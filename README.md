@@ -1,18 +1,27 @@
 # Axon
 
-This repository contains the initial EPIC-01 workspace scaffold and the architecture and delivery documentation for the WASM + Delta Lake on GCS program captured on March 20, 2026.
+Axon is a Rust workspace for building a hybrid query platform with native and browser runtimes, shared query contracts, and supporting infrastructure for control-plane and UDF execution.
 
-Workspace scaffold:
+## Workspace
 
-- [Cargo workspace manifest](./Cargo.toml)
-- [Shared query contract crate](./crates/query-contract/src/lib.rs)
-- [CI workflow](./.github/workflows/ci.yml)
-- [Package ownership map](./docs/program/package-owners.md)
+- `crates/query-contract` contains shared request and response types, capability flags, and fallback reasons.
+- `crates/native-query-runtime` is the native execution runtime scaffold.
+- `crates/wasm-query-runtime` is the browser-oriented runtime scaffold.
+- `crates/delta-control-plane` is the control-plane scaffold for snapshot resolution and browser-safe access.
+- `crates/query-router`, `crates/browser-sdk`, `crates/wasm-http-object-store`, `crates/udf-abi`, and `crates/udf-host-wasi` provide the supporting packages around routing, browser access, and hosted UDF execution.
 
-Start here:
+## Getting Started
 
-- [Program Bundle](./docs/program/wasm-delta-gcs-program.md)
-- [ADR Index](./docs/adr/README.md)
-- [Epic Index](./docs/epics/README.md)
-- [Release Gate Checklist](./docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md)
-- [GitHub Project Setup](./docs/program/github-project-setup.md)
+```bash
+cargo check --workspace
+cargo test -p query-contract
+cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --target wasm32-unknown-unknown
+```
+
+## Repository Layout
+
+- `crates/` contains the Rust workspace packages.
+- `tests/conformance/` contains scaffold and parity-oriented checks.
+- `tests/perf/` contains performance test scaffolding.
+- `tests/security/` contains security test scaffolding.
+- `.github/workflows/ci.yml` contains the CI configuration.
