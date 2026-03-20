@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   rust:
@@ -32,8 +33,17 @@ jobs:
       - name: Test shared query contract
         run: cargo test -p query-contract --locked
 
+      - name: Test native query runtime
+        run: cargo test -p native-query-runtime --locked
+
       - name: Check wasm targets
         run: cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --target wasm32-unknown-unknown --locked
 
       - name: Verify workspace layout
         run: bash tests/conformance/verify_workspace_layout.sh
+
+      - name: Run env-gated native GCS smoke
+        if: ${{ vars.AXON_GCS_TEST_TABLE_URI != '' }}
+        env:
+          AXON_GCS_TEST_TABLE_URI: ${{ vars.AXON_GCS_TEST_TABLE_URI }}
+        run: cargo test -p native-query-runtime bootstrap_table_supports_env_gated_gcs_smoke -- --exact --nocapture

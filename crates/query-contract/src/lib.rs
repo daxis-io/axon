@@ -120,24 +120,60 @@ impl QueryError {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct QueryExecutionOptions {
+    #[serde(default)]
+    pub include_explain: bool,
+    #[serde(default = "default_collect_metrics")]
+    pub collect_metrics: bool,
+}
+
+impl Default for QueryExecutionOptions {
+    fn default() -> Self {
+        Self {
+            include_explain: false,
+            collect_metrics: default_collect_metrics(),
+        }
+    }
+}
+
+const fn default_collect_metrics() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct QueryRequest {
+    pub table_uri: String,
     pub sql: String,
     pub preferred_target: ExecutionTarget,
+    #[serde(default)]
+    pub options: QueryExecutionOptions,
 }
 
 impl QueryRequest {
-    pub fn new(sql: impl Into<String>, preferred_target: ExecutionTarget) -> Self {
+    pub fn new(
+        table_uri: impl Into<String>,
+        sql: impl Into<String>,
+        preferred_target: ExecutionTarget,
+    ) -> Self {
         Self {
+            table_uri: table_uri.into(),
             sql: sql.into(),
             preferred_target,
+            options: QueryExecutionOptions::default(),
         }
+    }
+
+    pub fn with_options(mut self, options: QueryExecutionOptions) -> Self {
+        self.options = options;
+        self
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct QueryMetricsSummary {
     pub bytes_fetched: u64,
+    pub duration_ms: u64,
     pub files_touched: u64,
     pub files_skipped: u64,
 }

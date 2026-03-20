@@ -1,0 +1,22 @@
+[
+  {
+    "name": "projection_filter",
+    "sql": "SELECT id, value FROM axon_table WHERE category = 'B' ORDER BY id",
+    "expected_pretty": "+----+-------+\n| id | value |\n+----+-------+\n| 2  | 20    |\n| 4  | 40    |\n| 5  | 50    |\n+----+-------+"
+  },
+  {
+    "name": "aggregate_sum",
+    "sql": "SELECT SUM(value) AS total_value FROM axon_table",
+    "expected_pretty": "+-------------+\n| total_value |\n+-------------+\n| 210         |\n+-------------+"
+  },
+  {
+    "name": "group_by_category",
+    "sql": "SELECT category, COUNT(*) AS row_count FROM axon_table GROUP BY category ORDER BY category",
+    "expected_pretty": "+----------+-----------+\n| category | row_count |\n+----------+-----------+\n| A        | 2         |\n| B        | 3         |\n| C        | 1         |\n+----------+-----------+"
+  },
+  {
+    "name": "order_limit",
+    "sql": "SELECT id FROM axon_table ORDER BY value DESC LIMIT 2",
+    "expected_pretty": "+----+\n| id |\n+----+\n| 6  |\n| 5  |\n+----+"
+  }
+]
