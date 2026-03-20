@@ -1,0 +1,9 @@
+[package]
+name = "udf-host-wasi"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+query-contract = { path = "../query-contract" }
+udf-abi = { path = "../udf-abi" }

@@ -1,0 +1,8 @@
+[package]
+name = "wasm-query-runtime"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+query-contract = { path = "../query-contract" }

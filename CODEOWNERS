@@ -1,0 +1,16 @@
+# Replace these placeholder teams with real GitHub teams before enabling branch protection.
+
+/crates/query-contract/ @axon/runtime-engine
+/crates/query-router/ @axon/runtime-engine
+/crates/native-query-runtime/ @axon/runtime-engine
+/crates/delta-control-plane/ @axon/storage-platform
+/crates/wasm-query-runtime/ @axon/runtime-engine
+/crates/wasm-http-object-store/ @axon/runtime-engine
+/crates/browser-sdk/ @axon/web-platform
+/crates/udf-abi/ @axon/runtime-engine
+/crates/udf-host-wasi/ @axon/runtime-engine
+/docs/adr/ @axon/query-platform
+/docs/epics/ @axon/query-platform
+/tests/conformance/ @axon/qa-performance
+/tests/perf/ @axon/qa-performance
+/tests/security/ @axon/security-engineering

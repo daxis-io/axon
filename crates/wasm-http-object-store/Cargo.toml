@@ -1,0 +1,8 @@
+[package]
+name = "wasm-http-object-store"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+query-contract = { path = "../query-contract" }
