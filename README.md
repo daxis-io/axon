@@ -24,13 +24,15 @@ cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --tar
 `crates/native-query-runtime` now contains the first callable EPIC-02 slice:
 
 - `bootstrap_table(table_uri)` opens a Delta table and validates the Sprint 1 compatibility envelope.
-- `execute_query(request)` registers the table as `axon_table`, executes read-only SQL, and returns Arrow batches, core metrics, and optional explain output.
+- `execute_query(request)` registers the table as `axon_table`, executes read-only SQL, and returns Arrow batches, conservative snapshot-derived file metrics, wall-clock duration, and optional explain output.
 
 Local/offline validation:
 
 ```bash
 cargo test -p native-query-runtime --locked
 ```
+
+Sprint 1 metrics are intentionally conservative: `bytes_fetched` and `files_touched` are derived from active snapshot metadata, and `files_skipped` remains `0` until pruning stats are wired through the runtime.
 
 Env-gated GCS smoke validation:
 
