@@ -23,7 +23,7 @@ use deltalake::datafusion::sql::sqlparser::ast::{
 use deltalake::errors::DeltaTableError;
 use deltalake::kernel::{DataType, PrimitiveType, StructField};
 use deltalake::table::{config::TablePropertiesExt, state::DeltaTableState};
-use deltalake::{open_table, ObjectStoreError};
+use deltalake::{open_table, open_table_with_version, ObjectStoreError};
 use query_contract::{
     CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, QueryError, QueryErrorCode,
     QueryMetricsSummary, QueryRequest,
@@ -57,7 +57,7 @@ pub fn bootstrap_table(table_uri: &str) -> Result<NativeTableBootstrap, QueryErr
     let table_uri = table_uri.to_string();
 
     run_on_runtime(async move {
-        let prepared = PreparedTable::load(&table_uri).await?;
+        let prepared = PreparedTable::load(&table_uri, None).await?;
 
         Ok(NativeTableBootstrap {
             table_uri: prepared.table_uri,
@@ -82,9 +82,10 @@ async fn execute_query_async(request: QueryRequest) -> Result<NativeQueryResult,
         ));
     }
 
+    validate_snapshot_version(request.snapshot_version)?;
     validate_query_sql(&request.sql)?;
 
-    let prepared = PreparedTable::load(&request.table_uri).await?;
+    let prepared = PreparedTable::load(&request.table_uri, request.snapshot_version).await?;
     let query = prepared
         .session
         .sql_with_options(&request.sql, read_only_sql_options())
@@ -393,11 +394,16 @@ struct PreparedTable {
 }
 
 impl PreparedTable {
-    async fn load(table_uri: &str) -> Result<Self, QueryError> {
+    async fn load(table_uri: &str, snapshot_version: Option<i64>) -> Result<Self, QueryError> {
         let normalized_uri = normalize_table_uri(table_uri)?;
-        let table = open_table(normalized_uri.clone())
-            .await
-            .map_err(map_delta_error)?;
+        let table = match snapshot_version {
+            Some(version) => open_table_with_version(normalized_uri.clone(), version)
+                .await
+                .map_err(map_delta_error)?,
+            None => open_table(normalized_uri.clone())
+                .await
+                .map_err(map_delta_error)?,
+        };
         let snapshot = table.snapshot().map_err(map_delta_error)?;
         let capability_analysis = analyze_table_capabilities(snapshot);
         ensure_supported_table_shape(&capability_analysis)?;
@@ -421,6 +427,22 @@ impl PreparedTable {
             version: snapshot.version(),
         })
     }
+}
+
+fn validate_snapshot_version(snapshot_version: Option<i64>) -> Result<(), QueryError> {
+    if let Some(snapshot_version) = snapshot_version {
+        if snapshot_version < 0 {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidRequest,
+                format!(
+                    "snapshot_version must be greater than or equal to 0, got {snapshot_version}"
+                ),
+                ExecutionTarget::Native,
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn normalize_table_uri(table_uri: &str) -> Result<Url, QueryError> {
@@ -502,7 +524,7 @@ fn analyze_table_capabilities(snapshot: &DeltaTableState) -> CapabilityAnalysis 
         (CapabilityKey::ProxyAccess, CapabilityState::Unsupported),
         (CapabilityKey::RangeReads, CapabilityState::Supported),
         (CapabilityKey::SignedUrlAccess, CapabilityState::Unsupported),
-        (CapabilityKey::TimeTravel, CapabilityState::Unsupported),
+        (CapabilityKey::TimeTravel, CapabilityState::Supported),
         (CapabilityKey::TimestampNtz, CapabilityState::Unsupported),
     ]);
 
@@ -717,18 +739,61 @@ fn map_delta_error(error: DeltaTableError) -> QueryError {
             "table location is not initialized as a Delta table",
             ExecutionTarget::Native,
         ),
+        DeltaTableError::InvalidVersion(version) => QueryError::new(
+            QueryErrorCode::InvalidRequest,
+            format!("snapshot version {version} is not available for this table"),
+            ExecutionTarget::Native,
+        ),
         DeltaTableError::MissingFeature { feature, url } => QueryError::new(
             QueryErrorCode::UnsupportedFeature,
             format!("missing runtime feature '{feature}' for table location {url}"),
             ExecutionTarget::Native,
         ),
         DeltaTableError::ObjectStore { source } => map_object_store_error(source),
+        DeltaTableError::KernelError(source) => {
+            if let Some(mapped) = query_error_from_unavailable_snapshot_message(&source.to_string())
+            {
+                mapped
+            } else {
+                QueryError::new(
+                    QueryErrorCode::ExecutionFailed,
+                    format!("Kernel error: {source}"),
+                    ExecutionTarget::Native,
+                )
+            }
+        }
+        DeltaTableError::Generic(message) => {
+            if let Some(mapped) = query_error_from_unavailable_snapshot_message(&message) {
+                mapped
+            } else {
+                QueryError::new(
+                    QueryErrorCode::ExecutionFailed,
+                    format!("Generic DeltaTable error: {message}"),
+                    ExecutionTarget::Native,
+                )
+            }
+        }
         other => QueryError::new(
             QueryErrorCode::ExecutionFailed,
             other.to_string(),
             ExecutionTarget::Native,
         ),
     }
+}
+
+fn query_error_from_unavailable_snapshot_message(message: &str) -> Option<QueryError> {
+    let normalized = message.to_ascii_lowercase();
+    let snapshot_unavailable = normalized.contains("specified end version")
+        || normalized.contains("provided snapshot version does not match the requested version")
+        || normalized.contains("snapshot version is not available");
+
+    snapshot_unavailable.then(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidRequest,
+            format!("requested snapshot version is not available: {message}"),
+            ExecutionTarget::Native,
+        )
+    })
 }
 
 fn map_datafusion_error(error: DataFusionError) -> QueryError {
@@ -900,6 +965,26 @@ mod tests {
 
         assert_eq!(error.code, QueryErrorCode::InvalidRequest);
         assert_eq!(error.target, ExecutionTarget::Native);
+    }
+
+    #[test]
+    fn invalid_snapshot_versions_map_to_invalid_request() {
+        let error = map_delta_error(DeltaTableError::InvalidVersion(42));
+
+        assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+        assert_eq!(error.target, ExecutionTarget::Native);
+    }
+
+    #[test]
+    fn unavailable_snapshot_messages_map_to_invalid_request() {
+        let error = query_error_from_unavailable_snapshot_message(
+            "Generic delta kernel error: LogSegment end version 2 not the same as the specified end version 99",
+        )
+        .expect("snapshot-version mismatch should be recognized");
+
+        assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+        assert_eq!(error.target, ExecutionTarget::Native);
+        assert!(error.message.contains("requested snapshot version"));
     }
 
     #[test]

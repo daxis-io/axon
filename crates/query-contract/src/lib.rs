@@ -144,6 +144,8 @@ const fn default_collect_metrics() -> bool {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct QueryRequest {
     pub table_uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_version: Option<i64>,
     pub sql: String,
     pub preferred_target: ExecutionTarget,
     #[serde(default)]
@@ -158,6 +160,7 @@ impl QueryRequest {
     ) -> Self {
         Self {
             table_uri: table_uri.into(),
+            snapshot_version: None,
             sql: sql.into(),
             preferred_target,
             options: QueryExecutionOptions::default(),

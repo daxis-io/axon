@@ -43,7 +43,7 @@ jobs:
         run: bash tests/conformance/verify_workspace_layout.sh
 
       - name: Authenticate for env-gated native GCS smoke
-        if: ${{ vars.AXON_GCS_TEST_TABLE_URI != '' && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
+        if: ${{ (vars.AXON_GCS_TEST_TABLE_URI != '' || vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI != '') && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.AXON_GCP_CREDENTIALS_JSON }}
@@ -59,3 +59,16 @@ jobs:
         env:
           AXON_GCS_TEST_TABLE_URI: ${{ vars.AXON_GCS_TEST_TABLE_URI }}
         run: cargo test -p native-query-runtime --locked execute_query_supports_env_gated_gcs_smoke -- --exact --nocapture
+
+      - name: Run env-gated partitioned native GCS pruning smoke
+        if: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI != '' && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
+        env:
+          AXON_GCS_TEST_PARTITIONED_TABLE_URI: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI }}
+        run: cargo test -p native-query-runtime --locked execute_query_supports_env_gated_partitioned_gcs_pruning_smoke -- --exact --nocapture
+
+      - name: Run env-gated partitioned native GCS snapshot-version smoke
+        if: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI != '' && vars.AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION != '' && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
+        env:
+          AXON_GCS_TEST_PARTITIONED_TABLE_URI: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI }}
+          AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION }}
+        run: cargo test -p native-query-runtime --locked execute_query_supports_env_gated_partitioned_gcs_snapshot_version_smoke -- --exact --nocapture

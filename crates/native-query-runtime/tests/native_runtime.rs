@@ -506,6 +506,96 @@ fn execute_query_runs_the_partitioned_sql_corpus_with_pruning_metrics() {
 }
 
 #[test]
+fn execute_query_supports_explicit_snapshot_versions() {
+    let fixture = TestTableFixture::create();
+
+    let latest_request = QueryRequest {
+        snapshot_version: None,
+        ..QueryRequest::new(
+            &fixture.table_uri,
+            format!("SELECT COUNT(*) AS row_count FROM {DEFAULT_TABLE_NAME}"),
+            ExecutionTarget::Native,
+        )
+    };
+    let historical_request = QueryRequest {
+        snapshot_version: Some(1),
+        ..QueryRequest::new(
+            &fixture.table_uri,
+            format!("SELECT COUNT(*) AS row_count FROM {DEFAULT_TABLE_NAME}"),
+            ExecutionTarget::Native,
+        )
+    };
+
+    let latest_result = execute_query(latest_request).expect("latest query should execute");
+    let historical_result =
+        execute_query(historical_request).expect("historical query should execute");
+
+    assert_eq!(
+        pretty_format_batches(&latest_result.batches)
+            .expect("batches should format")
+            .to_string(),
+        "+-----------+\n| row_count |\n+-----------+\n| 6         |\n+-----------+"
+    );
+    assert_eq!(
+        pretty_format_batches(&historical_result.batches)
+            .expect("batches should format")
+            .to_string(),
+        "+-----------+\n| row_count |\n+-----------+\n| 3         |\n+-----------+"
+    );
+    assert_eq!(
+        historical_result
+            .capabilities
+            .state(CapabilityKey::TimeTravel),
+        Some(CapabilityState::Supported),
+        "historical query should report native time-travel support"
+    );
+}
+
+#[test]
+fn execute_query_rejects_negative_snapshot_versions() {
+    let fixture = TestTableFixture::create();
+    let request = QueryRequest {
+        snapshot_version: Some(-1),
+        ..QueryRequest::new(
+            &fixture.table_uri,
+            format!("SELECT COUNT(*) AS row_count FROM {DEFAULT_TABLE_NAME}"),
+            ExecutionTarget::Native,
+        )
+    };
+
+    let error = execute_query(request).expect_err("negative versions should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(
+        error.message.contains("snapshot_version"),
+        "error should identify the rejected field: {}",
+        error.message
+    );
+}
+
+#[test]
+fn execute_query_rejects_unknown_snapshot_versions() {
+    let fixture = TestTableFixture::create();
+    let request = QueryRequest {
+        snapshot_version: Some(99),
+        ..QueryRequest::new(
+            &fixture.table_uri,
+            format!("SELECT COUNT(*) AS row_count FROM {DEFAULT_TABLE_NAME}"),
+            ExecutionTarget::Native,
+        )
+    };
+
+    let error = execute_query(request).expect_err("unknown versions should fail deterministically");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(
+        error.message.contains("snapshot"),
+        "error should describe the unavailable snapshot: {}",
+        error.message
+    );
+}
+
+#[test]
 fn execute_query_optionally_returns_explain_output() {
     let fixture = TestTableFixture::create();
     let request = QueryRequest::new(
@@ -636,6 +726,37 @@ fn execute_query_maps_missing_data_files_to_object_store_protocol_errors() {
     assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
 }
 
+#[cfg(unix)]
+#[test]
+fn execute_query_maps_permission_denied_files_to_access_denied() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = TestTableFixture::create();
+    let data_files = fixture.data_file_paths();
+    let denied_file = data_files
+        .first()
+        .expect("fixture should have at least one parquet data file");
+    let original_permissions = fs::metadata(denied_file)
+        .expect("metadata should load")
+        .permissions();
+
+    let mut denied_permissions = original_permissions.clone();
+    denied_permissions.set_mode(0o000);
+    fs::set_permissions(denied_file, denied_permissions).expect("permissions should update");
+
+    let request = QueryRequest::new(
+        &fixture.table_uri,
+        format!("SELECT id FROM {DEFAULT_TABLE_NAME} ORDER BY id"),
+        ExecutionTarget::Native,
+    );
+
+    let error = execute_query(request).expect_err("permission denied should surface");
+
+    fs::set_permissions(denied_file, original_permissions).expect("permissions should be restored");
+
+    assert_eq!(error.code, QueryErrorCode::AccessDenied);
+}
+
 #[test]
 fn bootstrap_table_supports_env_gated_gcs_smoke() {
     let Ok(table_uri) = std::env::var("AXON_GCS_TEST_TABLE_URI") else {
@@ -681,5 +802,88 @@ fn execute_query_supports_env_gated_gcs_smoke() {
         result.capabilities.state(CapabilityKey::RangeReads),
         Some(CapabilityState::Supported),
         "query smoke should report range-read support"
+    );
+}
+
+#[test]
+fn execute_query_supports_env_gated_partitioned_gcs_pruning_smoke() {
+    let Ok(table_uri) = std::env::var("AXON_GCS_TEST_PARTITIONED_TABLE_URI") else {
+        return;
+    };
+
+    let request = QueryRequest::new(
+        &table_uri,
+        format!("SELECT COUNT(*) AS row_count FROM {DEFAULT_TABLE_NAME} WHERE category = 'C'"),
+        ExecutionTarget::Native,
+    );
+
+    let result = execute_query(request).expect("partitioned gcs pruning query should succeed");
+    let pretty = pretty_format_batches(&result.batches)
+        .expect("batches should format")
+        .to_string();
+
+    assert!(
+        pretty.contains("row_count"),
+        "partitioned gcs pruning smoke should return an aggregate row"
+    );
+    assert!(
+        result.metrics.files_touched > 0,
+        "partitioned gcs pruning smoke should scan at least one file"
+    );
+    assert!(
+        result.metrics.files_skipped > 0,
+        "partitioned gcs pruning smoke should report skipped files"
+    );
+}
+
+#[test]
+fn execute_query_supports_env_gated_partitioned_gcs_snapshot_version_smoke() {
+    let Ok(table_uri) = std::env::var("AXON_GCS_TEST_PARTITIONED_TABLE_URI") else {
+        return;
+    };
+    let Ok(snapshot_version) = std::env::var("AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION")
+    else {
+        return;
+    };
+    let snapshot_version: i64 = snapshot_version
+        .parse()
+        .expect("partitioned gcs snapshot version should parse");
+
+    let latest_request = QueryRequest::new(
+        &table_uri,
+        format!("SELECT COUNT(*) AS row_count FROM {DEFAULT_TABLE_NAME}"),
+        ExecutionTarget::Native,
+    );
+    let historical_request = QueryRequest {
+        snapshot_version: Some(snapshot_version),
+        ..QueryRequest::new(
+            &table_uri,
+            format!("SELECT COUNT(*) AS row_count FROM {DEFAULT_TABLE_NAME}"),
+            ExecutionTarget::Native,
+        )
+    };
+
+    let latest_result =
+        execute_query(latest_request).expect("latest partitioned query should work");
+    let historical_result =
+        execute_query(historical_request).expect("historical partitioned query should work");
+
+    let latest_pretty = pretty_format_batches(&latest_result.batches)
+        .expect("batches should format")
+        .to_string();
+    let historical_pretty = pretty_format_batches(&historical_result.batches)
+        .expect("batches should format")
+        .to_string();
+
+    assert_ne!(
+        latest_pretty, historical_pretty,
+        "historical partitioned gcs smoke should return a different aggregate than latest"
+    );
+    assert_eq!(
+        historical_result
+            .capabilities
+            .state(CapabilityKey::TimeTravel),
+        Some(CapabilityState::Supported),
+        "historical partitioned gcs smoke should report native time-travel support"
     );
 }

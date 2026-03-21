@@ -132,7 +132,7 @@ fn query_response_serializes_without_absent_fallback_reason() {
 
 #[test]
 fn query_request_serializes_single_table_locator_and_execution_options() {
-    let request = QueryRequest::new(
+    let mut request = QueryRequest::new(
         "gs://axon-fixtures/sample_table",
         "SELECT id FROM axon_table LIMIT 5",
         ExecutionTarget::Native,
@@ -141,6 +141,7 @@ fn query_request_serializes_single_table_locator_and_execution_options() {
         include_explain: true,
         collect_metrics: false,
     });
+    request.snapshot_version = Some(3);
 
     let json = serde_json::to_value(&request).expect("query request should serialize");
 
@@ -148,6 +149,7 @@ fn query_request_serializes_single_table_locator_and_execution_options() {
         json,
         json!({
             "table_uri": "gs://axon-fixtures/sample_table",
+            "snapshot_version": 3,
             "sql": "SELECT id FROM axon_table LIMIT 5",
             "preferred_target": "native",
             "options": {
@@ -168,7 +170,22 @@ fn query_request_defaults_execution_options_when_omitted() {
     .expect("query request should deserialize");
 
     assert_eq!(request.table_uri, "gs://axon-fixtures/sample_table");
+    assert_eq!(request.snapshot_version, None);
     assert_eq!(request.options, QueryExecutionOptions::default());
     assert!(!request.options.include_explain);
     assert!(request.options.collect_metrics);
+}
+
+#[test]
+fn query_request_deserializes_explicit_snapshot_version() {
+    let request: QueryRequest = serde_json::from_value(json!({
+        "table_uri": "gs://axon-fixtures/sample_table",
+        "snapshot_version": 7,
+        "sql": "SELECT count(*) FROM axon_table",
+        "preferred_target": "native"
+    }))
+    .expect("query request should deserialize");
+
+    assert_eq!(request.snapshot_version, Some(7));
+    assert_eq!(request.options, QueryExecutionOptions::default());
 }
