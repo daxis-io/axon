@@ -6,7 +6,7 @@ use deltalake::arrow::datatypes::{DataType as ArrowDataType, Field, Schema as Ar
 use deltalake::arrow::record_batch::RecordBatch;
 use deltalake::arrow::util::pretty::pretty_format_batches;
 use deltalake::kernel::{DataType, PrimitiveType, StructField};
-use deltalake::DeltaTable;
+use deltalake::{DeltaTable, TableProperty};
 use native_query_runtime::{bootstrap_table, execute_query, DEFAULT_TABLE_NAME};
 use query_contract::{
     CapabilityKey, CapabilityState, ExecutionTarget, QueryErrorCode, QueryExecutionOptions,
@@ -29,42 +29,17 @@ struct QueryCorpusCase {
 
 impl TestTableFixture {
     fn create() -> Self {
-        let tempdir = TempDir::new().expect("tempdir should be created");
-        let table_uri = deltalake::ensure_table_uri(tempdir.path().to_string_lossy())
-            .expect("table uri should be normalized")
-            .to_string();
+        let fixture = Self::create_with_columns_and_configuration(default_table_columns(), vec![]);
 
         tokio::runtime::Runtime::new()
             .expect("runtime should be created")
             .block_on(async {
                 let table = DeltaTable::try_from_url(
-                    deltalake::ensure_table_uri(&table_uri).expect("table uri should parse"),
+                    deltalake::ensure_table_uri(&fixture.table_uri)
+                        .expect("table uri should parse"),
                 )
                 .await
                 .expect("table handle should be created");
-
-                let table = table
-                    .create()
-                    .with_columns(vec![
-                        StructField::new(
-                            "id".to_string(),
-                            DataType::Primitive(PrimitiveType::Integer),
-                            false,
-                        ),
-                        StructField::new(
-                            "category".to_string(),
-                            DataType::Primitive(PrimitiveType::String),
-                            false,
-                        ),
-                        StructField::new(
-                            "value".to_string(),
-                            DataType::Primitive(PrimitiveType::Integer),
-                            false,
-                        ),
-                    ])
-                    .with_table_name("axon_fixture")
-                    .await
-                    .expect("table should be created");
 
                 let table = table
                     .write(vec![fixture_batch(
@@ -85,11 +60,63 @@ impl TestTableFixture {
                     .expect("second batch should be written");
             });
 
+        fixture
+    }
+
+    fn create_with_columns_and_configuration(
+        columns: Vec<StructField>,
+        configuration: Vec<(String, Option<String>)>,
+    ) -> Self {
+        let tempdir = TempDir::new().expect("tempdir should be created");
+        let table_uri = deltalake::ensure_table_uri(tempdir.path().to_string_lossy())
+            .expect("table uri should be normalized")
+            .to_string();
+
+        tokio::runtime::Runtime::new()
+            .expect("runtime should be created")
+            .block_on(async {
+                let table = DeltaTable::try_from_url(
+                    deltalake::ensure_table_uri(&table_uri).expect("table uri should parse"),
+                )
+                .await
+                .expect("table handle should be created");
+
+                let table = table
+                    .create()
+                    .with_columns(columns)
+                    .with_table_name("axon_fixture")
+                    .with_configuration(configuration)
+                    .await
+                    .expect("table should be created");
+
+                drop(table);
+            });
+
         Self {
             _tempdir: tempdir,
             table_uri,
         }
     }
+}
+
+fn default_table_columns() -> Vec<StructField> {
+    vec![
+        StructField::new(
+            "id".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            false,
+        ),
+        StructField::new(
+            "category".to_string(),
+            DataType::Primitive(PrimitiveType::String),
+            false,
+        ),
+        StructField::new(
+            "value".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            false,
+        ),
+    ]
 }
 
 fn fixture_batch(ids: &[i32], categories: &[&str], values: &[i32]) -> RecordBatch {
@@ -158,6 +185,56 @@ fn bootstrap_table_does_not_create_missing_local_directories() {
     assert!(
         !missing_path.exists(),
         "bootstrap should not create local directories for read-only access"
+    );
+}
+
+#[test]
+fn bootstrap_table_rejects_change_data_feed_tables() {
+    let fixture = TestTableFixture::create_with_columns_and_configuration(
+        default_table_columns(),
+        vec![(
+            TableProperty::EnableChangeDataFeed.as_ref().to_string(),
+            Some("true".to_string()),
+        )],
+    );
+
+    let error = bootstrap_table(&fixture.table_uri)
+        .expect_err("change data feed tables should be rejected in Sprint 1");
+
+    assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+    assert!(
+        error.message.contains("ChangeDataFeed"),
+        "error should identify the rejected capability: {}",
+        error.message
+    );
+}
+
+#[test]
+fn bootstrap_table_rejects_timestamp_ntz_tables() {
+    let fixture = TestTableFixture::create_with_columns_and_configuration(
+        vec![
+            StructField::new(
+                "id".to_string(),
+                DataType::Primitive(PrimitiveType::Integer),
+                false,
+            ),
+            StructField::new(
+                "event_time".to_string(),
+                DataType::Primitive(PrimitiveType::TimestampNtz),
+                true,
+            ),
+        ],
+        vec![],
+    );
+
+    let error = bootstrap_table(&fixture.table_uri)
+        .expect_err("timestamp_ntz tables should be rejected in Sprint 1");
+
+    assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+    assert!(
+        error.message.contains("TimestampNtz"),
+        "error should identify the rejected capability: {}",
+        error.message
     );
 }
 

@@ -16,8 +16,8 @@ use deltalake::datafusion::sql::sqlparser::ast::{
 };
 use deltalake::errors::DeltaTableError;
 use deltalake::kernel::{DataType, PrimitiveType, StructField};
-use deltalake::table::config::TablePropertiesExt;
-use deltalake::{open_table, DeltaTable, ObjectStoreError};
+use deltalake::table::{config::TablePropertiesExt, state::DeltaTableState};
+use deltalake::{open_table, ObjectStoreError};
 use query_contract::{
     CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, QueryError, QueryErrorCode,
     QueryMetricsSummary, QueryRequest,
@@ -66,6 +66,8 @@ pub fn execute_query(request: QueryRequest) -> Result<NativeQueryResult, QueryEr
 }
 
 async fn execute_query_async(request: QueryRequest) -> Result<NativeQueryResult, QueryError> {
+    let operation_started_at = Instant::now();
+
     if request.sql.trim().is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidRequest,
@@ -77,7 +79,6 @@ async fn execute_query_async(request: QueryRequest) -> Result<NativeQueryResult,
     validate_query_sql(&request.sql)?;
 
     let prepared = PreparedTable::load(&request.table_uri).await?;
-    let query_started_at = Instant::now();
     let query = prepared
         .session
         .sql_with_options(&request.sql, read_only_sql_options())
@@ -97,7 +98,7 @@ async fn execute_query_async(request: QueryRequest) -> Result<NativeQueryResult,
     let metrics = if request.options.collect_metrics {
         QueryMetricsSummary {
             bytes_fetched: prepared.bytes_fetched,
-            duration_ms: query_started_at.elapsed().as_millis().max(1) as u64,
+            duration_ms: wall_clock_duration_ms(operation_started_at),
             files_touched: prepared.files_touched,
             files_skipped: 0,
         }
@@ -111,6 +112,10 @@ async fn execute_query_async(request: QueryRequest) -> Result<NativeQueryResult,
         metrics,
         capabilities: prepared.capabilities,
     })
+}
+
+fn wall_clock_duration_ms(started_at: Instant) -> u64 {
+    started_at.elapsed().as_millis().max(1) as u64
 }
 
 async fn collect_explain_lines(
@@ -381,8 +386,9 @@ impl PreparedTable {
         let table = open_table(normalized_uri.clone())
             .await
             .map_err(map_delta_error)?;
-        let capabilities = detect_capabilities(&table)?;
-        ensure_supported_table_shape(&table, &capabilities)?;
+        let snapshot = table.snapshot().map_err(map_delta_error)?;
+        let capability_analysis = analyze_table_capabilities(snapshot);
+        ensure_supported_table_shape(&capability_analysis)?;
 
         let session = SessionContext::new();
         table
@@ -393,7 +399,6 @@ impl PreparedTable {
             .register_table(DEFAULT_TABLE_NAME, provider)
             .map_err(map_datafusion_error)?;
 
-        let snapshot = table.snapshot().map_err(map_delta_error)?;
         let files_touched = snapshot.log_data().num_files() as u64;
         let bytes_fetched = snapshot
             .log_data()
@@ -402,7 +407,7 @@ impl PreparedTable {
             .sum();
 
         Ok(Self {
-            capabilities,
+            capabilities: capability_analysis.report,
             bytes_fetched,
             files_touched,
             session,
@@ -465,8 +470,12 @@ fn normalize_local_path(path: std::path::PathBuf) -> Result<Url, QueryError> {
     })
 }
 
-fn detect_capabilities(table: &DeltaTable) -> Result<CapabilityReport, QueryError> {
-    let snapshot = table.snapshot().map_err(map_delta_error)?;
+struct CapabilityAnalysis {
+    report: CapabilityReport,
+    unsupported_capability: Option<CapabilityKey>,
+}
+
+fn analyze_table_capabilities(snapshot: &DeltaTableState) -> CapabilityAnalysis {
     let schema = snapshot.schema();
     let deletion_vectors_present = snapshot
         .log_data()
@@ -510,38 +519,27 @@ fn detect_capabilities(table: &DeltaTable) -> Result<CapabilityReport, QueryErro
         report.insert(CapabilityKey::TimestampNtz, CapabilityState::Experimental);
     }
 
-    Ok(report)
+    let unsupported_capability = [
+        (change_data_feed_enabled, CapabilityKey::ChangeDataFeed),
+        (column_mapping_present, CapabilityKey::ColumnMapping),
+        (deletion_vectors_present, CapabilityKey::DeletionVectors),
+        (timestamp_ntz_present, CapabilityKey::TimestampNtz),
+    ]
+    .into_iter()
+    .find_map(|(present, capability)| present.then_some(capability));
+
+    CapabilityAnalysis {
+        report,
+        unsupported_capability,
+    }
 }
 
 fn ensure_supported_table_shape(
-    table: &DeltaTable,
-    capabilities: &CapabilityReport,
+    capability_analysis: &CapabilityAnalysis,
 ) -> Result<(), QueryError> {
-    let snapshot = table.snapshot().map_err(map_delta_error)?;
-    let mut unsupported_capabilities = Vec::new();
-
-    if snapshot.table_config().enable_change_data_feed() {
-        unsupported_capabilities.push(CapabilityKey::ChangeDataFeed);
-    }
-
-    if snapshot.schema().fields().any(field_uses_column_mapping) {
-        unsupported_capabilities.push(CapabilityKey::ColumnMapping);
-    }
-
-    if snapshot
-        .log_data()
-        .iter()
-        .any(|file| file.deletion_vector_descriptor().is_some())
-    {
-        unsupported_capabilities.push(CapabilityKey::DeletionVectors);
-    }
-
-    if snapshot.schema().fields().any(field_uses_timestamp_ntz) {
-        unsupported_capabilities.push(CapabilityKey::TimestampNtz);
-    }
-
-    if let Some(capability) = unsupported_capabilities.into_iter().next() {
-        let state = capabilities
+    if let Some(capability) = capability_analysis.unsupported_capability {
+        let state = capability_analysis
+            .report
             .state(capability)
             .unwrap_or(CapabilityState::Unsupported);
 
@@ -691,7 +689,7 @@ fn map_object_store_error(error: ObjectStoreError) -> QueryError {
                 ExecutionTarget::Native,
             )
         }
-        ObjectStoreError::NotSupported { .. } | ObjectStoreError::NotImplemented { .. } => {
+        ObjectStoreError::NotSupported { .. } | ObjectStoreError::NotImplemented => {
             QueryError::new(
                 QueryErrorCode::UnsupportedFeature,
                 error.to_string(),
@@ -709,6 +707,7 @@ fn map_object_store_error(error: ObjectStoreError) -> QueryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn permission_denied_object_store_errors_map_to_access_denied() {
@@ -732,5 +731,12 @@ mod tests {
 
         assert_eq!(error.code, QueryErrorCode::InvalidRequest);
         assert_eq!(error.target, ExecutionTarget::Native);
+    }
+
+    #[test]
+    fn wall_clock_duration_ms_reports_elapsed_millis() {
+        let started_at = Instant::now() - Duration::from_millis(25);
+
+        assert!(wall_clock_duration_ms(started_at) >= 25);
     }
 }
