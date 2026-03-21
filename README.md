@@ -43,7 +43,7 @@ Offline native coverage now includes both the original unpartitioned SQL corpus 
 Sprint 4 expands that local oracle coverage to:
 
 - a 12-case latest-snapshot unpartitioned SQL corpus,
-- a 10-case latest-snapshot partitioned SQL corpus with pruning assertions only where scan metrics are stable,
+- a 10-case latest-snapshot partitioned SQL corpus with explicit scan-metric assertion flags so pruning expectations are only enforced where they are stable,
 - a 4-case snapshot-version SQL corpus over the local multi-version fixture.
 
 Env-gated GCS smoke validation:
@@ -106,8 +106,8 @@ Negative fixture contract:
 
 - `AXON_GCS_TEST_FORBIDDEN_TABLE_URI` must point at a table path that exists but returns `403` or equivalent access denial for the runner identity.
 - `AXON_GCS_TEST_NOT_FOUND_TABLE_URI` must point at a table path that returns `404` or equivalent not-found behavior during bootstrap.
-- `AXON_GCS_TEST_STALE_HISTORY_TABLE_URI` must point at a table whose current snapshot is readable but whose configured historical version is no longer available.
-- `AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI` must point at a table whose log is readable but whose current snapshot references at least one missing data object.
+- `AXON_GCS_TEST_STALE_HISTORY_TABLE_URI` and `AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION` must be configured together, and the table must have a readable latest snapshot whose configured historical version is no longer available.
+- `AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI` must point at a table whose log is readable but whose current snapshot references at least one missing data object; the smoke issues a full-table aggregate to force every current file to be opened.
 
 Fixture provisioning, IAM policy, and CI variable population for these negative smokes remain external dependencies outside this repository.
 

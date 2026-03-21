@@ -27,6 +27,7 @@ struct QueryCorpusCase {
     name: String,
     sql: String,
     expected_pretty: String,
+    assert_scan_metrics: bool,
     #[serde(default)]
     expected_files_touched: Option<u64>,
     #[serde(default)]
@@ -38,6 +39,7 @@ struct PartitionedQueryCorpusCase {
     name: String,
     sql: String,
     expected_pretty: String,
+    assert_scan_metrics: bool,
     #[serde(default)]
     expected_files_touched: Option<u64>,
     #[serde(default)]
@@ -298,6 +300,88 @@ fn load_snapshot_version_query_corpus() -> Vec<SnapshotVersionQueryCorpusCase> {
     .expect("snapshot-version query corpus should deserialize")
 }
 
+fn load_raw_corpus_cases(path: &Path) -> Vec<serde_json::Value> {
+    serde_json::from_str(&std::fs::read_to_string(path).expect("raw corpus should be readable"))
+        .expect("raw corpus should deserialize")
+}
+
+fn assert_raw_metric_contract(corpus_name: &str, cases: &[serde_json::Value]) {
+    for case in cases {
+        let object = case
+            .as_object()
+            .expect("every corpus case should deserialize as a JSON object");
+        let case_name = object
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .expect("every corpus case should define a name");
+        let assert_scan_metrics = object.get("assert_scan_metrics").unwrap_or_else(|| {
+            panic!("{corpus_name} case '{case_name}' must declare assert_scan_metrics explicitly")
+        });
+        let assert_scan_metrics = assert_scan_metrics.as_bool().unwrap_or_else(|| {
+            panic!("{corpus_name} case '{case_name}' must set assert_scan_metrics to true or false")
+        });
+        let has_files_touched = object.contains_key("expected_files_touched");
+        let has_files_skipped = object.contains_key("expected_files_skipped");
+
+        assert_eq!(
+            has_files_touched, has_files_skipped,
+            "{corpus_name} case '{case_name}' must either define both expected_files_* fields or neither"
+        );
+        assert_eq!(
+            assert_scan_metrics, has_files_touched,
+            "{corpus_name} case '{case_name}' must match assert_scan_metrics with expected_files_* presence"
+        );
+    }
+}
+
+fn expected_scan_metrics(
+    corpus_name: &str,
+    case_name: &str,
+    assert_scan_metrics: bool,
+    expected_files_touched: Option<u64>,
+    expected_files_skipped: Option<u64>,
+) -> Option<(u64, u64)> {
+    match (
+        assert_scan_metrics,
+        expected_files_touched,
+        expected_files_skipped,
+    ) {
+        (true, Some(files_touched), Some(files_skipped)) => Some((files_touched, files_skipped)),
+        (false, None, None) => None,
+        (true, _, _) => panic!(
+            "{corpus_name} case '{case_name}' must define both expected_files_* values when assert_scan_metrics is true"
+        ),
+        (false, _, _) => panic!(
+            "{corpus_name} case '{case_name}' must omit expected_files_* values when assert_scan_metrics is false"
+        ),
+    }
+}
+
+const ALL_CAPABILITY_KEYS: [CapabilityKey; 9] = [
+    CapabilityKey::ChangeDataFeed,
+    CapabilityKey::ColumnMapping,
+    CapabilityKey::DeletionVectors,
+    CapabilityKey::MultiPartitionExecution,
+    CapabilityKey::ProxyAccess,
+    CapabilityKey::RangeReads,
+    CapabilityKey::SignedUrlAccess,
+    CapabilityKey::TimeTravel,
+    CapabilityKey::TimestampNtz,
+];
+
+fn paired_env_vars_or_skip(left_name: &str, right_name: &str) -> Option<(String, String)> {
+    match (
+        std::env::var(left_name).ok(),
+        std::env::var(right_name).ok(),
+    ) {
+        (None, None) => None,
+        (Some(left), Some(right)) => Some((left, right)),
+        (Some(_), None) | (None, Some(_)) => {
+            panic!("{left_name} and {right_name} must be configured together")
+        }
+    }
+}
+
 fn collect_matching_paths<F>(root: &Path, matches: &mut Vec<PathBuf>, predicate: F)
 where
     F: Fn(&Path) -> bool + Copy,
@@ -311,6 +395,20 @@ where
             matches.push(path);
         }
     }
+}
+
+#[test]
+fn unpartitioned_query_corpus_explicitly_declares_metric_assertions() {
+    let cases = load_raw_corpus_cases(&query_corpus_path());
+
+    assert_raw_metric_contract("native-runtime-sql-corpus.json", &cases);
+}
+
+#[test]
+fn partitioned_query_corpus_explicitly_declares_metric_assertions() {
+    let cases = load_raw_corpus_cases(&partitioned_query_corpus_path());
+
+    assert_raw_metric_contract("native-runtime-partitioned-sql-corpus.json", &cases);
 }
 
 #[test]
@@ -515,14 +613,18 @@ fn execute_query_runs_the_native_sql_corpus_with_golden_results() {
             "query case '{}' should report range read support",
             case.name
         );
-        if let Some(expected_files_touched) = case.expected_files_touched {
+        if let Some((expected_files_touched, expected_files_skipped)) = expected_scan_metrics(
+            "native-runtime-sql-corpus.json",
+            &case.name,
+            case.assert_scan_metrics,
+            case.expected_files_touched,
+            case.expected_files_skipped,
+        ) {
             assert_eq!(
                 result.metrics.files_touched, expected_files_touched,
                 "query case '{}' should report the expected scanned file count",
                 case.name
             );
-        }
-        if let Some(expected_files_skipped) = case.expected_files_skipped {
             assert_eq!(
                 result.metrics.files_skipped, expected_files_skipped,
                 "query case '{}' should report the expected skipped file count",
@@ -550,43 +652,30 @@ fn execute_query_reports_the_full_capability_matrix_for_supported_tables() {
     let result = execute_query(request).expect("query should execute");
 
     assert_eq!(
-        result.capabilities.state(CapabilityKey::ChangeDataFeed),
-        Some(CapabilityState::Unsupported)
+        result.capabilities.capabilities.len(),
+        ALL_CAPABILITY_KEYS.len(),
+        "supported-table capability report should include every contract capability"
     );
-    assert_eq!(
-        result.capabilities.state(CapabilityKey::ColumnMapping),
-        Some(CapabilityState::Unsupported)
-    );
-    assert_eq!(
-        result.capabilities.state(CapabilityKey::DeletionVectors),
-        Some(CapabilityState::Unsupported)
-    );
-    assert_eq!(
-        result
-            .capabilities
-            .state(CapabilityKey::MultiPartitionExecution),
-        Some(CapabilityState::Supported)
-    );
-    assert_eq!(
-        result.capabilities.state(CapabilityKey::ProxyAccess),
-        Some(CapabilityState::Unsupported)
-    );
-    assert_eq!(
-        result.capabilities.state(CapabilityKey::RangeReads),
-        Some(CapabilityState::Supported)
-    );
-    assert_eq!(
-        result.capabilities.state(CapabilityKey::SignedUrlAccess),
-        Some(CapabilityState::Unsupported)
-    );
-    assert_eq!(
-        result.capabilities.state(CapabilityKey::TimeTravel),
-        Some(CapabilityState::Supported)
-    );
-    assert_eq!(
-        result.capabilities.state(CapabilityKey::TimestampNtz),
-        Some(CapabilityState::Unsupported)
-    );
+    for (capability, expected_state) in [
+        (CapabilityKey::ChangeDataFeed, CapabilityState::Unsupported),
+        (CapabilityKey::ColumnMapping, CapabilityState::Unsupported),
+        (CapabilityKey::DeletionVectors, CapabilityState::Unsupported),
+        (
+            CapabilityKey::MultiPartitionExecution,
+            CapabilityState::Supported,
+        ),
+        (CapabilityKey::ProxyAccess, CapabilityState::Unsupported),
+        (CapabilityKey::RangeReads, CapabilityState::Supported),
+        (CapabilityKey::SignedUrlAccess, CapabilityState::Unsupported),
+        (CapabilityKey::TimeTravel, CapabilityState::Supported),
+        (CapabilityKey::TimestampNtz, CapabilityState::Unsupported),
+    ] {
+        assert_eq!(
+            result.capabilities.state(capability),
+            Some(expected_state),
+            "supported-table capability report should include {capability:?}"
+        );
+    }
 }
 
 #[test]
@@ -647,14 +736,18 @@ fn execute_query_runs_the_partitioned_sql_corpus_with_pruning_metrics() {
             "partitioned query case '{}' should match the golden result",
             case.name
         );
-        if let Some(expected_files_touched) = case.expected_files_touched {
+        if let Some((expected_files_touched, expected_files_skipped)) = expected_scan_metrics(
+            "native-runtime-partitioned-sql-corpus.json",
+            &case.name,
+            case.assert_scan_metrics,
+            case.expected_files_touched,
+            case.expected_files_skipped,
+        ) {
             assert_eq!(
                 result.metrics.files_touched, expected_files_touched,
                 "partitioned query case '{}' should report scanned files",
                 case.name
             );
-        }
-        if let Some(expected_files_skipped) = case.expected_files_skipped {
             assert_eq!(
                 result.metrics.files_skipped, expected_files_skipped,
                 "partitioned query case '{}' should report skipped files",
@@ -1029,10 +1122,10 @@ fn bootstrap_table_rejects_env_gated_not_found_gcs_smoke() {
 
 #[test]
 fn execute_query_rejects_env_gated_stale_history_gcs_smoke() {
-    let Ok(table_uri) = std::env::var("AXON_GCS_TEST_STALE_HISTORY_TABLE_URI") else {
-        return;
-    };
-    let Ok(snapshot_version) = std::env::var("AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION") else {
+    let Some((table_uri, snapshot_version)) = paired_env_vars_or_skip(
+        "AXON_GCS_TEST_STALE_HISTORY_TABLE_URI",
+        "AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION",
+    ) else {
         return;
     };
     let snapshot_version: i64 = snapshot_version
@@ -1067,7 +1160,7 @@ fn execute_query_rejects_env_gated_missing_object_gcs_smoke() {
 
     let request = QueryRequest::new(
         &table_uri,
-        format!("SELECT * FROM {DEFAULT_TABLE_NAME} LIMIT 1"),
+        format!("SELECT SUM(value) AS total_value FROM {DEFAULT_TABLE_NAME}"),
         ExecutionTarget::Native,
     );
 

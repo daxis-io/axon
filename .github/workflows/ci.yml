@@ -42,6 +42,17 @@ jobs:
       - name: Verify workspace layout
         run: bash tests/conformance/verify_workspace_layout.sh
 
+      - name: Validate env-gated native GCS fixture configuration
+        env:
+          AXON_GCS_TEST_STALE_HISTORY_TABLE_URI: ${{ vars.AXON_GCS_TEST_STALE_HISTORY_TABLE_URI }}
+          AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION: ${{ vars.AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION }}
+        run: |
+          if { [ -n "$AXON_GCS_TEST_STALE_HISTORY_TABLE_URI" ] && [ -z "$AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION" ]; } || \
+             { [ -z "$AXON_GCS_TEST_STALE_HISTORY_TABLE_URI" ] && [ -n "$AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION" ]; }; then
+            echo "AXON_GCS_TEST_STALE_HISTORY_TABLE_URI and AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION must be configured together" >&2
+            exit 1
+          fi
+
       - name: Authenticate for env-gated native GCS smoke
         if: ${{ (vars.AXON_GCS_TEST_TABLE_URI != '' || vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI != '' || vars.AXON_GCS_TEST_FORBIDDEN_TABLE_URI != '' || vars.AXON_GCS_TEST_NOT_FOUND_TABLE_URI != '' || vars.AXON_GCS_TEST_STALE_HISTORY_TABLE_URI != '' || vars.AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI != '') && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
         uses: google-github-actions/auth@v2

@@ -2,6 +2,7 @@
   {
     "name": "single_partition_filter",
     "sql": "SELECT id, value FROM axon_table WHERE category = 'C' ORDER BY id",
+    "assert_scan_metrics": true,
     "expected_pretty": "+----+-------+\n| id | value |\n+----+-------+\n| 6  | 60    |\n+----+-------+",
     "expected_files_touched": 1,
     "expected_files_skipped": 2
@@ -9,6 +10,7 @@
   {
     "name": "multi_partition_filter",
     "sql": "SELECT category, COUNT(*) AS row_count FROM axon_table WHERE category IN ('A', 'B') GROUP BY category ORDER BY category",
+    "assert_scan_metrics": true,
     "expected_pretty": "+----------+-----------+\n| category | row_count |\n+----------+-----------+\n| A        | 2         |\n| B        | 3         |\n+----------+-----------+",
     "expected_files_touched": 2,
     "expected_files_skipped": 1
@@ -16,6 +18,7 @@
   {
     "name": "no_match_partition_filter",
     "sql": "SELECT id FROM axon_table WHERE category = 'Z' ORDER BY id",
+    "assert_scan_metrics": true,
     "expected_pretty": "++\n++",
     "expected_files_touched": 0,
     "expected_files_skipped": 3
@@ -23,6 +26,7 @@
   {
     "name": "aggregate_all_partitions",
     "sql": "SELECT SUM(value) AS total_value FROM axon_table",
+    "assert_scan_metrics": true,
     "expected_pretty": "+-------------+\n| total_value |\n+-------------+\n| 210         |\n+-------------+",
     "expected_files_touched": 3,
     "expected_files_skipped": 0
@@ -30,6 +34,7 @@
   {
     "name": "stats_prune_not_full",
     "sql": "SELECT id FROM axon_table WHERE value >= 40 ORDER BY id",
+    "assert_scan_metrics": true,
     "expected_pretty": "+----+\n| id |\n+----+\n| 4  |\n| 5  |\n| 6  |\n+----+",
     "expected_files_touched": 2,
     "expected_files_skipped": 1
@@ -37,26 +42,31 @@
   {
     "name": "single_partition_aggregate",
     "sql": "SELECT COUNT(*) AS row_count FROM axon_table WHERE category = 'A'",
+    "assert_scan_metrics": false,
     "expected_pretty": "+-----------+\n| row_count |\n+-----------+\n| 2         |\n+-----------+"
   },
   {
     "name": "two_partition_sum",
     "sql": "SELECT SUM(value) AS total_value FROM axon_table WHERE category IN ('A', 'C')",
+    "assert_scan_metrics": false,
     "expected_pretty": "+-------------+\n| total_value |\n+-------------+\n| 100         |\n+-------------+"
   },
   {
     "name": "single_partition_order_limit",
     "sql": "SELECT id FROM axon_table WHERE category = 'B' ORDER BY id DESC LIMIT 2",
+    "assert_scan_metrics": false,
     "expected_pretty": "+----+\n| id |\n+----+\n| 5  |\n| 4  |\n+----+"
   },
   {
     "name": "single_partition_grouped_sum",
     "sql": "SELECT category, SUM(value) AS total_value FROM axon_table WHERE category IN ('A', 'Z') GROUP BY category ORDER BY category",
+    "assert_scan_metrics": false,
     "expected_pretty": "+----------+-------------+\n| category | total_value |\n+----------+-------------+\n| A        | 40          |\n+----------+-------------+"
   },
   {
     "name": "no_match_partition_aggregate",
     "sql": "SELECT COUNT(*) AS row_count FROM axon_table WHERE category = 'Z'",
+    "assert_scan_metrics": false,
     "expected_pretty": "+-----------+\n| row_count |\n+-----------+\n| 0         |\n+-----------+"
   }
 ]

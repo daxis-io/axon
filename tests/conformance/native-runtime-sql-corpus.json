@@ -2,6 +2,7 @@
   {
     "name": "projection_filter",
     "sql": "SELECT id, value FROM axon_table WHERE category = 'B' ORDER BY id",
+    "assert_scan_metrics": true,
     "expected_pretty": "+----+-------+\n| id | value |\n+----+-------+\n| 2  | 20    |\n| 4  | 40    |\n| 5  | 50    |\n+----+-------+",
     "expected_files_touched": 2,
     "expected_files_skipped": 0
@@ -9,6 +10,7 @@
   {
     "name": "aggregate_sum",
     "sql": "SELECT SUM(value) AS total_value FROM axon_table",
+    "assert_scan_metrics": true,
     "expected_pretty": "+-------------+\n| total_value |\n+-------------+\n| 210         |\n+-------------+",
     "expected_files_touched": 2,
     "expected_files_skipped": 0
@@ -16,6 +18,7 @@
   {
     "name": "group_by_category",
     "sql": "SELECT category, COUNT(*) AS row_count FROM axon_table GROUP BY category ORDER BY category",
+    "assert_scan_metrics": true,
     "expected_pretty": "+----------+-----------+\n| category | row_count |\n+----------+-----------+\n| A        | 2         |\n| B        | 3         |\n| C        | 1         |\n+----------+-----------+",
     "expected_files_touched": 2,
     "expected_files_skipped": 0
@@ -23,6 +26,7 @@
   {
     "name": "order_limit",
     "sql": "SELECT id FROM axon_table ORDER BY value DESC LIMIT 2",
+    "assert_scan_metrics": true,
     "expected_pretty": "+----+\n| id |\n+----+\n| 6  |\n| 5  |\n+----+",
     "expected_files_touched": 2,
     "expected_files_skipped": 0
@@ -30,41 +34,49 @@
   {
     "name": "count_all_rows",
     "sql": "SELECT COUNT(*) AS row_count FROM axon_table",
+    "assert_scan_metrics": false,
     "expected_pretty": "+-----------+\n| row_count |\n+-----------+\n| 6         |\n+-----------+"
   },
   {
     "name": "sum_ids",
     "sql": "SELECT SUM(id) AS total_id FROM axon_table",
+    "assert_scan_metrics": false,
     "expected_pretty": "+----------+\n| total_id |\n+----------+\n| 21       |\n+----------+"
   },
   {
     "name": "min_max_value",
     "sql": "SELECT MIN(value) AS min_value, MAX(value) AS max_value FROM axon_table",
+    "assert_scan_metrics": false,
     "expected_pretty": "+-----------+-----------+\n| min_value | max_value |\n+-----------+-----------+\n| 10        | 60        |\n+-----------+-----------+"
   },
   {
     "name": "distinct_categories",
     "sql": "SELECT DISTINCT category FROM axon_table ORDER BY category",
+    "assert_scan_metrics": false,
     "expected_pretty": "+----------+\n| category |\n+----------+\n| A        |\n| B        |\n| C        |\n+----------+"
   },
   {
     "name": "cte_grouped_sum",
     "sql": "WITH base AS (SELECT category, value FROM axon_table) SELECT category, SUM(value) AS total_value FROM base GROUP BY category ORDER BY category",
+    "assert_scan_metrics": false,
     "expected_pretty": "+----------+-------------+\n| category | total_value |\n+----------+-------------+\n| A        | 40          |\n| B        | 110         |\n| C        | 60          |\n+----------+-------------+"
   },
   {
     "name": "derived_table_high_value_count",
     "sql": "SELECT COUNT(*) AS high_value_rows FROM (SELECT id, value FROM axon_table WHERE value >= 20) filtered",
+    "assert_scan_metrics": false,
     "expected_pretty": "+-----------------+\n| high_value_rows |\n+-----------------+\n| 5               |\n+-----------------+"
   },
   {
     "name": "having_grouped_sum",
     "sql": "SELECT category, SUM(value) AS total_value FROM axon_table GROUP BY category HAVING SUM(value) >= 60 ORDER BY category",
+    "assert_scan_metrics": false,
     "expected_pretty": "+----------+-------------+\n| category | total_value |\n+----------+-------------+\n| B        | 110         |\n| C        | 60          |\n+----------+-------------+"
   },
   {
     "name": "case_aggregate",
     "sql": "SELECT SUM(CASE WHEN category = 'A' THEN value ELSE 0 END) AS a_value_total FROM axon_table",
+    "assert_scan_metrics": false,
     "expected_pretty": "+---------------+\n| a_value_total |\n+---------------+\n| 40            |\n+---------------+"
   }
 ]
