@@ -1,0 +1,26 @@
+[
+  {
+    "name": "historical_row_count",
+    "snapshot_version": 1,
+    "sql": "SELECT COUNT(*) AS row_count FROM axon_table",
+    "expected_pretty": "+-----------+\n| row_count |\n+-----------+\n| 3         |\n+-----------+"
+  },
+  {
+    "name": "historical_total_value",
+    "snapshot_version": 1,
+    "sql": "SELECT SUM(value) AS total_value FROM axon_table",
+    "expected_pretty": "+-------------+\n| total_value |\n+-------------+\n| 60          |\n+-------------+"
+  },
+  {
+    "name": "historical_group_by_category",
+    "snapshot_version": 1,
+    "sql": "SELECT category, COUNT(*) AS row_count FROM axon_table GROUP BY category ORDER BY category",
+    "expected_pretty": "+----------+-----------+\n| category | row_count |\n+----------+-----------+\n| A        | 2         |\n| B        | 1         |\n+----------+-----------+"
+  },
+  {
+    "name": "historical_cte_count",
+    "snapshot_version": 1,
+    "sql": "WITH filtered AS (SELECT id FROM axon_table WHERE category = 'A') SELECT COUNT(*) AS row_count FROM filtered",
+    "expected_pretty": "+-----------+\n| row_count |\n+-----------+\n| 2         |\n+-----------+"
+  }
+]

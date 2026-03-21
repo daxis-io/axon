@@ -505,11 +505,8 @@ struct CapabilityAnalysis {
 
 fn analyze_table_capabilities(snapshot: &DeltaTableState) -> CapabilityAnalysis {
     let schema = snapshot.schema();
-    let deletion_vectors_present = snapshot
-        .log_data()
-        .iter()
-        .any(|file| file.deletion_vector_descriptor().is_some());
-    let change_data_feed_enabled = snapshot.table_config().enable_change_data_feed();
+    let deletion_vectors_enabled = table_uses_deletion_vectors(snapshot);
+    let change_data_feed_enabled = table_uses_change_data_feed(snapshot);
     let column_mapping_present = schema.fields().any(field_uses_column_mapping);
     let timestamp_ntz_present = schema.fields().any(field_uses_timestamp_ntz);
 
@@ -536,7 +533,7 @@ fn analyze_table_capabilities(snapshot: &DeltaTableState) -> CapabilityAnalysis 
         report.insert(CapabilityKey::ColumnMapping, CapabilityState::Experimental);
     }
 
-    if deletion_vectors_present {
+    if deletion_vectors_enabled {
         report.insert(
             CapabilityKey::DeletionVectors,
             CapabilityState::Experimental,
@@ -550,7 +547,7 @@ fn analyze_table_capabilities(snapshot: &DeltaTableState) -> CapabilityAnalysis 
     let unsupported_capability = [
         (change_data_feed_enabled, CapabilityKey::ChangeDataFeed),
         (column_mapping_present, CapabilityKey::ColumnMapping),
-        (deletion_vectors_present, CapabilityKey::DeletionVectors),
+        (deletion_vectors_enabled, CapabilityKey::DeletionVectors),
         (timestamp_ntz_present, CapabilityKey::TimestampNtz),
     ]
     .into_iter()
@@ -560,6 +557,49 @@ fn analyze_table_capabilities(snapshot: &DeltaTableState) -> CapabilityAnalysis 
         report,
         unsupported_capability,
     }
+}
+
+fn table_uses_change_data_feed(snapshot: &DeltaTableState) -> bool {
+    if !snapshot.table_config().enable_change_data_feed() {
+        return false;
+    }
+
+    let protocol = snapshot.protocol();
+    if protocol.min_writer_version() == 7 {
+        return protocol_has_writer_feature(protocol, "changeDataFeed");
+    }
+
+    protocol.min_writer_version() >= 4
+}
+
+fn table_uses_deletion_vectors(snapshot: &DeltaTableState) -> bool {
+    if snapshot
+        .log_data()
+        .iter()
+        .any(|file| file.deletion_vector_descriptor().is_some())
+    {
+        return true;
+    }
+
+    snapshot.table_config().enable_deletion_vectors == Some(true)
+        && (protocol_has_reader_feature(snapshot.protocol(), "deletionVectors")
+            || protocol_has_writer_feature(snapshot.protocol(), "deletionVectors"))
+}
+
+fn protocol_has_reader_feature(protocol: &deltalake::kernel::Protocol, feature_name: &str) -> bool {
+    protocol.reader_features().is_some_and(|features| {
+        features
+            .iter()
+            .any(|feature| feature.to_string() == feature_name)
+    })
+}
+
+fn protocol_has_writer_feature(protocol: &deltalake::kernel::Protocol, feature_name: &str) -> bool {
+    protocol.writer_features().is_some_and(|features| {
+        features
+            .iter()
+            .any(|feature| feature.to_string() == feature_name)
+    })
 }
 
 fn ensure_supported_table_shape(

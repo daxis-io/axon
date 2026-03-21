@@ -1,9 +1,13 @@
 # Conformance Tests
 
-This directory holds checks that keep browser and native behavior aligned, plus native-only corpora for execution metrics and pruning coverage.
+This directory holds checks that keep browser and native behavior aligned, plus native-only corpora for oracle correctness, execution metrics, pruning coverage, and historical snapshot reads.
 
 Current contents:
 
 - `verify_workspace_layout.sh`: verifies the EPIC-01 scaffold exists before feature work begins.
-- `native-runtime-sql-corpus.json`: unpartitioned native reference-runtime SQL corpus with golden result tables for projection/filter, aggregate, group-by, and order/limit coverage.
-- `native-runtime-partitioned-sql-corpus.json`: partitioned latest-snapshot SQL corpus with golden results plus expected scanned/skipped file counts for pruning-visible cases.
+- `native-runtime-sql-corpus.json`: 12-case unpartitioned latest-snapshot SQL corpus with golden result tables and opt-in scan metric assertions only where they are stable.
+- `native-runtime-partitioned-sql-corpus.json`: 10-case partitioned latest-snapshot SQL corpus with golden results and pruning-visible metric assertions only where they are stable.
+- `native-runtime-snapshot-version-sql-corpus.json`: 4-case historical snapshot-version SQL corpus for the local multi-version fixture.
+
+Env-gated real-GCS smokes, including the Sprint 4 negative cases for `403`, `404`, stale history, and missing objects, live in `crates/native-query-runtime/tests/native_runtime.rs`.
+Fixture provisioning and IAM setup for those env-gated GCS paths are external to this repository.

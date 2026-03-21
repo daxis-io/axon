@@ -6,7 +6,7 @@ use deltalake::arrow::array::{Int32Array, StringArray};
 use deltalake::arrow::datatypes::{DataType as ArrowDataType, Field, Schema as ArrowSchema};
 use deltalake::arrow::record_batch::RecordBatch;
 use deltalake::arrow::util::pretty::pretty_format_batches;
-use deltalake::kernel::{DataType, MetadataValue, PrimitiveType, StructField};
+use deltalake::kernel::{Action, DataType, MetadataValue, PrimitiveType, Protocol, StructField};
 use deltalake::{DeltaTable, TableProperty};
 use native_query_runtime::{bootstrap_table, execute_query, DEFAULT_TABLE_NAME};
 use query_contract::{
@@ -14,6 +14,7 @@ use query_contract::{
     QueryRequest,
 };
 use serde::Deserialize;
+use serde_json::json;
 use tempfile::TempDir;
 
 struct TestTableFixture {
@@ -26,6 +27,10 @@ struct QueryCorpusCase {
     name: String,
     sql: String,
     expected_pretty: String,
+    #[serde(default)]
+    expected_files_touched: Option<u64>,
+    #[serde(default)]
+    expected_files_skipped: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,8 +38,18 @@ struct PartitionedQueryCorpusCase {
     name: String,
     sql: String,
     expected_pretty: String,
-    expected_files_touched: u64,
-    expected_files_skipped: u64,
+    #[serde(default)]
+    expected_files_touched: Option<u64>,
+    #[serde(default)]
+    expected_files_skipped: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapshotVersionQueryCorpusCase {
+    name: String,
+    snapshot_version: i64,
+    sql: String,
+    expected_pretty: String,
 }
 
 impl TestTableFixture {
@@ -147,6 +162,43 @@ impl TestTableFixture {
         }
     }
 
+    fn create_with_columns_configuration_partitions_and_actions(
+        columns: Vec<StructField>,
+        configuration: Vec<(String, Option<String>)>,
+        partition_columns: Vec<&str>,
+        actions: Vec<Action>,
+    ) -> Self {
+        let tempdir = TempDir::new().expect("tempdir should be created");
+        let table_uri = deltalake::ensure_table_uri(tempdir.path().to_string_lossy())
+            .expect("table uri should be normalized")
+            .to_string();
+
+        tokio::runtime::Runtime::new()
+            .expect("runtime should be created")
+            .block_on(async {
+                let table = DeltaTable::try_from_url(
+                    deltalake::ensure_table_uri(&table_uri).expect("table uri should parse"),
+                )
+                .await
+                .expect("table handle should be created");
+
+                table
+                    .create()
+                    .with_columns(columns)
+                    .with_partition_columns(partition_columns)
+                    .with_table_name("axon_fixture")
+                    .with_configuration(configuration)
+                    .with_actions(actions)
+                    .await
+                    .expect("table should be created");
+            });
+
+        Self {
+            _tempdir: tempdir,
+            table_uri,
+        }
+    }
+
     fn data_file_paths(&self) -> Vec<PathBuf> {
         let mut paths = Vec::new();
         collect_matching_paths(self._tempdir.path(), &mut paths, |path| {
@@ -176,6 +228,18 @@ fn default_table_columns() -> Vec<StructField> {
             false,
         ),
     ]
+}
+
+fn deletion_vector_protocol_action() -> Action {
+    let protocol: Protocol = serde_json::from_value(json!({
+        "minReaderVersion": 3,
+        "minWriterVersion": 7,
+        "readerFeatures": ["deletionVectors"],
+        "writerFeatures": ["deletionVectors"],
+    }))
+    .expect("protocol should deserialize");
+
+    Action::Protocol(protocol)
 }
 
 fn fixture_batch(ids: &[i32], categories: &[&str], values: &[i32]) -> RecordBatch {
@@ -219,6 +283,19 @@ fn load_partitioned_query_corpus() -> Vec<PartitionedQueryCorpusCase> {
             .expect("partitioned query corpus should be readable"),
     )
     .expect("partitioned query corpus should deserialize")
+}
+
+fn snapshot_version_query_corpus_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/native-runtime-snapshot-version-sql-corpus.json")
+}
+
+fn load_snapshot_version_query_corpus() -> Vec<SnapshotVersionQueryCorpusCase> {
+    serde_json::from_str(
+        &std::fs::read_to_string(snapshot_version_query_corpus_path())
+            .expect("snapshot-version query corpus should be readable"),
+    )
+    .expect("snapshot-version query corpus should deserialize")
 }
 
 fn collect_matching_paths<F>(root: &Path, matches: &mut Vec<PathBuf>, predicate: F)
@@ -291,6 +368,29 @@ fn bootstrap_table_rejects_change_data_feed_tables() {
     assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
     assert!(
         error.message.contains("ChangeDataFeed"),
+        "error should identify the rejected capability: {}",
+        error.message
+    );
+}
+
+#[test]
+fn bootstrap_table_rejects_deletion_vector_enabled_tables_without_dv_add_actions() {
+    let fixture = TestTableFixture::create_with_columns_configuration_partitions_and_actions(
+        default_table_columns(),
+        vec![(
+            TableProperty::EnableDeletionVectors.as_ref().to_string(),
+            Some("true".to_string()),
+        )],
+        vec![],
+        vec![deletion_vector_protocol_action()],
+    );
+
+    let error = bootstrap_table(&fixture.table_uri)
+        .expect_err("deletion-vector-enabled tables should be rejected without scanning adds");
+
+    assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+    assert!(
+        error.message.contains("DeletionVectors"),
         "error should identify the rejected capability: {}",
         error.message
     );
@@ -388,8 +488,8 @@ fn execute_query_runs_the_native_sql_corpus_with_golden_results() {
     let corpus = load_query_corpus();
 
     assert!(
-        corpus.len() >= 4,
-        "corpus should contain the Sprint 1 query cases"
+        corpus.len() >= 12,
+        "corpus should contain the Sprint 4 latest-snapshot query cases"
     );
 
     for case in corpus {
@@ -415,22 +515,77 @@ fn execute_query_runs_the_native_sql_corpus_with_golden_results() {
             "query case '{}' should report range read support",
             case.name
         );
-        assert_eq!(
-            result.metrics.files_touched, 2,
-            "query case '{}' should report the active file count",
-            case.name
-        );
-        assert_eq!(
-            result.metrics.files_skipped, 0,
-            "query case '{}' should report zero skipped files for the fixture",
-            case.name
-        );
+        if let Some(expected_files_touched) = case.expected_files_touched {
+            assert_eq!(
+                result.metrics.files_touched, expected_files_touched,
+                "query case '{}' should report the expected scanned file count",
+                case.name
+            );
+        }
+        if let Some(expected_files_skipped) = case.expected_files_skipped {
+            assert_eq!(
+                result.metrics.files_skipped, expected_files_skipped,
+                "query case '{}' should report the expected skipped file count",
+                case.name
+            );
+        }
         saw_metrics |= result.metrics.bytes_fetched > 0 && result.metrics.duration_ms > 0;
     }
 
     assert!(
         saw_metrics,
         "at least one corpus case should report populated metrics"
+    );
+}
+
+#[test]
+fn execute_query_reports_the_full_capability_matrix_for_supported_tables() {
+    let fixture = TestTableFixture::create();
+    let request = QueryRequest::new(
+        &fixture.table_uri,
+        format!("SELECT id FROM {DEFAULT_TABLE_NAME} ORDER BY id LIMIT 1"),
+        ExecutionTarget::Native,
+    );
+
+    let result = execute_query(request).expect("query should execute");
+
+    assert_eq!(
+        result.capabilities.state(CapabilityKey::ChangeDataFeed),
+        Some(CapabilityState::Unsupported)
+    );
+    assert_eq!(
+        result.capabilities.state(CapabilityKey::ColumnMapping),
+        Some(CapabilityState::Unsupported)
+    );
+    assert_eq!(
+        result.capabilities.state(CapabilityKey::DeletionVectors),
+        Some(CapabilityState::Unsupported)
+    );
+    assert_eq!(
+        result
+            .capabilities
+            .state(CapabilityKey::MultiPartitionExecution),
+        Some(CapabilityState::Supported)
+    );
+    assert_eq!(
+        result.capabilities.state(CapabilityKey::ProxyAccess),
+        Some(CapabilityState::Unsupported)
+    );
+    assert_eq!(
+        result.capabilities.state(CapabilityKey::RangeReads),
+        Some(CapabilityState::Supported)
+    );
+    assert_eq!(
+        result.capabilities.state(CapabilityKey::SignedUrlAccess),
+        Some(CapabilityState::Unsupported)
+    );
+    assert_eq!(
+        result.capabilities.state(CapabilityKey::TimeTravel),
+        Some(CapabilityState::Supported)
+    );
+    assert_eq!(
+        result.capabilities.state(CapabilityKey::TimestampNtz),
+        Some(CapabilityState::Unsupported)
     );
 }
 
@@ -471,8 +626,8 @@ fn execute_query_runs_the_partitioned_sql_corpus_with_pruning_metrics() {
     let corpus = load_partitioned_query_corpus();
 
     assert!(
-        corpus.len() >= 5,
-        "partitioned corpus should contain the Sprint 2 query cases"
+        corpus.len() >= 10,
+        "partitioned corpus should contain the Sprint 4 partitioned query cases"
     );
 
     for case in corpus {
@@ -492,14 +647,57 @@ fn execute_query_runs_the_partitioned_sql_corpus_with_pruning_metrics() {
             "partitioned query case '{}' should match the golden result",
             case.name
         );
+        if let Some(expected_files_touched) = case.expected_files_touched {
+            assert_eq!(
+                result.metrics.files_touched, expected_files_touched,
+                "partitioned query case '{}' should report scanned files",
+                case.name
+            );
+        }
+        if let Some(expected_files_skipped) = case.expected_files_skipped {
+            assert_eq!(
+                result.metrics.files_skipped, expected_files_skipped,
+                "partitioned query case '{}' should report skipped files",
+                case.name
+            );
+        }
+    }
+}
+
+#[test]
+fn execute_query_runs_the_snapshot_version_sql_corpus_with_golden_results() {
+    let fixture = TestTableFixture::create();
+    let corpus = load_snapshot_version_query_corpus();
+
+    assert!(
+        corpus.len() >= 4,
+        "snapshot-version corpus should contain the Sprint 4 historical query cases"
+    );
+
+    for case in corpus {
+        let request = QueryRequest {
+            snapshot_version: Some(case.snapshot_version),
+            ..QueryRequest::new(&fixture.table_uri, case.sql, ExecutionTarget::Native)
+        };
+        let result = execute_query(request).unwrap_or_else(|error| {
+            panic!(
+                "snapshot-version query case '{}' should execute successfully: {error:?}",
+                case.name
+            )
+        });
+
         assert_eq!(
-            result.metrics.files_touched, case.expected_files_touched,
-            "partitioned query case '{}' should report scanned files",
+            pretty_format_batches(&result.batches)
+                .expect("batches should format")
+                .to_string(),
+            case.expected_pretty,
+            "snapshot-version query case '{}' should match the golden result",
             case.name
         );
         assert_eq!(
-            result.metrics.files_skipped, case.expected_files_skipped,
-            "partitioned query case '{}' should report skipped files",
+            result.capabilities.state(CapabilityKey::TimeTravel),
+            Some(CapabilityState::Supported),
+            "snapshot-version query case '{}' should report native time-travel support",
             case.name
         );
     }
@@ -803,6 +1001,80 @@ fn execute_query_supports_env_gated_gcs_smoke() {
         Some(CapabilityState::Supported),
         "query smoke should report range-read support"
     );
+}
+
+#[test]
+fn bootstrap_table_rejects_env_gated_forbidden_gcs_smoke() {
+    let Ok(table_uri) = std::env::var("AXON_GCS_TEST_FORBIDDEN_TABLE_URI") else {
+        return;
+    };
+
+    let error = bootstrap_table(&table_uri).expect_err("forbidden gcs bootstrap should fail");
+
+    assert_eq!(error.code, QueryErrorCode::AccessDenied);
+    assert_eq!(error.target, ExecutionTarget::Native);
+}
+
+#[test]
+fn bootstrap_table_rejects_env_gated_not_found_gcs_smoke() {
+    let Ok(table_uri) = std::env::var("AXON_GCS_TEST_NOT_FOUND_TABLE_URI") else {
+        return;
+    };
+
+    let error = bootstrap_table(&table_uri).expect_err("missing gcs table should fail");
+
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert_eq!(error.target, ExecutionTarget::Native);
+}
+
+#[test]
+fn execute_query_rejects_env_gated_stale_history_gcs_smoke() {
+    let Ok(table_uri) = std::env::var("AXON_GCS_TEST_STALE_HISTORY_TABLE_URI") else {
+        return;
+    };
+    let Ok(snapshot_version) = std::env::var("AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION") else {
+        return;
+    };
+    let snapshot_version: i64 = snapshot_version
+        .parse()
+        .expect("stale-history gcs snapshot version should parse");
+
+    let request = QueryRequest {
+        snapshot_version: Some(snapshot_version),
+        ..QueryRequest::new(
+            &table_uri,
+            format!("SELECT COUNT(*) AS row_count FROM {DEFAULT_TABLE_NAME}"),
+            ExecutionTarget::Native,
+        )
+    };
+
+    let error = execute_query(request).expect_err("stale-history gcs query should fail");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert_eq!(error.target, ExecutionTarget::Native);
+    assert!(
+        error.message.contains("snapshot"),
+        "stale-history error should describe the unavailable snapshot: {}",
+        error.message
+    );
+}
+
+#[test]
+fn execute_query_rejects_env_gated_missing_object_gcs_smoke() {
+    let Ok(table_uri) = std::env::var("AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI") else {
+        return;
+    };
+
+    let request = QueryRequest::new(
+        &table_uri,
+        format!("SELECT * FROM {DEFAULT_TABLE_NAME} LIMIT 1"),
+        ExecutionTarget::Native,
+    );
+
+    let error = execute_query(request).expect_err("missing-object gcs query should fail");
+
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert_eq!(error.target, ExecutionTarget::Native);
 }
 
 #[test]

@@ -33,5 +33,30 @@
     "expected_pretty": "+----+\n| id |\n+----+\n| 4  |\n| 5  |\n| 6  |\n+----+",
     "expected_files_touched": 2,
     "expected_files_skipped": 1
+  },
+  {
+    "name": "single_partition_aggregate",
+    "sql": "SELECT COUNT(*) AS row_count FROM axon_table WHERE category = 'A'",
+    "expected_pretty": "+-----------+\n| row_count |\n+-----------+\n| 2         |\n+-----------+"
+  },
+  {
+    "name": "two_partition_sum",
+    "sql": "SELECT SUM(value) AS total_value FROM axon_table WHERE category IN ('A', 'C')",
+    "expected_pretty": "+-------------+\n| total_value |\n+-------------+\n| 100         |\n+-------------+"
+  },
+  {
+    "name": "single_partition_order_limit",
+    "sql": "SELECT id FROM axon_table WHERE category = 'B' ORDER BY id DESC LIMIT 2",
+    "expected_pretty": "+----+\n| id |\n+----+\n| 5  |\n| 4  |\n+----+"
+  },
+  {
+    "name": "single_partition_grouped_sum",
+    "sql": "SELECT category, SUM(value) AS total_value FROM axon_table WHERE category IN ('A', 'Z') GROUP BY category ORDER BY category",
+    "expected_pretty": "+----------+-------------+\n| category | total_value |\n+----------+-------------+\n| A        | 40          |\n+----------+-------------+"
+  },
+  {
+    "name": "no_match_partition_aggregate",
+    "sql": "SELECT COUNT(*) AS row_count FROM axon_table WHERE category = 'Z'",
+    "expected_pretty": "+-----------+\n| row_count |\n+-----------+\n| 0         |\n+-----------+"
   }
 ]

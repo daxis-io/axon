@@ -40,6 +40,11 @@ Sprint 2 tightens native metrics around the executed plan:
 - `files_skipped` reports partition/file pruning outcomes when the scan path exposes them, and otherwise falls back to `active_files - files_touched`.
 
 Offline native coverage now includes both the original unpartitioned SQL corpus and a partitioned latest-snapshot corpus that asserts pruning-visible metrics.
+Sprint 4 expands that local oracle coverage to:
+
+- a 12-case latest-snapshot unpartitioned SQL corpus,
+- a 10-case latest-snapshot partitioned SQL corpus with pruning assertions only where scan metrics are stable,
+- a 4-case snapshot-version SQL corpus over the local multi-version fixture.
 
 Env-gated GCS smoke validation:
 
@@ -56,7 +61,7 @@ cargo test -p native-query-runtime --locked execute_query_supports_env_gated_gcs
 ```
 
 The GCS smoke path assumes standard Google ADC is already available in the shell or runner environment, and the configured table should be non-empty so the query smoke can assert `LIMIT 1` execution.
-GitHub Actions uses the same command behind an explicit `google-github-actions/auth` step and requires the `AXON_GCP_CREDENTIALS_JSON` secret when `AXON_GCS_TEST_TABLE_URI` is configured.
+GitHub Actions uses the same command behind an explicit `google-github-actions/auth` step and requires the `AXON_GCP_CREDENTIALS_JSON` secret when any env-gated GCS fixture is configured.
 
 Env-gated partitioned GCS pruning smoke:
 
@@ -80,10 +85,36 @@ The partitioned GCS fixture contract is intentionally narrow:
 - the pinned historical snapshot version must be readable and return a different `COUNT(*)` result than latest,
 - the latest pruning query should visibly skip at least one file so the smoke can assert `files_skipped > 0`.
 
+Env-gated negative GCS smokes:
+
+```bash
+AXON_GCS_TEST_FORBIDDEN_TABLE_URI=gs://your-bucket/forbidden-table \
+cargo test -p native-query-runtime --locked bootstrap_table_rejects_env_gated_forbidden_gcs_smoke -- --exact --nocapture
+
+AXON_GCS_TEST_NOT_FOUND_TABLE_URI=gs://your-bucket/missing-table \
+cargo test -p native-query-runtime --locked bootstrap_table_rejects_env_gated_not_found_gcs_smoke -- --exact --nocapture
+
+AXON_GCS_TEST_STALE_HISTORY_TABLE_URI=gs://your-bucket/history-trimmed-table \
+AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION=1 \
+cargo test -p native-query-runtime --locked execute_query_rejects_env_gated_stale_history_gcs_smoke -- --exact --nocapture
+
+AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI=gs://your-bucket/missing-object-table \
+cargo test -p native-query-runtime --locked execute_query_rejects_env_gated_missing_object_gcs_smoke -- --exact --nocapture
+```
+
+Negative fixture contract:
+
+- `AXON_GCS_TEST_FORBIDDEN_TABLE_URI` must point at a table path that exists but returns `403` or equivalent access denial for the runner identity.
+- `AXON_GCS_TEST_NOT_FOUND_TABLE_URI` must point at a table path that returns `404` or equivalent not-found behavior during bootstrap.
+- `AXON_GCS_TEST_STALE_HISTORY_TABLE_URI` must point at a table whose current snapshot is readable but whose configured historical version is no longer available.
+- `AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI` must point at a table whose log is readable but whose current snapshot references at least one missing data object.
+
+Fixture provisioning, IAM policy, and CI variable population for these negative smokes remain external dependencies outside this repository.
+
 ## Repository Layout
 
 - `crates/` contains the Rust workspace packages.
-- `tests/conformance/` contains scaffold checks plus unpartitioned and partitioned native SQL corpora with golden expectations.
+- `tests/conformance/` contains scaffold checks plus latest-snapshot and snapshot-version native SQL corpora with golden expectations.
 - `tests/perf/` contains performance test scaffolding.
 - `tests/security/` contains security test scaffolding.
 - `.github/workflows/ci.yml` contains the CI configuration.
