@@ -552,7 +552,7 @@ fn ensure_supported_table_shape(
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedFeature,
             format!(
-                "table requires {:?} support, but Sprint 1 only allows capabilities marked supported; current state is {:?}",
+                "table requires {:?} support, but Sprint 2 only allows capabilities marked supported; current state is {:?}",
                 capability, state
             ),
             ExecutionTarget::Native,
@@ -736,7 +736,7 @@ fn map_datafusion_error(error: DataFusionError) -> QueryError {
         return query_error_from_object_store_error(object_store_error);
     }
 
-    if let Some(mapped) = query_error_from_datafusion_message(&error) {
+    if let Some(mapped) = query_error_from_execution_error(&error) {
         return mapped;
     }
 
@@ -816,14 +816,42 @@ fn find_object_store_error<'a>(
     None
 }
 
-fn query_error_from_datafusion_message(error: &DataFusionError) -> Option<QueryError> {
-    let message = error.to_string();
+fn query_error_from_execution_error(error: &DataFusionError) -> Option<QueryError> {
+    match error {
+        DataFusionError::Execution(message) => query_error_from_execution_message(message),
+        DataFusionError::ParquetError(error) => {
+            query_error_from_execution_message(&error.to_string())
+        }
+        DataFusionError::IoError(error) => match error.kind() {
+            std::io::ErrorKind::NotFound => Some(QueryError::new(
+                QueryErrorCode::ObjectStoreProtocol,
+                error.to_string(),
+                ExecutionTarget::Native,
+            )),
+            std::io::ErrorKind::PermissionDenied => Some(QueryError::new(
+                QueryErrorCode::AccessDenied,
+                error.to_string(),
+                ExecutionTarget::Native,
+            )),
+            _ => None,
+        },
+        DataFusionError::Context(_, inner) => query_error_from_execution_error(inner),
+        DataFusionError::Diagnostic(_, inner) => query_error_from_execution_error(inner),
+        DataFusionError::Shared(inner) => query_error_from_execution_error(inner),
+        DataFusionError::Collection(errors) => {
+            errors.iter().find_map(query_error_from_execution_error)
+        }
+        _ => None,
+    }
+}
+
+fn query_error_from_execution_message(message: &str) -> Option<QueryError> {
     let normalized = message.to_ascii_lowercase();
 
     if normalized.contains("not found") || normalized.contains("404") {
         return Some(QueryError::new(
             QueryErrorCode::ObjectStoreProtocol,
-            message,
+            message.to_string(),
             ExecutionTarget::Native,
         ));
     }
@@ -837,7 +865,7 @@ fn query_error_from_datafusion_message(error: &DataFusionError) -> Option<QueryE
     {
         return Some(QueryError::new(
             QueryErrorCode::AccessDenied,
-            message,
+            message.to_string(),
             ExecutionTarget::Native,
         ));
     }
@@ -888,6 +916,38 @@ mod tests {
         ));
 
         assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+        assert_eq!(error.target, ExecutionTarget::Native);
+    }
+
+    #[test]
+    fn schema_errors_containing_unauthorized_stay_invalid_request() {
+        let error = map_datafusion_error(DataFusionError::SchemaError(
+            Box::new(deltalake::datafusion::common::SchemaError::FieldNotFound {
+                field: Box::new(deltalake::datafusion::common::Column::from_name(
+                    "unauthorized",
+                )),
+                valid_fields: vec![],
+            }),
+            Box::new(None),
+        ));
+
+        assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+        assert_eq!(error.target, ExecutionTarget::Native);
+    }
+
+    #[test]
+    fn schema_errors_containing_404_stay_invalid_request() {
+        let error = map_datafusion_error(DataFusionError::SchemaError(
+            Box::new(deltalake::datafusion::common::SchemaError::FieldNotFound {
+                field: Box::new(deltalake::datafusion::common::Column::from_name(
+                    "404_status",
+                )),
+                valid_fields: vec![],
+            }),
+            Box::new(None),
+        ));
+
+        assert_eq!(error.code, QueryErrorCode::InvalidRequest);
         assert_eq!(error.target, ExecutionTarget::Native);
     }
 }

@@ -172,13 +172,13 @@ impl QueryRequest {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct QueryMetricsSummary {
-    /// Bytes scanned by the executed query plan when the runtime can report them.
+    /// Bytes scanned by the executed query plan when the runtime can report them; otherwise `0`.
     pub bytes_fetched: u64,
     /// Wall-clock execution time for the query call.
     pub duration_ms: u64,
-    /// Data files scanned by the executed query plan.
+    /// Data files scanned by the executed query plan when the runtime can report them; otherwise `0`.
     pub files_touched: u64,
-    /// Data files skipped by partition or file pruning when the runtime can report them.
+    /// Data files skipped by partition or file pruning when the runtime can report them; otherwise `0`.
     pub files_skipped: u64,
 }
 

@@ -1,6 +1,6 @@
 # Conformance Tests
 
-This directory holds checks that keep browser and native behavior aligned.
+This directory holds checks that keep browser and native behavior aligned, plus native-only corpora for execution metrics and pruning coverage.
 
 Current contents:
 
