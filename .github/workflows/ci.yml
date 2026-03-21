@@ -42,8 +42,14 @@ jobs:
       - name: Verify workspace layout
         run: bash tests/conformance/verify_workspace_layout.sh
 
+      - name: Authenticate for env-gated native GCS smoke
+        if: ${{ vars.AXON_GCS_TEST_TABLE_URI != '' && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.AXON_GCP_CREDENTIALS_JSON }}
+
       - name: Run env-gated native GCS smoke
-        if: ${{ vars.AXON_GCS_TEST_TABLE_URI != '' }}
+        if: ${{ vars.AXON_GCS_TEST_TABLE_URI != '' && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
         env:
           AXON_GCS_TEST_TABLE_URI: ${{ vars.AXON_GCS_TEST_TABLE_URI }}
-        run: cargo test -p native-query-runtime bootstrap_table_supports_env_gated_gcs_smoke -- --exact --nocapture
+        run: cargo test -p native-query-runtime --locked bootstrap_table_supports_env_gated_gcs_smoke -- --exact --nocapture

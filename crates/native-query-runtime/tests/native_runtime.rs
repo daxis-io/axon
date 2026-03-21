@@ -237,6 +237,76 @@ fn execute_query_optionally_returns_explain_output() {
 }
 
 #[test]
+fn execute_query_rejects_queries_without_axon_table() {
+    let fixture = TestTableFixture::create();
+    let request = QueryRequest::new(&fixture.table_uri, "SELECT 1", ExecutionTarget::Native);
+
+    let error = execute_query(request).expect_err("constant queries should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(
+        error.message.contains(DEFAULT_TABLE_NAME),
+        "error should explain the required table binding: {}",
+        error.message
+    );
+}
+
+#[test]
+fn execute_query_rejects_non_read_only_sql() {
+    let fixture = TestTableFixture::create();
+    let request = QueryRequest::new(
+        &fixture.table_uri,
+        format!("CREATE VIEW scratch_view AS SELECT * FROM {DEFAULT_TABLE_NAME}"),
+        ExecutionTarget::Native,
+    );
+
+    let error = execute_query(request).expect_err("DDL should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+}
+
+#[test]
+fn execute_query_rejects_non_table_sources() {
+    let fixture = TestTableFixture::create();
+    let request = QueryRequest::new(
+        &fixture.table_uri,
+        "SELECT * FROM generate_series(1, 2)",
+        ExecutionTarget::Native,
+    );
+
+    let error = execute_query(request).expect_err("table functions should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(
+        error.message.contains(DEFAULT_TABLE_NAME),
+        "error should explain the required table binding: {}",
+        error.message
+    );
+}
+
+#[test]
+fn execute_query_allows_ctes_built_from_axon_table() {
+    let fixture = TestTableFixture::create();
+    let request = QueryRequest::new(
+        &fixture.table_uri,
+        format!(
+            "WITH filtered AS (SELECT id FROM {DEFAULT_TABLE_NAME} WHERE value >= 50) \
+             SELECT id FROM filtered ORDER BY id"
+        ),
+        ExecutionTarget::Native,
+    );
+
+    let result = execute_query(request).expect("CTEs over axon_table should execute");
+
+    assert_eq!(
+        pretty_format_batches(&result.batches)
+            .expect("batches should format")
+            .to_string(),
+        "+----+\n| id |\n+----+\n| 5  |\n| 6  |\n+----+"
+    );
+}
+
+#[test]
 fn execute_query_is_safe_to_call_from_an_existing_tokio_runtime() {
     let fixture = TestTableFixture::create();
     let request = QueryRequest::new(

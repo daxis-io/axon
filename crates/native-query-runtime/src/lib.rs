@@ -1,11 +1,19 @@
 //! Native reference runtime for trusted Delta + DataFusion execution.
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::time::Instant;
 
 use deltalake::arrow::record_batch::RecordBatch;
-use deltalake::datafusion::common::DataFusionError;
+use deltalake::datafusion::common::tree_node::TreeNodeRecursion;
+use deltalake::datafusion::common::{DataFusionError, TableReference};
+use deltalake::datafusion::execution::context::SQLOptions;
+use deltalake::datafusion::logical_expr::LogicalPlan;
 use deltalake::datafusion::prelude::SessionContext;
+use deltalake::datafusion::sql::parser::{DFParser, Statement as ParsedStatement};
+use deltalake::datafusion::sql::sqlparser::ast::{
+    ObjectName, Query as SqlQuery, SetExpr, Statement as SqlStatement, TableFactor, TableWithJoins,
+};
 use deltalake::errors::DeltaTableError;
 use deltalake::kernel::{DataType, PrimitiveType, StructField};
 use deltalake::table::config::TablePropertiesExt;
@@ -66,17 +74,19 @@ async fn execute_query_async(request: QueryRequest) -> Result<NativeQueryResult,
         ));
     }
 
+    validate_query_sql(&request.sql)?;
+
     let prepared = PreparedTable::load(&request.table_uri).await?;
     let query_started_at = Instant::now();
-
-    let batches = prepared
+    let query = prepared
         .session
-        .sql(&request.sql)
-        .await
-        .map_err(map_datafusion_error)?
-        .collect()
+        .sql_with_options(&request.sql, read_only_sql_options())
         .await
         .map_err(map_datafusion_error)?;
+
+    ensure_query_scans_only_registered_table(&query.clone().into_unoptimized_plan())?;
+
+    let batches = query.collect().await.map_err(map_datafusion_error)?;
 
     let explain_lines = if request.options.include_explain {
         Some(collect_explain_lines(&prepared.session, &request.sql).await?)
@@ -123,6 +133,210 @@ async fn collect_explain_lines(
             .lines()
             .map(ToOwned::to_owned)
             .collect(),
+    )
+}
+
+fn read_only_sql_options() -> SQLOptions {
+    SQLOptions::new()
+        .with_allow_ddl(false)
+        .with_allow_dml(false)
+        .with_allow_statements(false)
+}
+
+fn validate_query_sql(sql: &str) -> Result<(), QueryError> {
+    let mut statements = DFParser::parse_sql(sql).map_err(map_datafusion_error)?;
+    if statements.len() != 1 {
+        return Err(invalid_query_request(format!(
+            "sql must contain exactly one read-only query over {DEFAULT_TABLE_NAME}"
+        )));
+    }
+
+    match statements
+        .pop_front()
+        .expect("statement length already checked")
+    {
+        ParsedStatement::Statement(statement) => match *statement {
+            SqlStatement::Query(query) => validate_query_sources(&query, &HashSet::new()),
+            _ => Err(invalid_query_request(format!(
+                "only read-only SELECT queries over {DEFAULT_TABLE_NAME} are supported"
+            ))),
+        },
+        _ => Err(invalid_query_request(format!(
+            "only read-only SELECT queries over {DEFAULT_TABLE_NAME} are supported"
+        ))),
+    }
+}
+
+fn validate_query_sources(
+    query: &SqlQuery,
+    outer_scope: &HashSet<String>,
+) -> Result<(), QueryError> {
+    let mut scope = outer_scope.clone();
+
+    if let Some(with) = &query.with {
+        if with.recursive {
+            return Err(invalid_query_request(format!(
+                "recursive queries are not supported; only read-only SELECT queries over {DEFAULT_TABLE_NAME} are supported"
+            )));
+        }
+
+        for cte in &with.cte_tables {
+            scope.insert(normalize_name(&cte.alias.name.value));
+        }
+
+        for cte in &with.cte_tables {
+            validate_query_sources(&cte.query, &scope)?;
+        }
+    }
+
+    validate_set_expr_sources(&query.body, &scope)
+}
+
+fn validate_set_expr_sources(
+    set_expr: &SetExpr,
+    scope: &HashSet<String>,
+) -> Result<(), QueryError> {
+    match set_expr {
+        SetExpr::Select(select) => {
+            for table_with_joins in &select.from {
+                validate_table_with_joins(table_with_joins, scope)?;
+            }
+            Ok(())
+        }
+        SetExpr::Query(query) => validate_query_sources(query, scope),
+        SetExpr::SetOperation { left, right, .. } => {
+            validate_set_expr_sources(left, scope)?;
+            validate_set_expr_sources(right, scope)
+        }
+        _ => Err(invalid_query_request(format!(
+            "only read-only SELECT queries over {DEFAULT_TABLE_NAME} are supported"
+        ))),
+    }
+}
+
+fn validate_table_with_joins(
+    table_with_joins: &TableWithJoins,
+    scope: &HashSet<String>,
+) -> Result<(), QueryError> {
+    validate_table_factor(&table_with_joins.relation, scope)?;
+    for join in &table_with_joins.joins {
+        validate_table_factor(&join.relation, scope)?;
+    }
+    Ok(())
+}
+
+fn validate_table_factor(
+    table_factor: &TableFactor,
+    scope: &HashSet<String>,
+) -> Result<(), QueryError> {
+    match table_factor {
+        TableFactor::Table {
+            name,
+            args,
+            with_hints,
+            version,
+            with_ordinality,
+            partitions,
+            json_path,
+            sample,
+            index_hints,
+            ..
+        } => {
+            let relation_name = object_name_to_relation_name(name).ok_or_else(|| {
+                invalid_query_request(format!("query must read only from {DEFAULT_TABLE_NAME}"))
+            })?;
+
+            if args.is_some()
+                || !with_hints.is_empty()
+                || version.is_some()
+                || *with_ordinality
+                || !partitions.is_empty()
+                || json_path.is_some()
+                || sample.is_some()
+                || !index_hints.is_empty()
+            {
+                return Err(invalid_query_request(format!(
+                    "query must read only from {DEFAULT_TABLE_NAME}"
+                )));
+            }
+
+            if relation_name == DEFAULT_TABLE_NAME || scope.contains(&relation_name) {
+                Ok(())
+            } else {
+                Err(invalid_query_request(format!(
+                    "query must read only from {DEFAULT_TABLE_NAME}"
+                )))
+            }
+        }
+        TableFactor::Derived { subquery, .. } => validate_query_sources(subquery, scope),
+        TableFactor::NestedJoin {
+            table_with_joins, ..
+        } => validate_table_with_joins(table_with_joins, scope),
+        _ => Err(invalid_query_request(format!(
+            "query must read only from {DEFAULT_TABLE_NAME}"
+        ))),
+    }
+}
+
+fn object_name_to_relation_name(name: &ObjectName) -> Option<String> {
+    let [part] = name.0.as_slice() else {
+        return None;
+    };
+
+    Some(normalize_name(&part.as_ident()?.value))
+}
+
+fn normalize_name(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
+fn ensure_query_scans_only_registered_table(plan: &LogicalPlan) -> Result<(), QueryError> {
+    let expected_table = TableReference::bare(DEFAULT_TABLE_NAME);
+    let mut saw_table_scan = false;
+    let mut invalid_query = None;
+
+    plan.apply_with_subqueries(|node| {
+        match node {
+            LogicalPlan::TableScan(scan) => {
+                saw_table_scan = true;
+                if !scan.table_name.resolved_eq(&expected_table) {
+                    invalid_query = Some(invalid_query_request(format!(
+                        "query must read only from {DEFAULT_TABLE_NAME}"
+                    )));
+                    return Ok(TreeNodeRecursion::Stop);
+                }
+            }
+            LogicalPlan::EmptyRelation(_) => {
+                invalid_query = Some(invalid_query_request(format!(
+                    "query must read only from {DEFAULT_TABLE_NAME}"
+                )));
+                return Ok(TreeNodeRecursion::Stop);
+            }
+            _ => {}
+        }
+
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .map_err(map_datafusion_error)?;
+
+    if let Some(error) = invalid_query {
+        return Err(error);
+    }
+
+    if saw_table_scan {
+        Ok(())
+    } else {
+        Err(invalid_query_request(format!(
+            "query must read from {DEFAULT_TABLE_NAME}"
+        )))
+    }
+}
+
+fn invalid_query_request(message: impl Into<String>) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidRequest,
+        message,
+        ExecutionTarget::Native,
     )
 }
 
