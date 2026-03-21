@@ -5,4 +5,11 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+deltalake = { version = "=0.31.1", features = ["gcs"] }
 query-contract = { path = "../query-contract" }
+tokio = { version = "=1.50.0", features = ["rt-multi-thread"] }
+url = "=2.5.8"
+
+[dev-dependencies]
+native-query-runtime = { path = "../native-query-runtime" }
+tempfile = "=3.27.0"

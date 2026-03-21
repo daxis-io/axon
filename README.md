@@ -111,6 +111,25 @@ Negative fixture contract:
 
 Fixture provisioning, IAM policy, and CI variable population for these negative smokes remain external dependencies outside this repository.
 
+## Trusted Control-Plane Slice
+
+`crates/delta-control-plane` now contains the first in-repo EPIC-03 slice:
+
+- `resolve_snapshot(request)` validates the table locator, resolves the latest or explicit historical Delta snapshot, and returns a metadata-only descriptor.
+- `SnapshotResolutionRequest` carries `table_uri` plus an optional `snapshot_version`.
+- `ResolvedSnapshotDescriptor` returns the normalized `table_uri`, the concrete resolved `snapshot_version`, and deterministically ordered active file metadata as `ResolvedFileDescriptor` entries.
+
+The descriptor intentionally excludes signed URLs, proxy endpoints, tokens, and credentials. It is only the minimal handoff needed for the existing native oracle.
+
+Local validation:
+
+```bash
+cargo test -p delta-control-plane --locked
+```
+
+Cross-crate handoff coverage in `crates/delta-control-plane/tests` proves the descriptor can drive `crates/native-query-runtime` without changing `QueryRequest`.
+Authenticated HTTP service work remains out of repo: there is still no `services/query-api` directory here.
+
 ## Repository Layout
 
 - `crates/` contains the Rust workspace packages.

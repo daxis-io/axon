@@ -33,6 +33,9 @@ jobs:
       - name: Test shared query contract
         run: cargo test -p query-contract --locked
 
+      - name: Test delta control plane
+        run: cargo test -p delta-control-plane --locked
+
       - name: Test native query runtime
         run: cargo test -p native-query-runtime --locked
 
@@ -44,12 +47,18 @@ jobs:
 
       - name: Validate env-gated native GCS fixture configuration
         env:
+          AXON_GCS_TEST_PARTITIONED_TABLE_URI: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI }}
+          AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION }}
           AXON_GCS_TEST_STALE_HISTORY_TABLE_URI: ${{ vars.AXON_GCS_TEST_STALE_HISTORY_TABLE_URI }}
           AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION: ${{ vars.AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION }}
         run: |
           if { [ -n "$AXON_GCS_TEST_STALE_HISTORY_TABLE_URI" ] && [ -z "$AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION" ]; } || \
              { [ -z "$AXON_GCS_TEST_STALE_HISTORY_TABLE_URI" ] && [ -n "$AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION" ]; }; then
             echo "AXON_GCS_TEST_STALE_HISTORY_TABLE_URI and AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION must be configured together" >&2
+            exit 1
+          fi
+          if [ -n "$AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION" ] && [ -z "$AXON_GCS_TEST_PARTITIONED_TABLE_URI" ]; then
+            echo "AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION requires AXON_GCS_TEST_PARTITIONED_TABLE_URI" >&2
             exit 1
           fi
 

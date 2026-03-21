@@ -1,6 +1,7 @@
 use query_contract::{
     CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, QueryError,
     QueryErrorCode, QueryExecutionOptions, QueryMetricsSummary, QueryRequest, QueryResponse,
+    ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 use serde_json::json;
 
@@ -188,4 +189,83 @@ fn query_request_deserializes_explicit_snapshot_version() {
 
     assert_eq!(request.snapshot_version, Some(7));
     assert_eq!(request.options, QueryExecutionOptions::default());
+}
+
+#[test]
+fn snapshot_resolution_request_serializes_optional_snapshot_version() {
+    let request = SnapshotResolutionRequest {
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        snapshot_version: Some(9),
+    };
+
+    let json =
+        serde_json::to_value(&request).expect("snapshot resolution request should serialize");
+
+    assert_eq!(
+        json,
+        json!({
+            "table_uri": "gs://axon-fixtures/sample_table",
+            "snapshot_version": 9
+        })
+    );
+}
+
+#[test]
+fn snapshot_resolution_request_defaults_snapshot_version_when_omitted() {
+    let request: SnapshotResolutionRequest = serde_json::from_value(json!({
+        "table_uri": "gs://axon-fixtures/sample_table"
+    }))
+    .expect("snapshot resolution request should deserialize");
+
+    assert_eq!(request.table_uri, "gs://axon-fixtures/sample_table");
+    assert_eq!(request.snapshot_version, None);
+}
+
+#[test]
+fn resolved_snapshot_descriptor_serializes_metadata_only_file_descriptors() {
+    let descriptor = ResolvedSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        snapshot_version: 12,
+        active_files: vec![
+            ResolvedFileDescriptor {
+                path: "category=A/part-000.parquet".to_string(),
+                size_bytes: 128,
+                partition_values: std::collections::BTreeMap::from([
+                    ("category".to_string(), Some("A".to_string())),
+                    ("region".to_string(), None),
+                ]),
+            },
+            ResolvedFileDescriptor {
+                path: "category=B/part-001.parquet".to_string(),
+                size_bytes: 256,
+                partition_values: std::collections::BTreeMap::new(),
+            },
+        ],
+    };
+
+    let json =
+        serde_json::to_value(&descriptor).expect("resolved snapshot descriptor should serialize");
+
+    assert_eq!(
+        json,
+        json!({
+            "table_uri": "gs://axon-fixtures/sample_table",
+            "snapshot_version": 12,
+            "active_files": [
+                {
+                    "path": "category=A/part-000.parquet",
+                    "size_bytes": 128,
+                    "partition_values": {
+                        "category": "A",
+                        "region": null
+                    }
+                },
+                {
+                    "path": "category=B/part-001.parquet",
+                    "size_bytes": 256,
+                    "partition_values": {}
+                }
+            ]
+        })
+    );
 }

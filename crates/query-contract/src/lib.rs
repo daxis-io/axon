@@ -173,6 +173,27 @@ impl QueryRequest {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct SnapshotResolutionRequest {
+    pub table_uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_version: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ResolvedFileDescriptor {
+    pub path: String,
+    pub size_bytes: u64,
+    pub partition_values: BTreeMap<String, Option<String>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ResolvedSnapshotDescriptor {
+    pub table_uri: String,
+    pub snapshot_version: i64,
+    pub active_files: Vec<ResolvedFileDescriptor>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct QueryMetricsSummary {
     /// Bytes scanned by the executed query plan when the runtime can report them; otherwise `0`.

@@ -1485,7 +1485,12 @@ dependencies = [
 name = "delta-control-plane"
 version = "0.1.0"
 dependencies = [
+ "deltalake",
+ "native-query-runtime",
  "query-contract",
+ "tempfile",
+ "tokio",
+ "url",
 ]
 
 [[package]]
