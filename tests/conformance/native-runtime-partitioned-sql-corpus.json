@@ -1,0 +1,37 @@
+[
+  {
+    "name": "single_partition_filter",
+    "sql": "SELECT id, value FROM axon_table WHERE category = 'C' ORDER BY id",
+    "expected_pretty": "+----+-------+\n| id | value |\n+----+-------+\n| 6  | 60    |\n+----+-------+",
+    "expected_files_touched": 1,
+    "expected_files_skipped": 2
+  },
+  {
+    "name": "multi_partition_filter",
+    "sql": "SELECT category, COUNT(*) AS row_count FROM axon_table WHERE category IN ('A', 'B') GROUP BY category ORDER BY category",
+    "expected_pretty": "+----------+-----------+\n| category | row_count |\n+----------+-----------+\n| A        | 2         |\n| B        | 3         |\n+----------+-----------+",
+    "expected_files_touched": 2,
+    "expected_files_skipped": 1
+  },
+  {
+    "name": "no_match_partition_filter",
+    "sql": "SELECT id FROM axon_table WHERE category = 'Z' ORDER BY id",
+    "expected_pretty": "++\n++",
+    "expected_files_touched": 0,
+    "expected_files_skipped": 3
+  },
+  {
+    "name": "aggregate_all_partitions",
+    "sql": "SELECT SUM(value) AS total_value FROM axon_table",
+    "expected_pretty": "+-------------+\n| total_value |\n+-------------+\n| 210         |\n+-------------+",
+    "expected_files_touched": 3,
+    "expected_files_skipped": 0
+  },
+  {
+    "name": "stats_prune_not_full",
+    "sql": "SELECT id FROM axon_table WHERE value >= 40 ORDER BY id",
+    "expected_pretty": "+----+\n| id |\n+----+\n| 4  |\n| 5  |\n| 6  |\n+----+",
+    "expected_files_touched": 2,
+    "expected_files_skipped": 1
+  }
+]

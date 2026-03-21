@@ -172,13 +172,13 @@ impl QueryRequest {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct QueryMetricsSummary {
-    /// Conservative estimate of bytes represented by the active snapshot files.
+    /// Bytes scanned by the executed query plan when the runtime can report them.
     pub bytes_fetched: u64,
     /// Wall-clock execution time for the query call.
     pub duration_ms: u64,
-    /// Conservative count of active data files in the snapshot made available to the runtime.
+    /// Data files scanned by the executed query plan.
     pub files_touched: u64,
-    /// Files skipped by pruning when the runtime can report it; currently zero when unavailable.
+    /// Data files skipped by partition or file pruning when the runtime can report them.
     pub files_skipped: u64,
 }
 

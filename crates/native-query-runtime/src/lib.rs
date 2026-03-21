@@ -1,7 +1,9 @@
 //! Native reference runtime for trusted Delta + DataFusion execution.
 
 use std::collections::HashSet;
+use std::error::Error as StdError;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Instant;
 
 use deltalake::arrow::record_batch::RecordBatch;
@@ -9,6 +11,10 @@ use deltalake::datafusion::common::tree_node::TreeNodeRecursion;
 use deltalake::datafusion::common::{DataFusionError, TableReference};
 use deltalake::datafusion::execution::context::SQLOptions;
 use deltalake::datafusion::logical_expr::LogicalPlan;
+use deltalake::datafusion::physical_plan::metrics::MetricsSet;
+use deltalake::datafusion::physical_plan::{
+    collect as collect_physical_plan, visit_execution_plan, ExecutionPlan, ExecutionPlanVisitor,
+};
 use deltalake::datafusion::prelude::SessionContext;
 use deltalake::datafusion::sql::parser::{DFParser, Statement as ParsedStatement};
 use deltalake::datafusion::sql::sqlparser::ast::{
@@ -56,7 +62,7 @@ pub fn bootstrap_table(table_uri: &str) -> Result<NativeTableBootstrap, QueryErr
         Ok(NativeTableBootstrap {
             table_uri: prepared.table_uri,
             version: prepared.version,
-            active_files: prepared.files_touched,
+            active_files: prepared.active_files,
         })
     })
 }
@@ -87,7 +93,14 @@ async fn execute_query_async(request: QueryRequest) -> Result<NativeQueryResult,
 
     ensure_query_scans_only_registered_table(&query.clone().into_unoptimized_plan())?;
 
-    let batches = query.collect().await.map_err(map_datafusion_error)?;
+    let task_ctx = Arc::new(query.task_ctx());
+    let physical_plan = query
+        .create_physical_plan()
+        .await
+        .map_err(map_datafusion_error)?;
+    let batches = collect_physical_plan(Arc::clone(&physical_plan), task_ctx)
+        .await
+        .map_err(map_datafusion_error)?;
 
     let explain_lines = if request.options.include_explain {
         Some(collect_explain_lines(&prepared.session, &request.sql).await?)
@@ -96,12 +109,12 @@ async fn execute_query_async(request: QueryRequest) -> Result<NativeQueryResult,
     };
 
     let metrics = if request.options.collect_metrics {
-        QueryMetricsSummary {
-            bytes_fetched: prepared.bytes_fetched,
-            duration_ms: wall_clock_duration_ms(operation_started_at),
-            files_touched: prepared.files_touched,
-            files_skipped: 0,
-        }
+        collect_query_metrics(
+            physical_plan.as_ref(),
+            prepared.active_files,
+            operation_started_at,
+        )
+        .map_err(map_datafusion_error)?
     } else {
         QueryMetricsSummary::default()
     };
@@ -373,8 +386,7 @@ where
 
 struct PreparedTable {
     capabilities: CapabilityReport,
-    bytes_fetched: u64,
-    files_touched: u64,
+    active_files: u64,
     session: SessionContext,
     table_uri: String,
     version: i64,
@@ -399,17 +411,11 @@ impl PreparedTable {
             .register_table(DEFAULT_TABLE_NAME, provider)
             .map_err(map_datafusion_error)?;
 
-        let files_touched = snapshot.log_data().num_files() as u64;
-        let bytes_fetched = snapshot
-            .log_data()
-            .iter()
-            .map(|file| file.size().max(0) as u64)
-            .sum();
+        let active_files = snapshot.log_data().num_files() as u64;
 
         Ok(Self {
             capabilities: capability_analysis.report,
-            bytes_fetched,
-            files_touched,
+            active_files,
             session,
             table_uri: normalized_uri.to_string(),
             version: snapshot.version(),
@@ -491,7 +497,7 @@ fn analyze_table_capabilities(snapshot: &DeltaTableState) -> CapabilityAnalysis 
         (CapabilityKey::DeletionVectors, CapabilityState::Unsupported),
         (
             CapabilityKey::MultiPartitionExecution,
-            CapabilityState::Experimental,
+            CapabilityState::Supported,
         ),
         (CapabilityKey::ProxyAccess, CapabilityState::Unsupported),
         (CapabilityKey::RangeReads, CapabilityState::Supported),
@@ -597,6 +603,87 @@ fn data_type_uses_column_mapping(data_type: &DataType) -> bool {
     }
 }
 
+#[derive(Default)]
+struct ExecutionMetricCollector {
+    bytes_scanned: u64,
+    files_scanned: u64,
+    files_pruned: u64,
+    saw_bytes_scanned: bool,
+    saw_files_scanned: bool,
+    saw_files_pruned: bool,
+}
+
+impl ExecutionMetricCollector {
+    fn record_metric(total: &mut u64, saw_metric: &mut bool, metrics: &MetricsSet, names: &[&str]) {
+        if let Some(value) = metric_value(metrics, names) {
+            *total += value;
+            *saw_metric = true;
+        }
+    }
+}
+
+impl ExecutionPlanVisitor for ExecutionMetricCollector {
+    type Error = DataFusionError;
+
+    fn pre_visit(&mut self, plan: &dyn ExecutionPlan) -> std::result::Result<bool, Self::Error> {
+        let Some(metrics) = plan.metrics() else {
+            return Ok(true);
+        };
+
+        Self::record_metric(
+            &mut self.bytes_scanned,
+            &mut self.saw_bytes_scanned,
+            &metrics,
+            &["bytes_scanned"],
+        );
+        Self::record_metric(
+            &mut self.files_scanned,
+            &mut self.saw_files_scanned,
+            &metrics,
+            &["count_files_scanned", "files_scanned"],
+        );
+        Self::record_metric(
+            &mut self.files_pruned,
+            &mut self.saw_files_pruned,
+            &metrics,
+            &["count_files_pruned", "files_pruned"],
+        );
+
+        Ok(true)
+    }
+}
+
+fn collect_query_metrics(
+    plan: &dyn ExecutionPlan,
+    active_files: u64,
+    operation_started_at: Instant,
+) -> Result<QueryMetricsSummary, DataFusionError> {
+    let mut collector = ExecutionMetricCollector::default();
+    visit_execution_plan(plan, &mut collector)?;
+
+    let files_touched = collector.files_scanned;
+    let files_skipped = if collector.saw_files_pruned {
+        collector.files_pruned
+    } else {
+        active_files.saturating_sub(files_touched.min(active_files))
+    };
+
+    Ok(QueryMetricsSummary {
+        bytes_fetched: collector.bytes_scanned,
+        duration_ms: wall_clock_duration_ms(operation_started_at),
+        files_touched,
+        files_skipped,
+    })
+}
+
+fn metric_value(metrics: &MetricsSet, names: &[&str]) -> Option<u64> {
+    names.iter().find_map(|name| {
+        metrics
+            .sum_by_name(name)
+            .map(|metric| metric.as_usize() as u64)
+    })
+}
+
 fn map_arrow_error(error: deltalake::arrow::error::ArrowError) -> QueryError {
     QueryError::new(
         QueryErrorCode::ExecutionFailed,
@@ -645,6 +732,14 @@ fn map_delta_error(error: DeltaTableError) -> QueryError {
 }
 
 fn map_datafusion_error(error: DataFusionError) -> QueryError {
+    if let Some(object_store_error) = find_object_store_error(&error) {
+        return query_error_from_object_store_error(object_store_error);
+    }
+
+    if let Some(mapped) = query_error_from_datafusion_message(&error) {
+        return mapped;
+    }
+
     match error {
         DataFusionError::ObjectStore(source) => map_object_store_error(*source),
         DataFusionError::SQL(..)
@@ -669,6 +764,10 @@ fn map_datafusion_error(error: DataFusionError) -> QueryError {
 }
 
 fn map_object_store_error(error: ObjectStoreError) -> QueryError {
+    query_error_from_object_store_error(&error)
+}
+
+fn query_error_from_object_store_error(error: &ObjectStoreError) -> QueryError {
     match error {
         ObjectStoreError::PermissionDenied { .. } | ObjectStoreError::Unauthenticated { .. } => {
             QueryError::new(
@@ -702,6 +801,48 @@ fn map_object_store_error(error: ObjectStoreError) -> QueryError {
             ExecutionTarget::Native,
         ),
     }
+}
+
+fn find_object_store_error<'a>(
+    error: &'a (dyn StdError + 'static),
+) -> Option<&'a ObjectStoreError> {
+    let mut current = Some(error);
+    while let Some(candidate) = current {
+        if let Some(object_store_error) = candidate.downcast_ref::<ObjectStoreError>() {
+            return Some(object_store_error);
+        }
+        current = candidate.source();
+    }
+    None
+}
+
+fn query_error_from_datafusion_message(error: &DataFusionError) -> Option<QueryError> {
+    let message = error.to_string();
+    let normalized = message.to_ascii_lowercase();
+
+    if normalized.contains("not found") || normalized.contains("404") {
+        return Some(QueryError::new(
+            QueryErrorCode::ObjectStoreProtocol,
+            message,
+            ExecutionTarget::Native,
+        ));
+    }
+
+    if normalized.contains("permission denied")
+        || normalized.contains("access denied")
+        || normalized.contains("unauthenticated")
+        || normalized.contains("unauthorized")
+        || normalized.contains("401")
+        || normalized.contains("403")
+    {
+        return Some(QueryError::new(
+            QueryErrorCode::AccessDenied,
+            message,
+            ExecutionTarget::Native,
+        ));
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -738,5 +879,15 @@ mod tests {
         let started_at = Instant::now() - Duration::from_millis(25);
 
         assert!(wall_clock_duration_ms(started_at) >= 25);
+    }
+
+    #[test]
+    fn not_found_execution_errors_map_to_object_store_protocol() {
+        let error = map_datafusion_error(DataFusionError::Execution(
+            "object store not found".to_string(),
+        ));
+
+        assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+        assert_eq!(error.target, ExecutionTarget::Native);
     }
 }

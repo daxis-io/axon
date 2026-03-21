@@ -24,7 +24,7 @@ cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --tar
 `crates/native-query-runtime` now contains the first callable EPIC-02 slice:
 
 - `bootstrap_table(table_uri)` opens a Delta table and validates the Sprint 1 compatibility envelope.
-- `execute_query(request)` registers the table as `axon_table`, executes read-only SQL, and returns Arrow batches, conservative snapshot-derived file metrics, wall-clock duration, and optional explain output.
+- `execute_query(request)` registers the table as `axon_table`, executes read-only SQL, and returns Arrow batches, execution-derived scan metrics, wall-clock duration, and optional explain output.
 
 Local/offline validation:
 
@@ -32,7 +32,13 @@ Local/offline validation:
 cargo test -p native-query-runtime --locked
 ```
 
-Sprint 1 metrics are intentionally conservative: `bytes_fetched` and `files_touched` are derived from active snapshot metadata, and `files_skipped` remains `0` until pruning stats are wired through the runtime.
+Sprint 2 tightens native metrics around the executed plan:
+
+- `bytes_fetched` is sourced from scan-level `bytes_scanned` metrics when available.
+- `files_touched` reports scanned files rather than total active snapshot files.
+- `files_skipped` reports partition/file pruning outcomes when the scan path exposes them, and otherwise falls back to `active_files - files_touched`.
+
+Offline native coverage now includes both the original unpartitioned SQL corpus and a partitioned latest-snapshot corpus that asserts pruning-visible metrics.
 
 Env-gated GCS smoke validation:
 
@@ -54,7 +60,7 @@ GitHub Actions uses the same command behind an explicit `google-github-actions/a
 ## Repository Layout
 
 - `crates/` contains the Rust workspace packages.
-- `tests/conformance/` contains scaffold checks plus the native SQL corpus and golden expectations.
+- `tests/conformance/` contains scaffold checks plus unpartitioned and partitioned native SQL corpora with golden expectations.
 - `tests/perf/` contains performance test scaffolding.
 - `tests/security/` contains security test scaffolding.
 - `.github/workflows/ci.yml` contains the CI configuration.
