@@ -41,7 +41,14 @@ AXON_GCS_TEST_TABLE_URI=gs://your-bucket/your-table \
 cargo test -p native-query-runtime --locked bootstrap_table_supports_env_gated_gcs_smoke -- --exact --nocapture
 ```
 
-The GCS smoke path assumes standard Google ADC is already available in the shell or runner environment.
+Env-gated GCS query execution smoke:
+
+```bash
+AXON_GCS_TEST_TABLE_URI=gs://your-bucket/your-table \
+cargo test -p native-query-runtime --locked execute_query_supports_env_gated_gcs_smoke -- --exact --nocapture
+```
+
+The GCS smoke path assumes standard Google ADC is already available in the shell or runner environment, and the configured table should be non-empty so the query smoke can assert `LIMIT 1` execution.
 GitHub Actions uses the same command behind an explicit `google-github-actions/auth` step and requires the `AXON_GCP_CREDENTIALS_JSON` secret when `AXON_GCS_TEST_TABLE_URI` is configured.
 
 ## Repository Layout

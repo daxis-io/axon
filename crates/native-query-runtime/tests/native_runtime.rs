@@ -337,3 +337,38 @@ fn bootstrap_table_supports_env_gated_gcs_smoke() {
     assert!(bootstrap.version >= 0);
     assert!(bootstrap.active_files > 0);
 }
+
+#[test]
+fn execute_query_supports_env_gated_gcs_smoke() {
+    let Ok(table_uri) = std::env::var("AXON_GCS_TEST_TABLE_URI") else {
+        return;
+    };
+
+    let request = QueryRequest::new(
+        &table_uri,
+        format!("SELECT * FROM {DEFAULT_TABLE_NAME} LIMIT 1"),
+        ExecutionTarget::Native,
+    );
+
+    let result = execute_query(request).expect("gcs query should succeed");
+    let row_count: usize = result.batches.iter().map(RecordBatch::num_rows).sum();
+
+    assert_eq!(row_count, 1, "query smoke should return a single row");
+    assert!(
+        result.metrics.bytes_fetched > 0,
+        "query smoke should report snapshot-derived byte metrics"
+    );
+    assert!(
+        result.metrics.files_touched > 0,
+        "query smoke should report touched files"
+    );
+    assert!(
+        result.metrics.duration_ms > 0,
+        "query smoke should record elapsed time"
+    );
+    assert_eq!(
+        result.capabilities.state(CapabilityKey::RangeReads),
+        Some(CapabilityState::Supported),
+        "query smoke should report range-read support"
+    );
+}

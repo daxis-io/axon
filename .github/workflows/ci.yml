@@ -53,3 +53,9 @@ jobs:
         env:
           AXON_GCS_TEST_TABLE_URI: ${{ vars.AXON_GCS_TEST_TABLE_URI }}
         run: cargo test -p native-query-runtime --locked bootstrap_table_supports_env_gated_gcs_smoke -- --exact --nocapture
+
+      - name: Run env-gated native GCS query smoke
+        if: ${{ vars.AXON_GCS_TEST_TABLE_URI != '' && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
+        env:
+          AXON_GCS_TEST_TABLE_URI: ${{ vars.AXON_GCS_TEST_TABLE_URI }}
+        run: cargo test -p native-query-runtime --locked execute_query_supports_env_gated_gcs_smoke -- --exact --nocapture
