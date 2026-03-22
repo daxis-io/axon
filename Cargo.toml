@@ -2,6 +2,7 @@
 members = [
   "crates/browser-sdk",
   "crates/delta-control-plane",
+  "crates/delta-runtime-support",
   "crates/native-query-runtime",
   "crates/query-contract",
   "crates/query-router",

@@ -127,7 +127,7 @@ Local validation:
 cargo test -p delta-control-plane --locked
 ```
 
-Cross-crate handoff coverage in `crates/delta-control-plane/tests` proves the descriptor can drive `crates/native-query-runtime` without changing `QueryRequest`.
+Cross-crate handoff coverage in `crates/delta-control-plane/tests` checks the resolved `table_uri` / `snapshot_version` pair against `crates/native-query-runtime` and validates the descriptor's active-file metadata against the local fixture without changing `QueryRequest`.
 Authenticated HTTP service work remains out of repo: there is still no `services/query-api` directory here.
 
 ## Repository Layout

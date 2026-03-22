@@ -2,10 +2,13 @@
 
 use std::collections::HashSet;
 use std::error::Error as StdError;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
+use delta_runtime_support::{
+    map_delta_error, map_object_store_error, normalize_table_uri,
+    query_error_from_object_store_error, run_on_runtime, validate_snapshot_version,
+};
 use deltalake::arrow::record_batch::RecordBatch;
 use deltalake::datafusion::common::tree_node::TreeNodeRecursion;
 use deltalake::datafusion::common::{DataFusionError, TableReference};
@@ -20,7 +23,6 @@ use deltalake::datafusion::sql::parser::{DFParser, Statement as ParsedStatement}
 use deltalake::datafusion::sql::sqlparser::ast::{
     ObjectName, Query as SqlQuery, SetExpr, Statement as SqlStatement, TableFactor, TableWithJoins,
 };
-use deltalake::errors::DeltaTableError;
 use deltalake::kernel::{DataType, PrimitiveType, StructField};
 use deltalake::table::{config::TablePropertiesExt, state::DeltaTableState};
 use deltalake::{open_table, open_table_with_version, ObjectStoreError};
@@ -28,7 +30,6 @@ use query_contract::{
     CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, QueryError, QueryErrorCode,
     QueryMetricsSummary, QueryRequest,
 };
-use url::Url;
 
 pub const OWNER: &str = "Runtime / engine team";
 pub const RESPONSIBILITY: &str = "Authoritative native execution path and fallback runtime.";
@@ -56,19 +57,27 @@ pub struct NativeQueryResult {
 pub fn bootstrap_table(table_uri: &str) -> Result<NativeTableBootstrap, QueryError> {
     let table_uri = table_uri.to_string();
 
-    run_on_runtime(async move {
-        let prepared = PreparedTable::load(&table_uri, None).await?;
+    run_on_runtime(
+        async move {
+            let prepared = PreparedTable::load(&table_uri, None).await?;
 
-        Ok(NativeTableBootstrap {
-            table_uri: prepared.table_uri,
-            version: prepared.version,
-            active_files: prepared.active_files,
-        })
-    })
+            Ok(NativeTableBootstrap {
+                table_uri: prepared.table_uri,
+                version: prepared.version,
+                active_files: prepared.active_files,
+            })
+        },
+        "native query runtime thread panicked",
+        runtime_target(),
+    )
 }
 
 pub fn execute_query(request: QueryRequest) -> Result<NativeQueryResult, QueryError> {
-    run_on_runtime(async move { execute_query_async(request).await })
+    run_on_runtime(
+        async move { execute_query_async(request).await },
+        "native query runtime thread panicked",
+        runtime_target(),
+    )
 }
 
 async fn execute_query_async(request: QueryRequest) -> Result<NativeQueryResult, QueryError> {
@@ -82,7 +91,7 @@ async fn execute_query_async(request: QueryRequest) -> Result<NativeQueryResult,
         ));
     }
 
-    validate_snapshot_version(request.snapshot_version)?;
+    validate_snapshot_version(request.snapshot_version, runtime_target())?;
     validate_query_sql(&request.sql)?;
 
     let prepared = PreparedTable::load(&request.table_uri, request.snapshot_version).await?;
@@ -359,32 +368,6 @@ fn invalid_query_request(message: impl Into<String>) -> QueryError {
     )
 }
 
-fn run_on_runtime<F, T>(future: F) -> Result<T, QueryError>
-where
-    F: Future<Output = Result<T, QueryError>> + Send + 'static,
-    T: Send + 'static,
-{
-    if tokio::runtime::Handle::try_current().is_ok() {
-        std::thread::spawn(move || {
-            tokio::runtime::Runtime::new()
-                .map_err(map_runtime_creation_error)?
-                .block_on(future)
-        })
-        .join()
-        .map_err(|_| {
-            QueryError::new(
-                QueryErrorCode::ExecutionFailed,
-                "native query runtime thread panicked",
-                ExecutionTarget::Native,
-            )
-        })?
-    } else {
-        tokio::runtime::Runtime::new()
-            .map_err(map_runtime_creation_error)?
-            .block_on(future)
-    }
-}
-
 struct PreparedTable {
     capabilities: CapabilityReport,
     active_files: u64,
@@ -395,23 +378,25 @@ struct PreparedTable {
 
 impl PreparedTable {
     async fn load(table_uri: &str, snapshot_version: Option<i64>) -> Result<Self, QueryError> {
-        let normalized_uri = normalize_table_uri(table_uri)?;
+        let normalized_uri = normalize_table_uri(table_uri, runtime_target())?;
         let table = match snapshot_version {
             Some(version) => open_table_with_version(normalized_uri.clone(), version)
                 .await
-                .map_err(map_delta_error)?,
+                .map_err(|error| map_delta_error(error, runtime_target()))?,
             None => open_table(normalized_uri.clone())
                 .await
-                .map_err(map_delta_error)?,
+                .map_err(|error| map_delta_error(error, runtime_target()))?,
         };
-        let snapshot = table.snapshot().map_err(map_delta_error)?;
+        let snapshot = table
+            .snapshot()
+            .map_err(|error| map_delta_error(error, runtime_target()))?;
         let capability_analysis = analyze_table_capabilities(snapshot);
         ensure_supported_table_shape(&capability_analysis)?;
 
         let session = SessionContext::new();
         table
             .update_datafusion_session(&session.state())
-            .map_err(map_delta_error)?;
+            .map_err(|error| map_delta_error(error, runtime_target()))?;
         let provider = table.table_provider().await.map_err(map_datafusion_error)?;
         session
             .register_table(DEFAULT_TABLE_NAME, provider)
@@ -427,75 +412,6 @@ impl PreparedTable {
             version: snapshot.version(),
         })
     }
-}
-
-fn validate_snapshot_version(snapshot_version: Option<i64>) -> Result<(), QueryError> {
-    if let Some(snapshot_version) = snapshot_version {
-        if snapshot_version < 0 {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidRequest,
-                format!(
-                    "snapshot_version must be greater than or equal to 0, got {snapshot_version}"
-                ),
-                ExecutionTarget::Native,
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-fn normalize_table_uri(table_uri: &str) -> Result<Url, QueryError> {
-    let table_uri = table_uri.trim();
-    if table_uri.is_empty() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidRequest,
-            "table_uri must not be empty",
-            ExecutionTarget::Native,
-        ));
-    }
-
-    if table_uri.contains("://") {
-        let url = Url::parse(table_uri).map_err(|error| {
-            QueryError::new(
-                QueryErrorCode::InvalidRequest,
-                format!("invalid table location: {error}"),
-                ExecutionTarget::Native,
-            )
-        })?;
-
-        if url.scheme() == "file" {
-            return normalize_local_path(url.to_file_path().map_err(|_| {
-                QueryError::new(
-                    QueryErrorCode::InvalidRequest,
-                    format!("invalid file table location: {table_uri}"),
-                    ExecutionTarget::Native,
-                )
-            })?);
-        }
-
-        Ok(url)
-    } else {
-        normalize_local_path(std::path::PathBuf::from(table_uri))
-    }
-}
-
-fn normalize_local_path(path: std::path::PathBuf) -> Result<Url, QueryError> {
-    let canonical_path = std::fs::canonicalize(&path).map_err(|error| {
-        QueryError::new(
-            QueryErrorCode::InvalidRequest,
-            format!("invalid table location '{}': {error}", path.display()),
-            ExecutionTarget::Native,
-        )
-    })?;
-
-    Url::from_directory_path(canonical_path).map_err(|_| {
-        QueryError::new(
-            QueryErrorCode::InvalidRequest,
-            format!("table location '{}' must be a directory", path.display()),
-            ExecutionTarget::Native,
-        )
-    })
 }
 
 struct CapabilityAnalysis {
@@ -754,91 +670,9 @@ fn map_arrow_error(error: deltalake::arrow::error::ArrowError) -> QueryError {
     )
 }
 
-fn map_runtime_creation_error(error: std::io::Error) -> QueryError {
-    QueryError::new(
-        QueryErrorCode::ExecutionFailed,
-        format!("failed to create tokio runtime: {error}"),
-        ExecutionTarget::Native,
-    )
-}
-
-fn map_delta_error(error: DeltaTableError) -> QueryError {
-    match error {
-        DeltaTableError::InvalidTableLocation(message) => QueryError::new(
-            QueryErrorCode::InvalidRequest,
-            format!("invalid table location: {message}"),
-            ExecutionTarget::Native,
-        ),
-        DeltaTableError::NotATable(message) => QueryError::new(
-            QueryErrorCode::InvalidRequest,
-            format!("not a delta table: {message}"),
-            ExecutionTarget::Native,
-        ),
-        DeltaTableError::NotInitialized => QueryError::new(
-            QueryErrorCode::InvalidRequest,
-            "table location is not initialized as a Delta table",
-            ExecutionTarget::Native,
-        ),
-        DeltaTableError::InvalidVersion(version) => QueryError::new(
-            QueryErrorCode::InvalidRequest,
-            format!("snapshot version {version} is not available for this table"),
-            ExecutionTarget::Native,
-        ),
-        DeltaTableError::MissingFeature { feature, url } => QueryError::new(
-            QueryErrorCode::UnsupportedFeature,
-            format!("missing runtime feature '{feature}' for table location {url}"),
-            ExecutionTarget::Native,
-        ),
-        DeltaTableError::ObjectStore { source } => map_object_store_error(source),
-        DeltaTableError::KernelError(source) => {
-            if let Some(mapped) = query_error_from_unavailable_snapshot_message(&source.to_string())
-            {
-                mapped
-            } else {
-                QueryError::new(
-                    QueryErrorCode::ExecutionFailed,
-                    format!("Kernel error: {source}"),
-                    ExecutionTarget::Native,
-                )
-            }
-        }
-        DeltaTableError::Generic(message) => {
-            if let Some(mapped) = query_error_from_unavailable_snapshot_message(&message) {
-                mapped
-            } else {
-                QueryError::new(
-                    QueryErrorCode::ExecutionFailed,
-                    format!("Generic DeltaTable error: {message}"),
-                    ExecutionTarget::Native,
-                )
-            }
-        }
-        other => QueryError::new(
-            QueryErrorCode::ExecutionFailed,
-            other.to_string(),
-            ExecutionTarget::Native,
-        ),
-    }
-}
-
-fn query_error_from_unavailable_snapshot_message(message: &str) -> Option<QueryError> {
-    let normalized = message.to_ascii_lowercase();
-    let snapshot_unavailable = normalized.contains("specified end version")
-        || normalized.contains("provided snapshot version does not match the requested version")
-        || normalized.contains("snapshot version is not available");
-
-    snapshot_unavailable.then(|| {
-        QueryError::new(
-            QueryErrorCode::InvalidRequest,
-            format!("requested snapshot version is not available: {message}"),
-            ExecutionTarget::Native,
-        )
-    })
-}
-
 fn map_datafusion_error(error: DataFusionError) -> QueryError {
     if let Some(object_store_error) = find_object_store_error(&error) {
-        return query_error_from_object_store_error(object_store_error);
+        return query_error_from_object_store_error(object_store_error, runtime_target());
     }
 
     if let Some(mapped) = query_error_from_execution_error(&error) {
@@ -846,7 +680,7 @@ fn map_datafusion_error(error: DataFusionError) -> QueryError {
     }
 
     match error {
-        DataFusionError::ObjectStore(source) => map_object_store_error(*source),
+        DataFusionError::ObjectStore(source) => map_object_store_error(*source, runtime_target()),
         DataFusionError::SQL(..)
         | DataFusionError::Plan(_)
         | DataFusionError::SchemaError(..)
@@ -860,46 +694,6 @@ fn map_datafusion_error(error: DataFusionError) -> QueryError {
             error.to_string(),
             ExecutionTarget::Native,
         ),
-        _ => QueryError::new(
-            QueryErrorCode::ExecutionFailed,
-            error.to_string(),
-            ExecutionTarget::Native,
-        ),
-    }
-}
-
-fn map_object_store_error(error: ObjectStoreError) -> QueryError {
-    query_error_from_object_store_error(&error)
-}
-
-fn query_error_from_object_store_error(error: &ObjectStoreError) -> QueryError {
-    match error {
-        ObjectStoreError::PermissionDenied { .. } | ObjectStoreError::Unauthenticated { .. } => {
-            QueryError::new(
-                QueryErrorCode::AccessDenied,
-                error.to_string(),
-                ExecutionTarget::Native,
-            )
-        }
-        ObjectStoreError::NotFound { .. } => QueryError::new(
-            QueryErrorCode::ObjectStoreProtocol,
-            error.to_string(),
-            ExecutionTarget::Native,
-        ),
-        ObjectStoreError::InvalidPath { .. } | ObjectStoreError::UnknownConfigurationKey { .. } => {
-            QueryError::new(
-                QueryErrorCode::InvalidRequest,
-                error.to_string(),
-                ExecutionTarget::Native,
-            )
-        }
-        ObjectStoreError::NotSupported { .. } | ObjectStoreError::NotImplemented => {
-            QueryError::new(
-                QueryErrorCode::UnsupportedFeature,
-                error.to_string(),
-                ExecutionTarget::Native,
-            )
-        }
         _ => QueryError::new(
             QueryErrorCode::ExecutionFailed,
             error.to_string(),
@@ -983,15 +777,21 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    use delta_runtime_support::query_error_from_unavailable_snapshot_message;
+    use deltalake::errors::DeltaTableError;
+
     #[test]
     fn permission_denied_object_store_errors_map_to_access_denied() {
-        let error = map_object_store_error(ObjectStoreError::PermissionDenied {
-            path: "_delta_log/00000000000000000000.json".to_string(),
-            source: Box::new(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "permission denied",
-            )),
-        });
+        let error = map_object_store_error(
+            ObjectStoreError::PermissionDenied {
+                path: "_delta_log/00000000000000000000.json".to_string(),
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "permission denied",
+                )),
+            },
+            runtime_target(),
+        );
 
         assert_eq!(error.code, QueryErrorCode::AccessDenied);
         assert_eq!(error.target, ExecutionTarget::Native);
@@ -999,9 +799,10 @@ mod tests {
 
     #[test]
     fn invalid_table_locations_map_to_invalid_request() {
-        let error = map_delta_error(DeltaTableError::InvalidTableLocation(
-            "bad gs uri".to_string(),
-        ));
+        let error = map_delta_error(
+            DeltaTableError::InvalidTableLocation("bad gs uri".to_string()),
+            runtime_target(),
+        );
 
         assert_eq!(error.code, QueryErrorCode::InvalidRequest);
         assert_eq!(error.target, ExecutionTarget::Native);
@@ -1009,7 +810,7 @@ mod tests {
 
     #[test]
     fn invalid_snapshot_versions_map_to_invalid_request() {
-        let error = map_delta_error(DeltaTableError::InvalidVersion(42));
+        let error = map_delta_error(DeltaTableError::InvalidVersion(42), runtime_target());
 
         assert_eq!(error.code, QueryErrorCode::InvalidRequest);
         assert_eq!(error.target, ExecutionTarget::Native);
@@ -1019,6 +820,7 @@ mod tests {
     fn unavailable_snapshot_messages_map_to_invalid_request() {
         let error = query_error_from_unavailable_snapshot_message(
             "Generic delta kernel error: LogSegment end version 2 not the same as the specified end version 99",
+            runtime_target(),
         )
         .expect("snapshot-version mismatch should be recognized");
 

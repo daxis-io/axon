@@ -18,39 +18,64 @@ fn resolve_snapshot_returns_latest_descriptor_with_sorted_active_files() {
 
     assert_eq!(descriptor.table_uri, fixture.table_uri);
     assert_eq!(descriptor.snapshot_version, 1);
-    assert!(!descriptor.active_files.is_empty());
-    assert_eq!(
-        descriptor.active_files.len(),
-        fixture.data_file_paths().len()
-    );
-
-    let actual_paths: Vec<_> = descriptor
-        .active_files
-        .iter()
-        .map(|file| file.path.clone())
-        .collect();
-    let mut expected_paths = actual_paths.clone();
-    expected_paths.sort();
-
-    assert_eq!(actual_paths, expected_paths);
-    assert!(descriptor
-        .active_files
-        .iter()
-        .all(|file| file.size_bytes > 0 && file.partition_values.contains_key("category")));
+    assert_eq!(descriptor.active_files, fixture.expected_active_files(None));
 }
 
 #[test]
 fn resolve_snapshot_honors_explicit_snapshot_version() {
     let fixture = TestTableFixture::create_multi_version();
+    let table_uri = fixture.table_uri.clone();
 
     let descriptor = resolve_snapshot(SnapshotResolutionRequest {
-        table_uri: fixture.table_uri,
+        table_uri,
         snapshot_version: Some(1),
     })
     .expect("historical snapshot should resolve");
 
     assert_eq!(descriptor.snapshot_version, 1);
-    assert_eq!(descriptor.active_files.len(), 1);
+    assert_eq!(
+        descriptor.active_files,
+        fixture.expected_active_files(Some(1))
+    );
+}
+
+#[test]
+fn resolve_snapshot_accepts_raw_local_paths() {
+    let fixture = TestTableFixture::create_partitioned();
+    let descriptor = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.raw_table_path(),
+        snapshot_version: None,
+    })
+    .expect("raw local paths should resolve");
+
+    assert_eq!(descriptor.table_uri, fixture.table_uri);
+    assert_eq!(descriptor.active_files, fixture.expected_active_files(None));
+}
+
+#[test]
+fn resolve_snapshot_accepts_file_urls() {
+    let fixture = TestTableFixture::create_partitioned();
+    let descriptor = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect("file urls should resolve");
+
+    assert_eq!(descriptor.table_uri, fixture.table_uri);
+    assert_eq!(descriptor.active_files, fixture.expected_active_files(None));
+}
+
+#[test]
+fn resolve_snapshot_trims_whitespace_around_table_uri() {
+    let fixture = TestTableFixture::create_partitioned();
+    let descriptor = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: format!("  {}  ", fixture.raw_table_path()),
+        snapshot_version: None,
+    })
+    .expect("whitespace-trimmed raw paths should resolve");
+
+    assert_eq!(descriptor.table_uri, fixture.table_uri);
+    assert_eq!(descriptor.active_files, fixture.expected_active_files(None));
 }
 
 #[test]

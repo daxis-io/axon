@@ -7,11 +7,11 @@ use query_contract::{ExecutionTarget, QueryErrorCode, QueryRequest, SnapshotReso
 use support::TestTableFixture;
 
 #[test]
-fn resolved_latest_snapshot_descriptor_drives_native_bootstrap_and_query_execution() {
-    let fixture = TestTableFixture::create_multi_version();
+fn resolved_latest_snapshot_descriptor_matches_fixture_files_and_drives_native_query_execution() {
+    let fixture = TestTableFixture::create_partitioned();
 
     let descriptor = resolve_snapshot(SnapshotResolutionRequest {
-        table_uri: fixture.table_uri,
+        table_uri: fixture.table_uri.clone(),
         snapshot_version: None,
     })
     .expect("latest snapshot should resolve");
@@ -20,6 +20,7 @@ fn resolved_latest_snapshot_descriptor_drives_native_bootstrap_and_query_executi
 
     assert_eq!(descriptor.snapshot_version, bootstrap.version);
     assert_eq!(descriptor.active_files.len() as u64, bootstrap.active_files);
+    assert_eq!(descriptor.active_files, fixture.expected_active_files(None));
 
     let result = execute_query(QueryRequest {
         snapshot_version: Some(descriptor.snapshot_version),
@@ -40,14 +41,19 @@ fn resolved_latest_snapshot_descriptor_drives_native_bootstrap_and_query_executi
 }
 
 #[test]
-fn resolved_historical_snapshot_descriptor_drives_native_query_execution() {
+fn resolved_historical_snapshot_descriptor_matches_fixture_files_and_drives_native_query_execution()
+{
     let fixture = TestTableFixture::create_multi_version();
 
     let descriptor = resolve_snapshot(SnapshotResolutionRequest {
-        table_uri: fixture.table_uri,
+        table_uri: fixture.table_uri.clone(),
         snapshot_version: Some(1),
     })
     .expect("historical snapshot should resolve");
+    assert_eq!(
+        descriptor.active_files,
+        fixture.expected_active_files(Some(1))
+    );
 
     let result = execute_query(QueryRequest {
         snapshot_version: Some(descriptor.snapshot_version),
@@ -60,6 +66,11 @@ fn resolved_historical_snapshot_descriptor_drives_native_query_execution() {
     .expect("native query should execute with the resolved historical snapshot");
 
     assert_eq!(descriptor.snapshot_version, 1);
+    assert_eq!(descriptor.active_files.len(), 1);
+    assert!(descriptor
+        .active_files
+        .iter()
+        .all(|file| file.partition_values.is_empty()));
     assert_eq!(
         pretty_format_batches(&result.batches)
             .expect("batches should format")
