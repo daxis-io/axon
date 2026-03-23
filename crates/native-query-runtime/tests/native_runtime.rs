@@ -1029,8 +1029,7 @@ fn execute_query_maps_permission_denied_files_to_access_denied() {
 
     impl Drop for PermissionRestoreGuard {
         fn drop(&mut self) {
-            fs::set_permissions(&self.path, self.original_permissions.clone())
-                .expect("permissions should be restored");
+            let _ = fs::set_permissions(&self.path, self.original_permissions.clone());
         }
     }
 

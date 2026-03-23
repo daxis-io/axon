@@ -119,7 +119,7 @@ Negative fixture contract:
 - `AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI` must point at a table whose log is readable but whose current snapshot references at least one missing data object; the smoke issues a full-table aggregate to force every current file to be opened.
 
 Fixture provisioning, IAM policy, and CI variable population for these negative smokes remain external dependencies outside this repository.
-Only paired snapshot-history env vars are hard-validated in CI; the single-variable negative fixture URIs remain independently optional and simply skip when unset.
+Among the negative GCS fixtures, only the paired stale-history env vars are hard-validated in CI; the single-variable negative fixture URIs remain independently optional and simply skip when unset.
 
 ## Trusted Control-Plane Slice
 

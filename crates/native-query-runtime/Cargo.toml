@@ -6,7 +6,7 @@ version.workspace = true
 
 [dependencies]
 deltalake = { version = "=0.31.1", features = ["datafusion", "gcs"] }
-delta-runtime-support = { path = "../delta-runtime-support" }
+delta-runtime-support = { path = "../delta-runtime-support", default-features = false, features = ["datafusion"] }
 query-contract = { path = "../query-contract" }
 
 [dev-dependencies]

@@ -4,8 +4,12 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
+[features]
+default = ["datafusion"]
+datafusion = ["deltalake/datafusion"]
+
 [dependencies]
-deltalake = { version = "=0.31.1", features = ["datafusion", "gcs"] }
+deltalake = { version = "=0.31.1", features = ["gcs"] }
 query-contract = { path = "../query-contract" }
 tokio = { version = "=1.50.0", features = ["rt-multi-thread"] }
 url = "=2.5.8"
