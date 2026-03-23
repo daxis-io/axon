@@ -1022,6 +1022,18 @@ fn execute_query_maps_missing_data_files_to_object_store_protocol_errors() {
 fn execute_query_maps_permission_denied_files_to_access_denied() {
     use std::os::unix::fs::PermissionsExt;
 
+    struct PermissionRestoreGuard {
+        path: PathBuf,
+        original_permissions: fs::Permissions,
+    }
+
+    impl Drop for PermissionRestoreGuard {
+        fn drop(&mut self) {
+            fs::set_permissions(&self.path, self.original_permissions.clone())
+                .expect("permissions should be restored");
+        }
+    }
+
     let fixture = TestTableFixture::create();
     let data_files = fixture.data_file_paths();
     let denied_file = data_files
@@ -1034,6 +1046,10 @@ fn execute_query_maps_permission_denied_files_to_access_denied() {
     let mut denied_permissions = original_permissions.clone();
     denied_permissions.set_mode(0o000);
     fs::set_permissions(denied_file, denied_permissions).expect("permissions should update");
+    let _restore_guard = PermissionRestoreGuard {
+        path: denied_file.to_path_buf(),
+        original_permissions,
+    };
 
     let request = QueryRequest::new(
         &fixture.table_uri,
@@ -1042,8 +1058,6 @@ fn execute_query_maps_permission_denied_files_to_access_denied() {
     );
 
     let error = execute_query(request).expect_err("permission denied should surface");
-
-    fs::set_permissions(denied_file, original_permissions).expect("permissions should be restored");
 
     assert_eq!(error.code, QueryErrorCode::AccessDenied);
 }

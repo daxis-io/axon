@@ -46,6 +46,15 @@ Sprint 4 expands that local oracle coverage to:
 - a 10-case latest-snapshot partitioned SQL corpus with explicit scan-metric assertion flags so pruning expectations are only enforced where they are stable,
 - a 4-case snapshot-version SQL corpus over the local multi-version fixture.
 
+The local `cargo test -p native-query-runtime --locked` suite also carries deterministic negative-path coverage for:
+
+- invalid table locations,
+- unavailable or negative snapshot versions,
+- missing local data files,
+- Unix permission-denied local data files.
+
+These local failures are the baseline oracle checks; the GCS smokes below remain optional environment-backed coverage for cloud-specific paths.
+
 Env-gated GCS smoke validation:
 
 ```bash
@@ -110,6 +119,7 @@ Negative fixture contract:
 - `AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI` must point at a table whose log is readable but whose current snapshot references at least one missing data object; the smoke issues a full-table aggregate to force every current file to be opened.
 
 Fixture provisioning, IAM policy, and CI variable population for these negative smokes remain external dependencies outside this repository.
+Only paired snapshot-history env vars are hard-validated in CI; the single-variable negative fixture URIs remain independently optional and simply skip when unset.
 
 ## Trusted Control-Plane Slice
 

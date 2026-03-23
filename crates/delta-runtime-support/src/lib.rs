@@ -1,6 +1,8 @@
+use std::error::Error as StdError;
 use std::future::Future;
 use std::path::PathBuf;
 
+use deltalake::datafusion::common::DataFusionError;
 use deltalake::{DeltaTableError, ObjectStoreError};
 use query_contract::{ExecutionTarget, QueryError, QueryErrorCode};
 use url::Url;
@@ -173,6 +175,32 @@ pub fn map_object_store_error(error: ObjectStoreError, target: ExecutionTarget) 
     query_error_from_object_store_error(&error, target)
 }
 
+pub fn map_datafusion_error(error: DataFusionError, target: ExecutionTarget) -> QueryError {
+    if let Some(object_store_error) = find_object_store_error(&error) {
+        return query_error_from_object_store_error(object_store_error, target);
+    }
+
+    if let Some(mapped) = query_error_from_datafusion_error(&error, target) {
+        return mapped;
+    }
+
+    match error {
+        DataFusionError::ObjectStore(source) => map_object_store_error(*source, target),
+        DataFusionError::SQL(..)
+        | DataFusionError::Plan(_)
+        | DataFusionError::SchemaError(..)
+        | DataFusionError::Configuration(_) => {
+            QueryError::new(QueryErrorCode::InvalidRequest, error.to_string(), target)
+        }
+        DataFusionError::NotImplemented(_) => QueryError::new(
+            QueryErrorCode::UnsupportedFeature,
+            error.to_string(),
+            target,
+        ),
+        _ => QueryError::new(QueryErrorCode::ExecutionFailed, error.to_string(), target),
+    }
+}
+
 pub fn query_error_from_unavailable_snapshot_message(
     message: &str,
     target: ExecutionTarget,
@@ -189,6 +217,96 @@ pub fn query_error_from_unavailable_snapshot_message(
             target,
         )
     })
+}
+
+fn find_object_store_error<'a>(
+    error: &'a (dyn StdError + 'static),
+) -> Option<&'a ObjectStoreError> {
+    let mut current = Some(error);
+    while let Some(candidate) = current {
+        if let Some(object_store_error) = candidate.downcast_ref::<ObjectStoreError>() {
+            return Some(object_store_error);
+        }
+        current = candidate.source();
+    }
+    None
+}
+
+fn query_error_from_datafusion_error(
+    error: &DataFusionError,
+    target: ExecutionTarget,
+) -> Option<QueryError> {
+    match error {
+        DataFusionError::Execution(message) => query_error_from_execution_message(message, target),
+        DataFusionError::ParquetError(error) => {
+            query_error_from_execution_message(&error.to_string(), target)
+        }
+        DataFusionError::IoError(error) => query_error_from_io_error(error, target),
+        DataFusionError::Context(_, inner) => query_error_from_datafusion_error(inner, target),
+        DataFusionError::Diagnostic(_, inner) => query_error_from_datafusion_error(inner, target),
+        DataFusionError::Shared(inner) => query_error_from_datafusion_error(inner, target),
+        DataFusionError::Collection(errors) => errors
+            .iter()
+            .find_map(|error| query_error_from_datafusion_error(error, target)),
+        _ => None,
+    }
+}
+
+fn query_error_from_io_error(
+    error: &std::io::Error,
+    target: ExecutionTarget,
+) -> Option<QueryError> {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => Some(QueryError::new(
+            QueryErrorCode::ObjectStoreProtocol,
+            error.to_string(),
+            target,
+        )),
+        std::io::ErrorKind::PermissionDenied => Some(QueryError::new(
+            QueryErrorCode::AccessDenied,
+            error.to_string(),
+            target,
+        )),
+        _ => query_error_from_execution_message(&error.to_string(), target),
+    }
+}
+
+fn query_error_from_execution_message(
+    message: &str,
+    target: ExecutionTarget,
+) -> Option<QueryError> {
+    let normalized = message.to_ascii_lowercase();
+
+    if normalized.contains("not found")
+        || normalized.contains("404")
+        || normalized.contains("no such file or directory")
+        || normalized.contains("os error 2")
+    {
+        return Some(QueryError::new(
+            QueryErrorCode::ObjectStoreProtocol,
+            message.to_string(),
+            target,
+        ));
+    }
+
+    if normalized.contains("permission denied")
+        || normalized.contains("access denied")
+        || normalized.contains("unauthenticated")
+        || normalized.contains("unauthorized")
+        || normalized.contains("operation not permitted")
+        || normalized.contains("os error 1")
+        || normalized.contains("os error 13")
+        || normalized.contains("401")
+        || normalized.contains("403")
+    {
+        return Some(QueryError::new(
+            QueryErrorCode::AccessDenied,
+            message.to_string(),
+            target,
+        ));
+    }
+
+    None
 }
 
 fn normalize_local_path(path: PathBuf, target: ExecutionTarget) -> Result<Url, QueryError> {
@@ -221,6 +339,7 @@ fn map_runtime_creation_error(error: std::io::Error, target: ExecutionTarget) ->
 mod tests {
     use super::*;
 
+    use deltalake::datafusion::common::{Column, DataFusionError, SchemaError};
     use tempfile::TempDir;
 
     #[test]
@@ -281,6 +400,76 @@ mod tests {
         );
 
         assert_eq!(error.code, QueryErrorCode::AccessDenied);
+        assert_eq!(error.target, ExecutionTarget::Native);
+    }
+
+    #[test]
+    fn datafusion_execution_errors_with_os_error_13_map_to_access_denied() {
+        let error = map_datafusion_error(
+            DataFusionError::Execution(
+                "failed to open parquet file: Permission denied (os error 13)".to_string(),
+            ),
+            ExecutionTarget::Native,
+        );
+
+        assert_eq!(error.code, QueryErrorCode::AccessDenied);
+        assert_eq!(error.target, ExecutionTarget::Native);
+    }
+
+    #[test]
+    fn datafusion_execution_errors_with_operation_not_permitted_map_to_access_denied() {
+        let error = map_datafusion_error(
+            DataFusionError::Execution("read failed: Operation not permitted (os error 1)".into()),
+            ExecutionTarget::Native,
+        );
+
+        assert_eq!(error.code, QueryErrorCode::AccessDenied);
+        assert_eq!(error.target, ExecutionTarget::Native);
+    }
+
+    #[test]
+    fn datafusion_execution_errors_with_missing_file_messages_map_to_object_store_protocol() {
+        let error = map_datafusion_error(
+            DataFusionError::Execution(
+                "failed to open parquet file: No such file or directory (os error 2)".into(),
+            ),
+            ExecutionTarget::Native,
+        );
+
+        assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+        assert_eq!(error.target, ExecutionTarget::Native);
+    }
+
+    #[test]
+    fn nested_datafusion_execution_errors_preserve_access_denied_classification() {
+        let error = map_datafusion_error(
+            DataFusionError::Context(
+                "while scanning parquet".into(),
+                Box::new(DataFusionError::Execution(
+                    "failed to open parquet file: Permission denied (os error 13)".into(),
+                )),
+            ),
+            ExecutionTarget::Native,
+        );
+
+        assert_eq!(error.code, QueryErrorCode::AccessDenied);
+        assert_eq!(error.target, ExecutionTarget::Native);
+    }
+
+    #[test]
+    fn schema_errors_containing_status_like_field_names_stay_invalid_request() {
+        let error = map_datafusion_error(
+            DataFusionError::SchemaError(
+                Box::new(SchemaError::FieldNotFound {
+                    field: Box::new(Column::from_name("unauthorized")),
+                    valid_fields: vec![],
+                }),
+                Box::new(None),
+            ),
+            ExecutionTarget::Native,
+        );
+
+        assert_eq!(error.code, QueryErrorCode::InvalidRequest);
         assert_eq!(error.target, ExecutionTarget::Native);
     }
 

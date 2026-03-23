@@ -1,13 +1,12 @@
 //! Native reference runtime for trusted Delta + DataFusion execution.
 
 use std::collections::HashSet;
-use std::error::Error as StdError;
 use std::sync::Arc;
 use std::time::Instant;
 
 use delta_runtime_support::{
-    map_delta_error, map_object_store_error, normalize_table_uri,
-    query_error_from_object_store_error, run_on_runtime, validate_snapshot_version,
+    map_datafusion_error as map_shared_datafusion_error, map_delta_error, normalize_table_uri,
+    run_on_runtime, validate_snapshot_version,
 };
 use deltalake::arrow::record_batch::RecordBatch;
 use deltalake::datafusion::common::tree_node::TreeNodeRecursion;
@@ -25,7 +24,7 @@ use deltalake::datafusion::sql::sqlparser::ast::{
 };
 use deltalake::kernel::{DataType, PrimitiveType, StructField};
 use deltalake::table::{config::TablePropertiesExt, state::DeltaTableState};
-use deltalake::{open_table, open_table_with_version, ObjectStoreError};
+use deltalake::{open_table, open_table_with_version};
 use query_contract::{
     CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, QueryError, QueryErrorCode,
     QueryMetricsSummary, QueryRequest,
@@ -671,105 +670,7 @@ fn map_arrow_error(error: deltalake::arrow::error::ArrowError) -> QueryError {
 }
 
 fn map_datafusion_error(error: DataFusionError) -> QueryError {
-    if let Some(object_store_error) = find_object_store_error(&error) {
-        return query_error_from_object_store_error(object_store_error, runtime_target());
-    }
-
-    if let Some(mapped) = query_error_from_execution_error(&error) {
-        return mapped;
-    }
-
-    match error {
-        DataFusionError::ObjectStore(source) => map_object_store_error(*source, runtime_target()),
-        DataFusionError::SQL(..)
-        | DataFusionError::Plan(_)
-        | DataFusionError::SchemaError(..)
-        | DataFusionError::Configuration(_) => QueryError::new(
-            QueryErrorCode::InvalidRequest,
-            error.to_string(),
-            ExecutionTarget::Native,
-        ),
-        DataFusionError::NotImplemented(_) => QueryError::new(
-            QueryErrorCode::UnsupportedFeature,
-            error.to_string(),
-            ExecutionTarget::Native,
-        ),
-        _ => QueryError::new(
-            QueryErrorCode::ExecutionFailed,
-            error.to_string(),
-            ExecutionTarget::Native,
-        ),
-    }
-}
-
-fn find_object_store_error<'a>(
-    error: &'a (dyn StdError + 'static),
-) -> Option<&'a ObjectStoreError> {
-    let mut current = Some(error);
-    while let Some(candidate) = current {
-        if let Some(object_store_error) = candidate.downcast_ref::<ObjectStoreError>() {
-            return Some(object_store_error);
-        }
-        current = candidate.source();
-    }
-    None
-}
-
-fn query_error_from_execution_error(error: &DataFusionError) -> Option<QueryError> {
-    match error {
-        DataFusionError::Execution(message) => query_error_from_execution_message(message),
-        DataFusionError::ParquetError(error) => {
-            query_error_from_execution_message(&error.to_string())
-        }
-        DataFusionError::IoError(error) => match error.kind() {
-            std::io::ErrorKind::NotFound => Some(QueryError::new(
-                QueryErrorCode::ObjectStoreProtocol,
-                error.to_string(),
-                ExecutionTarget::Native,
-            )),
-            std::io::ErrorKind::PermissionDenied => Some(QueryError::new(
-                QueryErrorCode::AccessDenied,
-                error.to_string(),
-                ExecutionTarget::Native,
-            )),
-            _ => None,
-        },
-        DataFusionError::Context(_, inner) => query_error_from_execution_error(inner),
-        DataFusionError::Diagnostic(_, inner) => query_error_from_execution_error(inner),
-        DataFusionError::Shared(inner) => query_error_from_execution_error(inner),
-        DataFusionError::Collection(errors) => {
-            errors.iter().find_map(query_error_from_execution_error)
-        }
-        _ => None,
-    }
-}
-
-fn query_error_from_execution_message(message: &str) -> Option<QueryError> {
-    let normalized = message.to_ascii_lowercase();
-
-    if normalized.contains("not found") || normalized.contains("404") {
-        return Some(QueryError::new(
-            QueryErrorCode::ObjectStoreProtocol,
-            message.to_string(),
-            ExecutionTarget::Native,
-        ));
-    }
-
-    if normalized.contains("permission denied")
-        || normalized.contains("access denied")
-        || normalized.contains("unauthenticated")
-        || normalized.contains("unauthorized")
-        || normalized.contains("401")
-        || normalized.contains("403")
-    {
-        return Some(QueryError::new(
-            QueryErrorCode::AccessDenied,
-            message.to_string(),
-            ExecutionTarget::Native,
-        ));
-    }
-
-    None
+    map_shared_datafusion_error(error, runtime_target())
 }
 
 #[cfg(test)]
@@ -782,8 +683,8 @@ mod tests {
 
     #[test]
     fn permission_denied_object_store_errors_map_to_access_denied() {
-        let error = map_object_store_error(
-            ObjectStoreError::PermissionDenied {
+        let error = delta_runtime_support::map_object_store_error(
+            deltalake::ObjectStoreError::PermissionDenied {
                 path: "_delta_log/00000000000000000000.json".to_string(),
                 source: Box::new(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
