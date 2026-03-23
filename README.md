@@ -8,7 +8,8 @@ Axon is a Rust workspace for building a hybrid query platform with native and br
 - `crates/native-query-runtime` is the native execution runtime scaffold.
 - `crates/wasm-query-runtime` is the browser-oriented runtime scaffold.
 - `crates/delta-control-plane` contains the in-repo control-plane slice for snapshot resolution and table policy enforcement.
-- `crates/query-router`, `crates/browser-sdk`, `crates/wasm-http-object-store`, `crates/udf-abi`, and `crates/udf-host-wasi` provide the supporting packages around routing, browser access, and hosted UDF execution.
+- `crates/wasm-http-object-store` contains the thin EPIC-04 HTTP byte-range slice for browser-safe object reads.
+- `crates/query-router`, `crates/browser-sdk`, `crates/udf-abi`, and `crates/udf-host-wasi` provide the remaining supporting packages around routing, browser access, and hosted UDF execution.
 
 ## Getting Started
 
@@ -16,6 +17,7 @@ Axon is a Rust workspace for building a hybrid query platform with native and br
 cargo check --workspace
 cargo test -p query-contract
 cargo test -p native-query-runtime
+cargo test -p wasm-http-object-store
 cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --target wasm32-unknown-unknown
 ```
 
@@ -142,6 +144,24 @@ cargo test -p delta-control-plane --locked
 
 Cross-crate handoff coverage in `crates/delta-control-plane/tests` checks the resolved `table_uri` / `snapshot_version` pair against `crates/native-query-runtime`, validates the descriptor's active-file metadata against the local fixture without changing `QueryRequest`, and proves denied tables fail as `SecurityPolicyViolation` before storage-layer resolution runs.
 Authenticated HTTP service work remains out of repo: there is still no `services/query-api` directory here, so signed URL issuance, proxy reads, audit logging, request correlation, and CORS/origin validation remain external blockers rather than shipped repository scope.
+
+## HTTP Range-Read Slice
+
+`crates/wasm-http-object-store` now contains the thin in-repo EPIC-04 opening slice:
+
+- `HttpByteRange` models full, bounded, from-offset, and suffix reads without introducing signing or proxy assumptions.
+- `HttpRangeReader::read_range(url, range)` performs exact HTTP byte-range requests and returns response bytes plus `HttpObjectMetadata`.
+- Deterministic local HTTP tests cover footer-style reads plus `401`, `403`, `404`, `416`, and malformed partial-response handling.
+- The crate maps transport failures to `ExecutionFailed`, auth failures to `AccessDenied`, and range/protocol failures to `ObjectStoreProtocol` using the existing shared query error taxonomy.
+
+Local validation:
+
+```bash
+cargo test -p wasm-http-object-store --locked
+cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --target wasm32-unknown-unknown --locked
+```
+
+This slice is intentionally small: it does not register tables with DataFusion, execute browser SQL, expose a browser SDK surface, or implement any `services/query-api` behavior. Signed URL issuance, read-proxy mode, audit logging, request correlation, and production-shape CORS/origin validation remain external blockers outside this repository.
 
 ## Repository Layout
 

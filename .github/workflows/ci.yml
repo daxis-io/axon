@@ -42,6 +42,9 @@ jobs:
       - name: Test native query runtime
         run: cargo test -p native-query-runtime --locked
 
+      - name: Test wasm HTTP object store
+        run: cargo test -p wasm-http-object-store --locked
+
       - name: Check wasm targets
         run: cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --target wasm32-unknown-unknown --locked
 

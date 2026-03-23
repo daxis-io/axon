@@ -4073,6 +4073,8 @@ name = "wasm-http-object-store"
 version = "0.1.0"
 dependencies = [
  "query-contract",
+ "reqwest",
+ "tokio",
 ]
 
 [[package]]

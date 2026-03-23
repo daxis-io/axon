@@ -29,6 +29,22 @@ Build the browser runtime for supported SQL workloads over signed HTTPS or proxy
 - single-partition execution by default
 - size and startup budgets
 
+## Current In-Repo Status
+
+The repository now implements only the first thin `wasm-http-object-store` slice:
+
+- a URL-only `HttpRangeReader` with exact full, bounded, from-offset, and suffix byte-range support
+- deterministic local tests for footer-style reads and `401` / `403` / `404` / `416` / malformed partial-response handling
+- wasm-target compile coverage proving the crate remains compatible with `wasm32-unknown-unknown`
+
+The following EPIC-04 work remains explicitly out of Sprint 8 scope:
+
+- `crates/wasm-query-runtime` descriptor registration and browser SQL execution
+- `crates/browser-sdk` public API work
+- `crates/query-router` fallback orchestration
+- bundle-size, startup, and memory benchmarking
+- any work that depends on signed URL or proxy descriptors from the still-missing `services/query-api`
+
 ## Child Issues
 
 1. Wire `wasm-query-runtime` to descriptor-based registration.

@@ -11,4 +11,5 @@ Current contents:
 
 Deterministic offline negative-path coverage for invalid table locations, unavailable snapshots, missing local data files, and Unix permission-denied local data files lives in `crates/native-query-runtime/tests/native_runtime.rs`.
 Env-gated real-GCS smokes, including the Sprint 4 negative cases for `403`, `404`, stale history, and missing objects, live in the same file.
+Sprint 8 adds deterministic local HTTP range-read coverage in `crates/wasm-http-object-store/tests/http_range_reader.rs`, including footer-style, bounded, offset, and suffix reads plus `401`, `403`, `404`, `416`, and malformed partial-response handling.
 Fixture provisioning and IAM setup for those env-gated GCS paths are external to this repository.
