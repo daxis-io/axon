@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 #[cfg(feature = "datafusion")]
 use deltalake::datafusion::common::DataFusionError;
+use deltalake::table::normalize_table_url;
 use deltalake::{DeltaTableError, ObjectStoreError};
 use query_contract::{ExecutionTarget, QueryError, QueryErrorCode};
 use url::Url;
@@ -87,6 +88,18 @@ pub fn normalize_table_uri(table_uri: &str, target: ExecutionTarget) -> Result<U
     } else {
         normalize_local_path(PathBuf::from(table_uri), target)
     }
+}
+
+pub fn canonical_table_policy_key(
+    table_uri: &str,
+    target: ExecutionTarget,
+) -> Result<String, QueryError> {
+    let normalized = normalize_table_uri(table_uri, target)?;
+    Ok(canonical_table_policy_key_from_url(&normalized))
+}
+
+pub fn canonical_table_policy_key_from_url(table_uri: &Url) -> String {
+    normalize_table_url(table_uri).to_string()
 }
 
 pub fn map_delta_error(error: DeltaTableError, target: ExecutionTarget) -> QueryError {
@@ -347,6 +360,83 @@ mod tests {
     #[cfg(feature = "datafusion")]
     use deltalake::datafusion::common::{Column, DataFusionError, SchemaError};
     use tempfile::TempDir;
+
+    #[test]
+    fn canonical_table_policy_key_treats_equivalent_local_locators_as_same_table() {
+        let tempdir = TempDir::new().expect("tempdir should be created");
+        let raw_path = tempdir.path().display().to_string();
+        let raw_path_with_trailing_slash = format!("{raw_path}/");
+        let file_url = Url::from_directory_path(tempdir.path())
+            .expect("tempdir should be representable as a file url")
+            .to_string();
+        let trimmed_file_url = format!("  {}  ", file_url.trim_end_matches('/'));
+
+        let expected = canonical_table_policy_key(&raw_path, ExecutionTarget::Native)
+            .expect("raw path should normalize into a policy key");
+
+        assert_eq!(
+            canonical_table_policy_key(
+                &format!("  {raw_path_with_trailing_slash}  "),
+                ExecutionTarget::Native
+            )
+            .expect("whitespace and trailing slashes should not change the key"),
+            expected
+        );
+        assert_eq!(
+            canonical_table_policy_key(&file_url, ExecutionTarget::Native)
+                .expect("file url should normalize into a policy key"),
+            expected
+        );
+        assert_eq!(
+            canonical_table_policy_key(&trimmed_file_url, ExecutionTarget::Native)
+                .expect("trimmed file url should normalize into a policy key"),
+            expected
+        );
+    }
+
+    #[test]
+    fn canonical_table_policy_key_treats_equivalent_remote_locators_as_same_table() {
+        let expected = canonical_table_policy_key("gs://bucket/prefix", ExecutionTarget::Native)
+            .expect("remote table uri should normalize into a policy key");
+
+        assert_eq!(
+            canonical_table_policy_key("gs://bucket/prefix/", ExecutionTarget::Native)
+                .expect("trailing slash variants should share the same key"),
+            expected
+        );
+        assert_eq!(
+            canonical_table_policy_key("gs://bucket//prefix", ExecutionTarget::Native)
+                .expect("redundant slash variants should share the same key"),
+            expected
+        );
+    }
+
+    #[test]
+    fn canonical_table_policy_key_treats_remote_bucket_root_variants_as_same_table() {
+        let expected = canonical_table_policy_key("gs://bucket", ExecutionTarget::Native)
+            .expect("bucket-root table uri should normalize into a policy key");
+
+        assert_eq!(
+            canonical_table_policy_key("gs://bucket/", ExecutionTarget::Native)
+                .expect("bucket-root trailing slash variants should share the same key"),
+            expected
+        );
+    }
+
+    #[test]
+    fn canonical_table_policy_key_rejects_invalid_table_locations() {
+        let tempdir = TempDir::new().expect("tempdir should be created");
+        let missing_path = tempdir.path().join("missing-table");
+
+        let error = canonical_table_policy_key(
+            &missing_path.display().to_string(),
+            ExecutionTarget::Native,
+        )
+        .expect_err("missing local paths should still be rejected");
+
+        assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+        assert!(error.message.contains("table"));
+    }
 
     #[test]
     fn normalize_table_uri_accepts_trimmed_raw_paths_and_file_urls() {

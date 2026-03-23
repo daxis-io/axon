@@ -33,6 +33,9 @@ jobs:
       - name: Test shared query contract
         run: cargo test -p query-contract --locked
 
+      - name: Test shared delta runtime support
+        run: cargo test -p delta-runtime-support --locked
+
       - name: Test delta control plane
         run: cargo test -p delta-control-plane --locked
 

@@ -27,6 +27,23 @@ Provide a trusted service that resolves Delta snapshots and returns browser-safe
 - signed URL policy configuration
 - origin and CORS validation tests
 
+## Current In-Repo Status
+
+The repository currently implements only the thin library slice in `crates/delta-control-plane`:
+
+- deterministic snapshot resolution for latest and explicit historical versions
+- metadata-only active-file descriptors
+- exact-match per-table allow/deny hooks enforced before snapshot I/O
+
+The following EPIC-03 work is still blocked on out-of-repo service delivery:
+
+- `services/query-api`
+- authenticated API surface
+- signed URL issuance
+- read-proxy mode
+- audit logging and request correlation
+- production-shape CORS/origin validation
+
 ## Child Issues
 
 1. Define the table descriptor schema in `query-contract`.

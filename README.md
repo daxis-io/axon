@@ -7,7 +7,7 @@ Axon is a Rust workspace for building a hybrid query platform with native and br
 - `crates/query-contract` contains shared request and response types, capability flags, and fallback reasons.
 - `crates/native-query-runtime` is the native execution runtime scaffold.
 - `crates/wasm-query-runtime` is the browser-oriented runtime scaffold.
-- `crates/delta-control-plane` is the control-plane scaffold for snapshot resolution and browser-safe access.
+- `crates/delta-control-plane` contains the in-repo control-plane slice for snapshot resolution and table policy enforcement.
 - `crates/query-router`, `crates/browser-sdk`, `crates/wasm-http-object-store`, `crates/udf-abi`, and `crates/udf-host-wasi` provide the supporting packages around routing, browser access, and hosted UDF execution.
 
 ## Getting Started
@@ -126,24 +126,27 @@ Among the negative GCS fixtures, only the paired stale-history env vars are hard
 `crates/delta-control-plane` now contains the first in-repo EPIC-03 slice:
 
 - `resolve_snapshot(request)` validates the table locator, resolves the latest or explicit historical Delta snapshot, and returns a metadata-only descriptor.
+- `resolve_snapshot_with_policy(request, policy)` applies exact-match per-table allow/deny rules after URI normalization and before snapshot I/O.
+- `SnapshotAccessPolicy` canonicalizes equivalent locators so raw local paths, `file://` URLs, remote bucket/root variants, redundant-slash variants, whitespace variants, and trailing-slash variants cannot bypass table policy.
 - `SnapshotResolutionRequest` carries `table_uri` plus an optional `snapshot_version`.
 - `ResolvedSnapshotDescriptor` returns the normalized `table_uri`, the concrete resolved `snapshot_version`, and deterministically ordered active file metadata as `ResolvedFileDescriptor` entries.
 
-The descriptor intentionally excludes signed URLs, proxy endpoints, tokens, and credentials. It is only the minimal handoff needed for the existing native oracle.
+The descriptor intentionally excludes signed URLs, proxy endpoints, tokens, credentials, audit fields, and request correlation. It is only the minimal handoff needed for the existing native oracle.
 
 Local validation:
 
 ```bash
+cargo test -p delta-runtime-support --locked
 cargo test -p delta-control-plane --locked
 ```
 
-Cross-crate handoff coverage in `crates/delta-control-plane/tests` checks the resolved `table_uri` / `snapshot_version` pair against `crates/native-query-runtime` and validates the descriptor's active-file metadata against the local fixture without changing `QueryRequest`.
-Authenticated HTTP service work remains out of repo: there is still no `services/query-api` directory here.
+Cross-crate handoff coverage in `crates/delta-control-plane/tests` checks the resolved `table_uri` / `snapshot_version` pair against `crates/native-query-runtime`, validates the descriptor's active-file metadata against the local fixture without changing `QueryRequest`, and proves denied tables fail as `SecurityPolicyViolation` before storage-layer resolution runs.
+Authenticated HTTP service work remains out of repo: there is still no `services/query-api` directory here, so signed URL issuance, proxy reads, audit logging, request correlation, and CORS/origin validation remain external blockers rather than shipped repository scope.
 
 ## Repository Layout
 
 - `crates/` contains the Rust workspace packages.
 - `tests/conformance/` contains scaffold checks plus latest-snapshot and snapshot-version native SQL corpora with golden expectations.
 - `tests/perf/` contains performance test scaffolding.
-- `tests/security/` contains security test scaffolding.
+- `tests/security/` contains security notes and will grow into service-level secret/CORS coverage once `services/query-api` exists.
 - `.github/workflows/ci.yml` contains the CI configuration.
