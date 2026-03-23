@@ -1,5 +1,6 @@
 //! HTTP range-read adapter for browser-safe object access over exact HTTP byte ranges.
 
+use bytes::Bytes;
 use query_contract::{ExecutionTarget, QueryError, QueryErrorCode};
 use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE};
 use reqwest::{StatusCode, Url};
@@ -109,7 +110,7 @@ pub struct HttpObjectMetadata {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HttpRangeReadResult {
     pub metadata: HttpObjectMetadata,
-    pub bytes: Vec<u8>,
+    pub bytes: Bytes,
 }
 
 #[derive(Clone, Debug)]
@@ -212,7 +213,7 @@ impl HttpRangeReader {
                 url: display_url,
                 size_bytes: object_size.or(Some(bytes.len() as u64)),
             },
-            bytes: bytes.to_vec(),
+            bytes,
         })
     }
 }

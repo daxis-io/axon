@@ -39,7 +39,7 @@ fn full_reads_fetch_entire_object_without_range_header() {
     assert!(!request.headers.contains_key("range"));
     assert_eq!(result.metadata.url, url);
     assert_eq!(result.metadata.size_bytes, Some(11));
-    assert_eq!(result.bytes, b"hello world");
+    assert_eq!(result.bytes.as_ref(), b"hello world");
 }
 
 #[test]
@@ -63,7 +63,35 @@ fn full_reads_support_injected_reqwest_clients() {
     assert!(!request.headers.contains_key("range"));
     assert_eq!(result.metadata.url, url);
     assert_eq!(result.metadata.size_bytes, Some(11));
-    assert_eq!(result.bytes, b"hello world");
+    assert_eq!(result.bytes.as_ref(), b"hello world");
+}
+
+#[test]
+fn read_results_clone_bytes_without_copying() {
+    let (url, _, server) =
+        spawn_test_server(|request| full_or_ranged_response(request, b"abcdefghij"));
+
+    let reader = HttpRangeReader::new();
+    let result = runtime()
+        .block_on(reader.read_range(
+            &url,
+            HttpByteRange::Bounded {
+                offset: 2,
+                length: 4,
+            },
+        ))
+        .expect("bounded read should succeed");
+
+    server.join().expect("test server should shut down cleanly");
+    let cloned = result.bytes.clone();
+
+    assert_eq!(result.bytes.as_ref(), b"cdef");
+    assert_eq!(cloned.as_ref(), b"cdef");
+    assert_eq!(
+        result.bytes.as_ptr(),
+        cloned.as_ptr(),
+        "cloning result bytes should not duplicate the buffer"
+    );
 }
 
 #[test]
@@ -85,7 +113,7 @@ fn bounded_reads_send_exact_range_header_and_capture_object_size() {
     let request = finish_request(server, requests);
     assert_eq!(request.headers.get("range"), Some(&"bytes=2-5".to_string()));
     assert_eq!(result.metadata.size_bytes, Some(10));
-    assert_eq!(result.bytes, b"cdef");
+    assert_eq!(result.bytes.as_ref(), b"cdef");
 }
 
 #[test]
@@ -101,7 +129,7 @@ fn from_offset_reads_send_exact_range_header_and_capture_object_size() {
     let request = finish_request(server, requests);
     assert_eq!(request.headers.get("range"), Some(&"bytes=6-".to_string()));
     assert_eq!(result.metadata.size_bytes, Some(10));
-    assert_eq!(result.bytes, b"ghij");
+    assert_eq!(result.bytes.as_ref(), b"ghij");
 }
 
 #[test]
@@ -117,7 +145,7 @@ fn suffix_reads_send_exact_range_header_and_capture_object_size() {
     let request = finish_request(server, requests);
     assert_eq!(request.headers.get("range"), Some(&"bytes=-3".to_string()));
     assert_eq!(result.metadata.size_bytes, Some(10));
-    assert_eq!(result.bytes, b"hij");
+    assert_eq!(result.bytes.as_ref(), b"hij");
 }
 
 #[test]
@@ -135,7 +163,7 @@ fn parquet_footer_style_reads_return_last_eight_bytes() {
         result.metadata.size_bytes,
         Some(PARQUET_LIKE_BYTES.len() as u64)
     );
-    assert_eq!(result.bytes, b"lmnoPAR1");
+    assert_eq!(result.bytes.as_ref(), b"lmnoPAR1");
 }
 
 #[test]
