@@ -150,7 +150,9 @@ Authenticated HTTP service work remains out of repo: there is still no `services
 `crates/wasm-http-object-store` now contains the thin in-repo EPIC-04 opening slice:
 
 - `HttpByteRange` models full, bounded, from-offset, and suffix reads without introducing signing or proxy assumptions.
+- `HttpRangeReader::with_client(client)` allows callers to inject a preconfigured `reqwest::Client` for timeout or redirect policy control.
 - `HttpRangeReader::read_range(url, range)` performs exact HTTP byte-range requests and returns response bytes plus `HttpObjectMetadata`.
+- Returned metadata and error messages redact URL query strings and fragments so signed URL secrets do not leak past the transport boundary.
 - Deterministic local HTTP tests cover footer-style reads plus `401`, `403`, `404`, `416`, and malformed partial-response handling.
 - The crate maps transport failures to `ExecutionFailed`, auth failures to `AccessDenied`, and range/protocol failures to `ObjectStoreProtocol` using the existing shared query error taxonomy.
 

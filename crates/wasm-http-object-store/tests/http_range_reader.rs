@@ -43,6 +43,30 @@ fn full_reads_fetch_entire_object_without_range_header() {
 }
 
 #[test]
+fn full_reads_support_injected_reqwest_clients() {
+    let (url, requests, server) = spawn_test_server(|request| {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/object");
+        full_or_ranged_response(request, b"hello world")
+    });
+
+    let reader = HttpRangeReader::with_client(
+        reqwest::Client::builder()
+            .build()
+            .expect("custom reqwest client should build"),
+    );
+    let result = runtime()
+        .block_on(reader.read_range(&url, HttpByteRange::Full))
+        .expect("full read should succeed");
+
+    let request = finish_request(server, requests);
+    assert!(!request.headers.contains_key("range"));
+    assert_eq!(result.metadata.url, url);
+    assert_eq!(result.metadata.size_bytes, Some(11));
+    assert_eq!(result.bytes, b"hello world");
+}
+
+#[test]
 fn bounded_reads_send_exact_range_header_and_capture_object_size() {
     let (url, requests, server) =
         spawn_test_server(|request| full_or_ranged_response(request, b"abcdefghij"));
@@ -198,6 +222,200 @@ fn malformed_partial_responses_map_to_object_store_protocol() {
 
     server.join().expect("test server should shut down cleanly");
     assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+}
+
+#[test]
+fn mismatched_content_ranges_are_rejected_even_when_body_length_matches() {
+    let (url, _, server) = spawn_test_server(|request| {
+        assert_eq!(request.headers.get("range"), Some(&"bytes=2-5".to_string()));
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "4".to_string()),
+                ("Content-Range".to_string(), "bytes 0-3/10".to_string()),
+            ],
+            body: b"abcd".to_vec(),
+        }
+    });
+
+    let reader = HttpRangeReader::new();
+    let error = runtime()
+        .block_on(reader.read_range(
+            &url,
+            HttpByteRange::Bounded {
+                offset: 2,
+                length: 4,
+            },
+        ))
+        .expect_err("content ranges that do not match the requested bytes should fail");
+
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+}
+
+#[test]
+fn from_offset_reads_reject_partial_responses_that_do_not_extend_to_eof() {
+    let (url, _, server) = spawn_test_server(|request| {
+        assert_eq!(request.headers.get("range"), Some(&"bytes=6-".to_string()));
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "3".to_string()),
+                ("Content-Range".to_string(), "bytes 6-8/10".to_string()),
+            ],
+            body: b"ghi".to_vec(),
+        }
+    });
+
+    let reader = HttpRangeReader::new();
+    let error = runtime()
+        .block_on(reader.read_range(&url, HttpByteRange::FromOffset { offset: 6 }))
+        .expect_err("from-offset reads should extend through the end of the object");
+
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+}
+
+#[test]
+fn suffix_reads_reject_partial_responses_that_do_not_cover_the_final_bytes() {
+    let (url, _, server) = spawn_test_server(|request| {
+        assert_eq!(request.headers.get("range"), Some(&"bytes=-3".to_string()));
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "3".to_string()),
+                ("Content-Range".to_string(), "bytes 6-8/10".to_string()),
+            ],
+            body: b"ghi".to_vec(),
+        }
+    });
+
+    let reader = HttpRangeReader::new();
+    let error = runtime()
+        .block_on(reader.read_range(&url, HttpByteRange::Suffix { length: 3 }))
+        .expect_err("suffix reads should return the final requested bytes");
+
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+}
+
+#[test]
+fn range_requests_reject_ok_statuses() {
+    let (url, _, server) = spawn_test_server(|request| {
+        assert_eq!(request.headers.get("range"), Some(&"bytes=2-5".to_string()));
+        TestResponse {
+            status_line: "200 OK",
+            headers: vec![("Content-Length".to_string(), "4".to_string())],
+            body: b"cdef".to_vec(),
+        }
+    });
+
+    let reader = HttpRangeReader::new();
+    let error = runtime()
+        .block_on(reader.read_range(
+            &url,
+            HttpByteRange::Bounded {
+                offset: 2,
+                length: 4,
+            },
+        ))
+        .expect_err("range requests should require HTTP 206");
+
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+}
+
+#[test]
+fn full_requests_reject_partial_content_statuses() {
+    let (url, _, server) = spawn_test_server(|_| TestResponse {
+        status_line: "206 Partial Content",
+        headers: vec![
+            ("Content-Length".to_string(), "11".to_string()),
+            ("Content-Range".to_string(), "bytes 0-10/11".to_string()),
+        ],
+        body: b"hello world".to_vec(),
+    });
+
+    let reader = HttpRangeReader::new();
+    let error = runtime()
+        .block_on(reader.read_range(&url, HttpByteRange::Full))
+        .expect_err("full requests should require HTTP 200");
+
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+}
+
+#[test]
+fn body_length_mismatches_are_rejected() {
+    let (url, _, server) = spawn_test_server(|request| {
+        assert_eq!(request.headers.get("range"), Some(&"bytes=2-5".to_string()));
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "3".to_string()),
+                ("Content-Range".to_string(), "bytes 2-5/10".to_string()),
+            ],
+            body: b"cde".to_vec(),
+        }
+    });
+
+    let reader = HttpRangeReader::new();
+    let error = runtime()
+        .block_on(reader.read_range(
+            &url,
+            HttpByteRange::Bounded {
+                offset: 2,
+                length: 4,
+            },
+        ))
+        .expect_err("partial bodies should match their declared content range length");
+
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+}
+
+#[test]
+fn invalid_schemes_map_to_invalid_request() {
+    let reader = HttpRangeReader::new();
+    let error = runtime()
+        .block_on(reader.read_range("ftp://example.com/object", HttpByteRange::Full))
+        .expect_err("unsupported schemes should fail validation");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+}
+
+#[test]
+fn metadata_and_errors_redact_query_strings_from_signed_urls() {
+    let (base_url, _, server) = spawn_test_server(|_| TestResponse {
+        status_line: "401 Unauthorized",
+        headers: vec![("Content-Length".to_string(), "0".to_string())],
+        body: Vec::new(),
+    });
+    let signed_url = format!("{base_url}?X-Goog-Signature=super-secret&X-Goog-Expires=30#fragment");
+
+    let reader = HttpRangeReader::new();
+    let error = runtime()
+        .block_on(reader.read_range(&signed_url, HttpByteRange::Full))
+        .expect_err("unauthorized signed URLs should fail");
+
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(error.code, QueryErrorCode::AccessDenied);
+    assert!(error.message.contains(&base_url));
+    assert!(!error.message.contains("X-Goog-Signature"));
+    assert!(!error.message.contains("fragment"));
+
+    let (base_url, _, server) = spawn_test_server(|_| TestResponse {
+        status_line: "200 OK",
+        headers: vec![("Content-Length".to_string(), "5".to_string())],
+        body: b"hello".to_vec(),
+    });
+    let signed_url = format!("{base_url}?sig=secret");
+    let result = runtime()
+        .block_on(reader.read_range(&signed_url, HttpByteRange::Full))
+        .expect("full reads should succeed");
+
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(result.metadata.url, base_url);
 }
 
 #[test]
