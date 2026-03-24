@@ -13,3 +13,4 @@ query-contract = { path = "../query-contract" }
 native-query-runtime = { path = "../native-query-runtime" }
 tempfile = "=3.27.0"
 tokio = { version = "=1.50.0", features = ["rt-multi-thread"] }
+wasm-query-runtime = { path = "../wasm-query-runtime" }

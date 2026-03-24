@@ -1497,6 +1497,7 @@ dependencies = [
  "query-contract",
  "tempfile",
  "tokio",
+ "wasm-query-runtime",
 ]
 
 [[package]]
@@ -2924,6 +2925,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]

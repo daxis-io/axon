@@ -35,6 +35,7 @@ The repository now implements two thin in-repo EPIC-04 slices:
 
 - `crates/wasm-http-object-store` provides a URL-only `HttpRangeReader` with exact full, bounded, from-offset, and suffix byte-range support plus deterministic local tests for footer-style reads and `401` / `403` / `404` / `416` / malformed partial-response handling
 - `crates/wasm-query-runtime` now provides a constrained browser runtime envelope with runtime-owned config validation, an opaque `BrowserObjectSource` boundary for URL-backed reads, runtime-owned request timeout policy for default readers, a tiny async probe path built on `HttpRangeReader`, and a thin Parquet footer bootstrap API that validates the trailer and fetches raw footer bytes through exact suffix and bounded HTTP range reads, all covered by deterministic local tests plus a `wasm32-unknown-unknown` execution smoke test
+- EPIC-03 now also provides the shared browser HTTP snapshot descriptor contract plus deterministic control-plane-side URL attachment, but `wasm-query-runtime` is not yet wired to consume that descriptor for table registration
 - wasm-target compile coverage proves the browser crates remain compatible with `wasm32-unknown-unknown`
 
 The following EPIC-04 work remains explicitly out of Sprint 10 scope:

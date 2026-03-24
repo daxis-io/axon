@@ -150,11 +150,13 @@ Among the negative GCS fixtures, only the paired stale-history env vars are hard
 
 - `resolve_snapshot(request)` validates the table locator, resolves the latest or explicit historical Delta snapshot, and returns a metadata-only descriptor.
 - `resolve_snapshot_with_policy(request, policy)` applies exact-match per-table allow/deny rules after URI normalization and before snapshot I/O.
+- `attach_browser_http_urls(resolved_snapshot, object_urls_by_path)` converts a resolved metadata-only snapshot into a browser HTTP descriptor once a trusted caller supplies exact per-file URLs.
 - `SnapshotAccessPolicy` canonicalizes equivalent locators so raw local paths, `file://` URLs, remote bucket/root variants, redundant-slash variants, whitespace variants, and trailing-slash variants cannot bypass table policy.
 - `SnapshotResolutionRequest` carries `table_uri` plus an optional `snapshot_version`.
 - `ResolvedSnapshotDescriptor` returns the normalized `table_uri`, the concrete resolved `snapshot_version`, and deterministically ordered active file metadata as `ResolvedFileDescriptor` entries.
+- `BrowserHttpSnapshotDescriptor` and `BrowserHttpFileDescriptor` provide the shared in-repo browser-facing contract for explicit per-file HTTPS access without changing the existing metadata-only snapshot path.
 
-The descriptor intentionally excludes signed URLs, proxy endpoints, tokens, credentials, audit fields, and request correlation. It is only the minimal handoff needed for the existing native oracle.
+This slice still does not mint signed URLs or proxy endpoints. Instead, it now defines and validates the descriptor seam that future trusted service code will use after it generates exact per-file browser-safe URLs. Tokens, credentials, audit fields, TTL, request correlation, and CORS/origin behavior remain out of repo.
 
 Local validation:
 
@@ -163,7 +165,7 @@ cargo test -p delta-runtime-support --locked
 cargo test -p delta-control-plane --locked
 ```
 
-Cross-crate handoff coverage in `crates/delta-control-plane/tests` checks the resolved `table_uri` / `snapshot_version` pair against `crates/native-query-runtime`, validates the descriptor's active-file metadata against the local fixture without changing `QueryRequest`, and proves denied tables fail as `SecurityPolicyViolation` before storage-layer resolution runs.
+Cross-crate handoff coverage in `crates/delta-control-plane/tests` checks the resolved `table_uri` / `snapshot_version` pair against `crates/native-query-runtime`, validates the descriptor's active-file metadata against the local fixture without changing `QueryRequest`, proves browser HTTP URL attachment preserves file order and metadata, proves invalid or duplicate browser URL inputs fail deterministically without leaking query strings, and confirms the resulting HTTPS descriptors are accepted by `crates/wasm-query-runtime::BrowserObjectSource`.
 Authenticated HTTP service work remains out of repo: there is still no `services/query-api` directory here, so signed URL issuance, proxy reads, audit logging, request correlation, and CORS/origin validation remain external blockers rather than shipped repository scope.
 
 ## HTTP Range-Read Slice

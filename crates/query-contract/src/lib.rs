@@ -1,9 +1,11 @@
 //! Shared contracts for query execution across browser, native, and control-plane layers.
 
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 #[derive(
     Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
@@ -192,6 +194,105 @@ pub struct ResolvedSnapshotDescriptor {
     pub table_uri: String,
     pub snapshot_version: i64,
     pub active_files: Vec<ResolvedFileDescriptor>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct BrowserHttpFileDescriptor {
+    pub path: String,
+    pub url: String,
+    pub size_bytes: u64,
+    pub partition_values: BTreeMap<String, Option<String>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct BrowserHttpSnapshotDescriptor {
+    pub table_uri: String,
+    pub snapshot_version: i64,
+    pub active_files: Vec<BrowserHttpFileDescriptor>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrowserObjectUrlPolicy {
+    HttpsOnly,
+    HttpsOrLoopbackHttpForHostTests,
+}
+
+pub fn validate_browser_object_url(
+    url: &str,
+    target: ExecutionTarget,
+    policy: BrowserObjectUrlPolicy,
+    invalid_url_label: &str,
+) -> Result<Url, QueryError> {
+    let parsed = Url::parse(url).map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::InvalidRequest,
+            format!(
+                "invalid {invalid_url_label} '{}': {error}",
+                redacted_input_url(url)
+            ),
+            target,
+        )
+    })?;
+
+    match parsed.scheme() {
+        "https" => Ok(parsed),
+        "http" if allows_loopback_http_for_host_tests(&parsed, policy) => Ok(parsed),
+        "http" => Err(QueryError::new(
+            QueryErrorCode::SecurityPolicyViolation,
+            format!(
+                "{}: '{}'",
+                browser_object_url_security_message(policy),
+                redacted_url(&parsed)
+            ),
+            target,
+        )),
+        scheme => Err(QueryError::new(
+            QueryErrorCode::InvalidRequest,
+            format!(
+                "browser object URL '{}' uses unsupported scheme '{scheme}'",
+                redacted_url(&parsed)
+            ),
+            target,
+        )),
+    }
+}
+
+fn browser_object_url_security_message(policy: BrowserObjectUrlPolicy) -> &'static str {
+    match policy {
+        BrowserObjectUrlPolicy::HttpsOnly => "browser object URLs must use HTTPS",
+        BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTests => {
+            "browser object URLs must use HTTPS unless they target loopback hosts for host-side tests"
+        }
+    }
+}
+
+fn allows_loopback_http_for_host_tests(url: &Url, policy: BrowserObjectUrlPolicy) -> bool {
+    matches!(
+        policy,
+        BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTests
+    ) && cfg!(not(target_arch = "wasm32"))
+        && match url.host_str() {
+            Some("localhost") => true,
+            Some(host) => host
+                .parse::<IpAddr>()
+                .map(|address| address.is_loopback())
+                .unwrap_or(false),
+            None => false,
+        }
+}
+
+fn redacted_input_url(url: &str) -> String {
+    let end = url.find(['?', '#']).unwrap_or(url.len());
+    url[..end].to_string()
+}
+
+fn redacted_url(url: &Url) -> String {
+    let mut redacted = url.clone();
+    let _ = redacted.set_username("");
+    let _ = redacted.set_password(None);
+    redacted.set_query(None);
+    redacted.set_fragment(None);
+    redacted.to_string()
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

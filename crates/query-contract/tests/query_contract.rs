@@ -1,7 +1,9 @@
 use query_contract::{
-    CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, QueryError,
-    QueryErrorCode, QueryExecutionOptions, QueryMetricsSummary, QueryRequest, QueryResponse,
-    ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
+    validate_browser_object_url, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor,
+    BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget,
+    FallbackReason, QueryError, QueryErrorCode, QueryExecutionOptions, QueryMetricsSummary,
+    QueryRequest, QueryResponse, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
+    SnapshotResolutionRequest,
 };
 use serde_json::json;
 
@@ -268,4 +270,102 @@ fn resolved_snapshot_descriptor_serializes_metadata_only_file_descriptors() {
             ]
         })
     );
+}
+
+#[test]
+fn browser_http_snapshot_descriptor_serializes_browser_safe_file_urls() {
+    let descriptor = BrowserHttpSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        snapshot_version: 12,
+        active_files: vec![
+            BrowserHttpFileDescriptor {
+                path: "category=A/part-000.parquet".to_string(),
+                url: "https://signed.example.test/category=A/part-000.parquet?X-Goog-Signature=super-secret#fragment".to_string(),
+                size_bytes: 128,
+                partition_values: std::collections::BTreeMap::from([
+                    ("category".to_string(), Some("A".to_string())),
+                    ("region".to_string(), None),
+                ]),
+            },
+            BrowserHttpFileDescriptor {
+                path: "category=B/part-001.parquet".to_string(),
+                url: "https://proxy.example.test/read/category=B/part-001.parquet".to_string(),
+                size_bytes: 256,
+                partition_values: std::collections::BTreeMap::new(),
+            },
+        ],
+    };
+
+    let json = serde_json::to_value(&descriptor)
+        .expect("browser http snapshot descriptor should serialize");
+
+    assert_eq!(
+        json,
+        json!({
+            "table_uri": "gs://axon-fixtures/sample_table",
+            "snapshot_version": 12,
+            "active_files": [
+                {
+                    "path": "category=A/part-000.parquet",
+                    "url": "https://signed.example.test/category=A/part-000.parquet?X-Goog-Signature=super-secret#fragment",
+                    "size_bytes": 128,
+                    "partition_values": {
+                        "category": "A",
+                        "region": null
+                    }
+                },
+                {
+                    "path": "category=B/part-001.parquet",
+                    "url": "https://proxy.example.test/read/category=B/part-001.parquet",
+                    "size_bytes": 256,
+                    "partition_values": {}
+                }
+            ]
+        })
+    );
+}
+
+#[test]
+fn browser_object_url_validation_allows_https_for_browser_contracts() {
+    let url = validate_browser_object_url(
+        "https://signed.example.test/object?sig=secret#fragment",
+        ExecutionTarget::Native,
+        BrowserObjectUrlPolicy::HttpsOnly,
+        "browser object URL",
+    )
+    .expect("https urls should be accepted");
+
+    assert_eq!(
+        url.as_str(),
+        "https://signed.example.test/object?sig=secret#fragment"
+    );
+}
+
+#[test]
+fn browser_object_url_validation_rejects_loopback_http_for_https_only_policy() {
+    let error = validate_browser_object_url(
+        "http://127.0.0.1:8787/object?sig=secret#fragment",
+        ExecutionTarget::Native,
+        BrowserObjectUrlPolicy::HttpsOnly,
+        "browser object URL",
+    )
+    .expect_err("https-only policy should reject plain HTTP");
+
+    assert_eq!(error.code, QueryErrorCode::SecurityPolicyViolation);
+    assert!(error.message.contains("http://127.0.0.1:8787/object"));
+    assert!(!error.message.contains("secret"));
+    assert!(!error.message.contains("fragment"));
+}
+
+#[test]
+fn browser_object_url_validation_allows_loopback_http_only_for_host_test_policy() {
+    let url = validate_browser_object_url(
+        "http://127.0.0.1:8787/object",
+        ExecutionTarget::Native,
+        BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTests,
+        "browser object URL",
+    )
+    .expect("host-test policy should allow loopback HTTP on native targets");
+
+    assert_eq!(url.as_str(), "http://127.0.0.1:8787/object");
 }

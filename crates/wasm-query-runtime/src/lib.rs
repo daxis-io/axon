@@ -5,12 +5,12 @@
 //! probe path above HTTP range reads, and can bootstrap bounded raw Parquet footer bytes without
 //! starting DataFusion registration or browser SQL execution.
 
-use std::net::IpAddr;
 use std::time::Duration;
 
 use bytes::Bytes;
 use query_contract::{
-    CapabilityKey, CapabilityState, ExecutionTarget, FallbackReason, QueryError, QueryErrorCode,
+    validate_browser_object_url, BrowserObjectUrlPolicy, CapabilityKey, CapabilityState,
+    ExecutionTarget, FallbackReason, QueryError, QueryErrorCode,
 };
 use reqwest::Url;
 use wasm_http_object_store::{HttpByteRange, HttpRangeReadResult, HttpRangeReader};
@@ -248,63 +248,12 @@ impl BrowserRuntimeSession {
 }
 
 fn validate_source_url(url: &str) -> Result<Url, QueryError> {
-    let parsed = Url::parse(url).map_err(|error| {
-        QueryError::new(
-            QueryErrorCode::InvalidRequest,
-            format!(
-                "invalid browser object URL '{}': {error}",
-                redacted_input_url(url)
-            ),
-            runtime_target(),
-        )
-    })?;
-
-    match parsed.scheme() {
-        "https" => Ok(parsed),
-        "http" if allows_loopback_http_for_host_tests(&parsed) => Ok(parsed),
-        "http" => Err(QueryError::new(
-            QueryErrorCode::SecurityPolicyViolation,
-            format!(
-                "browser runtime only permits HTTPS object URLs; plain HTTP is reserved for loopback host-side tests: '{}'",
-                redacted_url(&parsed)
-            ),
-            runtime_target(),
-        )),
-        scheme => Err(QueryError::new(
-            QueryErrorCode::InvalidRequest,
-            format!(
-                "browser runtime only supports HTTPS object URLs; received unsupported scheme '{scheme}' for '{}'",
-                redacted_url(&parsed)
-            ),
-            runtime_target(),
-        )),
-    }
-}
-
-fn allows_loopback_http_for_host_tests(url: &Url) -> bool {
-    cfg!(not(target_arch = "wasm32"))
-        && match url.host_str() {
-            Some("localhost") => true,
-            Some(host) => host
-                .parse::<IpAddr>()
-                .map(|address| address.is_loopback())
-                .unwrap_or(false),
-            None => false,
-        }
-}
-
-fn redacted_input_url(url: &str) -> String {
-    let end = url.find(['?', '#']).unwrap_or(url.len());
-    url[..end].to_string()
-}
-
-fn redacted_url(url: &Url) -> String {
-    let mut redacted = url.clone();
-    let _ = redacted.set_username("");
-    let _ = redacted.set_password(None);
-    redacted.set_query(None);
-    redacted.set_fragment(None);
-    redacted.to_string()
+    validate_browser_object_url(
+        url,
+        runtime_target(),
+        BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTests,
+        "browser object URL",
+    )
 }
 
 fn parse_parquet_footer_trailer(trailer: &HttpRangeReadResult) -> Result<(u64, u32), QueryError> {

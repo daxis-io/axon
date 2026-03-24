@@ -10,7 +10,8 @@ use deltalake::kernel::scalars::ScalarExt;
 use deltalake::table::state::DeltaTableState;
 use deltalake::{open_table, open_table_with_version};
 use query_contract::{
-    ExecutionTarget, QueryError, QueryErrorCode, ResolvedFileDescriptor,
+    validate_browser_object_url, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor,
+    BrowserObjectUrlPolicy, ExecutionTarget, QueryError, QueryErrorCode, ResolvedFileDescriptor,
     ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 
@@ -116,6 +117,97 @@ pub fn resolve_snapshot_with_policy(
     )
 }
 
+pub fn attach_browser_http_urls(
+    resolved_snapshot: ResolvedSnapshotDescriptor,
+    object_urls_by_path: &BTreeMap<String, String>,
+) -> Result<BrowserHttpSnapshotDescriptor, QueryError> {
+    let mut resolved_paths = BTreeSet::new();
+    let mut duplicate_paths = BTreeSet::new();
+    for file in &resolved_snapshot.active_files {
+        if !resolved_paths.insert(file.path.clone()) {
+            duplicate_paths.insert(file.path.clone());
+        }
+    }
+    let missing_paths = resolved_snapshot
+        .active_files
+        .iter()
+        .filter(|file| !object_urls_by_path.contains_key(&file.path))
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
+    let unexpected_paths = object_urls_by_path
+        .keys()
+        .filter(|path| !resolved_paths.contains(*path))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if !duplicate_paths.is_empty() || !missing_paths.is_empty() || !unexpected_paths.is_empty() {
+        let mut reasons = Vec::new();
+        if !duplicate_paths.is_empty() {
+            reasons.push(format!(
+                "resolved snapshot contained duplicate paths [{}]",
+                duplicate_paths
+                    .iter()
+                    .map(|path| format!("'{path}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !missing_paths.is_empty() {
+            reasons.push(format!(
+                "missing URLs for [{}]",
+                missing_paths
+                    .iter()
+                    .map(|path| format!("'{path}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !unexpected_paths.is_empty() {
+            reasons.push(format!(
+                "unexpected URLs for [{}]",
+                unexpected_paths
+                    .iter()
+                    .map(|path| format!("'{path}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidRequest,
+            format!(
+                "browser HTTP object URL coverage did not match the resolved snapshot: {}",
+                reasons.join("; ")
+            ),
+            control_plane_target(),
+        ));
+    }
+
+    let active_files = resolved_snapshot
+        .active_files
+        .into_iter()
+        .map(|file| {
+            let url = object_urls_by_path
+                .get(&file.path)
+                .expect("missing URL coverage should be rejected before mapping");
+            validate_browser_http_url(url)?;
+
+            Ok(BrowserHttpFileDescriptor {
+                path: file.path,
+                url: url.clone(),
+                size_bytes: file.size_bytes,
+                partition_values: file.partition_values,
+            })
+        })
+        .collect::<Result<Vec<_>, QueryError>>()?;
+
+    Ok(BrowserHttpSnapshotDescriptor {
+        table_uri: resolved_snapshot.table_uri,
+        snapshot_version: resolved_snapshot.snapshot_version,
+        active_files,
+    })
+}
+
 fn collect_active_files(
     snapshot: &DeltaTableState,
 ) -> Result<Vec<ResolvedFileDescriptor>, QueryError> {
@@ -159,4 +251,14 @@ fn collect_active_files(
 
     active_files.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(active_files)
+}
+
+fn validate_browser_http_url(url: &str) -> Result<(), QueryError> {
+    validate_browser_object_url(
+        url,
+        control_plane_target(),
+        BrowserObjectUrlPolicy::HttpsOnly,
+        "browser HTTP object URL",
+    )
+    .map(|_| ())
 }

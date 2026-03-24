@@ -29,11 +29,15 @@ Provide a trusted service that resolves Delta snapshots and returns browser-safe
 
 ## Current In-Repo Status
 
-The repository currently implements only the thin library slice in `crates/delta-control-plane`:
+The repository currently implements only the thin in-repo library-owned contract slice across `crates/delta-control-plane` and `crates/query-contract`:
 
 - deterministic snapshot resolution for latest and explicit historical versions
 - metadata-only active-file descriptors
+- browser HTTP snapshot/file descriptor types in `query-contract`
+- deterministic attachment of caller-supplied per-file browser-safe HTTP URLs to resolved snapshot files
 - exact-match per-table allow/deny hooks enforced before snapshot I/O
+
+This in-repo slice deliberately stops at descriptor shaping and validation. It does not mint signed URLs, implement proxy reads, or expose an authenticated endpoint.
 
 The following EPIC-03 work is still blocked on out-of-repo service delivery:
 
