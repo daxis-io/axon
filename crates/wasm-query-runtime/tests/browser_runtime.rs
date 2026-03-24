@@ -169,6 +169,42 @@ fn new_sessions_apply_request_timeouts_to_probe_requests() {
 }
 
 #[test]
+fn read_parquet_footer_applies_request_timeouts_to_footer_reads() {
+    let footer = b"serialized-parquet-footer";
+    let prefix = b"row-group-bytes";
+    let object = parquet_like_object(prefix, footer);
+    let trailer = object[object.len() - 8..].to_vec();
+    let footer_offset = prefix.len() as u64;
+    let expected_range = format!(
+        "bytes={footer_offset}-{}",
+        footer_offset + footer.len() as u64 - 1
+    );
+    let (url, requests, server) =
+        spawn_stalling_footer_read_server(Duration::from_millis(250), trailer, object.len());
+    let source =
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests");
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig {
+        request_timeout_ms: 25,
+        ..BrowserRuntimeConfig::default()
+    })
+    .expect("short timeouts should be supported");
+
+    let error = runtime()
+        .block_on(session.read_parquet_footer(&source))
+        .expect_err("stalled footer reads should time out");
+
+    let requests = finish_requests(server, requests, 2);
+    assert_eq!(
+        requests[0].headers.get("range"),
+        Some(&"bytes=-8".to_string())
+    );
+    assert_eq!(requests[1].headers.get("range"), Some(&expected_range));
+    assert_eq!(error.code, QueryErrorCode::ExecutionFailed);
+    assert_eq!(error.fallback_reason, None);
+    assert_eq!(error.target, ExecutionTarget::BrowserWasm);
+}
+
+#[test]
 fn probe_preserves_http_range_reader_errors() {
     let (url, _, server) = spawn_test_server(|_| TestResponse {
         status_line: "401 Unauthorized",
@@ -643,6 +679,46 @@ fn spawn_stalling_server(delay: Duration) -> (String, JoinHandle<()>) {
     });
 
     (url, server)
+}
+
+fn spawn_stalling_footer_read_server(
+    delay: Duration,
+    trailer: Vec<u8>,
+    object_len: usize,
+) -> (String, Receiver<CapturedRequest>, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+    let address = listener.local_addr().expect("listener addr should resolve");
+    let url = format!("http://{address}/object");
+    let (request_tx, request_rx) = mpsc::channel();
+
+    let server = thread::spawn(move || {
+        {
+            let (mut trailer_stream, _) = listener.accept().expect("test client should connect");
+            let trailer_request = read_request(&mut trailer_stream);
+            write_response(
+                &mut trailer_stream,
+                TestResponse {
+                    status_line: "206 Partial Content",
+                    headers: vec![
+                        ("Content-Length".to_string(), trailer.len().to_string()),
+                        (
+                            "Content-Range".to_string(),
+                            format!("bytes {}-{}/{}", object_len - 8, object_len - 1, object_len),
+                        ),
+                    ],
+                    body: trailer,
+                },
+            );
+            let _ = request_tx.send(trailer_request);
+        }
+
+        let (mut footer_stream, _) = listener.accept().expect("test client should connect");
+        let footer_request = read_request(&mut footer_stream);
+        let _ = request_tx.send(footer_request);
+        thread::sleep(delay);
+    });
+
+    (url, request_rx, server)
 }
 
 fn finish_request(server: JoinHandle<()>, requests: Receiver<CapturedRequest>) -> CapturedRequest {

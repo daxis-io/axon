@@ -26,3 +26,14 @@ fn plain_http_sources_are_rejected_in_wasm() {
     assert_eq!(error.code, QueryErrorCode::SecurityPolicyViolation);
     assert_eq!(error.target, ExecutionTarget::BrowserWasm);
 }
+
+#[wasm_bindgen_test]
+fn parquet_footer_api_surface_constructs_a_future_in_wasm() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported in wasm");
+    let source = BrowserObjectSource::from_url("https://example.com/object")
+        .expect("https object sources should be supported in wasm");
+
+    let footer_read = session.read_parquet_footer(&source);
+    drop(footer_read);
+}

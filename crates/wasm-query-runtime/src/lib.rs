@@ -38,6 +38,10 @@ pub struct BrowserRuntimeConfig {
     pub target_partitions: usize,
     pub object_access_mode: BrowserObjectAccessMode,
     pub allow_cloud_credentials: bool,
+    /// Maximum time applied to each outbound HTTP request issued by the browser runtime.
+    ///
+    /// Multi-step operations such as Parquet footer bootstrap apply this timeout independently to
+    /// the trailer read and the footer read; it is not a single end-to-end deadline.
     pub request_timeout_ms: u64,
 }
 
