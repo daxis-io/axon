@@ -6,7 +6,7 @@ Axon is a Rust workspace for building a hybrid query platform with native and br
 
 - `crates/query-contract` contains shared request and response types, capability flags, and fallback reasons.
 - `crates/native-query-runtime` is the native execution runtime scaffold.
-- `crates/wasm-query-runtime` is the browser-oriented runtime scaffold.
+- `crates/wasm-query-runtime` is the browser-oriented runtime envelope for constrained object access and future browser SQL execution.
 - `crates/delta-control-plane` contains the in-repo control-plane slice for snapshot resolution and table policy enforcement.
 - `crates/wasm-http-object-store` contains the thin EPIC-04 HTTP byte-range slice for browser-safe object reads.
 - `crates/query-router`, `crates/browser-sdk`, `crates/udf-abi`, and `crates/udf-host-wasi` provide the remaining supporting packages around routing, browser access, and hosted UDF execution.
@@ -17,9 +17,29 @@ Axon is a Rust workspace for building a hybrid query platform with native and br
 cargo check --workspace
 cargo test -p query-contract
 cargo test -p native-query-runtime
+cargo test -p wasm-query-runtime
 cargo test -p wasm-http-object-store
 cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --target wasm32-unknown-unknown
 ```
+
+## Browser Runtime Envelope
+
+`crates/wasm-query-runtime` now contains the thin Sprint 9 EPIC-04 runtime-owned browser slice:
+
+- `BrowserRuntimeConfig` validates the constrained browser envelope before any object access is attempted, including a nonzero request timeout for runtime-owned readers.
+- `BrowserRuntimeSession::new(config)` constructs a runtime handle with runtime-owned HTTP client timeout policy, while `BrowserRuntimeSession::with_reader(config, reader)` remains available for injected host-side readers and tests.
+- `BrowserObjectSource::from_url(url)` is the typed browser object source boundary for URL-backed access and enforces HTTPS object URLs in production browser mode.
+- `BrowserRuntimeSession::probe(&source, range)` delegates exact range reads to `crates/wasm-http-object-store` without reimplementing HTTP logic.
+- The runtime rejects multi-partition execution as a structured native fallback, rejects non-HTTP object access as a browser runtime constraint, rejects cloud credentials as a security policy violation, and allows plain HTTP only for loopback host-side tests.
+
+Local validation:
+
+```bash
+cargo test -p wasm-query-runtime --locked
+cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --locked --test wasm_smoke
+```
+
+This slice is intentionally small: it does not execute browser SQL, register tables with DataFusion, expose `browser-sdk`, orchestrate `query-router`, or implement any `services/query-api` behavior.
 
 ## Native Runtime Slice
 

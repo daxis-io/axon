@@ -24,6 +24,9 @@ jobs:
       - name: Restore cargo cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Install wasm bindgen test runner
+        run: cargo install wasm-bindgen-cli --version 0.2.114 --locked
+
       - name: Check formatting
         run: cargo fmt --all --check
 
@@ -42,11 +45,17 @@ jobs:
       - name: Test native query runtime
         run: cargo test -p native-query-runtime --locked
 
+      - name: Test wasm query runtime
+        run: cargo test -p wasm-query-runtime --locked
+
       - name: Test wasm HTTP object store
         run: cargo test -p wasm-http-object-store --locked
 
       - name: Check wasm targets
         run: cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --target wasm32-unknown-unknown --locked
+
+      - name: Run wasm query runtime smoke
+        run: cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --locked --test wasm_smoke
 
       - name: Verify workspace layout
         run: bash tests/conformance/verify_workspace_layout.sh
