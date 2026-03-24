@@ -1,5 +1,7 @@
 //! HTTP range-read adapter for browser-safe object access over exact HTTP byte ranges.
 
+use std::time::Duration;
+
 use bytes::Bytes;
 use query_contract::{ExecutionTarget, QueryError, QueryErrorCode};
 use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE};
@@ -138,6 +140,15 @@ impl HttpRangeReader {
         url: &str,
         range: HttpByteRange,
     ) -> Result<HttpRangeReadResult, QueryError> {
+        self.read_range_with_timeout(url, range, None).await
+    }
+
+    pub async fn read_range_with_timeout(
+        &self,
+        url: &str,
+        range: HttpByteRange,
+        timeout: Option<Duration>,
+    ) -> Result<HttpRangeReadResult, QueryError> {
         let url = parse_url(url)?;
         let display_url = redacted_url(&url);
         let range_header = range.header_value()?;
@@ -145,6 +156,9 @@ impl HttpRangeReader {
         let mut request = self.client.get(url.clone());
         if let Some(range_header) = &range_header {
             request = request.header(RANGE, range_header);
+        }
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
         }
 
         let response = request.send().await.map_err(|error| {
