@@ -105,6 +105,18 @@ fn non_loopback_plain_http_sources_are_rejected() {
 }
 
 #[test]
+fn unsupported_object_source_schemes_are_rejected() {
+    for url in ["file:///tmp/object", "s3://bucket/object"] {
+        let error =
+            BrowserObjectSource::from_url(url).expect_err("unsupported schemes should be rejected");
+
+        assert_eq!(error.code, QueryErrorCode::InvalidRequest, "url: {url}");
+        assert_eq!(error.fallback_reason, None, "url: {url}");
+        assert_eq!(error.target, ExecutionTarget::BrowserWasm, "url: {url}");
+    }
+}
+
+#[test]
 fn sessions_can_probe_loopback_http_sources_in_host_tests_through_an_injected_range_reader() {
     let (url, requests, server) =
         spawn_test_server(|request| full_or_ranged_response(request, b"abcdefghij"));
@@ -155,7 +167,7 @@ fn new_sessions_apply_request_timeouts_to_probe_requests() {
 }
 
 #[test]
-fn probe_url_preserves_http_range_reader_errors() {
+fn probe_preserves_http_range_reader_errors() {
     let (url, _, server) = spawn_test_server(|_| TestResponse {
         status_line: "401 Unauthorized",
         headers: vec![("Content-Length".to_string(), "0".to_string())],

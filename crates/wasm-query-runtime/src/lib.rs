@@ -91,19 +91,19 @@ impl BrowserRuntimeConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BrowserObjectSource {
-    url: String,
+    url: Url,
 }
 
 impl BrowserObjectSource {
     pub fn from_url(url: impl Into<String>) -> Result<Self, QueryError> {
         let url = url.into();
-        validate_source_url(&url)?;
+        let url = validate_source_url(&url)?;
 
         Ok(Self { url })
     }
 
     pub fn url(&self) -> &str {
-        &self.url
+        self.url.as_str()
     }
 }
 
@@ -146,7 +146,7 @@ impl BrowserRuntimeSession {
     }
 }
 
-fn validate_source_url(url: &str) -> Result<(), QueryError> {
+fn validate_source_url(url: &str) -> Result<Url, QueryError> {
     let parsed = Url::parse(url).map_err(|error| {
         QueryError::new(
             QueryErrorCode::InvalidRequest,
@@ -158,18 +158,26 @@ fn validate_source_url(url: &str) -> Result<(), QueryError> {
         )
     })?;
 
-    if parsed.scheme() == "http" && !allows_loopback_http_for_host_tests(&parsed) {
-        return Err(QueryError::new(
+    match parsed.scheme() {
+        "https" => Ok(parsed),
+        "http" if allows_loopback_http_for_host_tests(&parsed) => Ok(parsed),
+        "http" => Err(QueryError::new(
             QueryErrorCode::SecurityPolicyViolation,
             format!(
                 "browser runtime only permits HTTPS object URLs; plain HTTP is reserved for loopback host-side tests: '{}'",
                 redacted_url(&parsed)
             ),
             runtime_target(),
-        ));
+        )),
+        scheme => Err(QueryError::new(
+            QueryErrorCode::InvalidRequest,
+            format!(
+                "browser runtime only supports HTTPS object URLs; received unsupported scheme '{scheme}' for '{}'",
+                redacted_url(&parsed)
+            ),
+            runtime_target(),
+        )),
     }
-
-    Ok(())
 }
 
 fn allows_loopback_http_for_host_tests(url: &Url) -> bool {
@@ -196,4 +204,20 @@ fn redacted_url(url: &Url) -> String {
     redacted.set_query(None);
     redacted.set_fragment(None);
     redacted.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browser_object_source_stores_a_validated_parsed_url() {
+        let source = BrowserObjectSource::from_url("https://example.com/object")
+            .expect("https object sources should be supported");
+
+        let parsed_url: &Url = &source.url;
+
+        assert_eq!(parsed_url.as_str(), "https://example.com/object");
+        assert_eq!(source.url(), parsed_url.as_str());
+    }
 }

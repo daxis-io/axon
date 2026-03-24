@@ -28,13 +28,14 @@ cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --tar
 
 - `BrowserRuntimeConfig` validates the constrained browser envelope before any object access is attempted, including a nonzero request timeout for runtime-owned readers.
 - `BrowserRuntimeSession::new(config)` constructs a runtime handle with runtime-owned HTTP client timeout policy, while `BrowserRuntimeSession::with_reader(config, reader)` remains available for injected host-side readers and tests.
-- `BrowserObjectSource::from_url(url)` is the typed browser object source boundary for URL-backed access and enforces HTTPS object URLs in production browser mode.
+- `BrowserObjectSource::from_url(url)` is the typed browser object source boundary for URL-backed access and only accepts HTTPS object URLs in production browser mode, with loopback-only plain HTTP reserved for native host-side tests.
 - `BrowserRuntimeSession::probe(&source, range)` delegates exact range reads to `crates/wasm-http-object-store` without reimplementing HTTP logic.
-- The runtime rejects multi-partition execution as a structured native fallback, rejects non-HTTP object access as a browser runtime constraint, rejects cloud credentials as a security policy violation, and allows plain HTTP only for loopback host-side tests.
+- The runtime rejects multi-partition execution as a structured native fallback, rejects unsupported object URL schemes during source construction, rejects cloud credentials as a security policy violation, and allows plain HTTP only for loopback host-side tests.
 
 Local validation:
 
 ```bash
+cargo install wasm-bindgen-cli --version 0.2.114 --locked
 cargo test -p wasm-query-runtime --locked
 cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --locked --test wasm_smoke
 ```
