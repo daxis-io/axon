@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use query_contract::{ExecutionTarget, QueryError, QueryErrorCode};
-use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE};
+use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, ETAG, RANGE};
 use reqwest::{StatusCode, Url};
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -107,6 +107,7 @@ impl HttpByteRange {
 pub struct HttpObjectMetadata {
     pub url: String,
     pub size_bytes: Option<u64>,
+    pub etag: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -198,6 +199,7 @@ impl HttpRangeReader {
             Some(content_range) => Some(content_range.total_size),
             None => parse_optional_content_length(response.headers(), &display_url)?,
         };
+        let etag = parse_optional_header_string(response.headers(), ETAG.as_str(), &display_url)?;
 
         let bytes = response.bytes().await.map_err(|error| {
             QueryError::new(
@@ -226,6 +228,7 @@ impl HttpRangeReader {
             metadata: HttpObjectMetadata {
                 url: display_url,
                 size_bytes: object_size.or(Some(bytes.len() as u64)),
+                etag,
             },
             bytes,
         })
@@ -387,6 +390,23 @@ fn parse_header_u64(
             "response from '{display_url}' returned an invalid {header_name} header: {error}"
         ))
     })
+}
+
+fn parse_optional_header_string(
+    headers: &reqwest::header::HeaderMap,
+    header_name: &str,
+    display_url: &str,
+) -> Result<Option<String>, QueryError> {
+    headers
+        .get(header_name)
+        .map(|value| {
+            value.to_str().map(|text| text.to_string()).map_err(|error| {
+                protocol_error(format!(
+                    "response from '{display_url}' returned a non-UTF8 {header_name} header: {error}"
+                ))
+            })
+        })
+        .transpose()
 }
 
 fn redacted_input_url(url: &str) -> String {

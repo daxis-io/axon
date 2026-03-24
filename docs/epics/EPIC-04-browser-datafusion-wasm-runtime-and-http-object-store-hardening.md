@@ -34,17 +34,17 @@ Build the browser runtime for supported SQL workloads over signed HTTPS or proxy
 The repository now implements two thin in-repo EPIC-04 slices:
 
 - `crates/wasm-http-object-store` provides a URL-only `HttpRangeReader` with exact full, bounded, from-offset, and suffix byte-range support plus deterministic local tests for footer-style reads and `401` / `403` / `404` / `416` / malformed partial-response handling
-- `crates/wasm-query-runtime` now provides a constrained browser runtime envelope with runtime-owned config validation, an opaque `BrowserObjectSource` boundary for URL-backed reads, runtime-owned request timeout policy for default readers, a tiny async probe path built on `HttpRangeReader`, deterministic local tests for browser guardrails plus loopback-only host-side HTTP handoff, and a `wasm32-unknown-unknown` execution smoke test
+- `crates/wasm-query-runtime` now provides a constrained browser runtime envelope with runtime-owned config validation, an opaque `BrowserObjectSource` boundary for URL-backed reads, runtime-owned request timeout policy for default readers, a tiny async probe path built on `HttpRangeReader`, and a thin Parquet footer bootstrap API that validates the trailer and fetches raw footer bytes through exact suffix and bounded HTTP range reads, all covered by deterministic local tests plus a `wasm32-unknown-unknown` execution smoke test
 - wasm-target compile coverage proves the browser crates remain compatible with `wasm32-unknown-unknown`
 
-The following EPIC-04 work remains explicitly out of Sprint 9 scope:
+The following EPIC-04 work remains explicitly out of Sprint 10 scope:
 
 - browser SQL / DataFusion execution in `crates/wasm-query-runtime`
 - descriptor-based table registration
 - `crates/browser-sdk` public API work
 - `crates/query-router` fallback orchestration
 - bundle-size, startup, and memory benchmarking
-- any work that depends on signed URL or proxy descriptors from the still-missing `services/query-api`
+- any service-backed browser access, signed URL issuance, proxy mode orchestration, or other work that depends on the still-missing `services/query-api`
 
 ## Child Issues
 

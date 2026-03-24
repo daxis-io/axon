@@ -149,6 +149,37 @@ fn suffix_reads_send_exact_range_header_and_capture_object_size() {
 }
 
 #[test]
+fn partial_reads_capture_entity_tags_when_present() {
+    let (url, requests, server) = spawn_test_server(|request| {
+        assert_eq!(request.headers.get("range"), Some(&"bytes=2-5".to_string()));
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "4".to_string()),
+                ("Content-Range".to_string(), "bytes 2-5/10".to_string()),
+                ("ETag".to_string(), "\"v1\"".to_string()),
+            ],
+            body: b"cdef".to_vec(),
+        }
+    });
+
+    let reader = HttpRangeReader::new();
+    let result = runtime()
+        .block_on(reader.read_range(
+            &url,
+            HttpByteRange::Bounded {
+                offset: 2,
+                length: 4,
+            },
+        ))
+        .expect("bounded read should capture entity tags");
+
+    let request = finish_request(server, requests);
+    assert_eq!(request.headers.get("range"), Some(&"bytes=2-5".to_string()));
+    assert_eq!(result.metadata.etag.as_deref(), Some("\"v1\""));
+}
+
+#[test]
 fn parquet_footer_style_reads_return_last_eight_bytes() {
     let (url, _, server) =
         spawn_test_server(|request| full_or_ranged_response(request, PARQUET_LIKE_BYTES));

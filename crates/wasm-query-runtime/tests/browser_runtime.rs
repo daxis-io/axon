@@ -16,6 +16,8 @@ use wasm_query_runtime::{
     BrowserRuntimeSession,
 };
 
+const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
+
 #[test]
 fn default_config_constructs_a_browser_runtime_session() {
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
@@ -188,6 +190,411 @@ fn probe_preserves_http_range_reader_errors() {
     assert_eq!(error.target, ExecutionTarget::BrowserWasm);
 }
 
+#[test]
+fn read_parquet_footer_bootstraps_raw_footer_bytes_from_loopback_http() {
+    let footer = b"serialized-parquet-footer";
+    let prefix = b"row-group-bytes";
+    let object = parquet_like_object(prefix, footer);
+    let footer_offset = prefix.len() as u64;
+    let expected_range = format!(
+        "bytes={footer_offset}-{}",
+        footer_offset + footer.len() as u64 - 1
+    );
+    let (url, requests, server) = spawn_multi_request_server(2, move |request, _| {
+        full_or_ranged_response(request, &object)
+    });
+    let source =
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests");
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let result = runtime()
+        .block_on(session.read_parquet_footer(&source))
+        .expect("footer bootstrap should succeed");
+
+    let requests = finish_requests(server, requests, 2);
+    assert_eq!(
+        requests[0].headers.get("range"),
+        Some(&"bytes=-8".to_string())
+    );
+    assert_eq!(requests[1].headers.get("range"), Some(&expected_range));
+    assert_eq!(
+        result.object_size_bytes(),
+        (prefix.len() + footer.len() + 8) as u64
+    );
+    assert_eq!(result.footer_length_bytes(), footer.len() as u32);
+    assert_eq!(result.footer_bytes(), footer);
+}
+
+#[test]
+fn read_parquet_footer_rejects_objects_smaller_than_the_parquet_trailer() {
+    let (url, requests, server) =
+        spawn_test_server(|request| full_or_ranged_response(request, b"small"));
+    let source =
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests");
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let error = runtime()
+        .block_on(session.read_parquet_footer(&source))
+        .expect_err("objects shorter than 8 bytes should fail");
+
+    let request = finish_request(server, requests);
+    assert_eq!(request.headers.get("range"), Some(&"bytes=-8".to_string()));
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert_eq!(error.fallback_reason, None);
+    assert_eq!(error.target, ExecutionTarget::BrowserWasm);
+}
+
+#[test]
+fn read_parquet_footer_rejects_missing_trailing_magic() {
+    let footer = b"serialized-parquet-footer";
+    let mut object = b"row-group-bytes".to_vec();
+    object.extend_from_slice(footer);
+    object.extend_from_slice(&(footer.len() as u32).to_le_bytes());
+    object.extend_from_slice(b"NOPE");
+    let (url, requests, server) =
+        spawn_test_server(move |request| full_or_ranged_response(request, &object));
+    let source =
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests");
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let error = runtime()
+        .block_on(session.read_parquet_footer(&source))
+        .expect_err("footer bootstrap should reject missing trailing magic");
+
+    let request = finish_request(server, requests);
+    assert_eq!(request.headers.get("range"), Some(&"bytes=-8".to_string()));
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert_eq!(error.fallback_reason, None);
+    assert_eq!(error.target, ExecutionTarget::BrowserWasm);
+}
+
+#[test]
+fn read_parquet_footer_rejects_zero_length_footers() {
+    let mut object = b"row-group-bytes".to_vec();
+    object.extend_from_slice(&0_u32.to_le_bytes());
+    object.extend_from_slice(PARQUET_MAGIC);
+    let (url, requests, server) =
+        spawn_test_server(move |request| full_or_ranged_response(request, &object));
+    let source =
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests");
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let error = runtime()
+        .block_on(session.read_parquet_footer(&source))
+        .expect_err("zero-length footers should fail");
+
+    let request = finish_request(server, requests);
+    assert_eq!(request.headers.get("range"), Some(&"bytes=-8".to_string()));
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert_eq!(error.fallback_reason, None);
+    assert_eq!(error.target, ExecutionTarget::BrowserWasm);
+}
+
+#[test]
+fn read_parquet_footer_rejects_footer_lengths_that_point_outside_the_object() {
+    let mut object = b"row-group-bytes".to_vec();
+    object.extend_from_slice(b"tiny");
+    object.extend_from_slice(&64_u32.to_le_bytes());
+    object.extend_from_slice(PARQUET_MAGIC);
+    let (url, requests, server) =
+        spawn_test_server(move |request| full_or_ranged_response(request, &object));
+    let source =
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests");
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let error = runtime()
+        .block_on(session.read_parquet_footer(&source))
+        .expect_err("footer ranges that precede byte zero should fail");
+
+    let request = finish_request(server, requests);
+    assert_eq!(request.headers.get("range"), Some(&"bytes=-8".to_string()));
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert_eq!(error.fallback_reason, None);
+    assert_eq!(error.target, ExecutionTarget::BrowserWasm);
+}
+
+#[test]
+fn read_parquet_footer_rejects_oversized_footers_before_fetching_them() {
+    let declared_footer_length = 20_u32 * 1024 * 1024;
+    let object_size = u64::from(declared_footer_length) + 8;
+    let trailer = {
+        let mut trailer = declared_footer_length.to_le_bytes().to_vec();
+        trailer.extend_from_slice(PARQUET_MAGIC);
+        trailer
+    };
+    let (url, requests, server) = spawn_test_server(move |request| {
+        assert_eq!(request.headers.get("range"), Some(&"bytes=-8".to_string()));
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), trailer.len().to_string()),
+                (
+                    "Content-Range".to_string(),
+                    format!(
+                        "bytes {}-{}/{}",
+                        object_size - 8,
+                        object_size - 1,
+                        object_size
+                    ),
+                ),
+            ],
+            body: trailer.clone(),
+        }
+    });
+    let source =
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests");
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let error = runtime()
+        .block_on(session.read_parquet_footer(&source))
+        .expect_err("oversized footers should fail before the second fetch");
+
+    let request = finish_request(server, requests);
+    assert_eq!(request.headers.get("range"), Some(&"bytes=-8".to_string()));
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert_eq!(error.fallback_reason, None);
+    assert_eq!(error.target, ExecutionTarget::BrowserWasm);
+}
+
+#[test]
+fn read_parquet_footer_rejects_footer_reads_when_object_size_changes_between_requests() {
+    let footer = b"serialized-parquet-footer";
+    let prefix = b"row-group-bytes";
+    let object = parquet_like_object(prefix, footer);
+    let footer_offset = prefix.len() as u64;
+    let expected_range = format!(
+        "bytes={footer_offset}-{}",
+        footer_offset + footer.len() as u64 - 1
+    );
+    let trailer = object[object.len() - 8..].to_vec();
+    let object_len = object.len() as u64;
+    let changed_object_len = object_len + 1;
+    let expected_range_in_server = expected_range.clone();
+    let (url, requests, server) =
+        spawn_multi_request_server(2, move |request, index| match index {
+            0 => {
+                assert_eq!(request.headers.get("range"), Some(&"bytes=-8".to_string()));
+                TestResponse {
+                    status_line: "206 Partial Content",
+                    headers: vec![
+                        ("Content-Length".to_string(), trailer.len().to_string()),
+                        (
+                            "Content-Range".to_string(),
+                            format!("bytes {}-{}/{}", object_len - 8, object_len - 1, object_len),
+                        ),
+                    ],
+                    body: trailer.clone(),
+                }
+            }
+            1 => {
+                assert_eq!(
+                    request.headers.get("range"),
+                    Some(&expected_range_in_server)
+                );
+                TestResponse {
+                    status_line: "206 Partial Content",
+                    headers: vec![
+                        ("Content-Length".to_string(), footer.len().to_string()),
+                        (
+                            "Content-Range".to_string(),
+                            format!(
+                                "bytes {footer_offset}-{}",
+                                footer_offset + footer.len() as u64 - 1
+                            ) + &format!("/{changed_object_len}"),
+                        ),
+                    ],
+                    body: footer.to_vec(),
+                }
+            }
+            _ => unreachable!("only two requests are expected"),
+        });
+    let source =
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests");
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let error = runtime()
+        .block_on(session.read_parquet_footer(&source))
+        .expect_err("object-size changes between footer reads should fail");
+
+    let requests = finish_requests(server, requests, 2);
+    assert_eq!(
+        requests[0].headers.get("range"),
+        Some(&"bytes=-8".to_string())
+    );
+    assert_eq!(requests[1].headers.get("range"), Some(&expected_range));
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert_eq!(error.fallback_reason, None);
+    assert_eq!(error.target, ExecutionTarget::BrowserWasm);
+}
+
+#[test]
+fn read_parquet_footer_rejects_footer_reads_when_entity_tag_changes_between_requests() {
+    let footer = b"serialized-parquet-footer";
+    let prefix = b"row-group-bytes";
+    let object = parquet_like_object(prefix, footer);
+    let footer_offset = prefix.len() as u64;
+    let expected_range = format!(
+        "bytes={footer_offset}-{}",
+        footer_offset + footer.len() as u64 - 1
+    );
+    let trailer = object[object.len() - 8..].to_vec();
+    let object_len = object.len();
+    let expected_range_in_server = expected_range.clone();
+    let (url, requests, server) =
+        spawn_multi_request_server(2, move |request, index| match index {
+            0 => {
+                assert_eq!(request.headers.get("range"), Some(&"bytes=-8".to_string()));
+                TestResponse {
+                    status_line: "206 Partial Content",
+                    headers: vec![
+                        ("Content-Length".to_string(), trailer.len().to_string()),
+                        (
+                            "Content-Range".to_string(),
+                            format!("bytes {}-{}/{}", object_len - 8, object_len - 1, object_len),
+                        ),
+                        ("ETag".to_string(), "\"v1\"".to_string()),
+                    ],
+                    body: trailer.clone(),
+                }
+            }
+            1 => {
+                assert_eq!(
+                    request.headers.get("range"),
+                    Some(&expected_range_in_server)
+                );
+                TestResponse {
+                    status_line: "206 Partial Content",
+                    headers: vec![
+                        ("Content-Length".to_string(), footer.len().to_string()),
+                        (
+                            "Content-Range".to_string(),
+                            format!(
+                                "bytes {footer_offset}-{}",
+                                footer_offset + footer.len() as u64 - 1
+                            ) + &format!("/{}", object_len),
+                        ),
+                        ("ETag".to_string(), "\"v2\"".to_string()),
+                    ],
+                    body: footer.to_vec(),
+                }
+            }
+            _ => unreachable!("only two requests are expected"),
+        });
+    let source =
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests");
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let error = runtime()
+        .block_on(session.read_parquet_footer(&source))
+        .expect_err("entity-tag changes between footer reads should fail");
+
+    let requests = finish_requests(server, requests, 2);
+    assert_eq!(
+        requests[0].headers.get("range"),
+        Some(&"bytes=-8".to_string())
+    );
+    assert_eq!(requests[1].headers.get("range"), Some(&expected_range));
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert_eq!(error.fallback_reason, None);
+    assert_eq!(error.target, ExecutionTarget::BrowserWasm);
+}
+
+#[test]
+fn read_parquet_footer_preserves_http_range_reader_errors_from_the_trailer_read() {
+    let (url, requests, server) = spawn_test_server(|request| {
+        assert_eq!(request.headers.get("range"), Some(&"bytes=-8".to_string()));
+        TestResponse {
+            status_line: "401 Unauthorized",
+            headers: vec![("Content-Length".to_string(), "0".to_string())],
+            body: Vec::new(),
+        }
+    });
+    let source =
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests");
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let error = runtime()
+        .block_on(session.read_parquet_footer(&source))
+        .expect_err("trailer-read failures should surface");
+
+    let request = finish_request(server, requests);
+    assert_eq!(request.headers.get("range"), Some(&"bytes=-8".to_string()));
+    assert_eq!(error.code, QueryErrorCode::AccessDenied);
+    assert_eq!(error.fallback_reason, None);
+    assert_eq!(error.target, ExecutionTarget::BrowserWasm);
+}
+
+#[test]
+fn read_parquet_footer_preserves_http_range_reader_errors_from_the_footer_read() {
+    let footer = b"serialized-parquet-footer";
+    let prefix = b"row-group-bytes";
+    let object = parquet_like_object(prefix, footer);
+    let footer_offset = prefix.len() as u64;
+    let expected_range = format!(
+        "bytes={footer_offset}-{}",
+        footer_offset + footer.len() as u64 - 1
+    );
+    let trailer = object[object.len() - 8..].to_vec();
+    let object_len = object.len();
+    let expected_range_in_server = expected_range.clone();
+    let (url, requests, server) =
+        spawn_multi_request_server(2, move |request, index| match index {
+            0 => {
+                assert_eq!(request.headers.get("range"), Some(&"bytes=-8".to_string()));
+                TestResponse {
+                    status_line: "206 Partial Content",
+                    headers: vec![
+                        ("Content-Length".to_string(), trailer.len().to_string()),
+                        (
+                            "Content-Range".to_string(),
+                            format!("bytes {}-{}/{}", object_len - 8, object_len - 1, object_len),
+                        ),
+                    ],
+                    body: trailer.clone(),
+                }
+            }
+            1 => {
+                assert_eq!(
+                    request.headers.get("range"),
+                    Some(&expected_range_in_server)
+                );
+                TestResponse {
+                    status_line: "200 OK",
+                    headers: vec![("Content-Length".to_string(), footer.len().to_string())],
+                    body: footer.to_vec(),
+                }
+            }
+            _ => unreachable!("only two requests are expected"),
+        });
+    let source =
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests");
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let error = runtime()
+        .block_on(session.read_parquet_footer(&source))
+        .expect_err("footer-read failures should surface");
+
+    let requests = finish_requests(server, requests, 2);
+    assert_eq!(
+        requests[0].headers.get("range"),
+        Some(&"bytes=-8".to_string())
+    );
+    assert_eq!(requests[1].headers.get("range"), Some(&expected_range));
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert_eq!(error.fallback_reason, None);
+    assert_eq!(error.target, ExecutionTarget::BrowserWasm);
+}
+
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Runtime::new().expect("tokio runtime should be created for tests")
 }
@@ -245,6 +652,21 @@ fn finish_request(server: JoinHandle<()>, requests: Receiver<CapturedRequest>) -
         .expect("test should receive the captured request")
 }
 
+fn finish_requests(
+    server: JoinHandle<()>,
+    requests: Receiver<CapturedRequest>,
+    expected_count: usize,
+) -> Vec<CapturedRequest> {
+    server.join().expect("test server should shut down cleanly");
+    (0..expected_count)
+        .map(|_| {
+            requests
+                .recv()
+                .expect("test should receive the captured request")
+        })
+        .collect()
+}
+
 fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
     let mut buffer = [0_u8; 4096];
     let mut request = Vec::new();
@@ -290,34 +712,97 @@ fn write_response(stream: &mut std::net::TcpStream, response: TestResponse) {
     stream.flush().expect("response should flush");
 }
 
-fn full_or_ranged_response(request: &CapturedRequest, body: &[u8]) -> TestResponse {
-    if let Some(range_header) = request.headers.get("range") {
-        let range_spec = range_header
-            .strip_prefix("bytes=")
-            .expect("range header should start with bytes=");
-        let (start, end) = range_spec
-            .split_once('-')
-            .expect("range header should contain a dash");
-        let start = start.parse::<usize>().expect("range start should parse");
-        let end = end.parse::<usize>().expect("range end should parse");
-        let ranged = body[start..=end].to_vec();
+fn spawn_multi_request_server<F>(
+    request_count: usize,
+    handler: F,
+) -> (String, Receiver<CapturedRequest>, JoinHandle<()>)
+where
+    F: Fn(&CapturedRequest, usize) -> TestResponse + Send + 'static,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+    let address = listener.local_addr().expect("listener addr should resolve");
+    let url = format!("http://{address}/object");
+    let (request_tx, request_rx) = mpsc::channel();
 
-        TestResponse {
-            status_line: "206 Partial Content",
-            headers: vec![
-                ("Content-Length".to_string(), ranged.len().to_string()),
-                (
-                    "Content-Range".to_string(),
-                    format!("bytes {start}-{end}/{}", body.len()),
-                ),
-            ],
-            body: ranged,
+    let server = thread::spawn(move || {
+        for index in 0..request_count {
+            let (mut stream, _) = listener.accept().expect("test client should connect");
+            let request = read_request(&mut stream);
+            let response = handler(&request, index);
+            write_response(&mut stream, response);
+            let _ = request_tx.send(request);
         }
-    } else {
-        TestResponse {
+    });
+
+    (url, request_rx, server)
+}
+
+fn full_or_ranged_response(request: &CapturedRequest, body: &[u8]) -> TestResponse {
+    let Some(range_header) = request.headers.get("range") else {
+        return TestResponse {
             status_line: "200 OK",
             headers: vec![("Content-Length".to_string(), body.len().to_string())],
             body: body.to_vec(),
-        }
+        };
+    };
+
+    let (start, end) = resolve_range(range_header, body.len());
+    if start > end || end >= body.len() {
+        return TestResponse {
+            status_line: "416 Range Not Satisfiable",
+            headers: vec![
+                ("Content-Length".to_string(), "0".to_string()),
+                (
+                    "Content-Range".to_string(),
+                    format!("bytes */{}", body.len()),
+                ),
+            ],
+            body: Vec::new(),
+        };
     }
+
+    let ranged = body[start..=end].to_vec();
+    TestResponse {
+        status_line: "206 Partial Content",
+        headers: vec![
+            ("Content-Length".to_string(), ranged.len().to_string()),
+            (
+                "Content-Range".to_string(),
+                format!("bytes {start}-{end}/{}", body.len()),
+            ),
+        ],
+        body: ranged,
+    }
+}
+
+fn resolve_range(range_header: &str, object_len: usize) -> (usize, usize) {
+    let range = range_header
+        .strip_prefix("bytes=")
+        .expect("test server expects byte ranges");
+
+    if let Some(suffix) = range.strip_prefix('-') {
+        let suffix_len = suffix.parse::<usize>().expect("suffix length should parse");
+        let start = object_len.saturating_sub(suffix_len);
+        return (start, object_len.saturating_sub(1));
+    }
+
+    let (start, end) = range
+        .split_once('-')
+        .expect("range should contain a start/end separator");
+    let start = start.parse::<usize>().expect("range start should parse");
+
+    if end.is_empty() {
+        return (start, object_len.saturating_sub(1));
+    }
+
+    let end = end.parse::<usize>().expect("range end should parse");
+    (start, end)
+}
+
+fn parquet_like_object(prefix: &[u8], footer: &[u8]) -> Vec<u8> {
+    let mut object = prefix.to_vec();
+    object.extend_from_slice(footer);
+    object.extend_from_slice(&(footer.len() as u32).to_le_bytes());
+    object.extend_from_slice(PARQUET_MAGIC);
+    object
 }

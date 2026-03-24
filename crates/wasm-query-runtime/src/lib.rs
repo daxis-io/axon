@@ -1,8 +1,14 @@
-//! Constrained browser runtime envelope for future DataFusion WASM integration.
+//! Browser-safe runtime envelope with Parquet footer bootstrap for future DataFusion WASM
+//! integration.
+//!
+//! The current in-repo surface validates browser-safe object sources, preserves a tiny generic
+//! probe path above HTTP range reads, and can bootstrap bounded raw Parquet footer bytes without
+//! starting DataFusion registration or browser SQL execution.
 
 use std::net::IpAddr;
 use std::time::Duration;
 
+use bytes::Bytes;
 use query_contract::{
     CapabilityKey, CapabilityState, ExecutionTarget, FallbackReason, QueryError, QueryErrorCode,
 };
@@ -12,6 +18,9 @@ use wasm_http_object_store::{HttpByteRange, HttpRangeReadResult, HttpRangeReader
 pub const OWNER: &str = "Runtime / engine team";
 pub const RESPONSIBILITY: &str = "Browser-safe query execution for the supported SQL envelope.";
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
+const MAX_PARQUET_FOOTER_SIZE_BYTES: u64 = 16 * 1024 * 1024;
+const PARQUET_TRAILER_SIZE_BYTES: u64 = 8;
+const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
 
 pub fn runtime_target() -> ExecutionTarget {
     ExecutionTarget::BrowserWasm
@@ -113,6 +122,30 @@ pub struct BrowserRuntimeSession {
     reader: HttpRangeReader,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserParquetFooter {
+    object_size_bytes: u64,
+    footer_length_bytes: u32,
+    footer_bytes: Bytes,
+}
+
+impl BrowserParquetFooter {
+    /// Total size of the source object in bytes, as derived from the Parquet trailer read.
+    pub fn object_size_bytes(&self) -> u64 {
+        self.object_size_bytes
+    }
+
+    /// Footer length encoded in the Parquet trailer.
+    pub fn footer_length_bytes(&self) -> u32 {
+        self.footer_length_bytes
+    }
+
+    /// Raw footer bytes returned by the exact bounded footer range read.
+    pub fn footer_bytes(&self) -> &[u8] {
+        self.footer_bytes.as_ref()
+    }
+}
+
 impl BrowserRuntimeSession {
     pub fn new(config: BrowserRuntimeConfig) -> Result<Self, QueryError> {
         Self::with_reader(config, HttpRangeReader::new())
@@ -132,6 +165,70 @@ impl BrowserRuntimeSession {
     }
 
     pub async fn probe(
+        &self,
+        source: &BrowserObjectSource,
+        range: HttpByteRange,
+    ) -> Result<HttpRangeReadResult, QueryError> {
+        self.read_range(source, range).await
+    }
+
+    /// Bootstraps the raw Parquet footer by reading the trailing trailer and then the exact footer
+    /// byte range.
+    ///
+    /// The browser runtime rejects oversized footer declarations and fails if the second range
+    /// read no longer matches the object metadata returned by the trailer read.
+    pub async fn read_parquet_footer(
+        &self,
+        source: &BrowserObjectSource,
+    ) -> Result<BrowserParquetFooter, QueryError> {
+        let trailer = self
+            .read_range(
+                source,
+                HttpByteRange::Suffix {
+                    length: PARQUET_TRAILER_SIZE_BYTES,
+                },
+            )
+            .await?;
+        let (object_size_bytes, footer_length_bytes) = parse_parquet_footer_trailer(&trailer)?;
+        let footer_length_bytes_u64 = u64::from(footer_length_bytes);
+        if footer_length_bytes_u64 > MAX_PARQUET_FOOTER_SIZE_BYTES {
+            return Err(parquet_protocol_error(format!(
+                "parquet footer bootstrap for '{}' declared a footer length of {} bytes, which exceeds the browser runtime cap of {} bytes",
+                trailer.metadata.url,
+                footer_length_bytes,
+                MAX_PARQUET_FOOTER_SIZE_BYTES,
+            )));
+        }
+        let footer_offset = object_size_bytes
+            .checked_sub(PARQUET_TRAILER_SIZE_BYTES)
+            .and_then(|offset| offset.checked_sub(footer_length_bytes_u64))
+            .ok_or_else(|| {
+                parquet_protocol_error(format!(
+                    "parquet footer bootstrap for '{}' declared a footer length of {} bytes, which exceeds the object size of {} bytes",
+                    trailer.metadata.url,
+                    footer_length_bytes,
+                    object_size_bytes,
+                ))
+            })?;
+        let footer = self
+            .read_range(
+                source,
+                HttpByteRange::Bounded {
+                    offset: footer_offset,
+                    length: footer_length_bytes_u64,
+                },
+            )
+            .await?;
+        validate_parquet_footer_read_consistency(&trailer, &footer, object_size_bytes)?;
+
+        Ok(BrowserParquetFooter {
+            object_size_bytes,
+            footer_length_bytes,
+            footer_bytes: footer.bytes,
+        })
+    }
+
+    async fn read_range(
         &self,
         source: &BrowserObjectSource,
         range: HttpByteRange,
@@ -204,6 +301,111 @@ fn redacted_url(url: &Url) -> String {
     redacted.set_query(None);
     redacted.set_fragment(None);
     redacted.to_string()
+}
+
+fn parse_parquet_footer_trailer(trailer: &HttpRangeReadResult) -> Result<(u64, u32), QueryError> {
+    let object_size_bytes = trailer.metadata.size_bytes.ok_or_else(|| {
+        parquet_protocol_error(format!(
+            "parquet footer bootstrap for '{}' did not return object size metadata",
+            trailer.metadata.url,
+        ))
+    })?;
+
+    if object_size_bytes < PARQUET_TRAILER_SIZE_BYTES {
+        return Err(parquet_protocol_error(format!(
+            "parquet footer bootstrap for '{}' requires at least {} bytes, but the object size was {} bytes",
+            trailer.metadata.url,
+            PARQUET_TRAILER_SIZE_BYTES,
+            object_size_bytes,
+        )));
+    }
+
+    if trailer.bytes.len() != PARQUET_TRAILER_SIZE_BYTES as usize {
+        return Err(parquet_protocol_error(format!(
+            "parquet footer bootstrap for '{}' expected {} trailer bytes, but received {} bytes",
+            trailer.metadata.url,
+            PARQUET_TRAILER_SIZE_BYTES,
+            trailer.bytes.len(),
+        )));
+    }
+
+    if &trailer.bytes[4..8] != PARQUET_MAGIC {
+        return Err(parquet_protocol_error(format!(
+            "parquet footer bootstrap for '{}' did not find trailing PAR1 magic",
+            trailer.metadata.url,
+        )));
+    }
+
+    let footer_length_bytes = u32::from_le_bytes(
+        trailer.bytes[..4]
+            .try_into()
+            .expect("footer trailer length"),
+    );
+    if footer_length_bytes == 0 {
+        return Err(parquet_protocol_error(format!(
+            "parquet footer bootstrap for '{}' requires a non-zero footer length",
+            trailer.metadata.url,
+        )));
+    }
+
+    let max_footer_length = object_size_bytes
+        .checked_sub(PARQUET_TRAILER_SIZE_BYTES)
+        .expect("objects smaller than the parquet trailer should already be rejected");
+    if u64::from(footer_length_bytes) > max_footer_length {
+        return Err(parquet_protocol_error(format!(
+            "parquet footer bootstrap for '{}' declared a footer length of {} bytes, which exceeds the available {} bytes before the trailer",
+            trailer.metadata.url,
+            footer_length_bytes,
+            max_footer_length,
+        )));
+    }
+
+    Ok((object_size_bytes, footer_length_bytes))
+}
+
+fn validate_parquet_footer_read_consistency(
+    trailer: &HttpRangeReadResult,
+    footer: &HttpRangeReadResult,
+    expected_object_size_bytes: u64,
+) -> Result<(), QueryError> {
+    let footer_object_size_bytes = footer.metadata.size_bytes.ok_or_else(|| {
+        parquet_protocol_error(format!(
+            "parquet footer bootstrap for '{}' did not return object size metadata on the footer read",
+            footer.metadata.url,
+        ))
+    })?;
+    if footer_object_size_bytes != expected_object_size_bytes {
+        return Err(parquet_protocol_error(format!(
+            "parquet footer bootstrap for '{}' observed object size {} bytes on the trailer read but {} bytes on the footer read",
+            trailer.metadata.url,
+            expected_object_size_bytes,
+            footer_object_size_bytes,
+        )));
+    }
+
+    match (&trailer.metadata.etag, &footer.metadata.etag) {
+        (Some(trailer_etag), Some(footer_etag)) if trailer_etag != footer_etag => {
+            Err(parquet_protocol_error(format!(
+                "parquet footer bootstrap for '{}' observed entity tag {} on the trailer read but {} on the footer read",
+                trailer.metadata.url,
+                trailer_etag,
+                footer_etag,
+            )))
+        }
+        (Some(_), None) | (None, Some(_)) => Err(parquet_protocol_error(format!(
+            "parquet footer bootstrap for '{}' observed entity-tag metadata on only one of the two footer bootstrap reads",
+            trailer.metadata.url,
+        ))),
+        _ => Ok(()),
+    }
+}
+
+fn parquet_protocol_error(message: impl Into<String>) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::ObjectStoreProtocol,
+        message,
+        runtime_target(),
+    )
 }
 
 #[cfg(test)]

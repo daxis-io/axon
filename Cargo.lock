@@ -4164,6 +4164,7 @@ dependencies = [
 name = "wasm-query-runtime"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "query-contract",
  "reqwest",
  "tokio",
