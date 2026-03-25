@@ -7,7 +7,7 @@ use query_contract::{
     QueryErrorCode, ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 use support::TestTableFixture;
-use wasm_query_runtime::BrowserObjectSource;
+use wasm_query_runtime::{BrowserObjectSource, BrowserRuntimeConfig, BrowserRuntimeSession};
 
 #[test]
 fn attach_browser_http_urls_maps_latest_snapshot_files_with_stable_order() {
@@ -221,6 +221,51 @@ fn attach_browser_http_urls_produces_https_urls_accepted_by_browser_object_sourc
         let source =
             BrowserObjectSource::from_url(&file.url).expect("https urls should construct sources");
         assert_eq!(source.url(), file.url);
+    }
+}
+
+#[test]
+fn browser_http_descriptors_materialize_into_runtime_owned_object_sources() {
+    let fixture = TestTableFixture::create_partitioned();
+    let resolved_snapshot = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect("latest snapshot should resolve");
+    let object_urls_by_path = build_url_map(&resolved_snapshot, |path| {
+        format!("https://signed.example.test/runtime/{path}?sig=secret")
+    });
+    let browser_snapshot =
+        attach_browser_http_urls(resolved_snapshot.clone(), &object_urls_by_path)
+            .expect("browser http urls should attach");
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default browser runtime config should be supported");
+
+    let materialized = session
+        .materialize_snapshot(&browser_snapshot)
+        .expect("attached browser descriptors should materialize");
+
+    assert_eq!(materialized.table_uri(), browser_snapshot.table_uri);
+    assert_eq!(
+        materialized.snapshot_version(),
+        browser_snapshot.snapshot_version
+    );
+    assert_eq!(
+        materialized.active_files().len(),
+        browser_snapshot.active_files.len()
+    );
+    for (materialized_file, browser_file) in materialized
+        .active_files()
+        .iter()
+        .zip(browser_snapshot.active_files.iter())
+    {
+        assert_eq!(materialized_file.path(), browser_file.path);
+        assert_eq!(materialized_file.size_bytes(), browser_file.size_bytes);
+        assert_eq!(
+            materialized_file.partition_values(),
+            &browser_file.partition_values
+        );
+        assert_eq!(materialized_file.object_source().url(), browser_file.url);
     }
 }
 

@@ -1,6 +1,8 @@
 #![cfg(target_arch = "wasm32")]
 
-use query_contract::{ExecutionTarget, QueryErrorCode};
+use query_contract::{
+    BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget, QueryErrorCode,
+};
 use wasm_bindgen_test::wasm_bindgen_test;
 use wasm_query_runtime::{
     runtime_target, BrowserObjectSource, BrowserRuntimeConfig, BrowserRuntimeSession,
@@ -36,4 +38,55 @@ fn parquet_footer_api_surface_constructs_a_future_in_wasm() {
 
     let footer_read = session.read_parquet_footer(&source);
     drop(footer_read);
+}
+
+#[wasm_bindgen_test]
+fn browser_runtime_materializes_https_descriptors_in_wasm() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported in wasm");
+    let descriptor = BrowserHttpSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        snapshot_version: 4,
+        active_files: vec![BrowserHttpFileDescriptor {
+            path: "part-000.parquet".to_string(),
+            url: "https://example.com/object".to_string(),
+            size_bytes: 128,
+            partition_values: std::collections::BTreeMap::new(),
+        }],
+    };
+
+    let materialized = session
+        .materialize_snapshot(&descriptor)
+        .expect("https descriptors should materialize in wasm");
+
+    assert_eq!(materialized.table_uri(), descriptor.table_uri);
+    assert_eq!(materialized.snapshot_version(), descriptor.snapshot_version);
+    assert_eq!(materialized.active_files().len(), 1);
+    assert_eq!(
+        materialized.active_files()[0].object_source().url(),
+        descriptor.active_files[0].url
+    );
+}
+
+#[wasm_bindgen_test]
+fn materialize_snapshot_rejects_loopback_http_in_wasm() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported in wasm");
+    let descriptor = BrowserHttpSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        snapshot_version: 4,
+        active_files: vec![BrowserHttpFileDescriptor {
+            path: "part-000.parquet".to_string(),
+            url: "http://127.0.0.1:8080/object".to_string(),
+            size_bytes: 128,
+            partition_values: std::collections::BTreeMap::new(),
+        }],
+    };
+
+    let error = session
+        .materialize_snapshot(&descriptor)
+        .expect_err("loopback HTTP should be rejected in wasm");
+
+    assert_eq!(error.code, QueryErrorCode::SecurityPolicyViolation);
+    assert_eq!(error.target, ExecutionTarget::BrowserWasm);
 }

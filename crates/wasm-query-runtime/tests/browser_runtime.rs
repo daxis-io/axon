@@ -8,7 +8,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use query_contract::{
-    CapabilityKey, CapabilityState, ExecutionTarget, FallbackReason, QueryErrorCode,
+    BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey, CapabilityState,
+    ExecutionTarget, FallbackReason, QueryErrorCode,
 };
 use wasm_http_object_store::{HttpByteRange, HttpRangeReader};
 use wasm_query_runtime::{
@@ -33,6 +34,76 @@ fn https_object_sources_are_constructible() {
         .expect("https object sources should be supported");
 
     assert_eq!(source.url(), "https://example.com/object");
+}
+
+#[test]
+fn materialize_snapshot_preserves_descriptor_metadata_and_file_order() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let descriptor = BrowserHttpSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        snapshot_version: 7,
+        active_files: vec![
+            BrowserHttpFileDescriptor {
+                path: "z-last.parquet".to_string(),
+                url: "https://example.com/z-last.parquet".to_string(),
+                size_bytes: 333,
+                partition_values: BTreeMap::from([("category".to_string(), Some("z".to_string()))]),
+            },
+            BrowserHttpFileDescriptor {
+                path: "a-first.parquet".to_string(),
+                url: "https://example.com/a-first.parquet".to_string(),
+                size_bytes: 111,
+                partition_values: BTreeMap::from([
+                    ("category".to_string(), Some("a".to_string())),
+                    ("region".to_string(), None),
+                ]),
+            },
+        ],
+    };
+
+    let materialized = session
+        .materialize_snapshot(&descriptor)
+        .expect("https descriptors should materialize");
+
+    assert_eq!(materialized.table_uri(), descriptor.table_uri);
+    assert_eq!(materialized.snapshot_version(), descriptor.snapshot_version);
+    assert_eq!(
+        materialized.active_files().len(),
+        descriptor.active_files.len()
+    );
+    for (materialized_file, descriptor_file) in materialized
+        .active_files()
+        .iter()
+        .zip(descriptor.active_files.iter())
+    {
+        assert_eq!(materialized_file.path(), descriptor_file.path);
+        assert_eq!(materialized_file.size_bytes(), descriptor_file.size_bytes);
+        assert_eq!(
+            materialized_file.partition_values(),
+            &descriptor_file.partition_values
+        );
+        assert_eq!(materialized_file.object_source().url(), descriptor_file.url);
+    }
+}
+
+#[test]
+fn materialize_snapshot_allows_empty_active_file_lists() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let descriptor = BrowserHttpSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/empty_table".to_string(),
+        snapshot_version: 3,
+        active_files: Vec::new(),
+    };
+
+    let materialized = session
+        .materialize_snapshot(&descriptor)
+        .expect("empty descriptors should materialize");
+
+    assert_eq!(materialized.table_uri(), descriptor.table_uri);
+    assert_eq!(materialized.snapshot_version(), descriptor.snapshot_version);
+    assert!(materialized.active_files().is_empty());
 }
 
 #[test]
@@ -119,6 +190,113 @@ fn unsupported_object_source_schemes_are_rejected() {
 }
 
 #[test]
+fn materialize_snapshot_rejects_duplicate_paths() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let duplicate_path = "category=A/part-000.parquet".to_string();
+    let descriptor = BrowserHttpSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        snapshot_version: 12,
+        active_files: vec![
+            BrowserHttpFileDescriptor {
+                path: duplicate_path.clone(),
+                url: "https://example.com/one.parquet".to_string(),
+                size_bytes: 128,
+                partition_values: BTreeMap::new(),
+            },
+            BrowserHttpFileDescriptor {
+                path: duplicate_path.clone(),
+                url: "https://example.com/two.parquet".to_string(),
+                size_bytes: 256,
+                partition_values: BTreeMap::new(),
+            },
+        ],
+    };
+
+    let error = session
+        .materialize_snapshot(&descriptor)
+        .expect_err("duplicate paths should fail");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains(&duplicate_path));
+}
+
+#[test]
+fn materialize_snapshot_rejects_invalid_url_syntax_without_leaking_query_or_fragment() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let descriptor = BrowserHttpSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        snapshot_version: 1,
+        active_files: vec![BrowserHttpFileDescriptor {
+            path: "part-000.parquet".to_string(),
+            url: "https://signed example.test/object?sig=super-secret#fragment".to_string(),
+            size_bytes: 128,
+            partition_values: BTreeMap::new(),
+        }],
+    };
+
+    let error = session
+        .materialize_snapshot(&descriptor)
+        .expect_err("invalid URL syntax should fail");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("https://signed example.test/object"));
+    assert!(!error.message.contains("super-secret"));
+    assert!(!error.message.contains("fragment"));
+}
+
+#[test]
+fn materialize_snapshot_rejects_unsupported_schemes_without_leaking_query_or_fragment() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let descriptor = BrowserHttpSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        snapshot_version: 1,
+        active_files: vec![BrowserHttpFileDescriptor {
+            path: "part-000.parquet".to_string(),
+            url: "ftp://signed.example.test/object?sig=super-secret#fragment".to_string(),
+            size_bytes: 128,
+            partition_values: BTreeMap::new(),
+        }],
+    };
+
+    let error = session
+        .materialize_snapshot(&descriptor)
+        .expect_err("unsupported schemes should fail");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("ftp://signed.example.test/object"));
+    assert!(!error.message.contains("super-secret"));
+    assert!(!error.message.contains("fragment"));
+}
+
+#[test]
+fn materialize_snapshot_rejects_non_loopback_plain_http_urls() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let descriptor = BrowserHttpSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        snapshot_version: 1,
+        active_files: vec![BrowserHttpFileDescriptor {
+            path: "part-000.parquet".to_string(),
+            url: "http://example.com/object?sig=super-secret#fragment".to_string(),
+            size_bytes: 128,
+            partition_values: BTreeMap::new(),
+        }],
+    };
+
+    let error = session
+        .materialize_snapshot(&descriptor)
+        .expect_err("non-loopback plain HTTP should fail");
+
+    assert_eq!(error.code, QueryErrorCode::SecurityPolicyViolation);
+    assert!(error.message.contains("http://example.com/object"));
+    assert!(!error.message.contains("super-secret"));
+    assert!(!error.message.contains("fragment"));
+}
+
+#[test]
 fn sessions_can_probe_loopback_http_sources_in_host_tests_through_an_injected_range_reader() {
     let (url, requests, server) =
         spawn_test_server(|request| full_or_ranged_response(request, b"abcdefghij"));
@@ -143,6 +321,32 @@ fn sessions_can_probe_loopback_http_sources_in_host_tests_through_an_injected_ra
     assert_eq!(result.metadata.url, url);
     assert_eq!(result.metadata.size_bytes, Some(10));
     assert_eq!(result.bytes.as_ref(), b"cdef");
+}
+
+#[test]
+fn materialize_snapshot_rejects_loopback_http_even_in_host_tests() {
+    let descriptor = BrowserHttpSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        snapshot_version: 9,
+        active_files: vec![BrowserHttpFileDescriptor {
+            path: "part-000.parquet".to_string(),
+            url: "http://127.0.0.1:8787/object?sig=super-secret#fragment".to_string(),
+            size_bytes: 10,
+            partition_values: BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
+        }],
+    };
+    let session =
+        BrowserRuntimeSession::with_reader(BrowserRuntimeConfig::default(), HttpRangeReader::new())
+            .expect("default config should be supported");
+
+    let error = session
+        .materialize_snapshot(&descriptor)
+        .expect_err("browser-facing descriptors should remain HTTPS-only");
+
+    assert_eq!(error.code, QueryErrorCode::SecurityPolicyViolation);
+    assert!(error.message.contains("http://127.0.0.1:8787/object"));
+    assert!(!error.message.contains("super-secret"));
+    assert!(!error.message.contains("fragment"));
 }
 
 #[test]

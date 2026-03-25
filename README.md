@@ -29,6 +29,7 @@ cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --tar
 - `BrowserRuntimeConfig` validates the constrained browser envelope before any object access is attempted, including a nonzero request timeout for runtime-owned readers.
 - `BrowserRuntimeSession::new(config)` constructs a runtime handle with runtime-owned HTTP client timeout policy, while `BrowserRuntimeSession::with_reader(config, reader)` remains available for injected host-side readers and tests.
 - `BrowserObjectSource::from_url(url)` is the typed browser object source boundary for URL-backed access and only accepts HTTPS object URLs in production browser mode, with loopback-only plain HTTP reserved for native host-side tests.
+- `BrowserRuntimeSession::materialize_snapshot(&descriptor)` converts a shared HTTPS-only `BrowserHttpSnapshotDescriptor` into runtime-owned validated object sources while preserving file order and metadata without performing any network I/O.
 - `BrowserRuntimeSession::probe(&source, range)` delegates exact range reads to `crates/wasm-http-object-store` without reimplementing HTTP logic.
 - The runtime rejects multi-partition execution as a structured native fallback, rejects unsupported object URL schemes during source construction, rejects cloud credentials as a security policy violation, and allows plain HTTP only for loopback host-side tests.
 
@@ -40,7 +41,7 @@ cargo test -p wasm-query-runtime --locked
 cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --locked --test wasm_smoke
 ```
 
-This slice is intentionally small: it does not execute browser SQL, register tables with DataFusion, expose `browser-sdk`, orchestrate `query-router`, or implement any `services/query-api` behavior.
+This slice is intentionally small: it does not register tables with DataFusion, execute browser SQL, expose `browser-sdk`, orchestrate `query-router`, or implement any `services/query-api` behavior.
 
 ## Native Runtime Slice
 
@@ -165,7 +166,7 @@ cargo test -p delta-runtime-support --locked
 cargo test -p delta-control-plane --locked
 ```
 
-Cross-crate handoff coverage in `crates/delta-control-plane/tests` checks the resolved `table_uri` / `snapshot_version` pair against `crates/native-query-runtime`, validates the descriptor's active-file metadata against the local fixture without changing `QueryRequest`, proves browser HTTP URL attachment preserves file order and metadata, proves invalid or duplicate browser URL inputs fail deterministically without leaking query strings, and confirms the resulting HTTPS descriptors are accepted by `crates/wasm-query-runtime::BrowserObjectSource`.
+Cross-crate handoff coverage in `crates/delta-control-plane/tests` checks the resolved `table_uri` / `snapshot_version` pair against `crates/native-query-runtime`, validates the descriptor's active-file metadata against the local fixture without changing `QueryRequest`, proves browser HTTP URL attachment preserves file order and metadata, proves invalid or duplicate browser URL inputs fail deterministically without leaking query strings, and confirms the resulting HTTPS descriptors materialize cleanly into `crates/wasm-query-runtime` runtime-owned object sources.
 Authenticated HTTP service work remains out of repo: there is still no `services/query-api` directory here, so signed URL issuance, proxy reads, audit logging, request correlation, and CORS/origin validation remain external blockers rather than shipped repository scope.
 
 ## HTTP Range-Read Slice

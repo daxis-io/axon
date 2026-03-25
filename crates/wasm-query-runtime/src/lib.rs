@@ -2,15 +2,17 @@
 //! integration.
 //!
 //! The current in-repo surface validates browser-safe object sources, preserves a tiny generic
-//! probe path above HTTP range reads, and can bootstrap bounded raw Parquet footer bytes without
+//! probe path above HTTP range reads, can materialize browser HTTP snapshot descriptors into
+//! runtime-owned object sources, and can bootstrap bounded raw Parquet footer bytes without
 //! starting DataFusion registration or browser SQL execution.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use bytes::Bytes;
 use query_contract::{
-    validate_browser_object_url, BrowserObjectUrlPolicy, CapabilityKey, CapabilityState,
-    ExecutionTarget, FallbackReason, QueryError, QueryErrorCode,
+    validate_browser_object_url, BrowserHttpSnapshotDescriptor, BrowserObjectUrlPolicy,
+    CapabilityKey, CapabilityState, ExecutionTarget, FallbackReason, QueryError, QueryErrorCode,
 };
 use reqwest::Url;
 use wasm_http_object_store::{HttpByteRange, HttpRangeReadResult, HttpRangeReader};
@@ -120,6 +122,55 @@ impl BrowserObjectSource {
     }
 }
 
+/// Runtime-owned file metadata derived from a validated browser HTTP snapshot descriptor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaterializedBrowserFile {
+    path: String,
+    size_bytes: u64,
+    partition_values: BTreeMap<String, Option<String>>,
+    object_source: BrowserObjectSource,
+}
+
+impl MaterializedBrowserFile {
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn size_bytes(&self) -> u64 {
+        self.size_bytes
+    }
+
+    pub fn partition_values(&self) -> &BTreeMap<String, Option<String>> {
+        &self.partition_values
+    }
+
+    pub fn object_source(&self) -> &BrowserObjectSource {
+        &self.object_source
+    }
+}
+
+/// Runtime-owned snapshot metadata derived from a validated browser HTTP snapshot descriptor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaterializedBrowserSnapshot {
+    table_uri: String,
+    snapshot_version: i64,
+    active_files: Vec<MaterializedBrowserFile>,
+}
+
+impl MaterializedBrowserSnapshot {
+    pub fn table_uri(&self) -> &str {
+        &self.table_uri
+    }
+
+    pub fn snapshot_version(&self) -> i64 {
+        self.snapshot_version
+    }
+
+    pub fn active_files(&self) -> &[MaterializedBrowserFile] {
+        &self.active_files
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BrowserRuntimeSession {
     config: BrowserRuntimeConfig,
@@ -166,6 +217,42 @@ impl BrowserRuntimeSession {
 
     pub fn config(&self) -> &BrowserRuntimeConfig {
         &self.config
+    }
+
+    /// Validates and materializes a shared browser HTTP snapshot descriptor without performing any
+    /// network I/O.
+    ///
+    /// File order and metadata are preserved exactly, but duplicate paths and non-HTTPS browser
+    /// object URLs are rejected to keep the runtime aligned with the browser-facing descriptor
+    /// contract.
+    pub fn materialize_snapshot(
+        &self,
+        descriptor: &BrowserHttpSnapshotDescriptor,
+    ) -> Result<MaterializedBrowserSnapshot, QueryError> {
+        validate_unique_descriptor_paths(&descriptor.active_files)?;
+
+        let active_files = descriptor
+            .active_files
+            .iter()
+            .map(|file| {
+                let object_source = BrowserObjectSource {
+                    url: validate_descriptor_source_url(&file.url)?,
+                };
+
+                Ok(MaterializedBrowserFile {
+                    path: file.path.clone(),
+                    size_bytes: file.size_bytes,
+                    partition_values: file.partition_values.clone(),
+                    object_source,
+                })
+            })
+            .collect::<Result<Vec<_>, QueryError>>()?;
+
+        Ok(MaterializedBrowserSnapshot {
+            table_uri: descriptor.table_uri.clone(),
+            snapshot_version: descriptor.snapshot_version,
+            active_files,
+        })
     }
 
     pub async fn probe(
@@ -254,6 +341,45 @@ fn validate_source_url(url: &str) -> Result<Url, QueryError> {
         BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTests,
         "browser object URL",
     )
+}
+
+fn validate_descriptor_source_url(url: &str) -> Result<Url, QueryError> {
+    validate_browser_object_url(
+        url,
+        runtime_target(),
+        BrowserObjectUrlPolicy::HttpsOnly,
+        "browser HTTP object URL",
+    )
+}
+
+fn validate_unique_descriptor_paths(
+    active_files: &[query_contract::BrowserHttpFileDescriptor],
+) -> Result<(), QueryError> {
+    let mut paths = BTreeSet::new();
+    let mut duplicate_paths = BTreeSet::new();
+
+    for file in active_files {
+        if !paths.insert(file.path.clone()) {
+            duplicate_paths.insert(file.path.clone());
+        }
+    }
+
+    if duplicate_paths.is_empty() {
+        return Ok(());
+    }
+
+    Err(QueryError::new(
+        QueryErrorCode::InvalidRequest,
+        format!(
+            "browser HTTP snapshot descriptor contained duplicate paths [{}]",
+            duplicate_paths
+                .iter()
+                .map(|path| format!("'{path}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        runtime_target(),
+    ))
 }
 
 fn parse_parquet_footer_trailer(trailer: &HttpRangeReadResult) -> Result<(u64, u32), QueryError> {
