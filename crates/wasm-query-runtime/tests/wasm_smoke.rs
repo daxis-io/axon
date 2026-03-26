@@ -5,7 +5,9 @@ use query_contract::{
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 use wasm_query_runtime::{
-    runtime_target, BrowserObjectSource, BrowserRuntimeConfig, BrowserRuntimeSession,
+    runtime_target, BootstrappedBrowserSnapshot, BrowserObjectSource, BrowserParquetField,
+    BrowserParquetFileMetadata, BrowserRuntimeConfig, BrowserRuntimeSession,
+    MaterializedBrowserFile, MaterializedBrowserSnapshot,
 };
 
 #[wasm_bindgen_test]
@@ -38,6 +40,60 @@ fn parquet_footer_api_surface_constructs_a_future_in_wasm() {
 
     let footer_read = session.read_parquet_footer(&source);
     drop(footer_read);
+}
+
+#[wasm_bindgen_test]
+fn preflight_api_surface_constructs_futures_and_summaries_in_wasm() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported in wasm");
+    let source = BrowserObjectSource::from_url("https://example.com/object")
+        .expect("https object sources should be supported in wasm");
+    let file = MaterializedBrowserFile::new(
+        "part-000.parquet",
+        128,
+        std::collections::BTreeMap::new(),
+        source,
+    );
+    let snapshot =
+        MaterializedBrowserSnapshot::new("gs://axon-fixtures/sample_table", 4, vec![file.clone()])
+            .expect("duplicate-free snapshots should construct in wasm");
+    let metadata_read = session.read_parquet_metadata_for_file(&file);
+    let snapshot_bootstrap = session.bootstrap_snapshot_metadata(&snapshot);
+    let summarized = BootstrappedBrowserSnapshot {
+        table_uri: snapshot.table_uri().to_string(),
+        snapshot_version: snapshot.snapshot_version(),
+        active_files: vec![wasm_query_runtime::BootstrappedBrowserFile {
+            path: file.path().to_string(),
+            size_bytes: file.size_bytes(),
+            partition_values: file.partition_values().clone(),
+            metadata: BrowserParquetFileMetadata {
+                object_size_bytes: 128,
+                footer_length_bytes: 16,
+                row_group_count: 0,
+                row_count: 0,
+                fields: vec![BrowserParquetField {
+                    name: "id".to_string(),
+                    physical_type: "INT32".to_string(),
+                    logical_type: None,
+                    converted_type: None,
+                    repetition: "REQUIRED".to_string(),
+                    nullable: false,
+                    max_definition_level: 0,
+                    max_repetition_level: 0,
+                    type_length: None,
+                    precision: None,
+                    scale: None,
+                }],
+            },
+        }],
+    }
+    .summarize()
+    .expect("uniform synthetic snapshots should summarize in wasm");
+
+    drop(metadata_read);
+    drop(snapshot_bootstrap);
+    assert_eq!(summarized.file_count, 1);
+    assert!(summarized.schema.partition_columns.is_empty());
 }
 
 #[wasm_bindgen_test]

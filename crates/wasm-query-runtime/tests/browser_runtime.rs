@@ -13,8 +13,9 @@ use query_contract::{
 };
 use wasm_http_object_store::{HttpByteRange, HttpRangeReader};
 use wasm_query_runtime::{
-    runtime_target, BrowserObjectAccessMode, BrowserObjectSource, BrowserRuntimeConfig,
-    BrowserRuntimeSession,
+    runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserObjectAccessMode,
+    BrowserObjectSource, BrowserParquetField, BrowserParquetFileMetadata, BrowserRuntimeConfig,
+    BrowserRuntimeSession, MaterializedBrowserFile,
 };
 
 const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
@@ -165,6 +166,27 @@ fn request_timeouts_must_be_positive() {
     assert_eq!(error.code, QueryErrorCode::InvalidRequest);
     assert_eq!(error.fallback_reason, None);
     assert_eq!(error.target, ExecutionTarget::BrowserWasm);
+}
+
+#[test]
+fn snapshot_preflight_limits_must_be_positive() {
+    let concurrency_error = BrowserRuntimeSession::new(BrowserRuntimeConfig {
+        snapshot_preflight_max_concurrency: 0,
+        ..BrowserRuntimeConfig::default()
+    })
+    .expect_err("zero snapshot preflight concurrency should be rejected");
+    assert_eq!(concurrency_error.code, QueryErrorCode::InvalidRequest);
+    assert_eq!(concurrency_error.fallback_reason, None);
+    assert_eq!(concurrency_error.target, ExecutionTarget::BrowserWasm);
+
+    let timeout_error = BrowserRuntimeSession::new(BrowserRuntimeConfig {
+        snapshot_preflight_timeout_ms: 0,
+        ..BrowserRuntimeConfig::default()
+    })
+    .expect_err("zero snapshot preflight timeout should be rejected");
+    assert_eq!(timeout_error.code, QueryErrorCode::InvalidRequest);
+    assert_eq!(timeout_error.fallback_reason, None);
+    assert_eq!(timeout_error.target, ExecutionTarget::BrowserWasm);
 }
 
 #[test]
@@ -464,6 +486,299 @@ fn read_parquet_footer_bootstraps_raw_footer_bytes_from_loopback_http() {
     );
     assert_eq!(result.footer_length_bytes(), footer.len() as u32);
     assert_eq!(result.footer_bytes(), footer);
+}
+
+#[test]
+fn read_parquet_footer_for_file_bootstraps_raw_footer_bytes_from_loopback_http() {
+    let footer = b"serialized-parquet-footer";
+    let prefix = b"row-group-bytes";
+    let object = parquet_like_object(prefix, footer);
+    let object_for_server = object.clone();
+    let (url, _, server) = spawn_multi_request_server(2, move |request, _| {
+        full_or_ranged_response(request, &object_for_server)
+    });
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let file = MaterializedBrowserFile::new(
+        "part-000.parquet",
+        object.len() as u64,
+        BTreeMap::new(),
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests"),
+    );
+
+    let result = runtime()
+        .block_on(session.read_parquet_footer_for_file(&file))
+        .expect("file-driven footer bootstrap should succeed");
+
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(result.object_size_bytes(), file.size_bytes());
+    assert_eq!(result.footer_length_bytes(), footer.len() as u32);
+    assert_eq!(result.footer_bytes(), footer);
+}
+
+#[test]
+fn read_parquet_footer_for_file_rejects_descriptor_size_mismatches() {
+    let footer = b"serialized-parquet-footer";
+    let prefix = b"row-group-bytes";
+    let object = parquet_like_object(prefix, footer);
+    let object_for_server = object.clone();
+    let (url, _, server) = spawn_multi_request_server(2, move |request, _| {
+        full_or_ranged_response(request, &object_for_server)
+    });
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let file = MaterializedBrowserFile::new(
+        "part-000.parquet",
+        object.len() as u64 + 1,
+        BTreeMap::new(),
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests"),
+    );
+
+    let error = runtime()
+        .block_on(session.read_parquet_footer_for_file(&file))
+        .expect_err("descriptor size mismatches should fail");
+
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert!(error.message.contains(file.path()));
+}
+
+#[test]
+fn read_parquet_metadata_for_file_rejects_malformed_footer_metadata() {
+    let footer = b"not-a-valid-parquet-footer";
+    let object = parquet_like_object(b"row-group-bytes", footer);
+    let object_for_server = object.clone();
+    let (url, _, server) = spawn_multi_request_server(2, move |request, _| {
+        full_or_ranged_response(request, &object_for_server)
+    });
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let file = MaterializedBrowserFile::new(
+        "part-000.parquet",
+        object.len() as u64,
+        BTreeMap::new(),
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests"),
+    );
+
+    let error = runtime()
+        .block_on(session.read_parquet_metadata_for_file(&file))
+        .expect_err("malformed footer metadata should fail");
+
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert!(error.message.contains(file.path()));
+}
+
+#[test]
+fn validate_uniform_schema_rejects_mixed_file_field_layouts() {
+    let snapshot = BootstrappedBrowserSnapshot {
+        table_uri: "gs://axon-fixtures/mixed".to_string(),
+        snapshot_version: 5,
+        active_files: vec![
+            BootstrappedBrowserFile {
+                path: "part-000.parquet".to_string(),
+                size_bytes: 100,
+                partition_values: BTreeMap::new(),
+                metadata: BrowserParquetFileMetadata {
+                    object_size_bytes: 100,
+                    footer_length_bytes: 32,
+                    row_group_count: 1,
+                    row_count: 3,
+                    fields: vec![BrowserParquetField {
+                        name: "id".to_string(),
+                        physical_type: "INT32".to_string(),
+                        logical_type: None,
+                        converted_type: None,
+                        repetition: "REQUIRED".to_string(),
+                        nullable: false,
+                        max_definition_level: 0,
+                        max_repetition_level: 0,
+                        type_length: None,
+                        precision: None,
+                        scale: None,
+                    }],
+                },
+            },
+            BootstrappedBrowserFile {
+                path: "part-001.parquet".to_string(),
+                size_bytes: 120,
+                partition_values: BTreeMap::new(),
+                metadata: BrowserParquetFileMetadata {
+                    object_size_bytes: 120,
+                    footer_length_bytes: 40,
+                    row_group_count: 1,
+                    row_count: 4,
+                    fields: vec![BrowserParquetField {
+                        name: "id".to_string(),
+                        physical_type: "INT64".to_string(),
+                        logical_type: None,
+                        converted_type: None,
+                        repetition: "REQUIRED".to_string(),
+                        nullable: false,
+                        max_definition_level: 0,
+                        max_repetition_level: 0,
+                        type_length: None,
+                        precision: None,
+                        scale: None,
+                    }],
+                },
+            },
+        ],
+    };
+
+    let error = snapshot
+        .validate_uniform_schema()
+        .expect_err("mixed schemas should fail validation");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("part-001.parquet"));
+}
+
+#[test]
+fn validate_uniform_schema_rejects_mixed_logical_types_with_the_same_physical_type() {
+    let snapshot = BootstrappedBrowserSnapshot {
+        table_uri: "gs://axon-fixtures/mixed-logical".to_string(),
+        snapshot_version: 6,
+        active_files: vec![
+            BootstrappedBrowserFile {
+                path: "part-000.parquet".to_string(),
+                size_bytes: 100,
+                partition_values: BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
+                metadata: BrowserParquetFileMetadata {
+                    object_size_bytes: 100,
+                    footer_length_bytes: 32,
+                    row_group_count: 1,
+                    row_count: 3,
+                    fields: vec![BrowserParquetField {
+                        name: "name".to_string(),
+                        physical_type: "BYTE_ARRAY".to_string(),
+                        logical_type: Some("String".to_string()),
+                        converted_type: Some("UTF8".to_string()),
+                        repetition: "OPTIONAL".to_string(),
+                        nullable: true,
+                        max_definition_level: 1,
+                        max_repetition_level: 0,
+                        type_length: None,
+                        precision: None,
+                        scale: None,
+                    }],
+                },
+            },
+            BootstrappedBrowserFile {
+                path: "part-001.parquet".to_string(),
+                size_bytes: 120,
+                partition_values: BTreeMap::from([("category".to_string(), Some("B".to_string()))]),
+                metadata: BrowserParquetFileMetadata {
+                    object_size_bytes: 120,
+                    footer_length_bytes: 40,
+                    row_group_count: 1,
+                    row_count: 4,
+                    fields: vec![BrowserParquetField {
+                        name: "name".to_string(),
+                        physical_type: "BYTE_ARRAY".to_string(),
+                        logical_type: None,
+                        converted_type: None,
+                        repetition: "OPTIONAL".to_string(),
+                        nullable: true,
+                        max_definition_level: 1,
+                        max_repetition_level: 0,
+                        type_length: None,
+                        precision: None,
+                        scale: None,
+                    }],
+                },
+            },
+        ],
+    };
+
+    let error = snapshot
+        .validate_uniform_schema()
+        .expect_err("logical-type mismatches should fail validation");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("part-001.parquet"));
+}
+
+#[test]
+fn summarize_reports_sorted_partition_columns() {
+    let summary = BootstrappedBrowserSnapshot {
+        table_uri: "gs://axon-fixtures/partitioned".to_string(),
+        snapshot_version: 7,
+        active_files: vec![BootstrappedBrowserFile {
+            path: "part-000.parquet".to_string(),
+            size_bytes: 100,
+            partition_values: BTreeMap::from([
+                ("region".to_string(), Some("us-east-1".to_string())),
+                ("category".to_string(), Some("A".to_string())),
+            ]),
+            metadata: BrowserParquetFileMetadata {
+                object_size_bytes: 100,
+                footer_length_bytes: 32,
+                row_group_count: 1,
+                row_count: 3,
+                fields: vec![BrowserParquetField {
+                    name: "id".to_string(),
+                    physical_type: "INT32".to_string(),
+                    logical_type: None,
+                    converted_type: None,
+                    repetition: "REQUIRED".to_string(),
+                    nullable: false,
+                    max_definition_level: 0,
+                    max_repetition_level: 0,
+                    type_length: None,
+                    precision: None,
+                    scale: None,
+                }],
+            },
+        }],
+    }
+    .summarize()
+    .expect("uniform snapshots should summarize");
+
+    assert_eq!(
+        summary.schema.partition_columns,
+        vec!["category".to_string(), "region".to_string()]
+    );
+}
+
+#[test]
+fn bootstrap_snapshot_metadata_enforces_the_snapshot_preflight_deadline() {
+    let footer = b"serialized-parquet-footer";
+    let prefix = b"row-group-bytes";
+    let object = parquet_like_object(prefix, footer);
+    let object_for_server = object.clone();
+    let (url, _, server) = spawn_multi_request_server(2, move |request, _| {
+        thread::sleep(Duration::from_millis(70));
+        full_or_ranged_response(request, &object_for_server)
+    });
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig {
+        request_timeout_ms: 200,
+        snapshot_preflight_timeout_ms: 100,
+        snapshot_preflight_max_concurrency: 1,
+        ..BrowserRuntimeConfig::default()
+    })
+    .expect("preflight timeout configuration should be supported");
+    let source =
+        BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests");
+    let snapshot = wasm_query_runtime::MaterializedBrowserSnapshot::new(
+        "gs://axon-fixtures/sample_table",
+        9,
+        vec![MaterializedBrowserFile::new(
+            "part-000.parquet",
+            object.len() as u64,
+            BTreeMap::new(),
+            source,
+        )],
+    )
+    .expect("duplicate-free snapshots should construct");
+
+    let error = runtime()
+        .block_on(session.bootstrap_snapshot_metadata(&snapshot))
+        .expect_err("snapshot preflight should fail once the batch deadline is exceeded");
+
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(error.code, QueryErrorCode::ExecutionFailed);
+    assert!(error.message.contains("snapshot preflight"));
 }
 
 #[test]
