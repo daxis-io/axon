@@ -1295,16 +1295,35 @@ fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
 }
 
 fn write_response(stream: &mut std::net::TcpStream, response: TestResponse) {
-    write!(stream, "HTTP/1.1 {}\r\n", response.status_line)
-        .expect("response status should be writable");
-    for (header, value) in response.headers {
-        write!(stream, "{header}: {value}\r\n").expect("response header should be writable");
+    if let Err(error) = try_write_response(stream, response) {
+        if !is_expected_client_disconnect(&error) {
+            panic!("response should be writable: {error}");
+        }
     }
-    write!(stream, "\r\n").expect("response separator should be writable");
-    stream
-        .write_all(&response.body)
-        .expect("response body should be writable");
-    stream.flush().expect("response should flush");
+}
+
+fn try_write_response(
+    stream: &mut std::net::TcpStream,
+    response: TestResponse,
+) -> std::io::Result<()> {
+    write!(stream, "HTTP/1.1 {}\r\n", response.status_line)?;
+    for (header, value) in response.headers {
+        write!(stream, "{header}: {value}\r\n")?;
+    }
+    write!(stream, "\r\n")?;
+    stream.write_all(&response.body)?;
+    stream.flush()
+}
+
+fn is_expected_client_disconnect(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::NotConnected
+    )
 }
 
 fn spawn_multi_request_server<F>(
