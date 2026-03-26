@@ -34,11 +34,12 @@ Build the browser runtime for supported SQL workloads over signed HTTPS or proxy
 The repository now implements two thin in-repo EPIC-04 slices:
 
 - `crates/wasm-http-object-store` provides a URL-only `HttpRangeReader` with exact full, bounded, from-offset, and suffix byte-range support plus deterministic local tests for footer-style reads and `401` / `403` / `404` / `416` / malformed partial-response handling
-- `crates/wasm-query-runtime` now provides a constrained browser runtime envelope with runtime-owned config validation, an opaque `BrowserObjectSource` boundary for URL-backed reads, runtime-owned request timeout policy for default readers, descriptor materialization from HTTPS-only `BrowserHttpSnapshotDescriptor` inputs into runtime-owned validated object sources, a tiny async probe path built on `HttpRangeReader`, and a thin Parquet footer bootstrap API that validates the trailer and fetches raw footer bytes through exact suffix and bounded HTTP range reads, all covered by deterministic local tests plus a `wasm32-unknown-unknown` execution smoke test
+- `crates/wasm-query-runtime` now provides a constrained browser runtime envelope with runtime-owned config validation, an opaque `BrowserObjectSource` boundary for URL-backed reads, runtime-owned request timeout policy for default readers, bounded-concurrency snapshot-preflight deadlines, descriptor materialization from HTTPS-only `BrowserHttpSnapshotDescriptor` inputs into runtime-owned validated object sources, a tiny async probe path built on `HttpRangeReader`, file-driven Parquet footer bootstrap with descriptor-size validation, Parquet footer-to-metadata decoding, snapshot metadata bootstrap, richer uniform-schema validation, and a browser snapshot preflight summary API that reports Parquet payload fields plus partition columns, all covered by deterministic local tests plus a `wasm32-unknown-unknown` execution smoke test
 - EPIC-03 now also provides the shared browser HTTP snapshot descriptor contract plus deterministic control-plane-side URL attachment, and `wasm-query-runtime` can now consume that descriptor into runtime-owned object sources without yet attempting DataFusion table registration
+- cross-crate tests in `crates/delta-control-plane/tests/browser_snapshot_preflight.rs` now prove the real in-repo seam from resolved Delta snapshots to browser preflight summaries over real local fixture Parquet files, including parity against the native `COUNT(*)` oracle
 - wasm-target compile coverage proves the browser crates remain compatible with `wasm32-unknown-unknown`
 
-The following EPIC-04 work remains explicitly out of Sprint 10 scope:
+The following EPIC-04 work remains explicitly out of current in-repo scope:
 
 - browser SQL / DataFusion execution in `crates/wasm-query-runtime`
 - descriptor-based table registration

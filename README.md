@@ -5,11 +5,11 @@ Axon is a Rust workspace for building a hybrid query platform with native and br
 ## Workspace
 
 - `crates/query-contract` contains shared request and response types, capability flags, and fallback reasons.
-- `crates/native-query-runtime` is the native execution runtime scaffold.
+- `crates/native-query-runtime` is the native execution reference runtime.
 - `crates/wasm-query-runtime` is the browser-oriented runtime envelope for constrained object access and future browser SQL execution.
 - `crates/delta-control-plane` contains the in-repo control-plane slice for snapshot resolution and table policy enforcement.
 - `crates/wasm-http-object-store` contains the thin EPIC-04 HTTP byte-range slice for browser-safe object reads.
-- `crates/query-router`, `crates/browser-sdk`, `crates/udf-abi`, and `crates/udf-host-wasi` provide the remaining supporting packages around routing, browser access, and hosted UDF execution.
+- `crates/query-router`, `crates/browser-sdk`, `crates/udf-abi`, and `crates/udf-host-wasi` remain scaffolds around routing, browser access, and hosted UDF execution.
 
 ## Getting Started
 
@@ -24,13 +24,18 @@ cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --tar
 
 ## Browser Runtime Envelope
 
-`crates/wasm-query-runtime` now contains the thin Sprint 9 EPIC-04 runtime-owned browser slice:
+`crates/wasm-query-runtime` now contains the current in-repo EPIC-04 browser preflight slice:
 
 - `BrowserRuntimeConfig` validates the constrained browser envelope before any object access is attempted, including a nonzero request timeout for runtime-owned readers.
+- `BrowserRuntimeConfig` also carries a nonzero snapshot-preflight deadline plus bounded metadata-fetch concurrency so browser snapshot bootstrap is not forced into unbounded serial I/O.
 - `BrowserRuntimeSession::new(config)` constructs a runtime handle with runtime-owned HTTP client timeout policy, while `BrowserRuntimeSession::with_reader(config, reader)` remains available for injected host-side readers and tests.
 - `BrowserObjectSource::from_url(url)` is the typed browser object source boundary for URL-backed access and only accepts HTTPS object URLs in production browser mode, with loopback-only plain HTTP reserved for native host-side tests.
+- `MaterializedBrowserFile::new(...)` and `MaterializedBrowserSnapshot::new(...)` provide runtime-owned constructors for already-validated object sources without broadening `query-contract`.
 - `BrowserRuntimeSession::materialize_snapshot(&descriptor)` converts a shared HTTPS-only `BrowserHttpSnapshotDescriptor` into runtime-owned validated object sources while preserving file order and metadata without performing any network I/O.
 - `BrowserRuntimeSession::probe(&source, range)` delegates exact range reads to `crates/wasm-http-object-store` without reimplementing HTTP logic.
+- `BrowserRuntimeSession::read_parquet_footer_for_file(&file)` validates descriptor size against observed object metadata while bootstrapping raw footer bytes.
+- `BrowserRuntimeSession::read_parquet_metadata_for_file(&file)` decodes typed Parquet file metadata from those footer bytes.
+- `BrowserRuntimeSession::bootstrap_snapshot_metadata(&snapshot)` now buffers metadata fetches up to the configured concurrency limit and enforces a snapshot-level deadline, while `BootstrappedBrowserSnapshot::{validate_uniform_schema,summarize}` produces deterministic Parquet payload-field summaries plus sorted partition-column names and row/byte totals without attempting browser SQL execution.
 - The runtime rejects multi-partition execution as a structured native fallback, rejects unsupported object URL schemes during source construction, rejects cloud credentials as a security policy violation, and allows plain HTTP only for loopback host-side tests.
 
 Local validation:
@@ -167,6 +172,7 @@ cargo test -p delta-control-plane --locked
 ```
 
 Cross-crate handoff coverage in `crates/delta-control-plane/tests` checks the resolved `table_uri` / `snapshot_version` pair against `crates/native-query-runtime`, validates the descriptor's active-file metadata against the local fixture without changing `QueryRequest`, proves browser HTTP URL attachment preserves file order and metadata, proves invalid or duplicate browser URL inputs fail deterministically without leaking query strings, and confirms the resulting HTTPS descriptors materialize cleanly into `crates/wasm-query-runtime` runtime-owned object sources.
+Additional cross-crate browser-preflight coverage now resolves real local Delta snapshots, serves their Parquet files over loopback HTTP in host-side tests, bootstraps runtime-owned Parquet metadata and snapshot summaries through `crates/wasm-query-runtime`, and proves the resulting `file_count`, `snapshot_version`, `total_bytes`, and `total_rows` remain aligned with the resolved snapshot descriptor and the native `COUNT(*)` oracle.
 Authenticated HTTP service work remains out of repo: there is still no `services/query-api` directory here, so signed URL issuance, proxy reads, audit logging, request correlation, and CORS/origin validation remain external blockers rather than shipped repository scope.
 
 ## HTTP Range-Read Slice

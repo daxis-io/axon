@@ -2,8 +2,13 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use deltalake::arrow::array::{Int32Array, StringArray};
 use deltalake::arrow::datatypes::{DataType as ArrowDataType, Field, Schema as ArrowSchema};
@@ -125,6 +130,10 @@ impl TestTableFixture {
         self._tempdir.path().display().to_string()
     }
 
+    pub fn table_root(&self) -> &Path {
+        self._tempdir.path()
+    }
+
     pub fn expected_active_files(
         &self,
         snapshot_version: Option<i64>,
@@ -235,4 +244,213 @@ where
             matches.push(path);
         }
     }
+}
+
+pub struct LoopbackObjectServer {
+    address: std::net::SocketAddr,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl LoopbackObjectServer {
+    pub fn from_fixture_paths(
+        fixture: &TestTableFixture,
+        relative_paths: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let objects_by_path = relative_paths
+            .into_iter()
+            .map(|relative_path| {
+                let absolute_path = fixture.table_root().join(&relative_path);
+                let bytes = fs::read(&absolute_path).unwrap_or_else(|error| {
+                    panic!(
+                        "fixture object '{}' should be readable: {error}",
+                        absolute_path.display()
+                    )
+                });
+                (format!("/{}", relative_path), bytes)
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        Self::from_objects(objects_by_path)
+    }
+
+    pub fn url_for_path(&self, relative_path: &str) -> String {
+        format!("http://{}/{}", self.address, relative_path)
+    }
+
+    fn from_objects(objects_by_path: BTreeMap<String, Vec<u8>>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("listener should allow nonblocking accept");
+        let address = listener
+            .local_addr()
+            .expect("listener should expose a local address");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = Arc::clone(&stop);
+
+        let thread = thread::spawn(move || {
+            while !stop_for_thread.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        if stop_for_thread.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        stream
+                            .set_nonblocking(false)
+                            .expect("accepted streams should allow blocking reads");
+                        handle_connection(&mut stream, &objects_by_path);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => {
+                        panic!("loopback object server accept should succeed: {error}")
+                    }
+                }
+            }
+        });
+
+        Self {
+            address,
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for LoopbackObjectServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(self.address);
+        if let Some(thread) = self.thread.take() {
+            thread
+                .join()
+                .expect("loopback object server should shut down cleanly");
+        }
+    }
+}
+
+fn handle_connection(stream: &mut TcpStream, objects_by_path: &BTreeMap<String, Vec<u8>>) {
+    let request = read_request(stream);
+    let response = objects_by_path
+        .get(&request.path)
+        .map(|object| full_or_ranged_response(request.range_header.as_deref(), object))
+        .unwrap_or_else(not_found_response);
+    write_response(stream, response);
+}
+
+struct CapturedRequest {
+    path: String,
+    range_header: Option<String>,
+}
+
+struct TestResponse {
+    status_line: &'static str,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+fn read_request(stream: &mut TcpStream) -> CapturedRequest {
+    let mut buffer = [0_u8; 8192];
+    let mut request = Vec::new();
+
+    loop {
+        let read = stream
+            .read(&mut buffer)
+            .expect("request bytes should be readable");
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+
+    let request = String::from_utf8(request).expect("request should be valid utf8");
+    let mut lines = request.split("\r\n");
+    let request_line = lines.next().expect("request line should be present");
+    let path = request_line
+        .split_whitespace()
+        .nth(1)
+        .expect("request line should include a path")
+        .to_string();
+    let range_header = lines.find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("range")
+            .then(|| value.trim().to_string())
+    });
+
+    CapturedRequest { path, range_header }
+}
+
+fn full_or_ranged_response(range_header: Option<&str>, object: &[u8]) -> TestResponse {
+    if let Some(range_header) = range_header {
+        let (start, end) = resolve_range(range_header, object.len());
+        let body = object[start..=end].to_vec();
+        return TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), body.len().to_string()),
+                (
+                    "Content-Range".to_string(),
+                    format!("bytes {start}-{end}/{}", object.len()),
+                ),
+            ],
+            body,
+        };
+    }
+
+    TestResponse {
+        status_line: "200 OK",
+        headers: vec![("Content-Length".to_string(), object.len().to_string())],
+        body: object.to_vec(),
+    }
+}
+
+fn not_found_response() -> TestResponse {
+    TestResponse {
+        status_line: "404 Not Found",
+        headers: vec![("Content-Length".to_string(), "0".to_string())],
+        body: Vec::new(),
+    }
+}
+
+fn resolve_range(range_header: &str, object_len: usize) -> (usize, usize) {
+    let range_spec = range_header
+        .strip_prefix("bytes=")
+        .expect("range header should use bytes= syntax");
+
+    if let Some(suffix) = range_spec.strip_prefix('-') {
+        let suffix = suffix.parse::<usize>().expect("suffix length should parse");
+        let start = object_len
+            .checked_sub(suffix)
+            .expect("suffix should be shorter than the object");
+        return (start, object_len - 1);
+    }
+
+    let (start, end) = range_spec
+        .split_once('-')
+        .expect("range header should contain a single dash");
+    let start = start.parse::<usize>().expect("range start should parse");
+    let end = if end.is_empty() {
+        object_len - 1
+    } else {
+        end.parse::<usize>().expect("range end should parse")
+    };
+
+    (start, end)
+}
+
+fn write_response(stream: &mut TcpStream, response: TestResponse) {
+    let mut bytes = format!("HTTP/1.1 {}\r\n", response.status_line).into_bytes();
+    for (name, value) in response.headers {
+        bytes.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+    }
+    bytes.extend_from_slice(b"Connection: close\r\n\r\n");
+    bytes.extend_from_slice(&response.body);
+    stream
+        .write_all(&bytes)
+        .expect("response bytes should be writable");
 }
