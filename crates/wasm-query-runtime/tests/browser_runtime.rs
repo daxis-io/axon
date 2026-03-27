@@ -216,6 +216,31 @@ fn plan_query_rejects_unknown_columns_and_snapshot_mismatches() {
 }
 
 #[test]
+fn plan_query_accepts_cte_output_aliases_without_requiring_snapshot_columns() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+
+    let planned = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "WITH filtered AS (SELECT value AS total FROM axon_table) \
+                 SELECT total FROM filtered ORDER BY total",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("cte output aliases should not be rejected as missing snapshot columns");
+
+    assert_eq!(planned.candidate_file_count, 3);
+    assert_eq!(planned.candidate_bytes, 360);
+    assert_eq!(planned.candidate_rows, 9);
+    assert!(!planned.pruning.used_partition_pruning);
+    assert!(!planned.pruning.used_file_stats_pruning);
+}
+
+#[test]
 fn plan_query_prunes_candidate_files_from_partition_values() {
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
         .expect("default config should be supported");
@@ -327,6 +352,33 @@ fn plan_query_leaves_full_scan_when_partition_predicates_are_not_lossless() {
 }
 
 #[test]
+fn plan_query_keeps_lossless_partition_pruning_with_unsupported_sibling_predicates() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+
+    let planned = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE category = 'C' AND value <> 0 ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("lossless partition pruning should survive unsupported sibling predicates");
+
+    assert_eq!(planned.candidate_paths, vec!["category=C/part-002.parquet"]);
+    assert_eq!(planned.candidate_file_count, 1);
+    assert_eq!(planned.candidate_bytes, 140);
+    assert_eq!(planned.candidate_rows, 4);
+    assert!(planned.pruning.used_partition_pruning);
+    assert!(!planned.pruning.used_file_stats_pruning);
+    assert_eq!(planned.pruning.files_retained, 1);
+    assert_eq!(planned.pruning.files_pruned, 2);
+}
+
+#[test]
 fn plan_query_supports_partition_null_filters() {
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
         .expect("default config should be supported");
@@ -391,6 +443,39 @@ fn plan_query_prunes_candidate_files_from_integer_footer_stats() {
             ),
         )
         .expect("supported integer footer-stat predicates should plan");
+
+    assert_eq!(
+        planned.candidate_paths,
+        vec![
+            "category=B/part-001.parquet".to_string(),
+            "category=C/part-002.parquet".to_string(),
+        ]
+    );
+    assert_eq!(planned.candidate_file_count, 2);
+    assert_eq!(planned.candidate_bytes, 260);
+    assert_eq!(planned.candidate_rows, 7);
+    assert!(!planned.pruning.used_partition_pruning);
+    assert!(planned.pruning.used_file_stats_pruning);
+    assert_eq!(planned.pruning.files_retained, 2);
+    assert_eq!(planned.pruning.files_pruned, 1);
+}
+
+#[test]
+fn plan_query_keeps_file_stats_pruning_with_unsupported_sibling_predicates() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = stats_bootstrapped_snapshot();
+
+    let planned = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE value >= 40 AND category <> 'A' ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("lossless stats pruning should survive unsupported sibling predicates");
 
     assert_eq!(
         planned.candidate_paths,

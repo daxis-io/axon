@@ -34,7 +34,7 @@ use sqlparser::ast::{
     BinaryOperator as SqlBinaryOperator, Expr as SqlExpr, FunctionArg, FunctionArgExpr,
     FunctionArguments, GroupByExpr, LimitClause, ObjectName, ObjectNamePart, OrderByKind,
     Query as SqlQuery, Select, SelectItem, SetExpr as SqlSetExpr, Statement as SqlStatement,
-    TableFactor as SqlTableFactor, TableWithJoins as SqlTableWithJoins,
+    TableAlias, TableFactor as SqlTableFactor, TableWithJoins as SqlTableWithJoins,
     UnaryOperator as SqlUnaryOperator, Value as SqlValue,
 };
 use sqlparser::dialect::GenericDialect;
@@ -811,7 +811,8 @@ impl BrowserRuntimeSession {
 
         let analyzed = analyze_browser_query(&request.sql)?;
         let summary = snapshot.summarize()?;
-        let available_columns = snapshot_available_columns(&summary);
+        let mut available_columns = snapshot_available_columns(&summary);
+        available_columns.extend(browser_query_scope_columns(analyzed.query.as_ref()));
         for referenced_column in &analyzed.shape.referenced_columns {
             if !available_columns.contains(referenced_column) {
                 return Err(invalid_query_request(format!(
@@ -1730,6 +1731,151 @@ fn query_uses_grouping(query: &SqlQuery) -> bool {
             .is_some_and(|select| select.having.is_some())
 }
 
+fn browser_query_scope_columns(query: &SqlQuery) -> BTreeSet<String> {
+    let cte_outputs = query_cte_output_columns(query);
+    let mut scope_columns = query_source_scope_columns(query, &cte_outputs);
+    scope_columns.extend(query_order_by_alias_columns(query));
+    scope_columns
+}
+
+fn query_cte_output_columns(query: &SqlQuery) -> BTreeMap<String, BTreeSet<String>> {
+    let mut cte_outputs = BTreeMap::new();
+    let Some(with) = &query.with else {
+        return cte_outputs;
+    };
+
+    for cte in &with.cte_tables {
+        let alias_columns = table_alias_columns(&cte.alias);
+        let output_columns = if alias_columns.is_empty() {
+            query_output_columns(cte.query.as_ref())
+        } else {
+            alias_columns
+        };
+        cte_outputs.insert(normalize_name(&cte.alias.name.value), output_columns);
+    }
+
+    cte_outputs
+}
+
+fn query_source_scope_columns(
+    query: &SqlQuery,
+    cte_outputs: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    let Some(select) = query.body.as_select() else {
+        return BTreeSet::new();
+    };
+    let Some(source) = select.from.first() else {
+        return BTreeSet::new();
+    };
+
+    table_factor_output_columns(&source.relation, cte_outputs)
+}
+
+fn query_order_by_alias_columns(query: &SqlQuery) -> BTreeSet<String> {
+    let Some(select) = query.body.as_select() else {
+        return BTreeSet::new();
+    };
+    let projection_aliases = select_projection_aliases(select);
+    if projection_aliases.is_empty() {
+        return BTreeSet::new();
+    }
+
+    let mut order_by_aliases = BTreeSet::new();
+    let Some(order_by) = &query.order_by else {
+        return order_by_aliases;
+    };
+    let OrderByKind::Expressions(expressions) = &order_by.kind else {
+        return order_by_aliases;
+    };
+
+    for expression in expressions {
+        if let Some(alias) = expr_named_column(&expression.expr, &projection_aliases) {
+            order_by_aliases.insert(alias);
+        }
+    }
+
+    order_by_aliases
+}
+
+fn query_output_columns(query: &SqlQuery) -> BTreeSet<String> {
+    match query.body.as_ref() {
+        SqlSetExpr::Select(select) => select_output_columns(select.as_ref()),
+        SqlSetExpr::Query(query) => query_output_columns(query.as_ref()),
+        _ => BTreeSet::new(),
+    }
+}
+
+fn select_output_columns(select: &Select) -> BTreeSet<String> {
+    let mut output_columns = BTreeSet::new();
+
+    for select_item in &select.projection {
+        match select_item {
+            SelectItem::ExprWithAlias { alias, .. } => {
+                output_columns.insert(normalize_name(&alias.value));
+            }
+            SelectItem::UnnamedExpr(SqlExpr::Identifier(ident)) => {
+                output_columns.insert(normalize_name(&ident.value));
+            }
+            SelectItem::UnnamedExpr(SqlExpr::CompoundIdentifier(parts)) => {
+                if let Some(part) = parts.last() {
+                    output_columns.insert(normalize_name(&part.value));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    output_columns
+}
+
+fn select_projection_aliases(select: &Select) -> BTreeSet<String> {
+    select
+        .projection
+        .iter()
+        .filter_map(|select_item| match select_item {
+            SelectItem::ExprWithAlias { alias, .. } => Some(normalize_name(&alias.value)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn table_factor_output_columns(
+    table_factor: &SqlTableFactor,
+    cte_outputs: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    match table_factor {
+        SqlTableFactor::Table { name, alias, .. } => {
+            let alias_columns = alias.as_ref().map(table_alias_columns).unwrap_or_default();
+            if !alias_columns.is_empty() {
+                return alias_columns;
+            }
+
+            object_name_to_relation_name(name)
+                .and_then(|relation_name| cte_outputs.get(&relation_name).cloned())
+                .unwrap_or_default()
+        }
+        SqlTableFactor::Derived {
+            subquery, alias, ..
+        } => {
+            let alias_columns = alias.as_ref().map(table_alias_columns).unwrap_or_default();
+            if !alias_columns.is_empty() {
+                alias_columns
+            } else {
+                query_output_columns(subquery.as_ref())
+            }
+        }
+        _ => BTreeSet::new(),
+    }
+}
+
+fn table_alias_columns(alias: &TableAlias) -> BTreeSet<String> {
+    alias
+        .columns
+        .iter()
+        .map(|ident| normalize_name(&ident.name.value))
+        .collect()
+}
+
 fn extract_browser_pruning_constraints(
     query: &SqlQuery,
     partition_columns: &BTreeSet<String>,
@@ -1765,9 +1911,9 @@ fn lower_browser_pruning_constraints(
             lower_browser_pruning_constraints(expr, partition_columns, file_stats_columns)
         }
         SqlExpr::BinaryOp { left, op, right } if *op == SqlBinaryOperator::And => {
-            merge_browser_pruning_constraints(
-                lower_browser_pruning_constraints(left, partition_columns, file_stats_columns)?,
-                lower_browser_pruning_constraints(right, partition_columns, file_stats_columns)?,
+            merge_optional_browser_pruning_constraints(
+                lower_browser_pruning_constraints(left, partition_columns, file_stats_columns),
+                lower_browser_pruning_constraints(right, partition_columns, file_stats_columns),
             )
         }
         _ => {
@@ -1784,6 +1930,17 @@ fn lower_browser_pruning_constraints(
                 file_stats: Some(file_stats),
             })
         }
+    }
+}
+
+fn merge_optional_browser_pruning_constraints(
+    left: Option<BrowserPruningConstraints>,
+    right: Option<BrowserPruningConstraints>,
+) -> Option<BrowserPruningConstraints> {
+    match (left, right) {
+        (None, None) => None,
+        (Some(constraints), None) | (None, Some(constraints)) => Some(constraints),
+        (Some(left), Some(right)) => merge_browser_pruning_constraints(left, right),
     }
 }
 
