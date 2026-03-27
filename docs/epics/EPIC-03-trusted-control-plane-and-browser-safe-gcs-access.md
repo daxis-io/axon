@@ -36,7 +36,7 @@ The repository currently implements only the thin in-repo library-owned contract
 - browser HTTP snapshot/file descriptor types in `query-contract`
 - deterministic attachment of caller-supplied per-file browser-safe HTTP URLs to resolved snapshot files
 - exact-match per-table allow/deny hooks enforced before snapshot I/O
-- deterministic cross-crate handoff tests that feed resolved active-file metadata into runtime-owned browser preflight over real local fixture Parquet files and compare the resulting snapshot summary, Parquet payload schema, partition-column set, and native row-count oracle
+- deterministic cross-crate handoff tests that feed resolved active-file metadata into runtime-owned browser preflight over real local fixture Parquet files and compare the resulting snapshot summary, typed Parquet payload schema, integer footer stats, partition-column set, and curated native row-count / file-pruning oracles
 
 This in-repo slice deliberately stops at descriptor shaping plus deterministic in-repo handoff coverage. It does not mint signed URLs, implement proxy reads, or expose an authenticated endpoint.
 

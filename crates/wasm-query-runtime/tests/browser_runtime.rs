@@ -9,13 +9,15 @@ use std::time::Duration;
 
 use query_contract::{
     BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey, CapabilityState,
-    ExecutionTarget, FallbackReason, QueryErrorCode,
+    ExecutionTarget, FallbackReason, QueryErrorCode, QueryRequest,
 };
 use wasm_http_object_store::{HttpByteRange, HttpRangeReader};
 use wasm_query_runtime::{
     runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserObjectAccessMode,
-    BrowserObjectSource, BrowserParquetField, BrowserParquetFileMetadata, BrowserRuntimeConfig,
-    BrowserRuntimeSession, MaterializedBrowserFile,
+    BrowserObjectSource, BrowserParquetConvertedType, BrowserParquetField,
+    BrowserParquetFieldStats, BrowserParquetFileMetadata, BrowserParquetLogicalType,
+    BrowserParquetPhysicalType, BrowserParquetRepetition, BrowserRuntimeConfig,
+    BrowserRuntimeSession, MaterializedBrowserFile, MaterializedBrowserSnapshot,
 };
 
 const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
@@ -35,6 +37,402 @@ fn https_object_sources_are_constructible() {
         .expect("https object sources should be supported");
 
     assert_eq!(source.url(), "https://example.com/object");
+}
+
+#[test]
+fn analyze_query_shape_extracts_columns_and_flags_supported_queries() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let shape = session
+        .analyze_query_shape(
+            "SELECT category, SUM(value) AS total_value \
+             FROM axon_table \
+             WHERE value >= 40 \
+             GROUP BY category \
+             ORDER BY category \
+             LIMIT 2",
+        )
+        .expect("supported single-table browser queries should analyze");
+
+    assert_eq!(shape.referenced_columns, vec!["category", "value"]);
+    assert_eq!(shape.filter_columns, vec!["value"]);
+    assert_eq!(shape.projection_columns, vec!["category", "value"]);
+    assert!(shape.has_aggregation);
+    assert!(shape.has_order_by);
+    assert_eq!(shape.limit, Some(2));
+}
+
+#[test]
+fn analyze_query_shape_allows_non_recursive_ctes_built_from_axon_table() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let shape = session
+        .analyze_query_shape(
+            "WITH filtered AS (SELECT id, value FROM axon_table WHERE value >= 20) \
+             SELECT id FROM filtered ORDER BY id",
+        )
+        .expect("non-recursive ctes over axon_table should analyze");
+
+    assert_eq!(shape.referenced_columns, vec!["id", "value"]);
+    assert_eq!(shape.filter_columns, vec!["value"]);
+    assert_eq!(shape.projection_columns, vec!["id"]);
+    assert!(!shape.has_aggregation);
+    assert!(shape.has_order_by);
+    assert_eq!(shape.limit, None);
+}
+
+#[test]
+fn analyze_query_shape_rejects_constant_queries_without_axon_table() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let error = session
+        .analyze_query_shape("SELECT 1")
+        .expect_err("constant queries should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("axon_table"));
+}
+
+#[test]
+fn analyze_query_shape_rejects_multiple_statements() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let error = session
+        .analyze_query_shape("SELECT * FROM axon_table; SELECT * FROM axon_table")
+        .expect_err("multiple statements should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("exactly one"));
+}
+
+#[test]
+fn analyze_query_shape_rejects_recursive_ctes_and_table_functions() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let recursive_error = session
+        .analyze_query_shape(
+            "WITH RECURSIVE looped AS (SELECT * FROM axon_table) SELECT * FROM looped",
+        )
+        .expect_err("recursive ctes should be rejected");
+    assert_eq!(recursive_error.code, QueryErrorCode::InvalidRequest);
+    assert!(recursive_error.message.contains("recursive"));
+
+    let table_function_error = session
+        .analyze_query_shape("SELECT * FROM generate_series(1, 2)")
+        .expect_err("table functions should be rejected");
+    assert_eq!(table_function_error.code, QueryErrorCode::InvalidRequest);
+    assert!(table_function_error.message.contains("axon_table"));
+}
+
+#[test]
+fn plan_query_returns_full_scan_totals_for_matching_snapshot_requests() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+
+    let planned = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("matching requests should plan against bootstrapped snapshots");
+
+    assert_eq!(planned.table_uri, snapshot.table_uri());
+    assert_eq!(planned.snapshot_version, snapshot.snapshot_version());
+    assert_eq!(
+        planned.candidate_paths,
+        vec![
+            "category=A/part-000.parquet".to_string(),
+            "category=B/part-001.parquet".to_string(),
+            "category=C/part-002.parquet".to_string(),
+        ]
+    );
+    assert_eq!(planned.candidate_file_count, 3);
+    assert_eq!(planned.candidate_bytes, 360);
+    assert_eq!(planned.candidate_rows, 9);
+    assert_eq!(planned.partition_columns, vec!["category"]);
+    assert!(!planned.pruning.used_partition_pruning);
+    assert!(!planned.pruning.used_file_stats_pruning);
+    assert_eq!(planned.pruning.files_retained, 3);
+    assert_eq!(planned.pruning.files_pruned, 0);
+}
+
+#[test]
+fn plan_query_rejects_unknown_columns_and_snapshot_mismatches() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+
+    let unknown_column_error = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT missing_column FROM axon_table",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect_err("unknown columns should be rejected");
+    assert_eq!(unknown_column_error.code, QueryErrorCode::InvalidRequest);
+    assert!(unknown_column_error.message.contains("missing_column"));
+
+    let table_mismatch_error = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                "gs://axon-fixtures/other_table",
+                "SELECT id FROM axon_table",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect_err("table-uri mismatches should be rejected");
+    assert_eq!(table_mismatch_error.code, QueryErrorCode::InvalidRequest);
+    assert!(table_mismatch_error.message.contains("table_uri"));
+
+    let version_mismatch_error = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest {
+                snapshot_version: Some(snapshot.snapshot_version() + 1),
+                ..QueryRequest::new(
+                    snapshot.table_uri(),
+                    "SELECT id FROM axon_table",
+                    ExecutionTarget::BrowserWasm,
+                )
+            },
+        )
+        .expect_err("snapshot-version mismatches should be rejected");
+    assert_eq!(version_mismatch_error.code, QueryErrorCode::InvalidRequest);
+    assert!(version_mismatch_error.message.contains("snapshot_version"));
+}
+
+#[test]
+fn plan_query_prunes_candidate_files_from_partition_values() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+
+    let planned = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE category = 'C' ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("partition predicates should plan");
+
+    assert_eq!(planned.candidate_paths, vec!["category=C/part-002.parquet"]);
+    assert_eq!(planned.candidate_file_count, 1);
+    assert_eq!(planned.candidate_bytes, 140);
+    assert_eq!(planned.candidate_rows, 4);
+    assert!(planned.pruning.used_partition_pruning);
+    assert!(!planned.pruning.used_file_stats_pruning);
+    assert_eq!(planned.pruning.files_retained, 1);
+    assert_eq!(planned.pruning.files_pruned, 2);
+}
+
+#[test]
+fn plan_query_prunes_candidate_files_from_partition_in_lists() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+
+    let planned = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE category IN ('A', 'B') ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("supported partition IN predicates should plan");
+
+    assert_eq!(
+        planned.candidate_paths,
+        vec![
+            "category=A/part-000.parquet".to_string(),
+            "category=B/part-001.parquet".to_string(),
+        ]
+    );
+    assert_eq!(planned.candidate_file_count, 2);
+    assert_eq!(planned.candidate_bytes, 220);
+    assert_eq!(planned.candidate_rows, 5);
+    assert!(planned.pruning.used_partition_pruning);
+    assert_eq!(planned.pruning.files_retained, 2);
+    assert_eq!(planned.pruning.files_pruned, 1);
+}
+
+#[test]
+fn plan_query_can_prune_all_files_when_partition_values_do_not_match() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+
+    let planned = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE category = 'Z' ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("supported partition equality predicates should plan");
+
+    assert!(planned.candidate_paths.is_empty());
+    assert_eq!(planned.candidate_file_count, 0);
+    assert_eq!(planned.candidate_bytes, 0);
+    assert_eq!(planned.candidate_rows, 0);
+    assert!(planned.pruning.used_partition_pruning);
+    assert_eq!(planned.pruning.files_retained, 0);
+    assert_eq!(planned.pruning.files_pruned, 3);
+}
+
+#[test]
+fn plan_query_leaves_full_scan_when_partition_predicates_are_not_lossless() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+
+    let planned = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE category = 'A' OR category = 'C' ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("unsupported partition predicates should still plan");
+
+    assert_eq!(planned.candidate_file_count, 3);
+    assert_eq!(planned.candidate_bytes, 360);
+    assert_eq!(planned.candidate_rows, 9);
+    assert!(!planned.pruning.used_partition_pruning);
+    assert!(!planned.pruning.used_file_stats_pruning);
+    assert_eq!(planned.pruning.files_retained, 3);
+    assert_eq!(planned.pruning.files_pruned, 0);
+}
+
+#[test]
+fn plan_query_supports_partition_null_filters() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = null_partition_bootstrapped_snapshot();
+
+    let is_null = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE region IS NULL ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("partition IS NULL predicates should plan");
+    assert_eq!(
+        is_null.candidate_paths,
+        vec!["region=NULL/part-000.parquet"]
+    );
+    assert_eq!(is_null.candidate_file_count, 1);
+    assert_eq!(is_null.candidate_bytes, 80);
+    assert_eq!(is_null.candidate_rows, 2);
+    assert!(is_null.pruning.used_partition_pruning);
+    assert_eq!(is_null.pruning.files_retained, 1);
+    assert_eq!(is_null.pruning.files_pruned, 1);
+
+    let is_not_null = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE region IS NOT NULL ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("partition IS NOT NULL predicates should plan");
+    assert_eq!(
+        is_not_null.candidate_paths,
+        vec!["region=us-east/part-001.parquet"]
+    );
+    assert_eq!(is_not_null.candidate_file_count, 1);
+    assert_eq!(is_not_null.candidate_bytes, 90);
+    assert_eq!(is_not_null.candidate_rows, 3);
+    assert!(is_not_null.pruning.used_partition_pruning);
+    assert_eq!(is_not_null.pruning.files_retained, 1);
+    assert_eq!(is_not_null.pruning.files_pruned, 1);
+}
+
+#[test]
+fn plan_query_prunes_candidate_files_from_integer_footer_stats() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = stats_bootstrapped_snapshot();
+
+    let planned = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE value >= 40 ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("supported integer footer-stat predicates should plan");
+
+    assert_eq!(
+        planned.candidate_paths,
+        vec![
+            "category=B/part-001.parquet".to_string(),
+            "category=C/part-002.parquet".to_string(),
+        ]
+    );
+    assert_eq!(planned.candidate_file_count, 2);
+    assert_eq!(planned.candidate_bytes, 260);
+    assert_eq!(planned.candidate_rows, 7);
+    assert!(!planned.pruning.used_partition_pruning);
+    assert!(planned.pruning.used_file_stats_pruning);
+    assert_eq!(planned.pruning.files_retained, 2);
+    assert_eq!(planned.pruning.files_pruned, 1);
+}
+
+#[test]
+fn plan_query_combines_partition_and_integer_footer_stats_pruning() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = stats_bootstrapped_snapshot();
+
+    let planned = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE category IN ('A', 'B') AND value >= 40 ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("combined partition and footer-stat predicates should plan");
+
+    assert_eq!(planned.candidate_paths, vec!["category=B/part-001.parquet"]);
+    assert_eq!(planned.candidate_file_count, 1);
+    assert_eq!(planned.candidate_bytes, 120);
+    assert_eq!(planned.candidate_rows, 3);
+    assert!(planned.pruning.used_partition_pruning);
+    assert!(planned.pruning.used_file_stats_pruning);
+    assert_eq!(planned.pruning.files_retained, 1);
+    assert_eq!(planned.pruning.files_pruned, 2);
 }
 
 #[test]
@@ -571,60 +969,39 @@ fn read_parquet_metadata_for_file_rejects_malformed_footer_metadata() {
 
 #[test]
 fn validate_uniform_schema_rejects_mixed_file_field_layouts() {
-    let snapshot = BootstrappedBrowserSnapshot {
-        table_uri: "gs://axon-fixtures/mixed".to_string(),
-        snapshot_version: 5,
-        active_files: vec![
-            BootstrappedBrowserFile {
-                path: "part-000.parquet".to_string(),
-                size_bytes: 100,
-                partition_values: BTreeMap::new(),
-                metadata: BrowserParquetFileMetadata {
+    let snapshot = BootstrappedBrowserSnapshot::new(
+        "gs://axon-fixtures/mixed",
+        5,
+        vec![
+            bootstrapped_file(
+                "part-000.parquet",
+                100,
+                BTreeMap::new(),
+                BrowserParquetFileMetadata {
                     object_size_bytes: 100,
                     footer_length_bytes: 32,
                     row_group_count: 1,
                     row_count: 3,
-                    fields: vec![BrowserParquetField {
-                        name: "id".to_string(),
-                        physical_type: "INT32".to_string(),
-                        logical_type: None,
-                        converted_type: None,
-                        repetition: "REQUIRED".to_string(),
-                        nullable: false,
-                        max_definition_level: 0,
-                        max_repetition_level: 0,
-                        type_length: None,
-                        precision: None,
-                        scale: None,
-                    }],
+                    fields: vec![required_field("id", BrowserParquetPhysicalType::Int32)],
+                    field_stats: BTreeMap::new(),
                 },
-            },
-            BootstrappedBrowserFile {
-                path: "part-001.parquet".to_string(),
-                size_bytes: 120,
-                partition_values: BTreeMap::new(),
-                metadata: BrowserParquetFileMetadata {
+            ),
+            bootstrapped_file(
+                "part-001.parquet",
+                120,
+                BTreeMap::new(),
+                BrowserParquetFileMetadata {
                     object_size_bytes: 120,
                     footer_length_bytes: 40,
                     row_group_count: 1,
                     row_count: 4,
-                    fields: vec![BrowserParquetField {
-                        name: "id".to_string(),
-                        physical_type: "INT64".to_string(),
-                        logical_type: None,
-                        converted_type: None,
-                        repetition: "REQUIRED".to_string(),
-                        nullable: false,
-                        max_definition_level: 0,
-                        max_repetition_level: 0,
-                        type_length: None,
-                        precision: None,
-                        scale: None,
-                    }],
+                    fields: vec![required_field("id", BrowserParquetPhysicalType::Int64)],
+                    field_stats: BTreeMap::new(),
                 },
-            },
+            ),
         ],
-    };
+    )
+    .expect("duplicate-free snapshots should construct");
 
     let error = snapshot
         .validate_uniform_schema()
@@ -636,25 +1013,25 @@ fn validate_uniform_schema_rejects_mixed_file_field_layouts() {
 
 #[test]
 fn validate_uniform_schema_rejects_mixed_logical_types_with_the_same_physical_type() {
-    let snapshot = BootstrappedBrowserSnapshot {
-        table_uri: "gs://axon-fixtures/mixed-logical".to_string(),
-        snapshot_version: 6,
-        active_files: vec![
-            BootstrappedBrowserFile {
-                path: "part-000.parquet".to_string(),
-                size_bytes: 100,
-                partition_values: BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
-                metadata: BrowserParquetFileMetadata {
+    let snapshot = BootstrappedBrowserSnapshot::new(
+        "gs://axon-fixtures/mixed-logical",
+        6,
+        vec![
+            bootstrapped_file(
+                "part-000.parquet",
+                100,
+                BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
+                BrowserParquetFileMetadata {
                     object_size_bytes: 100,
                     footer_length_bytes: 32,
                     row_group_count: 1,
                     row_count: 3,
                     fields: vec![BrowserParquetField {
                         name: "name".to_string(),
-                        physical_type: "BYTE_ARRAY".to_string(),
-                        logical_type: Some("String".to_string()),
-                        converted_type: Some("UTF8".to_string()),
-                        repetition: "OPTIONAL".to_string(),
+                        physical_type: BrowserParquetPhysicalType::ByteArray,
+                        logical_type: Some(BrowserParquetLogicalType::String),
+                        converted_type: Some(BrowserParquetConvertedType::Utf8),
+                        repetition: BrowserParquetRepetition::Optional,
                         nullable: true,
                         max_definition_level: 1,
                         max_repetition_level: 0,
@@ -662,23 +1039,24 @@ fn validate_uniform_schema_rejects_mixed_logical_types_with_the_same_physical_ty
                         precision: None,
                         scale: None,
                     }],
+                    field_stats: BTreeMap::new(),
                 },
-            },
-            BootstrappedBrowserFile {
-                path: "part-001.parquet".to_string(),
-                size_bytes: 120,
-                partition_values: BTreeMap::from([("category".to_string(), Some("B".to_string()))]),
-                metadata: BrowserParquetFileMetadata {
+            ),
+            bootstrapped_file(
+                "part-001.parquet",
+                120,
+                BTreeMap::from([("category".to_string(), Some("B".to_string()))]),
+                BrowserParquetFileMetadata {
                     object_size_bytes: 120,
                     footer_length_bytes: 40,
                     row_group_count: 1,
                     row_count: 4,
                     fields: vec![BrowserParquetField {
                         name: "name".to_string(),
-                        physical_type: "BYTE_ARRAY".to_string(),
+                        physical_type: BrowserParquetPhysicalType::ByteArray,
                         logical_type: None,
                         converted_type: None,
-                        repetition: "OPTIONAL".to_string(),
+                        repetition: BrowserParquetRepetition::Optional,
                         nullable: true,
                         max_definition_level: 1,
                         max_repetition_level: 0,
@@ -686,10 +1064,12 @@ fn validate_uniform_schema_rejects_mixed_logical_types_with_the_same_physical_ty
                         precision: None,
                         scale: None,
                     }],
+                    field_stats: BTreeMap::new(),
                 },
-            },
+            ),
         ],
-    };
+    )
+    .expect("duplicate-free snapshots should construct");
 
     let error = snapshot
         .validate_uniform_schema()
@@ -701,37 +1081,27 @@ fn validate_uniform_schema_rejects_mixed_logical_types_with_the_same_physical_ty
 
 #[test]
 fn summarize_reports_sorted_partition_columns() {
-    let summary = BootstrappedBrowserSnapshot {
-        table_uri: "gs://axon-fixtures/partitioned".to_string(),
-        snapshot_version: 7,
-        active_files: vec![BootstrappedBrowserFile {
-            path: "part-000.parquet".to_string(),
-            size_bytes: 100,
-            partition_values: BTreeMap::from([
+    let summary = BootstrappedBrowserSnapshot::new(
+        "gs://axon-fixtures/partitioned",
+        7,
+        vec![bootstrapped_file(
+            "part-000.parquet",
+            100,
+            BTreeMap::from([
                 ("region".to_string(), Some("us-east-1".to_string())),
                 ("category".to_string(), Some("A".to_string())),
             ]),
-            metadata: BrowserParquetFileMetadata {
+            BrowserParquetFileMetadata {
                 object_size_bytes: 100,
                 footer_length_bytes: 32,
                 row_group_count: 1,
                 row_count: 3,
-                fields: vec![BrowserParquetField {
-                    name: "id".to_string(),
-                    physical_type: "INT32".to_string(),
-                    logical_type: None,
-                    converted_type: None,
-                    repetition: "REQUIRED".to_string(),
-                    nullable: false,
-                    max_definition_level: 0,
-                    max_repetition_level: 0,
-                    type_length: None,
-                    precision: None,
-                    scale: None,
-                }],
+                fields: vec![required_field("id", BrowserParquetPhysicalType::Int32)],
+                field_stats: BTreeMap::new(),
             },
-        }],
-    }
+        )],
+    )
+    .expect("duplicate-free snapshots should construct")
     .summarize()
     .expect("uniform snapshots should summarize");
 
@@ -760,7 +1130,7 @@ fn bootstrap_snapshot_metadata_enforces_the_snapshot_preflight_deadline() {
     .expect("preflight timeout configuration should be supported");
     let source =
         BrowserObjectSource::from_url(&url).expect("loopback HTTP should be allowed in host tests");
-    let snapshot = wasm_query_runtime::MaterializedBrowserSnapshot::new(
+    let snapshot = MaterializedBrowserSnapshot::new(
         "gs://axon-fixtures/sample_table",
         9,
         vec![MaterializedBrowserFile::new(
@@ -779,6 +1149,67 @@ fn bootstrap_snapshot_metadata_enforces_the_snapshot_preflight_deadline() {
     server.join().expect("test server should shut down cleanly");
     assert_eq!(error.code, QueryErrorCode::ExecutionFailed);
     assert!(error.message.contains("snapshot preflight"));
+}
+
+#[test]
+fn bootstrapped_file_constructor_rejects_metadata_size_mismatches() {
+    let error = BootstrappedBrowserFile::new(
+        "part-000.parquet",
+        99,
+        BTreeMap::new(),
+        BrowserParquetFileMetadata {
+            object_size_bytes: 100,
+            footer_length_bytes: 32,
+            row_group_count: 1,
+            row_count: 3,
+            fields: vec![required_field("id", BrowserParquetPhysicalType::Int32)],
+            field_stats: BTreeMap::new(),
+        },
+    )
+    .expect_err("bootstrapped file sizes should align with metadata sizes");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("part-000.parquet"));
+}
+
+#[test]
+fn bootstrapped_snapshot_constructor_rejects_duplicate_paths() {
+    let error = BootstrappedBrowserSnapshot::new(
+        "gs://axon-fixtures/duplicate-paths",
+        11,
+        vec![
+            bootstrapped_file(
+                "part-000.parquet",
+                100,
+                BTreeMap::new(),
+                BrowserParquetFileMetadata {
+                    object_size_bytes: 100,
+                    footer_length_bytes: 32,
+                    row_group_count: 1,
+                    row_count: 3,
+                    fields: vec![required_field("id", BrowserParquetPhysicalType::Int32)],
+                    field_stats: BTreeMap::new(),
+                },
+            ),
+            bootstrapped_file(
+                "part-000.parquet",
+                120,
+                BTreeMap::new(),
+                BrowserParquetFileMetadata {
+                    object_size_bytes: 120,
+                    footer_length_bytes: 40,
+                    row_group_count: 1,
+                    row_count: 4,
+                    fields: vec![required_field("id", BrowserParquetPhysicalType::Int32)],
+                    field_stats: BTreeMap::new(),
+                },
+            ),
+        ],
+    )
+    .expect_err("duplicate paths should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("part-000.parquet"));
 }
 
 #[test]
@@ -1419,4 +1850,233 @@ fn parquet_like_object(prefix: &[u8], footer: &[u8]) -> Vec<u8> {
     object.extend_from_slice(&(footer.len() as u32).to_le_bytes());
     object.extend_from_slice(PARQUET_MAGIC);
     object
+}
+
+fn bootstrapped_file(
+    path: &str,
+    size_bytes: u64,
+    partition_values: BTreeMap<String, Option<String>>,
+    metadata: BrowserParquetFileMetadata,
+) -> BootstrappedBrowserFile {
+    BootstrappedBrowserFile::new(path, size_bytes, partition_values, metadata)
+        .expect("valid bootstrapped files should construct")
+}
+
+fn required_field(name: &str, physical_type: BrowserParquetPhysicalType) -> BrowserParquetField {
+    BrowserParquetField {
+        name: name.to_string(),
+        physical_type,
+        logical_type: None,
+        converted_type: None,
+        repetition: BrowserParquetRepetition::Required,
+        nullable: false,
+        max_definition_level: 0,
+        max_repetition_level: 0,
+        type_length: None,
+        precision: None,
+        scale: None,
+    }
+}
+
+fn sample_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
+    BootstrappedBrowserSnapshot::new(
+        "gs://axon-fixtures/sample_table",
+        7,
+        vec![
+            bootstrapped_file(
+                "category=A/part-000.parquet",
+                100,
+                BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
+                BrowserParquetFileMetadata {
+                    object_size_bytes: 100,
+                    footer_length_bytes: 32,
+                    row_group_count: 1,
+                    row_count: 2,
+                    fields: vec![
+                        required_field("id", BrowserParquetPhysicalType::Int32),
+                        required_field("value", BrowserParquetPhysicalType::Int32),
+                    ],
+                    field_stats: BTreeMap::new(),
+                },
+            ),
+            bootstrapped_file(
+                "category=B/part-001.parquet",
+                120,
+                BTreeMap::from([("category".to_string(), Some("B".to_string()))]),
+                BrowserParquetFileMetadata {
+                    object_size_bytes: 120,
+                    footer_length_bytes: 40,
+                    row_group_count: 1,
+                    row_count: 3,
+                    fields: vec![
+                        required_field("id", BrowserParquetPhysicalType::Int32),
+                        required_field("value", BrowserParquetPhysicalType::Int32),
+                    ],
+                    field_stats: BTreeMap::new(),
+                },
+            ),
+            bootstrapped_file(
+                "category=C/part-002.parquet",
+                140,
+                BTreeMap::from([("category".to_string(), Some("C".to_string()))]),
+                BrowserParquetFileMetadata {
+                    object_size_bytes: 140,
+                    footer_length_bytes: 48,
+                    row_group_count: 1,
+                    row_count: 4,
+                    fields: vec![
+                        required_field("id", BrowserParquetPhysicalType::Int32),
+                        required_field("value", BrowserParquetPhysicalType::Int32),
+                    ],
+                    field_stats: BTreeMap::new(),
+                },
+            ),
+        ],
+    )
+    .expect("sample bootstrapped snapshots should construct")
+}
+
+fn null_partition_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
+    BootstrappedBrowserSnapshot::new(
+        "gs://axon-fixtures/null_partition_table",
+        9,
+        vec![
+            bootstrapped_file(
+                "region=NULL/part-000.parquet",
+                80,
+                BTreeMap::from([("region".to_string(), None)]),
+                BrowserParquetFileMetadata {
+                    object_size_bytes: 80,
+                    footer_length_bytes: 24,
+                    row_group_count: 1,
+                    row_count: 2,
+                    fields: vec![required_field("id", BrowserParquetPhysicalType::Int32)],
+                    field_stats: BTreeMap::new(),
+                },
+            ),
+            bootstrapped_file(
+                "region=us-east/part-001.parquet",
+                90,
+                BTreeMap::from([("region".to_string(), Some("us-east".to_string()))]),
+                BrowserParquetFileMetadata {
+                    object_size_bytes: 90,
+                    footer_length_bytes: 28,
+                    row_group_count: 1,
+                    row_count: 3,
+                    fields: vec![required_field("id", BrowserParquetPhysicalType::Int32)],
+                    field_stats: BTreeMap::new(),
+                },
+            ),
+        ],
+    )
+    .expect("null-partition bootstrapped snapshots should construct")
+}
+
+fn stats_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
+    BootstrappedBrowserSnapshot::new(
+        "gs://axon-fixtures/stats_table",
+        10,
+        vec![
+            bootstrapped_file(
+                "category=A/part-000.parquet",
+                100,
+                BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
+                BrowserParquetFileMetadata {
+                    object_size_bytes: 100,
+                    footer_length_bytes: 32,
+                    row_group_count: 1,
+                    row_count: 2,
+                    fields: vec![
+                        required_field("id", BrowserParquetPhysicalType::Int32),
+                        required_field("value", BrowserParquetPhysicalType::Int32),
+                    ],
+                    field_stats: BTreeMap::from([
+                        (
+                            "id".to_string(),
+                            BrowserParquetFieldStats {
+                                min_i64: Some(1),
+                                max_i64: Some(3),
+                                null_count: Some(0),
+                            },
+                        ),
+                        (
+                            "value".to_string(),
+                            BrowserParquetFieldStats {
+                                min_i64: Some(10),
+                                max_i64: Some(30),
+                                null_count: Some(0),
+                            },
+                        ),
+                    ]),
+                },
+            ),
+            bootstrapped_file(
+                "category=B/part-001.parquet",
+                120,
+                BTreeMap::from([("category".to_string(), Some("B".to_string()))]),
+                BrowserParquetFileMetadata {
+                    object_size_bytes: 120,
+                    footer_length_bytes: 40,
+                    row_group_count: 1,
+                    row_count: 3,
+                    fields: vec![
+                        required_field("id", BrowserParquetPhysicalType::Int32),
+                        required_field("value", BrowserParquetPhysicalType::Int32),
+                    ],
+                    field_stats: BTreeMap::from([
+                        (
+                            "id".to_string(),
+                            BrowserParquetFieldStats {
+                                min_i64: Some(2),
+                                max_i64: Some(5),
+                                null_count: Some(0),
+                            },
+                        ),
+                        (
+                            "value".to_string(),
+                            BrowserParquetFieldStats {
+                                min_i64: Some(20),
+                                max_i64: Some(50),
+                                null_count: Some(0),
+                            },
+                        ),
+                    ]),
+                },
+            ),
+            bootstrapped_file(
+                "category=C/part-002.parquet",
+                140,
+                BTreeMap::from([("category".to_string(), Some("C".to_string()))]),
+                BrowserParquetFileMetadata {
+                    object_size_bytes: 140,
+                    footer_length_bytes: 48,
+                    row_group_count: 1,
+                    row_count: 4,
+                    fields: vec![
+                        required_field("id", BrowserParquetPhysicalType::Int32),
+                        required_field("value", BrowserParquetPhysicalType::Int32),
+                    ],
+                    field_stats: BTreeMap::from([
+                        (
+                            "id".to_string(),
+                            BrowserParquetFieldStats {
+                                min_i64: Some(6),
+                                max_i64: Some(6),
+                                null_count: Some(0),
+                            },
+                        ),
+                        (
+                            "value".to_string(),
+                            BrowserParquetFieldStats {
+                                min_i64: Some(60),
+                                max_i64: Some(60),
+                                null_count: Some(0),
+                            },
+                        ),
+                    ]),
+                },
+            ),
+        ],
+    )
+    .expect("stats bootstrapped snapshots should construct")
 }

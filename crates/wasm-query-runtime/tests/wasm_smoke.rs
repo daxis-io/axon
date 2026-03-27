@@ -2,12 +2,14 @@
 
 use query_contract::{
     BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget, QueryErrorCode,
+    QueryRequest,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 use wasm_query_runtime::{
-    runtime_target, BootstrappedBrowserSnapshot, BrowserObjectSource, BrowserParquetField,
-    BrowserParquetFileMetadata, BrowserRuntimeConfig, BrowserRuntimeSession,
-    MaterializedBrowserFile, MaterializedBrowserSnapshot,
+    runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserObjectSource,
+    BrowserParquetField, BrowserParquetFileMetadata, BrowserParquetPhysicalType,
+    BrowserParquetRepetition, BrowserRuntimeConfig, BrowserRuntimeSession, MaterializedBrowserFile,
+    MaterializedBrowserSnapshot,
 };
 
 #[wasm_bindgen_test]
@@ -59,24 +61,24 @@ fn preflight_api_surface_constructs_futures_and_summaries_in_wasm() {
             .expect("duplicate-free snapshots should construct in wasm");
     let metadata_read = session.read_parquet_metadata_for_file(&file);
     let snapshot_bootstrap = session.bootstrap_snapshot_metadata(&snapshot);
-    let summarized = BootstrappedBrowserSnapshot {
-        table_uri: snapshot.table_uri().to_string(),
-        snapshot_version: snapshot.snapshot_version(),
-        active_files: vec![wasm_query_runtime::BootstrappedBrowserFile {
-            path: file.path().to_string(),
-            size_bytes: file.size_bytes(),
-            partition_values: file.partition_values().clone(),
-            metadata: BrowserParquetFileMetadata {
+    let summarized = BootstrappedBrowserSnapshot::new(
+        snapshot.table_uri(),
+        snapshot.snapshot_version(),
+        vec![BootstrappedBrowserFile::new(
+            file.path(),
+            file.size_bytes(),
+            file.partition_values().clone(),
+            BrowserParquetFileMetadata {
                 object_size_bytes: 128,
                 footer_length_bytes: 16,
                 row_group_count: 0,
                 row_count: 0,
                 fields: vec![BrowserParquetField {
                     name: "id".to_string(),
-                    physical_type: "INT32".to_string(),
+                    physical_type: BrowserParquetPhysicalType::Int32,
                     logical_type: None,
                     converted_type: None,
-                    repetition: "REQUIRED".to_string(),
+                    repetition: BrowserParquetRepetition::Required,
                     nullable: false,
                     max_definition_level: 0,
                     max_repetition_level: 0,
@@ -84,9 +86,12 @@ fn preflight_api_surface_constructs_futures_and_summaries_in_wasm() {
                     precision: None,
                     scale: None,
                 }],
+                field_stats: std::collections::BTreeMap::new(),
             },
-        }],
-    }
+        )
+        .expect("valid bootstrapped files should construct in wasm")],
+    )
+    .expect("duplicate-free snapshots should construct in wasm")
     .summarize()
     .expect("uniform synthetic snapshots should summarize in wasm");
 
@@ -122,6 +127,61 @@ fn browser_runtime_materializes_https_descriptors_in_wasm() {
         materialized.active_files()[0].object_source().url(),
         descriptor.active_files[0].url
     );
+}
+
+#[wasm_bindgen_test]
+fn browser_runtime_analysis_and_planning_apis_construct_in_wasm() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported in wasm");
+    let shape = session
+        .analyze_query_shape("SELECT id FROM axon_table ORDER BY id LIMIT 1")
+        .expect("supported browser queries should analyze in wasm");
+    let snapshot = BootstrappedBrowserSnapshot::new(
+        "gs://axon-fixtures/sample_table",
+        4,
+        vec![BootstrappedBrowserFile::new(
+            "part-000.parquet",
+            128,
+            std::collections::BTreeMap::new(),
+            BrowserParquetFileMetadata {
+                object_size_bytes: 128,
+                footer_length_bytes: 16,
+                row_group_count: 0,
+                row_count: 0,
+                fields: vec![BrowserParquetField {
+                    name: "id".to_string(),
+                    physical_type: BrowserParquetPhysicalType::Int32,
+                    logical_type: None,
+                    converted_type: None,
+                    repetition: BrowserParquetRepetition::Required,
+                    nullable: false,
+                    max_definition_level: 0,
+                    max_repetition_level: 0,
+                    type_length: None,
+                    precision: None,
+                    scale: None,
+                }],
+                field_stats: std::collections::BTreeMap::new(),
+            },
+        )
+        .expect("valid bootstrapped files should construct in wasm")],
+    )
+    .expect("valid bootstrapped snapshots should construct in wasm");
+
+    let planned = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table ORDER BY id LIMIT 1",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("matching requests should plan in wasm");
+
+    assert_eq!(shape.referenced_columns, vec!["id"]);
+    assert_eq!(planned.candidate_file_count, 1);
+    assert_eq!(planned.query_shape.limit, Some(1));
 }
 
 #[wasm_bindgen_test]

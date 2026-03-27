@@ -4200,6 +4200,7 @@ dependencies = [
  "parquet",
  "query-contract",
  "reqwest",
+ "sqlparser",
  "tokio",
  "wasm-bindgen-test",
  "wasm-http-object-store",

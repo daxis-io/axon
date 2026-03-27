@@ -34,8 +34,11 @@ cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --tar
 - `BrowserRuntimeSession::materialize_snapshot(&descriptor)` converts a shared HTTPS-only `BrowserHttpSnapshotDescriptor` into runtime-owned validated object sources while preserving file order and metadata without performing any network I/O.
 - `BrowserRuntimeSession::probe(&source, range)` delegates exact range reads to `crates/wasm-http-object-store` without reimplementing HTTP logic.
 - `BrowserRuntimeSession::read_parquet_footer_for_file(&file)` validates descriptor size against observed object metadata while bootstrapping raw footer bytes.
-- `BrowserRuntimeSession::read_parquet_metadata_for_file(&file)` decodes typed Parquet file metadata from those footer bytes.
+- `BrowserRuntimeSession::read_parquet_metadata_for_file(&file)` decodes strongly typed Parquet file metadata from those footer bytes, including per-file integer `BrowserParquetFieldStats` min/max/null-count summaries when footer statistics are present.
+- `BootstrappedBrowserFile::new(...)` and `BootstrappedBrowserSnapshot::new(...)` now validate size/path invariants up front and expose bootstrapped state through read-only accessors instead of public mutable fields.
 - `BrowserRuntimeSession::bootstrap_snapshot_metadata(&snapshot)` now buffers metadata fetches up to the configured concurrency limit and enforces a snapshot-level deadline, while `BootstrappedBrowserSnapshot::{validate_uniform_schema,summarize}` produces deterministic Parquet payload-field summaries plus sorted partition-column names and row/byte totals without attempting browser SQL execution.
+- `BrowserRuntimeSession::analyze_query_shape(&self, sql)` validates the current read-only browser SQL envelope over `axon_table` and returns a deterministic `BrowserQueryShape` without attempting execution.
+- `BrowserRuntimeSession::plan_query(&self, snapshot, request)` binds a supported `QueryRequest` to a bootstrapped snapshot and returns a `BrowserPlannedQuery` candidate-file set plus `BrowserPruningSummary`, including lossless partition pruning for `=`, `IN`, `IS NULL`, and `IS NOT NULL` filters and integer footer-stat pruning for `=`, `>`, `>=`, `<`, and `<=` predicates when complete file stats are available.
 - The runtime rejects multi-partition execution as a structured native fallback, rejects unsupported object URL schemes during source construction, rejects cloud credentials as a security policy violation, and allows plain HTTP only for loopback host-side tests.
 
 Local validation:
@@ -46,7 +49,7 @@ cargo test -p wasm-query-runtime --locked
 cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --locked --test wasm_smoke
 ```
 
-This slice is intentionally small: it does not register tables with DataFusion, execute browser SQL, expose `browser-sdk`, orchestrate `query-router`, or implement any `services/query-api` behavior.
+This slice is intentionally small: it does not register tables with DataFusion, execute browser SQL, expose `browser-sdk`, orchestrate `query-router`, or implement any `services/query-api` behavior. The current browser output is a deterministic planning/pruning layer over bootstrapped Parquet metadata, not an executing browser SQL engine.
 
 ## Native Runtime Slice
 
@@ -172,7 +175,7 @@ cargo test -p delta-control-plane --locked
 ```
 
 Cross-crate handoff coverage in `crates/delta-control-plane/tests` checks the resolved `table_uri` / `snapshot_version` pair against `crates/native-query-runtime`, validates the descriptor's active-file metadata against the local fixture without changing `QueryRequest`, proves browser HTTP URL attachment preserves file order and metadata, proves invalid or duplicate browser URL inputs fail deterministically without leaking query strings, and confirms the resulting HTTPS descriptors materialize cleanly into `crates/wasm-query-runtime` runtime-owned object sources.
-Additional cross-crate browser-preflight coverage now resolves real local Delta snapshots, serves their Parquet files over loopback HTTP in host-side tests, bootstraps runtime-owned Parquet metadata and snapshot summaries through `crates/wasm-query-runtime`, and proves the resulting `file_count`, `snapshot_version`, `total_bytes`, and `total_rows` remain aligned with the resolved snapshot descriptor and the native `COUNT(*)` oracle.
+Additional cross-crate browser-preflight coverage now resolves real local Delta snapshots, serves their Parquet files over loopback HTTP in host-side tests, bootstraps runtime-owned Parquet metadata and snapshot summaries through `crates/wasm-query-runtime`, and proves the resulting `file_count`, `snapshot_version`, `total_bytes`, `total_rows`, integer footer stats, and curated browser-planning candidate-file counts remain aligned with the resolved snapshot descriptor and the native `COUNT(*)` / `files_touched` / `files_skipped` oracle.
 Authenticated HTTP service work remains out of repo: there is still no `services/query-api` directory here, so signed URL issuance, proxy reads, audit logging, request correlation, and CORS/origin validation remain external blockers rather than shipped repository scope.
 
 ## HTTP Range-Read Slice
@@ -198,7 +201,7 @@ This slice is intentionally small: it does not register tables with DataFusion, 
 ## Repository Layout
 
 - `crates/` contains the Rust workspace packages.
-- `tests/conformance/` contains scaffold checks plus latest-snapshot and snapshot-version native SQL corpora with golden expectations.
+- `tests/conformance/` contains scaffold checks plus native SQL corpora whose partition-pruning expectations now serve as the local oracle for narrow browser-planning parity coverage.
 - `tests/perf/` contains performance test scaffolding.
 - `tests/security/` contains security notes and will grow into service-level secret/CORS coverage once `services/query-api` exists.
 - `.github/workflows/ci.yml` contains the CI configuration.

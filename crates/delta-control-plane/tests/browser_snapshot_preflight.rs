@@ -6,8 +6,9 @@ use native_query_runtime::{execute_query, DEFAULT_TABLE_NAME};
 use query_contract::{ExecutionTarget, QueryErrorCode, QueryRequest, SnapshotResolutionRequest};
 use support::{LoopbackObjectServer, TestTableFixture};
 use wasm_query_runtime::{
-    BrowserObjectSource, BrowserRuntimeConfig, BrowserRuntimeSession, MaterializedBrowserFile,
-    MaterializedBrowserSnapshot,
+    BrowserObjectSource, BrowserParquetConvertedType, BrowserParquetLogicalType,
+    BrowserParquetPhysicalType, BrowserParquetRepetition, BrowserRuntimeConfig,
+    BrowserRuntimeSession, MaterializedBrowserFile, MaterializedBrowserSnapshot,
 };
 
 #[test]
@@ -61,10 +62,10 @@ fn latest_resolved_snapshot_bootstraps_browser_preflight_and_matches_native_row_
         vec![
             wasm_query_runtime::BrowserParquetField {
                 name: "id".to_string(),
-                physical_type: "INT32".to_string(),
+                physical_type: BrowserParquetPhysicalType::Int32,
                 logical_type: None,
                 converted_type: None,
-                repetition: "REQUIRED".to_string(),
+                repetition: BrowserParquetRepetition::Required,
                 nullable: false,
                 max_definition_level: 0,
                 max_repetition_level: 0,
@@ -74,10 +75,10 @@ fn latest_resolved_snapshot_bootstraps_browser_preflight_and_matches_native_row_
             },
             wasm_query_runtime::BrowserParquetField {
                 name: "value".to_string(),
-                physical_type: "INT32".to_string(),
+                physical_type: BrowserParquetPhysicalType::Int32,
                 logical_type: None,
                 converted_type: None,
-                repetition: "REQUIRED".to_string(),
+                repetition: BrowserParquetRepetition::Required,
                 nullable: false,
                 max_definition_level: 0,
                 max_repetition_level: 0,
@@ -92,13 +93,13 @@ fn latest_resolved_snapshot_bootstraps_browser_preflight_and_matches_native_row_
         vec!["category".to_string()]
     );
 
-    let first_file = &bootstrapped.active_files[0];
+    let first_file = &bootstrapped.active_files()[0];
     assert_eq!(
-        first_file.partition_values.get("category"),
+        first_file.partition_values().get("category"),
         Some(&Some("A".to_string()))
     );
-    assert_eq!(first_file.metadata.row_group_count, 1);
-    assert_eq!(first_file.metadata.row_count, 2);
+    assert_eq!(first_file.metadata().row_group_count, 1);
+    assert_eq!(first_file.metadata().row_count, 2);
 }
 
 #[test]
@@ -141,10 +142,10 @@ fn historical_resolved_snapshot_bootstraps_browser_preflight_and_matches_native_
         vec![
             wasm_query_runtime::BrowserParquetField {
                 name: "id".to_string(),
-                physical_type: "INT32".to_string(),
+                physical_type: BrowserParquetPhysicalType::Int32,
                 logical_type: None,
                 converted_type: None,
-                repetition: "REQUIRED".to_string(),
+                repetition: BrowserParquetRepetition::Required,
                 nullable: false,
                 max_definition_level: 0,
                 max_repetition_level: 0,
@@ -154,10 +155,10 @@ fn historical_resolved_snapshot_bootstraps_browser_preflight_and_matches_native_
             },
             wasm_query_runtime::BrowserParquetField {
                 name: "category".to_string(),
-                physical_type: "BYTE_ARRAY".to_string(),
-                logical_type: Some("String".to_string()),
-                converted_type: Some("UTF8".to_string()),
-                repetition: "REQUIRED".to_string(),
+                physical_type: BrowserParquetPhysicalType::ByteArray,
+                logical_type: Some(BrowserParquetLogicalType::String),
+                converted_type: Some(BrowserParquetConvertedType::Utf8),
+                repetition: BrowserParquetRepetition::Required,
                 nullable: false,
                 max_definition_level: 0,
                 max_repetition_level: 0,
@@ -167,10 +168,10 @@ fn historical_resolved_snapshot_bootstraps_browser_preflight_and_matches_native_
             },
             wasm_query_runtime::BrowserParquetField {
                 name: "value".to_string(),
-                physical_type: "INT32".to_string(),
+                physical_type: BrowserParquetPhysicalType::Int32,
                 logical_type: None,
                 converted_type: None,
-                repetition: "REQUIRED".to_string(),
+                repetition: BrowserParquetRepetition::Required,
                 nullable: false,
                 max_definition_level: 0,
                 max_repetition_level: 0,
@@ -181,7 +182,7 @@ fn historical_resolved_snapshot_bootstraps_browser_preflight_and_matches_native_
         ]
     );
     assert!(summary.schema.partition_columns.is_empty());
-    assert!(bootstrapped.active_files[0].partition_values.is_empty());
+    assert!(bootstrapped.active_files()[0].partition_values().is_empty());
 }
 
 #[test]
@@ -236,6 +237,83 @@ fn bootstrap_snapshot_metadata_rejects_descriptor_size_mismatches_for_real_fixtu
     assert!(error
         .message
         .contains(materialized.active_files()[0].path()));
+}
+
+#[test]
+fn browser_preflight_stats_and_planning_match_native_partitioned_metrics() {
+    let fixture = TestTableFixture::create_partitioned();
+    let resolved_snapshot = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect("latest snapshot should resolve");
+    let server = LoopbackObjectServer::from_fixture_paths(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+    );
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default browser runtime config should be supported");
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let bootstrapped = runtime()
+        .block_on(session.bootstrap_snapshot_metadata(&materialized))
+        .expect("browser snapshot metadata bootstrap should succeed");
+    let first_file_stats = &bootstrapped.active_files()[0].metadata().field_stats;
+
+    assert_eq!(first_file_stats["id"].min_i64, Some(1));
+    assert_eq!(first_file_stats["id"].max_i64, Some(3));
+    assert_eq!(first_file_stats["value"].min_i64, Some(10));
+    assert_eq!(first_file_stats["value"].max_i64, Some(30));
+    assert_eq!(first_file_stats["value"].null_count, Some(0));
+
+    for (sql, expected_files_touched, expected_files_skipped) in [
+        (
+            format!("SELECT id FROM {DEFAULT_TABLE_NAME} ORDER BY id"),
+            3_u64,
+            0_u64,
+        ),
+        (
+            format!("SELECT id, value FROM {DEFAULT_TABLE_NAME} WHERE category = 'C' ORDER BY id"),
+            1_u64,
+            2_u64,
+        ),
+        (
+            format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'Z' ORDER BY id"),
+            0_u64,
+            3_u64,
+        ),
+        (
+            format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE value >= 40 ORDER BY id"),
+            2_u64,
+            1_u64,
+        ),
+    ] {
+        let browser_plan = session
+            .plan_query(
+                &bootstrapped,
+                &QueryRequest {
+                    snapshot_version: Some(resolved_snapshot.snapshot_version),
+                    ..QueryRequest::new(
+                        &resolved_snapshot.table_uri,
+                        sql.clone(),
+                        ExecutionTarget::BrowserWasm,
+                    )
+                },
+            )
+            .expect("browser planner should accept supported partitioned queries");
+        let native_result = execute_query(QueryRequest {
+            snapshot_version: Some(resolved_snapshot.snapshot_version),
+            ..QueryRequest::new(&resolved_snapshot.table_uri, sql, ExecutionTarget::Native)
+        })
+        .expect("native query should execute");
+
+        assert_eq!(browser_plan.candidate_file_count, expected_files_touched);
+        assert_eq!(browser_plan.pruning.files_pruned, expected_files_skipped);
+        assert_eq!(native_result.metrics.files_touched, expected_files_touched);
+        assert_eq!(native_result.metrics.files_skipped, expected_files_skipped);
+    }
 }
 
 fn materialize_loopback_snapshot(
