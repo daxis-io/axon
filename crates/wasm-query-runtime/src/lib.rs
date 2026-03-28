@@ -6,7 +6,6 @@
 //! runtime-owned object sources, and can bootstrap bounded raw Parquet footer bytes without
 //! starting DataFusion registration or browser SQL execution.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -18,14 +17,7 @@ use futures_util::{
     pin_mut,
     stream::{self, StreamExt, TryStreamExt},
 };
-use parquet::basic::{
-    ConvertedType as ParquetConvertedType,
-    EdgeInterpolationAlgorithm as ParquetEdgeInterpolationAlgorithm,
-    LogicalType as ParquetLogicalType, Repetition as ParquetRepetition,
-    TimeUnit as ParquetTimeUnit, Type as ParquetPhysicalType,
-};
-use parquet::file::reader::{FileReader as ParquetFileReader, SerializedFileReader};
-use parquet::file::{metadata::ParquetMetaDataReader, statistics::Statistics as ParquetStatistics};
+#[cfg(test)]
 use parquet::record::Field as ParquetField;
 use query_contract::{
     validate_browser_object_url, BrowserHttpSnapshotDescriptor, BrowserObjectUrlPolicy,

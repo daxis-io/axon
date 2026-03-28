@@ -1,4 +1,26 @@
-use super::*;
+use std::collections::{BTreeMap, BTreeSet};
+
+use bytes::Bytes;
+use parquet::basic::{
+    ConvertedType as ParquetConvertedType,
+    EdgeInterpolationAlgorithm as ParquetEdgeInterpolationAlgorithm,
+    LogicalType as ParquetLogicalType, Repetition as ParquetRepetition,
+    TimeUnit as ParquetTimeUnit, Type as ParquetPhysicalType,
+};
+use parquet::file::reader::{FileReader as ParquetFileReader, SerializedFileReader};
+use parquet::file::{metadata::ParquetMetaDataReader, statistics::Statistics as ParquetStatistics};
+use parquet::record::Field as ParquetField;
+use query_contract::{FallbackReason, PartitionColumnType, QueryError, QueryErrorCode};
+use wasm_http_object_store::HttpRangeReadResult;
+
+use crate::{
+    execution_runtime_error, merge_partition_values_into_row, normalize_name,
+    parquet_protocol_error, runtime_target, BrowserInputRow, BrowserParquetConvertedType,
+    BrowserParquetEdgeInterpolationAlgorithm, BrowserParquetField, BrowserParquetFieldStats,
+    BrowserParquetFileMetadata, BrowserParquetFooter, BrowserParquetLogicalType,
+    BrowserParquetPhysicalType, BrowserParquetRepetition, BrowserParquetTimeUnit,
+    BrowserScalarValue, MaterializedBrowserFile, PARQUET_MAGIC, PARQUET_TRAILER_SIZE_BYTES,
+};
 
 pub(super) fn decode_parquet_input_rows(
     file: &MaterializedBrowserFile,
