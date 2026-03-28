@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use query_contract::{
     BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey, CapabilityState,
-    ExecutionTarget, FallbackReason, QueryErrorCode, QueryRequest,
+    ExecutionTarget, FallbackReason, PartitionColumnType, QueryErrorCode, QueryRequest,
 };
 use serde::Deserialize;
 use wasm_http_object_store::{HttpByteRange, HttpRangeReader};
@@ -549,6 +549,48 @@ fn build_execution_plan_rejects_non_lowerable_filters() {
 }
 
 #[test]
+fn build_execution_plan_rejects_null_compare_literals() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+
+    let error = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE value = NULL ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect_err("null compare literals should remain outside the browser execution envelope");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("WHERE filters"));
+}
+
+#[test]
+fn build_execution_plan_rejects_null_in_list_literals() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+
+    let error = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE value IN (NULL) ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect_err("null in-list literals should remain outside the browser execution envelope");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("WHERE filters"));
+}
+
+#[test]
 fn execute_plan_rejects_snapshot_identity_mismatches() {
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
         .expect("default config should be supported");
@@ -618,6 +660,154 @@ fn execute_plan_rejects_missing_candidate_paths_in_materialized_snapshots() {
 
     assert_eq!(error.code, QueryErrorCode::InvalidRequest);
     assert!(error.message.contains("category=B/part-001.parquet"));
+}
+
+#[test]
+fn execute_plan_enforces_the_execution_deadline() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig {
+        request_timeout_ms: 200,
+        execution_timeout_ms: 25,
+        ..BrowserRuntimeConfig::default()
+    })
+    .expect("short execution timeout configuration should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+    let plan = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE category = 'A' ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("single-file execution plans should build");
+    let (url, server) = spawn_stalling_server(Duration::from_millis(70));
+    let materialized = MaterializedBrowserSnapshot::new_with_partition_column_types(
+        snapshot.table_uri(),
+        snapshot.snapshot_version(),
+        vec![MaterializedBrowserFile::new(
+            "category=A/part-000.parquet",
+            100,
+            BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
+            BrowserObjectSource::from_url(&url)
+                .expect("loopback HTTP should be allowed in host tests"),
+        )],
+        BTreeMap::from([("category".to_string(), PartitionColumnType::String)]),
+    )
+    .expect("duplicate-free snapshots should construct");
+
+    let error = runtime()
+        .block_on(session.execute_plan(&materialized, &plan))
+        .expect_err("query execution should fail once the deadline is exceeded");
+
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(error.code, QueryErrorCode::ExecutionFailed);
+    assert!(error.message.contains("browser execution"));
+}
+
+#[test]
+fn execute_plan_rejects_entity_tag_mismatches_between_bootstrap_and_execution() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = BootstrappedBrowserSnapshot::new(
+        "gs://axon-fixtures/sample_table",
+        7,
+        vec![bootstrapped_file_with_etag(
+            "part-000.parquet",
+            4,
+            BTreeMap::new(),
+            BrowserParquetFileMetadata {
+                object_size_bytes: 4,
+                footer_length_bytes: 2,
+                row_group_count: 1,
+                row_count: 1,
+                fields: vec![required_field("id", BrowserParquetPhysicalType::Int32)],
+                field_stats: BTreeMap::new(),
+            },
+            Some("\"v1\""),
+        )],
+    )
+    .expect("single-file snapshots should construct");
+    let plan = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("direct projection execution plans should build");
+    let (url, requests, server) = spawn_test_server(|request| {
+        assert!(!request.headers.contains_key("range"));
+        TestResponse {
+            status_line: "200 OK",
+            headers: vec![
+                ("Content-Length".to_string(), "4".to_string()),
+                ("ETag".to_string(), "\"v2\"".to_string()),
+            ],
+            body: b"ABCD".to_vec(),
+        }
+    });
+    let materialized = MaterializedBrowserSnapshot::new(
+        snapshot.table_uri(),
+        snapshot.snapshot_version(),
+        vec![MaterializedBrowserFile::new(
+            "part-000.parquet",
+            4,
+            BTreeMap::new(),
+            BrowserObjectSource::from_url(&url)
+                .expect("loopback HTTP should be allowed in host tests"),
+        )],
+    )
+    .expect("duplicate-free snapshots should construct");
+
+    let error = runtime()
+        .block_on(session.execute_plan(&materialized, &plan))
+        .expect_err("bootstrap-to-execution entity-tag drift should fail");
+
+    let request = finish_request(server, requests);
+    assert!(!request.headers.contains_key("range"));
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert!(error.message.contains("entity tag"));
+}
+
+#[test]
+fn build_execution_plan_requires_bootstrapped_entity_tags_for_candidate_files() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = BootstrappedBrowserSnapshot::new(
+        "gs://axon-fixtures/sample_table",
+        7,
+        vec![bootstrapped_file_without_etag(
+            "part-000.parquet",
+            4,
+            BTreeMap::new(),
+            BrowserParquetFileMetadata {
+                object_size_bytes: 4,
+                footer_length_bytes: 2,
+                row_group_count: 1,
+                row_count: 1,
+                fields: vec![required_field("id", BrowserParquetPhysicalType::Int32)],
+                field_stats: BTreeMap::new(),
+            },
+        )],
+    )
+    .expect("single-file snapshots should construct");
+
+    let error = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect_err("candidate files without entity tags should require native fallback");
+
+    assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+    assert!(error.message.contains("entity tag"));
 }
 
 #[test]
@@ -1050,6 +1240,10 @@ fn materialize_snapshot_preserves_descriptor_metadata_and_file_order() {
     let descriptor = BrowserHttpSnapshotDescriptor {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 7,
+        partition_column_types: BTreeMap::from([
+            ("category".to_string(), PartitionColumnType::String),
+            ("region".to_string(), PartitionColumnType::String),
+        ]),
         active_files: vec![
             BrowserHttpFileDescriptor {
                 path: "z-last.parquet".to_string(),
@@ -1076,6 +1270,10 @@ fn materialize_snapshot_preserves_descriptor_metadata_and_file_order() {
     assert_eq!(materialized.table_uri(), descriptor.table_uri);
     assert_eq!(materialized.snapshot_version(), descriptor.snapshot_version);
     assert_eq!(
+        materialized.partition_column_types(),
+        &descriptor.partition_column_types
+    );
+    assert_eq!(
         materialized.active_files().len(),
         descriptor.active_files.len()
     );
@@ -1101,6 +1299,7 @@ fn materialize_snapshot_allows_empty_active_file_lists() {
     let descriptor = BrowserHttpSnapshotDescriptor {
         table_uri: "gs://axon-fixtures/empty_table".to_string(),
         snapshot_version: 3,
+        partition_column_types: BTreeMap::new(),
         active_files: Vec::new(),
     };
 
@@ -1175,6 +1374,19 @@ fn request_timeouts_must_be_positive() {
 }
 
 #[test]
+fn execution_timeouts_must_be_positive() {
+    let error = BrowserRuntimeSession::new(BrowserRuntimeConfig {
+        execution_timeout_ms: 0,
+        ..BrowserRuntimeConfig::default()
+    })
+    .expect_err("zero execution timeouts should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert_eq!(error.fallback_reason, None);
+    assert_eq!(error.target, ExecutionTarget::BrowserWasm);
+}
+
+#[test]
 fn snapshot_preflight_limits_must_be_positive() {
     let concurrency_error = BrowserRuntimeSession::new(BrowserRuntimeConfig {
         snapshot_preflight_max_concurrency: 0,
@@ -1225,6 +1437,7 @@ fn materialize_snapshot_rejects_duplicate_paths() {
     let descriptor = BrowserHttpSnapshotDescriptor {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 12,
+        partition_column_types: BTreeMap::new(),
         active_files: vec![
             BrowserHttpFileDescriptor {
                 path: duplicate_path.clone(),
@@ -1256,6 +1469,7 @@ fn materialize_snapshot_rejects_invalid_url_syntax_without_leaking_query_or_frag
     let descriptor = BrowserHttpSnapshotDescriptor {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 1,
+        partition_column_types: BTreeMap::new(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
             url: "https://signed example.test/object?sig=super-secret#fragment".to_string(),
@@ -1281,6 +1495,7 @@ fn materialize_snapshot_rejects_unsupported_schemes_without_leaking_query_or_fra
     let descriptor = BrowserHttpSnapshotDescriptor {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 1,
+        partition_column_types: BTreeMap::new(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
             url: "ftp://signed.example.test/object?sig=super-secret#fragment".to_string(),
@@ -1306,6 +1521,7 @@ fn materialize_snapshot_rejects_non_loopback_plain_http_urls() {
     let descriptor = BrowserHttpSnapshotDescriptor {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 1,
+        partition_column_types: BTreeMap::new(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
             url: "http://example.com/object?sig=super-secret#fragment".to_string(),
@@ -1356,6 +1572,7 @@ fn materialize_snapshot_rejects_loopback_http_even_in_host_tests() {
     let descriptor = BrowserHttpSnapshotDescriptor {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 9,
+        partition_column_types: BTreeMap::new(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
             url: "http://127.0.0.1:8787/object?sig=super-secret#fragment".to_string(),
@@ -2632,8 +2849,41 @@ fn bootstrapped_file(
     partition_values: BTreeMap<String, Option<String>>,
     metadata: BrowserParquetFileMetadata,
 ) -> BootstrappedBrowserFile {
+    BootstrappedBrowserFile::new_with_object_etag(
+        path,
+        size_bytes,
+        partition_values,
+        metadata,
+        Some(format!("\"{path}\"")),
+    )
+    .expect("valid bootstrapped files should construct")
+}
+
+fn bootstrapped_file_without_etag(
+    path: &str,
+    size_bytes: u64,
+    partition_values: BTreeMap<String, Option<String>>,
+    metadata: BrowserParquetFileMetadata,
+) -> BootstrappedBrowserFile {
     BootstrappedBrowserFile::new(path, size_bytes, partition_values, metadata)
         .expect("valid bootstrapped files should construct")
+}
+
+fn bootstrapped_file_with_etag(
+    path: &str,
+    size_bytes: u64,
+    partition_values: BTreeMap<String, Option<String>>,
+    metadata: BrowserParquetFileMetadata,
+    object_etag: Option<&str>,
+) -> BootstrappedBrowserFile {
+    BootstrappedBrowserFile::new_with_object_etag(
+        path,
+        size_bytes,
+        partition_values,
+        metadata,
+        object_etag.map(str::to_string),
+    )
+    .expect("valid bootstrapped files should construct")
 }
 
 fn required_field(name: &str, physical_type: BrowserParquetPhysicalType) -> BrowserParquetField {
@@ -2653,7 +2903,7 @@ fn required_field(name: &str, physical_type: BrowserParquetPhysicalType) -> Brow
 }
 
 fn sample_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
-    BootstrappedBrowserSnapshot::new(
+    BootstrappedBrowserSnapshot::new_with_partition_column_types(
         "gs://axon-fixtures/sample_table",
         7,
         vec![
@@ -2706,12 +2956,13 @@ fn sample_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
                 },
             ),
         ],
+        BTreeMap::from([("category".to_string(), PartitionColumnType::String)]),
     )
     .expect("sample bootstrapped snapshots should construct")
 }
 
 fn null_partition_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
-    BootstrappedBrowserSnapshot::new(
+    BootstrappedBrowserSnapshot::new_with_partition_column_types(
         "gs://axon-fixtures/null_partition_table",
         9,
         vec![
@@ -2742,12 +2993,13 @@ fn null_partition_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
                 },
             ),
         ],
+        BTreeMap::from([("region".to_string(), PartitionColumnType::String)]),
     )
     .expect("null-partition bootstrapped snapshots should construct")
 }
 
 fn stats_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
-    BootstrappedBrowserSnapshot::new(
+    BootstrappedBrowserSnapshot::new_with_partition_column_types(
         "gs://axon-fixtures/stats_table",
         10,
         vec![
@@ -2851,6 +3103,7 @@ fn stats_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
                 },
             ),
         ],
+        BTreeMap::from([("category".to_string(), PartitionColumnType::String)]),
     )
     .expect("stats bootstrapped snapshots should construct")
 }

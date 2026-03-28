@@ -9,7 +9,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_timer::Delay;
@@ -29,8 +29,8 @@ use parquet::file::{metadata::ParquetMetaDataReader, statistics::Statistics as P
 use parquet::record::Field as ParquetField;
 use query_contract::{
     validate_browser_object_url, BrowserHttpSnapshotDescriptor, BrowserObjectUrlPolicy,
-    CapabilityKey, CapabilityState, ExecutionTarget, FallbackReason, QueryError, QueryErrorCode,
-    QueryRequest,
+    CapabilityKey, CapabilityState, ExecutionTarget, FallbackReason, PartitionColumnType,
+    QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest,
 };
 use reqwest::Url;
 use sqlparser::ast::{
@@ -44,10 +44,24 @@ use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 use wasm_http_object_store::{HttpByteRange, HttpRangeReadResult, HttpRangeReader};
 
+mod execution;
+mod lowering;
+mod parquet_support;
+
+use execution::{execute_aggregate_plan_rows, execute_non_aggregate_plan_rows};
+use lowering::lower_browser_execution_plan;
+#[cfg(test)]
+use parquet_support::parquet_row_to_input_row;
+use parquet_support::{
+    decode_parquet_input_rows, format_browser_fields, format_partition_columns,
+    parse_parquet_footer_trailer, parse_parquet_metadata, validate_parquet_footer_read_consistency,
+};
+
 pub const OWNER: &str = "Runtime / engine team";
 pub const RESPONSIBILITY: &str = "Browser-safe query execution for the supported SQL envelope.";
 pub const DEFAULT_TABLE_NAME: &str = "axon_table";
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_EXECUTION_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_SNAPSHOT_PREFLIGHT_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_SNAPSHOT_PREFLIGHT_MAX_CONCURRENCY: usize = 4;
 const MAX_PARQUET_FOOTER_SIZE_BYTES: u64 = 16 * 1024 * 1024;
@@ -75,6 +89,8 @@ pub struct BrowserRuntimeConfig {
     /// Multi-step operations such as Parquet footer bootstrap apply this timeout independently to
     /// the trailer read and the footer read; it is not a single end-to-end deadline.
     pub request_timeout_ms: u64,
+    /// Maximum wall-clock time allowed for end-to-end browser query execution.
+    pub execution_timeout_ms: u64,
     /// Maximum wall-clock time allowed for full snapshot metadata preflight.
     pub snapshot_preflight_timeout_ms: u64,
     /// Maximum number of files whose metadata bootstrap may be in flight concurrently.
@@ -88,6 +104,7 @@ impl Default for BrowserRuntimeConfig {
             object_access_mode: BrowserObjectAccessMode::BrowserSafeHttp,
             allow_cloud_credentials: false,
             request_timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
+            execution_timeout_ms: DEFAULT_EXECUTION_TIMEOUT_MS,
             snapshot_preflight_timeout_ms: DEFAULT_SNAPSHOT_PREFLIGHT_TIMEOUT_MS,
             snapshot_preflight_max_concurrency: DEFAULT_SNAPSHOT_PREFLIGHT_MAX_CONCURRENCY,
         }
@@ -100,6 +117,14 @@ impl BrowserRuntimeConfig {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidRequest,
                 "browser runtime request timeout must be at least 1 ms",
+                runtime_target(),
+            ));
+        }
+
+        if self.execution_timeout_ms == 0 {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidRequest,
+                "browser runtime execution timeout must be at least 1 ms",
                 runtime_target(),
             ));
         }
@@ -221,6 +246,7 @@ pub struct MaterializedBrowserSnapshot {
     table_uri: String,
     snapshot_version: i64,
     active_files: Vec<MaterializedBrowserFile>,
+    partition_column_types: BTreeMap<String, PartitionColumnType>,
 }
 
 impl MaterializedBrowserSnapshot {
@@ -229,12 +255,27 @@ impl MaterializedBrowserSnapshot {
         snapshot_version: i64,
         active_files: Vec<MaterializedBrowserFile>,
     ) -> Result<Self, QueryError> {
+        Self::new_with_partition_column_types(
+            table_uri,
+            snapshot_version,
+            active_files,
+            BTreeMap::new(),
+        )
+    }
+
+    pub fn new_with_partition_column_types(
+        table_uri: impl Into<String>,
+        snapshot_version: i64,
+        active_files: Vec<MaterializedBrowserFile>,
+        partition_column_types: BTreeMap<String, PartitionColumnType>,
+    ) -> Result<Self, QueryError> {
         validate_unique_materialized_paths(&active_files)?;
 
         Ok(Self {
             table_uri: table_uri.into(),
             snapshot_version,
             active_files,
+            partition_column_types,
         })
     }
 
@@ -249,6 +290,10 @@ impl MaterializedBrowserSnapshot {
     pub fn active_files(&self) -> &[MaterializedBrowserFile] {
         &self.active_files
     }
+
+    pub fn partition_column_types(&self) -> &BTreeMap<String, PartitionColumnType> {
+        &self.partition_column_types
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -260,6 +305,7 @@ pub struct BrowserRuntimeSession {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BrowserParquetFooter {
     object_size_bytes: u64,
+    object_etag: Option<String>,
     footer_length_bytes: u32,
     footer_bytes: Bytes,
 }
@@ -268,6 +314,11 @@ impl BrowserParquetFooter {
     /// Total size of the source object in bytes, as derived from the Parquet trailer read.
     pub fn object_size_bytes(&self) -> u64 {
         self.object_size_bytes
+    }
+
+    /// Stable object identity observed during footer bootstrap when the server returned an ETag.
+    pub fn object_etag(&self) -> Option<&str> {
+        self.object_etag.as_deref()
     }
 
     /// Footer length encoded in the Parquet trailer.
@@ -558,6 +609,7 @@ pub struct BootstrappedBrowserFile {
     size_bytes: u64,
     partition_values: BTreeMap<String, Option<String>>,
     metadata: BrowserParquetFileMetadata,
+    object_etag: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -565,12 +617,14 @@ pub struct BootstrappedBrowserSnapshot {
     table_uri: String,
     snapshot_version: i64,
     active_files: Vec<BootstrappedBrowserFile>,
+    partition_column_types: BTreeMap<String, PartitionColumnType>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BrowserSnapshotSchema {
     pub fields: Vec<BrowserParquetField>,
     pub partition_columns: Vec<String>,
+    pub partition_column_types: BTreeMap<String, PartitionColumnType>,
     pub total_row_groups: u64,
     pub total_rows: u64,
     pub total_bytes: u64,
@@ -625,6 +679,7 @@ pub struct BrowserScanPlan {
     candidate_bytes: u64,
     candidate_rows: u64,
     partition_columns: Vec<String>,
+    candidate_object_etags: BTreeMap<String, String>,
     required_columns: Vec<String>,
 }
 
@@ -647,6 +702,10 @@ impl BrowserScanPlan {
 
     pub fn partition_columns(&self) -> &[String] {
         &self.partition_columns
+    }
+
+    pub fn candidate_object_etag(&self, path: &str) -> Option<&str> {
+        self.candidate_object_etags.get(path).map(String::as_str)
     }
 
     pub fn required_columns(&self) -> &[String] {
@@ -801,6 +860,7 @@ impl BrowserExecutionRow {
 pub struct BrowserExecutionResult {
     output_names: Vec<String>,
     rows: Vec<BrowserExecutionRow>,
+    metrics: QueryMetricsSummary,
 }
 
 impl BrowserExecutionResult {
@@ -810,6 +870,10 @@ impl BrowserExecutionResult {
 
     pub fn rows(&self) -> &[BrowserExecutionRow] {
         &self.rows
+    }
+
+    pub fn metrics(&self) -> &QueryMetricsSummary {
+        &self.metrics
     }
 }
 
@@ -879,6 +943,16 @@ impl BootstrappedBrowserFile {
         partition_values: BTreeMap<String, Option<String>>,
         metadata: BrowserParquetFileMetadata,
     ) -> Result<Self, QueryError> {
+        Self::new_with_object_etag(path, size_bytes, partition_values, metadata, None)
+    }
+
+    pub fn new_with_object_etag(
+        path: impl Into<String>,
+        size_bytes: u64,
+        partition_values: BTreeMap<String, Option<String>>,
+        metadata: BrowserParquetFileMetadata,
+        object_etag: Option<String>,
+    ) -> Result<Self, QueryError> {
         let path = path.into();
         if metadata.object_size_bytes != size_bytes {
             return Err(snapshot_validation_error(format!(
@@ -892,6 +966,7 @@ impl BootstrappedBrowserFile {
             size_bytes,
             partition_values,
             metadata,
+            object_etag,
         })
     }
 
@@ -910,6 +985,10 @@ impl BootstrappedBrowserFile {
     pub fn metadata(&self) -> &BrowserParquetFileMetadata {
         &self.metadata
     }
+
+    pub fn object_etag(&self) -> Option<&str> {
+        self.object_etag.as_deref()
+    }
 }
 
 impl BootstrappedBrowserSnapshot {
@@ -918,12 +997,27 @@ impl BootstrappedBrowserSnapshot {
         snapshot_version: i64,
         active_files: Vec<BootstrappedBrowserFile>,
     ) -> Result<Self, QueryError> {
+        Self::new_with_partition_column_types(
+            table_uri,
+            snapshot_version,
+            active_files,
+            BTreeMap::new(),
+        )
+    }
+
+    pub fn new_with_partition_column_types(
+        table_uri: impl Into<String>,
+        snapshot_version: i64,
+        active_files: Vec<BootstrappedBrowserFile>,
+        partition_column_types: BTreeMap<String, PartitionColumnType>,
+    ) -> Result<Self, QueryError> {
         validate_unique_bootstrapped_paths(&active_files)?;
 
         Ok(Self {
             table_uri: table_uri.into(),
             snapshot_version,
             active_files,
+            partition_column_types,
         })
     }
 
@@ -939,17 +1033,27 @@ impl BootstrappedBrowserSnapshot {
         &self.active_files
     }
 
+    pub fn partition_column_types(&self) -> &BTreeMap<String, PartitionColumnType> {
+        &self.partition_column_types
+    }
+
     pub fn validate_uniform_schema(&self) -> Result<BrowserSnapshotSchema, QueryError> {
         let expected_fields = self
             .active_files
             .first()
             .map(|file| file.metadata().fields.clone())
             .unwrap_or_default();
-        let expected_partition_columns = self
-            .active_files
-            .first()
-            .map(|file| file.partition_values().keys().cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
+        let expected_partition_columns = if self.partition_column_types.is_empty() {
+            self.active_files
+                .first()
+                .map(|file| file.partition_values().keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+        } else {
+            self.partition_column_types
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
         let mut total_row_groups = 0_u64;
         let mut total_rows = 0_u64;
         let mut total_bytes = 0_u64;
@@ -997,6 +1101,7 @@ impl BootstrappedBrowserSnapshot {
         Ok(BrowserSnapshotSchema {
             fields: expected_fields,
             partition_columns: expected_partition_columns,
+            partition_column_types: self.partition_column_types.clone(),
             total_row_groups,
             total_rows,
             total_bytes,
@@ -1061,7 +1166,7 @@ impl BrowserRuntimeSession {
         validate_snapshot_request_match(snapshot, request)?;
         let analyzed = analyze_browser_query(&request.sql)?;
         let planned = self.plan_query_from_analyzed(snapshot, &analyzed)?;
-        lower_browser_execution_plan(analyzed.query.as_ref(), &planned)
+        lower_browser_execution_plan(analyzed.query.as_ref(), snapshot, &planned)
     }
 
     pub async fn execute_plan(
@@ -1072,13 +1177,21 @@ impl BrowserRuntimeSession {
         validate_materialized_snapshot_plan_match(snapshot, plan)?;
         let candidate_files =
             candidate_materialized_files(snapshot, plan.scan().candidate_paths())?;
-        let rows = self
-            .read_candidate_input_rows(&candidate_files, plan.scan().required_columns())
-            .await?;
-        if plan.aggregation().is_some() {
-            execute_aggregate_plan_rows(plan, rows)
-        } else {
-            execute_non_aggregate_plan_rows(plan, rows)
+        let operation_started_at = Instant::now();
+        let execution =
+            self.execute_plan_inner(snapshot, plan, &candidate_files, operation_started_at);
+        let timeout = Delay::new(Duration::from_millis(self.config.execution_timeout_ms));
+        pin_mut!(execution);
+        pin_mut!(timeout);
+
+        match select(execution, timeout).await {
+            Either::Left((result, _)) => result,
+            Either::Right((_, _)) => Err(execution_timeout_error(
+                snapshot.table_uri(),
+                snapshot.snapshot_version(),
+                candidate_files.len(),
+                self.config.execution_timeout_ms,
+            )),
         }
     }
 
@@ -1203,10 +1316,11 @@ impl BrowserRuntimeSession {
             })
             .collect::<Result<Vec<_>, QueryError>>()?;
 
-        MaterializedBrowserSnapshot::new(
+        MaterializedBrowserSnapshot::new_with_partition_column_types(
             descriptor.table_uri.clone(),
             descriptor.snapshot_version,
             active_files,
+            descriptor.partition_column_types.clone(),
         )
     }
 
@@ -1269,10 +1383,11 @@ impl BrowserRuntimeSession {
             }
         };
 
-        BootstrappedBrowserSnapshot::new(
+        BootstrappedBrowserSnapshot::new_with_partition_column_types(
             snapshot.table_uri(),
             snapshot.snapshot_version(),
             active_files,
+            snapshot.partition_column_types().clone(),
         )
     }
 
@@ -1327,6 +1442,7 @@ impl BrowserRuntimeSession {
 
         Ok(BrowserParquetFooter {
             object_size_bytes,
+            object_etag: trailer.metadata.etag.clone(),
             footer_length_bytes,
             footer_bytes: footer.bytes,
         })
@@ -1348,38 +1464,67 @@ impl BrowserRuntimeSession {
 
     async fn read_candidate_input_rows(
         &self,
+        snapshot: &MaterializedBrowserSnapshot,
         candidate_files: &[&MaterializedBrowserFile],
-        required_columns: &[String],
-    ) -> Result<Vec<BrowserInputRow>, QueryError> {
+        scan: &BrowserScanPlan,
+    ) -> Result<(Vec<BrowserInputRow>, u64), QueryError> {
         let mut rows = Vec::new();
+        let mut bytes_fetched = 0_u64;
 
         for file in candidate_files {
             let read = self
                 .read_range(file.object_source(), HttpByteRange::Full)
                 .await?;
-            validate_full_object_read(file, &read)?;
+            validate_full_object_read(file, &read, scan.candidate_object_etag(file.path()))?;
+            bytes_fetched = bytes_fetched
+                .checked_add(file.size_bytes())
+                .ok_or_else(|| {
+                    execution_runtime_error("browser execution byte totals overflowed u64")
+                })?;
             rows.extend(decode_parquet_input_rows(
                 file,
                 read.bytes,
-                required_columns,
+                scan.required_columns(),
+                snapshot.partition_column_types(),
             )?);
         }
 
-        Ok(rows)
+        Ok((rows, bytes_fetched))
     }
 
     async fn bootstrap_file_metadata(
         &self,
         file: &MaterializedBrowserFile,
     ) -> Result<BootstrappedBrowserFile, QueryError> {
-        let metadata = self.read_parquet_metadata_for_file(file).await?;
+        let footer = self.read_parquet_footer_for_file(file).await?;
+        let metadata = parse_parquet_metadata(file, &footer)?;
 
-        BootstrappedBrowserFile::new(
+        BootstrappedBrowserFile::new_with_object_etag(
             file.path(),
             file.size_bytes(),
             file.partition_values().clone(),
             metadata,
+            footer.object_etag().map(str::to_string),
         )
+    }
+
+    async fn execute_plan_inner(
+        &self,
+        snapshot: &MaterializedBrowserSnapshot,
+        plan: &BrowserExecutionPlan,
+        candidate_files: &[&MaterializedBrowserFile],
+        operation_started_at: Instant,
+    ) -> Result<BrowserExecutionResult, QueryError> {
+        let (rows, bytes_fetched) = self
+            .read_candidate_input_rows(snapshot, candidate_files, plan.scan())
+            .await?;
+        let mut result = if plan.aggregation().is_some() {
+            execute_aggregate_plan_rows(plan, rows)?
+        } else {
+            execute_non_aggregate_plan_rows(plan, rows)?
+        };
+        result.metrics = execution_metrics(snapshot, plan, bytes_fetched, operation_started_at)?;
+        Ok(result)
     }
 }
 
@@ -1457,6 +1602,7 @@ fn candidate_materialized_files<'a>(
 fn validate_full_object_read(
     file: &MaterializedBrowserFile,
     read: &HttpRangeReadResult,
+    expected_object_etag: Option<&str>,
 ) -> Result<(), QueryError> {
     if let Some(object_size_bytes) = read.metadata.size_bytes {
         if object_size_bytes != file.size_bytes() {
@@ -1480,843 +1626,28 @@ fn validate_full_object_read(
         )));
     }
 
-    Ok(())
-}
-
-fn decode_parquet_input_rows(
-    file: &MaterializedBrowserFile,
-    bytes: Bytes,
-    required_columns: &[String],
-) -> Result<Vec<BrowserInputRow>, QueryError> {
-    let reader = SerializedFileReader::new(bytes).map_err(|error| {
-        execution_runtime_error(format!(
-            "browser runtime could not open parquet file '{}': {error}",
-            file.path()
-        ))
-    })?;
-    let row_iter = reader.get_row_iter(None).map_err(|error| {
-        execution_runtime_error(format!(
-            "browser runtime could not iterate parquet rows for file '{}': {error}",
-            file.path()
-        ))
-    })?;
-    let mut rows = Vec::new();
-
-    for row in row_iter {
-        let row = row.map_err(|error| {
-            execution_runtime_error(format!(
-                "browser runtime could not decode a parquet row for file '{}': {error}",
-                file.path()
-            ))
-        })?;
-        rows.push(merge_partition_values_into_row(
-            parquet_row_to_input_row(file.path(), &row, required_columns)?,
-            file.partition_values(),
-        ));
-    }
-
-    Ok(rows)
-}
-
-fn parquet_row_to_input_row(
-    file_path: &str,
-    row: &parquet::record::Row,
-    required_columns: &[String],
-) -> Result<BrowserInputRow, QueryError> {
-    let required_columns = required_columns
-        .iter()
-        .map(|column| normalize_name(column))
-        .collect::<BTreeSet<_>>();
-    let mut values = BTreeMap::new();
-
-    for (column_name, field) in row.get_column_iter() {
-        let normalized_name = normalize_name(column_name);
-        if !required_columns.is_empty() && !required_columns.contains(&normalized_name) {
-            continue;
-        }
-
-        values.insert(
-            normalized_name,
-            parquet_field_to_scalar(file_path, column_name, field)?,
-        );
-    }
-
-    Ok(values)
-}
-
-fn parquet_field_to_scalar(
-    file_path: &str,
-    column_name: &str,
-    field: &ParquetField,
-) -> Result<BrowserScalarValue, QueryError> {
-    match field {
-        ParquetField::Null => Ok(BrowserScalarValue::Null),
-        ParquetField::Bool(value) => Ok(BrowserScalarValue::Boolean(*value)),
-        ParquetField::Byte(value) => Ok(BrowserScalarValue::Int64(i64::from(*value))),
-        ParquetField::Short(value) => Ok(BrowserScalarValue::Int64(i64::from(*value))),
-        ParquetField::Int(value) => Ok(BrowserScalarValue::Int64(i64::from(*value))),
-        ParquetField::Long(value) => Ok(BrowserScalarValue::Int64(*value)),
-        ParquetField::UByte(value) => Ok(BrowserScalarValue::Int64(i64::from(*value))),
-        ParquetField::UShort(value) => Ok(BrowserScalarValue::Int64(i64::from(*value))),
-        ParquetField::UInt(value) => Ok(BrowserScalarValue::Int64(i64::from(*value))),
-        ParquetField::ULong(value) => i64::try_from(*value)
-            .map(BrowserScalarValue::Int64)
-            .map_err(|_| unsupported_execution_scalar(file_path, column_name, field)),
-        ParquetField::Str(value) => Ok(BrowserScalarValue::String(value.clone())),
-        _ => Err(unsupported_execution_scalar(file_path, column_name, field)),
-    }
-}
-
-fn unsupported_execution_scalar(
-    file_path: &str,
-    column_name: &str,
-    field: &ParquetField,
-) -> QueryError {
-    QueryError::new(
-        QueryErrorCode::FallbackRequired,
-        format!(
-            "browser runtime cannot execute parquet field '{}' in file '{}' with value kind '{field:?}'",
-            column_name, file_path
-        ),
-        runtime_target(),
-    )
-    .with_fallback_reason(FallbackReason::NativeRequired)
-}
-
-#[derive(Clone, Debug)]
-enum BrowserSourceBindings {
-    BaseTable,
-    Named(BTreeMap<String, String>),
-}
-
-impl BrowserSourceBindings {
-    fn resolve_passthrough_expr(&self, expr: &SqlExpr) -> Option<String> {
-        match self {
-            Self::BaseTable => base_table_passthrough_column(expr),
-            Self::Named(bindings) => {
-                passthrough_binding_name(expr).and_then(|name| bindings.get(&name).cloned())
+    if let Some(expected_object_etag) = expected_object_etag {
+        match read.metadata.etag.as_deref() {
+            Some(actual_object_etag) if actual_object_etag == expected_object_etag => {}
+            Some(actual_object_etag) => {
+                return Err(parquet_protocol_error(format!(
+                    "browser execution for file '{}' observed entity tag {} during bootstrap but {} during execution",
+                    file.path(),
+                    expected_object_etag,
+                    actual_object_etag,
+                )))
+            }
+            None => {
+                return Err(parquet_protocol_error(format!(
+                    "browser execution for file '{}' expected entity tag metadata {} from bootstrap, but the full-object read returned none",
+                    file.path(),
+                    expected_object_etag,
+                )))
             }
         }
-    }
-}
-
-fn lower_browser_execution_plan(
-    query: &SqlQuery,
-    planned: &BrowserPlannedQuery,
-) -> Result<BrowserExecutionPlan, QueryError> {
-    let select = query
-        .body
-        .as_select()
-        .ok_or_else(|| execution_plan_error("browser execution plans require a SELECT query"))?;
-    let source_bindings = lower_query_source_bindings(query)?;
-    let group_by_columns = lower_group_by_columns(select, &source_bindings)?;
-    if select.having.is_some() {
-        return Err(execution_plan_error(
-            "HAVING is not supported in browser execution plans",
-        ));
-    }
-
-    let (outputs, measures) = lower_select_outputs(select, &source_bindings)?;
-    validate_unique_execution_output_names(&outputs)?;
-    let grouped_query = !group_by_columns.is_empty();
-    let aggregate_query = grouped_query || !measures.is_empty();
-    if aggregate_query {
-        let grouped_columns = group_by_columns.iter().cloned().collect::<BTreeSet<_>>();
-        for output in &outputs {
-            if let BrowserExecutionOutputKind::Passthrough { source_column } = output.kind() {
-                if !grouped_columns.contains(source_column) {
-                    return Err(execution_plan_error(
-                        "non-aggregate outputs must be grouped columns in browser execution plans",
-                    ));
-                }
-            }
-        }
-    }
-
-    let aggregation = aggregate_query.then(|| BrowserAggregationPlan {
-        group_by_columns,
-        measures,
-    });
-    let filter = lower_execution_filter(select.selection.as_ref(), &source_bindings)?;
-    let order_by = lower_order_by_keys(query, &outputs)?;
-    let required_columns = lower_required_columns(filter.as_ref(), &outputs, aggregation.as_ref());
-
-    Ok(BrowserExecutionPlan {
-        table_uri: planned.table_uri.clone(),
-        snapshot_version: planned.snapshot_version,
-        scan: browser_scan_plan(planned, required_columns),
-        filter,
-        outputs,
-        aggregation,
-        order_by,
-        limit: planned.query_shape.limit,
-        pruning: planned.pruning.clone(),
-    })
-}
-
-fn lower_query_source_bindings(query: &SqlQuery) -> Result<BrowserSourceBindings, QueryError> {
-    let mut cte_bindings = BTreeMap::new();
-    if let Some(with) = &query.with {
-        for cte in &with.cte_tables {
-            if !cte.alias.columns.is_empty() {
-                return Err(execution_plan_error(
-                    "CTE column lists are not supported in browser execution plans",
-                ));
-            }
-
-            let bindings = lower_query_passthrough_bindings(cte.query.as_ref(), &cte_bindings)?;
-            cte_bindings.insert(normalize_name(&cte.alias.name.value), bindings);
-        }
-    }
-
-    let select = query
-        .body
-        .as_select()
-        .ok_or_else(|| execution_plan_error("browser execution plans require a SELECT query"))?;
-    let source = select.from.first().ok_or_else(|| {
-        execution_plan_error("browser execution plans require a single source relation")
-    })?;
-    if !source.joins.is_empty() {
-        return Err(execution_plan_error(
-            "browser execution plans require a single source relation",
-        ));
-    }
-
-    lower_table_factor_bindings(&source.relation, &cte_bindings)
-}
-
-fn lower_table_factor_bindings(
-    table_factor: &SqlTableFactor,
-    cte_bindings: &BTreeMap<String, BTreeMap<String, String>>,
-) -> Result<BrowserSourceBindings, QueryError> {
-    match table_factor {
-        SqlTableFactor::Table { name, alias, .. } => {
-            if alias
-                .as_ref()
-                .is_some_and(|alias| !alias.columns.is_empty())
-            {
-                return Err(execution_plan_error(
-                    "table alias column lists are not supported in browser execution plans",
-                ));
-            }
-
-            let relation_name = object_name_to_relation_name(name)
-                .ok_or_else(|| execution_plan_error("query must read only from axon_table"))?;
-            if relation_name == DEFAULT_TABLE_NAME {
-                Ok(BrowserSourceBindings::BaseTable)
-            } else if let Some(bindings) = cte_bindings.get(&relation_name) {
-                Ok(BrowserSourceBindings::Named(bindings.clone()))
-            } else {
-                Err(execution_plan_error("query must read only from axon_table"))
-            }
-        }
-        SqlTableFactor::Derived {
-            subquery, alias, ..
-        } => {
-            if alias
-                .as_ref()
-                .is_some_and(|alias| !alias.columns.is_empty())
-            {
-                return Err(execution_plan_error(
-                    "derived-table alias column lists are not supported in browser execution plans",
-                ));
-            }
-
-            Ok(BrowserSourceBindings::Named(
-                lower_query_passthrough_bindings(subquery.as_ref(), cte_bindings)?,
-            ))
-        }
-        _ => Err(execution_plan_error("query must read only from axon_table")),
-    }
-}
-
-fn lower_query_passthrough_bindings(
-    query: &SqlQuery,
-    cte_bindings: &BTreeMap<String, BTreeMap<String, String>>,
-) -> Result<BTreeMap<String, String>, QueryError> {
-    if query.order_by.is_some() || query.limit_clause.is_some() {
-        return Err(execution_plan_error(
-            "CTE and derived queries must remain pure passthrough projections in browser execution plans",
-        ));
-    }
-
-    let select = query.body.as_select().ok_or_else(|| {
-        execution_plan_error(
-            "CTE and derived queries must remain pure passthrough projections in browser execution plans",
-        )
-    })?;
-    if select.having.is_some()
-        || matches!(select.group_by, GroupByExpr::All(_))
-        || matches!(&select.group_by, GroupByExpr::Expressions(expressions, _) if !expressions.is_empty())
-    {
-        return Err(execution_plan_error(
-            "CTE and derived queries must remain pure passthrough projections in browser execution plans",
-        ));
-    }
-
-    let source = select.from.first().ok_or_else(|| {
-        execution_plan_error(
-            "CTE and derived queries must remain pure passthrough projections in browser execution plans",
-        )
-    })?;
-    if !source.joins.is_empty() {
-        return Err(execution_plan_error(
-            "CTE and derived queries must remain pure passthrough projections in browser execution plans",
-        ));
-    }
-
-    let source_bindings = lower_table_factor_bindings(&source.relation, cte_bindings)?;
-    let mut bindings = BTreeMap::new();
-    for select_item in &select.projection {
-        let output = lower_passthrough_output(select_item, &source_bindings)?;
-        let BrowserExecutionOutputKind::Passthrough { source_column } = output.kind else {
-            return Err(execution_plan_error(
-                "CTE and derived queries must remain pure passthrough projections in browser execution plans",
-            ));
-        };
-        if bindings
-            .insert(output.output_name.clone(), source_column.clone())
-            .is_some()
-        {
-            return Err(execution_plan_error(
-                "duplicate output columns are not supported in browser execution plans",
-            ));
-        }
-    }
-
-    Ok(bindings)
-}
-
-fn lower_group_by_columns(
-    select: &Select,
-    source_bindings: &BrowserSourceBindings,
-) -> Result<Vec<String>, QueryError> {
-    match &select.group_by {
-        GroupByExpr::All(_) => Err(execution_plan_error(
-            "GROUP BY ALL is not supported in browser execution plans",
-        )),
-        GroupByExpr::Expressions(expressions, _) => expressions
-            .iter()
-            .map(|expression| {
-                source_bindings
-                    .resolve_passthrough_expr(expression)
-                    .ok_or_else(|| {
-                        execution_plan_error(
-                            "GROUP BY expressions must be passthrough column references in browser execution plans",
-                        )
-                    })
-            })
-            .collect(),
-    }
-}
-
-fn lower_select_outputs(
-    select: &Select,
-    source_bindings: &BrowserSourceBindings,
-) -> Result<(Vec<BrowserExecutionOutput>, Vec<BrowserAggregateMeasure>), QueryError> {
-    let mut outputs = Vec::new();
-    let mut measures = Vec::new();
-
-    for select_item in &select.projection {
-        if let Some((output, measure)) = lower_aggregate_output(select_item, source_bindings)? {
-            outputs.push(output);
-            measures.push(measure);
-        } else {
-            outputs.push(lower_passthrough_output(select_item, source_bindings)?);
-        }
-    }
-
-    Ok((outputs, measures))
-}
-
-fn lower_aggregate_output(
-    select_item: &SelectItem,
-    source_bindings: &BrowserSourceBindings,
-) -> Result<Option<(BrowserExecutionOutput, BrowserAggregateMeasure)>, QueryError> {
-    let (expr, output_name) = match select_item {
-        SelectItem::ExprWithAlias { expr, alias } => (expr, Some(normalize_name(&alias.value))),
-        SelectItem::UnnamedExpr(expr) => (expr, None),
-        SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => {
-            return Err(execution_plan_error(
-                "wildcard projections are not supported in browser execution plans",
-            ))
-        }
-    };
-
-    let SqlExpr::Function(function) = expr else {
-        return Ok(None);
-    };
-    let function_name = function
-        .name
-        .0
-        .last()
-        .and_then(ObjectNamePart::as_ident)
-        .map(|ident| normalize_name(&ident.value))
-        .ok_or_else(|| {
-            execution_plan_error(
-                "aggregate projections are not supported in browser execution plans",
-            )
-        })?;
-
-    let aggregate_function = match function_name.as_str() {
-        "avg" => {
-            lower_single_column_aggregate(function, source_bindings, BrowserAggregateFunction::Avg)?
-        }
-        "array_agg" => lower_single_column_aggregate(
-            function,
-            source_bindings,
-            BrowserAggregateFunction::ArrayAgg,
-        )?,
-        "bool_and" => lower_single_column_aggregate(
-            function,
-            source_bindings,
-            BrowserAggregateFunction::BoolAnd,
-        )?,
-        "bool_or" => lower_single_column_aggregate(
-            function,
-            source_bindings,
-            BrowserAggregateFunction::BoolOr,
-        )?,
-        "count" => lower_count_aggregate(function, source_bindings)?,
-        "sum" => {
-            lower_single_column_aggregate(function, source_bindings, BrowserAggregateFunction::Sum)?
-        }
-        "min" => {
-            lower_single_column_aggregate(function, source_bindings, BrowserAggregateFunction::Min)?
-        }
-        "max" => {
-            lower_single_column_aggregate(function, source_bindings, BrowserAggregateFunction::Max)?
-        }
-        _ => return Ok(None),
-    };
-    let output_name = output_name.ok_or_else(|| {
-        execution_plan_error(
-            "aggregate projections must use explicit aliases in browser execution plans",
-        )
-    })?;
-
-    let measure = BrowserAggregateMeasure {
-        output_name: output_name.clone(),
-        function: aggregate_function.0,
-        source_column: aggregate_function.1.clone(),
-    };
-    let output = BrowserExecutionOutput {
-        output_name,
-        kind: BrowserExecutionOutputKind::Aggregate {
-            function: measure.function.clone(),
-            source_column: measure.source_column.clone(),
-        },
-    };
-
-    Ok(Some((output, measure)))
-}
-
-fn lower_count_aggregate(
-    function: &sqlparser::ast::Function,
-    source_bindings: &BrowserSourceBindings,
-) -> Result<(BrowserAggregateFunction, Option<String>), QueryError> {
-    validate_supported_aggregate_function(function)?;
-    let args = single_function_argument(function)?;
-    match args {
-        FunctionArgExpr::Wildcard => Ok((BrowserAggregateFunction::CountStar, None)),
-        FunctionArgExpr::Expr(expr) => {
-            let source_column = source_bindings.resolve_passthrough_expr(expr).ok_or_else(|| {
-                execution_plan_error(
-                    "aggregate arguments must be passthrough column references in browser execution plans",
-                )
-            })?;
-            Ok((BrowserAggregateFunction::Count, Some(source_column)))
-        }
-        FunctionArgExpr::QualifiedWildcard(_) => Err(execution_plan_error(
-            "qualified wildcard aggregates are not supported in browser execution plans",
-        )),
-    }
-}
-
-fn lower_single_column_aggregate(
-    function: &sqlparser::ast::Function,
-    source_bindings: &BrowserSourceBindings,
-    aggregate_function: BrowserAggregateFunction,
-) -> Result<(BrowserAggregateFunction, Option<String>), QueryError> {
-    validate_supported_aggregate_function(function)?;
-    let FunctionArgExpr::Expr(expr) = single_function_argument(function)? else {
-        return Err(execution_plan_error(
-            "aggregate arguments must be passthrough column references in browser execution plans",
-        ));
-    };
-    let source_column = source_bindings
-        .resolve_passthrough_expr(expr)
-        .ok_or_else(|| {
-            execution_plan_error(
-            "aggregate arguments must be passthrough column references in browser execution plans",
-        )
-        })?;
-
-    Ok((aggregate_function, Some(source_column)))
-}
-
-fn validate_supported_aggregate_function(
-    function: &sqlparser::ast::Function,
-) -> Result<(), QueryError> {
-    if function.uses_odbc_syntax
-        || !matches!(function.parameters, FunctionArguments::None)
-        || function.filter.is_some()
-        || function.null_treatment.is_some()
-        || function.over.is_some()
-        || !function.within_group.is_empty()
-    {
-        return Err(execution_plan_error(
-            "aggregate function form is not supported in browser execution plans",
-        ));
-    }
-
-    let FunctionArguments::List(arguments) = &function.args else {
-        return Err(execution_plan_error(
-            "aggregate function form is not supported in browser execution plans",
-        ));
-    };
-    if arguments.duplicate_treatment.is_some() || !arguments.clauses.is_empty() {
-        return Err(execution_plan_error(
-            "aggregate function form is not supported in browser execution plans",
-        ));
     }
 
     Ok(())
-}
-
-fn single_function_argument(
-    function: &sqlparser::ast::Function,
-) -> Result<&FunctionArgExpr, QueryError> {
-    let FunctionArguments::List(arguments) = &function.args else {
-        return Err(execution_plan_error(
-            "aggregate function form is not supported in browser execution plans",
-        ));
-    };
-    let [argument] = arguments.args.as_slice() else {
-        return Err(execution_plan_error(
-            "aggregate functions must take exactly one argument in browser execution plans",
-        ));
-    };
-
-    match argument {
-        FunctionArg::Named { arg, .. }
-        | FunctionArg::ExprNamed { arg, .. }
-        | FunctionArg::Unnamed(arg) => Ok(arg),
-    }
-}
-
-fn lower_passthrough_output(
-    select_item: &SelectItem,
-    source_bindings: &BrowserSourceBindings,
-) -> Result<BrowserExecutionOutput, QueryError> {
-    match select_item {
-        SelectItem::ExprWithAlias { expr, alias } => {
-            let source_column = source_bindings.resolve_passthrough_expr(expr).ok_or_else(|| {
-                execution_plan_error(
-                    "projection expressions must be passthrough column references in browser execution plans",
-                )
-            })?;
-            Ok(BrowserExecutionOutput {
-                output_name: normalize_name(&alias.value),
-                kind: BrowserExecutionOutputKind::Passthrough { source_column },
-            })
-        }
-        SelectItem::UnnamedExpr(expr) => {
-            let source_column = source_bindings.resolve_passthrough_expr(expr).ok_or_else(|| {
-                execution_plan_error(
-                    "projection expressions must be passthrough column references in browser execution plans",
-                )
-            })?;
-            let output_name = passthrough_output_name(expr).ok_or_else(|| {
-                execution_plan_error(
-                    "projection expressions must be passthrough column references in browser execution plans",
-                )
-            })?;
-            Ok(BrowserExecutionOutput {
-                output_name,
-                kind: BrowserExecutionOutputKind::Passthrough { source_column },
-            })
-        }
-        SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => Err(execution_plan_error(
-            "wildcard projections are not supported in browser execution plans",
-        )),
-    }
-}
-
-fn passthrough_output_name(expr: &SqlExpr) -> Option<String> {
-    match expr {
-        SqlExpr::Nested(expr) => passthrough_output_name(expr),
-        SqlExpr::Identifier(ident) => Some(normalize_name(&ident.value)),
-        SqlExpr::CompoundIdentifier(parts) => Some(normalize_name(&parts.last()?.value)),
-        _ => None,
-    }
-}
-
-fn passthrough_binding_name(expr: &SqlExpr) -> Option<String> {
-    passthrough_output_name(expr)
-}
-
-fn base_table_passthrough_column(expr: &SqlExpr) -> Option<String> {
-    passthrough_output_name(expr)
-}
-
-fn lower_order_by_keys(
-    query: &SqlQuery,
-    outputs: &[BrowserExecutionOutput],
-) -> Result<Vec<BrowserSortKey>, QueryError> {
-    let output_names = outputs
-        .iter()
-        .map(|output| output.output_name.clone())
-        .collect::<BTreeSet<_>>();
-    let Some(order_by) = &query.order_by else {
-        return Ok(Vec::new());
-    };
-    let OrderByKind::Expressions(expressions) = &order_by.kind else {
-        return Err(execution_plan_error(
-            "ORDER BY expressions are not supported in browser execution plans",
-        ));
-    };
-
-    expressions
-        .iter()
-        .map(|expression| {
-            if expression.with_fill.is_some() || expression.options.nulls_first.is_some() {
-                return Err(execution_plan_error(
-                    "ORDER BY options are not supported in browser execution plans",
-                ));
-            }
-
-            let output_name =
-                expr_named_column(&expression.expr, &output_names).ok_or_else(|| {
-                    execution_plan_error(
-                        "ORDER BY expressions must reference projected output columns in browser execution plans",
-                    )
-                })?;
-            Ok(BrowserSortKey {
-                output_name,
-                descending: expression.options.asc == Some(false),
-            })
-        })
-        .collect()
-}
-
-fn lower_execution_filter(
-    selection: Option<&SqlExpr>,
-    source_bindings: &BrowserSourceBindings,
-) -> Result<Option<BrowserFilterExpr>, QueryError> {
-    selection
-        .map(|expr| lower_execution_filter_expr(expr, source_bindings))
-        .transpose()
-}
-
-fn lower_execution_filter_expr(
-    expr: &SqlExpr,
-    source_bindings: &BrowserSourceBindings,
-) -> Result<BrowserFilterExpr, QueryError> {
-    match expr {
-        SqlExpr::Nested(expr) => lower_execution_filter_expr(expr, source_bindings),
-        SqlExpr::BinaryOp { left, op, right } if *op == SqlBinaryOperator::And => {
-            let mut children = Vec::new();
-            push_filter_child(
-                &mut children,
-                lower_execution_filter_expr(left, source_bindings)?,
-            );
-            push_filter_child(
-                &mut children,
-                lower_execution_filter_expr(right, source_bindings)?,
-            );
-            Ok(BrowserFilterExpr::And { children })
-        }
-        SqlExpr::InList {
-            expr,
-            list,
-            negated,
-        } if !negated => {
-            let source_column = source_bindings
-                .resolve_passthrough_expr(expr)
-                .ok_or_else(where_filter_error)?;
-            let literals = list
-                .iter()
-                .map(|item| expr_scalar_value(item).ok_or_else(where_filter_error))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(BrowserFilterExpr::InList {
-                source_column,
-                literals,
-            })
-        }
-        SqlExpr::IsNull(expr) => Ok(BrowserFilterExpr::IsNull {
-            source_column: source_bindings
-                .resolve_passthrough_expr(expr)
-                .ok_or_else(where_filter_error)?,
-        }),
-        SqlExpr::IsNotNull(expr) => Ok(BrowserFilterExpr::IsNotNull {
-            source_column: source_bindings
-                .resolve_passthrough_expr(expr)
-                .ok_or_else(where_filter_error)?,
-        }),
-        SqlExpr::BinaryOp { left, op, right } => {
-            lower_compare_filter(left, op, right, source_bindings).ok_or_else(where_filter_error)
-        }
-        _ => Err(where_filter_error()),
-    }
-}
-
-fn push_filter_child(children: &mut Vec<BrowserFilterExpr>, child: BrowserFilterExpr) {
-    match child {
-        BrowserFilterExpr::And { children: nested } => children.extend(nested),
-        other => children.push(other),
-    }
-}
-
-fn lower_compare_filter(
-    left: &SqlExpr,
-    op: &SqlBinaryOperator,
-    right: &SqlExpr,
-    source_bindings: &BrowserSourceBindings,
-) -> Option<BrowserFilterExpr> {
-    if let Some(source_column) = source_bindings.resolve_passthrough_expr(left) {
-        let literal = expr_scalar_value(right)?;
-        let comparison = browser_comparison_op(op)?;
-        return Some(BrowserFilterExpr::Compare {
-            source_column,
-            comparison,
-            literal,
-        });
-    }
-
-    let source_column = source_bindings.resolve_passthrough_expr(right)?;
-    let literal = expr_scalar_value(left)?;
-    let reversed = reverse_binary_operator(op)?;
-    let comparison = browser_comparison_op(&reversed)?;
-    Some(BrowserFilterExpr::Compare {
-        source_column,
-        comparison,
-        literal,
-    })
-}
-
-fn browser_comparison_op(op: &SqlBinaryOperator) -> Option<BrowserComparisonOp> {
-    Some(match op {
-        SqlBinaryOperator::Eq => BrowserComparisonOp::Eq,
-        SqlBinaryOperator::Gt => BrowserComparisonOp::Gt,
-        SqlBinaryOperator::GtEq => BrowserComparisonOp::Gte,
-        SqlBinaryOperator::Lt => BrowserComparisonOp::Lt,
-        SqlBinaryOperator::LtEq => BrowserComparisonOp::Lte,
-        _ => return None,
-    })
-}
-
-fn expr_scalar_value(expr: &SqlExpr) -> Option<BrowserScalarValue> {
-    match expr {
-        SqlExpr::Nested(expr) => expr_scalar_value(expr),
-        SqlExpr::UnaryOp { op, expr } => match op {
-            SqlUnaryOperator::Plus => Some(BrowserScalarValue::Int64(expr_i64_literal(expr)?)),
-            SqlUnaryOperator::Minus => Some(BrowserScalarValue::Int64(
-                expr_i64_literal(expr)?.checked_neg()?,
-            )),
-            _ => None,
-        },
-        SqlExpr::Value(value) => {
-            if let Some(string) = value.value.clone().into_string() {
-                return Some(BrowserScalarValue::String(string));
-            }
-
-            match &value.value {
-                SqlValue::Number(number, _) => {
-                    number.parse::<i64>().ok().map(BrowserScalarValue::Int64)
-                }
-                SqlValue::Boolean(value) => Some(BrowserScalarValue::Boolean(*value)),
-                SqlValue::Null => Some(BrowserScalarValue::Null),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-fn lower_required_columns(
-    filter: Option<&BrowserFilterExpr>,
-    outputs: &[BrowserExecutionOutput],
-    aggregation: Option<&BrowserAggregationPlan>,
-) -> Vec<String> {
-    let mut required_columns = BTreeSet::new();
-
-    if let Some(filter) = filter {
-        collect_required_filter_columns(filter, &mut required_columns);
-    }
-
-    for output in outputs {
-        match output.kind() {
-            BrowserExecutionOutputKind::Passthrough { source_column } => {
-                required_columns.insert(source_column.clone());
-            }
-            BrowserExecutionOutputKind::Aggregate { source_column, .. } => {
-                if let Some(source_column) = source_column {
-                    required_columns.insert(source_column.clone());
-                }
-            }
-        }
-    }
-
-    if let Some(aggregation) = aggregation {
-        required_columns.extend(aggregation.group_by_columns.iter().cloned());
-        for measure in &aggregation.measures {
-            if let Some(source_column) = &measure.source_column {
-                required_columns.insert(source_column.clone());
-            }
-        }
-    }
-
-    required_columns.into_iter().collect()
-}
-
-fn collect_required_filter_columns(
-    filter: &BrowserFilterExpr,
-    required_columns: &mut BTreeSet<String>,
-) {
-    match filter {
-        BrowserFilterExpr::And { children } => {
-            for child in children {
-                collect_required_filter_columns(child, required_columns);
-            }
-        }
-        BrowserFilterExpr::Compare { source_column, .. }
-        | BrowserFilterExpr::InList { source_column, .. }
-        | BrowserFilterExpr::IsNull { source_column }
-        | BrowserFilterExpr::IsNotNull { source_column } => {
-            required_columns.insert(source_column.clone());
-        }
-    }
-}
-
-fn where_filter_error() -> QueryError {
-    execution_plan_error("WHERE filters must be lowerable into browser execution plans")
-}
-
-fn validate_unique_execution_output_names(
-    outputs: &[BrowserExecutionOutput],
-) -> Result<(), QueryError> {
-    let mut seen = BTreeSet::new();
-    let mut duplicates = BTreeSet::new();
-
-    for output in outputs {
-        if !seen.insert(output.output_name.clone()) {
-            duplicates.insert(output.output_name.clone());
-        }
-    }
-
-    if duplicates.is_empty() {
-        return Ok(());
-    }
-
-    Err(execution_plan_error(format!(
-        "duplicate output columns are not supported in browser execution plans [{}]",
-        duplicates
-            .iter()
-            .map(|name| format!("'{name}'"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )))
 }
 
 fn execution_plan_error(message: impl Into<String>) -> QueryError {
@@ -2327,451 +1658,231 @@ fn execution_runtime_error(message: impl Into<String>) -> QueryError {
     QueryError::new(QueryErrorCode::ExecutionFailed, message, runtime_target())
 }
 
+fn execution_metrics(
+    _snapshot: &MaterializedBrowserSnapshot,
+    plan: &BrowserExecutionPlan,
+    bytes_fetched: u64,
+    operation_started_at: Instant,
+) -> Result<QueryMetricsSummary, QueryError> {
+    Ok(QueryMetricsSummary {
+        bytes_fetched,
+        duration_ms: wall_clock_duration_ms(operation_started_at),
+        files_touched: plan.scan().candidate_file_count(),
+        files_skipped: plan.pruning().files_pruned,
+    })
+}
+
+fn wall_clock_duration_ms(operation_started_at: Instant) -> u64 {
+    u64::try_from(operation_started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 fn browser_scan_plan(
+    snapshot: &BootstrappedBrowserSnapshot,
     planned: &BrowserPlannedQuery,
     required_columns: Vec<String>,
-) -> BrowserScanPlan {
-    BrowserScanPlan {
+) -> Result<BrowserScanPlan, QueryError> {
+    validate_required_partition_execution_types(
+        snapshot.partition_column_types(),
+        &planned.partition_columns,
+        &required_columns,
+    )?;
+
+    Ok(BrowserScanPlan {
         candidate_paths: planned.candidate_paths.clone(),
         candidate_file_count: planned.candidate_file_count,
         candidate_bytes: planned.candidate_bytes,
         candidate_rows: planned.candidate_rows,
         partition_columns: planned.partition_columns.clone(),
+        candidate_object_etags: candidate_object_etags_from_snapshot(
+            snapshot,
+            &planned.candidate_paths,
+        )?,
         required_columns,
+    })
+}
+
+fn candidate_object_etags_from_snapshot(
+    snapshot: &BootstrappedBrowserSnapshot,
+    candidate_paths: &[String],
+) -> Result<BTreeMap<String, String>, QueryError> {
+    let files_by_path = snapshot
+        .active_files()
+        .iter()
+        .map(|file| (file.path(), file))
+        .collect::<BTreeMap<_, _>>();
+    let mut candidate_object_etags = BTreeMap::new();
+
+    for path in candidate_paths {
+        let file = files_by_path.get(path.as_str()).copied().ok_or_else(|| {
+            invalid_query_request(format!(
+                "browser execution plan candidate path '{}' was absent from the bootstrapped snapshot",
+                path
+            ))
+        })?;
+        let object_etag = file.object_etag().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::FallbackRequired,
+                format!(
+                    "browser execution for file '{}' requires bootstrapped entity tag metadata to enforce object identity",
+                    path
+                ),
+                runtime_target(),
+            )
+            .with_fallback_reason(FallbackReason::NativeRequired)
+        })?;
+        candidate_object_etags.insert(path.clone(), object_etag.to_string());
     }
+
+    Ok(candidate_object_etags)
 }
 
 fn merge_partition_values_into_row(
     mut row: BrowserInputRow,
     partition_values: &BTreeMap<String, Option<String>>,
-) -> BrowserInputRow {
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    required_columns: &[String],
+) -> Result<BrowserInputRow, QueryError> {
+    let required_columns = required_columns
+        .iter()
+        .map(|column| normalize_name(column))
+        .collect::<BTreeSet<_>>();
+
     for (column, value) in partition_values {
+        let normalized_column = normalize_name(column);
+        if !required_columns.is_empty() && !required_columns.contains(&normalized_column) {
+            continue;
+        }
+
+        let partition_type = partition_column_type_for_name(partition_column_types, column)
+            .ok_or_else(|| missing_partition_column_type_error(column))?;
         row.insert(
-            column.clone(),
-            value
-                .clone()
-                .map(BrowserScalarValue::String)
-                .unwrap_or(BrowserScalarValue::Null),
+            normalized_column,
+            partition_value_to_scalar(column, value, partition_type)?,
         );
     }
 
-    row
+    Ok(row)
 }
 
-fn execute_non_aggregate_plan_rows(
-    plan: &BrowserExecutionPlan,
-    rows: Vec<BrowserInputRow>,
-) -> Result<BrowserExecutionResult, QueryError> {
-    if plan.aggregation().is_some() {
-        return Err(execution_runtime_error(
-            "aggregate browser execution requires the aggregate executor",
-        ));
-    }
-
-    let mut projected_rows = filter_input_rows(rows, plan.filter())?
-        .into_iter()
-        .map(|row| project_non_aggregate_row(plan, &row))
-        .collect::<Result<Vec<_>, QueryError>>()?;
-
-    sort_projected_rows(&mut projected_rows, plan.order_by());
-    apply_limit(&mut projected_rows, plan.limit())?;
-
-    Ok(BrowserExecutionResult {
-        output_names: plan
-            .outputs()
-            .iter()
-            .map(|output| output.output_name().to_string())
-            .collect(),
-        rows: projected_rows.into_iter().map(|row| row.row).collect(),
-    })
-}
-
-fn project_non_aggregate_row(
-    plan: &BrowserExecutionPlan,
-    row: &BrowserInputRow,
-) -> Result<BrowserProjectedRow, QueryError> {
-    let mut values_by_name = BTreeMap::new();
-    let mut values = Vec::with_capacity(plan.outputs().len());
-
-    for output in plan.outputs() {
-        let value = match output.kind() {
-            BrowserExecutionOutputKind::Passthrough { source_column } => {
-                input_row_value(row, source_column)?.clone()
-            }
-            BrowserExecutionOutputKind::Aggregate { .. } => {
-                return Err(execution_runtime_error(format!(
-                    "non-aggregate browser execution cannot project aggregate output '{}'",
-                    output.output_name()
-                )))
-            }
-        };
-        values_by_name.insert(output.output_name().to_string(), value.clone());
-        values.push(value);
-    }
-
-    Ok(BrowserProjectedRow {
-        values_by_name,
-        row: BrowserExecutionRow { values },
-    })
-}
-
-fn execute_aggregate_plan_rows(
-    plan: &BrowserExecutionPlan,
-    rows: Vec<BrowserInputRow>,
-) -> Result<BrowserExecutionResult, QueryError> {
-    let aggregation = plan.aggregation().ok_or_else(|| {
-        execution_runtime_error("aggregate execution requires an aggregation plan")
-    })?;
-    let filtered_rows = filter_input_rows(rows, plan.filter())?;
-    let mut grouped_rows = group_input_rows(&filtered_rows, aggregation)?;
-    let mut projected_rows = Vec::new();
-
-    if aggregation.group_by_columns().is_empty() {
-        let rows = grouped_rows.remove(&Vec::new()).unwrap_or_default();
-        projected_rows.push(project_aggregate_group(plan, aggregation, &[], &rows)?);
-    } else {
-        for (group_key, rows) in grouped_rows {
-            projected_rows.push(project_aggregate_group(
-                plan,
-                aggregation,
-                &group_key,
-                &rows,
-            )?);
-        }
-    }
-
-    sort_projected_rows(&mut projected_rows, plan.order_by());
-    apply_limit(&mut projected_rows, plan.limit())?;
-
-    Ok(BrowserExecutionResult {
-        output_names: plan
-            .outputs()
-            .iter()
-            .map(|output| output.output_name().to_string())
-            .collect(),
-        rows: projected_rows.into_iter().map(|row| row.row).collect(),
-    })
-}
-
-fn filter_input_rows(
-    rows: Vec<BrowserInputRow>,
-    filter: Option<&BrowserFilterExpr>,
-) -> Result<Vec<BrowserInputRow>, QueryError> {
-    rows.into_iter()
-        .filter_map(|row| match filter {
-            Some(filter) => match filter_matches(&row, filter) {
-                Ok(true) => Some(Ok(row)),
-                Ok(false) => None,
-                Err(error) => Some(Err(error)),
-            },
-            None => Some(Ok(row)),
-        })
-        .collect()
-}
-
-fn group_input_rows(
-    rows: &[BrowserInputRow],
-    aggregation: &BrowserAggregationPlan,
-) -> Result<BTreeMap<Vec<BrowserScalarValue>, Vec<BrowserInputRow>>, QueryError> {
-    if aggregation.group_by_columns().is_empty() {
-        return Ok(BTreeMap::from([(Vec::new(), rows.to_vec())]));
-    }
-
-    let mut groups = BTreeMap::<Vec<BrowserScalarValue>, Vec<BrowserInputRow>>::new();
-    for row in rows {
-        let group_key = aggregation
-            .group_by_columns()
-            .iter()
-            .map(|column| input_row_value(row, column).cloned())
-            .collect::<Result<Vec<_>, _>>()?;
-        groups.entry(group_key).or_default().push(row.clone());
-    }
-
-    Ok(groups)
-}
-
-fn project_aggregate_group(
-    plan: &BrowserExecutionPlan,
-    aggregation: &BrowserAggregationPlan,
-    group_key: &[BrowserScalarValue],
-    rows: &[BrowserInputRow],
-) -> Result<BrowserProjectedRow, QueryError> {
-    let group_values = aggregation
-        .group_by_columns()
-        .iter()
-        .cloned()
-        .zip(group_key.iter().cloned())
-        .collect::<BTreeMap<_, _>>();
-    let mut values_by_name = BTreeMap::new();
-    let mut values = Vec::with_capacity(plan.outputs().len());
-
-    for output in plan.outputs() {
-        let value = match output.kind() {
-            BrowserExecutionOutputKind::Passthrough { source_column } => {
-                group_values.get(source_column).cloned().ok_or_else(|| {
-                    execution_runtime_error(format!(
-                        "aggregate browser execution could not resolve group-by output '{}'",
-                        output.output_name()
-                    ))
-                })?
-            }
-            BrowserExecutionOutputKind::Aggregate {
-                function,
-                source_column,
-            } => aggregate_scalar(function, source_column.as_deref(), rows)?,
-        };
-        values_by_name.insert(output.output_name().to_string(), value.clone());
-        values.push(value);
-    }
-
-    Ok(BrowserProjectedRow {
-        values_by_name,
-        row: BrowserExecutionRow { values },
-    })
-}
-
-fn aggregate_scalar(
-    function: &BrowserAggregateFunction,
-    source_column: Option<&str>,
-    rows: &[BrowserInputRow],
+fn partition_value_to_scalar(
+    column: &str,
+    value: &Option<String>,
+    partition_type: PartitionColumnType,
 ) -> Result<BrowserScalarValue, QueryError> {
-    match function {
-        BrowserAggregateFunction::CountStar => {
-            let count = i64::try_from(rows.len())
-                .map_err(|_| execution_runtime_error("COUNT(*) overflowed i64"))?;
-            Ok(BrowserScalarValue::Int64(count))
-        }
-        BrowserAggregateFunction::Count => {
-            let count = aggregate_non_null_scalars(rows, source_column, "COUNT")?.len();
-            let count = i64::try_from(count)
-                .map_err(|_| execution_runtime_error("COUNT aggregate overflowed i64"))?;
-            Ok(BrowserScalarValue::Int64(count))
-        }
-        BrowserAggregateFunction::Sum => {
-            let values = aggregate_non_null_i64_values(rows, source_column, "SUM")?;
-            if values.is_empty() {
-                return Ok(BrowserScalarValue::Null);
-            }
-            let Some(sum) = values
-                .into_iter()
-                .try_fold(0_i64, |acc, value| acc.checked_add(value))
-            else {
-                return Err(execution_runtime_error("SUM aggregate overflowed i64"));
-            };
-            Ok(BrowserScalarValue::Int64(sum))
-        }
-        BrowserAggregateFunction::Avg => {
-            let values = aggregate_non_null_i64_values(rows, source_column, "AVG")?;
-            if values.is_empty() {
-                return Ok(BrowserScalarValue::Null);
-            }
-            let sum = values
-                .iter()
-                .try_fold(0_i64, |acc, value| acc.checked_add(*value))
-                .ok_or_else(|| execution_runtime_error("AVG aggregate overflowed i64"))?;
-            let count = i64::try_from(values.len())
-                .map_err(|_| execution_runtime_error("AVG aggregate count overflowed i64"))?;
-            if sum % count != 0 {
-                return Err(QueryError::new(
-                    QueryErrorCode::FallbackRequired,
-                    "browser runtime AVG execution requires native fallback for non-integral results",
-                    runtime_target(),
-                )
-                .with_fallback_reason(FallbackReason::NativeRequired));
-            }
-            Ok(BrowserScalarValue::Int64(sum / count))
-        }
-        BrowserAggregateFunction::Min => {
-            let values = aggregate_non_null_scalars(rows, source_column, "MIN")?;
-            Ok(values.into_iter().min().unwrap_or(BrowserScalarValue::Null))
-        }
-        BrowserAggregateFunction::Max => {
-            let values = aggregate_non_null_scalars(rows, source_column, "MAX")?;
-            Ok(values.into_iter().max().unwrap_or(BrowserScalarValue::Null))
-        }
-        BrowserAggregateFunction::ArrayAgg
-        | BrowserAggregateFunction::BoolAnd
-        | BrowserAggregateFunction::BoolOr => Err(QueryError::new(
-            QueryErrorCode::FallbackRequired,
-            format!(
-                "browser runtime aggregate execution requires native fallback for {:?}",
-                function
-            ),
-            runtime_target(),
-        )
-        .with_fallback_reason(FallbackReason::NativeRequired)),
+    match value {
+        None => Ok(BrowserScalarValue::Null),
+        Some(value) => typed_partition_scalar(column, value, partition_type),
     }
 }
 
-fn aggregate_non_null_i64_values(
-    rows: &[BrowserInputRow],
-    source_column: Option<&str>,
-    function_name: &str,
-) -> Result<Vec<i64>, QueryError> {
-    aggregate_non_null_scalars(rows, source_column, function_name)?
-        .into_iter()
-        .map(|value| match value {
-            BrowserScalarValue::Int64(value) => Ok(value),
-            other => Err(execution_runtime_error(format!(
-                "{function_name} aggregate requires i64-compatible inputs, found {other:?}"
-            ))),
+fn typed_partition_scalar(
+    column: &str,
+    value: &str,
+    partition_type: PartitionColumnType,
+) -> Result<BrowserScalarValue, QueryError> {
+    match partition_type {
+        PartitionColumnType::String => Ok(BrowserScalarValue::String(value.to_string())),
+        PartitionColumnType::Boolean => parse_canonical_partition_bool(value)
+            .map(BrowserScalarValue::Boolean)
+            .ok_or_else(|| invalid_partition_value_error(column, value, partition_type)),
+        PartitionColumnType::Int64 => parse_canonical_partition_i64(value)
+            .map(BrowserScalarValue::Int64)
+            .ok_or_else(|| invalid_partition_value_error(column, value, partition_type)),
+        PartitionColumnType::Unsupported => Err(unsupported_partition_type_error(column)),
+    }
+}
+
+fn partition_column_type_for_name(
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    column: &str,
+) -> Option<PartitionColumnType> {
+    let normalized_column = normalize_name(column);
+    partition_column_types
+        .iter()
+        .find_map(|(name, partition_type)| {
+            (normalize_name(name) == normalized_column).then_some(*partition_type)
         })
-        .collect()
 }
 
-fn aggregate_non_null_scalars(
-    rows: &[BrowserInputRow],
-    source_column: Option<&str>,
-    function_name: &str,
-) -> Result<Vec<BrowserScalarValue>, QueryError> {
-    let source_column = source_column.ok_or_else(|| {
-        execution_runtime_error(format!(
-            "{function_name} aggregate outputs must reference a source column"
-        ))
-    })?;
+fn validate_required_partition_execution_types(
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    partition_columns: &[String],
+    required_columns: &[String],
+) -> Result<(), QueryError> {
+    let required_columns = required_columns
+        .iter()
+        .map(|column| normalize_name(column))
+        .collect::<BTreeSet<_>>();
 
-    rows.iter()
-        .filter_map(|row| match input_row_value(row, source_column) {
-            Ok(BrowserScalarValue::Null) => None,
-            Ok(value) => Some(Ok(value.clone())),
-            Err(error) => Some(Err(error)),
-        })
-        .collect()
-}
-
-fn sort_projected_rows(rows: &mut [BrowserProjectedRow], order_by: &[BrowserSortKey]) {
-    if order_by.is_empty() {
-        return;
-    }
-
-    rows.sort_by(|left, right| {
-        for sort_key in order_by {
-            let left_value = left
-                .values_by_name
-                .get(sort_key.output_name())
-                .expect("projected rows should expose every sort-key output");
-            let right_value = right
-                .values_by_name
-                .get(sort_key.output_name())
-                .expect("projected rows should expose every sort-key output");
-            let ordering = scalar_sort_order(left_value, right_value);
-            if ordering != Ordering::Equal {
-                return if sort_key.descending() {
-                    ordering.reverse()
-                } else {
-                    ordering
-                };
-            }
+    for partition_column in partition_columns {
+        let normalized_partition_column = normalize_name(partition_column);
+        if !required_columns.contains(&normalized_partition_column) {
+            continue;
         }
 
-        Ordering::Equal
-    });
-}
-
-fn apply_limit(rows: &mut Vec<BrowserProjectedRow>, limit: Option<u64>) -> Result<(), QueryError> {
-    let Some(limit) = limit else {
-        return Ok(());
-    };
-    let limit = usize::try_from(limit)
-        .map_err(|_| execution_runtime_error("browser execution limit overflowed usize"))?;
-    if rows.len() > limit {
-        rows.truncate(limit);
+        match partition_column_type_for_name(partition_column_types, partition_column) {
+            Some(PartitionColumnType::Unsupported) => {
+                return Err(unsupported_partition_type_error(partition_column))
+            }
+            Some(_) => {}
+            None => return Err(missing_partition_column_type_error(partition_column)),
+        }
     }
+
     Ok(())
 }
 
-fn filter_matches(row: &BrowserInputRow, filter: &BrowserFilterExpr) -> Result<bool, QueryError> {
-    match filter {
-        BrowserFilterExpr::And { children } => children.iter().try_fold(true, |matched, child| {
-            Ok(matched && filter_matches(row, child)?)
-        }),
-        BrowserFilterExpr::Compare {
-            source_column,
-            comparison,
-            literal,
-        } => {
-            let value = input_row_value(row, source_column)?;
-            Ok(compare_scalar_values(value, comparison, literal))
-        }
-        BrowserFilterExpr::InList {
-            source_column,
-            literals,
-        } => {
-            let value = input_row_value(row, source_column)?;
-            Ok(literals.iter().any(|literal| scalar_equals(value, literal)))
-        }
-        BrowserFilterExpr::IsNull { source_column } => Ok(matches!(
-            input_row_value(row, source_column)?,
-            BrowserScalarValue::Null
-        )),
-        BrowserFilterExpr::IsNotNull { source_column } => Ok(!matches!(
-            input_row_value(row, source_column)?,
-            BrowserScalarValue::Null
-        )),
-    }
+fn missing_partition_column_type_error(column: &str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::FallbackRequired,
+        format!(
+            "browser execution requires explicit partition type metadata for column '{}'",
+            column
+        ),
+        runtime_target(),
+    )
+    .with_fallback_reason(FallbackReason::NativeRequired)
 }
 
-fn input_row_value<'a>(
-    row: &'a BrowserInputRow,
-    source_column: &str,
-) -> Result<&'a BrowserScalarValue, QueryError> {
-    row.get(source_column).ok_or_else(|| {
-        execution_runtime_error(format!(
-            "browser execution row was missing required column '{source_column}'"
-        ))
-    })
+fn unsupported_partition_type_error(column: &str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::FallbackRequired,
+        format!(
+            "browser execution requires native fallback for unsupported partition column '{}'",
+            column
+        ),
+        runtime_target(),
+    )
+    .with_fallback_reason(FallbackReason::NativeRequired)
 }
 
-fn compare_scalar_values(
-    value: &BrowserScalarValue,
-    comparison: &BrowserComparisonOp,
-    literal: &BrowserScalarValue,
-) -> bool {
-    let Some(ordering) = scalar_compare(value, literal) else {
-        return false;
-    };
-
-    match comparison {
-        BrowserComparisonOp::Eq => ordering == Ordering::Equal,
-        BrowserComparisonOp::Gt => ordering == Ordering::Greater,
-        BrowserComparisonOp::Gte => ordering == Ordering::Greater || ordering == Ordering::Equal,
-        BrowserComparisonOp::Lt => ordering == Ordering::Less,
-        BrowserComparisonOp::Lte => ordering == Ordering::Less || ordering == Ordering::Equal,
-    }
+fn invalid_partition_value_error(
+    column: &str,
+    value: &str,
+    partition_type: PartitionColumnType,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::FallbackRequired,
+        format!(
+            "browser execution could not coerce partition value '{}' for column '{}' as {:?}",
+            value, column, partition_type
+        ),
+        runtime_target(),
+    )
+    .with_fallback_reason(FallbackReason::NativeRequired)
 }
 
-fn scalar_compare(left: &BrowserScalarValue, right: &BrowserScalarValue) -> Option<Ordering> {
-    match (left, right) {
-        (BrowserScalarValue::Int64(left), BrowserScalarValue::Int64(right)) => {
-            Some(left.cmp(right))
-        }
-        (BrowserScalarValue::String(left), BrowserScalarValue::String(right)) => {
-            Some(left.cmp(right))
-        }
-        (BrowserScalarValue::Boolean(left), BrowserScalarValue::Boolean(right)) => {
-            Some(left.cmp(right))
-        }
-        (BrowserScalarValue::Null, BrowserScalarValue::Null) => Some(Ordering::Equal),
+fn parse_canonical_partition_bool(value: &str) -> Option<bool> {
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
         _ => None,
     }
 }
 
-fn scalar_equals(left: &BrowserScalarValue, right: &BrowserScalarValue) -> bool {
-    matches!(scalar_compare(left, right), Some(Ordering::Equal))
-}
-
-fn scalar_sort_order(left: &BrowserScalarValue, right: &BrowserScalarValue) -> Ordering {
-    scalar_compare(left, right)
-        .unwrap_or_else(|| scalar_variant_rank(left).cmp(&scalar_variant_rank(right)))
-}
-
-fn scalar_variant_rank(value: &BrowserScalarValue) -> u8 {
-    match value {
-        BrowserScalarValue::Null => 0,
-        BrowserScalarValue::Boolean(_) => 1,
-        BrowserScalarValue::Int64(_) => 2,
-        BrowserScalarValue::String(_) => 3,
-    }
+fn parse_canonical_partition_i64(value: &str) -> Option<i64> {
+    let parsed = value.parse::<i64>().ok()?;
+    (parsed.to_string() == value).then_some(parsed)
 }
 
 #[derive(Clone)]
@@ -4119,103 +3230,6 @@ fn validate_unique_paths<'a>(
     ))
 }
 
-fn parse_parquet_footer_trailer(trailer: &HttpRangeReadResult) -> Result<(u64, u32), QueryError> {
-    let object_size_bytes = trailer.metadata.size_bytes.ok_or_else(|| {
-        parquet_protocol_error(format!(
-            "parquet footer bootstrap for '{}' did not return object size metadata",
-            trailer.metadata.url,
-        ))
-    })?;
-
-    if object_size_bytes < PARQUET_TRAILER_SIZE_BYTES {
-        return Err(parquet_protocol_error(format!(
-            "parquet footer bootstrap for '{}' requires at least {} bytes, but the object size was {} bytes",
-            trailer.metadata.url,
-            PARQUET_TRAILER_SIZE_BYTES,
-            object_size_bytes,
-        )));
-    }
-
-    if trailer.bytes.len() != PARQUET_TRAILER_SIZE_BYTES as usize {
-        return Err(parquet_protocol_error(format!(
-            "parquet footer bootstrap for '{}' expected {} trailer bytes, but received {} bytes",
-            trailer.metadata.url,
-            PARQUET_TRAILER_SIZE_BYTES,
-            trailer.bytes.len(),
-        )));
-    }
-
-    if &trailer.bytes[4..8] != PARQUET_MAGIC {
-        return Err(parquet_protocol_error(format!(
-            "parquet footer bootstrap for '{}' did not find trailing PAR1 magic",
-            trailer.metadata.url,
-        )));
-    }
-
-    let footer_length_bytes = u32::from_le_bytes(
-        trailer.bytes[..4]
-            .try_into()
-            .expect("footer trailer length"),
-    );
-    if footer_length_bytes == 0 {
-        return Err(parquet_protocol_error(format!(
-            "parquet footer bootstrap for '{}' requires a non-zero footer length",
-            trailer.metadata.url,
-        )));
-    }
-
-    let max_footer_length = object_size_bytes
-        .checked_sub(PARQUET_TRAILER_SIZE_BYTES)
-        .expect("objects smaller than the parquet trailer should already be rejected");
-    if u64::from(footer_length_bytes) > max_footer_length {
-        return Err(parquet_protocol_error(format!(
-            "parquet footer bootstrap for '{}' declared a footer length of {} bytes, which exceeds the available {} bytes before the trailer",
-            trailer.metadata.url,
-            footer_length_bytes,
-            max_footer_length,
-        )));
-    }
-
-    Ok((object_size_bytes, footer_length_bytes))
-}
-
-fn validate_parquet_footer_read_consistency(
-    trailer: &HttpRangeReadResult,
-    footer: &HttpRangeReadResult,
-    expected_object_size_bytes: u64,
-) -> Result<(), QueryError> {
-    let footer_object_size_bytes = footer.metadata.size_bytes.ok_or_else(|| {
-        parquet_protocol_error(format!(
-            "parquet footer bootstrap for '{}' did not return object size metadata on the footer read",
-            footer.metadata.url,
-        ))
-    })?;
-    if footer_object_size_bytes != expected_object_size_bytes {
-        return Err(parquet_protocol_error(format!(
-            "parquet footer bootstrap for '{}' observed object size {} bytes on the trailer read but {} bytes on the footer read",
-            trailer.metadata.url,
-            expected_object_size_bytes,
-            footer_object_size_bytes,
-        )));
-    }
-
-    match (&trailer.metadata.etag, &footer.metadata.etag) {
-        (Some(trailer_etag), Some(footer_etag)) if trailer_etag != footer_etag => {
-            Err(parquet_protocol_error(format!(
-                "parquet footer bootstrap for '{}' observed entity tag {} on the trailer read but {} on the footer read",
-                trailer.metadata.url,
-                trailer_etag,
-                footer_etag,
-            )))
-        }
-        (Some(_), None) | (None, Some(_)) => Err(parquet_protocol_error(format!(
-            "parquet footer bootstrap for '{}' observed entity-tag metadata on only one of the two footer bootstrap reads",
-            trailer.metadata.url,
-        ))),
-        _ => Ok(()),
-    }
-}
-
 fn parquet_protocol_error(message: impl Into<String>) -> QueryError {
     QueryError::new(
         QueryErrorCode::ObjectStoreProtocol,
@@ -4247,371 +3261,23 @@ fn snapshot_preflight_timeout_error(
     )
 }
 
-fn parse_parquet_metadata(
-    file: &MaterializedBrowserFile,
-    footer: &BrowserParquetFooter,
-) -> Result<BrowserParquetFileMetadata, QueryError> {
-    let metadata =
-        ParquetMetaDataReader::decode_metadata(footer.footer_bytes()).map_err(|error| {
-            parquet_protocol_error(format!(
-                "parquet metadata decode for file '{}' failed: {error}",
-                file.path(),
-            ))
-        })?;
-    let file_metadata = metadata.file_metadata();
-    let row_count = u64::try_from(file_metadata.num_rows()).map_err(|_| {
-        parquet_protocol_error(format!(
-            "parquet metadata for file '{}' reported a negative row count",
-            file.path(),
-        ))
-    })?;
-    let row_group_count = u64::try_from(metadata.num_row_groups()).map_err(|_| {
-        parquet_protocol_error(format!(
-            "parquet metadata for file '{}' reported too many row groups to fit in u64",
-            file.path(),
-        ))
-    })?;
-    let fields = file_metadata
-        .schema_descr()
-        .columns()
-        .iter()
-        .map(|column| browser_parquet_field_from_descriptor(column.as_ref()))
-        .collect::<Vec<_>>();
-    let field_stats = browser_parquet_field_stats_from_metadata(&metadata);
-
-    Ok(BrowserParquetFileMetadata {
-        object_size_bytes: footer.object_size_bytes(),
-        footer_length_bytes: footer.footer_length_bytes(),
-        row_group_count,
-        row_count,
-        fields,
-        field_stats,
-    })
-}
-
-fn browser_parquet_field_stats_from_metadata(
-    metadata: &parquet::file::metadata::ParquetMetaData,
-) -> BTreeMap<String, BrowserParquetFieldStats> {
-    metadata
-        .file_metadata()
-        .schema_descr()
-        .columns()
-        .iter()
-        .enumerate()
-        .filter_map(|(column_index, column)| {
-            let field_stats = browser_parquet_integer_field_stats(
-                column.as_ref(),
-                metadata.row_groups(),
-                column_index,
-            )?;
-            Some((column.path().string(), field_stats))
-        })
-        .collect()
-}
-
-fn browser_parquet_integer_field_stats(
-    column: &parquet::schema::types::ColumnDescriptor,
-    row_groups: &[parquet::file::metadata::RowGroupMetaData],
-    column_index: usize,
-) -> Option<BrowserParquetFieldStats> {
-    if !matches!(
-        column.physical_type(),
-        ParquetPhysicalType::INT32 | ParquetPhysicalType::INT64
-    ) {
-        return None;
-    }
-    if column.converted_type() == ParquetConvertedType::DECIMAL
-        || matches!(
-            column.logical_type_ref(),
-            Some(ParquetLogicalType::Decimal { .. })
-        )
-    {
-        return None;
-    }
-
-    let mut min_i64 = None;
-    let mut max_i64 = None;
-    let mut min_complete = true;
-    let mut max_complete = true;
-    let mut null_count = Some(0_u64);
-    let mut saw_statistics = false;
-
-    for row_group in row_groups {
-        let stats = row_group.column(column_index).statistics()?;
-        saw_statistics = true;
-        let (row_group_min, row_group_max) = parquet_integer_min_max(stats)?;
-
-        match row_group_min {
-            Some(value) => {
-                min_i64 = Some(min_i64.map_or(value, |current: i64| current.min(value)));
-            }
-            None => {
-                min_complete = false;
-            }
-        }
-
-        match row_group_max {
-            Some(value) => {
-                max_i64 = Some(max_i64.map_or(value, |current: i64| current.max(value)));
-            }
-            None => {
-                max_complete = false;
-            }
-        }
-
-        null_count = match (null_count, stats.null_count_opt()) {
-            (Some(total), Some(count)) => total.checked_add(count),
-            _ => None,
-        };
-    }
-
-    if !saw_statistics {
-        return None;
-    }
-
-    let field_stats = BrowserParquetFieldStats {
-        min_i64: min_complete.then_some(min_i64).flatten(),
-        max_i64: max_complete.then_some(max_i64).flatten(),
-        null_count,
-    };
-
-    (field_stats.min_i64.is_some()
-        || field_stats.max_i64.is_some()
-        || field_stats.null_count.is_some())
-    .then_some(field_stats)
-}
-
-fn parquet_integer_min_max(stats: &ParquetStatistics) -> Option<(Option<i64>, Option<i64>)> {
-    match stats {
-        ParquetStatistics::Int32(stats) => Some((
-            stats.min_opt().copied().map(i64::from),
-            stats.max_opt().copied().map(i64::from),
-        )),
-        ParquetStatistics::Int64(stats) => {
-            Some((stats.min_opt().copied(), stats.max_opt().copied()))
-        }
-        _ => None,
-    }
-}
-
-fn browser_parquet_field_from_descriptor(
-    column: &parquet::schema::types::ColumnDescriptor,
-) -> BrowserParquetField {
-    let repetition = column.self_type().get_basic_info().repetition();
-    let converted_type = browser_parquet_converted_type(column.converted_type());
-    let logical_type = column.logical_type_ref().map(browser_parquet_logical_type);
-    let type_length = matches!(
-        column.physical_type(),
-        ParquetPhysicalType::FIXED_LEN_BYTE_ARRAY
+fn execution_timeout_error(
+    table_uri: &str,
+    snapshot_version: i64,
+    file_count: usize,
+    timeout_ms: u64,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::ExecutionFailed,
+        format!(
+            "browser execution for '{}' at version {} did not finish within {} ms across {} file(s)",
+            table_uri,
+            snapshot_version,
+            timeout_ms,
+            file_count,
+        ),
+        runtime_target(),
     )
-    .then(|| column.type_length());
-    let has_decimal_annotation = column.converted_type() == ParquetConvertedType::DECIMAL
-        || matches!(
-            column.logical_type_ref(),
-            Some(ParquetLogicalType::Decimal { .. })
-        );
-    let precision = has_decimal_annotation.then(|| column.type_precision());
-    let scale = has_decimal_annotation.then(|| column.type_scale());
-
-    BrowserParquetField {
-        name: column.path().string(),
-        physical_type: browser_parquet_physical_type(column.physical_type()),
-        logical_type,
-        converted_type,
-        repetition: browser_parquet_repetition(repetition),
-        nullable: column.self_type().is_optional(),
-        max_definition_level: column.max_def_level(),
-        max_repetition_level: column.max_rep_level(),
-        type_length,
-        precision,
-        scale,
-    }
-}
-
-fn browser_parquet_physical_type(physical_type: ParquetPhysicalType) -> BrowserParquetPhysicalType {
-    match physical_type {
-        ParquetPhysicalType::BOOLEAN => BrowserParquetPhysicalType::Boolean,
-        ParquetPhysicalType::INT32 => BrowserParquetPhysicalType::Int32,
-        ParquetPhysicalType::INT64 => BrowserParquetPhysicalType::Int64,
-        ParquetPhysicalType::INT96 => BrowserParquetPhysicalType::Int96,
-        ParquetPhysicalType::FLOAT => BrowserParquetPhysicalType::Float,
-        ParquetPhysicalType::DOUBLE => BrowserParquetPhysicalType::Double,
-        ParquetPhysicalType::BYTE_ARRAY => BrowserParquetPhysicalType::ByteArray,
-        ParquetPhysicalType::FIXED_LEN_BYTE_ARRAY => BrowserParquetPhysicalType::FixedLenByteArray,
-    }
-}
-
-fn browser_parquet_repetition(repetition: ParquetRepetition) -> BrowserParquetRepetition {
-    match repetition {
-        ParquetRepetition::REQUIRED => BrowserParquetRepetition::Required,
-        ParquetRepetition::OPTIONAL => BrowserParquetRepetition::Optional,
-        ParquetRepetition::REPEATED => BrowserParquetRepetition::Repeated,
-    }
-}
-
-fn browser_parquet_converted_type(
-    converted_type: ParquetConvertedType,
-) -> Option<BrowserParquetConvertedType> {
-    Some(match converted_type {
-        ParquetConvertedType::NONE => return None,
-        ParquetConvertedType::UTF8 => BrowserParquetConvertedType::Utf8,
-        ParquetConvertedType::MAP => BrowserParquetConvertedType::Map,
-        ParquetConvertedType::MAP_KEY_VALUE => BrowserParquetConvertedType::MapKeyValue,
-        ParquetConvertedType::LIST => BrowserParquetConvertedType::List,
-        ParquetConvertedType::ENUM => BrowserParquetConvertedType::Enum,
-        ParquetConvertedType::DECIMAL => BrowserParquetConvertedType::Decimal,
-        ParquetConvertedType::DATE => BrowserParquetConvertedType::Date,
-        ParquetConvertedType::TIME_MILLIS => BrowserParquetConvertedType::TimeMillis,
-        ParquetConvertedType::TIME_MICROS => BrowserParquetConvertedType::TimeMicros,
-        ParquetConvertedType::TIMESTAMP_MILLIS => BrowserParquetConvertedType::TimestampMillis,
-        ParquetConvertedType::TIMESTAMP_MICROS => BrowserParquetConvertedType::TimestampMicros,
-        ParquetConvertedType::UINT_8 => BrowserParquetConvertedType::UInt8,
-        ParquetConvertedType::UINT_16 => BrowserParquetConvertedType::UInt16,
-        ParquetConvertedType::UINT_32 => BrowserParquetConvertedType::UInt32,
-        ParquetConvertedType::UINT_64 => BrowserParquetConvertedType::UInt64,
-        ParquetConvertedType::INT_8 => BrowserParquetConvertedType::Int8,
-        ParquetConvertedType::INT_16 => BrowserParquetConvertedType::Int16,
-        ParquetConvertedType::INT_32 => BrowserParquetConvertedType::Int32,
-        ParquetConvertedType::INT_64 => BrowserParquetConvertedType::Int64,
-        ParquetConvertedType::JSON => BrowserParquetConvertedType::Json,
-        ParquetConvertedType::BSON => BrowserParquetConvertedType::Bson,
-        ParquetConvertedType::INTERVAL => BrowserParquetConvertedType::Interval,
-    })
-}
-
-fn browser_parquet_logical_type(logical_type: &ParquetLogicalType) -> BrowserParquetLogicalType {
-    match logical_type {
-        ParquetLogicalType::String => BrowserParquetLogicalType::String,
-        ParquetLogicalType::Map => BrowserParquetLogicalType::Map,
-        ParquetLogicalType::List => BrowserParquetLogicalType::List,
-        ParquetLogicalType::Enum => BrowserParquetLogicalType::Enum,
-        ParquetLogicalType::Decimal { scale, precision } => BrowserParquetLogicalType::Decimal {
-            scale: *scale,
-            precision: *precision,
-        },
-        ParquetLogicalType::Date => BrowserParquetLogicalType::Date,
-        ParquetLogicalType::Time {
-            is_adjusted_to_u_t_c,
-            unit,
-        } => BrowserParquetLogicalType::Time {
-            is_adjusted_to_utc: *is_adjusted_to_u_t_c,
-            unit: browser_parquet_time_unit(unit),
-        },
-        ParquetLogicalType::Timestamp {
-            is_adjusted_to_u_t_c,
-            unit,
-        } => BrowserParquetLogicalType::Timestamp {
-            is_adjusted_to_utc: *is_adjusted_to_u_t_c,
-            unit: browser_parquet_time_unit(unit),
-        },
-        ParquetLogicalType::Integer {
-            bit_width,
-            is_signed,
-        } => BrowserParquetLogicalType::Integer {
-            bit_width: *bit_width,
-            is_signed: *is_signed,
-        },
-        ParquetLogicalType::Unknown => BrowserParquetLogicalType::Unknown,
-        ParquetLogicalType::Json => BrowserParquetLogicalType::Json,
-        ParquetLogicalType::Bson => BrowserParquetLogicalType::Bson,
-        ParquetLogicalType::Uuid => BrowserParquetLogicalType::Uuid,
-        ParquetLogicalType::Float16 => BrowserParquetLogicalType::Float16,
-        ParquetLogicalType::Variant {
-            specification_version,
-        } => BrowserParquetLogicalType::Variant {
-            specification_version: *specification_version,
-        },
-        ParquetLogicalType::Geometry { crs } => {
-            BrowserParquetLogicalType::Geometry { crs: crs.clone() }
-        }
-        ParquetLogicalType::Geography { crs, algorithm } => BrowserParquetLogicalType::Geography {
-            crs: crs.clone(),
-            algorithm: algorithm
-                .as_ref()
-                .map(browser_parquet_edge_interpolation_algorithm),
-        },
-        ParquetLogicalType::_Unknown { field_id } => BrowserParquetLogicalType::Unrecognized {
-            field_id: *field_id,
-        },
-    }
-}
-
-fn browser_parquet_time_unit(unit: &ParquetTimeUnit) -> BrowserParquetTimeUnit {
-    match unit {
-        ParquetTimeUnit::MILLIS => BrowserParquetTimeUnit::Millis,
-        ParquetTimeUnit::MICROS => BrowserParquetTimeUnit::Micros,
-        ParquetTimeUnit::NANOS => BrowserParquetTimeUnit::Nanos,
-    }
-}
-
-fn browser_parquet_edge_interpolation_algorithm(
-    algorithm: &ParquetEdgeInterpolationAlgorithm,
-) -> BrowserParquetEdgeInterpolationAlgorithm {
-    match algorithm {
-        ParquetEdgeInterpolationAlgorithm::SPHERICAL => {
-            BrowserParquetEdgeInterpolationAlgorithm::Spherical
-        }
-        ParquetEdgeInterpolationAlgorithm::VINCENTY => {
-            BrowserParquetEdgeInterpolationAlgorithm::Vincenty
-        }
-        ParquetEdgeInterpolationAlgorithm::THOMAS => {
-            BrowserParquetEdgeInterpolationAlgorithm::Thomas
-        }
-        ParquetEdgeInterpolationAlgorithm::ANDOYER => {
-            BrowserParquetEdgeInterpolationAlgorithm::Andoyer
-        }
-        ParquetEdgeInterpolationAlgorithm::KARNEY => {
-            BrowserParquetEdgeInterpolationAlgorithm::Karney
-        }
-        ParquetEdgeInterpolationAlgorithm::_Unknown(code) => {
-            BrowserParquetEdgeInterpolationAlgorithm::Unknown(*code)
-        }
-    }
-}
-
-fn format_browser_fields(fields: &[BrowserParquetField]) -> String {
-    if fields.is_empty() {
-        return "<empty>".to_string();
-    }
-
-    fields
-        .iter()
-        .map(|field| {
-            let logical_type = field
-                .logical_type
-                .as_ref()
-                .map(|logical_type| logical_type.to_string())
-                .unwrap_or_else(|| "<none>".to_string());
-            let converted_type = field
-                .converted_type
-                .as_ref()
-                .map(|converted_type| converted_type.to_string())
-                .unwrap_or_else(|| "<none>".to_string());
-            format!(
-                "{}: {} logical={} converted={} repetition={} nullable={} def={} rep={} length={} precision={} scale={}",
-                field.name,
-                field.physical_type,
-                logical_type,
-                converted_type,
-                field.repetition,
-                field.nullable,
-                field.max_definition_level,
-                field.max_repetition_level,
-                field.type_length.map(|value| value.to_string()).unwrap_or_else(|| "<none>".to_string()),
-                field.precision.map(|value| value.to_string()).unwrap_or_else(|| "<none>".to_string()),
-                field.scale.map(|value| value.to_string()).unwrap_or_else(|| "<none>".to_string()),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn format_partition_columns(partition_columns: &[String]) -> String {
-    if partition_columns.is_empty() {
-        return "<empty>".to_string();
-    }
-
-    partition_columns.join(", ")
 }
 
 #[cfg(test)]
@@ -4638,7 +3304,10 @@ mod tests {
                 ("value", BrowserScalarValue::Int64(60)),
             ]),
             &BTreeMap::from([("category".to_string(), Some("C".to_string()))]),
-        );
+            &BTreeMap::from([("category".to_string(), PartitionColumnType::String)]),
+            &["category".to_string(), "id".to_string()],
+        )
+        .expect("partition values should merge");
         let plan = non_aggregate_test_plan(
             Some(BrowserFilterExpr::Compare {
                 source_column: "category".to_string(),
@@ -4681,6 +3350,46 @@ mod tests {
     }
 
     #[test]
+    fn merged_input_rows_normalize_and_coerce_integer_partition_values() {
+        let merged = merge_partition_values_into_row(
+            input_row([]),
+            &BTreeMap::from([("ID".to_string(), Some("2".to_string()))]),
+            &BTreeMap::from([("id".to_string(), PartitionColumnType::Int64)]),
+            &["id".to_string()],
+        )
+        .expect("integer partition values should merge");
+
+        assert_eq!(merged.get("id"), Some(&BrowserScalarValue::Int64(2)));
+    }
+
+    #[test]
+    fn merged_input_rows_preserve_numeric_string_partition_values_when_typed_as_strings() {
+        let merged = merge_partition_values_into_row(
+            input_row([]),
+            &BTreeMap::from([("year_code".to_string(), Some("2024".to_string()))]),
+            &BTreeMap::from([("year_code".to_string(), PartitionColumnType::String)]),
+            &["year_code".to_string()],
+        )
+        .expect("string partition values should merge");
+
+        assert_eq!(
+            merged.get("year_code"),
+            Some(&BrowserScalarValue::String("2024".to_string()))
+        );
+    }
+
+    #[test]
+    fn parquet_row_to_input_row_skips_fields_when_no_columns_are_required() {
+        let row =
+            parquet::record::Row::new(vec![("payload".to_string(), ParquetField::Float(1.5))]);
+
+        let values =
+            parquet_row_to_input_row("part-000.parquet", &row, &[]).expect("row should decode");
+
+        assert!(values.is_empty());
+    }
+
+    #[test]
     fn execute_non_aggregate_plan_applies_filter_alias_projection_order_and_limit() {
         let plan = non_aggregate_test_plan(
             Some(BrowserFilterExpr::Compare {
@@ -4716,6 +3425,74 @@ mod tests {
         assert_eq!(result.rows().len(), 2);
         assert_eq!(result.rows()[0].values(), [BrowserScalarValue::Int64(40)]);
         assert_eq!(result.rows()[1].values(), [BrowserScalarValue::Int64(30)]);
+    }
+
+    #[test]
+    fn execute_non_aggregate_plan_sorts_nulls_last_for_ascending_order() {
+        let plan = non_aggregate_test_plan(
+            None,
+            vec![BrowserExecutionOutput {
+                output_name: "value".to_string(),
+                kind: BrowserExecutionOutputKind::Passthrough {
+                    source_column: "value".to_string(),
+                },
+            }],
+            vec![BrowserSortKey {
+                output_name: "value".to_string(),
+                descending: false,
+            }],
+            None,
+        );
+
+        let result = execute_non_aggregate_plan_rows(
+            &plan,
+            vec![
+                input_row([("value", BrowserScalarValue::Null)]),
+                input_row([("value", BrowserScalarValue::Int64(10))]),
+                input_row([("value", BrowserScalarValue::Int64(5))]),
+            ],
+        )
+        .expect("plan rows should execute");
+
+        assert_eq!(result.output_names(), ["value"]);
+        assert_eq!(result.rows().len(), 3);
+        assert_eq!(result.rows()[0].values(), [BrowserScalarValue::Int64(5)]);
+        assert_eq!(result.rows()[1].values(), [BrowserScalarValue::Int64(10)]);
+        assert_eq!(result.rows()[2].values(), [BrowserScalarValue::Null]);
+    }
+
+    #[test]
+    fn execute_non_aggregate_plan_sorts_nulls_first_for_descending_order() {
+        let plan = non_aggregate_test_plan(
+            None,
+            vec![BrowserExecutionOutput {
+                output_name: "value".to_string(),
+                kind: BrowserExecutionOutputKind::Passthrough {
+                    source_column: "value".to_string(),
+                },
+            }],
+            vec![BrowserSortKey {
+                output_name: "value".to_string(),
+                descending: true,
+            }],
+            None,
+        );
+
+        let result = execute_non_aggregate_plan_rows(
+            &plan,
+            vec![
+                input_row([("value", BrowserScalarValue::Int64(5))]),
+                input_row([("value", BrowserScalarValue::Null)]),
+                input_row([("value", BrowserScalarValue::Int64(10))]),
+            ],
+        )
+        .expect("plan rows should execute");
+
+        assert_eq!(result.output_names(), ["value"]);
+        assert_eq!(result.rows().len(), 3);
+        assert_eq!(result.rows()[0].values(), [BrowserScalarValue::Null]);
+        assert_eq!(result.rows()[1].values(), [BrowserScalarValue::Int64(10)]);
+        assert_eq!(result.rows()[2].values(), [BrowserScalarValue::Int64(5)]);
     }
 
     #[test]
@@ -4897,6 +3674,7 @@ mod tests {
                 candidate_bytes: 128,
                 candidate_rows: 4,
                 partition_columns: vec!["category".to_string()],
+                candidate_object_etags: BTreeMap::new(),
                 required_columns: vec![
                     "category".to_string(),
                     "id".to_string(),
@@ -4941,6 +3719,7 @@ mod tests {
                 candidate_bytes: 128,
                 candidate_rows: 4,
                 partition_columns: vec!["category".to_string()],
+                candidate_object_etags: BTreeMap::new(),
                 required_columns: vec![
                     "category".to_string(),
                     "id".to_string(),

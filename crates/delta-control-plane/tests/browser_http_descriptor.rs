@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 use delta_control_plane::{attach_browser_http_urls, resolve_snapshot};
 use query_contract::{
-    QueryErrorCode, ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
+    PartitionColumnType, QueryErrorCode, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
+    SnapshotResolutionRequest,
 };
 use support::TestTableFixture;
 use wasm_query_runtime::{BrowserObjectSource, BrowserRuntimeConfig, BrowserRuntimeSession};
@@ -27,6 +28,10 @@ fn attach_browser_http_urls_maps_latest_snapshot_files_with_stable_order() {
 
     assert_eq!(browser_snapshot.table_uri, fixture.table_uri);
     assert_eq!(browser_snapshot.snapshot_version, 1);
+    assert_eq!(
+        browser_snapshot.partition_column_types,
+        resolved_snapshot.partition_column_types
+    );
     assert_eq!(
         browser_snapshot.active_files.len(),
         resolved_snapshot.active_files.len()
@@ -64,6 +69,10 @@ fn attach_browser_http_urls_preserves_historical_snapshot_version_and_file_set()
 
     assert_eq!(browser_snapshot.table_uri, fixture.table_uri);
     assert_eq!(browser_snapshot.snapshot_version, 1);
+    assert_eq!(
+        browser_snapshot.partition_column_types,
+        resolved_snapshot.partition_column_types
+    );
     assert_eq!(
         browser_snapshot.active_files.len(),
         resolved_snapshot.active_files.len()
@@ -251,6 +260,10 @@ fn browser_http_descriptors_materialize_into_runtime_owned_object_sources() {
         browser_snapshot.snapshot_version
     );
     assert_eq!(
+        materialized.partition_column_types(),
+        &browser_snapshot.partition_column_types
+    );
+    assert_eq!(
         materialized.active_files().len(),
         browser_snapshot.active_files.len()
     );
@@ -303,6 +316,10 @@ fn attach_browser_http_urls_rejects_duplicate_resolved_paths() {
     let resolved_snapshot = ResolvedSnapshotDescriptor {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 12,
+        partition_column_types: BTreeMap::from([(
+            "category".to_string(),
+            PartitionColumnType::String,
+        )]),
         active_files: vec![
             ResolvedFileDescriptor {
                 path: duplicate_path.clone(),
@@ -326,6 +343,37 @@ fn attach_browser_http_urls_rejects_duplicate_resolved_paths() {
 
     assert_eq!(error.code, QueryErrorCode::InvalidRequest);
     assert!(error.message.contains(&duplicate_path));
+}
+
+#[test]
+fn attach_browser_http_urls_preserves_partition_column_types() {
+    let resolved_snapshot = ResolvedSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/string-partition-table".to_string(),
+        snapshot_version: 4,
+        partition_column_types: BTreeMap::from([
+            ("category".to_string(), PartitionColumnType::String),
+            ("year_code".to_string(), PartitionColumnType::String),
+        ]),
+        active_files: vec![ResolvedFileDescriptor {
+            path: "year_code=2024/part-000.parquet".to_string(),
+            size_bytes: 128,
+            partition_values: BTreeMap::from([("year_code".to_string(), Some("2024".to_string()))]),
+        }],
+    };
+    let object_urls_by_path = build_url_map(&resolved_snapshot, |path| {
+        format!("https://signed.example.test/{path}?sig=secret")
+    });
+
+    let browser_snapshot = attach_browser_http_urls(resolved_snapshot, &object_urls_by_path)
+        .expect("browser http urls should attach");
+
+    assert_eq!(
+        browser_snapshot.partition_column_types,
+        BTreeMap::from([
+            ("category".to_string(), PartitionColumnType::String),
+            ("year_code".to_string(), PartitionColumnType::String),
+        ])
+    );
 }
 
 fn build_url_map<F>(

@@ -189,10 +189,21 @@ pub struct ResolvedFileDescriptor {
     pub partition_values: BTreeMap<String, Option<String>>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PartitionColumnType {
+    String,
+    Int64,
+    Boolean,
+    Unsupported,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct ResolvedSnapshotDescriptor {
     pub table_uri: String,
     pub snapshot_version: i64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub partition_column_types: BTreeMap<String, PartitionColumnType>,
     pub active_files: Vec<ResolvedFileDescriptor>,
 }
 
@@ -208,6 +219,8 @@ pub struct BrowserHttpFileDescriptor {
 pub struct BrowserHttpSnapshotDescriptor {
     pub table_uri: String,
     pub snapshot_version: i64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub partition_column_types: BTreeMap<String, PartitionColumnType>,
     pub active_files: Vec<BrowserHttpFileDescriptor>,
 }
 

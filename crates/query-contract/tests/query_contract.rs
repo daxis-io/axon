@@ -1,9 +1,9 @@
 use query_contract::{
     validate_browser_object_url, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor,
     BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget,
-    FallbackReason, QueryError, QueryErrorCode, QueryExecutionOptions, QueryMetricsSummary,
-    QueryRequest, QueryResponse, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
-    SnapshotResolutionRequest,
+    FallbackReason, PartitionColumnType, QueryError, QueryErrorCode, QueryExecutionOptions,
+    QueryMetricsSummary, QueryRequest, QueryResponse, ResolvedFileDescriptor,
+    ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 use serde_json::json;
 
@@ -228,6 +228,10 @@ fn resolved_snapshot_descriptor_serializes_metadata_only_file_descriptors() {
     let descriptor = ResolvedSnapshotDescriptor {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 12,
+        partition_column_types: std::collections::BTreeMap::from([
+            ("category".to_string(), PartitionColumnType::String),
+            ("year".to_string(), PartitionColumnType::Int64),
+        ]),
         active_files: vec![
             ResolvedFileDescriptor {
                 path: "category=A/part-000.parquet".to_string(),
@@ -253,6 +257,10 @@ fn resolved_snapshot_descriptor_serializes_metadata_only_file_descriptors() {
         json!({
             "table_uri": "gs://axon-fixtures/sample_table",
             "snapshot_version": 12,
+            "partition_column_types": {
+                "category": "string",
+                "year": "int64"
+            },
             "active_files": [
                 {
                     "path": "category=A/part-000.parquet",
@@ -277,6 +285,10 @@ fn browser_http_snapshot_descriptor_serializes_browser_safe_file_urls() {
     let descriptor = BrowserHttpSnapshotDescriptor {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 12,
+        partition_column_types: std::collections::BTreeMap::from([
+            ("category".to_string(), PartitionColumnType::String),
+            ("year".to_string(), PartitionColumnType::Int64),
+        ]),
         active_files: vec![
             BrowserHttpFileDescriptor {
                 path: "category=A/part-000.parquet".to_string(),
@@ -304,6 +316,10 @@ fn browser_http_snapshot_descriptor_serializes_browser_safe_file_urls() {
         json!({
             "table_uri": "gs://axon-fixtures/sample_table",
             "snapshot_version": 12,
+            "partition_column_types": {
+                "category": "string",
+                "year": "int64"
+            },
             "active_files": [
                 {
                     "path": "category=A/part-000.parquet",
@@ -323,6 +339,25 @@ fn browser_http_snapshot_descriptor_serializes_browser_safe_file_urls() {
             ]
         })
     );
+}
+
+#[test]
+fn snapshot_descriptors_default_partition_column_types_when_omitted() {
+    let resolved: ResolvedSnapshotDescriptor = serde_json::from_value(json!({
+        "table_uri": "gs://axon-fixtures/sample_table",
+        "snapshot_version": 12,
+        "active_files": []
+    }))
+    .expect("resolved snapshot descriptor should deserialize");
+    let browser: BrowserHttpSnapshotDescriptor = serde_json::from_value(json!({
+        "table_uri": "gs://axon-fixtures/sample_table",
+        "snapshot_version": 12,
+        "active_files": []
+    }))
+    .expect("browser http snapshot descriptor should deserialize");
+
+    assert!(resolved.partition_column_types.is_empty());
+    assert!(browser.partition_column_types.is_empty());
 }
 
 #[test]

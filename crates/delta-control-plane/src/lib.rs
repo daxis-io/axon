@@ -7,12 +7,13 @@ use delta_runtime_support::{
     validate_snapshot_version,
 };
 use deltalake::kernel::scalars::ScalarExt;
+use deltalake::kernel::{DataType, PrimitiveType, StructField};
 use deltalake::table::state::DeltaTableState;
 use deltalake::{open_table, open_table_with_version};
 use query_contract::{
     validate_browser_object_url, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor,
-    BrowserObjectUrlPolicy, ExecutionTarget, QueryError, QueryErrorCode, ResolvedFileDescriptor,
-    ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
+    BrowserObjectUrlPolicy, ExecutionTarget, PartitionColumnType, QueryError, QueryErrorCode,
+    ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 
 pub const OWNER: &str = "Storage platform team";
@@ -105,10 +106,12 @@ pub fn resolve_snapshot_with_policy(
                 .snapshot()
                 .map_err(|error| map_delta_error(error, control_plane_target()))?;
             let active_files = collect_active_files(snapshot)?;
+            let partition_column_types = resolve_partition_column_types(snapshot)?;
 
             Ok(ResolvedSnapshotDescriptor {
                 table_uri: normalized_uri.to_string(),
                 snapshot_version: snapshot.version(),
+                partition_column_types,
                 active_files,
             })
         },
@@ -204,8 +207,62 @@ pub fn attach_browser_http_urls(
     Ok(BrowserHttpSnapshotDescriptor {
         table_uri: resolved_snapshot.table_uri,
         snapshot_version: resolved_snapshot.snapshot_version,
+        partition_column_types: resolved_snapshot.partition_column_types,
         active_files,
     })
+}
+
+fn resolve_partition_column_types(
+    snapshot: &DeltaTableState,
+) -> Result<BTreeMap<String, PartitionColumnType>, QueryError> {
+    let schema = snapshot.schema();
+
+    snapshot
+        .metadata()
+        .partition_columns()
+        .iter()
+        .map(|column| {
+            let field = schema
+                .fields()
+                .find(|field| field.name() == column.as_str())
+                .ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorCode::ExecutionFailed,
+                        format!(
+                            "partition column '{}' was absent from the Delta schema during snapshot resolution",
+                            column
+                        ),
+                        control_plane_target(),
+                    )
+                })?;
+
+            Ok((
+                column.clone(),
+                partition_column_type_from_field(field),
+            ))
+        })
+        .collect()
+}
+
+fn partition_column_type_from_field(field: &StructField) -> PartitionColumnType {
+    partition_column_type_from_data_type(&field.data_type)
+}
+
+fn partition_column_type_from_data_type(data_type: &DataType) -> PartitionColumnType {
+    match data_type {
+        DataType::Primitive(PrimitiveType::String) => PartitionColumnType::String,
+        DataType::Primitive(PrimitiveType::Boolean) => PartitionColumnType::Boolean,
+        DataType::Primitive(
+            PrimitiveType::Byte
+            | PrimitiveType::Short
+            | PrimitiveType::Integer
+            | PrimitiveType::Long,
+        ) => PartitionColumnType::Int64,
+        DataType::Primitive(_) | DataType::Array(_) | DataType::Map(_) => {
+            PartitionColumnType::Unsupported
+        }
+        DataType::Struct(_) | DataType::Variant(_) => PartitionColumnType::Unsupported,
+    }
 }
 
 fn collect_active_files(

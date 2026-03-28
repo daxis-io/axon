@@ -86,7 +86,90 @@ impl TestTableFixture {
         fixture
     }
 
+    pub fn create_integer_partitioned_mixed_case() -> Self {
+        let fixture =
+            Self::create_with_columns(mixed_case_integer_partition_columns(), vec!["Year"]);
+
+        tokio::runtime::Runtime::new()
+            .expect("runtime should be created")
+            .block_on(async {
+                let table = DeltaTable::try_from_url(
+                    deltalake::ensure_table_uri(&fixture.table_uri)
+                        .expect("table uri should parse"),
+                )
+                .await
+                .expect("table handle should be created");
+
+                table
+                    .write(vec![mixed_case_integer_partition_batch(
+                        &[1, 2, 3, 4],
+                        &[2024, 2024, 2025, 2025],
+                        &[10, 20, 30, 40],
+                    )])
+                    .await
+                    .expect("mixed-case integer-partition batch should be written");
+            });
+
+        fixture
+    }
+
+    pub fn create_numeric_string_partitioned() -> Self {
+        let fixture =
+            Self::create_with_columns(numeric_string_partition_columns(), vec!["year_code"]);
+
+        tokio::runtime::Runtime::new()
+            .expect("runtime should be created")
+            .block_on(async {
+                let table = DeltaTable::try_from_url(
+                    deltalake::ensure_table_uri(&fixture.table_uri)
+                        .expect("table uri should parse"),
+                )
+                .await
+                .expect("table handle should be created");
+
+                table
+                    .write(vec![numeric_string_partition_batch(
+                        &[1, 2, 3, 4],
+                        &["2024", "2024", "2025", "2025"],
+                        &[10, 20, 30, 40],
+                    )])
+                    .await
+                    .expect("numeric-string partition batch should be written");
+            });
+
+        fixture
+    }
+
+    pub fn create_nullable_values() -> Self {
+        let fixture = Self::create_with_columns(nullable_value_columns(), vec![]);
+
+        tokio::runtime::Runtime::new()
+            .expect("runtime should be created")
+            .block_on(async {
+                let table = DeltaTable::try_from_url(
+                    deltalake::ensure_table_uri(&fixture.table_uri)
+                        .expect("table uri should parse"),
+                )
+                .await
+                .expect("table handle should be created");
+
+                table
+                    .write(vec![nullable_value_batch(
+                        &[1, 2, 3, 4],
+                        &[Some(20), None, Some(10), None],
+                    )])
+                    .await
+                    .expect("nullable-value batch should be written");
+            });
+
+        fixture
+    }
+
     fn create_with_partition_columns(partition_columns: Vec<&str>) -> Self {
+        Self::create_with_columns(default_table_columns(), partition_columns)
+    }
+
+    fn create_with_columns(columns: Vec<StructField>, partition_columns: Vec<&str>) -> Self {
         let tempdir = TempDir::new().expect("tempdir should be created");
         let table_uri = deltalake::ensure_table_uri(tempdir.path().to_string_lossy())
             .expect("table uri should be normalized")
@@ -103,7 +186,7 @@ impl TestTableFixture {
 
                 table
                     .create()
-                    .with_columns(default_table_columns())
+                    .with_columns(columns)
                     .with_partition_columns(partition_columns)
                     .with_table_name("axon_fixture")
                     .await
@@ -231,6 +314,113 @@ fn fixture_batch(ids: &[i32], categories: &[&str], values: &[i32]) -> RecordBatc
     .expect("fixture batch should be created")
 }
 
+fn mixed_case_integer_partition_columns() -> Vec<StructField> {
+    vec![
+        StructField::new(
+            "id".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            false,
+        ),
+        StructField::new(
+            "Year".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            false,
+        ),
+        StructField::new(
+            "value".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            false,
+        ),
+    ]
+}
+
+fn mixed_case_integer_partition_batch(ids: &[i32], years: &[i32], values: &[i32]) -> RecordBatch {
+    let schema = Arc::new(ArrowSchema::new(vec![
+        Field::new("id", ArrowDataType::Int32, false),
+        Field::new("Year", ArrowDataType::Int32, false),
+        Field::new("value", ArrowDataType::Int32, false),
+    ]));
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from(ids.to_vec())),
+            Arc::new(Int32Array::from(years.to_vec())),
+            Arc::new(Int32Array::from(values.to_vec())),
+        ],
+    )
+    .expect("mixed-case integer-partition batch should be created")
+}
+
+fn numeric_string_partition_columns() -> Vec<StructField> {
+    vec![
+        StructField::new(
+            "id".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            false,
+        ),
+        StructField::new(
+            "year_code".to_string(),
+            DataType::Primitive(PrimitiveType::String),
+            false,
+        ),
+        StructField::new(
+            "value".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            false,
+        ),
+    ]
+}
+
+fn numeric_string_partition_batch(ids: &[i32], year_codes: &[&str], values: &[i32]) -> RecordBatch {
+    let schema = Arc::new(ArrowSchema::new(vec![
+        Field::new("id", ArrowDataType::Int32, false),
+        Field::new("year_code", ArrowDataType::Utf8, false),
+        Field::new("value", ArrowDataType::Int32, false),
+    ]));
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from(ids.to_vec())),
+            Arc::new(StringArray::from(year_codes.to_vec())),
+            Arc::new(Int32Array::from(values.to_vec())),
+        ],
+    )
+    .expect("numeric-string partition batch should be created")
+}
+
+fn nullable_value_columns() -> Vec<StructField> {
+    vec![
+        StructField::new(
+            "id".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            false,
+        ),
+        StructField::new(
+            "value".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            true,
+        ),
+    ]
+}
+
+fn nullable_value_batch(ids: &[i32], values: &[Option<i32>]) -> RecordBatch {
+    let schema = Arc::new(ArrowSchema::new(vec![
+        Field::new("id", ArrowDataType::Int32, false),
+        Field::new("value", ArrowDataType::Int32, true),
+    ]));
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from(ids.to_vec())),
+            Arc::new(Int32Array::from(values.to_vec())),
+        ],
+    )
+    .expect("nullable-value batch should be created")
+}
+
 fn collect_matching_paths<F>(root: &Path, matches: &mut Vec<PathBuf>, predicate: F)
 where
     F: Fn(&Path) -> bool + Copy,
@@ -252,10 +442,29 @@ pub struct LoopbackObjectServer {
     thread: Option<JoinHandle<()>>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct LoopbackObjectServerOptions {
+    pub range_etag: Option<String>,
+    pub full_etag: Option<String>,
+    pub full_read_delay: Option<Duration>,
+}
+
 impl LoopbackObjectServer {
     pub fn from_fixture_paths(
         fixture: &TestTableFixture,
         relative_paths: impl IntoIterator<Item = String>,
+    ) -> Self {
+        Self::from_fixture_paths_with_options(
+            fixture,
+            relative_paths,
+            LoopbackObjectServerOptions::default(),
+        )
+    }
+
+    pub fn from_fixture_paths_with_options(
+        fixture: &TestTableFixture,
+        relative_paths: impl IntoIterator<Item = String>,
+        options: LoopbackObjectServerOptions,
     ) -> Self {
         let objects_by_path = relative_paths
             .into_iter()
@@ -271,7 +480,7 @@ impl LoopbackObjectServer {
             })
             .collect::<BTreeMap<_, _>>();
 
-        Self::from_objects(objects_by_path)
+        Self::from_objects_with_options(objects_by_path, options)
     }
 
     pub fn url_for_path(&self, relative_path: &str) -> String {
@@ -279,6 +488,13 @@ impl LoopbackObjectServer {
     }
 
     fn from_objects(objects_by_path: BTreeMap<String, Vec<u8>>) -> Self {
+        Self::from_objects_with_options(objects_by_path, LoopbackObjectServerOptions::default())
+    }
+
+    fn from_objects_with_options(
+        objects_by_path: BTreeMap<String, Vec<u8>>,
+        options: LoopbackObjectServerOptions,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
         listener
             .set_nonblocking(true)
@@ -299,7 +515,7 @@ impl LoopbackObjectServer {
                         stream
                             .set_nonblocking(false)
                             .expect("accepted streams should allow blocking reads");
-                        handle_connection(&mut stream, &objects_by_path);
+                        handle_connection(&mut stream, &objects_by_path, &options);
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(5));
@@ -331,11 +547,15 @@ impl Drop for LoopbackObjectServer {
     }
 }
 
-fn handle_connection(stream: &mut TcpStream, objects_by_path: &BTreeMap<String, Vec<u8>>) {
+fn handle_connection(
+    stream: &mut TcpStream,
+    objects_by_path: &BTreeMap<String, Vec<u8>>,
+    options: &LoopbackObjectServerOptions,
+) {
     let request = read_request(stream);
     let response = objects_by_path
         .get(&request.path)
-        .map(|object| full_or_ranged_response(request.range_header.as_deref(), object))
+        .map(|object| full_or_ranged_response(request.range_header.as_deref(), object, options))
         .unwrap_or_else(not_found_response);
     write_response(stream, response);
 }
@@ -385,26 +605,51 @@ fn read_request(stream: &mut TcpStream) -> CapturedRequest {
     CapturedRequest { path, range_header }
 }
 
-fn full_or_ranged_response(range_header: Option<&str>, object: &[u8]) -> TestResponse {
+fn full_or_ranged_response(
+    range_header: Option<&str>,
+    object: &[u8],
+    options: &LoopbackObjectServerOptions,
+) -> TestResponse {
     if let Some(range_header) = range_header {
         let (start, end) = resolve_range(range_header, object.len());
         let body = object[start..=end].to_vec();
+        let mut headers = vec![
+            ("Content-Length".to_string(), body.len().to_string()),
+            (
+                "Content-Range".to_string(),
+                format!("bytes {start}-{end}/{}", object.len()),
+            ),
+        ];
+        headers.push((
+            "ETag".to_string(),
+            options
+                .range_etag
+                .clone()
+                .unwrap_or_else(|| default_test_etag(object)),
+        ));
         return TestResponse {
             status_line: "206 Partial Content",
-            headers: vec![
-                ("Content-Length".to_string(), body.len().to_string()),
-                (
-                    "Content-Range".to_string(),
-                    format!("bytes {start}-{end}/{}", object.len()),
-                ),
-            ],
+            headers,
             body,
         };
     }
 
+    if let Some(delay) = options.full_read_delay {
+        thread::sleep(delay);
+    }
+
+    let mut headers = vec![("Content-Length".to_string(), object.len().to_string())];
+    headers.push((
+        "ETag".to_string(),
+        options
+            .full_etag
+            .clone()
+            .unwrap_or_else(|| default_test_etag(object)),
+    ));
+
     TestResponse {
         status_line: "200 OK",
-        headers: vec![("Content-Length".to_string(), object.len().to_string())],
+        headers,
         body: object.to_vec(),
     }
 }
@@ -415,6 +660,15 @@ fn not_found_response() -> TestResponse {
         headers: vec![("Content-Length".to_string(), "0".to_string())],
         body: Vec::new(),
     }
+}
+
+fn default_test_etag(object: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in object {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("\"fixture-{hash:016x}\"")
 }
 
 fn resolve_range(range_header: &str, object_len: usize) -> (usize, usize) {

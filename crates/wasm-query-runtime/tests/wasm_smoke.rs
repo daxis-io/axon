@@ -1,8 +1,8 @@
 #![cfg(target_arch = "wasm32")]
 
 use query_contract::{
-    BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget, QueryErrorCode,
-    QueryRequest,
+    BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget, PartitionColumnType,
+    QueryErrorCode, QueryRequest,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 use wasm_query_runtime::{
@@ -11,6 +11,22 @@ use wasm_query_runtime::{
     BrowserParquetRepetition, BrowserRuntimeConfig, BrowserRuntimeSession, MaterializedBrowserFile,
     MaterializedBrowserSnapshot,
 };
+
+fn synthetic_bootstrapped_file(
+    path: &str,
+    size_bytes: u64,
+    partition_values: std::collections::BTreeMap<String, Option<String>>,
+    metadata: BrowserParquetFileMetadata,
+) -> BootstrappedBrowserFile {
+    BootstrappedBrowserFile::new_with_object_etag(
+        path,
+        size_bytes,
+        partition_values,
+        metadata,
+        Some(format!("\"{path}\"")),
+    )
+    .expect("valid bootstrapped files should construct in wasm")
+}
 
 #[wasm_bindgen_test]
 fn browser_runtime_session_and_object_source_construct_in_wasm() {
@@ -64,7 +80,7 @@ fn preflight_api_surface_constructs_futures_and_summaries_in_wasm() {
     let summarized = BootstrappedBrowserSnapshot::new(
         snapshot.table_uri(),
         snapshot.snapshot_version(),
-        vec![BootstrappedBrowserFile::new(
+        vec![synthetic_bootstrapped_file(
             file.path(),
             file.size_bytes(),
             file.partition_values().clone(),
@@ -88,8 +104,7 @@ fn preflight_api_surface_constructs_futures_and_summaries_in_wasm() {
                 }],
                 field_stats: std::collections::BTreeMap::new(),
             },
-        )
-        .expect("valid bootstrapped files should construct in wasm")],
+        )],
     )
     .expect("duplicate-free snapshots should construct in wasm")
     .summarize()
@@ -108,6 +123,7 @@ fn browser_runtime_materializes_https_descriptors_in_wasm() {
     let descriptor = BrowserHttpSnapshotDescriptor {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 4,
+        partition_column_types: std::collections::BTreeMap::new(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
             url: "https://example.com/object".to_string(),
@@ -139,7 +155,7 @@ fn browser_runtime_analysis_and_planning_apis_construct_in_wasm() {
     let snapshot = BootstrappedBrowserSnapshot::new(
         "gs://axon-fixtures/sample_table",
         4,
-        vec![BootstrappedBrowserFile::new(
+        vec![synthetic_bootstrapped_file(
             "part-000.parquet",
             128,
             std::collections::BTreeMap::new(),
@@ -163,8 +179,7 @@ fn browser_runtime_analysis_and_planning_apis_construct_in_wasm() {
                 }],
                 field_stats: std::collections::BTreeMap::new(),
             },
-        )
-        .expect("valid bootstrapped files should construct in wasm")],
+        )],
     )
     .expect("valid bootstrapped snapshots should construct in wasm");
 
@@ -191,7 +206,7 @@ fn browser_runtime_execution_plan_api_constructs_in_wasm() {
     let snapshot = BootstrappedBrowserSnapshot::new(
         "gs://axon-fixtures/sample_table",
         4,
-        vec![BootstrappedBrowserFile::new(
+        vec![synthetic_bootstrapped_file(
             "part-000.parquet",
             128,
             std::collections::BTreeMap::new(),
@@ -215,8 +230,7 @@ fn browser_runtime_execution_plan_api_constructs_in_wasm() {
                 }],
                 field_stats: std::collections::BTreeMap::new(),
             },
-        )
-        .expect("valid bootstrapped files should construct in wasm")],
+        )],
     )
     .expect("valid bootstrapped snapshots should construct in wasm");
 
@@ -244,7 +258,7 @@ fn browser_runtime_execute_plan_api_constructs_in_wasm() {
     let snapshot = BootstrappedBrowserSnapshot::new(
         "gs://axon-fixtures/sample_table",
         4,
-        vec![BootstrappedBrowserFile::new(
+        vec![synthetic_bootstrapped_file(
             "part-000.parquet",
             128,
             std::collections::BTreeMap::new(),
@@ -268,8 +282,7 @@ fn browser_runtime_execute_plan_api_constructs_in_wasm() {
                 }],
                 field_stats: std::collections::BTreeMap::new(),
             },
-        )
-        .expect("valid bootstrapped files should construct in wasm")],
+        )],
     )
     .expect("valid bootstrapped snapshots should construct in wasm");
     let materialized = MaterializedBrowserSnapshot::new(
@@ -306,7 +319,7 @@ fn browser_runtime_aggregate_execution_plan_api_constructs_in_wasm() {
     let snapshot = BootstrappedBrowserSnapshot::new(
         "gs://axon-fixtures/sample_table",
         4,
-        vec![BootstrappedBrowserFile::new(
+        vec![synthetic_bootstrapped_file(
             "part-000.parquet",
             128,
             std::collections::BTreeMap::new(),
@@ -330,8 +343,7 @@ fn browser_runtime_aggregate_execution_plan_api_constructs_in_wasm() {
                 }],
                 field_stats: std::collections::BTreeMap::new(),
             },
-        )
-        .expect("valid bootstrapped files should construct in wasm")],
+        )],
     )
     .expect("valid bootstrapped snapshots should construct in wasm");
 
@@ -355,10 +367,10 @@ fn browser_runtime_aggregate_execution_plan_api_constructs_in_wasm() {
 fn browser_runtime_grouped_order_limit_execution_plan_constructs_in_wasm() {
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
         .expect("default config should be supported in wasm");
-    let snapshot = BootstrappedBrowserSnapshot::new(
+    let snapshot = BootstrappedBrowserSnapshot::new_with_partition_column_types(
         "gs://axon-fixtures/sample_table",
         4,
-        vec![BootstrappedBrowserFile::new(
+        vec![synthetic_bootstrapped_file(
             "category=A/part-000.parquet",
             128,
             std::collections::BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
@@ -382,8 +394,8 @@ fn browser_runtime_grouped_order_limit_execution_plan_constructs_in_wasm() {
                 }],
                 field_stats: std::collections::BTreeMap::new(),
             },
-        )
-        .expect("valid bootstrapped files should construct in wasm")],
+        )],
+        std::collections::BTreeMap::from([("category".to_string(), PartitionColumnType::String)]),
     )
     .expect("valid bootstrapped snapshots should construct in wasm");
 
@@ -414,6 +426,7 @@ fn materialize_snapshot_rejects_loopback_http_in_wasm() {
     let descriptor = BrowserHttpSnapshotDescriptor {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 4,
+        partition_column_types: std::collections::BTreeMap::new(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
             url: "http://127.0.0.1:8080/object".to_string(),

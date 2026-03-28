@@ -7,8 +7,10 @@ use deltalake::arrow::array::{
 use deltalake::arrow::datatypes::DataType as ArrowDataType;
 use deltalake::arrow::util::display::array_value_to_string;
 use native_query_runtime::{execute_query, NativeQueryResult, DEFAULT_TABLE_NAME};
-use query_contract::{ExecutionTarget, QueryErrorCode, QueryRequest, SnapshotResolutionRequest};
-use support::{LoopbackObjectServer, TestTableFixture};
+use query_contract::{
+    ExecutionTarget, PartitionColumnType, QueryErrorCode, QueryRequest, SnapshotResolutionRequest,
+};
+use support::{LoopbackObjectServer, LoopbackObjectServerOptions, TestTableFixture};
 use wasm_query_runtime::{
     BootstrappedBrowserSnapshot, BrowserAggregateFunction, BrowserComparisonOp,
     BrowserExecutionOutputKind, BrowserExecutionPlan, BrowserExecutionResult, BrowserFilterExpr,
@@ -278,10 +280,11 @@ fn bootstrap_snapshot_metadata_rejects_descriptor_size_mismatches_for_real_fixtu
         BrowserObjectSource::from_url(server.url_for_path(&resolved_snapshot.active_files[0].path))
             .expect("loopback HTTP should be allowed in host tests"),
     );
-    let materialized = MaterializedBrowserSnapshot::new(
+    let materialized = MaterializedBrowserSnapshot::new_with_partition_column_types(
         resolved_snapshot.table_uri,
         resolved_snapshot.snapshot_version,
         files,
+        resolved_snapshot.partition_column_types,
     )
     .expect("duplicate-free snapshots should construct");
 
@@ -608,6 +611,410 @@ fn supported_browser_aggregate_queries_have_native_result_parity_on_partitioned_
 }
 
 #[test]
+fn browser_execution_reports_metrics_for_pruned_and_empty_scans() {
+    let fixture = TestTableFixture::create_partitioned();
+    let resolved_snapshot = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect("latest snapshot should resolve");
+    let server = LoopbackObjectServer::from_fixture_paths(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+    );
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default browser runtime config should be supported");
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let bootstrapped = runtime()
+        .block_on(session.bootstrap_snapshot_metadata(&materialized))
+        .expect("browser snapshot metadata bootstrap should succeed");
+
+    for sql in [
+        format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'C' ORDER BY id"),
+        format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'Z' ORDER BY id"),
+    ] {
+        let execution_plan = execution_plan_for_case(
+            &session,
+            &bootstrapped,
+            &resolved_snapshot.table_uri,
+            resolved_snapshot.snapshot_version,
+            &sql,
+        );
+        let browser_result = runtime()
+            .block_on(session.execute_plan(&materialized, &execution_plan))
+            .expect("browser execution should succeed for metric cases");
+        let native_result = native_result_for_case(
+            &resolved_snapshot.table_uri,
+            Some(resolved_snapshot.snapshot_version),
+            &sql,
+        );
+
+        assert_eq!(
+            browser_result.metrics().bytes_fetched,
+            execution_plan.scan().candidate_bytes(),
+            "sql '{}': fetched bytes should match the candidate scan bytes",
+            sql
+        );
+        assert_eq!(
+            browser_result.metrics().files_touched,
+            native_result.metrics.files_touched,
+            "sql '{}': touched files should match native metrics",
+            sql
+        );
+        assert_eq!(
+            browser_result.metrics().files_skipped,
+            native_result.metrics.files_skipped,
+            "sql '{}': skipped files should match native metrics",
+            sql
+        );
+    }
+}
+
+#[test]
+fn browser_execution_rejects_bootstrap_to_execution_etag_drift_on_real_fixture_files() {
+    let fixture = TestTableFixture::create_partitioned();
+    let resolved_snapshot = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect("latest snapshot should resolve");
+    let server = LoopbackObjectServer::from_fixture_paths_with_options(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+        LoopbackObjectServerOptions {
+            range_etag: Some("\"bootstrap-v1\"".to_string()),
+            full_etag: Some("\"execution-v2\"".to_string()),
+            ..LoopbackObjectServerOptions::default()
+        },
+    );
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default browser runtime config should be supported");
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let bootstrapped = runtime()
+        .block_on(session.bootstrap_snapshot_metadata(&materialized))
+        .expect("browser snapshot metadata bootstrap should succeed");
+    assert!(
+        bootstrapped
+            .active_files()
+            .iter()
+            .all(|file| file.object_etag() == Some("\"bootstrap-v1\"")),
+        "bootstrap should preserve the observed object etag for every file",
+    );
+
+    let sql = format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'A' ORDER BY id");
+    let execution_plan = execution_plan_for_case(
+        &session,
+        &bootstrapped,
+        &resolved_snapshot.table_uri,
+        resolved_snapshot.snapshot_version,
+        &sql,
+    );
+    let error = runtime()
+        .block_on(session.execute_plan(&materialized, &execution_plan))
+        .expect_err("etag drift between bootstrap and execution should fail");
+
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert!(error.message.contains("entity tag"));
+}
+
+#[test]
+fn browser_execution_reports_nonzero_duration_metrics_for_successful_reads() {
+    let fixture = TestTableFixture::create_partitioned();
+    let resolved_snapshot = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect("latest snapshot should resolve");
+    let server = LoopbackObjectServer::from_fixture_paths_with_options(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+        LoopbackObjectServerOptions {
+            full_read_delay: Some(std::time::Duration::from_millis(25)),
+            ..LoopbackObjectServerOptions::default()
+        },
+    );
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig {
+        request_timeout_ms: 250,
+        execution_timeout_ms: 1_000,
+        ..BrowserRuntimeConfig::default()
+    })
+    .expect("delayed full-read browser runtime config should be supported");
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let bootstrapped = runtime()
+        .block_on(session.bootstrap_snapshot_metadata(&materialized))
+        .expect("browser snapshot metadata bootstrap should succeed");
+
+    let sql = format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'A' ORDER BY id");
+    let execution_plan = execution_plan_for_case(
+        &session,
+        &bootstrapped,
+        &resolved_snapshot.table_uri,
+        resolved_snapshot.snapshot_version,
+        &sql,
+    );
+    let browser_result = runtime()
+        .block_on(session.execute_plan(&materialized, &execution_plan))
+        .expect("browser execution should succeed for delayed duration metrics");
+    let native_result = native_result_for_case(
+        &resolved_snapshot.table_uri,
+        Some(resolved_snapshot.snapshot_version),
+        &sql,
+    );
+
+    assert_eq!(
+        normalize_browser_result(&browser_result),
+        normalize_native_result(&native_result, &["id".to_string()]),
+        "browser/native rows should match for delayed metric cases",
+    );
+    assert!(
+        browser_result.metrics().duration_ms >= 20,
+        "duration should reflect the delayed full-object read, got {} ms",
+        browser_result.metrics().duration_ms
+    );
+    assert!(
+        browser_result.metrics().duration_ms < 1_000,
+        "duration should remain bounded by the configured execution timeout, got {} ms",
+        browser_result.metrics().duration_ms
+    );
+}
+
+#[test]
+fn supported_browser_integer_partition_queries_have_native_parity_and_typed_filters() {
+    let fixture = TestTableFixture::create_integer_partitioned_mixed_case();
+    let resolved_snapshot = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect("latest snapshot should resolve");
+    let server = LoopbackObjectServer::from_fixture_paths(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+    );
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default browser runtime config should be supported");
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let bootstrapped = runtime()
+        .block_on(session.bootstrap_snapshot_metadata(&materialized))
+        .expect("browser snapshot metadata bootstrap should succeed");
+
+    let filtered_sql =
+        format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE \"Year\" = 2024 ORDER BY id");
+    let filtered_plan = execution_plan_for_case(
+        &session,
+        &bootstrapped,
+        &resolved_snapshot.table_uri,
+        resolved_snapshot.snapshot_version,
+        &filtered_sql,
+    );
+    assert_eq!(filtered_plan.scan().required_columns(), ["id", "year"]);
+    assert_eq!(
+        filtered_plan.filter(),
+        Some(&BrowserFilterExpr::Compare {
+            source_column: "year".to_string(),
+            comparison: BrowserComparisonOp::Eq,
+            literal: BrowserScalarValue::Int64(2024),
+        })
+    );
+
+    let filtered_browser = runtime()
+        .block_on(session.execute_plan(&materialized, &filtered_plan))
+        .expect("browser integer-partition execution should succeed");
+    let filtered_native = native_result_for_case(
+        &resolved_snapshot.table_uri,
+        Some(resolved_snapshot.snapshot_version),
+        &filtered_sql,
+    );
+    assert_eq!(
+        normalize_browser_result(&filtered_browser),
+        normalize_native_result(&filtered_native, &["id".to_string()]),
+        "browser/native rows should match for typed integer partition filters",
+    );
+
+    let grouped_sql = format!(
+        "SELECT \"Year\" AS year, SUM(value) AS total_value \
+         FROM {DEFAULT_TABLE_NAME} \
+         GROUP BY \"Year\" \
+         ORDER BY year"
+    );
+    let grouped_plan = execution_plan_for_case(
+        &session,
+        &bootstrapped,
+        &resolved_snapshot.table_uri,
+        resolved_snapshot.snapshot_version,
+        &grouped_sql,
+    );
+    let grouped_browser = runtime()
+        .block_on(session.execute_plan(&materialized, &grouped_plan))
+        .expect("browser integer-partition aggregates should succeed");
+    let grouped_native = native_result_for_case(
+        &resolved_snapshot.table_uri,
+        Some(resolved_snapshot.snapshot_version),
+        &grouped_sql,
+    );
+    assert_eq!(
+        normalize_browser_result(&grouped_browser),
+        normalize_native_result(
+            &grouped_native,
+            &["year".to_string(), "total_value".to_string()],
+        ),
+        "browser/native rows should match for grouped integer partition outputs",
+    );
+}
+
+#[test]
+fn supported_browser_numeric_string_partition_queries_have_native_parity_and_string_filters() {
+    let fixture = TestTableFixture::create_numeric_string_partitioned();
+    let resolved_snapshot = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect("latest snapshot should resolve");
+    assert_eq!(
+        resolved_snapshot.partition_column_types,
+        std::collections::BTreeMap::from([("year_code".to_string(), PartitionColumnType::String,)])
+    );
+    let server = LoopbackObjectServer::from_fixture_paths(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+    );
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default browser runtime config should be supported");
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let bootstrapped = runtime()
+        .block_on(session.bootstrap_snapshot_metadata(&materialized))
+        .expect("browser snapshot metadata bootstrap should succeed");
+
+    let filtered_sql =
+        format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE year_code = '2024' ORDER BY id");
+    let filtered_plan = execution_plan_for_case(
+        &session,
+        &bootstrapped,
+        &resolved_snapshot.table_uri,
+        resolved_snapshot.snapshot_version,
+        &filtered_sql,
+    );
+    assert_eq!(filtered_plan.scan().required_columns(), ["id", "year_code"]);
+    assert_eq!(
+        filtered_plan.filter(),
+        Some(&BrowserFilterExpr::Compare {
+            source_column: "year_code".to_string(),
+            comparison: BrowserComparisonOp::Eq,
+            literal: BrowserScalarValue::String("2024".to_string()),
+        })
+    );
+
+    let filtered_browser = runtime()
+        .block_on(session.execute_plan(&materialized, &filtered_plan))
+        .expect("browser numeric-string-partition execution should succeed");
+    let filtered_native = native_result_for_case(
+        &resolved_snapshot.table_uri,
+        Some(resolved_snapshot.snapshot_version),
+        &filtered_sql,
+    );
+    assert_eq!(
+        normalize_browser_result(&filtered_browser),
+        normalize_native_result(&filtered_native, &["id".to_string()]),
+        "browser/native rows should match for typed string partition filters",
+    );
+
+    let grouped_sql = format!(
+        "SELECT year_code, SUM(value) AS total_value \
+         FROM {DEFAULT_TABLE_NAME} \
+         GROUP BY year_code \
+         ORDER BY year_code"
+    );
+    let grouped_plan = execution_plan_for_case(
+        &session,
+        &bootstrapped,
+        &resolved_snapshot.table_uri,
+        resolved_snapshot.snapshot_version,
+        &grouped_sql,
+    );
+    let grouped_browser = runtime()
+        .block_on(session.execute_plan(&materialized, &grouped_plan))
+        .expect("browser numeric-string-partition aggregates should succeed");
+    let grouped_native = native_result_for_case(
+        &resolved_snapshot.table_uri,
+        Some(resolved_snapshot.snapshot_version),
+        &grouped_sql,
+    );
+    assert_eq!(
+        normalize_browser_result(&grouped_browser),
+        normalize_native_result(
+            &grouped_native,
+            &["year_code".to_string(), "total_value".to_string()],
+        ),
+        "browser/native rows should match for grouped string partition outputs",
+    );
+}
+
+#[test]
+fn supported_browser_nullable_order_by_queries_have_native_parity() {
+    let fixture = TestTableFixture::create_nullable_values();
+    let resolved_snapshot = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect("latest snapshot should resolve");
+    let server = LoopbackObjectServer::from_fixture_paths(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+    );
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default browser runtime config should be supported");
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let bootstrapped = runtime()
+        .block_on(session.bootstrap_snapshot_metadata(&materialized))
+        .expect("browser snapshot metadata bootstrap should succeed");
+
+    for sql in [
+        format!("SELECT id, value FROM {DEFAULT_TABLE_NAME} ORDER BY value, id"),
+        format!("SELECT id, value FROM {DEFAULT_TABLE_NAME} ORDER BY value DESC, id"),
+    ] {
+        let execution_plan = execution_plan_for_case(
+            &session,
+            &bootstrapped,
+            &resolved_snapshot.table_uri,
+            resolved_snapshot.snapshot_version,
+            &sql,
+        );
+        let browser_result = runtime()
+            .block_on(session.execute_plan(&materialized, &execution_plan))
+            .expect("browser nullable-sort execution should succeed");
+        let native_result = native_result_for_case(
+            &resolved_snapshot.table_uri,
+            Some(resolved_snapshot.snapshot_version),
+            &sql,
+        );
+
+        assert_eq!(
+            normalize_browser_result(&browser_result),
+            normalize_native_result(&native_result, &["id".to_string(), "value".to_string()],),
+            "sql '{}': browser/native rows should match",
+            sql
+        );
+    }
+}
+
+#[test]
 fn intentional_browser_native_sql_envelope_divergences_are_explicit() {
     let fixture = TestTableFixture::create_partitioned();
 
@@ -650,10 +1057,11 @@ fn materialize_loopback_snapshot(
         })
         .collect::<Vec<_>>();
 
-    MaterializedBrowserSnapshot::new(
+    MaterializedBrowserSnapshot::new_with_partition_column_types(
         resolved_snapshot.table_uri.clone(),
         resolved_snapshot.snapshot_version,
         files,
+        resolved_snapshot.partition_column_types.clone(),
     )
     .expect("duplicate-free snapshots should construct")
 }
