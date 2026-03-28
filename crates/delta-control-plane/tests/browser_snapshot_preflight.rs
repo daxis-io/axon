@@ -1,15 +1,20 @@
 mod support;
 
 use delta_control_plane::resolve_snapshot;
-use deltalake::arrow::array::{Int64Array, UInt64Array};
+use deltalake::arrow::array::{
+    Array, Float64Array, Int32Array, Int64Array, StringArray, UInt64Array,
+};
+use deltalake::arrow::datatypes::DataType as ArrowDataType;
+use deltalake::arrow::util::display::array_value_to_string;
 use native_query_runtime::{execute_query, NativeQueryResult, DEFAULT_TABLE_NAME};
 use query_contract::{ExecutionTarget, QueryErrorCode, QueryRequest, SnapshotResolutionRequest};
 use support::{LoopbackObjectServer, TestTableFixture};
 use wasm_query_runtime::{
-    BootstrappedBrowserSnapshot, BrowserAggregateFunction, BrowserExecutionOutputKind,
-    BrowserExecutionPlan, BrowserObjectSource, BrowserParquetConvertedType,
-    BrowserParquetLogicalType, BrowserParquetPhysicalType, BrowserParquetRepetition,
-    BrowserPlannedQuery, BrowserRuntimeConfig, BrowserRuntimeSession, MaterializedBrowserFile,
+    BootstrappedBrowserSnapshot, BrowserAggregateFunction, BrowserComparisonOp,
+    BrowserExecutionOutputKind, BrowserExecutionPlan, BrowserExecutionResult, BrowserFilterExpr,
+    BrowserObjectSource, BrowserParquetConvertedType, BrowserParquetLogicalType,
+    BrowserParquetPhysicalType, BrowserParquetRepetition, BrowserPlannedQuery,
+    BrowserRuntimeConfig, BrowserRuntimeSession, BrowserScalarValue, MaterializedBrowserFile,
     MaterializedBrowserSnapshot,
 };
 
@@ -17,6 +22,8 @@ struct SupportedBrowserSqlParityCase {
     name: &'static str,
     sql: String,
     assert_scan_metrics: bool,
+    expected_required_columns: Vec<&'static str>,
+    expected_filter: Option<ExpectedFilterExpr>,
     expected_outputs: Vec<ExpectedExecutionOutput>,
     expected_group_by_columns: Vec<&'static str>,
     expected_measures: Vec<ExpectedAggregateMeasure>,
@@ -50,6 +57,14 @@ struct ExpectedAggregateMeasure {
 struct ExpectedSortKey {
     output_name: &'static str,
     descending: bool,
+}
+
+enum ExpectedFilterExpr {
+    Compare {
+        source_column: &'static str,
+        comparison: BrowserComparisonOp,
+        literal: BrowserScalarValue,
+    },
 }
 
 #[test]
@@ -418,6 +433,181 @@ fn supported_browser_sql_queries_have_native_parity_on_partitioned_fixture() {
 }
 
 #[test]
+fn supported_browser_sql_queries_lower_typed_filters_on_partitioned_fixture() {
+    let fixture = TestTableFixture::create_partitioned();
+    let resolved_snapshot = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect("latest snapshot should resolve");
+    let server = LoopbackObjectServer::from_fixture_paths(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+    );
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default browser runtime config should be supported");
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let bootstrapped = runtime()
+        .block_on(session.bootstrap_snapshot_metadata(&materialized))
+        .expect("browser snapshot metadata bootstrap should succeed");
+
+    for case in supported_browser_sql_parity_cases() {
+        let execution_plan = execution_plan_for_case(
+            &session,
+            &bootstrapped,
+            &resolved_snapshot.table_uri,
+            resolved_snapshot.snapshot_version,
+            &case.sql,
+        );
+
+        assert_eq!(
+            execution_plan.scan().required_columns(),
+            case.expected_required_columns.as_slice(),
+            "case '{}': required scan columns should match",
+            case.name
+        );
+
+        match (execution_plan.filter(), &case.expected_filter) {
+            (Some(actual), Some(expected)) => {
+                assert_filter_expr_matches(actual, expected, case.name);
+            }
+            (None, None) => {}
+            (Some(actual), None) => {
+                panic!(
+                    "case '{}': execution plan unexpectedly lowered a filter: {:?}",
+                    case.name, actual
+                );
+            }
+            (None, Some(_)) => {
+                panic!(
+                    "case '{}': execution plan did not lower the expected filter",
+                    case.name
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn supported_browser_non_aggregate_queries_have_native_result_parity_on_partitioned_fixture() {
+    let fixture = TestTableFixture::create_partitioned();
+    let resolved_snapshot = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect("latest snapshot should resolve");
+    let server = LoopbackObjectServer::from_fixture_paths(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+    );
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default browser runtime config should be supported");
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let bootstrapped = runtime()
+        .block_on(session.bootstrap_snapshot_metadata(&materialized))
+        .expect("browser snapshot metadata bootstrap should succeed");
+
+    for case in supported_browser_sql_parity_cases()
+        .into_iter()
+        .filter(|case| case.expected_measures.is_empty())
+    {
+        let execution_plan = execution_plan_for_case(
+            &session,
+            &bootstrapped,
+            &resolved_snapshot.table_uri,
+            resolved_snapshot.snapshot_version,
+            &case.sql,
+        );
+        let browser_result = runtime()
+            .block_on(session.execute_plan(&materialized, &execution_plan))
+            .expect("browser execution should succeed for supported non-aggregate cases");
+        let native_result = native_result_for_case(
+            &resolved_snapshot.table_uri,
+            Some(resolved_snapshot.snapshot_version),
+            &case.sql,
+        );
+
+        assert_eq!(
+            normalize_browser_result(&browser_result),
+            normalize_native_result(
+                &native_result,
+                &case
+                    .expected_outputs
+                    .iter()
+                    .map(|output| output.output_name.to_string())
+                    .collect::<Vec<_>>(),
+            ),
+            "case '{}': browser/native rows should match",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn supported_browser_aggregate_queries_have_native_result_parity_on_partitioned_fixture() {
+    let fixture = TestTableFixture::create_partitioned();
+    let resolved_snapshot = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect("latest snapshot should resolve");
+    let server = LoopbackObjectServer::from_fixture_paths(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+    );
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default browser runtime config should be supported");
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let bootstrapped = runtime()
+        .block_on(session.bootstrap_snapshot_metadata(&materialized))
+        .expect("browser snapshot metadata bootstrap should succeed");
+
+    for case in supported_browser_sql_parity_cases()
+        .into_iter()
+        .filter(|case| !case.expected_measures.is_empty())
+    {
+        let execution_plan = execution_plan_for_case(
+            &session,
+            &bootstrapped,
+            &resolved_snapshot.table_uri,
+            resolved_snapshot.snapshot_version,
+            &case.sql,
+        );
+        let browser_result = runtime()
+            .block_on(session.execute_plan(&materialized, &execution_plan))
+            .expect("browser execution should succeed for supported aggregate cases");
+        let native_result = native_result_for_case(
+            &resolved_snapshot.table_uri,
+            Some(resolved_snapshot.snapshot_version),
+            &case.sql,
+        );
+
+        assert_eq!(
+            normalize_browser_result(&browser_result),
+            normalize_native_result(
+                &native_result,
+                &case
+                    .expected_outputs
+                    .iter()
+                    .map(|output| output.output_name.to_string())
+                    .collect::<Vec<_>>(),
+            ),
+            "case '{}': browser/native rows should match",
+            case.name
+        );
+    }
+}
+
+#[test]
 fn intentional_browser_native_sql_envelope_divergences_are_explicit() {
     let fixture = TestTableFixture::create_partitioned();
 
@@ -474,6 +664,8 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
             name: "limit_order_by",
             sql: format!("SELECT id FROM {DEFAULT_TABLE_NAME} ORDER BY id LIMIT 1"),
             assert_scan_metrics: false,
+            expected_required_columns: vec!["id"],
+            expected_filter: None,
             expected_outputs: vec![ExpectedExecutionOutput {
                 output_name: "id",
                 kind: ExpectedOutputKind::Passthrough,
@@ -491,6 +683,8 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
             name: "count_star",
             sql: format!("SELECT COUNT(*) AS row_count FROM {DEFAULT_TABLE_NAME}"),
             assert_scan_metrics: false,
+            expected_required_columns: vec![],
+            expected_filter: None,
             expected_outputs: vec![ExpectedExecutionOutput {
                 output_name: "row_count",
                 kind: ExpectedOutputKind::Aggregate,
@@ -509,6 +703,8 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
             name: "avg_value",
             sql: format!("SELECT AVG(value) AS avg_value FROM {DEFAULT_TABLE_NAME}"),
             assert_scan_metrics: false,
+            expected_required_columns: vec!["value"],
+            expected_filter: None,
             expected_outputs: vec![ExpectedExecutionOutput {
                 output_name: "avg_value",
                 kind: ExpectedOutputKind::Aggregate,
@@ -533,6 +729,8 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
                  LIMIT 2"
             ),
             assert_scan_metrics: false,
+            expected_required_columns: vec!["category", "value"],
+            expected_filter: None,
             expected_outputs: vec![
                 ExpectedExecutionOutput {
                     output_name: "category",
@@ -564,6 +762,8 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
                  SELECT total FROM filtered ORDER BY total"
             ),
             assert_scan_metrics: false,
+            expected_required_columns: vec!["value"],
+            expected_filter: None,
             expected_outputs: vec![ExpectedExecutionOutput {
                 output_name: "total",
                 kind: ExpectedOutputKind::Passthrough,
@@ -581,6 +781,12 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
             name: "partition_pruned_equality",
             sql: format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'C' ORDER BY id"),
             assert_scan_metrics: true,
+            expected_required_columns: vec!["category", "id"],
+            expected_filter: Some(ExpectedFilterExpr::Compare {
+                source_column: "category",
+                comparison: BrowserComparisonOp::Eq,
+                literal: BrowserScalarValue::String("C".to_string()),
+            }),
             expected_outputs: vec![ExpectedExecutionOutput {
                 output_name: "id",
                 kind: ExpectedOutputKind::Passthrough,
@@ -598,6 +804,12 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
             name: "partition_pruned_no_match",
             sql: format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'Z' ORDER BY id"),
             assert_scan_metrics: true,
+            expected_required_columns: vec!["category", "id"],
+            expected_filter: Some(ExpectedFilterExpr::Compare {
+                source_column: "category",
+                comparison: BrowserComparisonOp::Eq,
+                literal: BrowserScalarValue::String("Z".to_string()),
+            }),
             expected_outputs: vec![ExpectedExecutionOutput {
                 output_name: "id",
                 kind: ExpectedOutputKind::Passthrough,
@@ -615,6 +827,12 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
             name: "stats_pruned_range",
             sql: format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE value >= 40 ORDER BY id"),
             assert_scan_metrics: true,
+            expected_required_columns: vec!["id", "value"],
+            expected_filter: Some(ExpectedFilterExpr::Compare {
+                source_column: "value",
+                comparison: BrowserComparisonOp::Gte,
+                literal: BrowserScalarValue::Int64(40),
+            }),
             expected_outputs: vec![ExpectedExecutionOutput {
                 output_name: "id",
                 kind: ExpectedOutputKind::Passthrough,
@@ -891,6 +1109,146 @@ fn query_row_count(table_uri: &str, snapshot_version: i64) -> u64 {
     }
 
     panic!("COUNT(*) should return an Int64Array or UInt64Array");
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct NormalizedQueryResult {
+    output_names: Vec<String>,
+    rows: Vec<Vec<BrowserScalarValue>>,
+}
+
+fn normalize_browser_result(result: &BrowserExecutionResult) -> NormalizedQueryResult {
+    NormalizedQueryResult {
+        output_names: result.output_names().to_vec(),
+        rows: result
+            .rows()
+            .iter()
+            .map(|row| row.values().to_vec())
+            .collect(),
+    }
+}
+
+fn normalize_native_result(
+    result: &NativeQueryResult,
+    empty_output_names: &[String],
+) -> NormalizedQueryResult {
+    let output_names = result
+        .batches
+        .first()
+        .map(|batch| {
+            batch
+                .schema()
+                .fields()
+                .iter()
+                .map(|field| field.name().to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| empty_output_names.to_vec());
+    let mut rows = Vec::new();
+
+    for batch in &result.batches {
+        for row_index in 0..batch.num_rows() {
+            rows.push(
+                batch
+                    .columns()
+                    .iter()
+                    .map(|column| arrow_value_to_scalar(column.as_ref(), row_index))
+                    .collect(),
+            );
+        }
+    }
+
+    NormalizedQueryResult { output_names, rows }
+}
+
+fn arrow_value_to_scalar(column: &dyn Array, row_index: usize) -> BrowserScalarValue {
+    if column.is_null(row_index) {
+        return BrowserScalarValue::Null;
+    }
+
+    if let Some(values) = column.as_any().downcast_ref::<Int32Array>() {
+        return BrowserScalarValue::Int64(i64::from(values.value(row_index)));
+    }
+
+    if let Some(values) = column.as_any().downcast_ref::<Int64Array>() {
+        return BrowserScalarValue::Int64(values.value(row_index));
+    }
+
+    if let Some(values) = column.as_any().downcast_ref::<UInt64Array>() {
+        return BrowserScalarValue::Int64(
+            i64::try_from(values.value(row_index)).expect("fixture values should fit in i64"),
+        );
+    }
+
+    if let Some(values) = column.as_any().downcast_ref::<StringArray>() {
+        return BrowserScalarValue::String(values.value(row_index).to_string());
+    }
+
+    if let Some(values) = column.as_any().downcast_ref::<Float64Array>() {
+        let value = values.value(row_index);
+        let rounded = value.round();
+        assert!(
+            (value - rounded).abs() < f64::EPSILON,
+            "non-integral float parity normalization is outside the current fixture envelope",
+        );
+        return BrowserScalarValue::Int64(rounded as i64);
+    }
+
+    if matches!(
+        column.data_type(),
+        ArrowDataType::Dictionary(_, value_type) if **value_type == ArrowDataType::Utf8
+    ) {
+        return BrowserScalarValue::String(
+            array_value_to_string(column, row_index)
+                .expect("dictionary-encoded strings should format"),
+        );
+    }
+
+    panic!(
+        "unsupported arrow value in parity normalization: {:?}",
+        column.data_type()
+    );
+}
+
+fn assert_filter_expr_matches(
+    actual: &BrowserFilterExpr,
+    expected: &ExpectedFilterExpr,
+    case_name: &str,
+) {
+    match (actual, expected) {
+        (
+            BrowserFilterExpr::Compare {
+                source_column,
+                comparison,
+                literal,
+            },
+            ExpectedFilterExpr::Compare {
+                source_column: expected_source_column,
+                comparison: expected_comparison,
+                literal: expected_literal,
+            },
+        ) => {
+            assert_eq!(
+                source_column, expected_source_column,
+                "case '{}': filter source column should match",
+                case_name
+            );
+            assert_eq!(
+                comparison, expected_comparison,
+                "case '{}': filter comparison should match",
+                case_name
+            );
+            assert_eq!(
+                literal, expected_literal,
+                "case '{}': filter literal should match",
+                case_name
+            );
+        }
+        _ => panic!(
+            "case '{}': execution-plan filter shape did not match expectation",
+            case_name
+        ),
+    }
 }
 
 fn runtime() -> tokio::runtime::Runtime {

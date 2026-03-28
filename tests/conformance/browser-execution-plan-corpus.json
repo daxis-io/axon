@@ -52,6 +52,16 @@
         "source_column": "id"
       }
     ],
+    "expected_required_columns": ["category", "id"],
+    "expected_filter": {
+      "kind": "compare",
+      "source_column": "category",
+      "comparison": "eq",
+      "literal": {
+        "kind": "string",
+        "value": "C"
+      }
+    },
     "expected_group_by_columns": [],
     "expected_measures": [],
     "expected_order_by": [],
@@ -142,6 +152,7 @@
         "source_column": "value"
       }
     ],
+    "expected_required_columns": ["value"],
     "expected_group_by_columns": [],
     "expected_measures": [],
     "expected_order_by": [
@@ -177,6 +188,7 @@
         "source_column": null
       }
     ],
+    "expected_required_columns": [],
     "expected_group_by_columns": [],
     "expected_measures": [
       {
@@ -218,6 +230,7 @@
         "source_column": "value"
       }
     ],
+    "expected_required_columns": ["value"],
     "expected_group_by_columns": [],
     "expected_measures": [
       {
@@ -259,6 +272,7 @@
         "source_column": "value"
       }
     ],
+    "expected_required_columns": ["value"],
     "expected_group_by_columns": [],
     "expected_measures": [
       {
@@ -454,6 +468,7 @@
         "source_column": "value"
       }
     ],
+    "expected_required_columns": ["category", "value"],
     "expected_group_by_columns": ["category"],
     "expected_measures": [
       {
@@ -490,6 +505,7 @@
         "source_column": "id"
       }
     ],
+    "expected_required_columns": ["id"],
     "expected_group_by_columns": [],
     "expected_measures": [],
     "expected_order_by": [
@@ -524,6 +540,16 @@
         "source_column": "id"
       }
     ],
+    "expected_required_columns": ["id", "value"],
+    "expected_filter": {
+      "kind": "compare",
+      "source_column": "value",
+      "comparison": "gte",
+      "literal": {
+        "kind": "int64",
+        "value": 40
+      }
+    },
     "expected_group_by_columns": [],
     "expected_measures": [],
     "expected_order_by": [
@@ -564,6 +590,7 @@
         "source_column": "value"
       }
     ],
+    "expected_required_columns": ["category", "value"],
     "expected_group_by_columns": ["category"],
     "expected_measures": [
       {

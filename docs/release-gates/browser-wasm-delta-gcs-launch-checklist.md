@@ -14,12 +14,12 @@
 
 ## Correctness
 
-- [ ] Native runtime exists and is production-callable.
-- [ ] Every supported browser query has a native parity test.
+- [x] Native runtime exists and is production-callable.
+- [x] Every supported browser query has a native parity test.
 - [ ] Advanced Delta features are classified as supported, native-only, unsupported, or experimental.
-- [ ] Unsupported cases fail clearly or route deterministically to native.
-- [ ] Range-read correctness is proven for footer, bounded, offset, and suffix reads.
-- [ ] Failure-path coverage exists for `401`, `403`, `404`, and `416`.
+- [x] Unsupported cases fail clearly or route deterministically to native.
+- [x] Range-read correctness is proven for footer, bounded, offset, and suffix reads.
+- [x] Failure-path coverage exists for `401`, `403`, `404`, and `416`.
 
 ## Runtime Constraints
 

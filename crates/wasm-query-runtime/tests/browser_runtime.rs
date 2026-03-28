@@ -16,10 +16,11 @@ use serde::Deserialize;
 use wasm_http_object_store::{HttpByteRange, HttpRangeReader};
 use wasm_query_runtime::{
     runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserAggregateFunction,
-    BrowserExecutionOutputKind, BrowserObjectAccessMode, BrowserObjectSource,
-    BrowserParquetConvertedType, BrowserParquetField, BrowserParquetFieldStats,
-    BrowserParquetFileMetadata, BrowserParquetLogicalType, BrowserParquetPhysicalType,
-    BrowserParquetRepetition, BrowserRuntimeConfig, BrowserRuntimeSession, MaterializedBrowserFile,
+    BrowserComparisonOp, BrowserExecutionOutputKind, BrowserFilterExpr, BrowserObjectAccessMode,
+    BrowserObjectSource, BrowserParquetConvertedType, BrowserParquetField,
+    BrowserParquetFieldStats, BrowserParquetFileMetadata, BrowserParquetLogicalType,
+    BrowserParquetPhysicalType, BrowserParquetRepetition, BrowserRuntimeConfig,
+    BrowserRuntimeSession, BrowserScalarValue, MaterializedBrowserFile,
     MaterializedBrowserSnapshot,
 };
 
@@ -40,6 +41,10 @@ struct ExecutionPlanCorpusCase {
     expected_measures: Vec<ExpectedAggregateMeasure>,
     expected_order_by: Vec<ExpectedSortKey>,
     expected_limit: Option<u64>,
+    #[serde(default)]
+    expected_required_columns: Option<Vec<String>>,
+    #[serde(default)]
+    expected_filter: Option<ExpectedFilterExpr>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +73,38 @@ struct ExpectedAggregateMeasure {
 struct ExpectedSortKey {
     output_name: String,
     descending: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ExpectedFilterExpr {
+    And {
+        children: Vec<ExpectedFilterExpr>,
+    },
+    Compare {
+        source_column: String,
+        comparison: String,
+        literal: ExpectedScalarValue,
+    },
+    InList {
+        source_column: String,
+        literals: Vec<ExpectedScalarValue>,
+    },
+    IsNull {
+        source_column: String,
+    },
+    IsNotNull {
+        source_column: String,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ExpectedScalarValue {
+    Int64 { value: i64 },
+    String { value: String },
+    Boolean { value: bool },
+    Null,
 }
 
 #[test]
@@ -279,6 +316,14 @@ fn build_execution_plan_matches_direct_projection_corpus() {
             "case '{}': partition columns should match",
             case.name
         );
+        if let Some(expected_required_columns) = &case.expected_required_columns {
+            assert_eq!(
+                plan.scan().required_columns(),
+                expected_required_columns.as_slice(),
+                "case '{}': required scan columns should match",
+                case.name
+            );
+        }
         assert_eq!(
             plan.pruning().used_partition_pruning,
             case.expected_pruning.used_partition_pruning,
@@ -309,6 +354,24 @@ fn build_execution_plan_matches_direct_projection_corpus() {
             "case '{}': limit should match",
             case.name
         );
+        match (plan.filter(), case.expected_filter.as_ref()) {
+            (Some(actual), Some(expected)) => {
+                assert_filter_expr_matches(actual, expected, &case.name);
+            }
+            (None, None) => {}
+            (Some(actual), None) => {
+                panic!(
+                    "case '{}': execution plan unexpectedly lowered a filter: {:?}",
+                    case.name, actual
+                );
+            }
+            (None, Some(expected)) => {
+                panic!(
+                    "case '{}': execution plan did not lower expected filter {:?}",
+                    case.name, expected
+                );
+            }
+        }
         let aggregation = plan.aggregation();
         assert_eq!(
             aggregation
@@ -457,6 +520,104 @@ fn build_execution_plan_rejects_table_and_snapshot_mismatches() {
         .expect_err("snapshot-version mismatches should be rejected");
     assert_eq!(version_mismatch_error.code, QueryErrorCode::InvalidRequest);
     assert!(version_mismatch_error.message.contains("snapshot_version"));
+}
+
+#[test]
+fn build_execution_plan_rejects_non_lowerable_filters() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+    let error = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE value + 1 > 10 ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect_err("non-lowerable filters should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(
+        error
+            .message
+            .contains("WHERE filters must be lowerable into browser execution plans"),
+        "unexpected error message: {}",
+        error.message
+    );
+}
+
+#[test]
+fn execute_plan_rejects_snapshot_identity_mismatches() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+    let plan = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("direct projection execution plans should build");
+    let materialized = MaterializedBrowserSnapshot::new(
+        "gs://axon-fixtures/other_table",
+        snapshot.snapshot_version(),
+        vec![MaterializedBrowserFile::new(
+            "category=A/part-000.parquet",
+            100,
+            BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
+            BrowserObjectSource::from_url("http://127.0.0.1:8787/object")
+                .expect("loopback HTTP should be allowed in host tests"),
+        )],
+    )
+    .expect("duplicate-free snapshots should construct");
+
+    let error = runtime()
+        .block_on(session.execute_plan(&materialized, &plan))
+        .expect_err("snapshot identity mismatches should fail before execution");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("table uri"));
+}
+
+#[test]
+fn execute_plan_rejects_missing_candidate_paths_in_materialized_snapshots() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+    let plan = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("direct projection execution plans should build");
+    let materialized = MaterializedBrowserSnapshot::new(
+        snapshot.table_uri(),
+        snapshot.snapshot_version(),
+        vec![MaterializedBrowserFile::new(
+            "category=A/part-000.parquet",
+            100,
+            BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
+            BrowserObjectSource::from_url("http://127.0.0.1:8787/object")
+                .expect("loopback HTTP should be allowed in host tests"),
+        )],
+    )
+    .expect("duplicate-free snapshots should construct");
+
+    let error = runtime()
+        .block_on(session.execute_plan(&materialized, &plan))
+        .expect_err("candidate paths absent from the materialized snapshot should fail");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("category=B/part-001.parquet"));
 }
 
 #[test]
@@ -2324,6 +2485,144 @@ fn expected_aggregate_function(name: &str) -> BrowserAggregateFunction {
         "min" => BrowserAggregateFunction::Min,
         "max" => BrowserAggregateFunction::Max,
         other => panic!("unsupported expected aggregate function '{other}'"),
+    }
+}
+
+fn assert_filter_expr_matches(
+    actual: &BrowserFilterExpr,
+    expected: &ExpectedFilterExpr,
+    case_name: &str,
+) {
+    match (actual, expected) {
+        (BrowserFilterExpr::And { children }, ExpectedFilterExpr::And { children: expected }) => {
+            assert_eq!(
+                children.len(),
+                expected.len(),
+                "case '{}': filter child count should match",
+                case_name
+            );
+            for (actual, expected) in children.iter().zip(expected.iter()) {
+                assert_filter_expr_matches(actual, expected, case_name);
+            }
+        }
+        (
+            BrowserFilterExpr::Compare {
+                source_column,
+                comparison,
+                literal,
+            },
+            ExpectedFilterExpr::Compare {
+                source_column: expected_source_column,
+                comparison: expected_comparison,
+                literal: expected_literal,
+            },
+        ) => {
+            assert_eq!(
+                source_column, expected_source_column,
+                "case '{}': filter source column should match",
+                case_name
+            );
+            assert_eq!(
+                comparison,
+                &expected_comparison_op(expected_comparison),
+                "case '{}': filter comparison should match",
+                case_name
+            );
+            assert_scalar_value_matches(literal, expected_literal, case_name);
+        }
+        (
+            BrowserFilterExpr::InList {
+                source_column,
+                literals,
+            },
+            ExpectedFilterExpr::InList {
+                source_column: expected_source_column,
+                literals: expected_literals,
+            },
+        ) => {
+            assert_eq!(
+                source_column, expected_source_column,
+                "case '{}': IN-list source column should match",
+                case_name
+            );
+            assert_eq!(
+                literals.len(),
+                expected_literals.len(),
+                "case '{}': IN-list literal count should match",
+                case_name
+            );
+            for (actual, expected) in literals.iter().zip(expected_literals.iter()) {
+                assert_scalar_value_matches(actual, expected, case_name);
+            }
+        }
+        (
+            BrowserFilterExpr::IsNull { source_column },
+            ExpectedFilterExpr::IsNull {
+                source_column: expected_source_column,
+            },
+        )
+        | (
+            BrowserFilterExpr::IsNotNull { source_column },
+            ExpectedFilterExpr::IsNotNull {
+                source_column: expected_source_column,
+            },
+        ) => {
+            assert_eq!(
+                source_column, expected_source_column,
+                "case '{}': null-check source column should match",
+                case_name
+            );
+        }
+        _ => panic!(
+            "case '{}': execution-plan filter shape did not match expected {:?}",
+            case_name, expected
+        ),
+    }
+}
+
+fn expected_comparison_op(name: &str) -> BrowserComparisonOp {
+    match name {
+        "eq" => BrowserComparisonOp::Eq,
+        "gt" => BrowserComparisonOp::Gt,
+        "gte" => BrowserComparisonOp::Gte,
+        "lt" => BrowserComparisonOp::Lt,
+        "lte" => BrowserComparisonOp::Lte,
+        other => panic!("unsupported expected comparison '{other}'"),
+    }
+}
+
+fn assert_scalar_value_matches(
+    actual: &BrowserScalarValue,
+    expected: &ExpectedScalarValue,
+    case_name: &str,
+) {
+    match (actual, expected) {
+        (BrowserScalarValue::Int64(actual), ExpectedScalarValue::Int64 { value }) => {
+            assert_eq!(
+                actual, value,
+                "case '{}': int64 scalar value should match",
+                case_name
+            );
+        }
+        (BrowserScalarValue::String(actual), ExpectedScalarValue::String { value }) => {
+            assert_eq!(
+                actual, value,
+                "case '{}': string scalar value should match",
+                case_name
+            );
+        }
+        (BrowserScalarValue::Boolean(actual), ExpectedScalarValue::Boolean { value }) => {
+            assert_eq!(
+                actual, value,
+                "case '{}': boolean scalar value should match",
+                case_name
+            );
+        }
+        (BrowserScalarValue::Null, ExpectedScalarValue::Null) => {}
+        _ => panic!(
+            "case '{}': scalar value {:?} did not match expected {:?}",
+            case_name, actual, expected
+        ),
     }
 }
 
