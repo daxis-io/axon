@@ -6,7 +6,8 @@ use native_query_runtime::{execute_query, NativeQueryResult, DEFAULT_TABLE_NAME}
 use query_contract::{ExecutionTarget, QueryErrorCode, QueryRequest, SnapshotResolutionRequest};
 use support::{LoopbackObjectServer, TestTableFixture};
 use wasm_query_runtime::{
-    BootstrappedBrowserSnapshot, BrowserObjectSource, BrowserParquetConvertedType,
+    BootstrappedBrowserSnapshot, BrowserAggregateFunction, BrowserExecutionOutputKind,
+    BrowserExecutionPlan, BrowserObjectSource, BrowserParquetConvertedType,
     BrowserParquetLogicalType, BrowserParquetPhysicalType, BrowserParquetRepetition,
     BrowserPlannedQuery, BrowserRuntimeConfig, BrowserRuntimeSession, MaterializedBrowserFile,
     MaterializedBrowserSnapshot,
@@ -16,11 +17,39 @@ struct SupportedBrowserSqlParityCase {
     name: &'static str,
     sql: String,
     assert_scan_metrics: bool,
+    expected_outputs: Vec<ExpectedExecutionOutput>,
+    expected_group_by_columns: Vec<&'static str>,
+    expected_measures: Vec<ExpectedAggregateMeasure>,
+    expected_order_by: Vec<ExpectedSortKey>,
+    expected_limit: Option<u64>,
 }
 
 struct IntentionalBrowserNativeDivergenceCase {
     name: &'static str,
     sql: String,
+}
+
+#[derive(Clone, Copy)]
+enum ExpectedOutputKind {
+    Passthrough,
+    Aggregate,
+}
+
+struct ExpectedExecutionOutput {
+    output_name: &'static str,
+    kind: ExpectedOutputKind,
+    source_column: Option<&'static str>,
+}
+
+struct ExpectedAggregateMeasure {
+    output_name: &'static str,
+    function: BrowserAggregateFunction,
+    source_column: Option<&'static str>,
+}
+
+struct ExpectedSortKey {
+    output_name: &'static str,
+    descending: bool,
 }
 
 #[test]
@@ -358,11 +387,20 @@ fn supported_browser_sql_queries_have_native_parity_on_partitioned_fixture() {
             resolved_snapshot.snapshot_version,
             &case.sql,
         );
+        let execution_plan = execution_plan_for_case(
+            &session,
+            &bootstrapped,
+            &resolved_snapshot.table_uri,
+            resolved_snapshot.snapshot_version,
+            &case.sql,
+        );
         let native_result = native_result_for_case(
             &resolved_snapshot.table_uri,
             Some(resolved_snapshot.snapshot_version),
             &case.sql,
         );
+
+        assert_execution_plan_shape(&execution_plan, &browser_plan, &case);
 
         if case.assert_scan_metrics {
             assert_eq!(
@@ -436,11 +474,54 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
             name: "limit_order_by",
             sql: format!("SELECT id FROM {DEFAULT_TABLE_NAME} ORDER BY id LIMIT 1"),
             assert_scan_metrics: false,
+            expected_outputs: vec![ExpectedExecutionOutput {
+                output_name: "id",
+                kind: ExpectedOutputKind::Passthrough,
+                source_column: Some("id"),
+            }],
+            expected_group_by_columns: vec![],
+            expected_measures: vec![],
+            expected_order_by: vec![ExpectedSortKey {
+                output_name: "id",
+                descending: false,
+            }],
+            expected_limit: Some(1),
         },
         SupportedBrowserSqlParityCase {
             name: "count_star",
             sql: format!("SELECT COUNT(*) AS row_count FROM {DEFAULT_TABLE_NAME}"),
             assert_scan_metrics: false,
+            expected_outputs: vec![ExpectedExecutionOutput {
+                output_name: "row_count",
+                kind: ExpectedOutputKind::Aggregate,
+                source_column: None,
+            }],
+            expected_group_by_columns: vec![],
+            expected_measures: vec![ExpectedAggregateMeasure {
+                output_name: "row_count",
+                function: BrowserAggregateFunction::CountStar,
+                source_column: None,
+            }],
+            expected_order_by: vec![],
+            expected_limit: None,
+        },
+        SupportedBrowserSqlParityCase {
+            name: "avg_value",
+            sql: format!("SELECT AVG(value) AS avg_value FROM {DEFAULT_TABLE_NAME}"),
+            assert_scan_metrics: false,
+            expected_outputs: vec![ExpectedExecutionOutput {
+                output_name: "avg_value",
+                kind: ExpectedOutputKind::Aggregate,
+                source_column: Some("value"),
+            }],
+            expected_group_by_columns: vec![],
+            expected_measures: vec![ExpectedAggregateMeasure {
+                output_name: "avg_value",
+                function: BrowserAggregateFunction::Avg,
+                source_column: Some("value"),
+            }],
+            expected_order_by: vec![],
+            expected_limit: None,
         },
         SupportedBrowserSqlParityCase {
             name: "group_by_aggregate",
@@ -452,6 +533,29 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
                  LIMIT 2"
             ),
             assert_scan_metrics: false,
+            expected_outputs: vec![
+                ExpectedExecutionOutput {
+                    output_name: "category",
+                    kind: ExpectedOutputKind::Passthrough,
+                    source_column: Some("category"),
+                },
+                ExpectedExecutionOutput {
+                    output_name: "total_value",
+                    kind: ExpectedOutputKind::Aggregate,
+                    source_column: Some("value"),
+                },
+            ],
+            expected_group_by_columns: vec!["category"],
+            expected_measures: vec![ExpectedAggregateMeasure {
+                output_name: "total_value",
+                function: BrowserAggregateFunction::Sum,
+                source_column: Some("value"),
+            }],
+            expected_order_by: vec![ExpectedSortKey {
+                output_name: "category",
+                descending: false,
+            }],
+            expected_limit: Some(2),
         },
         SupportedBrowserSqlParityCase {
             name: "cte_alias_projection",
@@ -460,27 +564,79 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
                  SELECT total FROM filtered ORDER BY total"
             ),
             assert_scan_metrics: false,
+            expected_outputs: vec![ExpectedExecutionOutput {
+                output_name: "total",
+                kind: ExpectedOutputKind::Passthrough,
+                source_column: Some("value"),
+            }],
+            expected_group_by_columns: vec![],
+            expected_measures: vec![],
+            expected_order_by: vec![ExpectedSortKey {
+                output_name: "total",
+                descending: false,
+            }],
+            expected_limit: None,
         },
         SupportedBrowserSqlParityCase {
             name: "partition_pruned_equality",
             sql: format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'C' ORDER BY id"),
             assert_scan_metrics: true,
+            expected_outputs: vec![ExpectedExecutionOutput {
+                output_name: "id",
+                kind: ExpectedOutputKind::Passthrough,
+                source_column: Some("id"),
+            }],
+            expected_group_by_columns: vec![],
+            expected_measures: vec![],
+            expected_order_by: vec![ExpectedSortKey {
+                output_name: "id",
+                descending: false,
+            }],
+            expected_limit: None,
         },
         SupportedBrowserSqlParityCase {
             name: "partition_pruned_no_match",
             sql: format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'Z' ORDER BY id"),
             assert_scan_metrics: true,
+            expected_outputs: vec![ExpectedExecutionOutput {
+                output_name: "id",
+                kind: ExpectedOutputKind::Passthrough,
+                source_column: Some("id"),
+            }],
+            expected_group_by_columns: vec![],
+            expected_measures: vec![],
+            expected_order_by: vec![ExpectedSortKey {
+                output_name: "id",
+                descending: false,
+            }],
+            expected_limit: None,
         },
         SupportedBrowserSqlParityCase {
             name: "stats_pruned_range",
             sql: format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE value >= 40 ORDER BY id"),
             assert_scan_metrics: true,
+            expected_outputs: vec![ExpectedExecutionOutput {
+                output_name: "id",
+                kind: ExpectedOutputKind::Passthrough,
+                source_column: Some("id"),
+            }],
+            expected_group_by_columns: vec![],
+            expected_measures: vec![],
+            expected_order_by: vec![ExpectedSortKey {
+                output_name: "id",
+                descending: false,
+            }],
+            expected_limit: None,
         },
     ]
 }
 
 fn intentional_browser_native_divergence_cases() -> Vec<IntentionalBrowserNativeDivergenceCase> {
     vec![
+        IntentionalBrowserNativeDivergenceCase {
+            name: "distinct_projection",
+            sql: format!("SELECT DISTINCT id FROM {DEFAULT_TABLE_NAME}"),
+        },
         IntentionalBrowserNativeDivergenceCase {
             name: "wildcard_projection",
             sql: format!("SELECT * FROM {DEFAULT_TABLE_NAME} LIMIT 1"),
@@ -516,6 +672,186 @@ fn browser_plan_for_case(
             },
         )
         .expect("supported browser corpus cases should plan")
+}
+
+fn execution_plan_for_case(
+    session: &BrowserRuntimeSession,
+    bootstrapped: &BootstrappedBrowserSnapshot,
+    table_uri: &str,
+    snapshot_version: i64,
+    sql: &str,
+) -> BrowserExecutionPlan {
+    session
+        .build_execution_plan(
+            bootstrapped,
+            &QueryRequest {
+                snapshot_version: Some(snapshot_version),
+                ..QueryRequest::new(table_uri, sql, ExecutionTarget::BrowserWasm)
+            },
+        )
+        .expect("supported browser corpus cases should build execution plans")
+}
+
+fn assert_execution_plan_shape(
+    execution_plan: &BrowserExecutionPlan,
+    browser_plan: &BrowserPlannedQuery,
+    case: &SupportedBrowserSqlParityCase,
+) {
+    assert_eq!(
+        execution_plan.scan().candidate_paths(),
+        browser_plan.candidate_paths.as_slice(),
+        "case '{}': execution-plan candidate paths should match browser planning",
+        case.name
+    );
+    assert_eq!(
+        execution_plan.scan().candidate_file_count(),
+        browser_plan.candidate_file_count,
+        "case '{}': execution-plan candidate-file count should match browser planning",
+        case.name
+    );
+    assert_eq!(
+        execution_plan.scan().candidate_bytes(),
+        browser_plan.candidate_bytes,
+        "case '{}': execution-plan candidate bytes should match browser planning",
+        case.name
+    );
+    assert_eq!(
+        execution_plan.scan().candidate_rows(),
+        browser_plan.candidate_rows,
+        "case '{}': execution-plan candidate rows should match browser planning",
+        case.name
+    );
+    assert_eq!(
+        execution_plan.outputs().len(),
+        case.expected_outputs.len(),
+        "case '{}': execution-plan output count should match",
+        case.name
+    );
+    for (output, expected) in execution_plan
+        .outputs()
+        .iter()
+        .zip(case.expected_outputs.iter())
+    {
+        assert_eq!(
+            output.output_name(),
+            expected.output_name,
+            "case '{}': execution-plan output name should match",
+            case.name
+        );
+        match (output.kind(), expected.kind) {
+            (
+                BrowserExecutionOutputKind::Passthrough { source_column },
+                ExpectedOutputKind::Passthrough,
+            ) => {
+                assert_eq!(
+                    Some(source_column.as_str()),
+                    expected.source_column,
+                    "case '{}': passthrough source column should match",
+                    case.name
+                );
+            }
+            (
+                BrowserExecutionOutputKind::Aggregate {
+                    function: _,
+                    source_column,
+                },
+                ExpectedOutputKind::Aggregate,
+            ) => {
+                assert_eq!(
+                    source_column.as_deref(),
+                    expected.source_column,
+                    "case '{}': aggregate source column should match",
+                    case.name
+                );
+            }
+            _ => panic!(
+                "case '{}': execution-plan output kind should match",
+                case.name
+            ),
+        }
+    }
+
+    let aggregation = execution_plan.aggregation();
+    assert_eq!(
+        aggregation
+            .map(|aggregation| {
+                aggregation
+                    .group_by_columns()
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+        case.expected_group_by_columns,
+        "case '{}': execution-plan group-by columns should match",
+        case.name
+    );
+    assert_eq!(
+        aggregation
+            .map(|aggregation| aggregation.measures().len())
+            .unwrap_or_default(),
+        case.expected_measures.len(),
+        "case '{}': execution-plan measure count should match",
+        case.name
+    );
+    if let Some(aggregation) = aggregation {
+        for (measure, expected) in aggregation
+            .measures()
+            .iter()
+            .zip(case.expected_measures.iter())
+        {
+            assert_eq!(
+                measure.output_name(),
+                expected.output_name,
+                "case '{}': execution-plan aggregate output name should match",
+                case.name
+            );
+            assert_eq!(
+                measure.function(),
+                &expected.function,
+                "case '{}': execution-plan aggregate function should match",
+                case.name
+            );
+            assert_eq!(
+                measure.source_column(),
+                expected.source_column,
+                "case '{}': execution-plan aggregate source column should match",
+                case.name
+            );
+        }
+    }
+
+    assert_eq!(
+        execution_plan.order_by().len(),
+        case.expected_order_by.len(),
+        "case '{}': execution-plan sort-key count should match",
+        case.name
+    );
+    for (sort_key, expected) in execution_plan
+        .order_by()
+        .iter()
+        .zip(case.expected_order_by.iter())
+    {
+        assert_eq!(
+            sort_key.output_name(),
+            expected.output_name,
+            "case '{}': execution-plan sort-key output should match",
+            case.name
+        );
+        assert_eq!(
+            sort_key.descending(),
+            expected.descending,
+            "case '{}': execution-plan sort-key direction should match",
+            case.name
+        );
+    }
+
+    assert_eq!(
+        execution_plan.limit(),
+        case.expected_limit,
+        "case '{}': execution-plan limit should match",
+        case.name
+    );
 }
 
 fn native_result_for_case(

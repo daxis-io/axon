@@ -1,0 +1,583 @@
+[
+  {
+    "name": "direct_projection_full_scan",
+    "snapshot": "sample",
+    "sql": "SELECT id FROM axon_table",
+    "expected_candidate_paths": [
+      "category=A/part-000.parquet",
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 360,
+    "expected_candidate_rows": 9,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": false,
+      "files_retained": 3,
+      "files_pruned": 0
+    },
+    "expected_outputs": [
+      {
+        "output_name": "id",
+        "kind": "passthrough",
+        "source_column": "id"
+      }
+    ],
+    "expected_group_by_columns": [],
+    "expected_measures": [],
+    "expected_order_by": [],
+    "expected_limit": null
+  },
+  {
+    "name": "direct_projection_partition_pruned",
+    "snapshot": "sample",
+    "sql": "SELECT id FROM axon_table WHERE category = 'C'",
+    "expected_candidate_paths": [
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 140,
+    "expected_candidate_rows": 4,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": true,
+      "used_file_stats_pruning": false,
+      "files_retained": 1,
+      "files_pruned": 2
+    },
+    "expected_outputs": [
+      {
+        "output_name": "id",
+        "kind": "passthrough",
+        "source_column": "id"
+      }
+    ],
+    "expected_group_by_columns": [],
+    "expected_measures": [],
+    "expected_order_by": [],
+    "expected_limit": null
+  },
+  {
+    "name": "aliased_projection",
+    "snapshot": "sample",
+    "sql": "SELECT value AS total FROM axon_table",
+    "expected_candidate_paths": [
+      "category=A/part-000.parquet",
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 360,
+    "expected_candidate_rows": 9,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": false,
+      "files_retained": 3,
+      "files_pruned": 0
+    },
+    "expected_outputs": [
+      {
+        "output_name": "total",
+        "kind": "passthrough",
+        "source_column": "value"
+      }
+    ],
+    "expected_group_by_columns": [],
+    "expected_measures": [],
+    "expected_order_by": [],
+    "expected_limit": null
+  },
+  {
+    "name": "qualified_projection",
+    "snapshot": "sample",
+    "sql": "SELECT axon_table.id FROM axon_table",
+    "expected_candidate_paths": [
+      "category=A/part-000.parquet",
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 360,
+    "expected_candidate_rows": 9,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": false,
+      "files_retained": 3,
+      "files_pruned": 0
+    },
+    "expected_outputs": [
+      {
+        "output_name": "id",
+        "kind": "passthrough",
+        "source_column": "id"
+      }
+    ],
+    "expected_group_by_columns": [],
+    "expected_measures": [],
+    "expected_order_by": [],
+    "expected_limit": null
+  },
+  {
+    "name": "cte_alias_projection",
+    "snapshot": "sample",
+    "sql": "WITH filtered AS (SELECT value AS total FROM axon_table) SELECT total FROM filtered ORDER BY total",
+    "expected_candidate_paths": [
+      "category=A/part-000.parquet",
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 360,
+    "expected_candidate_rows": 9,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": false,
+      "files_retained": 3,
+      "files_pruned": 0
+    },
+    "expected_outputs": [
+      {
+        "output_name": "total",
+        "kind": "passthrough",
+        "source_column": "value"
+      }
+    ],
+    "expected_group_by_columns": [],
+    "expected_measures": [],
+    "expected_order_by": [
+      {
+        "output_name": "total",
+        "descending": false
+      }
+    ],
+    "expected_limit": null
+  },
+  {
+    "name": "count_star",
+    "snapshot": "sample",
+    "sql": "SELECT COUNT(*) AS row_count FROM axon_table",
+    "expected_candidate_paths": [
+      "category=A/part-000.parquet",
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 360,
+    "expected_candidate_rows": 9,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": false,
+      "files_retained": 3,
+      "files_pruned": 0
+    },
+    "expected_outputs": [
+      {
+        "output_name": "row_count",
+        "kind": "aggregate",
+        "source_column": null
+      }
+    ],
+    "expected_group_by_columns": [],
+    "expected_measures": [
+      {
+        "output_name": "row_count",
+        "function": "count_star",
+        "source_column": null
+      }
+    ],
+    "expected_order_by": [],
+    "expected_limit": null
+  },
+  {
+    "name": "count_column_and_sum",
+    "snapshot": "sample",
+    "sql": "SELECT COUNT(value) AS value_count, SUM(value) AS total_value FROM axon_table",
+    "expected_candidate_paths": [
+      "category=A/part-000.parquet",
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 360,
+    "expected_candidate_rows": 9,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": false,
+      "files_retained": 3,
+      "files_pruned": 0
+    },
+    "expected_outputs": [
+      {
+        "output_name": "value_count",
+        "kind": "aggregate",
+        "source_column": "value"
+      },
+      {
+        "output_name": "total_value",
+        "kind": "aggregate",
+        "source_column": "value"
+      }
+    ],
+    "expected_group_by_columns": [],
+    "expected_measures": [
+      {
+        "output_name": "value_count",
+        "function": "count",
+        "source_column": "value"
+      },
+      {
+        "output_name": "total_value",
+        "function": "sum",
+        "source_column": "value"
+      }
+    ],
+    "expected_order_by": [],
+    "expected_limit": null
+  },
+  {
+    "name": "avg_value",
+    "snapshot": "sample",
+    "sql": "SELECT AVG(value) AS avg_value FROM axon_table",
+    "expected_candidate_paths": [
+      "category=A/part-000.parquet",
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 360,
+    "expected_candidate_rows": 9,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": false,
+      "files_retained": 3,
+      "files_pruned": 0
+    },
+    "expected_outputs": [
+      {
+        "output_name": "avg_value",
+        "kind": "aggregate",
+        "source_column": "value"
+      }
+    ],
+    "expected_group_by_columns": [],
+    "expected_measures": [
+      {
+        "output_name": "avg_value",
+        "function": "avg",
+        "source_column": "value"
+      }
+    ],
+    "expected_order_by": [],
+    "expected_limit": null
+  },
+  {
+    "name": "array_agg_value",
+    "snapshot": "sample",
+    "sql": "SELECT ARRAY_AGG(value) AS values FROM axon_table",
+    "expected_candidate_paths": [
+      "category=A/part-000.parquet",
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 360,
+    "expected_candidate_rows": 9,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": false,
+      "files_retained": 3,
+      "files_pruned": 0
+    },
+    "expected_outputs": [
+      {
+        "output_name": "values",
+        "kind": "aggregate",
+        "source_column": "value"
+      }
+    ],
+    "expected_group_by_columns": [],
+    "expected_measures": [
+      {
+        "output_name": "values",
+        "function": "array_agg",
+        "source_column": "value"
+      }
+    ],
+    "expected_order_by": [],
+    "expected_limit": null
+  },
+  {
+    "name": "bool_and_value",
+    "snapshot": "sample",
+    "sql": "SELECT BOOL_AND(value) AS all_values FROM axon_table",
+    "expected_candidate_paths": [
+      "category=A/part-000.parquet",
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 360,
+    "expected_candidate_rows": 9,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": false,
+      "files_retained": 3,
+      "files_pruned": 0
+    },
+    "expected_outputs": [
+      {
+        "output_name": "all_values",
+        "kind": "aggregate",
+        "source_column": "value"
+      }
+    ],
+    "expected_group_by_columns": [],
+    "expected_measures": [
+      {
+        "output_name": "all_values",
+        "function": "bool_and",
+        "source_column": "value"
+      }
+    ],
+    "expected_order_by": [],
+    "expected_limit": null
+  },
+  {
+    "name": "bool_or_value",
+    "snapshot": "sample",
+    "sql": "SELECT BOOL_OR(value) AS any_value FROM axon_table",
+    "expected_candidate_paths": [
+      "category=A/part-000.parquet",
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 360,
+    "expected_candidate_rows": 9,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": false,
+      "files_retained": 3,
+      "files_pruned": 0
+    },
+    "expected_outputs": [
+      {
+        "output_name": "any_value",
+        "kind": "aggregate",
+        "source_column": "value"
+      }
+    ],
+    "expected_group_by_columns": [],
+    "expected_measures": [
+      {
+        "output_name": "any_value",
+        "function": "bool_or",
+        "source_column": "value"
+      }
+    ],
+    "expected_order_by": [],
+    "expected_limit": null
+  },
+  {
+    "name": "min_max_value",
+    "snapshot": "sample",
+    "sql": "SELECT MIN(value) AS min_value, MAX(value) AS max_value FROM axon_table",
+    "expected_candidate_paths": [
+      "category=A/part-000.parquet",
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 360,
+    "expected_candidate_rows": 9,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": false,
+      "files_retained": 3,
+      "files_pruned": 0
+    },
+    "expected_outputs": [
+      {
+        "output_name": "min_value",
+        "kind": "aggregate",
+        "source_column": "value"
+      },
+      {
+        "output_name": "max_value",
+        "kind": "aggregate",
+        "source_column": "value"
+      }
+    ],
+    "expected_group_by_columns": [],
+    "expected_measures": [
+      {
+        "output_name": "min_value",
+        "function": "min",
+        "source_column": "value"
+      },
+      {
+        "output_name": "max_value",
+        "function": "max",
+        "source_column": "value"
+      }
+    ],
+    "expected_order_by": [],
+    "expected_limit": null
+  },
+  {
+    "name": "grouped_sum",
+    "snapshot": "sample",
+    "sql": "SELECT category, SUM(value) AS total_value FROM axon_table GROUP BY category",
+    "expected_candidate_paths": [
+      "category=A/part-000.parquet",
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 360,
+    "expected_candidate_rows": 9,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": false,
+      "files_retained": 3,
+      "files_pruned": 0
+    },
+    "expected_outputs": [
+      {
+        "output_name": "category",
+        "kind": "passthrough",
+        "source_column": "category"
+      },
+      {
+        "output_name": "total_value",
+        "kind": "aggregate",
+        "source_column": "value"
+      }
+    ],
+    "expected_group_by_columns": ["category"],
+    "expected_measures": [
+      {
+        "output_name": "total_value",
+        "function": "sum",
+        "source_column": "value"
+      }
+    ],
+    "expected_order_by": [],
+    "expected_limit": null
+  },
+  {
+    "name": "limit_order_by",
+    "snapshot": "sample",
+    "sql": "SELECT id FROM axon_table ORDER BY id LIMIT 1",
+    "expected_candidate_paths": [
+      "category=A/part-000.parquet",
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 360,
+    "expected_candidate_rows": 9,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": false,
+      "files_retained": 3,
+      "files_pruned": 0
+    },
+    "expected_outputs": [
+      {
+        "output_name": "id",
+        "kind": "passthrough",
+        "source_column": "id"
+      }
+    ],
+    "expected_group_by_columns": [],
+    "expected_measures": [],
+    "expected_order_by": [
+      {
+        "output_name": "id",
+        "descending": false
+      }
+    ],
+    "expected_limit": 1
+  },
+  {
+    "name": "stats_pruned_range",
+    "snapshot": "stats",
+    "sql": "SELECT id FROM axon_table WHERE value >= 40 ORDER BY id",
+    "expected_candidate_paths": [
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 260,
+    "expected_candidate_rows": 7,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": true,
+      "files_retained": 2,
+      "files_pruned": 1
+    },
+    "expected_outputs": [
+      {
+        "output_name": "id",
+        "kind": "passthrough",
+        "source_column": "id"
+      }
+    ],
+    "expected_group_by_columns": [],
+    "expected_measures": [],
+    "expected_order_by": [
+      {
+        "output_name": "id",
+        "descending": false
+      }
+    ],
+    "expected_limit": null
+  },
+  {
+    "name": "grouped_order_limit",
+    "snapshot": "sample",
+    "sql": "SELECT category, SUM(value) AS total_value FROM axon_table GROUP BY category ORDER BY category LIMIT 2",
+    "expected_candidate_paths": [
+      "category=A/part-000.parquet",
+      "category=B/part-001.parquet",
+      "category=C/part-002.parquet"
+    ],
+    "expected_candidate_bytes": 360,
+    "expected_candidate_rows": 9,
+    "expected_partition_columns": ["category"],
+    "expected_pruning": {
+      "used_partition_pruning": false,
+      "used_file_stats_pruning": false,
+      "files_retained": 3,
+      "files_pruned": 0
+    },
+    "expected_outputs": [
+      {
+        "output_name": "category",
+        "kind": "passthrough",
+        "source_column": "category"
+      },
+      {
+        "output_name": "total_value",
+        "kind": "aggregate",
+        "source_column": "value"
+      }
+    ],
+    "expected_group_by_columns": ["category"],
+    "expected_measures": [
+      {
+        "output_name": "total_value",
+        "function": "sum",
+        "source_column": "value"
+      }
+    ],
+    "expected_order_by": [
+      {
+        "output_name": "category",
+        "descending": false
+      }
+    ],
+    "expected_limit": 2
+  }
+]

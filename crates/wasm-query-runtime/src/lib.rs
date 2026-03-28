@@ -615,6 +615,176 @@ pub struct BrowserPlannedQuery {
     pub pruning: BrowserPruningSummary,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserScanPlan {
+    candidate_paths: Vec<String>,
+    candidate_file_count: u64,
+    candidate_bytes: u64,
+    candidate_rows: u64,
+    partition_columns: Vec<String>,
+}
+
+impl BrowserScanPlan {
+    pub fn candidate_paths(&self) -> &[String] {
+        &self.candidate_paths
+    }
+
+    pub fn candidate_file_count(&self) -> u64 {
+        self.candidate_file_count
+    }
+
+    pub fn candidate_bytes(&self) -> u64 {
+        self.candidate_bytes
+    }
+
+    pub fn candidate_rows(&self) -> u64 {
+        self.candidate_rows
+    }
+
+    pub fn partition_columns(&self) -> &[String] {
+        &self.partition_columns
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BrowserAggregateFunction {
+    Avg,
+    ArrayAgg,
+    BoolAnd,
+    BoolOr,
+    CountStar,
+    Count,
+    Sum,
+    Min,
+    Max,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserAggregateMeasure {
+    output_name: String,
+    function: BrowserAggregateFunction,
+    source_column: Option<String>,
+}
+
+impl BrowserAggregateMeasure {
+    pub fn output_name(&self) -> &str {
+        &self.output_name
+    }
+
+    pub fn function(&self) -> &BrowserAggregateFunction {
+        &self.function
+    }
+
+    pub fn source_column(&self) -> Option<&str> {
+        self.source_column.as_deref()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserAggregationPlan {
+    group_by_columns: Vec<String>,
+    measures: Vec<BrowserAggregateMeasure>,
+}
+
+impl BrowserAggregationPlan {
+    pub fn group_by_columns(&self) -> &[String] {
+        &self.group_by_columns
+    }
+
+    pub fn measures(&self) -> &[BrowserAggregateMeasure] {
+        &self.measures
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BrowserExecutionOutputKind {
+    Passthrough {
+        source_column: String,
+    },
+    Aggregate {
+        function: BrowserAggregateFunction,
+        source_column: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserExecutionOutput {
+    output_name: String,
+    kind: BrowserExecutionOutputKind,
+}
+
+impl BrowserExecutionOutput {
+    pub fn output_name(&self) -> &str {
+        &self.output_name
+    }
+
+    pub fn kind(&self) -> &BrowserExecutionOutputKind {
+        &self.kind
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserSortKey {
+    output_name: String,
+    descending: bool,
+}
+
+impl BrowserSortKey {
+    pub fn output_name(&self) -> &str {
+        &self.output_name
+    }
+
+    pub fn descending(&self) -> bool {
+        self.descending
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserExecutionPlan {
+    table_uri: String,
+    snapshot_version: i64,
+    scan: BrowserScanPlan,
+    outputs: Vec<BrowserExecutionOutput>,
+    aggregation: Option<BrowserAggregationPlan>,
+    order_by: Vec<BrowserSortKey>,
+    limit: Option<u64>,
+    pruning: BrowserPruningSummary,
+}
+
+impl BrowserExecutionPlan {
+    pub fn table_uri(&self) -> &str {
+        &self.table_uri
+    }
+
+    pub fn snapshot_version(&self) -> i64 {
+        self.snapshot_version
+    }
+
+    pub fn scan(&self) -> &BrowserScanPlan {
+        &self.scan
+    }
+
+    pub fn outputs(&self) -> &[BrowserExecutionOutput] {
+        &self.outputs
+    }
+
+    pub fn aggregation(&self) -> Option<&BrowserAggregationPlan> {
+        self.aggregation.as_ref()
+    }
+
+    pub fn order_by(&self) -> &[BrowserSortKey] {
+        &self.order_by
+    }
+
+    pub fn limit(&self) -> Option<u64> {
+        self.limit
+    }
+
+    pub fn pruning(&self) -> &BrowserPruningSummary {
+        &self.pruning
+    }
+}
+
 impl BootstrappedBrowserFile {
     pub fn new(
         path: impl Into<String>,
@@ -791,25 +961,27 @@ impl BrowserRuntimeSession {
         snapshot: &BootstrappedBrowserSnapshot,
         request: &QueryRequest,
     ) -> Result<BrowserPlannedQuery, QueryError> {
-        if request.table_uri != snapshot.table_uri() {
-            return Err(invalid_query_request(format!(
-                "request table_uri '{}' did not match the bootstrapped snapshot table_uri '{}'",
-                request.table_uri,
-                snapshot.table_uri(),
-            )));
-        }
-
-        if let Some(snapshot_version) = request.snapshot_version {
-            if snapshot_version != snapshot.snapshot_version() {
-                return Err(invalid_query_request(format!(
-                    "request snapshot_version {} did not match the bootstrapped snapshot version {}",
-                    snapshot_version,
-                    snapshot.snapshot_version(),
-                )));
-            }
-        }
-
+        validate_snapshot_request_match(snapshot, request)?;
         let analyzed = analyze_browser_query(&request.sql)?;
+        self.plan_query_from_analyzed(snapshot, &analyzed)
+    }
+
+    pub fn build_execution_plan(
+        &self,
+        snapshot: &BootstrappedBrowserSnapshot,
+        request: &QueryRequest,
+    ) -> Result<BrowserExecutionPlan, QueryError> {
+        validate_snapshot_request_match(snapshot, request)?;
+        let analyzed = analyze_browser_query(&request.sql)?;
+        let planned = self.plan_query_from_analyzed(snapshot, &analyzed)?;
+        lower_browser_execution_plan(analyzed.query.as_ref(), &planned)
+    }
+
+    fn plan_query_from_analyzed(
+        &self,
+        snapshot: &BootstrappedBrowserSnapshot,
+        analyzed: &AnalyzedBrowserQuery,
+    ) -> Result<BrowserPlannedQuery, QueryError> {
         let summary = snapshot.summarize()?;
         let mut available_columns = snapshot_available_columns(&summary);
         available_columns.extend(browser_query_scope_columns(analyzed.query.as_ref()));
@@ -881,7 +1053,7 @@ impl BrowserRuntimeSession {
         Ok(BrowserPlannedQuery {
             table_uri: snapshot.table_uri().to_string(),
             snapshot_version: snapshot.snapshot_version(),
-            query_shape: analyzed.shape,
+            query_shape: analyzed.shape.clone(),
             candidate_paths,
             candidate_file_count,
             candidate_bytes,
@@ -1084,6 +1256,585 @@ impl BrowserRuntimeSession {
     }
 }
 
+fn validate_snapshot_request_match(
+    snapshot: &BootstrappedBrowserSnapshot,
+    request: &QueryRequest,
+) -> Result<(), QueryError> {
+    if request.table_uri != snapshot.table_uri() {
+        return Err(invalid_query_request(format!(
+            "request table_uri '{}' did not match the bootstrapped snapshot table_uri '{}'",
+            request.table_uri,
+            snapshot.table_uri(),
+        )));
+    }
+
+    if let Some(snapshot_version) = request.snapshot_version {
+        if snapshot_version != snapshot.snapshot_version() {
+            return Err(invalid_query_request(format!(
+                "request snapshot_version {} did not match the bootstrapped snapshot version {}",
+                snapshot_version,
+                snapshot.snapshot_version(),
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+enum BrowserSourceBindings {
+    BaseTable,
+    Named(BTreeMap<String, String>),
+}
+
+impl BrowserSourceBindings {
+    fn resolve_passthrough_expr(&self, expr: &SqlExpr) -> Option<String> {
+        match self {
+            Self::BaseTable => base_table_passthrough_column(expr),
+            Self::Named(bindings) => {
+                passthrough_binding_name(expr).and_then(|name| bindings.get(&name).cloned())
+            }
+        }
+    }
+}
+
+fn lower_browser_execution_plan(
+    query: &SqlQuery,
+    planned: &BrowserPlannedQuery,
+) -> Result<BrowserExecutionPlan, QueryError> {
+    let select = query
+        .body
+        .as_select()
+        .ok_or_else(|| execution_plan_error("browser execution plans require a SELECT query"))?;
+    let source_bindings = lower_query_source_bindings(query)?;
+    let group_by_columns = lower_group_by_columns(select, &source_bindings)?;
+    if select.having.is_some() {
+        return Err(execution_plan_error(
+            "HAVING is not supported in browser execution plans",
+        ));
+    }
+
+    let (outputs, measures) = lower_select_outputs(select, &source_bindings)?;
+    validate_unique_execution_output_names(&outputs)?;
+    let grouped_query = !group_by_columns.is_empty();
+    let aggregate_query = grouped_query || !measures.is_empty();
+    if aggregate_query {
+        let grouped_columns = group_by_columns.iter().cloned().collect::<BTreeSet<_>>();
+        for output in &outputs {
+            if let BrowserExecutionOutputKind::Passthrough { source_column } = output.kind() {
+                if !grouped_columns.contains(source_column) {
+                    return Err(execution_plan_error(
+                        "non-aggregate outputs must be grouped columns in browser execution plans",
+                    ));
+                }
+            }
+        }
+    }
+
+    let aggregation = aggregate_query.then(|| BrowserAggregationPlan {
+        group_by_columns,
+        measures,
+    });
+    let order_by = lower_order_by_keys(query, &outputs)?;
+
+    Ok(BrowserExecutionPlan {
+        table_uri: planned.table_uri.clone(),
+        snapshot_version: planned.snapshot_version,
+        scan: browser_scan_plan(planned),
+        outputs,
+        aggregation,
+        order_by,
+        limit: planned.query_shape.limit,
+        pruning: planned.pruning.clone(),
+    })
+}
+
+fn lower_query_source_bindings(query: &SqlQuery) -> Result<BrowserSourceBindings, QueryError> {
+    let mut cte_bindings = BTreeMap::new();
+    if let Some(with) = &query.with {
+        for cte in &with.cte_tables {
+            if !cte.alias.columns.is_empty() {
+                return Err(execution_plan_error(
+                    "CTE column lists are not supported in browser execution plans",
+                ));
+            }
+
+            let bindings = lower_query_passthrough_bindings(cte.query.as_ref(), &cte_bindings)?;
+            cte_bindings.insert(normalize_name(&cte.alias.name.value), bindings);
+        }
+    }
+
+    let select = query
+        .body
+        .as_select()
+        .ok_or_else(|| execution_plan_error("browser execution plans require a SELECT query"))?;
+    let source = select.from.first().ok_or_else(|| {
+        execution_plan_error("browser execution plans require a single source relation")
+    })?;
+    if !source.joins.is_empty() {
+        return Err(execution_plan_error(
+            "browser execution plans require a single source relation",
+        ));
+    }
+
+    lower_table_factor_bindings(&source.relation, &cte_bindings)
+}
+
+fn lower_table_factor_bindings(
+    table_factor: &SqlTableFactor,
+    cte_bindings: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<BrowserSourceBindings, QueryError> {
+    match table_factor {
+        SqlTableFactor::Table { name, alias, .. } => {
+            if alias
+                .as_ref()
+                .is_some_and(|alias| !alias.columns.is_empty())
+            {
+                return Err(execution_plan_error(
+                    "table alias column lists are not supported in browser execution plans",
+                ));
+            }
+
+            let relation_name = object_name_to_relation_name(name)
+                .ok_or_else(|| execution_plan_error("query must read only from axon_table"))?;
+            if relation_name == DEFAULT_TABLE_NAME {
+                Ok(BrowserSourceBindings::BaseTable)
+            } else if let Some(bindings) = cte_bindings.get(&relation_name) {
+                Ok(BrowserSourceBindings::Named(bindings.clone()))
+            } else {
+                Err(execution_plan_error("query must read only from axon_table"))
+            }
+        }
+        SqlTableFactor::Derived {
+            subquery, alias, ..
+        } => {
+            if alias
+                .as_ref()
+                .is_some_and(|alias| !alias.columns.is_empty())
+            {
+                return Err(execution_plan_error(
+                    "derived-table alias column lists are not supported in browser execution plans",
+                ));
+            }
+
+            Ok(BrowserSourceBindings::Named(
+                lower_query_passthrough_bindings(subquery.as_ref(), cte_bindings)?,
+            ))
+        }
+        _ => Err(execution_plan_error("query must read only from axon_table")),
+    }
+}
+
+fn lower_query_passthrough_bindings(
+    query: &SqlQuery,
+    cte_bindings: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<BTreeMap<String, String>, QueryError> {
+    if query.order_by.is_some() || query.limit_clause.is_some() {
+        return Err(execution_plan_error(
+            "CTE and derived queries must remain pure passthrough projections in browser execution plans",
+        ));
+    }
+
+    let select = query.body.as_select().ok_or_else(|| {
+        execution_plan_error(
+            "CTE and derived queries must remain pure passthrough projections in browser execution plans",
+        )
+    })?;
+    if select.having.is_some()
+        || matches!(select.group_by, GroupByExpr::All(_))
+        || matches!(&select.group_by, GroupByExpr::Expressions(expressions, _) if !expressions.is_empty())
+    {
+        return Err(execution_plan_error(
+            "CTE and derived queries must remain pure passthrough projections in browser execution plans",
+        ));
+    }
+
+    let source = select.from.first().ok_or_else(|| {
+        execution_plan_error(
+            "CTE and derived queries must remain pure passthrough projections in browser execution plans",
+        )
+    })?;
+    if !source.joins.is_empty() {
+        return Err(execution_plan_error(
+            "CTE and derived queries must remain pure passthrough projections in browser execution plans",
+        ));
+    }
+
+    let source_bindings = lower_table_factor_bindings(&source.relation, cte_bindings)?;
+    let mut bindings = BTreeMap::new();
+    for select_item in &select.projection {
+        let output = lower_passthrough_output(select_item, &source_bindings)?;
+        let BrowserExecutionOutputKind::Passthrough { source_column } = output.kind else {
+            return Err(execution_plan_error(
+                "CTE and derived queries must remain pure passthrough projections in browser execution plans",
+            ));
+        };
+        if bindings
+            .insert(output.output_name.clone(), source_column.clone())
+            .is_some()
+        {
+            return Err(execution_plan_error(
+                "duplicate output columns are not supported in browser execution plans",
+            ));
+        }
+    }
+
+    Ok(bindings)
+}
+
+fn lower_group_by_columns(
+    select: &Select,
+    source_bindings: &BrowserSourceBindings,
+) -> Result<Vec<String>, QueryError> {
+    match &select.group_by {
+        GroupByExpr::All(_) => Err(execution_plan_error(
+            "GROUP BY ALL is not supported in browser execution plans",
+        )),
+        GroupByExpr::Expressions(expressions, _) => expressions
+            .iter()
+            .map(|expression| {
+                source_bindings
+                    .resolve_passthrough_expr(expression)
+                    .ok_or_else(|| {
+                        execution_plan_error(
+                            "GROUP BY expressions must be passthrough column references in browser execution plans",
+                        )
+                    })
+            })
+            .collect(),
+    }
+}
+
+fn lower_select_outputs(
+    select: &Select,
+    source_bindings: &BrowserSourceBindings,
+) -> Result<(Vec<BrowserExecutionOutput>, Vec<BrowserAggregateMeasure>), QueryError> {
+    let mut outputs = Vec::new();
+    let mut measures = Vec::new();
+
+    for select_item in &select.projection {
+        if let Some((output, measure)) = lower_aggregate_output(select_item, source_bindings)? {
+            outputs.push(output);
+            measures.push(measure);
+        } else {
+            outputs.push(lower_passthrough_output(select_item, source_bindings)?);
+        }
+    }
+
+    Ok((outputs, measures))
+}
+
+fn lower_aggregate_output(
+    select_item: &SelectItem,
+    source_bindings: &BrowserSourceBindings,
+) -> Result<Option<(BrowserExecutionOutput, BrowserAggregateMeasure)>, QueryError> {
+    let (expr, output_name) = match select_item {
+        SelectItem::ExprWithAlias { expr, alias } => (expr, Some(normalize_name(&alias.value))),
+        SelectItem::UnnamedExpr(expr) => (expr, None),
+        SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => {
+            return Err(execution_plan_error(
+                "wildcard projections are not supported in browser execution plans",
+            ))
+        }
+    };
+
+    let SqlExpr::Function(function) = expr else {
+        return Ok(None);
+    };
+    let function_name = function
+        .name
+        .0
+        .last()
+        .and_then(ObjectNamePart::as_ident)
+        .map(|ident| normalize_name(&ident.value))
+        .ok_or_else(|| {
+            execution_plan_error(
+                "aggregate projections are not supported in browser execution plans",
+            )
+        })?;
+
+    let aggregate_function = match function_name.as_str() {
+        "avg" => {
+            lower_single_column_aggregate(function, source_bindings, BrowserAggregateFunction::Avg)?
+        }
+        "array_agg" => lower_single_column_aggregate(
+            function,
+            source_bindings,
+            BrowserAggregateFunction::ArrayAgg,
+        )?,
+        "bool_and" => lower_single_column_aggregate(
+            function,
+            source_bindings,
+            BrowserAggregateFunction::BoolAnd,
+        )?,
+        "bool_or" => lower_single_column_aggregate(
+            function,
+            source_bindings,
+            BrowserAggregateFunction::BoolOr,
+        )?,
+        "count" => lower_count_aggregate(function, source_bindings)?,
+        "sum" => {
+            lower_single_column_aggregate(function, source_bindings, BrowserAggregateFunction::Sum)?
+        }
+        "min" => {
+            lower_single_column_aggregate(function, source_bindings, BrowserAggregateFunction::Min)?
+        }
+        "max" => {
+            lower_single_column_aggregate(function, source_bindings, BrowserAggregateFunction::Max)?
+        }
+        _ => return Ok(None),
+    };
+    let output_name = output_name.ok_or_else(|| {
+        execution_plan_error(
+            "aggregate projections must use explicit aliases in browser execution plans",
+        )
+    })?;
+
+    let measure = BrowserAggregateMeasure {
+        output_name: output_name.clone(),
+        function: aggregate_function.0,
+        source_column: aggregate_function.1.clone(),
+    };
+    let output = BrowserExecutionOutput {
+        output_name,
+        kind: BrowserExecutionOutputKind::Aggregate {
+            function: measure.function.clone(),
+            source_column: measure.source_column.clone(),
+        },
+    };
+
+    Ok(Some((output, measure)))
+}
+
+fn lower_count_aggregate(
+    function: &sqlparser::ast::Function,
+    source_bindings: &BrowserSourceBindings,
+) -> Result<(BrowserAggregateFunction, Option<String>), QueryError> {
+    validate_supported_aggregate_function(function)?;
+    let args = single_function_argument(function)?;
+    match args {
+        FunctionArgExpr::Wildcard => Ok((BrowserAggregateFunction::CountStar, None)),
+        FunctionArgExpr::Expr(expr) => {
+            let source_column = source_bindings.resolve_passthrough_expr(expr).ok_or_else(|| {
+                execution_plan_error(
+                    "aggregate arguments must be passthrough column references in browser execution plans",
+                )
+            })?;
+            Ok((BrowserAggregateFunction::Count, Some(source_column)))
+        }
+        FunctionArgExpr::QualifiedWildcard(_) => Err(execution_plan_error(
+            "qualified wildcard aggregates are not supported in browser execution plans",
+        )),
+    }
+}
+
+fn lower_single_column_aggregate(
+    function: &sqlparser::ast::Function,
+    source_bindings: &BrowserSourceBindings,
+    aggregate_function: BrowserAggregateFunction,
+) -> Result<(BrowserAggregateFunction, Option<String>), QueryError> {
+    validate_supported_aggregate_function(function)?;
+    let FunctionArgExpr::Expr(expr) = single_function_argument(function)? else {
+        return Err(execution_plan_error(
+            "aggregate arguments must be passthrough column references in browser execution plans",
+        ));
+    };
+    let source_column = source_bindings
+        .resolve_passthrough_expr(expr)
+        .ok_or_else(|| {
+            execution_plan_error(
+            "aggregate arguments must be passthrough column references in browser execution plans",
+        )
+        })?;
+
+    Ok((aggregate_function, Some(source_column)))
+}
+
+fn validate_supported_aggregate_function(
+    function: &sqlparser::ast::Function,
+) -> Result<(), QueryError> {
+    if function.uses_odbc_syntax
+        || !matches!(function.parameters, FunctionArguments::None)
+        || function.filter.is_some()
+        || function.null_treatment.is_some()
+        || function.over.is_some()
+        || !function.within_group.is_empty()
+    {
+        return Err(execution_plan_error(
+            "aggregate function form is not supported in browser execution plans",
+        ));
+    }
+
+    let FunctionArguments::List(arguments) = &function.args else {
+        return Err(execution_plan_error(
+            "aggregate function form is not supported in browser execution plans",
+        ));
+    };
+    if arguments.duplicate_treatment.is_some() || !arguments.clauses.is_empty() {
+        return Err(execution_plan_error(
+            "aggregate function form is not supported in browser execution plans",
+        ));
+    }
+
+    Ok(())
+}
+
+fn single_function_argument(
+    function: &sqlparser::ast::Function,
+) -> Result<&FunctionArgExpr, QueryError> {
+    let FunctionArguments::List(arguments) = &function.args else {
+        return Err(execution_plan_error(
+            "aggregate function form is not supported in browser execution plans",
+        ));
+    };
+    let [argument] = arguments.args.as_slice() else {
+        return Err(execution_plan_error(
+            "aggregate functions must take exactly one argument in browser execution plans",
+        ));
+    };
+
+    match argument {
+        FunctionArg::Named { arg, .. }
+        | FunctionArg::ExprNamed { arg, .. }
+        | FunctionArg::Unnamed(arg) => Ok(arg),
+    }
+}
+
+fn lower_passthrough_output(
+    select_item: &SelectItem,
+    source_bindings: &BrowserSourceBindings,
+) -> Result<BrowserExecutionOutput, QueryError> {
+    match select_item {
+        SelectItem::ExprWithAlias { expr, alias } => {
+            let source_column = source_bindings.resolve_passthrough_expr(expr).ok_or_else(|| {
+                execution_plan_error(
+                    "projection expressions must be passthrough column references in browser execution plans",
+                )
+            })?;
+            Ok(BrowserExecutionOutput {
+                output_name: normalize_name(&alias.value),
+                kind: BrowserExecutionOutputKind::Passthrough { source_column },
+            })
+        }
+        SelectItem::UnnamedExpr(expr) => {
+            let source_column = source_bindings.resolve_passthrough_expr(expr).ok_or_else(|| {
+                execution_plan_error(
+                    "projection expressions must be passthrough column references in browser execution plans",
+                )
+            })?;
+            let output_name = passthrough_output_name(expr).ok_or_else(|| {
+                execution_plan_error(
+                    "projection expressions must be passthrough column references in browser execution plans",
+                )
+            })?;
+            Ok(BrowserExecutionOutput {
+                output_name,
+                kind: BrowserExecutionOutputKind::Passthrough { source_column },
+            })
+        }
+        SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => Err(execution_plan_error(
+            "wildcard projections are not supported in browser execution plans",
+        )),
+    }
+}
+
+fn passthrough_output_name(expr: &SqlExpr) -> Option<String> {
+    match expr {
+        SqlExpr::Nested(expr) => passthrough_output_name(expr),
+        SqlExpr::Identifier(ident) => Some(normalize_name(&ident.value)),
+        SqlExpr::CompoundIdentifier(parts) => Some(normalize_name(&parts.last()?.value)),
+        _ => None,
+    }
+}
+
+fn passthrough_binding_name(expr: &SqlExpr) -> Option<String> {
+    passthrough_output_name(expr)
+}
+
+fn base_table_passthrough_column(expr: &SqlExpr) -> Option<String> {
+    passthrough_output_name(expr)
+}
+
+fn lower_order_by_keys(
+    query: &SqlQuery,
+    outputs: &[BrowserExecutionOutput],
+) -> Result<Vec<BrowserSortKey>, QueryError> {
+    let output_names = outputs
+        .iter()
+        .map(|output| output.output_name.clone())
+        .collect::<BTreeSet<_>>();
+    let Some(order_by) = &query.order_by else {
+        return Ok(Vec::new());
+    };
+    let OrderByKind::Expressions(expressions) = &order_by.kind else {
+        return Err(execution_plan_error(
+            "ORDER BY expressions are not supported in browser execution plans",
+        ));
+    };
+
+    expressions
+        .iter()
+        .map(|expression| {
+            if expression.with_fill.is_some() || expression.options.nulls_first.is_some() {
+                return Err(execution_plan_error(
+                    "ORDER BY options are not supported in browser execution plans",
+                ));
+            }
+
+            let output_name =
+                expr_named_column(&expression.expr, &output_names).ok_or_else(|| {
+                    execution_plan_error(
+                        "ORDER BY expressions must reference projected output columns in browser execution plans",
+                    )
+                })?;
+            Ok(BrowserSortKey {
+                output_name,
+                descending: expression.options.asc == Some(false),
+            })
+        })
+        .collect()
+}
+
+fn validate_unique_execution_output_names(
+    outputs: &[BrowserExecutionOutput],
+) -> Result<(), QueryError> {
+    let mut seen = BTreeSet::new();
+    let mut duplicates = BTreeSet::new();
+
+    for output in outputs {
+        if !seen.insert(output.output_name.clone()) {
+            duplicates.insert(output.output_name.clone());
+        }
+    }
+
+    if duplicates.is_empty() {
+        return Ok(());
+    }
+
+    Err(execution_plan_error(format!(
+        "duplicate output columns are not supported in browser execution plans [{}]",
+        duplicates
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
+}
+
+fn execution_plan_error(message: impl Into<String>) -> QueryError {
+    invalid_query_request(message)
+}
+
+fn browser_scan_plan(planned: &BrowserPlannedQuery) -> BrowserScanPlan {
+    BrowserScanPlan {
+        candidate_paths: planned.candidate_paths.clone(),
+        candidate_file_count: planned.candidate_file_count,
+        candidate_bytes: planned.candidate_bytes,
+        candidate_rows: planned.candidate_rows,
+        partition_columns: planned.partition_columns.clone(),
+    }
+}
+
 #[derive(Clone)]
 struct AnalyzedBrowserQuery {
     shape: BrowserQueryShape,
@@ -1233,6 +1984,12 @@ fn validate_set_expr_sources(
 }
 
 fn validate_select_sources(select: &Select, scope: &BTreeSet<String>) -> Result<(), QueryError> {
+    if select.distinct.is_some() {
+        return Err(invalid_query_request(format!(
+            "DISTINCT is not supported; query must read only from {DEFAULT_TABLE_NAME}"
+        )));
+    }
+
     if select.top.is_some()
         || select.into.is_some()
         || !select.lateral_views.is_empty()

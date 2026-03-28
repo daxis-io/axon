@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -11,16 +12,63 @@ use query_contract::{
     BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey, CapabilityState,
     ExecutionTarget, FallbackReason, QueryErrorCode, QueryRequest,
 };
+use serde::Deserialize;
 use wasm_http_object_store::{HttpByteRange, HttpRangeReader};
 use wasm_query_runtime::{
-    runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserObjectAccessMode,
-    BrowserObjectSource, BrowserParquetConvertedType, BrowserParquetField,
-    BrowserParquetFieldStats, BrowserParquetFileMetadata, BrowserParquetLogicalType,
-    BrowserParquetPhysicalType, BrowserParquetRepetition, BrowserRuntimeConfig,
-    BrowserRuntimeSession, MaterializedBrowserFile, MaterializedBrowserSnapshot,
+    runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot,
+    BrowserExecutionOutputKind, BrowserObjectAccessMode, BrowserObjectSource,
+    BrowserParquetConvertedType, BrowserParquetField, BrowserParquetFieldStats,
+    BrowserParquetFileMetadata, BrowserParquetLogicalType, BrowserParquetPhysicalType,
+    BrowserParquetRepetition, BrowserRuntimeConfig, BrowserRuntimeSession, MaterializedBrowserFile,
+    MaterializedBrowserSnapshot,
 };
 
 const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
+
+#[derive(Debug, Deserialize)]
+struct ExecutionPlanCorpusCase {
+    name: String,
+    snapshot: String,
+    sql: String,
+    expected_candidate_paths: Vec<String>,
+    expected_candidate_bytes: u64,
+    expected_candidate_rows: u64,
+    expected_partition_columns: Vec<String>,
+    expected_pruning: ExpectedPruningSummary,
+    expected_outputs: Vec<ExpectedExecutionOutput>,
+    expected_group_by_columns: Vec<String>,
+    expected_measures: Vec<ExpectedAggregateMeasure>,
+    expected_order_by: Vec<ExpectedSortKey>,
+    expected_limit: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExpectedPruningSummary {
+    used_partition_pruning: bool,
+    used_file_stats_pruning: bool,
+    files_retained: u64,
+    files_pruned: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExpectedExecutionOutput {
+    output_name: String,
+    kind: String,
+    source_column: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExpectedAggregateMeasure {
+    output_name: String,
+    function: String,
+    source_column: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExpectedSortKey {
+    output_name: String,
+    descending: bool,
+}
 
 #[test]
 fn default_config_constructs_a_browser_runtime_session() {
@@ -130,6 +178,19 @@ fn analyze_query_shape_rejects_recursive_ctes_and_table_functions() {
 }
 
 #[test]
+fn analyze_query_shape_rejects_distinct_queries() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    let error = session
+        .analyze_query_shape("SELECT DISTINCT id FROM axon_table")
+        .expect_err("distinct queries should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("DISTINCT") || error.message.contains("supported"));
+}
+
+#[test]
 fn plan_query_returns_full_scan_totals_for_matching_snapshot_requests() {
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
         .expect("default config should be supported");
@@ -164,6 +225,319 @@ fn plan_query_returns_full_scan_totals_for_matching_snapshot_requests() {
     assert!(!planned.pruning.used_file_stats_pruning);
     assert_eq!(planned.pruning.files_retained, 3);
     assert_eq!(planned.pruning.files_pruned, 0);
+}
+
+#[test]
+fn build_execution_plan_matches_direct_projection_corpus() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    for case in load_execution_plan_corpus() {
+        let snapshot = match case.snapshot.as_str() {
+            "sample" => sample_bootstrapped_snapshot(),
+            "stats" => stats_bootstrapped_snapshot(),
+            other => panic!("unsupported test snapshot '{other}'"),
+        };
+
+        let plan = session
+            .build_execution_plan(
+                &snapshot,
+                &QueryRequest::new(
+                    snapshot.table_uri(),
+                    &case.sql,
+                    ExecutionTarget::BrowserWasm,
+                ),
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "case '{}': execution-plan build should succeed, got {:?}: {}",
+                    case.name, error.code, error.message
+                )
+            });
+
+        assert_eq!(
+            plan.scan().candidate_paths(),
+            case.expected_candidate_paths.as_slice(),
+            "case '{}': candidate paths should match",
+            case.name
+        );
+        assert_eq!(
+            plan.scan().candidate_bytes(),
+            case.expected_candidate_bytes,
+            "case '{}': candidate bytes should match",
+            case.name
+        );
+        assert_eq!(
+            plan.scan().candidate_rows(),
+            case.expected_candidate_rows,
+            "case '{}': candidate rows should match",
+            case.name
+        );
+        assert_eq!(
+            plan.scan().partition_columns(),
+            case.expected_partition_columns.as_slice(),
+            "case '{}': partition columns should match",
+            case.name
+        );
+        assert_eq!(
+            plan.pruning().used_partition_pruning,
+            case.expected_pruning.used_partition_pruning,
+            "case '{}': partition pruning usage should match",
+            case.name
+        );
+        assert_eq!(
+            plan.pruning().used_file_stats_pruning,
+            case.expected_pruning.used_file_stats_pruning,
+            "case '{}': file-stats pruning usage should match",
+            case.name
+        );
+        assert_eq!(
+            plan.pruning().files_retained,
+            case.expected_pruning.files_retained,
+            "case '{}': retained-file count should match",
+            case.name
+        );
+        assert_eq!(
+            plan.pruning().files_pruned,
+            case.expected_pruning.files_pruned,
+            "case '{}': pruned-file count should match",
+            case.name
+        );
+        assert_eq!(
+            plan.limit(),
+            case.expected_limit,
+            "case '{}': limit should match",
+            case.name
+        );
+        let aggregation = plan.aggregation();
+        assert_eq!(
+            aggregation
+                .map(|aggregation| aggregation.group_by_columns().to_vec())
+                .unwrap_or_default(),
+            case.expected_group_by_columns,
+            "case '{}': group-by columns should match",
+            case.name
+        );
+        assert_eq!(
+            aggregation
+                .map(|aggregation| aggregation.measures().len())
+                .unwrap_or_default(),
+            case.expected_measures.len(),
+            "case '{}': aggregate-measure count should match",
+            case.name
+        );
+        if let Some(aggregation) = aggregation {
+            for (measure, expected) in aggregation
+                .measures()
+                .iter()
+                .zip(case.expected_measures.iter())
+            {
+                assert_eq!(
+                    measure.output_name(),
+                    expected.output_name,
+                    "case '{}': aggregate output name should match",
+                    case.name
+                );
+                assert_eq!(
+                    measure.source_column(),
+                    expected.source_column.as_deref(),
+                    "case '{}': aggregate source column should match",
+                    case.name
+                );
+                let expected_function = match expected.function.as_str() {
+                    "avg" => "Avg",
+                    "array_agg" => "ArrayAgg",
+                    "bool_and" => "BoolAnd",
+                    "bool_or" => "BoolOr",
+                    "count_star" => "CountStar",
+                    "count" => "Count",
+                    "sum" => "Sum",
+                    "min" => "Min",
+                    "max" => "Max",
+                    other => panic!("unsupported expected aggregate function '{other}'"),
+                };
+                assert_eq!(
+                    format!("{:?}", measure.function()),
+                    expected_function,
+                    "case '{}': aggregate function should match",
+                    case.name
+                );
+            }
+        }
+        assert_eq!(
+            plan.order_by().len(),
+            case.expected_order_by.len(),
+            "case '{}': sort-key count should match",
+            case.name
+        );
+        for (sort_key, expected) in plan.order_by().iter().zip(case.expected_order_by.iter()) {
+            assert_eq!(
+                sort_key.output_name(),
+                expected.output_name,
+                "case '{}': sort-key output should match",
+                case.name
+            );
+            assert_eq!(
+                sort_key.descending(),
+                expected.descending,
+                "case '{}': sort-key direction should match",
+                case.name
+            );
+        }
+        assert_eq!(
+            plan.outputs().len(),
+            case.expected_outputs.len(),
+            "case '{}': output count should match",
+            case.name
+        );
+
+        for (output, expected) in plan.outputs().iter().zip(case.expected_outputs.iter()) {
+            assert_eq!(
+                output.output_name(),
+                expected.output_name,
+                "case '{}': output name should match",
+                case.name
+            );
+            match output.kind() {
+                BrowserExecutionOutputKind::Passthrough { source_column } => {
+                    assert_eq!(expected.kind, "passthrough");
+                    assert_eq!(
+                        expected.source_column.as_deref(),
+                        Some(source_column.as_str())
+                    );
+                }
+                BrowserExecutionOutputKind::Aggregate {
+                    function,
+                    source_column,
+                } => {
+                    assert_eq!(expected.kind, "aggregate");
+                    assert_eq!(expected.source_column.as_deref(), source_column.as_deref());
+                    let function_name = format!("{function:?}");
+                    assert!(
+                        matches!(
+                            function_name.as_str(),
+                            "Avg"
+                                | "ArrayAgg"
+                                | "BoolAnd"
+                                | "BoolOr"
+                                | "CountStar"
+                                | "Count"
+                                | "Sum"
+                                | "Min"
+                                | "Max"
+                        ),
+                        "case '{}': aggregate outputs should use a supported function",
+                        case.name
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn build_execution_plan_rejects_table_and_snapshot_mismatches() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+
+    let table_mismatch_error = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                "gs://axon-fixtures/other_table",
+                "SELECT id FROM axon_table",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect_err("table-uri mismatches should be rejected");
+    assert_eq!(table_mismatch_error.code, QueryErrorCode::InvalidRequest);
+    assert!(table_mismatch_error.message.contains("table_uri"));
+
+    let version_mismatch_error = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest {
+                snapshot_version: Some(snapshot.snapshot_version() + 1),
+                ..QueryRequest::new(
+                    snapshot.table_uri(),
+                    "SELECT id FROM axon_table",
+                    ExecutionTarget::BrowserWasm,
+                )
+            },
+        )
+        .expect_err("snapshot-version mismatches should be rejected");
+    assert_eq!(version_mismatch_error.code, QueryErrorCode::InvalidRequest);
+    assert!(version_mismatch_error.message.contains("snapshot_version"));
+}
+
+#[test]
+fn build_execution_plan_rejects_having_clauses() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+
+    let error = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT category, SUM(value) AS total_value \
+                 FROM axon_table \
+                 GROUP BY category \
+                 HAVING SUM(value) >= 60",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect_err("having should remain unsupported for execution-plan lowering");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("HAVING") || error.message.contains("execution plans"));
+}
+
+#[test]
+fn build_execution_plan_rejects_non_projected_cte_columns() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+
+    let error = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "WITH filtered AS (SELECT value AS total FROM axon_table) \
+                 SELECT id FROM filtered",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect_err("cte outputs should not leak base-table columns");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("projection") || error.message.contains("passthrough"));
+}
+
+#[test]
+fn build_execution_plan_rejects_duplicate_output_names() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = sample_bootstrapped_snapshot();
+
+    let error = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id AS duplicate_name, value AS duplicate_name \
+                 FROM axon_table \
+                 ORDER BY duplicate_name",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect_err("duplicate output names should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("duplicate"));
 }
 
 #[test]
@@ -1935,6 +2309,19 @@ fn parquet_like_object(prefix: &[u8], footer: &[u8]) -> Vec<u8> {
     object.extend_from_slice(&(footer.len() as u32).to_le_bytes());
     object.extend_from_slice(PARQUET_MAGIC);
     object
+}
+
+fn execution_plan_corpus_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/browser-execution-plan-corpus.json")
+}
+
+fn load_execution_plan_corpus() -> Vec<ExecutionPlanCorpusCase> {
+    serde_json::from_str(
+        &std::fs::read_to_string(execution_plan_corpus_path())
+            .expect("execution-plan corpus should be readable"),
+    )
+    .expect("execution-plan corpus should deserialize")
 }
 
 fn bootstrapped_file(

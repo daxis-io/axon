@@ -185,6 +185,167 @@ fn browser_runtime_analysis_and_planning_apis_construct_in_wasm() {
 }
 
 #[wasm_bindgen_test]
+fn browser_runtime_execution_plan_api_constructs_in_wasm() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported in wasm");
+    let snapshot = BootstrappedBrowserSnapshot::new(
+        "gs://axon-fixtures/sample_table",
+        4,
+        vec![BootstrappedBrowserFile::new(
+            "part-000.parquet",
+            128,
+            std::collections::BTreeMap::new(),
+            BrowserParquetFileMetadata {
+                object_size_bytes: 128,
+                footer_length_bytes: 16,
+                row_group_count: 0,
+                row_count: 0,
+                fields: vec![BrowserParquetField {
+                    name: "id".to_string(),
+                    physical_type: BrowserParquetPhysicalType::Int32,
+                    logical_type: None,
+                    converted_type: None,
+                    repetition: BrowserParquetRepetition::Required,
+                    nullable: false,
+                    max_definition_level: 0,
+                    max_repetition_level: 0,
+                    type_length: None,
+                    precision: None,
+                    scale: None,
+                }],
+                field_stats: std::collections::BTreeMap::new(),
+            },
+        )
+        .expect("valid bootstrapped files should construct in wasm")],
+    )
+    .expect("valid bootstrapped snapshots should construct in wasm");
+
+    let plan = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("direct projection execution plans should build in wasm");
+
+    assert_eq!(plan.scan().candidate_file_count(), 1);
+    assert_eq!(plan.outputs().len(), 1);
+    assert!(plan.aggregation().is_none());
+    assert!(plan.order_by().is_empty());
+}
+
+#[wasm_bindgen_test]
+fn browser_runtime_aggregate_execution_plan_api_constructs_in_wasm() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported in wasm");
+    let snapshot = BootstrappedBrowserSnapshot::new(
+        "gs://axon-fixtures/sample_table",
+        4,
+        vec![BootstrappedBrowserFile::new(
+            "part-000.parquet",
+            128,
+            std::collections::BTreeMap::new(),
+            BrowserParquetFileMetadata {
+                object_size_bytes: 128,
+                footer_length_bytes: 16,
+                row_group_count: 0,
+                row_count: 0,
+                fields: vec![BrowserParquetField {
+                    name: "value".to_string(),
+                    physical_type: BrowserParquetPhysicalType::Int32,
+                    logical_type: None,
+                    converted_type: None,
+                    repetition: BrowserParquetRepetition::Required,
+                    nullable: false,
+                    max_definition_level: 0,
+                    max_repetition_level: 0,
+                    type_length: None,
+                    precision: None,
+                    scale: None,
+                }],
+                field_stats: std::collections::BTreeMap::new(),
+            },
+        )
+        .expect("valid bootstrapped files should construct in wasm")],
+    )
+    .expect("valid bootstrapped snapshots should construct in wasm");
+
+    let plan = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT COUNT(*) AS row_count FROM axon_table",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("aggregate execution plans should build in wasm");
+
+    assert_eq!(plan.outputs().len(), 1);
+    assert!(plan.aggregation().is_some());
+    assert!(plan.order_by().is_empty());
+}
+
+#[wasm_bindgen_test]
+fn browser_runtime_grouped_order_limit_execution_plan_constructs_in_wasm() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported in wasm");
+    let snapshot = BootstrappedBrowserSnapshot::new(
+        "gs://axon-fixtures/sample_table",
+        4,
+        vec![BootstrappedBrowserFile::new(
+            "category=A/part-000.parquet",
+            128,
+            std::collections::BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
+            BrowserParquetFileMetadata {
+                object_size_bytes: 128,
+                footer_length_bytes: 16,
+                row_group_count: 0,
+                row_count: 0,
+                fields: vec![BrowserParquetField {
+                    name: "value".to_string(),
+                    physical_type: BrowserParquetPhysicalType::Int32,
+                    logical_type: None,
+                    converted_type: None,
+                    repetition: BrowserParquetRepetition::Required,
+                    nullable: false,
+                    max_definition_level: 0,
+                    max_repetition_level: 0,
+                    type_length: None,
+                    precision: None,
+                    scale: None,
+                }],
+                field_stats: std::collections::BTreeMap::new(),
+            },
+        )
+        .expect("valid bootstrapped files should construct in wasm")],
+    )
+    .expect("valid bootstrapped snapshots should construct in wasm");
+
+    let plan = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT category, SUM(value) AS total_value \
+                 FROM axon_table \
+                 GROUP BY category \
+                 ORDER BY category \
+                 LIMIT 1",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("grouped execution plans should build in wasm");
+
+    assert_eq!(plan.outputs().len(), 2);
+    assert_eq!(plan.order_by().len(), 1);
+    assert_eq!(plan.limit(), Some(1));
+}
+
+#[wasm_bindgen_test]
 fn materialize_snapshot_rejects_loopback_http_in_wasm() {
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
         .expect("default config should be supported in wasm");

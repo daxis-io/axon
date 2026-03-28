@@ -4200,6 +4200,8 @@ dependencies = [
  "parquet",
  "query-contract",
  "reqwest",
+ "serde",
+ "serde_json",
  "sqlparser",
  "tokio",
  "wasm-bindgen-test",
