@@ -15,7 +15,7 @@ use query_contract::{
 use serde::Deserialize;
 use wasm_http_object_store::{HttpByteRange, HttpRangeReader};
 use wasm_query_runtime::{
-    runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot,
+    runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserAggregateFunction,
     BrowserExecutionOutputKind, BrowserObjectAccessMode, BrowserObjectSource,
     BrowserParquetConvertedType, BrowserParquetField, BrowserParquetFieldStats,
     BrowserParquetFileMetadata, BrowserParquetLogicalType, BrowserParquetPhysicalType,
@@ -344,21 +344,9 @@ fn build_execution_plan_matches_direct_projection_corpus() {
                     "case '{}': aggregate source column should match",
                     case.name
                 );
-                let expected_function = match expected.function.as_str() {
-                    "avg" => "Avg",
-                    "array_agg" => "ArrayAgg",
-                    "bool_and" => "BoolAnd",
-                    "bool_or" => "BoolOr",
-                    "count_star" => "CountStar",
-                    "count" => "Count",
-                    "sum" => "Sum",
-                    "min" => "Min",
-                    "max" => "Max",
-                    other => panic!("unsupported expected aggregate function '{other}'"),
-                };
                 assert_eq!(
-                    format!("{:?}", measure.function()),
-                    expected_function,
+                    measure.function(),
+                    &expected_aggregate_function(&expected.function),
                     "case '{}': aggregate function should match",
                     case.name
                 );
@@ -2322,6 +2310,21 @@ fn load_execution_plan_corpus() -> Vec<ExecutionPlanCorpusCase> {
             .expect("execution-plan corpus should be readable"),
     )
     .expect("execution-plan corpus should deserialize")
+}
+
+fn expected_aggregate_function(name: &str) -> BrowserAggregateFunction {
+    match name {
+        "avg" => BrowserAggregateFunction::Avg,
+        "array_agg" => BrowserAggregateFunction::ArrayAgg,
+        "bool_and" => BrowserAggregateFunction::BoolAnd,
+        "bool_or" => BrowserAggregateFunction::BoolOr,
+        "count_star" => BrowserAggregateFunction::CountStar,
+        "count" => BrowserAggregateFunction::Count,
+        "sum" => BrowserAggregateFunction::Sum,
+        "min" => BrowserAggregateFunction::Min,
+        "max" => BrowserAggregateFunction::Max,
+        other => panic!("unsupported expected aggregate function '{other}'"),
+    }
 }
 
 fn bootstrapped_file(
