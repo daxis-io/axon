@@ -214,15 +214,15 @@ This slice is intentionally small: it does not register tables with DataFusion, 
 Browser launch readiness is now tracked in the release checklist and supporting docs:
 
 - `docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md` captures the browser compatibility, Delta compatibility, security reporting, and size-budget gates for the new architecture.
-- `tests/perf/README.md` documents the release-artifact size proxy and the browser performance baseline commands.
+- `tests/perf/README.md` documents the provisional release-artifact size proxy and the browser performance baseline commands.
 - `tests/security/README.md` points at the in-repo security checks and the private reporting path in `SECURITY.md`.
-- CI now checks `wasm32-unknown-unknown` compatibility for `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-sdk`, and it keeps the existing `wasm-query-runtime` smoke test.
-- The browser size budget currently uses the release `.rlib` artifact as a proxy for bundle size. Startup and memory budgets are documented as future work. That is a limitation of the current repo surface; the final application bundle is not yet produced here.
+- CI now checks `wasm32-unknown-unknown` compatibility for `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-sdk`, runs host tests for the new browser-side crates, and keeps the existing `wasm-query-runtime` smoke test.
+- The browser size budget currently uses the release `.rlib` artifact as a provisional proxy for bundle size. Startup and memory budgets are documented as future work. That is a limitation of the current repo surface; the final application bundle is not yet produced here.
 
 ## Repository Layout
 
 - `crates/` contains the Rust workspace packages.
 - `tests/conformance/` contains scaffold checks plus native SQL corpora whose partition-pruning expectations now serve as the local oracle for narrow browser-planning parity coverage.
-- `tests/perf/` contains performance budget notes, size-proxy reporting, and benchmark scaffolding.
+- `tests/perf/` contains performance budget notes, provisional size-proxy reporting, and benchmark scaffolding.
 - `tests/security/` contains security reporting guidance and will grow into service-level secret/CORS coverage once `services/query-api` exists.
 - `.github/workflows/ci.yml` contains the CI configuration.

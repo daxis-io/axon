@@ -12,8 +12,8 @@
 ## Release Gates
 
 - [x] `wasm32-unknown-unknown` compile coverage includes `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-sdk`.
-- [x] Browser tests run where applicable, including the `wasm-query-runtime` smoke test and host tests for the new browser-side crates.
-- [x] Browser release-artifact size reporting is enforced in CI with a `.rlib` proxy until final bundle packaging exists.
+- [x] Host tests run for `wasm-parquet-engine`, `wasm-delta-snapshot`, and `browser-sdk`, and the existing `wasm-query-runtime` `wasm32-unknown-unknown` smoke test remains in CI.
+- [x] Provisional browser release-artifact size reporting is enforced in CI with a `.rlib` proxy until final bundle packaging exists.
 - [ ] Browser startup budgets are tracked in CI.
 - [ ] Browser memory budgets are tracked in CI.
 
@@ -38,7 +38,7 @@
 ## Runtime Constraints
 
 - [ ] Browser runtime ships single-partition by default.
-- [x] Browser bundle size is tracked in CI via the `.rlib` proxy.
+- [x] Browser bundle size is provisionally tracked in CI via the `.rlib` proxy.
 - [ ] Browser packages do not depend on signing or service-account code.
 - [ ] Hosted UDF runtime remains separate from browser runtime dependencies.
 
