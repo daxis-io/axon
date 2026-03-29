@@ -11,7 +11,9 @@ Axon is a Rust workspace for building a hybrid query platform with native and br
 - `crates/wasm-http-object-store` contains the thin EPIC-04 HTTP byte-range slice for browser-safe object reads.
 - `crates/wasm-parquet-engine` contains browser-side Parquet planning and scan primitives.
 - `crates/wasm-delta-snapshot` contains browser-safe Delta snapshot reconstruction.
-- `crates/query-router`, `crates/browser-sdk`, `crates/udf-abi`, and `crates/udf-host-wasi` remain scaffolds around routing, browser access, and hosted UDF execution.
+- `crates/query-router` contains browser-vs-native routing policy and structured fallback decisions.
+- `crates/browser-sdk` contains the thin browser embedding surface: worker request envelopes, Arrow IPC result transport, and structured fallback propagation.
+- `crates/udf-abi` and `crates/udf-host-wasi` remain scaffolds around hosted UDF execution.
 
 ## Getting Started
 
@@ -58,7 +60,7 @@ cargo test -p wasm-query-runtime --locked
 cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --locked --test wasm_smoke
 ```
 
-This slice is intentionally small: it does not register tables with DataFusion, expose `browser-sdk`, orchestrate `query-router`, or implement any `services/query-api` behavior. The current browser output is a deterministic planning/pruning plus narrow execution-plan interpreter over the curated supported SQL corpus, not a broad browser SQL or DataFusion engine.
+This slice is intentionally small: it does not register tables with DataFusion or implement any `services/query-api` behavior. The current browser output is a deterministic planning/pruning plus narrow execution-plan interpreter over the curated supported SQL corpus, not a broad browser SQL or DataFusion engine. The worker-facing embedding boundary now lives in `crates/browser-sdk`, which carries `QueryRequest` into a worker envelope and returns Arrow IPC bytes plus structured fallback metadata instead of row-oriented JSON.
 
 ## Native Runtime Slice
 

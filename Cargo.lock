@@ -440,6 +440,8 @@ name = "browser-sdk"
 version = "0.1.0"
 dependencies = [
  "query-contract",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
