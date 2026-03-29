@@ -1,6 +1,7 @@
 //! Public browser SDK contracts for worker-hosted query execution.
 
 use query_contract::{ExecutionTarget, FallbackReason, QueryError, QueryRequest, QueryResponse};
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
 pub const OWNER: &str = "Web platform team";
@@ -45,7 +46,7 @@ impl ArrowIpcFormat {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ArrowIpcResultEnvelope {
     pub format: ArrowIpcFormat,
     pub content_type: String,
@@ -59,6 +60,36 @@ impl ArrowIpcResultEnvelope {
             content_type: format.content_type().to_string(),
             bytes,
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for ArrowIpcResultEnvelope {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawArrowIpcResultEnvelope {
+            format: ArrowIpcFormat,
+            content_type: String,
+            bytes: Vec<u8>,
+        }
+
+        let raw = RawArrowIpcResultEnvelope::deserialize(deserializer)?;
+        let expected_content_type = raw.format.content_type();
+
+        if raw.content_type != expected_content_type {
+            return Err(de::Error::custom(format!(
+                "Arrow IPC content type '{}' does not match expected content type '{}' for format '{:?}'",
+                raw.content_type, expected_content_type, raw.format
+            )));
+        }
+
+        Ok(Self {
+            format: raw.format,
+            content_type: raw.content_type,
+            bytes: raw.bytes,
+        })
     }
 }
 

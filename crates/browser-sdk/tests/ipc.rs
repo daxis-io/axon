@@ -3,8 +3,8 @@ use browser_sdk::{
     BrowserWorkerResponseEnvelope,
 };
 use query_contract::{
-    CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason,
-    QueryMetricsSummary, QueryRequest, QueryResponse,
+    CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, QueryError,
+    QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse,
 };
 
 #[test]
@@ -94,5 +94,47 @@ fn browser_sdk_preserves_structured_fallback_reason() {
     let preserved = round_tripped
         .fallback_reason()
         .expect("fallback reason survives worker envelope");
+    assert_eq!(preserved, &fallback_reason);
+}
+
+#[test]
+fn browser_sdk_rejects_mismatched_arrow_ipc_content_type() {
+    let invalid = serde_json::json!({
+        "format": "stream",
+        "content_type": "application/vnd.apache.arrow.file",
+        "bytes": [255, 255, 0, 1]
+    });
+
+    let error = serde_json::from_value::<ArrowIpcResultEnvelope>(invalid)
+        .expect_err("mismatched format/content_type must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("does not match expected content type"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn browser_sdk_round_trips_error_envelope_with_fallback_reason() {
+    let fallback_reason = FallbackReason::NetworkFailure;
+    let response = BrowserWorkerResponseEnvelope::error(
+        "req-3",
+        QueryError::new(
+            QueryErrorCode::FallbackRequired,
+            "browser worker lost connectivity",
+            ExecutionTarget::BrowserWasm,
+        )
+        .with_fallback_reason(fallback_reason.clone()),
+    );
+
+    let serialized = serde_json::to_value(&response).expect("error response serializes");
+    let round_tripped: BrowserWorkerResponseEnvelope =
+        serde_json::from_value(serialized).expect("error response deserializes");
+
+    assert!(round_tripped.success_envelope().is_none());
+    let preserved = round_tripped
+        .fallback_reason()
+        .expect("error fallback reason survives worker envelope");
     assert_eq!(preserved, &fallback_reason);
 }
