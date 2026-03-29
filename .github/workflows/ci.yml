@@ -68,6 +68,12 @@ jobs:
 
       - name: Report browser wasm size proxy
         run: |
+          rm -f target/wasm32-unknown-unknown/release/deps/libwasm_http_object_store-*.rlib \
+                target/wasm32-unknown-unknown/release/deps/libwasm_parquet_engine-*.rlib \
+                target/wasm32-unknown-unknown/release/deps/libwasm_delta_snapshot-*.rlib \
+                target/wasm32-unknown-unknown/release/deps/libwasm_query_runtime-*.rlib \
+                target/wasm32-unknown-unknown/release/deps/libbrowser_sdk-*.rlib
+
           cargo build -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p browser-sdk --target wasm32-unknown-unknown --release --locked
 
           report_size() {

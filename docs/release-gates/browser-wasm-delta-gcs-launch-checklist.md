@@ -12,7 +12,9 @@
 ## Release Gates
 
 - [x] `wasm32-unknown-unknown` compile coverage includes `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-sdk`.
-- [x] Host tests run for `wasm-parquet-engine`, `wasm-delta-snapshot`, and `browser-sdk`, and the existing `wasm-query-runtime` `wasm32-unknown-unknown` smoke test remains in CI.
+- [x] Host tests run for `wasm-parquet-engine`, `wasm-delta-snapshot`, and `browser-sdk`.
+- [x] The existing `wasm-query-runtime` `wasm32-unknown-unknown` smoke test remains in CI.
+- [ ] Dedicated wasm execution suites for `browser-sdk`, `wasm-parquet-engine`, and `wasm-delta-snapshot` remain future work.
 - [x] Provisional browser release-artifact size reporting is enforced in CI with a `.rlib` proxy until final bundle packaging exists.
 - [ ] Browser startup budgets are tracked in CI.
 - [ ] Browser memory budgets are tracked in CI.

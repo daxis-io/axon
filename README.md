@@ -216,7 +216,8 @@ Browser launch readiness is now tracked in the release checklist and supporting 
 - `docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md` captures the browser compatibility, Delta compatibility, security reporting, and size-budget gates for the new architecture.
 - `tests/perf/README.md` documents the provisional release-artifact size proxy and the browser performance baseline commands.
 - `tests/security/README.md` points at the in-repo security checks and the private reporting path in `SECURITY.md`.
-- CI now checks `wasm32-unknown-unknown` compatibility for `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-sdk`, runs host tests for the new browser-side crates, and keeps the existing `wasm-query-runtime` smoke test.
+- CI now checks `wasm32-unknown-unknown` compatibility for `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-sdk`, runs host tests for the new split crates, and keeps the existing `wasm-query-runtime` wasm smoke test.
+- Dedicated wasm execution suites for `browser-sdk`, `wasm-parquet-engine`, and `wasm-delta-snapshot` remain future work.
 - The browser size budget currently uses the release `.rlib` artifact as a provisional proxy for bundle size. Startup and memory budgets are documented as future work. That is a limitation of the current repo surface; the final application bundle is not yet produced here.
 
 ## Repository Layout
