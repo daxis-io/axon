@@ -217,7 +217,7 @@ Browser launch readiness is now tracked in the release checklist and supporting 
 - `tests/perf/README.md` documents the release-artifact size proxy and the browser performance baseline commands.
 - `tests/security/README.md` points at the in-repo security checks and the private reporting path in `SECURITY.md`.
 - CI now checks `wasm32-unknown-unknown` compatibility for `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-sdk`, and it keeps the existing `wasm-query-runtime` smoke test.
-- The browser size budget currently uses the release `.rlib` artifact as a proxy for bundle size. That is a limitation of the current repo surface; the final application bundle is not yet produced here.
+- The browser size budget currently uses the release `.rlib` artifact as a proxy for bundle size. Startup and memory budgets are documented as future work. That is a limitation of the current repo surface; the final application bundle is not yet produced here.
 
 ## Repository Layout
 
