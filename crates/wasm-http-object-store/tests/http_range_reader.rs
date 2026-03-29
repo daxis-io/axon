@@ -5,7 +5,10 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 
 use query_contract::QueryErrorCode;
-use wasm_http_object_store::{HttpByteRange, HttpRangeReader};
+use wasm_http_object_store::{
+    HttpByteRange, HttpMetadataProbeRequirements, HttpObjectMetadata, HttpRangeReader,
+    HttpRangeValidation,
+};
 
 const PARQUET_LIKE_BYTES: &[u8] = b"PAR1abcdefghijklmnoPAR1";
 
@@ -492,6 +495,142 @@ fn transport_failures_map_to_execution_failed() {
         .expect_err("connection-refused reads should fail");
 
     assert_eq!(error.code, QueryErrorCode::ExecutionFailed);
+}
+
+#[tokio::test]
+async fn metadata_probe_is_optional_when_size_and_identity_are_known() {
+    let reader = HttpRangeReader::new();
+    let known = HttpObjectMetadata {
+        url: "https://already-known.example/object".to_string(),
+        size_bytes: Some(99),
+        etag: Some("\"known\"".to_string()),
+    };
+
+    let resolved = reader
+        .resolve_metadata_with_timeout(
+            "not a valid url",
+            Some(known.clone()),
+            HttpMetadataProbeRequirements {
+                require_size: true,
+                require_etag: true,
+            },
+            None,
+        )
+        .await
+        .expect("known metadata should skip probing");
+
+    assert_eq!(resolved, known);
+}
+
+#[tokio::test]
+async fn metadata_probe_fetches_when_size_or_identity_is_unknown() {
+    let (url, requests, server) = spawn_test_server(|request| {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/object");
+        assert_eq!(request.headers.get("range"), Some(&"bytes=0-0".to_string()));
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "1".to_string()),
+                ("Content-Range".to_string(), "bytes 0-0/10".to_string()),
+                ("ETag".to_string(), "\"v1\"".to_string()),
+            ],
+            body: b"a".to_vec(),
+        }
+    });
+
+    let reader = HttpRangeReader::new();
+    let resolved = reader
+        .resolve_metadata_with_timeout(
+            &url,
+            Some(HttpObjectMetadata {
+                url: url.clone(),
+                size_bytes: None,
+                etag: Some("\"v1\"".to_string()),
+            }),
+            HttpMetadataProbeRequirements {
+                require_size: true,
+                require_etag: true,
+            },
+            None,
+        )
+        .await
+        .expect("metadata should be probed when size is unknown");
+
+    let request = finish_request(server, requests);
+    assert_eq!(request.headers.get("range"), Some(&"bytes=0-0".to_string()));
+    assert_eq!(resolved.size_bytes, Some(10));
+    assert_eq!(resolved.etag.as_deref(), Some("\"v1\""));
+}
+
+#[tokio::test]
+async fn rejects_identity_drift_when_if_range_validation_fails() {
+    let (url, requests, server) = spawn_test_server(|request| {
+        assert_eq!(request.headers.get("range"), Some(&"bytes=2-5".to_string()));
+        assert_eq!(request.headers.get("if-range"), Some(&"\"v1\"".to_string()));
+        TestResponse {
+            status_line: "200 OK",
+            headers: vec![
+                ("Content-Length".to_string(), "10".to_string()),
+                ("ETag".to_string(), "\"v2\"".to_string()),
+            ],
+            body: b"abcdefghij".to_vec(),
+        }
+    });
+
+    let reader = HttpRangeReader::new();
+    let error = reader
+        .read_range_with_validation(
+            &url,
+            HttpByteRange::Bounded {
+                offset: 2,
+                length: 4,
+            },
+            Some(HttpRangeValidation::if_range_etag("\"v1\"".to_string())),
+            None,
+        )
+        .await
+        .expect_err("identity drift should be rejected when If-Range validation fails");
+
+    let request = finish_request(server, requests);
+    assert_eq!(request.headers.get("if-range"), Some(&"\"v1\"".to_string()));
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert!(error.message.contains("If-Range"));
+}
+
+#[tokio::test]
+async fn surfaces_missing_exposed_headers_as_protocol_errors() {
+    let (url, requests, server) = spawn_test_server(|request| {
+        assert_eq!(request.headers.get("range"), Some(&"bytes=2-5".to_string()));
+        assert_eq!(request.headers.get("if-range"), Some(&"\"v1\"".to_string()));
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "4".to_string()),
+                ("Content-Range".to_string(), "bytes 2-5/10".to_string()),
+            ],
+            body: b"cdef".to_vec(),
+        }
+    });
+
+    let reader = HttpRangeReader::new();
+    let error = reader
+        .read_range_with_validation(
+            &url,
+            HttpByteRange::Bounded {
+                offset: 2,
+                length: 4,
+            },
+            Some(HttpRangeValidation::if_range_etag("\"v1\"".to_string())),
+            None,
+        )
+        .await
+        .expect_err("validation should fail when required headers are not browser-visible");
+
+    let request = finish_request(server, requests);
+    assert_eq!(request.headers.get("if-range"), Some(&"\"v1\"".to_string()));
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert!(error.message.contains("ETag"));
 }
 
 fn runtime() -> tokio::runtime::Runtime {

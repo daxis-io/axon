@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use query_contract::{ExecutionTarget, QueryError, QueryErrorCode};
-use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, ETAG, RANGE};
+use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_RANGE, RANGE};
 use reqwest::{StatusCode, Url};
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -116,6 +116,177 @@ pub struct HttpRangeReadResult {
     pub bytes: Bytes,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HttpMetadataProbeRequirements {
+    pub require_size: bool,
+    pub require_etag: bool,
+}
+
+impl HttpMetadataProbeRequirements {
+    pub fn is_satisfied_by(self, metadata: &HttpObjectMetadata) -> bool {
+        (!self.require_size || metadata.size_bytes.is_some())
+            && (!self.require_etag || metadata.etag.is_some())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HttpRangeValidation {
+    IfRangeEtag(String),
+}
+
+impl HttpRangeValidation {
+    pub fn if_range_etag(etag: String) -> Self {
+        Self::IfRangeEtag(etag)
+    }
+
+    fn apply_request(
+        self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, QueryError> {
+        match self {
+            Self::IfRangeEtag(etag) => {
+                if etag.trim().is_empty() {
+                    return Err(invalid_request("if-range validators must not be empty"));
+                }
+                Ok(request.header(IF_RANGE, etag))
+            }
+        }
+    }
+
+    fn validate_response_identity(
+        self,
+        response_etag: Option<&str>,
+        display_url: &str,
+    ) -> Result<(), QueryError> {
+        match self {
+            Self::IfRangeEtag(expected) => match response_etag {
+                Some(actual) if actual == expected => Ok(()),
+                Some(actual) => Err(protocol_error(format!(
+                    "range validation for '{display_url}' expected ETag {expected}, but the response returned {actual}"
+                ))),
+                None => Err(protocol_error(format!(
+                    "range validation for '{display_url}' required an exposed ETag header, but none was returned"
+                ))),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct ByteExtent {
+    pub offset: u64,
+    pub length: u64,
+}
+
+impl ByteExtent {
+    pub fn new(offset: u64, length: u64) -> Result<Self, QueryError> {
+        if length == 0 {
+            return Err(invalid_request(
+                "byte extents must request at least one byte",
+            ));
+        }
+
+        let _ = offset
+            .checked_add(length)
+            .ok_or_else(|| invalid_request("byte extent overflowed u64"))?;
+
+        Ok(Self { offset, length })
+    }
+
+    fn end_exclusive(self) -> Result<u64, QueryError> {
+        self.offset
+            .checked_add(self.length)
+            .ok_or_else(|| protocol_error("byte extent overflowed u64"))
+    }
+
+    fn merge(self, other: Self) -> Result<Self, QueryError> {
+        let start = self.offset.min(other.offset);
+        let end = self.end_exclusive()?.max(other.end_exclusive()?);
+        Self::new(start, end - start)
+    }
+
+    pub fn contains(self, other: Self) -> bool {
+        let self_end = self.offset.saturating_add(self.length);
+        let other_end = other.offset.saturating_add(other.length);
+        self.offset <= other.offset && self_end >= other_end
+    }
+
+    fn touches_or_overlaps(self, other: Self) -> bool {
+        match (self.end_exclusive(), other.end_exclusive()) {
+            (Ok(self_end), Ok(other_end)) => self_end >= other.offset && other_end >= self.offset,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ExtentCacheKey {
+    pub resource: String,
+    pub identity: Option<String>,
+}
+
+impl ExtentCacheKey {
+    pub fn new(resource: impl Into<String>, identity: Option<String>) -> Self {
+        Self {
+            resource: resource.into(),
+            identity,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExtentCacheEntry {
+    pub key: ExtentCacheKey,
+    pub extent: ByteExtent,
+    pub bytes: Bytes,
+}
+
+impl ExtentCacheEntry {
+    pub fn new(key: ExtentCacheKey, extent: ByteExtent, bytes: Bytes) -> Result<Self, QueryError> {
+        let expected_len = usize::try_from(extent.length)
+            .map_err(|_| invalid_request("byte extent length overflowed usize"))?;
+        if bytes.len() != expected_len {
+            return Err(invalid_request(format!(
+                "cached extent length mismatch: extent declared {} bytes, but payload had {} bytes",
+                extent.length,
+                bytes.len()
+            )));
+        }
+
+        Ok(Self { key, extent, bytes })
+    }
+
+    pub fn can_satisfy(&self, request_key: &ExtentCacheKey, request_extent: ByteExtent) -> bool {
+        &self.key == request_key && self.extent.contains(request_extent)
+    }
+}
+
+pub fn coalesce_extents(mut extents: Vec<ByteExtent>) -> Result<Vec<ByteExtent>, QueryError> {
+    if extents.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    extents.sort_by(|left, right| {
+        left.offset
+            .cmp(&right.offset)
+            .then(left.length.cmp(&right.length))
+    });
+
+    let mut coalesced = Vec::with_capacity(extents.len());
+    let mut current = extents[0];
+    for extent in extents.into_iter().skip(1) {
+        if current.touches_or_overlaps(extent) {
+            current = current.merge(extent)?;
+            continue;
+        }
+        coalesced.push(current);
+        current = extent;
+    }
+    coalesced.push(current);
+
+    Ok(coalesced)
+}
+
 #[derive(Clone, Debug)]
 pub struct HttpRangeReader {
     client: reqwest::Client,
@@ -150,6 +321,17 @@ impl HttpRangeReader {
         range: HttpByteRange,
         timeout: Option<Duration>,
     ) -> Result<HttpRangeReadResult, QueryError> {
+        self.read_range_with_validation(url, range, None, timeout)
+            .await
+    }
+
+    pub async fn read_range_with_validation(
+        &self,
+        url: &str,
+        range: HttpByteRange,
+        validation: Option<HttpRangeValidation>,
+        timeout: Option<Duration>,
+    ) -> Result<HttpRangeReadResult, QueryError> {
         let url = parse_url(url)?;
         let display_url = redacted_url(&url);
         let range_header = range.header_value()?;
@@ -157,6 +339,9 @@ impl HttpRangeReader {
         let mut request = self.client.get(url.clone());
         if let Some(range_header) = &range_header {
             request = request.header(RANGE, range_header);
+        }
+        if let Some(validation) = validation.clone() {
+            request = validation.apply_request(request)?;
         }
         if let Some(timeout) = timeout {
             request = request.timeout(timeout);
@@ -176,6 +361,12 @@ impl HttpRangeReader {
 
         let content_range = if range.expects_partial_response() {
             if response.status() != StatusCode::PARTIAL_CONTENT {
+                if validation.is_some() {
+                    return Err(protocol_error(format!(
+                        "range request to '{display_url}' expected HTTP 206 Partial Content, got {}; If-Range validation likely failed due object identity drift",
+                        response.status()
+                    )));
+                }
                 return Err(protocol_error(format!(
                     "range request to '{display_url}' expected HTTP 206 Partial Content, got {}",
                     response.status()
@@ -200,6 +391,9 @@ impl HttpRangeReader {
             None => parse_optional_content_length(response.headers(), &display_url)?,
         };
         let etag = parse_optional_header_string(response.headers(), ETAG.as_str(), &display_url)?;
+        if let Some(validation) = validation {
+            validation.validate_response_identity(etag.as_deref(), &display_url)?;
+        }
 
         let bytes = response.bytes().await.map_err(|error| {
             QueryError::new(
@@ -232,6 +426,76 @@ impl HttpRangeReader {
             },
             bytes,
         })
+    }
+
+    pub async fn probe_metadata(
+        &self,
+        url: &str,
+        requirements: HttpMetadataProbeRequirements,
+    ) -> Result<HttpObjectMetadata, QueryError> {
+        self.probe_metadata_with_timeout(url, requirements, None)
+            .await
+    }
+
+    pub async fn probe_metadata_with_timeout(
+        &self,
+        url: &str,
+        requirements: HttpMetadataProbeRequirements,
+        timeout: Option<Duration>,
+    ) -> Result<HttpObjectMetadata, QueryError> {
+        let probe = self
+            .read_range_with_timeout(
+                url,
+                HttpByteRange::Bounded {
+                    offset: 0,
+                    length: 1,
+                },
+                timeout,
+            )
+            .await?;
+        let metadata = probe.metadata;
+
+        if requirements.require_size && metadata.size_bytes.is_none() {
+            return Err(protocol_error(format!(
+                "metadata probe for '{}' required object size metadata, but no browser-visible size headers were returned",
+                metadata.url
+            )));
+        }
+        if requirements.require_etag && metadata.etag.is_none() {
+            return Err(protocol_error(format!(
+                "metadata probe for '{}' required an exposed ETag header, but none was returned",
+                metadata.url
+            )));
+        }
+
+        Ok(metadata)
+    }
+
+    pub async fn resolve_metadata(
+        &self,
+        url: &str,
+        known_metadata: Option<HttpObjectMetadata>,
+        requirements: HttpMetadataProbeRequirements,
+    ) -> Result<HttpObjectMetadata, QueryError> {
+        self.resolve_metadata_with_timeout(url, known_metadata, requirements, None)
+            .await
+    }
+
+    pub async fn resolve_metadata_with_timeout(
+        &self,
+        url: &str,
+        known_metadata: Option<HttpObjectMetadata>,
+        requirements: HttpMetadataProbeRequirements,
+        timeout: Option<Duration>,
+    ) -> Result<HttpObjectMetadata, QueryError> {
+        if let Some(known_metadata) = known_metadata {
+            if requirements.is_satisfied_by(&known_metadata) {
+                return Ok(known_metadata);
+            }
+        }
+
+        self.probe_metadata_with_timeout(url, requirements, timeout)
+            .await
     }
 }
 
