@@ -6,11 +6,14 @@ use std::sync::Arc;
 use arrow_array::builder::{Int64Builder, MapBuilder, MapFieldNames, StringBuilder, StructBuilder};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Fields, Schema};
+use async_trait::async_trait;
+use bytes::Bytes;
 use parquet::arrow::ArrowWriter;
-use query_contract::{ResolvedFileDescriptor, SnapshotResolutionRequest};
+use query_contract::{QueryError, ResolvedFileDescriptor, SnapshotResolutionRequest};
 use tempfile::TempDir;
 use wasm_delta_snapshot::{
     DefaultJsonHandler, DefaultParquetHandler, LocalFileStorageHandler, SnapshotResolver,
+    StorageHandler,
 };
 
 #[tokio::test]
@@ -163,6 +166,137 @@ async fn loads_v2_checkpoint_sidecars_when_present() {
     );
 }
 
+#[tokio::test]
+async fn loads_v2_json_checkpoint_sidecars_when_present() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    write_json_commit(
+        fixture.path(),
+        0,
+        &[r#"{"add":{"path":"data/a.parquet","size":10,"partitionValues":{"category":"A"}}}"#],
+    );
+    write_json_commit(
+        fixture.path(),
+        1,
+        &[r#"{"add":{"path":"data/b.parquet","size":20,"partitionValues":{"category":"B"}}}"#],
+    );
+    write_json_uuid_checkpoint(
+        fixture.path(),
+        1,
+        "11111111-1111-1111-1111-111111111111",
+        &[r#"{"sidecar":{"path":"part-00001.parquet"}}"#],
+    );
+    write_sidecar(
+        fixture.path(),
+        "part-00001.parquet",
+        &[
+            CheckpointRow::add(
+                "data/a.parquet",
+                10,
+                BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
+            ),
+            CheckpointRow::add(
+                "data/b.parquet",
+                20,
+                BTreeMap::from([("category".to_string(), Some("B".to_string()))]),
+            ),
+        ],
+    );
+    write_last_checkpoint(fixture.path(), 1, None);
+    write_json_commit(
+        fixture.path(),
+        2,
+        &[r#"{"remove":{"path":"data/a.parquet"}}"#],
+    );
+    write_json_commit(
+        fixture.path(),
+        3,
+        &[r#"{"add":{"path":"data/c.parquet","size":30,"partitionValues":{"category":"C"}}}"#],
+    );
+
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+    let snapshot = resolver
+        .resolve_snapshot(SnapshotResolutionRequest {
+            table_uri: fixture.path().display().to_string(),
+            snapshot_version: None,
+        })
+        .await
+        .expect("snapshot should resolve");
+
+    assert_eq!(snapshot.snapshot_version, 3);
+    assert_eq!(
+        snapshot.active_files,
+        vec![
+            ResolvedFileDescriptor {
+                path: "data/b.parquet".to_string(),
+                size_bytes: 20,
+                partition_values: BTreeMap::from([
+                    ("category".to_string(), Some("B".to_string()),)
+                ]),
+            },
+            ResolvedFileDescriptor {
+                path: "data/c.parquet".to_string(),
+                size_bytes: 30,
+                partition_values: BTreeMap::from([
+                    ("category".to_string(), Some("C".to_string()),)
+                ]),
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn preserves_absolute_sidecar_paths() {
+    let absolute_sidecar_path = "https://example.com/_delta_log/_sidecars/part-00001.parquet";
+    let checkpoint_path =
+        "_delta_log/00000000000000000001.checkpoint.11111111-1111-1111-1111-111111111111.json";
+    let storage = InMemoryStorageHandler::new(
+        vec![checkpoint_path.to_string()],
+        BTreeMap::from([
+            (
+                checkpoint_path.to_string(),
+                Bytes::from(format!(
+                    r#"{{"sidecar":{{"path":"{absolute_sidecar_path}"}}}}"#
+                )),
+            ),
+            (
+                absolute_sidecar_path.to_string(),
+                checkpoint_bytes(&[CheckpointRow::add(
+                    "data/b.parquet",
+                    20,
+                    BTreeMap::from([("category".to_string(), Some("B".to_string()))]),
+                )]),
+            ),
+        ]),
+    );
+    let resolver = SnapshotResolver::new(
+        storage,
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+
+    let snapshot = resolver
+        .resolve_snapshot(SnapshotResolutionRequest {
+            table_uri: "memory://fixture".to_string(),
+            snapshot_version: None,
+        })
+        .await
+        .expect("snapshot should resolve");
+
+    assert_eq!(snapshot.snapshot_version, 1);
+    assert_eq!(
+        snapshot.active_files,
+        vec![ResolvedFileDescriptor {
+            path: "data/b.parquet".to_string(),
+            size_bytes: 20,
+            partition_values: BTreeMap::from([("category".to_string(), Some("B".to_string()),)]),
+        }]
+    );
+}
+
 #[derive(Clone)]
 enum CheckpointRow {
     Add(ResolvedFileDescriptor),
@@ -215,6 +349,11 @@ fn write_uuid_checkpoint(root: &Path, version: u64, uuid: &str, rows: &[Checkpoi
     );
 }
 
+fn write_json_uuid_checkpoint(root: &Path, version: u64, uuid: &str, lines: &[&str]) {
+    let path = delta_log_dir(root).join(format!("{version:020}.checkpoint.{uuid}.json"));
+    fs::write(path, lines.join("\n")).expect("json checkpoint should be written");
+}
+
 fn write_multipart_checkpoint_part(
     root: &Path,
     version: u64,
@@ -244,12 +383,23 @@ fn delta_log_dir(root: &Path) -> std::path::PathBuf {
 }
 
 fn write_checkpoint_file(path: &Path, rows: &[CheckpointRow]) {
-    let batch = checkpoint_record_batch(rows);
     let file = fs::File::create(path).expect("checkpoint file should be created");
+    let mut writer = ArrowWriter::try_new(file, checkpoint_record_batch(rows).schema(), None)
+        .expect("writer should be created");
+    writer
+        .write(&checkpoint_record_batch(rows))
+        .expect("batch should write");
+    writer.close().expect("writer should close");
+}
+
+fn checkpoint_bytes(rows: &[CheckpointRow]) -> Bytes {
+    let batch = checkpoint_record_batch(rows);
+    let mut bytes = Vec::new();
     let mut writer =
-        ArrowWriter::try_new(file, batch.schema(), None).expect("writer should be created");
+        ArrowWriter::try_new(&mut bytes, batch.schema(), None).expect("writer should be created");
     writer.write(&batch).expect("batch should write");
     writer.close().expect("writer should close");
+    Bytes::from(bytes)
 }
 
 fn checkpoint_record_batch(rows: &[CheckpointRow]) -> RecordBatch {
@@ -378,4 +528,39 @@ fn checkpoint_record_batch(rows: &[CheckpointRow]) -> RecordBatch {
         ],
     )
     .expect("record batch should be created")
+}
+
+#[derive(Clone)]
+struct InMemoryStorageHandler {
+    listed_paths: Vec<String>,
+    bytes_by_path: BTreeMap<String, Bytes>,
+}
+
+impl InMemoryStorageHandler {
+    fn new(listed_paths: Vec<String>, bytes_by_path: BTreeMap<String, Bytes>) -> Self {
+        Self {
+            listed_paths,
+            bytes_by_path,
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl StorageHandler for InMemoryStorageHandler {
+    async fn list_paths(&self, _table_uri: &str, prefix: &str) -> Result<Vec<String>, QueryError> {
+        Ok(self
+            .listed_paths
+            .iter()
+            .filter(|path| path.starts_with(prefix))
+            .cloned()
+            .collect())
+    }
+
+    async fn read_bytes(
+        &self,
+        _table_uri: &str,
+        relative_path: &str,
+    ) -> Result<Option<Bytes>, QueryError> {
+        Ok(self.bytes_by_path.get(relative_path).cloned())
+    }
 }

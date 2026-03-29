@@ -196,11 +196,7 @@ where
                 .ok_or_else(|| {
                     invalid_request(format!("missing checkpoint part '{}'", part_path))
                 })?;
-            actions.extend(
-                self.parquet
-                    .parse_checkpoint_actions(part_path, bytes)?
-                    .into_iter(),
-            );
+            actions.extend(self.parse_checkpoint_actions(part_path, bytes)?);
         }
 
         let sidecar_paths = actions
@@ -224,13 +220,23 @@ where
                         resolved_sidecar_path, checkpoint.display_path
                     ))
                 })?;
-            let actions = self
-                .parquet
-                .parse_checkpoint_actions(&resolved_sidecar_path, bytes)?;
+            let actions = self.parse_checkpoint_actions(&resolved_sidecar_path, bytes)?;
             apply_actions(active_files, actions)?;
         }
 
         Ok(())
+    }
+
+    fn parse_checkpoint_actions(
+        &self,
+        relative_path: &str,
+        bytes: Bytes,
+    ) -> Result<Vec<SnapshotLogAction>, QueryError> {
+        if relative_path.ends_with(".json") {
+            return self.json.parse_log_actions(bytes.as_ref());
+        }
+
+        self.parquet.parse_checkpoint_actions(relative_path, bytes)
     }
 }
 
@@ -568,7 +574,13 @@ fn parse_checkpoint_kind(filename: &str) -> Option<(i64, LogKind)> {
             return Some((version, LogKind::MultiPartCheckpoint { part, total_parts }));
         }
 
-        if parts.len() == 1 {
+        if parts.len() == 1 && is_uuid_like(parts[0]) {
+            return Some((version, LogKind::UuidCheckpoint));
+        }
+    }
+
+    if let Some(uuid) = remainder.strip_suffix(".json") {
+        if is_uuid_like(uuid) {
             return Some((version, LogKind::UuidCheckpoint));
         }
     }
@@ -588,6 +600,22 @@ fn parse_ten_digit_number(value: &str) -> Option<u32> {
         return None;
     }
     value.parse().ok()
+}
+
+fn is_uuid_like(value: &str) -> bool {
+    let mut groups = value.split('-');
+    let expected_lengths = [8, 4, 4, 4, 12];
+
+    for expected_length in expected_lengths {
+        let Some(group) = groups.next() else {
+            return false;
+        };
+        if group.len() != expected_length || !group.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return false;
+        }
+    }
+
+    groups.next().is_none()
 }
 
 fn group_checkpoints(entries: &[LogEntry]) -> BTreeMap<i64, SelectedCheckpoint> {
@@ -842,11 +870,24 @@ fn group_string_map(
 }
 
 fn resolve_sidecar_path(path: &str) -> String {
-    if path.starts_with("_delta_log/") {
+    if path.starts_with("_delta_log/") || is_absolute_uri(path) {
         path.to_string()
     } else {
         format!("{DELTA_LOG_DIR}/_sidecars/{path}")
     }
+}
+
+fn is_absolute_uri(path: &str) -> bool {
+    let Some((scheme, _)) = path.split_once(':') else {
+        return false;
+    };
+
+    !scheme.is_empty()
+        && scheme.chars().enumerate().all(|(index, ch)| match ch {
+            'a'..='z' | 'A'..='Z' => true,
+            '0'..='9' | '+' | '-' | '.' => index > 0,
+            _ => false,
+        })
 }
 
 fn invalid_request(message: String) -> QueryError {

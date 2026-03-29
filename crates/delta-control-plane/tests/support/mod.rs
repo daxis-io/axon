@@ -552,7 +552,9 @@ fn handle_connection(
     objects_by_path: &BTreeMap<String, Vec<u8>>,
     options: &LoopbackObjectServerOptions,
 ) {
-    let request = read_request(stream);
+    let Some(request) = read_request(stream) else {
+        return;
+    };
     let response = objects_by_path
         .get(&request.path)
         .map(|object| full_or_ranged_response(request.range_header.as_deref(), object, options))
@@ -571,7 +573,7 @@ struct TestResponse {
     body: Vec<u8>,
 }
 
-fn read_request(stream: &mut TcpStream) -> CapturedRequest {
+fn read_request(stream: &mut TcpStream) -> Option<CapturedRequest> {
     let mut buffer = [0_u8; 8192];
     let mut request = Vec::new();
 
@@ -588,6 +590,10 @@ fn read_request(stream: &mut TcpStream) -> CapturedRequest {
         }
     }
 
+    if request.is_empty() {
+        return None;
+    }
+
     let request = String::from_utf8(request).expect("request should be valid utf8");
     let mut lines = request.split("\r\n");
     let request_line = lines.next().expect("request line should be present");
@@ -602,7 +608,7 @@ fn read_request(stream: &mut TcpStream) -> CapturedRequest {
             .then(|| value.trim().to_string())
     });
 
-    CapturedRequest { path, range_header }
+    Some(CapturedRequest { path, range_header })
 }
 
 fn full_or_ranged_response(
