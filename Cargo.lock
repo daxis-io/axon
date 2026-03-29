@@ -4161,6 +4161,20 @@ checksum = "cfe29135b180b72b04c74aa97b2b4a2ef275161eff9a6c7955ea9eaedc7e1d4e"
 [[package]]
 name = "wasm-delta-snapshot"
 version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "bytes",
+ "delta-control-plane",
+ "deltalake",
+ "parquet",
+ "query-contract",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "wasm-encoder"

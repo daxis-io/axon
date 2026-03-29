@@ -611,27 +611,43 @@ fn full_or_ranged_response(
     options: &LoopbackObjectServerOptions,
 ) -> TestResponse {
     if let Some(range_header) = range_header {
-        let (start, end) = resolve_range(range_header, object.len());
-        let body = object[start..=end].to_vec();
-        let mut headers = vec![
-            ("Content-Length".to_string(), body.len().to_string()),
-            (
-                "Content-Range".to_string(),
-                format!("bytes {start}-{end}/{}", object.len()),
-            ),
-        ];
-        headers.push((
-            "ETag".to_string(),
-            options
-                .range_etag
-                .clone()
-                .unwrap_or_else(|| default_test_etag(object)),
-        ));
-        return TestResponse {
-            status_line: "206 Partial Content",
-            headers,
-            body,
-        };
+        match resolve_range(range_header, object.len()) {
+            Some((start, end)) => {
+                let body = object[start..=end].to_vec();
+                let mut headers = vec![
+                    ("Content-Length".to_string(), body.len().to_string()),
+                    (
+                        "Content-Range".to_string(),
+                        format!("bytes {start}-{end}/{}", object.len()),
+                    ),
+                ];
+                headers.push((
+                    "ETag".to_string(),
+                    options
+                        .range_etag
+                        .clone()
+                        .unwrap_or_else(|| default_test_etag(object)),
+                ));
+                return TestResponse {
+                    status_line: "206 Partial Content",
+                    headers,
+                    body,
+                };
+            }
+            None => {
+                return TestResponse {
+                    status_line: "416 Range Not Satisfiable",
+                    headers: vec![
+                        ("Content-Length".to_string(), "0".to_string()),
+                        (
+                            "Content-Range".to_string(),
+                            format!("bytes */{}", object.len()),
+                        ),
+                    ],
+                    body: Vec::new(),
+                };
+            }
+        }
     }
 
     if let Some(delay) = options.full_read_delay {
@@ -671,30 +687,36 @@ fn default_test_etag(object: &[u8]) -> String {
     format!("\"fixture-{hash:016x}\"")
 }
 
-fn resolve_range(range_header: &str, object_len: usize) -> (usize, usize) {
+fn resolve_range(range_header: &str, object_len: usize) -> Option<(usize, usize)> {
     let range_spec = range_header
         .strip_prefix("bytes=")
         .expect("range header should use bytes= syntax");
 
     if let Some(suffix) = range_spec.strip_prefix('-') {
         let suffix = suffix.parse::<usize>().expect("suffix length should parse");
-        let start = object_len
-            .checked_sub(suffix)
-            .expect("suffix should be shorter than the object");
-        return (start, object_len - 1);
+        if object_len == 0 {
+            return None;
+        }
+        let start = object_len.saturating_sub(suffix.min(object_len));
+        return Some((start, object_len - 1));
     }
 
     let (start, end) = range_spec
         .split_once('-')
         .expect("range header should contain a single dash");
     let start = start.parse::<usize>().expect("range start should parse");
+    if start >= object_len {
+        return None;
+    }
     let end = if end.is_empty() {
         object_len - 1
     } else {
-        end.parse::<usize>().expect("range end should parse")
+        end.parse::<usize>()
+            .expect("range end should parse")
+            .min(object_len - 1)
     };
 
-    (start, end)
+    (start <= end).then_some((start, end))
 }
 
 fn write_response(stream: &mut TcpStream, response: TestResponse) {
