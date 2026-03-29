@@ -22,7 +22,8 @@ use parquet::record::Field as ParquetField;
 use query_contract::{
     validate_browser_object_url, BrowserHttpSnapshotDescriptor, BrowserObjectUrlPolicy,
     CapabilityKey, CapabilityState, ExecutionTarget, FallbackReason, PartitionColumnType,
-    QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest,
+    QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest, ResolvedFileDescriptor,
+    ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 use reqwest::Url;
 use sqlparser::ast::{
@@ -34,6 +35,10 @@ use sqlparser::ast::{
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
+use wasm_delta_snapshot::{
+    JsonHandler as DeltaJsonHandler, ParquetHandler as DeltaParquetHandler,
+    SnapshotResolver as DeltaSnapshotResolver, StorageHandler as DeltaStorageHandler,
+};
 use wasm_http_object_store::{HttpByteRange, HttpRangeReadResult, HttpRangeReader};
 
 mod execution;
@@ -1159,6 +1164,19 @@ impl BrowserRuntimeSession {
         lower_browser_execution_plan(analyzed.query.as_ref(), snapshot, &planned)
     }
 
+    pub async fn resolve_delta_snapshot<S, J, P>(
+        &self,
+        resolver: &DeltaSnapshotResolver<S, J, P>,
+        request: SnapshotResolutionRequest,
+    ) -> Result<ResolvedSnapshotDescriptor, QueryError>
+    where
+        S: DeltaStorageHandler,
+        J: DeltaJsonHandler,
+        P: DeltaParquetHandler,
+    {
+        resolver.resolve_snapshot(request).await
+    }
+
     pub async fn execute_plan(
         &self,
         snapshot: &MaterializedBrowserSnapshot,
@@ -1288,20 +1306,65 @@ impl BrowserRuntimeSession {
         descriptor: &BrowserHttpSnapshotDescriptor,
     ) -> Result<MaterializedBrowserSnapshot, QueryError> {
         validate_unique_descriptor_paths(&descriptor.active_files)?;
+        let object_sources_by_path = descriptor
+            .active_files
+            .iter()
+            .map(|file| {
+                Ok((
+                    file.path.clone(),
+                    BrowserObjectSource {
+                        url: validate_descriptor_source_url(&file.url)?,
+                    },
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, QueryError>>()?;
+        let resolved = ResolvedSnapshotDescriptor {
+            table_uri: descriptor.table_uri.clone(),
+            snapshot_version: descriptor.snapshot_version,
+            partition_column_types: descriptor.partition_column_types.clone(),
+            active_files: descriptor
+                .active_files
+                .iter()
+                .map(|file| ResolvedFileDescriptor {
+                    path: file.path.clone(),
+                    size_bytes: file.size_bytes,
+                    partition_values: file.partition_values.clone(),
+                })
+                .collect(),
+        };
+
+        self.materialize_resolved_snapshot(&resolved, |file| {
+            object_sources_by_path
+                .get(&file.path)
+                .cloned()
+                .ok_or_else(|| {
+                    execution_runtime_error(format!(
+                        "resolved snapshot file '{}' did not have a browser object source",
+                        file.path
+                    ))
+                })
+        })
+    }
+
+    pub fn materialize_resolved_snapshot<F>(
+        &self,
+        descriptor: &ResolvedSnapshotDescriptor,
+        mut object_source_for_file: F,
+    ) -> Result<MaterializedBrowserSnapshot, QueryError>
+    where
+        F: FnMut(&ResolvedFileDescriptor) -> Result<BrowserObjectSource, QueryError>,
+    {
+        validate_unique_resolved_paths(&descriptor.active_files)?;
 
         let active_files = descriptor
             .active_files
             .iter()
             .map(|file| {
-                let object_source = BrowserObjectSource {
-                    url: validate_descriptor_source_url(&file.url)?,
-                };
-
                 Ok(MaterializedBrowserFile::new(
                     file.path.clone(),
                     file.size_bytes,
                     file.partition_values.clone(),
-                    object_source,
+                    object_source_for_file(file)?,
                 ))
             })
             .collect::<Result<Vec<_>, QueryError>>()?;
@@ -1445,14 +1508,16 @@ impl BrowserRuntimeSession {
                 .ok_or_else(|| {
                     execution_runtime_error("browser execution byte totals overflowed u64")
                 })?;
-            rows.extend(scan_target_input_rows(
-                &self.reader,
-                &target,
-                scan.required_columns(),
-                snapshot.partition_column_types(),
-                Some(Duration::from_millis(self.config.request_timeout_ms)),
-            )
-            .await?);
+            rows.extend(
+                scan_target_input_rows(
+                    &self.reader,
+                    &target,
+                    scan.required_columns(),
+                    snapshot.partition_column_types(),
+                    Some(Duration::from_millis(self.config.request_timeout_ms)),
+                )
+                .await?,
+            );
         }
 
         Ok((rows, bytes_fetched))
@@ -1464,8 +1529,9 @@ impl BrowserRuntimeSession {
     ) -> Result<BootstrappedBrowserFile, QueryError> {
         let target = engine_scan_target(file);
         let footer = self.read_engine_parquet_footer_for_file(file).await?;
-        let metadata =
-            browser_metadata_from_engine(wasm_parquet_engine::parse_parquet_metadata(&target, &footer)?);
+        let metadata = browser_metadata_from_engine(wasm_parquet_engine::parse_parquet_metadata(
+            &target, &footer,
+        )?);
 
         BootstrappedBrowserFile::new_with_object_etag(
             file.path(),
@@ -3101,6 +3167,13 @@ fn validate_unique_descriptor_paths(
     validate_unique_paths(
         active_files.iter().map(|file| file.path.as_str()),
         "browser HTTP snapshot descriptor contained duplicate paths",
+    )
+}
+
+fn validate_unique_resolved_paths(active_files: &[ResolvedFileDescriptor]) -> Result<(), QueryError> {
+    validate_unique_paths(
+        active_files.iter().map(|file| file.path.as_str()),
+        "resolved snapshot descriptor contained duplicate paths",
     )
 }
 

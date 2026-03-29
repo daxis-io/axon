@@ -1,5 +1,8 @@
 #![cfg(not(target_arch = "wasm32"))]
 
+#[path = "../../delta-control-plane/tests/support/mod.rs"]
+mod support;
+
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -11,8 +14,13 @@ use std::time::Duration;
 use query_contract::{
     BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey, CapabilityState,
     ExecutionTarget, FallbackReason, PartitionColumnType, QueryErrorCode, QueryRequest,
+    SnapshotResolutionRequest,
 };
 use serde::Deserialize;
+use support::{LoopbackObjectServer, TestTableFixture};
+use wasm_delta_snapshot::{
+    DefaultJsonHandler, DefaultParquetHandler, LocalFileStorageHandler, SnapshotResolver,
+};
 use wasm_http_object_store::{HttpByteRange, HttpRangeReader};
 use wasm_query_runtime::{
     runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserAggregateFunction,
@@ -1310,6 +1318,103 @@ fn materialize_snapshot_allows_empty_active_file_lists() {
     assert_eq!(materialized.table_uri(), descriptor.table_uri);
     assert_eq!(materialized.snapshot_version(), descriptor.snapshot_version);
     assert!(materialized.active_files().is_empty());
+}
+
+#[test]
+fn runtime_prunes_files_from_delta_snapshot_before_opening_parquet() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let fixture = TestTableFixture::create_partitioned();
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+    let mut resolved = runtime()
+        .block_on(session.resolve_delta_snapshot(
+            &resolver,
+            SnapshotResolutionRequest {
+                table_uri: fixture.raw_table_path(),
+                snapshot_version: None,
+            },
+        ))
+        .expect("delta snapshot should resolve");
+    resolved.partition_column_types.insert(
+        "category".to_string(),
+        PartitionColumnType::String,
+    );
+    let server = LoopbackObjectServer::from_fixture_paths(
+        &fixture,
+        resolved.active_files.iter().map(|file| file.path.clone()),
+    );
+    let materialized = session
+        .materialize_resolved_snapshot(&resolved, |file| {
+            BrowserObjectSource::from_url(server.url_for_path(&file.path))
+        })
+        .expect("resolved snapshot should materialize into browser object sources");
+    let bootstrapped = runtime()
+        .block_on(session.bootstrap_snapshot_metadata(&materialized))
+        .expect("snapshot metadata should bootstrap");
+    let request = QueryRequest::new(
+        bootstrapped.table_uri(),
+        "SELECT id FROM axon_table WHERE category = 'A' ORDER BY id",
+        ExecutionTarget::BrowserWasm,
+    );
+
+    let planned = session
+        .plan_query(&bootstrapped, &request)
+        .expect("partition-pruned browser plans should build");
+    let execution_plan = session
+        .build_execution_plan(&bootstrapped, &request)
+        .expect("execution plan should build from the pruned snapshot");
+    let result = runtime()
+        .block_on(session.execute_plan(&materialized, &execution_plan))
+        .expect("pruned browser execution should succeed");
+
+    assert_eq!(planned.candidate_file_count, 1);
+    assert_eq!(planned.pruning.files_pruned, 2);
+    assert_eq!(result.metrics().files_touched, 1);
+    assert_eq!(result.metrics().files_skipped, 2);
+    assert_eq!(result.rows().len(), 2);
+}
+
+#[test]
+fn runtime_falls_back_when_snapshot_features_exceed_browser_capability() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = BootstrappedBrowserSnapshot::new_with_partition_column_types(
+        "gs://axon-fixtures/unsupported-partition",
+        11,
+        vec![bootstrapped_file(
+            "region=us-east-1/part-000.parquet",
+            100,
+            BTreeMap::from([("region".to_string(), Some("us-east-1".to_string()))]),
+            BrowserParquetFileMetadata {
+                object_size_bytes: 100,
+                footer_length_bytes: 32,
+                row_group_count: 1,
+                row_count: 2,
+                fields: vec![required_field("id", BrowserParquetPhysicalType::Int32)],
+                field_stats: BTreeMap::new(),
+            },
+        )],
+        BTreeMap::from([("region".to_string(), PartitionColumnType::Unsupported)]),
+    )
+    .expect("unsupported partition snapshots should still construct");
+
+    let error = session
+        .build_execution_plan(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE region = 'us-east-1'",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect_err("unsupported snapshot features should require browser fallback");
+
+    assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+    assert_eq!(error.fallback_reason, Some(FallbackReason::NativeRequired));
 }
 
 #[test]
