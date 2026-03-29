@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -445,7 +445,7 @@ impl StorageHandler for LocalFileStorageHandler {
         relative_path: &str,
     ) -> Result<Option<Bytes>, QueryError> {
         let root = root_path_from_table_uri(table_uri)?;
-        let path = root.join(relative_path);
+        let path = table_relative_path(&root, relative_path)?;
         match fs::read(path) {
             Ok(bytes) => Ok(Some(Bytes::from(bytes))),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -464,6 +464,56 @@ fn root_path_from_table_uri(table_uri: &str) -> Result<PathBuf, QueryError> {
         return Ok(PathBuf::from(path));
     }
     Ok(PathBuf::from(trimmed))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn table_relative_path(table_root: &Path, relative_path: &str) -> Result<PathBuf, QueryError> {
+    if relative_path.is_empty()
+        || is_absolute_uri(relative_path)
+        || Path::new(relative_path).is_absolute()
+    {
+        return Err(invalid_request(format!(
+            "snapshot path '{}' must stay under the table root",
+            relative_path
+        )));
+    }
+
+    let parsed = Path::new(relative_path);
+    if parsed.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(invalid_request(format!(
+            "snapshot path '{}' must stay under the table root",
+            relative_path
+        )));
+    }
+
+    let joined = table_root.join(parsed);
+    if joined.exists() {
+        let canonical_root = fs::canonicalize(table_root).map_err(|error| {
+            execution_error(format!(
+                "failed to canonicalize table root '{}': {error}",
+                table_root.display()
+            ))
+        })?;
+        let canonical_joined = fs::canonicalize(&joined).map_err(|error| {
+            execution_error(format!(
+                "failed to canonicalize snapshot file '{}': {error}",
+                joined.display()
+            ))
+        })?;
+        if !canonical_joined.starts_with(&canonical_root) {
+            return Err(invalid_request(format!(
+                "snapshot path '{}' must stay under the table root",
+                relative_path
+            )));
+        }
+    }
+
+    Ok(joined)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
