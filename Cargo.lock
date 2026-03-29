@@ -4159,6 +4159,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfe29135b180b72b04c74aa97b2b4a2ef275161eff9a6c7955ea9eaedc7e1d4e"
 
 [[package]]
+name = "wasm-delta-snapshot"
+version = "0.1.0"
+
+[[package]]
 name = "wasm-encoder"
 version = "0.244.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4189,6 +4193,10 @@ dependencies = [
  "wasm-encoder",
  "wasmparser",
 ]
+
+[[package]]
+name = "wasm-parquet-engine"
+version = "0.1.0"
 
 [[package]]
 name = "wasm-query-runtime"
