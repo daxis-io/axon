@@ -83,6 +83,35 @@ mod tests {
     }
 
     #[test]
+    fn reroute_browser_failure_preserves_capability_gate_fallback_reason() {
+        let request = query_contract::QueryRequest::new(
+            "gs://axon-fixtures/table",
+            "SELECT id FROM axon_table",
+            ExecutionTarget::BrowserWasm,
+        );
+        let error = QueryError::new(
+            QueryErrorCode::FallbackRequired,
+            "browser runtime hit a capability gate",
+            ExecutionTarget::BrowserWasm,
+        )
+        .with_fallback_reason(FallbackReason::CapabilityGate {
+            capability: query_contract::CapabilityKey::SignedUrlAccess,
+            required_state: query_contract::CapabilityState::Supported,
+        });
+
+        assert_eq!(
+            reroute_browser_failure(&request, error).expect("fallback errors should reroute"),
+            RouteDecision {
+                target: ExecutionTarget::Native,
+                fallback_reason: Some(FallbackReason::CapabilityGate {
+                    capability: query_contract::CapabilityKey::SignedUrlAccess,
+                    required_state: query_contract::CapabilityState::Supported,
+                }),
+            }
+        );
+    }
+
+    #[test]
     fn reroute_browser_failure_keeps_non_fallback_errors_terminal() {
         let request = query_contract::QueryRequest::new(
             "gs://axon-fixtures/table",

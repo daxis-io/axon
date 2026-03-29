@@ -923,6 +923,27 @@ impl BrowserExecutionPlan {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedBrowserExecution {
+    bootstrapped_snapshot: BootstrappedBrowserSnapshot,
+    planned_query: BrowserPlannedQuery,
+    execution_plan: BrowserExecutionPlan,
+}
+
+impl PreparedBrowserExecution {
+    pub fn bootstrapped_snapshot(&self) -> &BootstrappedBrowserSnapshot {
+        &self.bootstrapped_snapshot
+    }
+
+    pub fn planned_query(&self) -> &BrowserPlannedQuery {
+        &self.planned_query
+    }
+
+    pub fn execution_plan(&self) -> &BrowserExecutionPlan {
+        &self.execution_plan
+    }
+}
+
 type BrowserInputRow = BTreeMap<String, BrowserScalarValue>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1203,6 +1224,41 @@ impl BrowserRuntimeSession {
         }
     }
 
+    pub async fn prepare_execution(
+        &self,
+        snapshot: &MaterializedBrowserSnapshot,
+        request: &QueryRequest,
+    ) -> Result<PreparedBrowserExecution, QueryError> {
+        validate_materialized_snapshot_request_match(snapshot, request)?;
+        let analyzed = analyze_browser_query(&request.sql)?;
+        let bootstrap_selection = select_materialized_files_for_bootstrap(snapshot, &analyzed)?;
+        let bootstrapped_snapshot = self
+            .bootstrap_selected_snapshot_metadata(snapshot, &bootstrap_selection.files)
+            .await?;
+        let mut planned = self.plan_query_from_analyzed(&bootstrapped_snapshot, &analyzed)?;
+        if bootstrap_selection.files_pruned_before_bootstrap > 0 {
+            planned.pruning.used_partition_pruning = true;
+            planned.pruning.files_pruned = planned
+                .pruning
+                .files_pruned
+                .checked_add(bootstrap_selection.files_pruned_before_bootstrap)
+                .ok_or_else(|| {
+                    invalid_query_request(
+                        "browser pruning totals overflowed u64 during execution preparation",
+                    )
+                })?;
+            planned.pruning.files_retained = planned.candidate_file_count;
+        }
+        let execution_plan =
+            lower_browser_execution_plan(analyzed.query.as_ref(), &bootstrapped_snapshot, &planned)?;
+
+        Ok(PreparedBrowserExecution {
+            bootstrapped_snapshot,
+            planned_query: planned,
+            execution_plan,
+        })
+    }
+
     fn plan_query_from_analyzed(
         &self,
         snapshot: &BootstrappedBrowserSnapshot,
@@ -1373,7 +1429,7 @@ impl BrowserRuntimeSession {
             descriptor.table_uri.clone(),
             descriptor.snapshot_version,
             active_files,
-            descriptor.partition_column_types.clone(),
+            resolved_partition_column_types(descriptor),
         )
     }
 
@@ -1416,7 +1472,17 @@ impl BrowserRuntimeSession {
         &self,
         snapshot: &MaterializedBrowserSnapshot,
     ) -> Result<BootstrappedBrowserSnapshot, QueryError> {
-        let fetches = stream::iter(snapshot.active_files().iter())
+        let active_files = snapshot.active_files().iter().collect::<Vec<_>>();
+        self.bootstrap_selected_snapshot_metadata(snapshot, &active_files)
+            .await
+    }
+
+    async fn bootstrap_selected_snapshot_metadata(
+        &self,
+        snapshot: &MaterializedBrowserSnapshot,
+        active_files: &[&MaterializedBrowserFile],
+    ) -> Result<BootstrappedBrowserSnapshot, QueryError> {
+        let fetches = stream::iter(active_files.iter().copied())
             .map(|file| self.bootstrap_file_metadata(file))
             .buffered(self.config.snapshot_preflight_max_concurrency)
             .try_collect::<Vec<_>>();
@@ -1432,7 +1498,7 @@ impl BrowserRuntimeSession {
                 return Err(snapshot_preflight_timeout_error(
                     snapshot.table_uri(),
                     snapshot.snapshot_version(),
-                    snapshot.active_files().len(),
+                    active_files.len(),
                     self.config.snapshot_preflight_timeout_ms,
                 ))
             }
@@ -1587,6 +1653,31 @@ fn validate_snapshot_request_match(
     Ok(())
 }
 
+fn validate_materialized_snapshot_request_match(
+    snapshot: &MaterializedBrowserSnapshot,
+    request: &QueryRequest,
+) -> Result<(), QueryError> {
+    if request.table_uri != snapshot.table_uri() {
+        return Err(invalid_query_request(format!(
+            "request table_uri '{}' did not match the materialized snapshot table_uri '{}'",
+            request.table_uri,
+            snapshot.table_uri(),
+        )));
+    }
+
+    if let Some(snapshot_version) = request.snapshot_version {
+        if snapshot_version != snapshot.snapshot_version() {
+            return Err(invalid_query_request(format!(
+                "request snapshot_version {} did not match the materialized snapshot version {}",
+                snapshot_version,
+                snapshot.snapshot_version(),
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_materialized_snapshot_plan_match(
     snapshot: &MaterializedBrowserSnapshot,
     plan: &BrowserExecutionPlan,
@@ -1633,6 +1724,11 @@ fn candidate_materialized_files<'a>(
         .collect()
 }
 
+struct MaterializedBootstrapSelection<'a> {
+    files: Vec<&'a MaterializedBrowserFile>,
+    files_pruned_before_bootstrap: u64,
+}
+
 fn execution_plan_error(message: impl Into<String>) -> QueryError {
     invalid_query_request(message)
 }
@@ -1657,6 +1753,56 @@ fn execution_metrics(
 
 fn wall_clock_duration_ms(operation_started_at: Instant) -> u64 {
     u64::try_from(operation_started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn select_materialized_files_for_bootstrap<'a>(
+    snapshot: &'a MaterializedBrowserSnapshot,
+    analyzed: &AnalyzedBrowserQuery,
+) -> Result<MaterializedBootstrapSelection<'a>, QueryError> {
+    let all_files = snapshot.active_files().iter().collect::<Vec<_>>();
+    let partition_columns = materialized_partition_columns(snapshot);
+    let normalized_partition_columns = partition_columns
+        .iter()
+        .map(|column| normalize_name(column))
+        .collect::<BTreeSet<_>>();
+    let partition_constraints = extract_browser_pruning_constraints(
+        analyzed.query.as_ref(),
+        &normalized_partition_columns,
+        &BTreeSet::new(),
+    )
+    .map(|constraints| constraints.partition)
+    .filter(|constraints| !constraints.by_column.is_empty());
+
+    let Some(partition_constraints) = partition_constraints else {
+        return Ok(MaterializedBootstrapSelection {
+            files: all_files,
+            files_pruned_before_bootstrap: 0,
+        });
+    };
+
+    let candidate_files = all_files
+        .iter()
+        .copied()
+        .filter(|file| materialized_partition_constraints_match(file, &partition_constraints))
+        .collect::<Vec<_>>();
+    if candidate_files.is_empty() || candidate_files.len() == all_files.len() {
+        return Ok(MaterializedBootstrapSelection {
+            files: all_files,
+            files_pruned_before_bootstrap: 0,
+        });
+    }
+
+    let files_pruned_before_bootstrap =
+        u64::try_from(all_files.len() - candidate_files.len()).map_err(|_| {
+            invalid_query_request(
+                "browser pre-bootstrap pruning file counts overflowed u64 during execution preparation",
+            )
+        })?;
+
+    Ok(MaterializedBootstrapSelection {
+        files: candidate_files,
+        files_pruned_before_bootstrap,
+    })
 }
 
 fn browser_scan_plan(
@@ -2985,6 +3131,25 @@ fn single_partition_not_null_constraint(column: String) -> PartitionPruningConst
     }
 }
 
+fn materialized_partition_constraints_match(
+    file: &MaterializedBrowserFile,
+    constraints: &PartitionPruningConstraints,
+) -> bool {
+    constraints.by_column.iter().all(|(column, constraint)| {
+        let value = file
+            .partition_values()
+            .iter()
+            .find_map(|(key, value)| (normalize_name(key) == *column).then_some(value));
+
+        match constraint {
+            PartitionValueConstraint::AllowedValues(values) => {
+                value.is_some_and(|value| values.contains(value))
+            }
+            PartitionValueConstraint::NotNull => value.is_some_and(|value| value.is_some()),
+        }
+    })
+}
+
 fn partition_constraints_match(
     file: &BootstrappedBrowserFile,
     constraints: &PartitionPruningConstraints,
@@ -3175,6 +3340,32 @@ fn validate_unique_resolved_paths(active_files: &[ResolvedFileDescriptor]) -> Re
         active_files.iter().map(|file| file.path.as_str()),
         "resolved snapshot descriptor contained duplicate paths",
     )
+}
+
+fn materialized_partition_columns(snapshot: &MaterializedBrowserSnapshot) -> Vec<String> {
+    if !snapshot.partition_column_types().is_empty() {
+        return snapshot.partition_column_types().keys().cloned().collect();
+    }
+
+    snapshot
+        .active_files()
+        .first()
+        .map(|file| file.partition_values().keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn resolved_partition_column_types(
+    descriptor: &ResolvedSnapshotDescriptor,
+) -> BTreeMap<String, PartitionColumnType> {
+    let mut partition_column_types = descriptor.partition_column_types.clone();
+    for file in &descriptor.active_files {
+        for column in file.partition_values.keys() {
+            partition_column_types
+                .entry(column.clone())
+                .or_insert(PartitionColumnType::String);
+        }
+    }
+    partition_column_types
 }
 
 fn validate_unique_materialized_paths(

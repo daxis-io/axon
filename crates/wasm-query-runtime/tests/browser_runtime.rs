@@ -5,9 +5,11 @@ mod support;
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -17,7 +19,7 @@ use query_contract::{
     SnapshotResolutionRequest,
 };
 use serde::Deserialize;
-use support::{LoopbackObjectServer, TestTableFixture};
+use support::TestTableFixture;
 use wasm_delta_snapshot::{
     DefaultJsonHandler, DefaultParquetHandler, LocalFileStorageHandler, SnapshotResolver,
 };
@@ -1330,7 +1332,7 @@ fn runtime_prunes_files_from_delta_snapshot_before_opening_parquet() {
         DefaultJsonHandler::default(),
         DefaultParquetHandler::default(),
     );
-    let mut resolved = runtime()
+    let resolved = runtime()
         .block_on(session.resolve_delta_snapshot(
             &resolver,
             SnapshotResolutionRequest {
@@ -1339,11 +1341,7 @@ fn runtime_prunes_files_from_delta_snapshot_before_opening_parquet() {
             },
         ))
         .expect("delta snapshot should resolve");
-    resolved.partition_column_types.insert(
-        "category".to_string(),
-        PartitionColumnType::String,
-    );
-    let server = LoopbackObjectServer::from_fixture_paths(
+    let server = RequestCapturingObjectServer::from_fixture_paths(
         &fixture,
         resolved.active_files.iter().map(|file| file.path.clone()),
     );
@@ -1352,27 +1350,33 @@ fn runtime_prunes_files_from_delta_snapshot_before_opening_parquet() {
             BrowserObjectSource::from_url(server.url_for_path(&file.path))
         })
         .expect("resolved snapshot should materialize into browser object sources");
-    let bootstrapped = runtime()
-        .block_on(session.bootstrap_snapshot_metadata(&materialized))
-        .expect("snapshot metadata should bootstrap");
+    assert_eq!(
+        materialized.partition_column_types().get("category"),
+        Some(&PartitionColumnType::String)
+    );
     let request = QueryRequest::new(
-        bootstrapped.table_uri(),
+        materialized.table_uri(),
         "SELECT id FROM axon_table WHERE category = 'A' ORDER BY id",
         ExecutionTarget::BrowserWasm,
     );
-
-    let planned = session
-        .plan_query(&bootstrapped, &request)
-        .expect("partition-pruned browser plans should build");
-    let execution_plan = session
-        .build_execution_plan(&bootstrapped, &request)
-        .expect("execution plan should build from the pruned snapshot");
+    let prepared = runtime()
+        .block_on(session.prepare_execution(&materialized, &request))
+        .expect("runtime should prune from Delta metadata before bootstrap");
+    let bootstrapped_paths = server.recorded_paths();
     let result = runtime()
-        .block_on(session.execute_plan(&materialized, &execution_plan))
+        .block_on(session.execute_plan(&materialized, prepared.execution_plan()))
         .expect("pruned browser execution should succeed");
 
-    assert_eq!(planned.candidate_file_count, 1);
-    assert_eq!(planned.pruning.files_pruned, 2);
+    assert_eq!(prepared.planned_query().candidate_file_count, 1);
+    assert_eq!(prepared.planned_query().pruning.files_pruned, 2);
+    assert_eq!(prepared.bootstrapped_snapshot().active_files().len(), 1);
+    assert!(!bootstrapped_paths.is_empty());
+    assert!(bootstrapped_paths.iter().all(|path| {
+        path == &format!(
+            "/{}",
+            prepared.bootstrapped_snapshot().active_files()[0].path()
+        )
+    }));
     assert_eq!(result.metrics().files_touched, 1);
     assert_eq!(result.metrics().files_skipped, 2);
     assert_eq!(result.rows().len(), 2);
@@ -2517,6 +2521,7 @@ fn runtime() -> tokio::runtime::Runtime {
 
 #[derive(Debug)]
 struct CapturedRequest {
+    path: String,
     headers: BTreeMap<String, String>,
 }
 
@@ -2642,7 +2647,12 @@ fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
 
     let text = String::from_utf8(request).expect("request should be valid ASCII");
     let mut lines = text.split("\r\n");
-    let _request_line = lines.next().expect("request line should be present");
+    let request_line = lines.next().expect("request line should be present");
+    let path = request_line
+        .split_whitespace()
+        .nth(1)
+        .expect("request line should include a path")
+        .to_string();
     let mut headers = BTreeMap::new();
 
     for line in lines.take_while(|line| !line.is_empty()) {
@@ -2652,7 +2662,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
         headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
     }
 
-    CapturedRequest { headers }
+    CapturedRequest { path, headers }
 }
 
 fn write_response(stream: &mut std::net::TcpStream, response: TestResponse) {
@@ -3211,4 +3221,134 @@ fn stats_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
         BTreeMap::from([("category".to_string(), PartitionColumnType::String)]),
     )
     .expect("stats bootstrapped snapshots should construct")
+}
+
+struct RequestCapturingObjectServer {
+    address: std::net::SocketAddr,
+    stop: Arc<AtomicBool>,
+    requests: Arc<Mutex<Vec<String>>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl RequestCapturingObjectServer {
+    fn from_fixture_paths(
+        fixture: &TestTableFixture,
+        relative_paths: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let objects_by_path = relative_paths
+            .into_iter()
+            .map(|relative_path| {
+                let absolute_path = fixture.table_root().join(&relative_path);
+                let bytes = std::fs::read(&absolute_path).unwrap_or_else(|error| {
+                    panic!(
+                        "fixture object '{}' should be readable: {error}",
+                        absolute_path.display()
+                    )
+                });
+                (format!("/{}", relative_path), bytes)
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        Self::from_objects(objects_by_path)
+    }
+
+    fn from_objects(objects_by_path: BTreeMap<String, Vec<u8>>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("listener should allow nonblocking accept");
+        let address = listener
+            .local_addr()
+            .expect("listener should expose a local address");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = Arc::clone(&stop);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let requests_for_thread = Arc::clone(&requests);
+
+        let thread = thread::spawn(move || {
+            while !stop_for_thread.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        if stop_for_thread.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        stream
+                            .set_nonblocking(false)
+                            .expect("accepted streams should allow blocking reads");
+                        handle_request_capturing_connection(
+                            &mut stream,
+                            &objects_by_path,
+                            &requests_for_thread,
+                        );
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => {
+                        panic!("loopback object server accept should succeed: {error}")
+                    }
+                }
+            }
+        });
+
+        Self {
+            address,
+            stop,
+            requests,
+            thread: Some(thread),
+        }
+    }
+
+    fn url_for_path(&self, relative_path: &str) -> String {
+        format!("http://{}/{}", self.address, relative_path)
+    }
+
+    fn recorded_paths(&self) -> Vec<String> {
+        self.requests
+            .lock()
+            .expect("recorded requests should be readable")
+            .clone()
+    }
+}
+
+impl Drop for RequestCapturingObjectServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(self.address);
+        if let Some(thread) = self.thread.take() {
+            thread
+                .join()
+                .expect("request-capturing object server should shut down cleanly");
+        }
+    }
+}
+
+fn handle_request_capturing_connection(
+    stream: &mut std::net::TcpStream,
+    objects_by_path: &BTreeMap<String, Vec<u8>>,
+    requests: &Arc<Mutex<Vec<String>>>,
+) {
+    let request = read_request(stream);
+    requests
+        .lock()
+        .expect("request log should be writable")
+        .push(request.path.clone());
+    let response = objects_by_path
+        .get(&request.path)
+        .map(|object| full_or_ranged_response_with_etag(&request, object))
+        .unwrap_or_else(|| TestResponse {
+            status_line: "404 Not Found",
+            headers: vec![("Content-Length".to_string(), "0".to_string())],
+            body: Vec::new(),
+        });
+    write_response(stream, response);
+}
+
+fn full_or_ranged_response_with_etag(request: &CapturedRequest, body: &[u8]) -> TestResponse {
+    let mut response = full_or_ranged_response(request, body);
+    response.headers.push((
+        "ETag".to_string(),
+        format!("\"fixture-{:016x}\"", body.len()),
+    ));
+    response
 }
