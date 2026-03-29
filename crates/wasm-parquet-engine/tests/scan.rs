@@ -11,6 +11,7 @@ use parquet::data_type::Int64Type;
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
+use query_contract::PartitionColumnType;
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{
     ObjectSource, ParquetScalarValue, ScanTarget, read_parquet_metadata_for_target,
@@ -37,20 +38,22 @@ async fn scan_target_reads_footer_and_row_groups_from_object_source() {
         full_or_ranged_response(request, &object_for_server)
     });
     let reader = HttpRangeReader::new();
-    let object_source = ObjectSource::new(url);
     let scan_target = ScanTarget {
+        object_source: ObjectSource::new(url),
+        object_etag: None,
         path: "part-000.parquet".to_string(),
         size_bytes: object_size,
+        partition_values: BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
     };
 
-    let metadata = read_parquet_metadata_for_target(&reader, &object_source, &scan_target, None)
+    let metadata = read_parquet_metadata_for_target(&reader, &scan_target, None)
         .await
         .expect("metadata reads should succeed");
     let rows = scan_target_input_rows(
         &reader,
-        &object_source,
         &scan_target,
-        &["id".to_string()],
+        &["id".to_string(), "category".to_string()],
+        &BTreeMap::from([("category".to_string(), PartitionColumnType::String)]),
         None,
     )
     .await
@@ -67,12 +70,21 @@ async fn scan_target_reads_footer_and_row_groups_from_object_source() {
     assert_eq!(metadata.row_count, 3);
     assert_eq!(
         rows.iter()
-            .map(|row| row.get("id").cloned())
+            .map(|row| (row.get("id").cloned(), row.get("category").cloned()))
             .collect::<Vec<_>>(),
         vec![
-            Some(ParquetScalarValue::Int64(7)),
-            Some(ParquetScalarValue::Int64(11)),
-            Some(ParquetScalarValue::Int64(13)),
+            (
+                Some(ParquetScalarValue::Int64(7)),
+                Some(ParquetScalarValue::String("A".to_string())),
+            ),
+            (
+                Some(ParquetScalarValue::Int64(11)),
+                Some(ParquetScalarValue::String("A".to_string())),
+            ),
+            (
+                Some(ParquetScalarValue::Int64(13)),
+                Some(ParquetScalarValue::String("A".to_string())),
+            ),
         ]
     );
 }

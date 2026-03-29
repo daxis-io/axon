@@ -35,10 +35,12 @@ async fn known_file_size_avoids_extra_metadata_round_trip() {
     });
     let metadata = read_parquet_metadata_for_target(
         &HttpRangeReader::new(),
-        &ObjectSource::new(url),
         &ScanTarget {
+            object_source: ObjectSource::new(url),
+            object_etag: None,
             path: "part-000.parquet".to_string(),
             size_bytes: object_size,
+            partition_values: BTreeMap::new(),
         },
         None,
     )

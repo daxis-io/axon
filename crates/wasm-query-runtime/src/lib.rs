@@ -45,8 +45,9 @@ use lowering::lower_browser_execution_plan;
 #[cfg(test)]
 use parquet_support::parquet_row_to_input_row;
 use parquet_support::{
-    browser_footer_from_engine, browser_metadata_from_engine, decode_parquet_input_rows,
-    engine_object_source, engine_scan_target, format_browser_fields, format_partition_columns,
+    browser_footer_from_engine, browser_metadata_from_engine, engine_object_source,
+    engine_scan_target, engine_scan_target_with_object_etag, format_browser_fields,
+    format_partition_columns, scan_target_input_rows,
 };
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -1407,7 +1408,6 @@ impl BrowserRuntimeSession {
     ) -> Result<wasm_parquet_engine::ParquetFooter, QueryError> {
         wasm_parquet_engine::read_parquet_footer_for_target(
             &self.reader,
-            &engine_object_source(file.object_source()),
             &engine_scan_target(file),
             Some(Duration::from_millis(self.config.request_timeout_ms)),
         )
@@ -1438,21 +1438,21 @@ impl BrowserRuntimeSession {
         let mut bytes_fetched = 0_u64;
 
         for file in candidate_files {
-            let read = self
-                .read_range(file.object_source(), HttpByteRange::Full)
-                .await?;
-            validate_full_object_read(file, &read, scan.candidate_object_etag(file.path()))?;
+            let target =
+                engine_scan_target_with_object_etag(file, scan.candidate_object_etag(file.path()));
             bytes_fetched = bytes_fetched
                 .checked_add(file.size_bytes())
                 .ok_or_else(|| {
                     execution_runtime_error("browser execution byte totals overflowed u64")
                 })?;
-            rows.extend(decode_parquet_input_rows(
-                file,
-                read.bytes,
+            rows.extend(scan_target_input_rows(
+                &self.reader,
+                &target,
                 scan.required_columns(),
                 snapshot.partition_column_types(),
-            )?);
+                Some(Duration::from_millis(self.config.request_timeout_ms)),
+            )
+            .await?);
         }
 
         Ok((rows, bytes_fetched))
@@ -1567,57 +1567,6 @@ fn candidate_materialized_files<'a>(
         .collect()
 }
 
-fn validate_full_object_read(
-    file: &MaterializedBrowserFile,
-    read: &HttpRangeReadResult,
-    expected_object_etag: Option<&str>,
-) -> Result<(), QueryError> {
-    if let Some(object_size_bytes) = read.metadata.size_bytes {
-        if object_size_bytes != file.size_bytes() {
-            return Err(parquet_protocol_error(format!(
-                "browser execution for file '{}' observed object size {} bytes, but the descriptor declared {} bytes",
-                file.path(),
-                object_size_bytes,
-                file.size_bytes(),
-            )));
-        }
-    }
-
-    let read_len = u64::try_from(read.bytes.len())
-        .map_err(|_| parquet_protocol_error("full-object read length overflowed u64"))?;
-    if read_len != file.size_bytes() {
-        return Err(parquet_protocol_error(format!(
-            "browser execution for file '{}' read {} bytes, but the descriptor declared {} bytes",
-            file.path(),
-            read_len,
-            file.size_bytes(),
-        )));
-    }
-
-    if let Some(expected_object_etag) = expected_object_etag {
-        match read.metadata.etag.as_deref() {
-            Some(actual_object_etag) if actual_object_etag == expected_object_etag => {}
-            Some(actual_object_etag) => {
-                return Err(parquet_protocol_error(format!(
-                    "browser execution for file '{}' observed entity tag {} during bootstrap but {} during execution",
-                    file.path(),
-                    expected_object_etag,
-                    actual_object_etag,
-                )))
-            }
-            None => {
-                return Err(parquet_protocol_error(format!(
-                    "browser execution for file '{}' expected entity tag metadata {} from bootstrap, but the full-object read returned none",
-                    file.path(),
-                    expected_object_etag,
-                )))
-            }
-        }
-    }
-
-    Ok(())
-}
-
 fn execution_plan_error(message: impl Into<String>) -> QueryError {
     invalid_query_request(message)
 }
@@ -1704,6 +1653,7 @@ fn candidate_object_etags_from_snapshot(
     Ok(candidate_object_etags)
 }
 
+#[cfg(test)]
 fn merge_partition_values_into_row(
     mut row: BrowserInputRow,
     partition_values: &BTreeMap<String, Option<String>>,
@@ -1732,6 +1682,7 @@ fn merge_partition_values_into_row(
     Ok(row)
 }
 
+#[cfg(test)]
 fn partition_value_to_scalar(
     column: &str,
     value: &Option<String>,
@@ -1743,6 +1694,7 @@ fn partition_value_to_scalar(
     }
 }
 
+#[cfg(test)]
 fn typed_partition_scalar(
     column: &str,
     value: &str,
@@ -1824,6 +1776,7 @@ fn unsupported_partition_type_error(column: &str) -> QueryError {
     .with_fallback_reason(FallbackReason::NativeRequired)
 }
 
+#[cfg(test)]
 fn invalid_partition_value_error(
     column: &str,
     value: &str,
@@ -1840,6 +1793,7 @@ fn invalid_partition_value_error(
     .with_fallback_reason(FallbackReason::NativeRequired)
 }
 
+#[cfg(test)]
 fn parse_canonical_partition_bool(value: &str) -> Option<bool> {
     match value {
         "true" => Some(true),
@@ -1848,6 +1802,7 @@ fn parse_canonical_partition_bool(value: &str) -> Option<bool> {
     }
 }
 
+#[cfg(test)]
 fn parse_canonical_partition_i64(value: &str) -> Option<i64> {
     let parsed = value.parse::<i64>().ok()?;
     (parsed.to_string() == value).then_some(parsed)

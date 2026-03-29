@@ -1,15 +1,17 @@
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use bytes::Bytes;
 use query_contract::{PartitionColumnType, QueryError};
+use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine as parquet_engine;
 
 use crate::{
-    merge_partition_values_into_row, BrowserInputRow, BrowserObjectSource,
-    BrowserParquetConvertedType, BrowserParquetEdgeInterpolationAlgorithm, BrowserParquetField,
-    BrowserParquetFieldStats, BrowserParquetFileMetadata, BrowserParquetFooter,
-    BrowserParquetLogicalType, BrowserParquetPhysicalType, BrowserParquetRepetition,
-    BrowserParquetTimeUnit, BrowserScalarValue, MaterializedBrowserFile,
+    BrowserInputRow, BrowserObjectSource, BrowserParquetConvertedType,
+    BrowserParquetEdgeInterpolationAlgorithm, BrowserParquetField, BrowserParquetFieldStats,
+    BrowserParquetFileMetadata, BrowserParquetFooter, BrowserParquetLogicalType,
+    BrowserParquetPhysicalType, BrowserParquetRepetition, BrowserParquetTimeUnit,
+    BrowserScalarValue, MaterializedBrowserFile,
 };
 
 pub(super) fn engine_object_source(source: &BrowserObjectSource) -> parquet_engine::ObjectSource {
@@ -17,9 +19,19 @@ pub(super) fn engine_object_source(source: &BrowserObjectSource) -> parquet_engi
 }
 
 pub(super) fn engine_scan_target(file: &MaterializedBrowserFile) -> parquet_engine::ScanTarget {
+    engine_scan_target_with_object_etag(file, None)
+}
+
+pub(super) fn engine_scan_target_with_object_etag(
+    file: &MaterializedBrowserFile,
+    object_etag: Option<&str>,
+) -> parquet_engine::ScanTarget {
     parquet_engine::ScanTarget {
+        object_source: engine_object_source(file.object_source()),
+        object_etag: object_etag.map(str::to_string),
         path: file.path().to_string(),
         size_bytes: file.size_bytes(),
+        partition_values: file.partition_values().clone(),
     }
 }
 
@@ -55,24 +67,22 @@ pub(super) fn browser_metadata_from_engine(
     }
 }
 
-pub(super) fn decode_parquet_input_rows(
-    file: &MaterializedBrowserFile,
-    bytes: Bytes,
+pub(super) async fn scan_target_input_rows(
+    reader: &HttpRangeReader,
+    target: &parquet_engine::ScanTarget,
     required_columns: &[String],
     partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    request_timeout: Option<Duration>,
 ) -> Result<Vec<BrowserInputRow>, QueryError> {
-    let target = engine_scan_target(file);
-    parquet_engine::decode_parquet_input_rows(&target, bytes, required_columns)?
-        .into_iter()
-        .map(|row| {
-            merge_partition_values_into_row(
-                browser_row_from_engine(row),
-                file.partition_values(),
-                partition_column_types,
-                required_columns,
-            )
-        })
-        .collect()
+    let rows = parquet_engine::scan_target_input_rows(
+        reader,
+        target,
+        required_columns,
+        partition_column_types,
+        request_timeout,
+    )
+    .await?;
+    Ok(rows.into_iter().map(browser_row_from_engine).collect())
 }
 
 #[cfg(test)]
@@ -83,8 +93,11 @@ pub(super) fn parquet_row_to_input_row(
 ) -> Result<BrowserInputRow, QueryError> {
     let row = parquet_engine::parquet_row_to_input_row(
         &parquet_engine::ScanTarget {
+            object_source: parquet_engine::ObjectSource::new("https://example.com/object"),
+            object_etag: None,
             path: file_path.to_string(),
             size_bytes: 0,
+            partition_values: BTreeMap::new(),
         },
         row,
         required_columns,

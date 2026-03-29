@@ -13,7 +13,9 @@ use parquet::basic::{
 use parquet::file::reader::{FileReader as ParquetFileReader, SerializedFileReader};
 use parquet::file::{metadata::ParquetMetaDataReader, statistics::Statistics as ParquetStatistics};
 use parquet::record::Field as ParquetField;
-use query_contract::{ExecutionTarget, FallbackReason, QueryError, QueryErrorCode};
+use query_contract::{
+    ExecutionTarget, FallbackReason, PartitionColumnType, QueryError, QueryErrorCode,
+};
 use wasm_http_object_store::{HttpByteRange, HttpRangeReadResult, HttpRangeReader};
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -39,8 +41,11 @@ impl ObjectSource {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScanTarget {
+    pub object_source: ObjectSource,
+    pub object_etag: Option<String>,
     pub path: String,
     pub size_bytes: u64,
+    pub partition_values: BTreeMap<String, Option<String>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -246,7 +251,6 @@ pub async fn read_parquet_footer(
 
 pub async fn read_parquet_footer_for_target(
     reader: &HttpRangeReader,
-    source: &ObjectSource,
     target: &ScanTarget,
     request_timeout: Option<Duration>,
 ) -> Result<ParquetFooter, QueryError> {
@@ -265,7 +269,7 @@ pub async fn read_parquet_footer_for_target(
         .expect("target sizes smaller than trailer bytes should already be rejected");
     let trailer = reader
         .read_range_with_timeout(
-            &source.url,
+            &target.object_source.url,
             HttpByteRange::Bounded {
                 offset: trailer_offset,
                 length: PARQUET_TRAILER_SIZE_BYTES,
@@ -278,7 +282,7 @@ pub async fn read_parquet_footer_for_target(
 
     read_footer_payload(
         reader,
-        source,
+        &target.object_source,
         request_timeout,
         trailer,
         target.size_bytes,
@@ -289,26 +293,35 @@ pub async fn read_parquet_footer_for_target(
 
 pub async fn read_parquet_metadata_for_target(
     reader: &HttpRangeReader,
-    source: &ObjectSource,
     target: &ScanTarget,
     request_timeout: Option<Duration>,
 ) -> Result<ParquetFileMetadata, QueryError> {
-    let footer = read_parquet_footer_for_target(reader, source, target, request_timeout).await?;
+    let footer = read_parquet_footer_for_target(reader, target, request_timeout).await?;
     parse_parquet_metadata(target, &footer)
 }
 
 pub async fn scan_target_input_rows(
     reader: &HttpRangeReader,
-    source: &ObjectSource,
     target: &ScanTarget,
     required_columns: &[String],
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
     request_timeout: Option<Duration>,
 ) -> Result<Vec<ParquetInputRow>, QueryError> {
     let read = reader
-        .read_range_with_timeout(&source.url, HttpByteRange::Full, request_timeout)
+        .read_range_with_timeout(&target.object_source.url, HttpByteRange::Full, request_timeout)
         .await?;
     validate_full_object_read(target, &read)?;
-    decode_parquet_input_rows(target, read.bytes, required_columns)
+    decode_parquet_input_rows(target, read.bytes, required_columns)?
+        .into_iter()
+        .map(|row| {
+            merge_partition_values_into_row(
+                row,
+                target,
+                partition_column_types,
+                required_columns,
+            )
+        })
+        .collect()
 }
 
 pub fn decode_parquet_input_rows(
@@ -585,7 +598,146 @@ fn validate_full_object_read(
         )));
     }
 
+    if let Some(expected_object_etag) = target.object_etag.as_deref() {
+        match read.metadata.etag.as_deref() {
+            Some(actual_object_etag) if actual_object_etag == expected_object_etag => {}
+            Some(actual_object_etag) => {
+                return Err(parquet_protocol_error(format!(
+                    "browser execution for file '{}' observed entity tag {} during bootstrap but {} during execution",
+                    target.path, expected_object_etag, actual_object_etag,
+                )))
+            }
+            None => {
+                return Err(parquet_protocol_error(format!(
+                    "browser execution for file '{}' expected entity tag metadata {} from bootstrap, but the full-object read returned none",
+                    target.path, expected_object_etag,
+                )))
+            }
+        }
+    }
+
     Ok(())
+}
+
+fn merge_partition_values_into_row(
+    mut row: ParquetInputRow,
+    target: &ScanTarget,
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    required_columns: &[String],
+) -> Result<ParquetInputRow, QueryError> {
+    let required_columns = required_columns
+        .iter()
+        .map(|column| normalize_name(column))
+        .collect::<BTreeSet<_>>();
+
+    for (column, value) in &target.partition_values {
+        let normalized_column = normalize_name(column);
+        if !required_columns.is_empty() && !required_columns.contains(&normalized_column) {
+            continue;
+        }
+
+        let partition_type = partition_column_type_for_name(partition_column_types, column)
+            .ok_or_else(|| missing_partition_column_type_error(column))?;
+        row.insert(
+            normalized_column,
+            partition_value_to_scalar(column, value, partition_type)?,
+        );
+    }
+
+    Ok(row)
+}
+
+fn partition_value_to_scalar(
+    column: &str,
+    value: &Option<String>,
+    partition_type: PartitionColumnType,
+) -> Result<ParquetScalarValue, QueryError> {
+    match value {
+        None => Ok(ParquetScalarValue::Null),
+        Some(value) => typed_partition_scalar(column, value, partition_type),
+    }
+}
+
+fn typed_partition_scalar(
+    column: &str,
+    value: &str,
+    partition_type: PartitionColumnType,
+) -> Result<ParquetScalarValue, QueryError> {
+    match partition_type {
+        PartitionColumnType::String => Ok(ParquetScalarValue::String(value.to_string())),
+        PartitionColumnType::Boolean => parse_canonical_partition_bool(value)
+            .map(ParquetScalarValue::Boolean)
+            .ok_or_else(|| invalid_partition_value_error(column, value, partition_type)),
+        PartitionColumnType::Int64 => parse_canonical_partition_i64(value)
+            .map(ParquetScalarValue::Int64)
+            .ok_or_else(|| invalid_partition_value_error(column, value, partition_type)),
+        PartitionColumnType::Unsupported => Err(unsupported_partition_type_error(column)),
+    }
+}
+
+fn partition_column_type_for_name(
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    column: &str,
+) -> Option<PartitionColumnType> {
+    let normalized_column = normalize_name(column);
+    partition_column_types
+        .iter()
+        .find_map(|(name, partition_type)| {
+            (normalize_name(name) == normalized_column).then_some(*partition_type)
+        })
+}
+
+fn missing_partition_column_type_error(column: &str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::FallbackRequired,
+        format!(
+            "browser execution requires explicit partition type metadata for column '{}'",
+            column
+        ),
+        runtime_target(),
+    )
+    .with_fallback_reason(FallbackReason::NativeRequired)
+}
+
+fn unsupported_partition_type_error(column: &str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::FallbackRequired,
+        format!(
+            "browser execution requires native fallback for unsupported partition column '{}'",
+            column
+        ),
+        runtime_target(),
+    )
+    .with_fallback_reason(FallbackReason::NativeRequired)
+}
+
+fn invalid_partition_value_error(
+    column: &str,
+    value: &str,
+    partition_type: PartitionColumnType,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::FallbackRequired,
+        format!(
+            "browser execution could not coerce partition value '{}' for column '{}' as {:?}",
+            value, column, partition_type
+        ),
+        runtime_target(),
+    )
+    .with_fallback_reason(FallbackReason::NativeRequired)
+}
+
+fn parse_canonical_partition_bool(value: &str) -> Option<bool> {
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_canonical_partition_i64(value: &str) -> Option<i64> {
+    let parsed = value.parse::<i64>().ok()?;
+    (parsed.to_string() == value).then_some(parsed)
 }
 
 fn parquet_field_to_scalar(
