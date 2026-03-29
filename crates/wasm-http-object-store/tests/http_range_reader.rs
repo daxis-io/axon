@@ -508,7 +508,7 @@ async fn metadata_probe_is_optional_when_size_and_identity_are_known() {
 
     let resolved = reader
         .resolve_metadata_with_timeout(
-            "not a valid url",
+            "https://already-known.example/object",
             Some(known.clone()),
             HttpMetadataProbeRequirements {
                 require_size: true,
@@ -520,6 +520,43 @@ async fn metadata_probe_is_optional_when_size_and_identity_are_known() {
         .expect("known metadata should skip probing");
 
     assert_eq!(resolved, known);
+}
+
+#[tokio::test]
+async fn metadata_probe_handles_zero_byte_objects_via_unsatisfied_range_metadata() {
+    let (url, requests, server) = spawn_test_server(|request| {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/object");
+        assert_eq!(request.headers.get("range"), Some(&"bytes=0-0".to_string()));
+        TestResponse {
+            status_line: "416 Range Not Satisfiable",
+            headers: vec![
+                ("Content-Length".to_string(), "0".to_string()),
+                ("Content-Range".to_string(), "bytes */0".to_string()),
+                ("ETag".to_string(), "\"empty\"".to_string()),
+            ],
+            body: Vec::new(),
+        }
+    });
+
+    let reader = HttpRangeReader::new();
+    let metadata = reader
+        .probe_metadata_with_timeout(
+            &url,
+            HttpMetadataProbeRequirements {
+                require_size: true,
+                require_etag: false,
+            },
+            None,
+        )
+        .await
+        .expect("zero-byte objects should be representable through metadata probing");
+
+    let request = finish_request(server, requests);
+    assert_eq!(request.headers.get("range"), Some(&"bytes=0-0".to_string()));
+    assert_eq!(metadata.url, url);
+    assert_eq!(metadata.size_bytes, Some(0));
+    assert_eq!(metadata.etag.as_deref(), Some("\"empty\""));
 }
 
 #[tokio::test]
@@ -561,6 +598,36 @@ async fn metadata_probe_fetches_when_size_or_identity_is_unknown() {
     assert_eq!(request.headers.get("range"), Some(&"bytes=0-0".to_string()));
     assert_eq!(resolved.size_bytes, Some(10));
     assert_eq!(resolved.etag.as_deref(), Some("\"v1\""));
+}
+
+#[tokio::test]
+async fn resolve_metadata_reprobes_when_known_metadata_belongs_to_different_url() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+    let url = format!(
+        "http://{}/object",
+        listener.local_addr().expect("addr should resolve")
+    );
+    drop(listener);
+
+    let reader = HttpRangeReader::new();
+    let error = reader
+        .resolve_metadata_with_timeout(
+            &url,
+            Some(HttpObjectMetadata {
+                url: "http://different.example/object".to_string(),
+                size_bytes: Some(100),
+                etag: Some("\"stale\"".to_string()),
+            }),
+            HttpMetadataProbeRequirements {
+                require_size: true,
+                require_etag: true,
+            },
+            None,
+        )
+        .await
+        .expect_err("mismatched metadata URLs must force a reprobe instead of reuse");
+
+    assert_eq!(error.code, QueryErrorCode::ExecutionFailed);
 }
 
 #[tokio::test]

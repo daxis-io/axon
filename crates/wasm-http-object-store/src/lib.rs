@@ -206,9 +206,10 @@ impl ByteExtent {
     }
 
     pub fn contains(self, other: Self) -> bool {
-        let self_end = self.offset.saturating_add(self.length);
-        let other_end = other.offset.saturating_add(other.length);
-        self.offset <= other.offset && self_end >= other_end
+        match (self.end_exclusive(), other.end_exclusive()) {
+            (Ok(self_end), Ok(other_end)) => self.offset <= other.offset && self_end >= other_end,
+            _ => false,
+        }
     }
 
     fn touches_or_overlaps(self, other: Self) -> bool {
@@ -243,6 +244,16 @@ pub struct ExtentCacheEntry {
 
 impl ExtentCacheEntry {
     pub fn new(key: ExtentCacheKey, extent: ByteExtent, bytes: Bytes) -> Result<Self, QueryError> {
+        if extent.length == 0 {
+            return Err(invalid_request(
+                "cached extents must request at least one byte",
+            ));
+        }
+        let _ = extent
+            .offset
+            .checked_add(extent.length)
+            .ok_or_else(|| invalid_request("cached extent overflowed u64"))?;
+
         let expected_len = usize::try_from(extent.length)
             .map_err(|_| invalid_request("byte extent length overflowed usize"))?;
         if bytes.len() != expected_len {
@@ -443,30 +454,78 @@ impl HttpRangeReader {
         requirements: HttpMetadataProbeRequirements,
         timeout: Option<Duration>,
     ) -> Result<HttpObjectMetadata, QueryError> {
-        let probe = self
-            .read_range_with_timeout(
-                url,
-                HttpByteRange::Bounded {
-                    offset: 0,
-                    length: 1,
-                },
-                timeout,
+        let url = parse_url(url)?;
+        let display_url = redacted_url(&url);
+        let mut request = self.client.get(url.clone()).header(RANGE, "bytes=0-0");
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
+        }
+        let response = request.send().await.map_err(|error| {
+            QueryError::new(
+                QueryErrorCode::ExecutionFailed,
+                format!("http request to '{display_url}' failed: {error}"),
+                supported_target(),
             )
-            .await?;
-        let metadata = probe.metadata;
+        })?;
 
-        if requirements.require_size && metadata.size_bytes.is_none() {
+        if response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
+            let unsatisfied_size =
+                parse_unsatisfied_content_range_total_size(response.headers(), &display_url)?;
+            if unsatisfied_size == Some(0) {
+                let etag =
+                    parse_optional_header_string(response.headers(), ETAG.as_str(), &display_url)?;
+                let metadata = HttpObjectMetadata {
+                    url: display_url,
+                    size_bytes: Some(0),
+                    etag,
+                };
+                validate_metadata_probe_requirements(&metadata, requirements)?;
+                return Ok(metadata);
+            }
+        }
+
+        if let Some(error) = map_status_error(response.status(), &display_url) {
+            return Err(error);
+        }
+        if response.status() != StatusCode::PARTIAL_CONTENT {
             return Err(protocol_error(format!(
-                "metadata probe for '{}' required object size metadata, but no browser-visible size headers were returned",
-                metadata.url
+                "metadata probe to '{display_url}' expected HTTP 206 Partial Content, got {}",
+                response.status()
             )));
         }
-        if requirements.require_etag && metadata.etag.is_none() {
+
+        let content_range = parse_content_range(response.headers(), &display_url)?;
+        HttpByteRange::Bounded {
+            offset: 0,
+            length: 1,
+        }
+        .validate_content_range(content_range, &display_url)?;
+        let etag = parse_optional_header_string(response.headers(), ETAG.as_str(), &display_url)?;
+        let bytes = response.bytes().await.map_err(|error| {
+            QueryError::new(
+                QueryErrorCode::ExecutionFailed,
+                format!("http response body from '{display_url}' could not be read: {error}"),
+                supported_target(),
+            )
+        })?;
+        let expected_length = content_range
+            .end
+            .checked_sub(content_range.start)
+            .and_then(|delta| delta.checked_add(1))
+            .ok_or_else(|| protocol_error("content-range length overflowed u64"))?;
+        if bytes.len() as u64 != expected_length {
             return Err(protocol_error(format!(
-                "metadata probe for '{}' required an exposed ETag header, but none was returned",
-                metadata.url
+                "http response body from '{display_url}' returned {} bytes, but Content-Range declared {expected_length}",
+                bytes.len()
             )));
         }
+
+        let metadata = HttpObjectMetadata {
+            url: display_url,
+            size_bytes: Some(content_range.total_size),
+            etag,
+        };
+        validate_metadata_probe_requirements(&metadata, requirements)?;
 
         Ok(metadata)
     }
@@ -488,8 +547,12 @@ impl HttpRangeReader {
         requirements: HttpMetadataProbeRequirements,
         timeout: Option<Duration>,
     ) -> Result<HttpObjectMetadata, QueryError> {
+        let requested_url = parse_url(url)?;
+        let requested_display_url = redacted_url(&requested_url);
         if let Some(known_metadata) = known_metadata {
-            if requirements.is_satisfied_by(&known_metadata) {
+            if known_metadata.url == requested_display_url
+                && requirements.is_satisfied_by(&known_metadata)
+            {
                 return Ok(known_metadata);
             }
         }
@@ -636,6 +699,71 @@ fn parse_content_range(
         end,
         total_size,
     })
+}
+
+fn parse_unsatisfied_content_range_total_size(
+    headers: &reqwest::header::HeaderMap,
+    display_url: &str,
+) -> Result<Option<u64>, QueryError> {
+    let Some(content_range) = headers.get(CONTENT_RANGE) else {
+        return Ok(None);
+    };
+    let content_range = content_range.to_str().map_err(|error| {
+        protocol_error(format!(
+            "response from '{display_url}' returned a non-UTF8 Content-Range header: {error}"
+        ))
+    })?;
+
+    let (unit, spec) = content_range.split_once(' ').ok_or_else(|| {
+        protocol_error(format!(
+            "response from '{display_url}' returned an invalid Content-Range header: {content_range}"
+        ))
+    })?;
+    if unit != "bytes" {
+        return Err(protocol_error(format!(
+            "response from '{display_url}' returned unsupported Content-Range units: {content_range}"
+        )));
+    }
+    let (range_spec, total_size) = spec.split_once('/').ok_or_else(|| {
+        protocol_error(format!(
+            "response from '{display_url}' returned an invalid Content-Range header: {content_range}"
+        ))
+    })?;
+    if range_spec != "*" {
+        return Ok(None);
+    }
+    if total_size == "*" {
+        return Err(protocol_error(format!(
+            "response from '{display_url}' returned an invalid unsatisfied Content-Range header: {content_range}"
+        )));
+    }
+
+    let total_size = total_size.parse::<u64>().map_err(|error| {
+        protocol_error(format!(
+            "response from '{display_url}' returned an invalid Content-Range size: {error}"
+        ))
+    })?;
+    Ok(Some(total_size))
+}
+
+fn validate_metadata_probe_requirements(
+    metadata: &HttpObjectMetadata,
+    requirements: HttpMetadataProbeRequirements,
+) -> Result<(), QueryError> {
+    if requirements.require_size && metadata.size_bytes.is_none() {
+        return Err(protocol_error(format!(
+            "metadata probe for '{}' required object size metadata, but no browser-visible size headers were returned",
+            metadata.url
+        )));
+    }
+    if requirements.require_etag && metadata.etag.is_none() {
+        return Err(protocol_error(format!(
+            "metadata probe for '{}' required an exposed ETag header, but none was returned",
+            metadata.url
+        )));
+    }
+
+    Ok(())
 }
 
 fn parse_header_u64(
