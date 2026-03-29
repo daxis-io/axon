@@ -1,0 +1,6 @@
+[package]
+name = "wasm-parquet-engine"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+

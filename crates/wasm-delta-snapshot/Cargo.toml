@@ -1,0 +1,6 @@
+[package]
+name = "wasm-delta-snapshot"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+

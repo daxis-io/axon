@@ -9,6 +9,8 @@ Axon is a Rust workspace for building a hybrid query platform with native and br
 - `crates/wasm-query-runtime` is the browser-oriented runtime envelope for constrained object access and the narrow in-repo browser execution-plan path.
 - `crates/delta-control-plane` contains the in-repo control-plane slice for snapshot resolution and table policy enforcement.
 - `crates/wasm-http-object-store` contains the thin EPIC-04 HTTP byte-range slice for browser-safe object reads.
+- `crates/wasm-parquet-engine` contains browser-side Parquet planning and scan primitives.
+- `crates/wasm-delta-snapshot` contains browser-safe Delta snapshot reconstruction.
 - `crates/query-router`, `crates/browser-sdk`, `crates/udf-abi`, and `crates/udf-host-wasi` remain scaffolds around routing, browser access, and hosted UDF execution.
 
 ## Getting Started
@@ -19,7 +21,8 @@ cargo test -p query-contract
 cargo test -p native-query-runtime
 cargo test -p wasm-query-runtime
 cargo test -p wasm-http-object-store
-cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --target wasm32-unknown-unknown
+cargo check -p wasm-query-runtime -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p browser-sdk --target wasm32-unknown-unknown
+cargo check -p wasm-parquet-engine -p wasm-delta-snapshot --locked
 ```
 
 ## Browser Runtime Envelope

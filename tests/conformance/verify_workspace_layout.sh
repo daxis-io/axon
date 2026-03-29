@@ -18,6 +18,8 @@ required_dirs=(
   "crates/delta-control-plane"
   "crates/wasm-query-runtime"
   "crates/wasm-http-object-store"
+  "crates/wasm-parquet-engine"
+  "crates/wasm-delta-snapshot"
   "crates/browser-sdk"
   "crates/udf-abi"
   "crates/udf-host-wasi"
