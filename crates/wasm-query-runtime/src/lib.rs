@@ -45,8 +45,8 @@ use lowering::lower_browser_execution_plan;
 #[cfg(test)]
 use parquet_support::parquet_row_to_input_row;
 use parquet_support::{
-    decode_parquet_input_rows, format_browser_fields, format_partition_columns,
-    parse_parquet_footer_trailer, parse_parquet_metadata, validate_parquet_footer_read_consistency,
+    browser_footer_from_engine, browser_metadata_from_engine, decode_parquet_input_rows,
+    engine_object_source, engine_scan_target, format_browser_fields, format_partition_columns,
 };
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -56,9 +56,6 @@ const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_EXECUTION_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_SNAPSHOT_PREFLIGHT_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_SNAPSHOT_PREFLIGHT_MAX_CONCURRENCY: usize = 4;
-const MAX_PARQUET_FOOTER_SIZE_BYTES: u64 = 16 * 1024 * 1024;
-const PARQUET_TRAILER_SIZE_BYTES: u64 = 8;
-const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
 
 pub fn runtime_target() -> ExecutionTarget {
     ExecutionTarget::BrowserWasm
@@ -1345,8 +1342,10 @@ impl BrowserRuntimeSession {
         &self,
         file: &MaterializedBrowserFile,
     ) -> Result<BrowserParquetFileMetadata, QueryError> {
-        let footer = self.read_parquet_footer_for_file(file).await?;
-        parse_parquet_metadata(file, &footer)
+        let target = engine_scan_target(file);
+        let footer = self.read_engine_parquet_footer_for_file(file).await?;
+        let metadata = wasm_parquet_engine::parse_parquet_metadata(&target, &footer)?;
+        Ok(browser_metadata_from_engine(metadata))
     }
 
     pub async fn bootstrap_snapshot_metadata(
@@ -1392,52 +1391,27 @@ impl BrowserRuntimeSession {
         &self,
         source: &BrowserObjectSource,
     ) -> Result<BrowserParquetFooter, QueryError> {
-        let trailer = self
-            .read_range(
-                source,
-                HttpByteRange::Suffix {
-                    length: PARQUET_TRAILER_SIZE_BYTES,
-                },
+        Ok(browser_footer_from_engine(
+            wasm_parquet_engine::read_parquet_footer(
+                &self.reader,
+                &engine_object_source(source),
+                Some(Duration::from_millis(self.config.request_timeout_ms)),
             )
-            .await?;
-        let (object_size_bytes, footer_length_bytes) = parse_parquet_footer_trailer(&trailer)?;
-        let footer_length_bytes_u64 = u64::from(footer_length_bytes);
-        if footer_length_bytes_u64 > MAX_PARQUET_FOOTER_SIZE_BYTES {
-            return Err(parquet_protocol_error(format!(
-                "parquet footer bootstrap for '{}' declared a footer length of {} bytes, which exceeds the browser runtime cap of {} bytes",
-                trailer.metadata.url,
-                footer_length_bytes,
-                MAX_PARQUET_FOOTER_SIZE_BYTES,
-            )));
-        }
-        let footer_offset = object_size_bytes
-            .checked_sub(PARQUET_TRAILER_SIZE_BYTES)
-            .and_then(|offset| offset.checked_sub(footer_length_bytes_u64))
-            .ok_or_else(|| {
-                parquet_protocol_error(format!(
-                    "parquet footer bootstrap for '{}' declared a footer length of {} bytes, which exceeds the object size of {} bytes",
-                    trailer.metadata.url,
-                    footer_length_bytes,
-                    object_size_bytes,
-                ))
-            })?;
-        let footer = self
-            .read_range(
-                source,
-                HttpByteRange::Bounded {
-                    offset: footer_offset,
-                    length: footer_length_bytes_u64,
-                },
-            )
-            .await?;
-        validate_parquet_footer_read_consistency(&trailer, &footer, object_size_bytes)?;
+            .await?,
+        ))
+    }
 
-        Ok(BrowserParquetFooter {
-            object_size_bytes,
-            object_etag: trailer.metadata.etag.clone(),
-            footer_length_bytes,
-            footer_bytes: footer.bytes,
-        })
+    async fn read_engine_parquet_footer_for_file(
+        &self,
+        file: &MaterializedBrowserFile,
+    ) -> Result<wasm_parquet_engine::ParquetFooter, QueryError> {
+        wasm_parquet_engine::read_parquet_footer_for_target(
+            &self.reader,
+            &engine_object_source(file.object_source()),
+            &engine_scan_target(file),
+            Some(Duration::from_millis(self.config.request_timeout_ms)),
+        )
+        .await
     }
 
     async fn read_range(
@@ -1488,8 +1462,10 @@ impl BrowserRuntimeSession {
         &self,
         file: &MaterializedBrowserFile,
     ) -> Result<BootstrappedBrowserFile, QueryError> {
-        let footer = self.read_parquet_footer_for_file(file).await?;
-        let metadata = parse_parquet_metadata(file, &footer)?;
+        let target = engine_scan_target(file);
+        let footer = self.read_engine_parquet_footer_for_file(file).await?;
+        let metadata =
+            browser_metadata_from_engine(wasm_parquet_engine::parse_parquet_metadata(&target, &footer)?);
 
         BootstrappedBrowserFile::new_with_object_etag(
             file.path(),

@@ -4197,6 +4197,13 @@ dependencies = [
 [[package]]
 name = "wasm-parquet-engine"
 version = "0.1.0"
+dependencies = [
+ "bytes",
+ "parquet",
+ "query-contract",
+ "tokio",
+ "wasm-http-object-store",
+]
 
 [[package]]
 name = "wasm-query-runtime"
@@ -4214,6 +4221,7 @@ dependencies = [
  "tokio",
  "wasm-bindgen-test",
  "wasm-http-object-store",
+ "wasm-parquet-engine",
 ]
 
 [[package]]

@@ -4,3 +4,11 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
+[dependencies]
+bytes = "=1.11.1"
+parquet = { version = "=57.3.0", default-features = false }
+query-contract = { path = "../query-contract" }
+wasm-http-object-store = { path = "../wasm-http-object-store" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "=1.50.0", features = ["macros", "rt-multi-thread"] }

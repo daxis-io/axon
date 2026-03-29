@@ -13,6 +13,7 @@ query-contract = { path = "../query-contract" }
 reqwest = { version = "=0.12.28", default-features = false }
 sqlparser = "=0.59.0"
 wasm-http-object-store = { path = "../wasm-http-object-store" }
+wasm-parquet-engine = { path = "../wasm-parquet-engine" }
 
 [dev-dependencies]
 serde.workspace = true
