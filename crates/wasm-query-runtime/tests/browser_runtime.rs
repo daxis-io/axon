@@ -1350,10 +1350,7 @@ fn runtime_prunes_files_from_delta_snapshot_before_opening_parquet() {
             BrowserObjectSource::from_url(server.url_for_path(&file.path))
         })
         .expect("resolved snapshot should materialize into browser object sources");
-    assert_eq!(
-        materialized.partition_column_types().get("category"),
-        Some(&PartitionColumnType::String)
-    );
+    assert!(materialized.partition_column_types().is_empty());
     let request = QueryRequest::new(
         materialized.table_uri(),
         "SELECT id FROM axon_table WHERE category = 'A' ORDER BY id",
@@ -1380,6 +1377,56 @@ fn runtime_prunes_files_from_delta_snapshot_before_opening_parquet() {
     assert_eq!(result.metrics().files_touched, 1);
     assert_eq!(result.metrics().files_skipped, 2);
     assert_eq!(result.rows().len(), 2);
+}
+
+#[test]
+fn runtime_prunes_all_files_from_delta_snapshot_before_opening_parquet() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let fixture = TestTableFixture::create_partitioned();
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+    let resolved = runtime()
+        .block_on(session.resolve_delta_snapshot(
+            &resolver,
+            SnapshotResolutionRequest {
+                table_uri: fixture.raw_table_path(),
+                snapshot_version: None,
+            },
+        ))
+        .expect("delta snapshot should resolve");
+    let server = RequestCapturingObjectServer::from_fixture_paths(
+        &fixture,
+        resolved.active_files.iter().map(|file| file.path.clone()),
+    );
+    let materialized = session
+        .materialize_resolved_snapshot(&resolved, |file| {
+            BrowserObjectSource::from_url(server.url_for_path(&file.path))
+        })
+        .expect("resolved snapshot should materialize into browser object sources");
+    let request = QueryRequest::new(
+        materialized.table_uri(),
+        "SELECT id FROM axon_table WHERE category = 'Z' ORDER BY id",
+        ExecutionTarget::BrowserWasm,
+    );
+
+    let prepared = runtime()
+        .block_on(session.prepare_execution(&materialized, &request))
+        .expect("runtime should prepare zero-candidate partition-pruned execution");
+    let result = runtime()
+        .block_on(session.execute_plan(&materialized, prepared.execution_plan()))
+        .expect("zero-candidate partition-pruned execution should succeed");
+
+    assert!(server.recorded_paths().is_empty());
+    assert!(prepared.bootstrapped_snapshot().active_files().is_empty());
+    assert_eq!(prepared.planned_query().candidate_file_count, 0);
+    assert_eq!(prepared.planned_query().pruning.files_pruned, 3);
+    assert_eq!(result.metrics().files_touched, 0);
+    assert_eq!(result.metrics().files_skipped, 3);
+    assert!(result.rows().is_empty());
 }
 
 #[test]

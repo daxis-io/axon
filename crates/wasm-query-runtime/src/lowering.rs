@@ -13,7 +13,8 @@ use crate::{
     object_name_to_relation_name, reverse_binary_operator, BootstrappedBrowserSnapshot,
     BrowserAggregateFunction, BrowserAggregateMeasure, BrowserAggregationPlan, BrowserComparisonOp,
     BrowserExecutionOutput, BrowserExecutionOutputKind, BrowserExecutionPlan, BrowserFilterExpr,
-    BrowserPlannedQuery, BrowserScalarValue, BrowserSortKey, DEFAULT_TABLE_NAME,
+    BrowserPlannedQuery, BrowserScalarValue, BrowserSortKey, PartitionPruningConstraints,
+    PartitionValueConstraint, DEFAULT_TABLE_NAME,
 };
 
 #[derive(Clone, Debug)]
@@ -37,6 +38,15 @@ pub(super) fn lower_browser_execution_plan(
     query: &SqlQuery,
     snapshot: &BootstrappedBrowserSnapshot,
     planned: &BrowserPlannedQuery,
+) -> Result<BrowserExecutionPlan, QueryError> {
+    lower_browser_execution_plan_with_applied_partition_constraints(query, snapshot, planned, None)
+}
+
+pub(super) fn lower_browser_execution_plan_with_applied_partition_constraints(
+    query: &SqlQuery,
+    snapshot: &BootstrappedBrowserSnapshot,
+    planned: &BrowserPlannedQuery,
+    applied_partition_constraints: Option<&PartitionPruningConstraints>,
 ) -> Result<BrowserExecutionPlan, QueryError> {
     let select = query
         .body
@@ -71,7 +81,10 @@ pub(super) fn lower_browser_execution_plan(
         group_by_columns,
         measures,
     });
-    let filter = lower_execution_filter(select.selection.as_ref(), &source_bindings)?;
+    let filter = strip_applied_partition_filter(
+        lower_execution_filter(select.selection.as_ref(), &source_bindings)?,
+        applied_partition_constraints,
+    );
     let order_by = lower_order_by_keys(query, &outputs)?;
     let required_columns = lower_required_columns(filter.as_ref(), &outputs, aggregation.as_ref());
 
@@ -86,6 +99,99 @@ pub(super) fn lower_browser_execution_plan(
         limit: planned.query_shape.limit,
         pruning: planned.pruning.clone(),
     })
+}
+
+fn strip_applied_partition_filter(
+    filter: Option<BrowserFilterExpr>,
+    applied_partition_constraints: Option<&PartitionPruningConstraints>,
+) -> Option<BrowserFilterExpr> {
+    match (filter, applied_partition_constraints) {
+        (Some(filter), Some(constraints)) => strip_applied_partition_filter_expr(filter, constraints),
+        (filter, None) => filter,
+        (None, Some(_)) => None,
+    }
+}
+
+fn strip_applied_partition_filter_expr(
+    filter: BrowserFilterExpr,
+    constraints: &PartitionPruningConstraints,
+) -> Option<BrowserFilterExpr> {
+    if filter_matches_applied_partition_constraint(&filter, constraints) {
+        return None;
+    }
+
+    match filter {
+        BrowserFilterExpr::And { children } => {
+            let mut retained_children = children
+                .into_iter()
+                .filter_map(|child| strip_applied_partition_filter_expr(child, constraints))
+                .collect::<Vec<_>>();
+            match retained_children.len() {
+                0 => None,
+                1 => retained_children.pop(),
+                _ => Some(BrowserFilterExpr::And {
+                    children: retained_children,
+                }),
+            }
+        }
+        other => Some(other),
+    }
+}
+
+fn filter_matches_applied_partition_constraint(
+    filter: &BrowserFilterExpr,
+    constraints: &PartitionPruningConstraints,
+) -> bool {
+    match filter {
+        BrowserFilterExpr::Compare {
+            source_column,
+            comparison: BrowserComparisonOp::Eq,
+            literal,
+        } => match constraints.by_column.get(source_column) {
+            Some(PartitionValueConstraint::AllowedValues(values)) => {
+                values.len() == 1
+                    && values.contains(&browser_scalar_to_partition_literal(literal))
+            }
+            Some(PartitionValueConstraint::NotNull) | None => false,
+        },
+        BrowserFilterExpr::InList {
+            source_column,
+            literals,
+        } => match constraints.by_column.get(source_column) {
+            Some(PartitionValueConstraint::AllowedValues(values)) => {
+                browser_scalars_to_partition_literals(literals) == *values
+            }
+            Some(PartitionValueConstraint::NotNull) | None => false,
+        },
+        BrowserFilterExpr::IsNull { source_column } => {
+            matches!(
+                constraints.by_column.get(source_column),
+                Some(PartitionValueConstraint::AllowedValues(values))
+                    if values == &BTreeSet::from([None])
+            )
+        }
+        BrowserFilterExpr::IsNotNull { source_column } => matches!(
+            constraints.by_column.get(source_column),
+            Some(PartitionValueConstraint::NotNull)
+        ),
+        BrowserFilterExpr::And { .. } => false,
+        BrowserFilterExpr::Compare { .. } => false,
+    }
+}
+
+fn browser_scalars_to_partition_literals(
+    literals: &[BrowserScalarValue],
+) -> BTreeSet<Option<String>> {
+    literals.iter().map(browser_scalar_to_partition_literal).collect()
+}
+
+fn browser_scalar_to_partition_literal(literal: &BrowserScalarValue) -> Option<String> {
+    match literal {
+        BrowserScalarValue::Int64(value) => Some(value.to_string()),
+        BrowserScalarValue::String(value) => Some(value.clone()),
+        BrowserScalarValue::Boolean(value) => Some(value.to_string()),
+        BrowserScalarValue::Null => None,
+    }
 }
 
 fn lower_query_source_bindings(query: &SqlQuery) -> Result<BrowserSourceBindings, QueryError> {

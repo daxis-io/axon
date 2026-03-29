@@ -46,7 +46,9 @@ mod lowering;
 mod parquet_support;
 
 use execution::{execute_aggregate_plan_rows, execute_non_aggregate_plan_rows};
-use lowering::lower_browser_execution_plan;
+use lowering::{
+    lower_browser_execution_plan, lower_browser_execution_plan_with_applied_partition_constraints,
+};
 #[cfg(test)]
 use parquet_support::parquet_row_to_input_row;
 use parquet_support::{
@@ -1235,22 +1237,33 @@ impl BrowserRuntimeSession {
         let bootstrapped_snapshot = self
             .bootstrap_selected_snapshot_metadata(snapshot, &bootstrap_selection.files)
             .await?;
-        let mut planned = self.plan_query_from_analyzed(&bootstrapped_snapshot, &analyzed)?;
-        if bootstrap_selection.files_pruned_before_bootstrap > 0 {
-            planned.pruning.used_partition_pruning = true;
-            planned.pruning.files_pruned = planned
-                .pruning
-                .files_pruned
-                .checked_add(bootstrap_selection.files_pruned_before_bootstrap)
-                .ok_or_else(|| {
-                    invalid_query_request(
-                        "browser pruning totals overflowed u64 during execution preparation",
-                    )
-                })?;
-            planned.pruning.files_retained = planned.candidate_file_count;
-        }
-        let execution_plan =
-            lower_browser_execution_plan(analyzed.query.as_ref(), &bootstrapped_snapshot, &planned)?;
+        let planned = if bootstrap_selection.files.is_empty()
+            && bootstrap_selection.files_pruned_before_bootstrap > 0
+        {
+            planned_query_for_empty_bootstrap(snapshot, &analyzed, &bootstrap_selection)?
+        } else {
+            let mut planned = self.plan_query_from_analyzed(&bootstrapped_snapshot, &analyzed)?;
+            if bootstrap_selection.files_pruned_before_bootstrap > 0 {
+                planned.pruning.used_partition_pruning = true;
+                planned.pruning.files_pruned = planned
+                    .pruning
+                    .files_pruned
+                    .checked_add(bootstrap_selection.files_pruned_before_bootstrap)
+                    .ok_or_else(|| {
+                        invalid_query_request(
+                            "browser pruning totals overflowed u64 during execution preparation",
+                        )
+                    })?;
+                planned.pruning.files_retained = planned.candidate_file_count;
+            }
+            planned
+        };
+        let execution_plan = lower_browser_execution_plan_with_applied_partition_constraints(
+            analyzed.query.as_ref(),
+            &bootstrapped_snapshot,
+            &planned,
+            bootstrap_selection.applied_partition_constraints.as_ref(),
+        )?;
 
         Ok(PreparedBrowserExecution {
             bootstrapped_snapshot,
@@ -1429,7 +1442,7 @@ impl BrowserRuntimeSession {
             descriptor.table_uri.clone(),
             descriptor.snapshot_version,
             active_files,
-            resolved_partition_column_types(descriptor),
+            descriptor.partition_column_types.clone(),
         )
     }
 
@@ -1727,6 +1740,8 @@ fn candidate_materialized_files<'a>(
 struct MaterializedBootstrapSelection<'a> {
     files: Vec<&'a MaterializedBrowserFile>,
     files_pruned_before_bootstrap: u64,
+    partition_columns: Vec<String>,
+    applied_partition_constraints: Option<PartitionPruningConstraints>,
 }
 
 fn execution_plan_error(message: impl Into<String>) -> QueryError {
@@ -1777,6 +1792,8 @@ fn select_materialized_files_for_bootstrap<'a>(
         return Ok(MaterializedBootstrapSelection {
             files: all_files,
             files_pruned_before_bootstrap: 0,
+            partition_columns,
+            applied_partition_constraints: None,
         });
     };
 
@@ -1785,10 +1802,12 @@ fn select_materialized_files_for_bootstrap<'a>(
         .copied()
         .filter(|file| materialized_partition_constraints_match(file, &partition_constraints))
         .collect::<Vec<_>>();
-    if candidate_files.is_empty() || candidate_files.len() == all_files.len() {
+    if candidate_files.len() == all_files.len() {
         return Ok(MaterializedBootstrapSelection {
             files: all_files,
             files_pruned_before_bootstrap: 0,
+            partition_columns,
+            applied_partition_constraints: None,
         });
     }
 
@@ -1802,6 +1821,37 @@ fn select_materialized_files_for_bootstrap<'a>(
     Ok(MaterializedBootstrapSelection {
         files: candidate_files,
         files_pruned_before_bootstrap,
+        partition_columns,
+        applied_partition_constraints: Some(partition_constraints),
+    })
+}
+
+fn planned_query_for_empty_bootstrap(
+    snapshot: &MaterializedBrowserSnapshot,
+    analyzed: &AnalyzedBrowserQuery,
+    bootstrap_selection: &MaterializedBootstrapSelection<'_>,
+) -> Result<BrowserPlannedQuery, QueryError> {
+    let total_file_count = u64::try_from(snapshot.active_files().len()).map_err(|_| {
+        invalid_query_request(
+            "snapshot file counts overflowed u64 during zero-candidate browser planning",
+        )
+    })?;
+
+    Ok(BrowserPlannedQuery {
+        table_uri: snapshot.table_uri().to_string(),
+        snapshot_version: snapshot.snapshot_version(),
+        query_shape: analyzed.shape.clone(),
+        candidate_paths: Vec::new(),
+        candidate_file_count: 0,
+        candidate_bytes: 0,
+        candidate_rows: 0,
+        partition_columns: bootstrap_selection.partition_columns.clone(),
+        pruning: BrowserPruningSummary {
+            used_partition_pruning: bootstrap_selection.applied_partition_constraints.is_some(),
+            used_file_stats_pruning: false,
+            files_retained: 0,
+            files_pruned: total_file_count,
+        },
     })
 }
 
@@ -3352,20 +3402,6 @@ fn materialized_partition_columns(snapshot: &MaterializedBrowserSnapshot) -> Vec
         .first()
         .map(|file| file.partition_values().keys().cloned().collect())
         .unwrap_or_default()
-}
-
-fn resolved_partition_column_types(
-    descriptor: &ResolvedSnapshotDescriptor,
-) -> BTreeMap<String, PartitionColumnType> {
-    let mut partition_column_types = descriptor.partition_column_types.clone();
-    for file in &descriptor.active_files {
-        for column in file.partition_values.keys() {
-            partition_column_types
-                .entry(column.clone())
-                .or_insert(PartitionColumnType::String);
-        }
-    }
-    partition_column_types
 }
 
 fn validate_unique_materialized_paths(
