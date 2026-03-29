@@ -51,11 +51,59 @@ jobs:
       - name: Test wasm HTTP object store
         run: cargo test -p wasm-http-object-store --locked
 
+      - name: Test wasm Parquet engine
+        run: cargo test -p wasm-parquet-engine --locked
+
+      - name: Test wasm Delta snapshot
+        run: cargo test -p wasm-delta-snapshot --locked
+
+      - name: Test browser SDK
+        run: cargo test -p browser-sdk --locked
+
       - name: Check wasm targets
-        run: cargo check -p wasm-query-runtime -p wasm-http-object-store -p browser-sdk --target wasm32-unknown-unknown --locked
+        run: cargo check -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p browser-sdk --target wasm32-unknown-unknown --locked
 
       - name: Run wasm query runtime smoke
         run: cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --locked --test wasm_smoke
+
+      - name: Report browser wasm size proxy
+        run: |
+          cargo build -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p browser-sdk --target wasm32-unknown-unknown --release --locked
+
+          report_size() {
+            local crate="$1"
+            local budget="$2"
+            local pattern="target/wasm32-unknown-unknown/release/deps/lib${crate//-/_}-*.rlib"
+            local max_size=0
+            local file
+
+            for file in $pattern; do
+              [ -e "$file" ] || continue
+              local size
+              size=$(stat -c%s "$file")
+              if [ "$size" -gt "$max_size" ]; then
+                max_size="$size"
+              fi
+            done
+
+            if [ "$max_size" -eq 0 ]; then
+              echo "missing release artifact for ${crate}" >&2
+              exit 1
+            fi
+
+            echo "${crate}: ${max_size} bytes (budget ${budget} bytes)"
+
+            if [ "$max_size" -gt "$budget" ]; then
+              echo "${crate} exceeded the browser wasm size proxy budget" >&2
+              exit 1
+            fi
+          }
+
+          report_size wasm-http-object-store 320000
+          report_size wasm-parquet-engine 640000
+          report_size wasm-delta-snapshot 860000
+          report_size wasm-query-runtime 2300000
+          report_size browser-sdk 260000
 
       - name: Verify workspace layout
         run: bash tests/conformance/verify_workspace_layout.sh

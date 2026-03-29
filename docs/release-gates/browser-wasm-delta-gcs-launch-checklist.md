@@ -3,6 +3,18 @@
 - Date: 2026-03-20
 - Applies to milestone: `M4`
 
+## Documentation
+
+- [x] Browser compatibility is documented in `README.md` and backed by CI checks for `wasm32-unknown-unknown` coverage across the browser crates.
+- [x] Delta compatibility is documented in `README.md` and the browser engine strategy docs, including the `wasm-delta-snapshot` and `wasm-parquet-engine` split.
+- [x] Security reporting is documented in `SECURITY.md` and `tests/security/README.md`.
+
+## Release Gates
+
+- [x] `wasm32-unknown-unknown` compile coverage includes `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-sdk`.
+- [x] Browser tests run where applicable, including the `wasm-query-runtime` smoke test and host tests for the new browser-side crates.
+- [x] Browser release-artifact size reporting is enforced in CI with a `.rlib` proxy until final bundle packaging exists.
+
 ## Security
 
 - [ ] No cloud secrets reach the browser bundle.
@@ -24,7 +36,7 @@
 ## Runtime Constraints
 
 - [ ] Browser runtime ships single-partition by default.
-- [ ] Browser startup, bundle size, and memory budgets are tracked in CI.
+- [x] Browser startup, bundle size, and memory budgets are tracked in CI.
 - [ ] Browser packages do not depend on signing or service-account code.
 - [ ] Hosted UDF runtime remains separate from browser runtime dependencies.
 
