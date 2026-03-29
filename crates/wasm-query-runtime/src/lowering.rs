@@ -106,7 +106,9 @@ fn strip_applied_partition_filter(
     applied_partition_constraints: Option<&PartitionPruningConstraints>,
 ) -> Option<BrowserFilterExpr> {
     match (filter, applied_partition_constraints) {
-        (Some(filter), Some(constraints)) => strip_applied_partition_filter_expr(filter, constraints),
+        (Some(filter), Some(constraints)) => {
+            strip_applied_partition_filter_expr(filter, constraints)
+        }
         (filter, None) => filter,
         (None, Some(_)) => None,
     }
@@ -149,8 +151,7 @@ fn filter_matches_applied_partition_constraint(
             literal,
         } => match constraints.by_column.get(source_column) {
             Some(PartitionValueConstraint::AllowedValues(values)) => {
-                values.len() == 1
-                    && values.contains(&browser_scalar_to_partition_literal(literal))
+                values.len() == 1 && values.contains(&browser_scalar_to_partition_literal(literal))
             }
             Some(PartitionValueConstraint::NotNull) | None => false,
         },
@@ -182,7 +183,10 @@ fn filter_matches_applied_partition_constraint(
 fn browser_scalars_to_partition_literals(
     literals: &[BrowserScalarValue],
 ) -> BTreeSet<Option<String>> {
-    literals.iter().map(browser_scalar_to_partition_literal).collect()
+    literals
+        .iter()
+        .map(browser_scalar_to_partition_literal)
+        .collect()
 }
 
 fn browser_scalar_to_partition_literal(literal: &BrowserScalarValue) -> Option<String> {

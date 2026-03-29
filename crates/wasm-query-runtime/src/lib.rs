@@ -3385,7 +3385,9 @@ fn validate_unique_descriptor_paths(
     )
 }
 
-fn validate_unique_resolved_paths(active_files: &[ResolvedFileDescriptor]) -> Result<(), QueryError> {
+fn validate_unique_resolved_paths(
+    active_files: &[ResolvedFileDescriptor],
+) -> Result<(), QueryError> {
     validate_unique_paths(
         active_files.iter().map(|file| file.path.as_str()),
         "resolved snapshot descriptor contained duplicate paths",
