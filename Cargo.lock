@@ -4170,6 +4170,7 @@ dependencies = [
  "bytes",
  "delta-control-plane",
  "deltalake",
+ "libc",
  "parquet",
  "query-contract",
  "serde",

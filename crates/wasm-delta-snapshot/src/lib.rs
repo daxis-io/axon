@@ -3,8 +3,19 @@
 use std::collections::BTreeMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+use std::io::Read;
+use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, PathBuf};
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+use std::{
+    ffi::CString,
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::ffi::OsStrExt,
+    },
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -445,14 +456,22 @@ impl StorageHandler for LocalFileStorageHandler {
         relative_path: &str,
     ) -> Result<Option<Bytes>, QueryError> {
         let root = root_path_from_table_uri(table_uri)?;
-        let path = table_relative_path(&root, relative_path)?;
-        match fs::read(path) {
-            Ok(bytes) => Ok(Some(Bytes::from(bytes))),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(execution_error(format!(
-                "failed to read snapshot file '{}': {error}",
-                relative_path
-            ))),
+        #[cfg(unix)]
+        {
+            return read_confined_bytes_unix(&root, relative_path);
+        }
+
+        #[cfg(not(unix))]
+        {
+            let path = table_relative_path(&root, relative_path)?;
+            match fs::read(path) {
+                Ok(bytes) => Ok(Some(Bytes::from(bytes))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(execution_error(format!(
+                    "failed to read snapshot file '{}': {error}",
+                    relative_path
+                ))),
+            }
         }
     }
 }
@@ -467,10 +486,10 @@ fn root_path_from_table_uri(table_uri: &str) -> Result<PathBuf, QueryError> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn table_relative_path(table_root: &Path, relative_path: &str) -> Result<PathBuf, QueryError> {
+fn validated_relative_path(relative_path: &str) -> Result<PathBuf, QueryError> {
     if relative_path.is_empty()
         || is_absolute_uri(relative_path)
-        || Path::new(relative_path).is_absolute()
+        || is_absolute_native_path(relative_path)
     {
         return Err(invalid_request(format!(
             "snapshot path '{}' must stay under the table root",
@@ -478,8 +497,7 @@ fn table_relative_path(table_root: &Path, relative_path: &str) -> Result<PathBuf
         )));
     }
 
-    let parsed = Path::new(relative_path);
-    if parsed.components().any(|component| {
+    if Path::new(relative_path).components().any(|component| {
         matches!(
             component,
             Component::ParentDir | Component::RootDir | Component::Prefix(_)
@@ -491,6 +509,12 @@ fn table_relative_path(table_root: &Path, relative_path: &str) -> Result<PathBuf
         )));
     }
 
+    Ok(PathBuf::from(relative_path))
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(unix)))]
+fn table_relative_path(table_root: &Path, relative_path: &str) -> Result<PathBuf, QueryError> {
+    let parsed = validated_relative_path(relative_path)?;
     let joined = table_root.join(parsed);
     if joined.exists() {
         let canonical_root = fs::canonicalize(table_root).map_err(|error| {
@@ -514,6 +538,135 @@ fn table_relative_path(table_root: &Path, relative_path: &str) -> Result<PathBuf
     }
 
     Ok(joined)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+fn read_confined_bytes_unix(
+    table_root: &Path,
+    relative_path: &str,
+) -> Result<Option<Bytes>, QueryError> {
+    let parsed = validated_relative_path(relative_path)?;
+    let mut components = parsed
+        .components()
+        .filter_map(|component| match component {
+            Component::CurDir => None,
+            Component::Normal(part) => Some(path_component_cstring(part, relative_path)),
+            _ => Some(Err(invalid_request(format!(
+                "snapshot path '{}' must stay under the table root",
+                relative_path
+            )))),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(final_component) = components.pop() else {
+        return Err(invalid_request(format!(
+            "snapshot path '{}' must stay under the table root",
+            relative_path
+        )));
+    };
+
+    let mut directory = fs::File::open(table_root).map_err(|error| {
+        execution_error(format!(
+            "failed to open table root '{}': {error}",
+            table_root.display()
+        ))
+    })?;
+    for component in components {
+        let Some(next_directory) = open_directory_nofollow_unix(
+            directory.as_raw_fd(),
+            component.as_c_str(),
+            relative_path,
+        )?
+        else {
+            return Ok(None);
+        };
+        directory = next_directory;
+    }
+
+    let Some(mut file) = open_file_nofollow_unix(
+        directory.as_raw_fd(),
+        final_component.as_c_str(),
+        relative_path,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|error| {
+        execution_error(format!(
+            "failed to read snapshot file '{}': {error}",
+            relative_path
+        ))
+    })?;
+    Ok(Some(Bytes::from(bytes)))
+}
+
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+fn path_component_cstring(
+    component: &std::ffi::OsStr,
+    relative_path: &str,
+) -> Result<CString, QueryError> {
+    CString::new(component.as_bytes()).map_err(|_| {
+        invalid_request(format!(
+            "snapshot path '{}' must stay under the table root",
+            relative_path
+        ))
+    })
+}
+
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+fn open_directory_nofollow_unix(
+    directory_fd: std::os::fd::RawFd,
+    component: &std::ffi::CStr,
+    relative_path: &str,
+) -> Result<Option<fs::File>, QueryError> {
+    open_nofollow_unix(
+        directory_fd,
+        component,
+        libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW,
+        relative_path,
+    )
+}
+
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+fn open_file_nofollow_unix(
+    directory_fd: std::os::fd::RawFd,
+    component: &std::ffi::CStr,
+    relative_path: &str,
+) -> Result<Option<fs::File>, QueryError> {
+    open_nofollow_unix(
+        directory_fd,
+        component,
+        libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        relative_path,
+    )
+}
+
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+fn open_nofollow_unix(
+    directory_fd: std::os::fd::RawFd,
+    component: &std::ffi::CStr,
+    flags: libc::c_int,
+    relative_path: &str,
+) -> Result<Option<fs::File>, QueryError> {
+    let opened_fd = unsafe { libc::openat(directory_fd, component.as_ptr(), flags) };
+    if opened_fd >= 0 {
+        let owned_fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(opened_fd) };
+        return Ok(Some(fs::File::from(owned_fd)));
+    }
+
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(code) if code == libc::ENOENT || code == libc::ENOTDIR => Ok(None),
+        Some(code) if code == libc::ELOOP => Err(invalid_request(format!(
+            "snapshot path '{}' must stay under the table root",
+            relative_path
+        ))),
+        _ => Err(execution_error(format!(
+            "failed to open snapshot file '{}': {error}",
+            relative_path
+        ))),
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -920,11 +1073,15 @@ fn group_string_map(
 }
 
 fn resolve_sidecar_path(path: &str) -> String {
-    if path.starts_with("_delta_log/") || is_absolute_uri(path) {
+    if path.starts_with("_delta_log/") || is_absolute_uri(path) || is_absolute_native_path(path) {
         path.to_string()
     } else {
         format!("{DELTA_LOG_DIR}/_sidecars/{path}")
     }
+}
+
+fn is_absolute_native_path(path: &str) -> bool {
+    Path::new(path).is_absolute() || path.starts_with('\\')
 }
 
 fn is_absolute_uri(path: &str) -> bool {

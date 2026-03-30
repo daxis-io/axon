@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use arrow_array::builder::{Int64Builder, MapBuilder, MapFieldNames, StringBuilder, StructBuilder};
@@ -302,6 +302,177 @@ async fn preserves_absolute_sidecar_paths() {
 }
 
 #[tokio::test]
+async fn rejects_native_absolute_sidecar_paths_that_escape_the_table_root() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    let table_root = fixture.path().join("table");
+    fs::create_dir_all(delta_log_dir(&table_root).join("_sidecars"))
+        .expect("sidecar directory should be created");
+
+    let escaped_sidecar = fixture.path().join("escape.parquet");
+    write_uuid_checkpoint(
+        &table_root,
+        0,
+        "11111111-1111-1111-1111-111111111111",
+        &[CheckpointRow::sidecar(
+            escaped_sidecar.display().to_string(),
+        )],
+    );
+    write_last_checkpoint(&table_root, 0, None);
+    write_checkpoint_file(
+        &remapped_native_absolute_sidecar_path(&table_root, &escaped_sidecar),
+        &[CheckpointRow::add(
+            "data/escape.parquet",
+            10,
+            BTreeMap::new(),
+        )],
+    );
+
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+
+    let error = resolver
+        .resolve_snapshot(SnapshotResolutionRequest {
+            table_uri: table_root.display().to_string(),
+            snapshot_version: None,
+        })
+        .await
+        .expect_err("native absolute sidecar paths should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(
+        error.message.contains("table root"),
+        "unexpected error message: {}",
+        error.message
+    );
+}
+
+#[tokio::test]
+async fn rejects_sidecar_file_uri_paths_that_escape_the_table_root() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    let table_root = fixture.path().join("table");
+    fs::create_dir_all(delta_log_dir(&table_root).join("_sidecars"))
+        .expect("sidecar directory should be created");
+
+    let escaped_sidecar = fixture.path().join("escape.parquet");
+    write_uuid_checkpoint(
+        &table_root,
+        0,
+        "11111111-1111-1111-1111-111111111111",
+        &[CheckpointRow::sidecar(format!(
+            "file://{}",
+            escaped_sidecar.display()
+        ))],
+    );
+    write_last_checkpoint(&table_root, 0, None);
+    write_checkpoint_file(
+        &escaped_sidecar,
+        &[CheckpointRow::add(
+            "data/escape.parquet",
+            10,
+            BTreeMap::new(),
+        )],
+    );
+
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+
+    let error = resolver
+        .resolve_snapshot(SnapshotResolutionRequest {
+            table_uri: table_root.display().to_string(),
+            snapshot_version: None,
+        })
+        .await
+        .expect_err("file URI sidecar paths should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(
+        error.message.contains("table root"),
+        "unexpected error message: {}",
+        error.message
+    );
+}
+
+#[tokio::test]
+async fn rejects_windows_drive_sidecar_paths_that_escape_the_table_root() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    let table_root = fixture.path().join("table");
+    fs::create_dir_all(delta_log_dir(&table_root).join("_sidecars"))
+        .expect("sidecar directory should be created");
+
+    write_uuid_checkpoint(
+        &table_root,
+        0,
+        "11111111-1111-1111-1111-111111111111",
+        &[CheckpointRow::sidecar(r"C:\escape.parquet")],
+    );
+    write_last_checkpoint(&table_root, 0, None);
+
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+
+    let error = resolver
+        .resolve_snapshot(SnapshotResolutionRequest {
+            table_uri: table_root.display().to_string(),
+            snapshot_version: None,
+        })
+        .await
+        .expect_err("windows drive sidecar paths should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(
+        error.message.contains("table root"),
+        "unexpected error message: {}",
+        error.message
+    );
+}
+
+#[tokio::test]
+async fn rejects_unc_sidecar_paths_that_escape_the_table_root() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    let table_root = fixture.path().join("table");
+    fs::create_dir_all(delta_log_dir(&table_root).join("_sidecars"))
+        .expect("sidecar directory should be created");
+
+    write_uuid_checkpoint(
+        &table_root,
+        0,
+        "11111111-1111-1111-1111-111111111111",
+        &[CheckpointRow::sidecar(r"\\server\share\escape.parquet")],
+    );
+    write_last_checkpoint(&table_root, 0, None);
+
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+
+    let error = resolver
+        .resolve_snapshot(SnapshotResolutionRequest {
+            table_uri: table_root.display().to_string(),
+            snapshot_version: None,
+        })
+        .await
+        .expect_err("UNC sidecar paths should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(
+        error.message.contains("table root"),
+        "unexpected error message: {}",
+        error.message
+    );
+}
+
+#[tokio::test]
 async fn rejects_sidecar_paths_that_escape_the_table_root() {
     let fixture = TempDir::new().expect("tempdir should be created");
     let table_root = fixture.path().join("table");
@@ -342,6 +513,54 @@ async fn rejects_sidecar_paths_that_escape_the_table_root() {
     assert_eq!(error.code, QueryErrorCode::InvalidRequest);
     assert!(
         error.message.contains("sidecar") || error.message.contains("table root"),
+        "unexpected error message: {}",
+        error.message
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn rejects_sidecar_symlinks_within_the_table_root() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    let table_root = fixture.path().join("table");
+    let sidecar_dir = delta_log_dir(&table_root).join("_sidecars");
+    fs::create_dir_all(&sidecar_dir).expect("sidecar directory should be created");
+
+    write_uuid_checkpoint(
+        &table_root,
+        0,
+        "11111111-1111-1111-1111-111111111111",
+        &[CheckpointRow::sidecar("link.parquet")],
+    );
+    write_last_checkpoint(&table_root, 0, None);
+    write_sidecar(
+        &table_root,
+        "real.parquet",
+        &[CheckpointRow::add("data/real.parquet", 10, BTreeMap::new())],
+    );
+    symlink(
+        sidecar_dir.join("real.parquet"),
+        sidecar_dir.join("link.parquet"),
+    )
+    .expect("sidecar symlink should be created");
+
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+
+    let error = resolver
+        .resolve_snapshot(SnapshotResolutionRequest {
+            table_uri: table_root.display().to_string(),
+            snapshot_version: None,
+        })
+        .await
+        .expect_err("symlinked sidecar paths should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(
+        error.message.contains("table root") || error.message.contains("symlink"),
         "unexpected error message: {}",
         error.message
     );
@@ -474,6 +693,18 @@ fn write_sidecar(root: &Path, filename: &str, rows: &[CheckpointRow]) {
     fs::create_dir_all(path.parent().expect("sidecar parent should exist"))
         .expect("sidecar dir should be created");
     write_checkpoint_file(&path, rows);
+}
+
+fn remapped_native_absolute_sidecar_path(root: &Path, absolute_path: &Path) -> PathBuf {
+    let mut path = delta_log_dir(root).join("_sidecars");
+    for component in absolute_path.components() {
+        if let Component::Normal(part) = component {
+            path.push(part);
+        }
+    }
+    fs::create_dir_all(path.parent().expect("sidecar parent should exist"))
+        .expect("sidecar dir should be created");
+    path
 }
 
 fn delta_log_dir(root: &Path) -> std::path::PathBuf {
