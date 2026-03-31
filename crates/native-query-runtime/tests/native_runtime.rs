@@ -14,7 +14,7 @@ use query_contract::{
     QueryRequest,
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value as JsonValue};
 use tempfile::TempDir;
 
 struct TestTableFixture {
@@ -210,6 +210,37 @@ impl TestTableFixture {
         paths.sort();
         paths
     }
+
+    fn overwrite_initial_protocol(&self, protocol: JsonValue) {
+        let commit_path = self
+            ._tempdir
+            .path()
+            .join("_delta_log")
+            .join("00000000000000000000.json");
+        let contents =
+            fs::read_to_string(&commit_path).expect("initial delta log commit should be readable");
+        let mut saw_protocol = false;
+        let rewritten = contents
+            .lines()
+            .map(|line| {
+                let mut action: JsonValue =
+                    serde_json::from_str(line).expect("delta log action should parse");
+                if action.get("protocol").is_some() {
+                    action["protocol"] = protocol.clone();
+                    saw_protocol = true;
+                }
+                serde_json::to_string(&action).expect("delta log action should serialize")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            saw_protocol,
+            "initial delta log commit should contain a protocol"
+        );
+        fs::write(commit_path, format!("{rewritten}\n"))
+            .expect("rewritten delta log commit should be written");
+    }
 }
 
 fn default_table_columns() -> Vec<StructField> {
@@ -242,6 +273,15 @@ fn deletion_vector_protocol_action() -> Action {
     .expect("protocol should deserialize");
 
     Action::Protocol(protocol)
+}
+
+fn unknown_protocol_feature_protocol() -> JsonValue {
+    json!({
+        "minReaderVersion": 3,
+        "minWriterVersion": 7,
+        "readerFeatures": ["mysteryFeature"],
+        "writerFeatures": ["mysteryFeature"],
+    })
 }
 
 fn fixture_batch(ids: &[i32], categories: &[&str], values: &[i32]) -> RecordBatch {
@@ -357,7 +397,7 @@ fn expected_scan_metrics(
     }
 }
 
-const ALL_CAPABILITY_KEYS: [CapabilityKey; 9] = [
+const ALL_CAPABILITY_KEYS: [CapabilityKey; 10] = [
     CapabilityKey::ChangeDataFeed,
     CapabilityKey::ColumnMapping,
     CapabilityKey::DeletionVectors,
@@ -367,6 +407,7 @@ const ALL_CAPABILITY_KEYS: [CapabilityKey; 9] = [
     CapabilityKey::SignedUrlAccess,
     CapabilityKey::TimeTravel,
     CapabilityKey::TimestampNtz,
+    CapabilityKey::UnknownProtocolFeatures,
 ];
 
 fn paired_env_vars_or_skip(left_name: &str, right_name: &str) -> Option<(String, String)> {
@@ -580,6 +621,23 @@ fn bootstrap_table_rejects_column_mapping_tables() {
 }
 
 #[test]
+fn bootstrap_table_rejects_unknown_protocol_feature_tables() {
+    let fixture =
+        TestTableFixture::create_with_columns_and_configuration(default_table_columns(), vec![]);
+    fixture.overwrite_initial_protocol(unknown_protocol_feature_protocol());
+
+    let error = bootstrap_table(&fixture.table_uri)
+        .expect_err("tables with unclassified protocol features should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+    assert!(
+        error.message.contains("mysteryFeature"),
+        "error should identify the rejected capability: {}",
+        error.message
+    );
+}
+
+#[test]
 fn execute_query_runs_the_native_sql_corpus_with_golden_results() {
     let fixture = TestTableFixture::create();
     let mut saw_metrics = false;
@@ -669,6 +727,10 @@ fn execute_query_reports_the_full_capability_matrix_for_supported_tables() {
         (CapabilityKey::SignedUrlAccess, CapabilityState::Unsupported),
         (CapabilityKey::TimeTravel, CapabilityState::Supported),
         (CapabilityKey::TimestampNtz, CapabilityState::Unsupported),
+        (
+            CapabilityKey::UnknownProtocolFeatures,
+            CapabilityState::Unsupported,
+        ),
     ] {
         assert_eq!(
             result.capabilities.state(capability),

@@ -5,8 +5,8 @@ use browser_sdk::{
     BrowserWorkerResponseEnvelope,
 };
 use query_contract::{
-    CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, QueryError,
-    QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse,
+    BrowserAccessMode, CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget,
+    FallbackReason, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -34,6 +34,9 @@ fn browser_sdk_round_trips_worker_success_envelopes_in_wasm() {
                 duration_ms: 4,
                 files_touched: 1,
                 files_skipped: 0,
+                footer_reads: None,
+                snapshot_bootstrap_duration_ms: None,
+                access_mode: None,
             },
         },
         ArrowIpcResultEnvelope::new(ArrowIpcFormat::Stream, vec![1, 2, 3, 4]),
@@ -90,4 +93,45 @@ fn browser_sdk_preserves_structured_fallbacks_and_content_type_validation_in_was
     assert!(error
         .to_string()
         .contains("does not match expected content type"));
+}
+
+#[wasm_bindgen_test]
+fn browser_sdk_round_trips_browser_telemetry_fields_in_wasm() {
+    let response = BrowserWorkerResponseEnvelope::success(
+        "req-telemetry",
+        QueryResponse {
+            executed_on: ExecutionTarget::BrowserWasm,
+            capabilities: CapabilityReport::from_pairs([(
+                CapabilityKey::RangeReads,
+                CapabilityState::Supported,
+            )]),
+            fallback_reason: None,
+            metrics: QueryMetricsSummary {
+                bytes_fetched: 2048,
+                duration_ms: 15,
+                files_touched: 2,
+                files_skipped: 1,
+                footer_reads: Some(2),
+                snapshot_bootstrap_duration_ms: Some(6),
+                access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
+            },
+        },
+        ArrowIpcResultEnvelope::new(ArrowIpcFormat::Stream, vec![9, 8, 7, 6]),
+    );
+
+    let round_tripped: BrowserWorkerResponseEnvelope =
+        serde_json::from_value(serde_json::to_value(&response).expect("response serializes"))
+            .expect("response deserializes in wasm");
+    let metrics = &round_tripped
+        .success_envelope()
+        .expect("success envelope should be present")
+        .response
+        .metrics;
+
+    assert_eq!(metrics.footer_reads, Some(2));
+    assert_eq!(metrics.snapshot_bootstrap_duration_ms, Some(6));
+    assert_eq!(
+        metrics.access_mode,
+        Some(BrowserAccessMode::BrowserSafeHttp)
+    );
 }

@@ -52,7 +52,10 @@ async fn known_file_size_avoids_extra_metadata_round_trip() {
         requests[0].headers.get("range"),
         Some(&expected_trailer_range)
     );
-    assert_eq!(requests[1].headers.get("range"), Some(&expected_footer_range));
+    assert_eq!(
+        requests[1].headers.get("range"),
+        Some(&expected_footer_range)
+    );
     assert_eq!(metadata.object_size_bytes, object_size);
     assert_eq!(metadata.row_group_count, 1);
     assert_eq!(metadata.row_count, 3);
@@ -169,8 +172,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
 }
 
 fn write_response(stream: &mut std::net::TcpStream, response: TestResponse) {
-    write!(stream, "HTTP/1.1 {}\r\n", response.status_line)
-        .expect("status line should write");
+    write!(stream, "HTTP/1.1 {}\r\n", response.status_line).expect("status line should write");
     for (header, value) in response.headers {
         write!(stream, "{header}: {value}\r\n").expect("header should write");
     }

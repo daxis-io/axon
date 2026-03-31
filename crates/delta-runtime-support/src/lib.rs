@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 #[cfg(feature = "datafusion")]
 use std::error::Error as StdError;
 use std::future::Future;
@@ -164,6 +165,10 @@ pub fn map_delta_error(error: DeltaTableError, target: ExecutionTarget) -> Query
                 query_error_from_unavailable_snapshot_message(&source.to_string(), target)
             {
                 mapped
+            } else if let Some(mapped) =
+                query_error_from_unsupported_protocol_feature_message(&source.to_string(), target)
+            {
+                mapped
             } else {
                 QueryError::new(
                     QueryErrorCode::ExecutionFailed,
@@ -174,6 +179,10 @@ pub fn map_delta_error(error: DeltaTableError, target: ExecutionTarget) -> Query
         }
         DeltaTableError::Generic(message) => {
             if let Some(mapped) = query_error_from_unavailable_snapshot_message(&message, target) {
+                mapped
+            } else if let Some(mapped) =
+                query_error_from_unsupported_protocol_feature_message(&message, target)
+            {
                 mapped
             } else {
                 QueryError::new(
@@ -247,6 +256,23 @@ pub fn query_error_from_unavailable_snapshot_message(
     })
 }
 
+fn query_error_from_unsupported_protocol_feature_message(
+    message: &str,
+    target: ExecutionTarget,
+) -> Option<QueryError> {
+    let normalized = message.to_ascii_lowercase();
+    let unsupported_protocol_feature =
+        normalized.contains("unknown feature") || normalized.contains("unsupported feature");
+
+    unsupported_protocol_feature.then(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedFeature,
+            format!("Delta protocol feature is not supported safely: {message}"),
+            target,
+        )
+    })
+}
+
 #[cfg(feature = "datafusion")]
 fn find_object_store_error<'a>(
     error: &'a (dyn StdError + 'static),
@@ -288,6 +314,32 @@ fn table_uses_deletion_vectors(snapshot: &DeltaTableState) -> bool {
             || protocol_has_writer_feature(snapshot.protocol(), "deletionVectors"))
 }
 
+pub fn unknown_table_protocol_features(snapshot: &DeltaTableState) -> Vec<String> {
+    unknown_protocol_features(snapshot.protocol())
+}
+
+pub fn table_uses_unknown_protocol_features(snapshot: &DeltaTableState) -> bool {
+    !unknown_table_protocol_features(snapshot).is_empty()
+}
+
+fn unknown_protocol_features(protocol: &deltalake::kernel::Protocol) -> Vec<String> {
+    protocol
+        .reader_features()
+        .into_iter()
+        .flat_map(|features| features.iter())
+        .chain(
+            protocol
+                .writer_features()
+                .into_iter()
+                .flat_map(|features| features.iter()),
+        )
+        .map(ToString::to_string)
+        .filter(|feature| !protocol_feature_is_classified(feature))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 fn protocol_has_reader_feature(protocol: &deltalake::kernel::Protocol, feature_name: &str) -> bool {
     protocol.reader_features().is_some_and(|features| {
         features
@@ -302,6 +354,13 @@ fn protocol_has_writer_feature(protocol: &deltalake::kernel::Protocol, feature_n
             .iter()
             .any(|feature| feature.to_string() == feature_name)
     })
+}
+
+fn protocol_feature_is_classified(feature_name: &str) -> bool {
+    matches!(
+        feature_name,
+        "changeDataFeed" | "columnMapping" | "deletionVectors" | "timestampNtz"
+    )
 }
 
 fn field_uses_timestamp_ntz(field: &StructField) -> bool {
@@ -473,6 +532,8 @@ mod tests {
 
     #[cfg(feature = "datafusion")]
     use deltalake::datafusion::common::{Column, DataFusionError, SchemaError};
+    use deltalake::kernel::Protocol;
+    use serde_json::json;
     use tempfile::TempDir;
 
     #[test]
@@ -760,6 +821,22 @@ mod tests {
         assert_eq!(error.code, QueryErrorCode::InvalidRequest);
         assert_eq!(error.target, ExecutionTarget::Native);
         assert!(error.message.contains("requested snapshot version"));
+    }
+
+    #[test]
+    fn unknown_protocol_features_reports_unclassified_features() {
+        let protocol = serde_json::from_value::<Protocol>(json!({
+            "minReaderVersion": 3,
+            "minWriterVersion": 7,
+            "readerFeatures": ["mysteryFeature"],
+            "writerFeatures": ["mysteryFeature"],
+        }))
+        .expect("protocol should deserialize");
+
+        assert_eq!(
+            unknown_protocol_features(&protocol),
+            vec!["mysteryFeature".to_string()]
+        );
     }
 
     #[test]

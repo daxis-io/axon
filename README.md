@@ -13,6 +13,7 @@ Axon is a Rust workspace for building a hybrid query platform with native and br
 - `crates/wasm-delta-snapshot` contains browser-safe Delta snapshot reconstruction.
 - `crates/query-router` contains browser-vs-native routing policy and structured fallback decisions.
 - `crates/browser-sdk` contains the thin browser embedding surface: worker request envelopes, Arrow IPC result transport, and structured fallback propagation.
+- `crates/browser-engine-worker` contains the internal browser worker artifact used for wasm size, startup, and footprint reporting.
 - `crates/udf-abi` and `crates/udf-host-wasi` remain scaffolds around hosted UDF execution.
 
 ## Getting Started
@@ -22,8 +23,9 @@ cargo check --workspace
 cargo test -p query-contract
 cargo test -p native-query-runtime
 cargo test -p wasm-query-runtime
+cargo test -p browser-engine-worker
 cargo test -p wasm-http-object-store
-cargo check -p wasm-query-runtime -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p browser-sdk --target wasm32-unknown-unknown
+cargo check -p wasm-query-runtime -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p browser-sdk -p browser-engine-worker --target wasm32-unknown-unknown
 cargo check -p wasm-parquet-engine -p wasm-delta-snapshot --locked
 ```
 
@@ -64,6 +66,23 @@ cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --locked --test
 ```
 
 This slice is intentionally small: it does not register tables with DataFusion or implement any `services/query-api` behavior. The current browser output is a deterministic planning/pruning plus narrow execution-plan interpreter over the curated supported SQL corpus, not a broad browser SQL or DataFusion engine. The worker-facing embedding boundary now lives in `crates/browser-sdk`, which carries `QueryRequest` into a worker envelope and returns Arrow IPC bytes plus structured fallback metadata instead of row-oriented JSON.
+
+## Browser Worker Artifact
+
+`crates/browser-engine-worker` is the internal wasm artifact that now links the browser runtime and SDK into one measurable worker-sized bundle:
+
+- `cold_start_report()` constructs the default browser runtime session, measures a local worker-initialization proxy inside the current host or wasm target, and reports serialized request/error envelope sizes plus the default access mode and timeout configuration.
+- `memory_baseline_report()` reports a non-blocking footprint proxy for the worker-facing runtime/session/config and envelope structs together with serialized JSON sizes.
+- `artifact_report()` combines both sections for host-side baseline publication, while the wasm smoke validates the same report path for the browser target.
+
+Local validation:
+
+```bash
+cargo test -p browser-engine-worker --locked
+cargo test -p browser-engine-worker --target wasm32-unknown-unknown --locked --test wasm_smoke -- --nocapture
+bash tests/perf/report_browser_worker_artifact.sh
+bash tests/security/verify_browser_dependency_guardrails.sh
+```
 
 ## Native Runtime Slice
 
@@ -217,15 +236,14 @@ This slice is intentionally small: it does not register tables with DataFusion, 
 Browser launch readiness is now tracked in the release checklist and supporting docs:
 
 - `docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md` captures the browser compatibility, Delta compatibility, security reporting, and size-budget gates for the new architecture.
-- `tests/perf/README.md` documents the provisional release-artifact size proxy and the browser performance baseline commands.
-- `tests/security/README.md` points at the in-repo security checks and the private reporting path in `SECURITY.md`.
-- CI now checks `wasm32-unknown-unknown` compatibility for `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-sdk`, runs host tests for the new split crates, and runs dedicated `wasm32-unknown-unknown` smoke suites for `browser-sdk`, `wasm-parquet-engine`, `wasm-delta-snapshot`, and `wasm-query-runtime`.
-- The browser size budget currently uses the release `.rlib` artifact as a provisional proxy for bundle size. Startup and memory budgets are documented as future work. That is a limitation of the current repo surface; the final application bundle is not yet produced here.
+- `tests/perf/README.md` documents the real `browser-engine-worker.wasm` size gate plus the startup and memory baseline commands.
+- `tests/security/README.md` points at the in-repo policy tests, dependency guardrails, bundle inspection, and the private reporting path in `SECURITY.md`.
+- CI now checks `wasm32-unknown-unknown` compatibility for `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, `browser-sdk`, and `browser-engine-worker`, runs host tests for the split browser crates, runs dedicated `wasm32-unknown-unknown` smoke suites for `browser-sdk`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-engine-worker`, enforces a real `browser-engine-worker.wasm` size budget, publishes host-proxy startup plus footprint reports from the worker baseline tests, and regression-checks the browser dependency guardrail parser.
 
 ## Repository Layout
 
 - `crates/` contains the Rust workspace packages.
 - `tests/conformance/` contains scaffold checks plus native SQL corpora whose partition-pruning expectations now serve as the local oracle for narrow browser-planning parity coverage.
-- `tests/perf/` contains performance budget notes, provisional size-proxy reporting, and benchmark scaffolding.
-- `tests/security/` contains security reporting guidance and will grow into service-level secret/CORS coverage once `services/query-api` exists.
+- `tests/perf/` contains performance budget notes, the browser worker artifact size gate, and benchmark scaffolding.
+- `tests/security/` contains security reporting guidance, browser dependency and bundle guardrails, and will grow into service-level secret/CORS coverage once `services/query-api` exists.
 - `.github/workflows/ci.yml` contains the CI configuration.

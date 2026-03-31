@@ -3,8 +3,8 @@ use browser_sdk::{
     BrowserWorkerResponseEnvelope,
 };
 use query_contract::{
-    CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, QueryError,
-    QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse,
+    BrowserAccessMode, CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget,
+    FallbackReason, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse,
 };
 
 #[test]
@@ -38,6 +38,9 @@ fn browser_sdk_exposes_arrow_ipc_result_envelope() {
                 duration_ms: 4,
                 files_touched: 1,
                 files_skipped: 0,
+                footer_reads: None,
+                snapshot_bootstrap_duration_ms: None,
+                access_mode: None,
             },
         },
         ArrowIpcResultEnvelope::new(ArrowIpcFormat::Stream, vec![0xff, 0xff, 0x00, 0x01]),
@@ -83,6 +86,9 @@ fn browser_sdk_preserves_structured_fallback_reason() {
                 duration_ms: 12,
                 files_touched: 2,
                 files_skipped: 3,
+                footer_reads: None,
+                snapshot_bootstrap_duration_ms: None,
+                access_mode: None,
             },
         },
         ArrowIpcResultEnvelope::new(ArrowIpcFormat::File, vec![1, 2, 3]),
@@ -95,6 +101,47 @@ fn browser_sdk_preserves_structured_fallback_reason() {
         .fallback_reason()
         .expect("fallback reason survives worker envelope");
     assert_eq!(preserved, &fallback_reason);
+}
+
+#[test]
+fn browser_sdk_round_trips_browser_telemetry_fields() {
+    let response = BrowserWorkerResponseEnvelope::success(
+        "req-telemetry",
+        QueryResponse {
+            executed_on: ExecutionTarget::BrowserWasm,
+            capabilities: CapabilityReport::from_pairs([(
+                CapabilityKey::RangeReads,
+                CapabilityState::Supported,
+            )]),
+            fallback_reason: None,
+            metrics: QueryMetricsSummary {
+                bytes_fetched: 2048,
+                duration_ms: 15,
+                files_touched: 2,
+                files_skipped: 1,
+                footer_reads: Some(2),
+                snapshot_bootstrap_duration_ms: Some(6),
+                access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
+            },
+        },
+        ArrowIpcResultEnvelope::new(ArrowIpcFormat::Stream, vec![9, 8, 7, 6]),
+    );
+
+    let round_tripped: BrowserWorkerResponseEnvelope =
+        serde_json::from_value(serde_json::to_value(&response).expect("response serializes"))
+            .expect("response deserializes");
+    let metrics = &round_tripped
+        .success_envelope()
+        .expect("success envelope should be present")
+        .response
+        .metrics;
+
+    assert_eq!(metrics.footer_reads, Some(2));
+    assert_eq!(metrics.snapshot_bootstrap_duration_ms, Some(6));
+    assert_eq!(
+        metrics.access_mode,
+        Some(BrowserAccessMode::BrowserSafeHttp)
+    );
 }
 
 #[test]

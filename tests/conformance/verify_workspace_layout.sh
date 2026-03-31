@@ -12,6 +12,7 @@ required_files=(
 )
 
 required_dirs=(
+  "crates/browser-engine-worker"
   "crates/query-contract"
   "crates/query-router"
   "crates/native-query-runtime"

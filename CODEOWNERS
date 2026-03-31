@@ -6,7 +6,10 @@
 /crates/delta-control-plane/ @axon/storage-platform
 /crates/wasm-query-runtime/ @axon/runtime-engine
 /crates/wasm-http-object-store/ @axon/runtime-engine
+/crates/wasm-parquet-engine/ @axon/runtime-engine
+/crates/wasm-delta-snapshot/ @axon/runtime-engine
 /crates/browser-sdk/ @axon/web-platform
+/crates/browser-engine-worker/ @axon/web-platform
 /crates/udf-abi/ @axon/runtime-engine
 /crates/udf-host-wasi/ @axon/runtime-engine
 /docs/adr/ @axon/query-platform

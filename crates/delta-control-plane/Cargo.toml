@@ -11,6 +11,7 @@ query-contract = { path = "../query-contract" }
 
 [dev-dependencies]
 native-query-runtime = { path = "../native-query-runtime" }
+serde_json.workspace = true
 tempfile = "=3.27.0"
 tokio = { version = "=1.50.0", features = ["rt-multi-thread"] }
 wasm-query-runtime = { path = "../wasm-query-runtime" }

@@ -3,7 +3,9 @@ mod support;
 use std::path::PathBuf;
 
 use delta_control_plane::{resolve_snapshot, resolve_snapshot_with_policy, SnapshotAccessPolicy};
+use deltalake::kernel::{DataType, PrimitiveType, StructField};
 use query_contract::{QueryErrorCode, SnapshotResolutionRequest};
+use serde_json::json;
 use support::TestTableFixture;
 use tempfile::TempDir;
 
@@ -26,8 +28,34 @@ fn resolve_snapshot_returns_latest_descriptor_with_sorted_active_files() {
             query_contract::PartitionColumnType::String,
         )])
     );
+    assert_eq!(
+        descriptor.browser_compatibility,
+        descriptor.required_capabilities
+    );
     assert!(descriptor.required_capabilities.capabilities.is_empty());
     assert_eq!(descriptor.active_files, fixture.expected_active_files(None));
+}
+
+#[test]
+fn resolve_snapshot_rejects_unknown_protocol_features() {
+    let fixture = TestTableFixture::create_with_columns_and_configuration(
+        vec![StructField::new(
+            "id".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            false,
+        )],
+        vec![],
+    );
+    fixture.overwrite_initial_protocol(unknown_protocol_feature_protocol());
+
+    let error = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect_err("unknown protocol features must hard fail during trusted snapshot resolution");
+
+    assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+    assert!(error.message.contains("mysteryFeature"));
 }
 
 #[test]
@@ -234,6 +262,15 @@ fn resolve_snapshot_with_policy_prefers_denies_over_allow_rules() {
     .expect_err("deny rules should win over allow rules");
 
     assert_eq!(error.code, QueryErrorCode::SecurityPolicyViolation);
+}
+
+fn unknown_protocol_feature_protocol() -> serde_json::Value {
+    json!({
+        "minReaderVersion": 3,
+        "minWriterVersion": 7,
+        "readerFeatures": ["mysteryFeature"],
+        "writerFeatures": ["mysteryFeature"],
+    })
 }
 
 #[test]

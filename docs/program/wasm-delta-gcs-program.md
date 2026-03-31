@@ -3,6 +3,9 @@
 - Status: Drafted from in-chat architecture bundle
 - Date: 2026-03-20
 - Scope: architecture, ownership, ADR split, epic split, release gates, and GitHub setup
+- Follow-on planning docs:
+  - [Browser Lakehouse Engine Strategy](./browser-lakehouse-engine-strategy.md)
+  - [Browser Lakehouse Engine Implementation Plan](../plans/2026-03-28-browser-lakehouse-engine-implementation-plan.md)
 
 This document is the source bundle for the initial program definition. The ADRs under [docs/adr](../adr/README.md) and the epic issue bodies under [docs/epics](../epics/README.md) are derived from this document.
 

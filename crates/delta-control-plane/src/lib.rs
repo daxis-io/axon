@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use delta_runtime_support::{
     canonical_table_policy_key_from_url, map_delta_error, normalize_table_uri,
-    required_table_capabilities, run_on_runtime, validate_snapshot_version,
+    required_table_capabilities, run_on_runtime, unknown_table_protocol_features,
+    validate_snapshot_version,
 };
 use deltalake::kernel::scalars::ScalarExt;
 use deltalake::kernel::{DataType, PrimitiveType, StructField};
@@ -105,14 +106,27 @@ pub fn resolve_snapshot_with_policy(
             let snapshot = table
                 .snapshot()
                 .map_err(|error| map_delta_error(error, control_plane_target()))?;
+            let unknown_protocol_features = unknown_table_protocol_features(snapshot);
+            if !unknown_protocol_features.is_empty() {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedFeature,
+                    format!(
+                        "trusted snapshot resolution does not support Delta protocol feature(s): {}",
+                        unknown_protocol_features.join(", ")
+                    ),
+                    control_plane_target(),
+                ));
+            }
             let active_files = collect_active_files(snapshot)?;
             let partition_column_types = resolve_partition_column_types(snapshot)?;
+            let browser_compatibility = required_table_capabilities(snapshot);
 
             Ok(ResolvedSnapshotDescriptor {
                 table_uri: normalized_uri.to_string(),
                 snapshot_version: snapshot.version(),
                 partition_column_types,
-                required_capabilities: required_table_capabilities(snapshot),
+                browser_compatibility: browser_compatibility.clone(),
+                required_capabilities: browser_compatibility,
                 active_files,
             })
         },
@@ -209,6 +223,7 @@ pub fn attach_browser_http_urls(
         table_uri: resolved_snapshot.table_uri,
         snapshot_version: resolved_snapshot.snapshot_version,
         partition_column_types: resolved_snapshot.partition_column_types,
+        browser_compatibility: resolved_snapshot.browser_compatibility,
         required_capabilities: resolved_snapshot.required_capabilities,
         active_files,
     })

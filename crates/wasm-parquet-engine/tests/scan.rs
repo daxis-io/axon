@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use parquet::data_type::Int64Type;
@@ -14,8 +14,8 @@ use parquet::schema::parser::parse_message_type;
 use query_contract::PartitionColumnType;
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{
-    ObjectSource, ParquetScalarValue, ScanTarget, read_parquet_metadata_for_target,
-    scan_target_input_rows,
+    read_parquet_metadata_for_target, scan_target_input_rows, ObjectSource, ParquetScalarValue,
+    ScanTarget,
 };
 
 #[tokio::test]
@@ -64,7 +64,10 @@ async fn scan_target_reads_footer_and_row_groups_from_object_source() {
         requests[0].headers.get("range"),
         Some(&expected_trailer_range)
     );
-    assert_eq!(requests[1].headers.get("range"), Some(&expected_footer_range));
+    assert_eq!(
+        requests[1].headers.get("range"),
+        Some(&expected_footer_range)
+    );
     assert!(requests[2].headers.get("range").is_none());
     assert_eq!(metadata.row_group_count, 1);
     assert_eq!(metadata.row_count, 3);
@@ -200,8 +203,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
 }
 
 fn write_response(stream: &mut std::net::TcpStream, response: TestResponse) {
-    write!(stream, "HTTP/1.1 {}\r\n", response.status_line)
-        .expect("status line should write");
+    write!(stream, "HTTP/1.1 {}\r\n", response.status_line).expect("status line should write");
     for (header, value) in response.headers {
         write!(stream, "{header}: {value}\r\n").expect("header should write");
     }

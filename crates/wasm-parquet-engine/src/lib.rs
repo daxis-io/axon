@@ -308,18 +308,17 @@ pub async fn scan_target_input_rows(
     request_timeout: Option<Duration>,
 ) -> Result<Vec<ParquetInputRow>, QueryError> {
     let read = reader
-        .read_range_with_timeout(&target.object_source.url, HttpByteRange::Full, request_timeout)
+        .read_range_with_timeout(
+            &target.object_source.url,
+            HttpByteRange::Full,
+            request_timeout,
+        )
         .await?;
     validate_full_object_read(target, &read)?;
     decode_parquet_input_rows(target, read.bytes, required_columns)?
         .into_iter()
         .map(|row| {
-            merge_partition_values_into_row(
-                row,
-                target,
-                partition_column_types,
-                required_columns,
-            )
+            merge_partition_values_into_row(row, target, partition_column_types, required_columns)
         })
         .collect()
 }
@@ -936,9 +935,7 @@ fn parquet_repetition(repetition: RawParquetRepetition) -> ParquetRepetition {
     }
 }
 
-fn parquet_converted_type(
-    converted_type: RawParquetConvertedType,
-) -> Option<ParquetConvertedType> {
+fn parquet_converted_type(converted_type: RawParquetConvertedType) -> Option<ParquetConvertedType> {
     Some(match converted_type {
         RawParquetConvertedType::NONE => return None,
         RawParquetConvertedType::UTF8 => ParquetConvertedType::Utf8,
@@ -1008,7 +1005,9 @@ fn parquet_logical_type(logical_type: &RawParquetLogicalType) -> ParquetLogicalT
         } => ParquetLogicalType::Variant {
             specification_version: *specification_version,
         },
-        RawParquetLogicalType::Geometry { crs } => ParquetLogicalType::Geometry { crs: crs.clone() },
+        RawParquetLogicalType::Geometry { crs } => {
+            ParquetLogicalType::Geometry { crs: crs.clone() }
+        }
         RawParquetLogicalType::Geography { crs, algorithm } => ParquetLogicalType::Geography {
             crs: crs.clone(),
             algorithm: algorithm.as_ref().map(parquet_edge_interpolation_algorithm),
@@ -1031,8 +1030,12 @@ fn parquet_edge_interpolation_algorithm(
     algorithm: &RawParquetEdgeInterpolationAlgorithm,
 ) -> ParquetEdgeInterpolationAlgorithm {
     match algorithm {
-        RawParquetEdgeInterpolationAlgorithm::SPHERICAL => ParquetEdgeInterpolationAlgorithm::Spherical,
-        RawParquetEdgeInterpolationAlgorithm::VINCENTY => ParquetEdgeInterpolationAlgorithm::Vincenty,
+        RawParquetEdgeInterpolationAlgorithm::SPHERICAL => {
+            ParquetEdgeInterpolationAlgorithm::Spherical
+        }
+        RawParquetEdgeInterpolationAlgorithm::VINCENTY => {
+            ParquetEdgeInterpolationAlgorithm::Vincenty
+        }
         RawParquetEdgeInterpolationAlgorithm::THOMAS => ParquetEdgeInterpolationAlgorithm::Thomas,
         RawParquetEdgeInterpolationAlgorithm::ANDOYER => ParquetEdgeInterpolationAlgorithm::Andoyer,
         RawParquetEdgeInterpolationAlgorithm::KARNEY => ParquetEdgeInterpolationAlgorithm::Karney,

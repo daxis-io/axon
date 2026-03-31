@@ -98,6 +98,9 @@ pub(super) fn lower_browser_execution_plan_with_applied_partition_constraints(
         order_by,
         limit: planned.query_shape.limit,
         pruning: planned.pruning.clone(),
+        footer_reads: snapshot.footer_reads(),
+        snapshot_bootstrap_duration_ms: snapshot.snapshot_bootstrap_duration_ms(),
+        access_mode: snapshot.access_mode(),
     })
 }
 

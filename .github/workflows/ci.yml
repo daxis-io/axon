@@ -60,8 +60,11 @@ jobs:
       - name: Test browser SDK
         run: cargo test -p browser-sdk --locked
 
+      - name: Test browser engine worker
+        run: cargo test -p browser-engine-worker --locked
+
       - name: Check wasm targets
-        run: cargo check -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p browser-sdk --target wasm32-unknown-unknown --locked
+        run: cargo check -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p browser-sdk -p browser-engine-worker --target wasm32-unknown-unknown --locked
 
       - name: Run wasm query runtime smoke
         run: cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --locked --test wasm_smoke
@@ -75,50 +78,20 @@ jobs:
       - name: Run wasm Delta snapshot smoke
         run: cargo test -p wasm-delta-snapshot --target wasm32-unknown-unknown --locked --test wasm_smoke
 
-      - name: Report browser wasm size proxy
-        run: |
-          rm -f target/wasm32-unknown-unknown/release/deps/libwasm_http_object_store-*.rlib \
-                target/wasm32-unknown-unknown/release/deps/libwasm_parquet_engine-*.rlib \
-                target/wasm32-unknown-unknown/release/deps/libwasm_delta_snapshot-*.rlib \
-                target/wasm32-unknown-unknown/release/deps/libwasm_query_runtime-*.rlib \
-                target/wasm32-unknown-unknown/release/deps/libbrowser_sdk-*.rlib
+      - name: Run browser engine worker wasm smoke
+        run: cargo test -p browser-engine-worker --target wasm32-unknown-unknown --locked --test wasm_smoke -- --nocapture
 
-          cargo build -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p browser-sdk --target wasm32-unknown-unknown --release --locked
+      - name: Report host-proxy browser worker startup and footprint baselines
+        run: cargo test -p browser-engine-worker --locked report_worker_artifact_baseline -- --exact --nocapture
 
-          report_size() {
-            local crate="$1"
-            local budget="$2"
-            local pattern="target/wasm32-unknown-unknown/release/deps/lib${crate//-/_}-*.rlib"
-            local max_size=0
-            local file
+      - name: Enforce browser worker artifact size budget
+        run: bash tests/perf/report_browser_worker_artifact.sh
 
-            for file in $pattern; do
-              [ -e "$file" ] || continue
-              local size
-              size=$(stat -c%s "$file")
-              if [ "$size" -gt "$max_size" ]; then
-                max_size="$size"
-              fi
-            done
+      - name: Run browser dependency guardrail regression
+        run: bash tests/security/verify_browser_dependency_guardrails_test.sh
 
-            if [ "$max_size" -eq 0 ]; then
-              echo "missing release artifact for ${crate}" >&2
-              exit 1
-            fi
-
-            echo "${crate}: ${max_size} bytes (budget ${budget} bytes)"
-
-            if [ "$max_size" -gt "$budget" ]; then
-              echo "${crate} exceeded the browser wasm size proxy budget" >&2
-              exit 1
-            fi
-          }
-
-          report_size wasm-http-object-store 320000
-          report_size wasm-parquet-engine 640000
-          report_size wasm-delta-snapshot 860000
-          report_size wasm-query-runtime 2300000
-          report_size browser-sdk 260000
+      - name: Verify browser dependency and bundle guardrails
+        run: bash tests/security/verify_browser_dependency_guardrails.sh
 
       - name: Verify workspace layout
         run: bash tests/conformance/verify_workspace_layout.sh

@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use delta_runtime_support::{
     map_datafusion_error as map_shared_datafusion_error, map_delta_error, normalize_table_uri,
-    run_on_runtime, validate_snapshot_version,
+    run_on_runtime, table_uses_unknown_protocol_features, validate_snapshot_version,
 };
 use deltalake::arrow::record_batch::RecordBatch;
 use deltalake::datafusion::common::tree_node::TreeNodeRecursion;
@@ -424,6 +424,7 @@ fn analyze_table_capabilities(snapshot: &DeltaTableState) -> CapabilityAnalysis 
     let change_data_feed_enabled = table_uses_change_data_feed(snapshot);
     let column_mapping_present = schema.fields().any(field_uses_column_mapping);
     let timestamp_ntz_present = schema.fields().any(field_uses_timestamp_ntz);
+    let unknown_protocol_features_present = table_uses_unknown_protocol_features(snapshot);
 
     let mut report = CapabilityReport::from_pairs([
         (CapabilityKey::ChangeDataFeed, CapabilityState::Unsupported),
@@ -438,6 +439,10 @@ fn analyze_table_capabilities(snapshot: &DeltaTableState) -> CapabilityAnalysis 
         (CapabilityKey::SignedUrlAccess, CapabilityState::Unsupported),
         (CapabilityKey::TimeTravel, CapabilityState::Supported),
         (CapabilityKey::TimestampNtz, CapabilityState::Unsupported),
+        (
+            CapabilityKey::UnknownProtocolFeatures,
+            CapabilityState::Unsupported,
+        ),
     ]);
 
     if change_data_feed_enabled {
@@ -464,6 +469,10 @@ fn analyze_table_capabilities(snapshot: &DeltaTableState) -> CapabilityAnalysis 
         (column_mapping_present, CapabilityKey::ColumnMapping),
         (deletion_vectors_enabled, CapabilityKey::DeletionVectors),
         (timestamp_ntz_present, CapabilityKey::TimestampNtz),
+        (
+            unknown_protocol_features_present,
+            CapabilityKey::UnknownProtocolFeatures,
+        ),
     ]
     .into_iter()
     .find_map(|(present, capability)| present.then_some(capability));
@@ -650,6 +659,9 @@ fn collect_query_metrics(
         duration_ms: wall_clock_duration_ms(operation_started_at),
         files_touched,
         files_skipped,
+        footer_reads: None,
+        snapshot_bootstrap_duration_ms: None,
+        access_mode: None,
     })
 }
 

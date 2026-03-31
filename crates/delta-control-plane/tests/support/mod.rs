@@ -14,9 +14,10 @@ use deltalake::arrow::array::{Int32Array, StringArray};
 use deltalake::arrow::datatypes::{DataType as ArrowDataType, Field, Schema as ArrowSchema};
 use deltalake::arrow::record_batch::RecordBatch;
 use deltalake::kernel::scalars::ScalarExt;
-use deltalake::kernel::{DataType, PrimitiveType, StructField};
+use deltalake::kernel::{Action, DataType, PrimitiveType, StructField};
 use deltalake::DeltaTable;
 use query_contract::ResolvedFileDescriptor;
+use serde_json::Value as JsonValue;
 use tempfile::TempDir;
 
 pub struct TestTableFixture {
@@ -169,7 +170,19 @@ impl TestTableFixture {
         Self::create_with_columns(default_table_columns(), partition_columns)
     }
 
-    fn create_with_columns(columns: Vec<StructField>, partition_columns: Vec<&str>) -> Self {
+    pub fn create_with_columns_and_configuration(
+        columns: Vec<StructField>,
+        configuration: Vec<(String, Option<String>)>,
+    ) -> Self {
+        Self::create_with_columns_configuration_and_partitions(columns, configuration, vec![])
+    }
+
+    pub fn create_with_columns_configuration_partitions_and_actions(
+        columns: Vec<StructField>,
+        configuration: Vec<(String, Option<String>)>,
+        partition_columns: Vec<&str>,
+        actions: Vec<Action>,
+    ) -> Self {
         let tempdir = TempDir::new().expect("tempdir should be created");
         let table_uri = deltalake::ensure_table_uri(tempdir.path().to_string_lossy())
             .expect("table uri should be normalized")
@@ -189,6 +202,47 @@ impl TestTableFixture {
                     .with_columns(columns)
                     .with_partition_columns(partition_columns)
                     .with_table_name("axon_fixture")
+                    .with_configuration(configuration)
+                    .with_actions(actions)
+                    .await
+                    .expect("table should be created");
+            });
+
+        Self {
+            _tempdir: tempdir,
+            table_uri,
+        }
+    }
+
+    fn create_with_columns(columns: Vec<StructField>, partition_columns: Vec<&str>) -> Self {
+        Self::create_with_columns_configuration_and_partitions(columns, vec![], partition_columns)
+    }
+
+    fn create_with_columns_configuration_and_partitions(
+        columns: Vec<StructField>,
+        configuration: Vec<(String, Option<String>)>,
+        partition_columns: Vec<&str>,
+    ) -> Self {
+        let tempdir = TempDir::new().expect("tempdir should be created");
+        let table_uri = deltalake::ensure_table_uri(tempdir.path().to_string_lossy())
+            .expect("table uri should be normalized")
+            .to_string();
+
+        tokio::runtime::Runtime::new()
+            .expect("runtime should be created")
+            .block_on(async {
+                let table = DeltaTable::try_from_url(
+                    deltalake::ensure_table_uri(&table_uri).expect("table uri should parse"),
+                )
+                .await
+                .expect("table handle should be created");
+
+                table
+                    .create()
+                    .with_columns(columns)
+                    .with_partition_columns(partition_columns)
+                    .with_table_name("axon_fixture")
+                    .with_configuration(configuration)
                     .await
                     .expect("table should be created");
             });
@@ -215,6 +269,37 @@ impl TestTableFixture {
 
     pub fn table_root(&self) -> &Path {
         self._tempdir.path()
+    }
+
+    pub fn overwrite_initial_protocol(&self, protocol: JsonValue) {
+        let commit_path = self
+            ._tempdir
+            .path()
+            .join("_delta_log")
+            .join("00000000000000000000.json");
+        let contents =
+            fs::read_to_string(&commit_path).expect("initial delta log commit should be readable");
+        let mut saw_protocol = false;
+        let rewritten = contents
+            .lines()
+            .map(|line| {
+                let mut action: JsonValue =
+                    serde_json::from_str(line).expect("delta log action should parse");
+                if action.get("protocol").is_some() {
+                    action["protocol"] = protocol.clone();
+                    saw_protocol = true;
+                }
+                serde_json::to_string(&action).expect("delta log action should serialize")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            saw_protocol,
+            "initial delta log commit should contain a protocol"
+        );
+        fs::write(commit_path, format!("{rewritten}\n"))
+            .expect("rewritten delta log commit should be written");
     }
 
     pub fn expected_active_files(

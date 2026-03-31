@@ -30,6 +30,7 @@ pub enum CapabilityKey {
     SignedUrlAccess,
     TimeTravel,
     TimestampNtz,
+    UnknownProtocolFeatures,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -205,6 +206,8 @@ pub struct ResolvedSnapshotDescriptor {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub partition_column_types: BTreeMap<String, PartitionColumnType>,
     #[serde(default, skip_serializing_if = "capability_report_is_empty")]
+    pub browser_compatibility: CapabilityReport,
+    #[serde(default, skip_serializing_if = "capability_report_is_empty")]
     pub required_capabilities: CapabilityReport,
     pub active_files: Vec<ResolvedFileDescriptor>,
 }
@@ -223,6 +226,8 @@ pub struct BrowserHttpSnapshotDescriptor {
     pub snapshot_version: i64,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub partition_column_types: BTreeMap<String, PartitionColumnType>,
+    #[serde(default, skip_serializing_if = "capability_report_is_empty")]
+    pub browser_compatibility: CapabilityReport,
     #[serde(default, skip_serializing_if = "capability_report_is_empty")]
     pub required_capabilities: CapabilityReport,
     pub active_files: Vec<BrowserHttpFileDescriptor>,
@@ -317,6 +322,14 @@ fn redacted_url(url: &Url) -> String {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserAccessMode {
+    #[default]
+    BrowserSafeHttp,
+    CloudObjectStore,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct QueryMetricsSummary {
     /// Bytes scanned by the executed query plan when the runtime can report them; otherwise `0`.
     pub bytes_fetched: u64,
@@ -326,6 +339,15 @@ pub struct QueryMetricsSummary {
     pub files_touched: u64,
     /// Data files skipped by partition or file pruning when the runtime can report them; otherwise `0`.
     pub files_skipped: u64,
+    /// Footer-range reads performed during browser snapshot bootstrap when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_reads: Option<u64>,
+    /// Wall-clock duration of browser snapshot bootstrap when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_bootstrap_duration_ms: Option<u64>,
+    /// Browser object access mode used for the execution when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_mode: Option<BrowserAccessMode>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

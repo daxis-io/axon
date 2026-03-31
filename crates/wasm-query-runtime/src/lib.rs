@@ -20,10 +20,10 @@ use futures_util::{
 #[cfg(test)]
 use parquet::record::Field as ParquetField;
 use query_contract::{
-    validate_browser_object_url, BrowserHttpSnapshotDescriptor, BrowserObjectUrlPolicy,
-    CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason,
-    PartitionColumnType, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest,
-    ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
+    validate_browser_object_url, BrowserAccessMode, BrowserHttpSnapshotDescriptor,
+    BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget,
+    FallbackReason, PartitionColumnType, QueryError, QueryErrorCode, QueryMetricsSummary,
+    QueryRequest, ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 use reqwest::Url;
 use sqlparser::ast::{
@@ -638,6 +638,9 @@ pub struct BootstrappedBrowserSnapshot {
     active_files: Vec<BootstrappedBrowserFile>,
     partition_column_types: BTreeMap<String, PartitionColumnType>,
     required_capabilities: CapabilityReport,
+    footer_reads: Option<u64>,
+    snapshot_bootstrap_duration_ms: Option<u64>,
+    access_mode: Option<BrowserAccessMode>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -908,6 +911,9 @@ pub struct BrowserExecutionPlan {
     order_by: Vec<BrowserSortKey>,
     limit: Option<u64>,
     pruning: BrowserPruningSummary,
+    footer_reads: Option<u64>,
+    snapshot_bootstrap_duration_ms: Option<u64>,
+    access_mode: Option<BrowserAccessMode>,
 }
 
 impl BrowserExecutionPlan {
@@ -941,6 +947,18 @@ impl BrowserExecutionPlan {
 
     pub fn limit(&self) -> Option<u64> {
         self.limit
+    }
+
+    pub fn footer_reads(&self) -> Option<u64> {
+        self.footer_reads
+    }
+
+    pub fn snapshot_bootstrap_duration_ms(&self) -> Option<u64> {
+        self.snapshot_bootstrap_duration_ms
+    }
+
+    pub fn access_mode(&self) -> Option<BrowserAccessMode> {
+        self.access_mode
     }
 
     pub fn pruning(&self) -> &BrowserPruningSummary {
@@ -1068,6 +1086,28 @@ impl BootstrappedBrowserSnapshot {
         partition_column_types: BTreeMap<String, PartitionColumnType>,
         required_capabilities: CapabilityReport,
     ) -> Result<Self, QueryError> {
+        Self::new_with_partition_metadata_and_telemetry(
+            table_uri,
+            snapshot_version,
+            active_files,
+            partition_column_types,
+            required_capabilities,
+            None,
+            None,
+            None,
+        )
+    }
+
+    pub fn new_with_partition_metadata_and_telemetry(
+        table_uri: impl Into<String>,
+        snapshot_version: i64,
+        active_files: Vec<BootstrappedBrowserFile>,
+        partition_column_types: BTreeMap<String, PartitionColumnType>,
+        required_capabilities: CapabilityReport,
+        footer_reads: Option<u64>,
+        snapshot_bootstrap_duration_ms: Option<u64>,
+        access_mode: Option<BrowserAccessMode>,
+    ) -> Result<Self, QueryError> {
         validate_unique_bootstrapped_paths(&active_files)?;
 
         Ok(Self {
@@ -1076,6 +1116,9 @@ impl BootstrappedBrowserSnapshot {
             active_files,
             partition_column_types,
             required_capabilities,
+            footer_reads,
+            snapshot_bootstrap_duration_ms,
+            access_mode,
         })
     }
 
@@ -1097,6 +1140,18 @@ impl BootstrappedBrowserSnapshot {
 
     pub fn required_capabilities(&self) -> &CapabilityReport {
         &self.required_capabilities
+    }
+
+    pub fn footer_reads(&self) -> Option<u64> {
+        self.footer_reads
+    }
+
+    pub fn snapshot_bootstrap_duration_ms(&self) -> Option<u64> {
+        self.snapshot_bootstrap_duration_ms
+    }
+
+    pub fn access_mode(&self) -> Option<BrowserAccessMode> {
+        self.access_mode
     }
 
     pub fn validate_uniform_schema(&self) -> Result<BrowserSnapshotSchema, QueryError> {
@@ -1438,6 +1493,10 @@ impl BrowserRuntimeSession {
             table_uri: descriptor.table_uri.clone(),
             snapshot_version: descriptor.snapshot_version,
             partition_column_types: descriptor.partition_column_types.clone(),
+            browser_compatibility: effective_browser_compatibility(
+                &descriptor.browser_compatibility,
+                &descriptor.required_capabilities,
+            ),
             required_capabilities: descriptor.required_capabilities.clone(),
             active_files: descriptor
                 .active_files
@@ -1491,7 +1550,10 @@ impl BrowserRuntimeSession {
             descriptor.snapshot_version,
             active_files,
             descriptor.partition_column_types.clone(),
-            descriptor.required_capabilities.clone(),
+            effective_browser_compatibility(
+                &descriptor.browser_compatibility,
+                &descriptor.required_capabilities,
+            ),
         )
     }
 
@@ -1545,6 +1607,7 @@ impl BrowserRuntimeSession {
         active_files: &[&MaterializedBrowserFile],
     ) -> Result<BootstrappedBrowserSnapshot, QueryError> {
         validate_required_snapshot_capabilities(snapshot.required_capabilities())?;
+        let bootstrap_started_at = Instant::now();
         let fetches = stream::iter(active_files.iter().copied())
             .map(|file| self.bootstrap_file_metadata(file))
             .buffered(self.config.snapshot_preflight_max_concurrency)
@@ -1567,12 +1630,21 @@ impl BrowserRuntimeSession {
             }
         };
 
-        BootstrappedBrowserSnapshot::new_with_partition_metadata(
+        let footer_reads = u64::try_from(active_files.len()).map_err(|_| {
+            invalid_query_request("footer read counts overflowed u64 during browser bootstrap")
+        })?;
+
+        BootstrappedBrowserSnapshot::new_with_partition_metadata_and_telemetry(
             snapshot.table_uri(),
             snapshot.snapshot_version(),
             active_files,
             snapshot.partition_column_types().clone(),
             snapshot.required_capabilities().clone(),
+            Some(footer_reads),
+            Some(wall_clock_duration_ms(bootstrap_started_at)),
+            Some(browser_access_mode_from_config(
+                self.config.object_access_mode,
+            )),
         )
     }
 
@@ -1771,7 +1843,28 @@ fn validate_required_snapshot_capabilities(
     if let Some((capability, required_state)) = required_capabilities
         .capabilities
         .iter()
-        .find(|(_, state)| **state != CapabilityState::Supported)
+        .find(|(_, state)| **state == CapabilityState::Unsupported)
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedFeature,
+            format!(
+                "browser execution does not support capability '{:?}' at state '{:?}'",
+                capability, required_state
+            ),
+            runtime_target(),
+        ));
+    }
+
+    if let Some((capability, required_state)) =
+        required_capabilities
+            .capabilities
+            .iter()
+            .find(|(_, state)| {
+                matches!(
+                    **state,
+                    CapabilityState::NativeOnly | CapabilityState::Experimental
+                )
+            })
     {
         return Err(QueryError::new(
             QueryErrorCode::FallbackRequired,
@@ -1788,6 +1881,24 @@ fn validate_required_snapshot_capabilities(
     }
 
     Ok(())
+}
+
+fn effective_browser_compatibility(
+    browser_compatibility: &CapabilityReport,
+    required_capabilities: &CapabilityReport,
+) -> CapabilityReport {
+    if browser_compatibility.capabilities.is_empty() {
+        required_capabilities.clone()
+    } else {
+        browser_compatibility.clone()
+    }
+}
+
+fn browser_access_mode_from_config(access_mode: BrowserObjectAccessMode) -> BrowserAccessMode {
+    match access_mode {
+        BrowserObjectAccessMode::BrowserSafeHttp => BrowserAccessMode::BrowserSafeHttp,
+        BrowserObjectAccessMode::CloudObjectStore => BrowserAccessMode::CloudObjectStore,
+    }
 }
 
 fn candidate_materialized_files<'a>(
@@ -1839,6 +1950,9 @@ fn execution_metrics(
         duration_ms: wall_clock_duration_ms(operation_started_at),
         files_touched: plan.scan().candidate_file_count(),
         files_skipped: plan.pruning().files_pruned,
+        footer_reads: plan.footer_reads(),
+        snapshot_bootstrap_duration_ms: plan.snapshot_bootstrap_duration_ms(),
+        access_mode: plan.access_mode(),
     })
 }
 
@@ -3988,6 +4102,9 @@ mod tests {
             order_by,
             limit,
             pruning: BrowserPruningSummary::default(),
+            footer_reads: None,
+            snapshot_bootstrap_duration_ms: None,
+            access_mode: None,
         }
     }
 
@@ -4039,6 +4156,9 @@ mod tests {
             order_by: order_by.unwrap_or_default(),
             limit: None,
             pruning: BrowserPruningSummary::default(),
+            footer_reads: None,
+            snapshot_bootstrap_duration_ms: None,
+            access_mode: None,
         }
     }
 

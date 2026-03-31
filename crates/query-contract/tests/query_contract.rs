@@ -1,9 +1,9 @@
 use query_contract::{
-    validate_browser_object_url, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor,
-    BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget,
-    FallbackReason, PartitionColumnType, QueryError, QueryErrorCode, QueryExecutionOptions,
-    QueryMetricsSummary, QueryRequest, QueryResponse, ResolvedFileDescriptor,
-    ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
+    validate_browser_object_url, BrowserAccessMode, BrowserHttpFileDescriptor,
+    BrowserHttpSnapshotDescriptor, BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport,
+    CapabilityState, ExecutionTarget, FallbackReason, PartitionColumnType, QueryError,
+    QueryErrorCode, QueryExecutionOptions, QueryMetricsSummary, QueryRequest, QueryResponse,
+    ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 use serde_json::json;
 
@@ -108,6 +108,9 @@ fn query_response_serializes_without_absent_fallback_reason() {
             duration_ms: 12,
             files_touched: 3,
             files_skipped: 1,
+            footer_reads: None,
+            snapshot_bootstrap_duration_ms: None,
+            access_mode: None,
         },
     };
 
@@ -128,6 +131,51 @@ fn query_response_serializes_without_absent_fallback_reason() {
                 "duration_ms": 12,
                 "files_touched": 3,
                 "files_skipped": 1
+            }
+        })
+    );
+}
+
+#[test]
+fn query_response_serializes_browser_telemetry_when_present() {
+    let response = QueryResponse {
+        executed_on: ExecutionTarget::BrowserWasm,
+        capabilities: CapabilityReport::from_pairs([
+            (CapabilityKey::DeletionVectors, CapabilityState::NativeOnly),
+            (CapabilityKey::RangeReads, CapabilityState::Supported),
+        ]),
+        fallback_reason: None,
+        metrics: QueryMetricsSummary {
+            bytes_fetched: 4096,
+            duration_ms: 12,
+            files_touched: 3,
+            files_skipped: 1,
+            footer_reads: Some(3),
+            snapshot_bootstrap_duration_ms: Some(8),
+            access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
+        },
+    };
+
+    let json = serde_json::to_value(&response).expect("query response should serialize");
+
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "executed_on": "browser_wasm",
+            "capabilities": {
+                "capabilities": {
+                    "deletion_vectors": "native_only",
+                    "range_reads": "supported"
+                }
+            },
+            "metrics": {
+                "bytes_fetched": 4096,
+                "duration_ms": 12,
+                "files_touched": 3,
+                "files_skipped": 1,
+                "footer_reads": 3,
+                "snapshot_bootstrap_duration_ms": 8,
+                "access_mode": "browser_safe_http"
             }
         })
     );
@@ -232,6 +280,10 @@ fn resolved_snapshot_descriptor_serializes_metadata_only_file_descriptors() {
             ("category".to_string(), PartitionColumnType::String),
             ("year".to_string(), PartitionColumnType::Int64),
         ]),
+        browser_compatibility: CapabilityReport::from_pairs([
+            (CapabilityKey::DeletionVectors, CapabilityState::NativeOnly),
+            (CapabilityKey::RangeReads, CapabilityState::Supported),
+        ]),
         required_capabilities: CapabilityReport::from_pairs([
             (CapabilityKey::DeletionVectors, CapabilityState::NativeOnly),
             (CapabilityKey::RangeReads, CapabilityState::Supported),
@@ -264,6 +316,12 @@ fn resolved_snapshot_descriptor_serializes_metadata_only_file_descriptors() {
             "partition_column_types": {
                 "category": "string",
                 "year": "int64"
+            },
+            "browser_compatibility": {
+                "capabilities": {
+                    "deletion_vectors": "native_only",
+                    "range_reads": "supported"
+                }
             },
             "required_capabilities": {
                 "capabilities": {
@@ -299,6 +357,10 @@ fn browser_http_snapshot_descriptor_serializes_browser_safe_file_urls() {
             ("category".to_string(), PartitionColumnType::String),
             ("year".to_string(), PartitionColumnType::Int64),
         ]),
+        browser_compatibility: CapabilityReport::from_pairs([
+            (CapabilityKey::DeletionVectors, CapabilityState::NativeOnly),
+            (CapabilityKey::RangeReads, CapabilityState::Supported),
+        ]),
         required_capabilities: CapabilityReport::from_pairs([
             (CapabilityKey::DeletionVectors, CapabilityState::NativeOnly),
             (CapabilityKey::RangeReads, CapabilityState::Supported),
@@ -333,6 +395,12 @@ fn browser_http_snapshot_descriptor_serializes_browser_safe_file_urls() {
             "partition_column_types": {
                 "category": "string",
                 "year": "int64"
+            },
+            "browser_compatibility": {
+                "capabilities": {
+                    "deletion_vectors": "native_only",
+                    "range_reads": "supported"
+                }
             },
             "required_capabilities": {
                 "capabilities": {
@@ -377,8 +445,10 @@ fn snapshot_descriptors_default_partition_column_types_when_omitted() {
     .expect("browser http snapshot descriptor should deserialize");
 
     assert!(resolved.partition_column_types.is_empty());
+    assert_eq!(resolved.browser_compatibility, CapabilityReport::default());
     assert_eq!(resolved.required_capabilities, CapabilityReport::default());
     assert!(browser.partition_column_types.is_empty());
+    assert_eq!(browser.browser_compatibility, CapabilityReport::default());
     assert_eq!(browser.required_capabilities, CapabilityReport::default());
 }
 

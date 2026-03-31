@@ -14,9 +14,10 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use query_contract::{
-    BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey, CapabilityReport,
-    CapabilityState, ExecutionTarget, FallbackReason, PartitionColumnType, QueryErrorCode,
-    QueryRequest, ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
+    BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey,
+    CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, PartitionColumnType,
+    QueryErrorCode, QueryRequest, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
+    SnapshotResolutionRequest,
 };
 use serde::Deserialize;
 use support::TestTableFixture;
@@ -1254,6 +1255,7 @@ fn materialize_snapshot_preserves_descriptor_metadata_and_file_order() {
             ("category".to_string(), PartitionColumnType::String),
             ("region".to_string(), PartitionColumnType::String),
         ]),
+        browser_compatibility: CapabilityReport::default(),
         required_capabilities: CapabilityReport::default(),
         active_files: vec![
             BrowserHttpFileDescriptor {
@@ -1311,6 +1313,7 @@ fn materialize_snapshot_allows_empty_active_file_lists() {
         table_uri: "gs://axon-fixtures/empty_table".to_string(),
         snapshot_version: 3,
         partition_column_types: BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
         required_capabilities: CapabilityReport::default(),
         active_files: Vec::new(),
     };
@@ -1381,6 +1384,18 @@ fn runtime_prunes_files_from_delta_snapshot_before_opening_parquet() {
     }));
     assert_eq!(result.metrics().files_touched, 1);
     assert_eq!(result.metrics().files_skipped, 2);
+    assert_eq!(result.metrics().footer_reads, Some(1));
+    assert_eq!(
+        result.metrics().access_mode,
+        Some(BrowserAccessMode::BrowserSafeHttp)
+    );
+    assert!(
+        result
+            .metrics()
+            .snapshot_bootstrap_duration_ms
+            .is_some_and(|duration| duration > 0),
+        "bootstrap duration should be populated for prepared browser execution"
+    );
     assert_eq!(result.rows().len(), 2);
 }
 
@@ -1520,6 +1535,10 @@ fn runtime_rejects_local_delta_snapshots_requiring_native_only_capabilities_befo
                 table_uri: "gs://axon-fixtures/deletion-vectors".to_string(),
                 snapshot_version: 3,
                 partition_column_types: BTreeMap::new(),
+                browser_compatibility: CapabilityReport::from_pairs([(
+                    CapabilityKey::DeletionVectors,
+                    CapabilityState::NativeOnly,
+                )]),
                 required_capabilities: CapabilityReport::from_pairs([(
                     CapabilityKey::DeletionVectors,
                     CapabilityState::NativeOnly,
@@ -1569,6 +1588,10 @@ fn bootstrap_snapshot_metadata_rejects_native_only_capabilities_before_network_i
                 table_uri: "gs://axon-fixtures/deletion-vectors".to_string(),
                 snapshot_version: 3,
                 partition_column_types: BTreeMap::new(),
+                browser_compatibility: CapabilityReport::from_pairs([(
+                    CapabilityKey::DeletionVectors,
+                    CapabilityState::NativeOnly,
+                )]),
                 required_capabilities: CapabilityReport::from_pairs([(
                     CapabilityKey::DeletionVectors,
                     CapabilityState::NativeOnly,
@@ -1595,6 +1618,49 @@ fn bootstrap_snapshot_metadata_rejects_native_only_capabilities_before_network_i
             required_state: CapabilityState::NativeOnly,
         })
     );
+    assert!(server.recorded_paths().is_empty());
+}
+
+#[test]
+fn bootstrap_snapshot_metadata_hard_fails_unsupported_capabilities_before_network_io() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let object = parquet_like_object(b"rows", b"footer");
+    let server = RequestCapturingObjectServer::from_objects(BTreeMap::from([(
+        "/part-000.parquet".to_string(),
+        object.clone(),
+    )]));
+    let materialized = session
+        .materialize_resolved_snapshot(
+            &ResolvedSnapshotDescriptor {
+                table_uri: "gs://axon-fixtures/unknown-protocol-feature".to_string(),
+                snapshot_version: 3,
+                partition_column_types: BTreeMap::new(),
+                browser_compatibility: CapabilityReport::from_pairs([(
+                    CapabilityKey::UnknownProtocolFeatures,
+                    CapabilityState::Unsupported,
+                )]),
+                required_capabilities: CapabilityReport::from_pairs([(
+                    CapabilityKey::UnknownProtocolFeatures,
+                    CapabilityState::Unsupported,
+                )]),
+                active_files: vec![ResolvedFileDescriptor {
+                    path: "part-000.parquet".to_string(),
+                    size_bytes: object.len() as u64,
+                    partition_values: BTreeMap::new(),
+                }],
+            },
+            |file| BrowserObjectSource::from_url(server.url_for_path(&file.path)),
+        )
+        .expect("resolved snapshot should materialize");
+
+    let error = runtime()
+        .block_on(session.bootstrap_snapshot_metadata(&materialized))
+        .expect_err("unsupported capabilities should hard fail before snapshot bootstrap");
+
+    assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+    assert_eq!(error.fallback_reason, None);
+    assert!(error.message.contains("UnknownProtocolFeatures"));
     assert!(server.recorded_paths().is_empty());
 }
 
@@ -1763,6 +1829,7 @@ fn materialize_snapshot_rejects_duplicate_paths() {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 12,
         partition_column_types: BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
         required_capabilities: CapabilityReport::default(),
         active_files: vec![
             BrowserHttpFileDescriptor {
@@ -1796,6 +1863,7 @@ fn materialize_snapshot_rejects_invalid_url_syntax_without_leaking_query_or_frag
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 1,
         partition_column_types: BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
         required_capabilities: CapabilityReport::default(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
@@ -1823,6 +1891,7 @@ fn materialize_snapshot_rejects_unsupported_schemes_without_leaking_query_or_fra
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 1,
         partition_column_types: BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
         required_capabilities: CapabilityReport::default(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
@@ -1850,6 +1919,7 @@ fn materialize_snapshot_rejects_non_loopback_plain_http_urls() {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 1,
         partition_column_types: BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
         required_capabilities: CapabilityReport::default(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
@@ -1902,6 +1972,7 @@ fn materialize_snapshot_rejects_loopback_http_even_in_host_tests() {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 9,
         partition_column_types: BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
         required_capabilities: CapabilityReport::default(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),

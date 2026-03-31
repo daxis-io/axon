@@ -149,14 +149,23 @@ where
             }
         }
         let schema_derivations = derive_schema_derivations(replay_state.current_metadata.as_ref())?;
-        let required_capabilities =
+        let unknown_protocol_features =
+            unknown_protocol_features(replay_state.current_protocol.as_ref());
+        if !unknown_protocol_features.is_empty() {
+            return Err(unsupported_feature(format!(
+                "browser snapshot reconstruction does not support Delta protocol feature(s): {}",
+                unknown_protocol_features.join(", ")
+            )));
+        }
+        let browser_compatibility =
             required_capabilities_from_replay_state(&replay_state, &schema_derivations);
 
         Ok(ResolvedSnapshotDescriptor {
             table_uri: request.table_uri,
             snapshot_version: target_version,
             partition_column_types: schema_derivations.partition_column_types,
-            required_capabilities,
+            browser_compatibility: browser_compatibility.clone(),
+            required_capabilities: browser_compatibility,
             active_files: replay_state.active_files.into_values().collect(),
         })
     }
@@ -1393,6 +1402,29 @@ fn protocol_supports_deletion_vectors(protocol: Option<&SnapshotProtocol>) -> bo
         || protocol.writer_features.contains("deletionVectors")
 }
 
+fn unknown_protocol_features(protocol: Option<&SnapshotProtocol>) -> Vec<String> {
+    let Some(protocol) = protocol else {
+        return Vec::new();
+    };
+
+    protocol
+        .reader_features
+        .iter()
+        .chain(protocol.writer_features.iter())
+        .filter(|feature| !protocol_feature_is_classified(feature))
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn protocol_feature_is_classified(feature_name: &str) -> bool {
+    matches!(
+        feature_name,
+        "changeDataFeed" | "columnMapping" | "deletionVectors" | "timestampNtz"
+    )
+}
+
 fn parse_schema_json(schema_string: &str) -> Result<Box<JsonValue>, QueryError> {
     serde_json::from_str(schema_string).map_err(|error| {
         execution_error(format!(
@@ -1598,4 +1630,12 @@ fn invalid_request(message: String) -> QueryError {
 
 fn execution_error(message: String) -> QueryError {
     QueryError::new(QueryErrorCode::ExecutionFailed, message, runtime_target())
+}
+
+fn unsupported_feature(message: String) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::UnsupportedFeature,
+        message,
+        runtime_target(),
+    )
 }

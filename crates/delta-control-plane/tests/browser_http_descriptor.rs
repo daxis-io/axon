@@ -328,6 +328,7 @@ fn attach_browser_http_urls_rejects_duplicate_resolved_paths() {
             "category".to_string(),
             PartitionColumnType::String,
         )]),
+        browser_compatibility: query_contract::CapabilityReport::default(),
         required_capabilities: query_contract::CapabilityReport::default(),
         active_files: vec![
             ResolvedFileDescriptor {
@@ -363,6 +364,10 @@ fn attach_browser_http_urls_preserves_partition_column_types() {
             ("category".to_string(), PartitionColumnType::String),
             ("year_code".to_string(), PartitionColumnType::String),
         ]),
+        browser_compatibility: query_contract::CapabilityReport::from_pairs([(
+            query_contract::CapabilityKey::DeletionVectors,
+            query_contract::CapabilityState::NativeOnly,
+        )]),
         required_capabilities: query_contract::CapabilityReport::from_pairs([(
             query_contract::CapabilityKey::DeletionVectors,
             query_contract::CapabilityState::NativeOnly,
@@ -386,6 +391,13 @@ fn attach_browser_http_urls_preserves_partition_column_types() {
             ("category".to_string(), PartitionColumnType::String),
             ("year_code".to_string(), PartitionColumnType::String),
         ])
+    );
+    assert_eq!(
+        browser_snapshot.browser_compatibility,
+        query_contract::CapabilityReport::from_pairs([(
+            query_contract::CapabilityKey::DeletionVectors,
+            query_contract::CapabilityState::NativeOnly,
+        )])
     );
     assert_eq!(
         browser_snapshot.required_capabilities,

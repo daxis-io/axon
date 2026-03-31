@@ -4,7 +4,9 @@ mod support;
 use delta_control_plane::resolve_snapshot as resolve_control_plane_snapshot;
 use deltalake::kernel::{Action, DataType, PrimitiveType, Protocol, StructField};
 use deltalake::DeltaTable;
-use query_contract::{CapabilityReport, ResolvedFileDescriptor, SnapshotResolutionRequest};
+use query_contract::{
+    CapabilityReport, QueryErrorCode, ResolvedFileDescriptor, SnapshotResolutionRequest,
+};
 use serde_json::json;
 use support::TestTableFixture;
 use tempfile::TempDir;
@@ -42,6 +44,10 @@ fn reconstructs_active_files_with_paths_sizes_and_partition_values() {
     assert_eq!(
         snapshot.partition_column_types,
         native_snapshot.partition_column_types
+    );
+    assert_eq!(
+        snapshot.browser_compatibility,
+        native_snapshot.browser_compatibility
     );
     assert_eq!(
         snapshot.required_capabilities,
@@ -85,6 +91,10 @@ fn snapshot_reconstruction_matches_control_plane_for_latest_snapshot() {
         native_snapshot.partition_column_types
     );
     assert_eq!(
+        browser_snapshot.browser_compatibility,
+        native_snapshot.browser_compatibility
+    );
+    assert_eq!(
         browser_snapshot.required_capabilities,
         native_snapshot.required_capabilities
     );
@@ -124,6 +134,10 @@ fn snapshot_reconstruction_matches_control_plane_for_historical_snapshot() {
     assert_eq!(
         browser_snapshot.partition_column_types,
         native_snapshot.partition_column_types
+    );
+    assert_eq!(
+        browser_snapshot.browser_compatibility,
+        native_snapshot.browser_compatibility
     );
     assert_eq!(
         browser_snapshot.required_capabilities,
@@ -197,11 +211,56 @@ fn snapshot_reconstruction_matches_control_plane_for_protocol_only_deletion_vect
     .expect("native snapshot should resolve");
 
     assert!(snapshot.active_files.is_empty());
+    assert_eq!(snapshot.browser_compatibility, CapabilityReport::default());
     assert_eq!(snapshot.required_capabilities, CapabilityReport::default());
+    assert_eq!(
+        snapshot.browser_compatibility,
+        native_snapshot.browser_compatibility
+    );
     assert_eq!(
         snapshot.required_capabilities,
         native_snapshot.required_capabilities
     );
+}
+
+#[test]
+fn snapshot_reconstruction_rejects_unknown_protocol_features() {
+    let fixture = TestTableFixture::create_with_columns_and_configuration(
+        vec![StructField::new(
+            "id".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            false,
+        )],
+        vec![],
+    );
+    fixture.overwrite_initial_protocol(unknown_protocol_feature_protocol());
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+
+    let browser_error = tokio::runtime::Runtime::new()
+        .expect("runtime should be created")
+        .block_on(async {
+            resolver
+                .resolve_snapshot(SnapshotResolutionRequest {
+                    table_uri: fixture.raw_table_path(),
+                    snapshot_version: None,
+                })
+                .await
+        })
+        .expect_err("browser snapshot resolver must hard fail on unknown protocol features");
+    let native_error = resolve_control_plane_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect_err("trusted snapshot resolver must hard fail on unknown protocol features");
+
+    assert_eq!(browser_error.code, QueryErrorCode::UnsupportedFeature);
+    assert_eq!(native_error.code, QueryErrorCode::UnsupportedFeature);
+    assert!(browser_error.message.contains("mysteryFeature"));
+    assert!(native_error.message.contains("mysteryFeature"));
 }
 
 fn deletion_vector_protocol_action() -> Action {
@@ -214,4 +273,13 @@ fn deletion_vector_protocol_action() -> Action {
     .expect("protocol should deserialize");
 
     Action::Protocol(protocol)
+}
+
+fn unknown_protocol_feature_protocol() -> serde_json::Value {
+    json!({
+        "minReaderVersion": 3,
+        "minWriterVersion": 7,
+        "readerFeatures": ["mysteryFeature"],
+        "writerFeatures": ["mysteryFeature"],
+    })
 }

@@ -10,7 +10,10 @@ This file records the role-based ownership model for the EPIC-01 scaffold. Repla
 | `crates/delta-control-plane` | Storage platform team | Snapshot resolution, signed URL/proxy descriptors, policy hooks |
 | `crates/wasm-query-runtime` | Runtime / engine team | Browser runtime, SQL execution envelope, browser-safe controls |
 | `crates/wasm-http-object-store` | Runtime / engine team | HTTP range-read adapter for signed URL / proxy access |
+| `crates/wasm-parquet-engine` | Runtime / engine team | Browser Parquet footer bootstrap, metadata decode, scan primitives |
+| `crates/wasm-delta-snapshot` | Runtime / engine team | Browser-safe Delta snapshot reconstruction and replay |
 | `crates/browser-sdk` | Web platform team | Public browser-facing SDK surface |
+| `crates/browser-engine-worker` | Web platform team | Internal worker artifact for bundle, startup, and footprint guardrails |
 | `crates/udf-abi` | Runtime / engine team | Versioned WIT / WASI Preview 2 ABI contracts |
 | `crates/udf-host-wasi` | Runtime / engine team | Hosted UDF runtime and capability mediation |
 | `tests/conformance` | QA / performance engineering | Native vs browser parity harness and scaffold checks |
