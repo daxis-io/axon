@@ -14,9 +14,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use query_contract::{
-    BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey, CapabilityState,
-    ExecutionTarget, FallbackReason, PartitionColumnType, QueryErrorCode, QueryRequest,
-    SnapshotResolutionRequest,
+    BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey, CapabilityReport,
+    CapabilityState, ExecutionTarget, FallbackReason, PartitionColumnType, QueryErrorCode,
+    QueryRequest, ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 use serde::Deserialize;
 use support::TestTableFixture;
@@ -1254,6 +1254,7 @@ fn materialize_snapshot_preserves_descriptor_metadata_and_file_order() {
             ("category".to_string(), PartitionColumnType::String),
             ("region".to_string(), PartitionColumnType::String),
         ]),
+        required_capabilities: CapabilityReport::default(),
         active_files: vec![
             BrowserHttpFileDescriptor {
                 path: "z-last.parquet".to_string(),
@@ -1310,6 +1311,7 @@ fn materialize_snapshot_allows_empty_active_file_lists() {
         table_uri: "gs://axon-fixtures/empty_table".to_string(),
         snapshot_version: 3,
         partition_column_types: BTreeMap::new(),
+        required_capabilities: CapabilityReport::default(),
         active_files: Vec::new(),
     };
 
@@ -1350,7 +1352,10 @@ fn runtime_prunes_files_from_delta_snapshot_before_opening_parquet() {
             BrowserObjectSource::from_url(server.url_for_path(&file.path))
         })
         .expect("resolved snapshot should materialize into browser object sources");
-    assert!(materialized.partition_column_types().is_empty());
+    assert_eq!(
+        materialized.partition_column_types(),
+        &BTreeMap::from([("category".to_string(), PartitionColumnType::String)])
+    );
     let request = QueryRequest::new(
         materialized.table_uri(),
         "SELECT id FROM axon_table WHERE category = 'A' ORDER BY id",
@@ -1427,6 +1432,170 @@ fn runtime_prunes_all_files_from_delta_snapshot_before_opening_parquet() {
     assert_eq!(result.metrics().files_touched, 0);
     assert_eq!(result.metrics().files_skipped, 3);
     assert!(result.rows().is_empty());
+}
+
+#[test]
+fn runtime_executes_partition_group_by_from_local_delta_snapshot() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let fixture = TestTableFixture::create_partitioned();
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+    let resolved = runtime()
+        .block_on(session.resolve_delta_snapshot(
+            &resolver,
+            SnapshotResolutionRequest {
+                table_uri: fixture.raw_table_path(),
+                snapshot_version: None,
+            },
+        ))
+        .expect("delta snapshot should resolve");
+    let server = RequestCapturingObjectServer::from_fixture_paths(
+        &fixture,
+        resolved.active_files.iter().map(|file| file.path.clone()),
+    );
+    let materialized = session
+        .materialize_resolved_snapshot(&resolved, |file| {
+            BrowserObjectSource::from_url(server.url_for_path(&file.path))
+        })
+        .expect("resolved snapshot should materialize into browser object sources");
+    let request = QueryRequest::new(
+        materialized.table_uri(),
+        "SELECT category, SUM(value) AS total_value FROM axon_table GROUP BY category ORDER BY category",
+        ExecutionTarget::BrowserWasm,
+    );
+
+    let prepared = runtime()
+        .block_on(session.prepare_execution(&materialized, &request))
+        .expect("partition-typed local snapshots should prepare grouped execution");
+    let result = runtime()
+        .block_on(session.execute_plan(&materialized, prepared.execution_plan()))
+        .expect("partition-typed local snapshots should execute grouped queries");
+
+    assert_eq!(
+        materialized.partition_column_types()["category"],
+        PartitionColumnType::String
+    );
+    assert_eq!(
+        result.output_names(),
+        &["category".to_string(), "total_value".to_string()]
+    );
+    assert_eq!(
+        result
+            .rows()
+            .iter()
+            .map(|row| row.values().to_vec())
+            .collect::<Vec<_>>(),
+        vec![
+            vec![
+                BrowserScalarValue::String("A".to_string()),
+                BrowserScalarValue::Int64(40),
+            ],
+            vec![
+                BrowserScalarValue::String("B".to_string()),
+                BrowserScalarValue::Int64(110),
+            ],
+            vec![
+                BrowserScalarValue::String("C".to_string()),
+                BrowserScalarValue::Int64(60),
+            ],
+        ]
+    );
+}
+
+#[test]
+fn runtime_rejects_local_delta_snapshots_requiring_native_only_capabilities_before_bootstrap() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let server = RequestCapturingObjectServer::from_objects(BTreeMap::from([(
+        "/part-000.parquet".to_string(),
+        parquet_like_object(b"rows", b"footer"),
+    )]));
+    let materialized = session
+        .materialize_resolved_snapshot(
+            &ResolvedSnapshotDescriptor {
+                table_uri: "gs://axon-fixtures/deletion-vectors".to_string(),
+                snapshot_version: 3,
+                partition_column_types: BTreeMap::new(),
+                required_capabilities: CapabilityReport::from_pairs([(
+                    CapabilityKey::DeletionVectors,
+                    CapabilityState::NativeOnly,
+                )]),
+                active_files: vec![ResolvedFileDescriptor {
+                    path: "part-000.parquet".to_string(),
+                    size_bytes: 128,
+                    partition_values: BTreeMap::new(),
+                }],
+            },
+            |file| BrowserObjectSource::from_url(server.url_for_path(&file.path)),
+        )
+        .expect("resolved snapshot should materialize");
+    let request = QueryRequest::new(
+        materialized.table_uri(),
+        "SELECT id FROM axon_table",
+        ExecutionTarget::BrowserWasm,
+    );
+
+    let error = runtime()
+        .block_on(session.prepare_execution(&materialized, &request))
+        .expect_err("native-only capabilities should stop before browser bootstrap");
+
+    assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+    assert_eq!(
+        error.fallback_reason,
+        Some(FallbackReason::CapabilityGate {
+            capability: CapabilityKey::DeletionVectors,
+            required_state: CapabilityState::NativeOnly,
+        })
+    );
+    assert!(server.recorded_paths().is_empty());
+}
+
+#[test]
+fn bootstrap_snapshot_metadata_rejects_native_only_capabilities_before_network_io() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let object = parquet_like_object(b"rows", b"footer");
+    let server = RequestCapturingObjectServer::from_objects(BTreeMap::from([(
+        "/part-000.parquet".to_string(),
+        object.clone(),
+    )]));
+    let materialized = session
+        .materialize_resolved_snapshot(
+            &ResolvedSnapshotDescriptor {
+                table_uri: "gs://axon-fixtures/deletion-vectors".to_string(),
+                snapshot_version: 3,
+                partition_column_types: BTreeMap::new(),
+                required_capabilities: CapabilityReport::from_pairs([(
+                    CapabilityKey::DeletionVectors,
+                    CapabilityState::NativeOnly,
+                )]),
+                active_files: vec![ResolvedFileDescriptor {
+                    path: "part-000.parquet".to_string(),
+                    size_bytes: object.len() as u64,
+                    partition_values: BTreeMap::new(),
+                }],
+            },
+            |file| BrowserObjectSource::from_url(server.url_for_path(&file.path)),
+        )
+        .expect("resolved snapshot should materialize");
+
+    let error = runtime()
+        .block_on(session.bootstrap_snapshot_metadata(&materialized))
+        .expect_err("native-only capabilities should stop before snapshot bootstrap");
+
+    assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+    assert_eq!(
+        error.fallback_reason,
+        Some(FallbackReason::CapabilityGate {
+            capability: CapabilityKey::DeletionVectors,
+            required_state: CapabilityState::NativeOnly,
+        })
+    );
+    assert!(server.recorded_paths().is_empty());
 }
 
 #[test]
@@ -1594,6 +1763,7 @@ fn materialize_snapshot_rejects_duplicate_paths() {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 12,
         partition_column_types: BTreeMap::new(),
+        required_capabilities: CapabilityReport::default(),
         active_files: vec![
             BrowserHttpFileDescriptor {
                 path: duplicate_path.clone(),
@@ -1626,6 +1796,7 @@ fn materialize_snapshot_rejects_invalid_url_syntax_without_leaking_query_or_frag
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 1,
         partition_column_types: BTreeMap::new(),
+        required_capabilities: CapabilityReport::default(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
             url: "https://signed example.test/object?sig=super-secret#fragment".to_string(),
@@ -1652,6 +1823,7 @@ fn materialize_snapshot_rejects_unsupported_schemes_without_leaking_query_or_fra
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 1,
         partition_column_types: BTreeMap::new(),
+        required_capabilities: CapabilityReport::default(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
             url: "ftp://signed.example.test/object?sig=super-secret#fragment".to_string(),
@@ -1678,6 +1850,7 @@ fn materialize_snapshot_rejects_non_loopback_plain_http_urls() {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 1,
         partition_column_types: BTreeMap::new(),
+        required_capabilities: CapabilityReport::default(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
             url: "http://example.com/object?sig=super-secret#fragment".to_string(),
@@ -1729,6 +1902,7 @@ fn materialize_snapshot_rejects_loopback_http_even_in_host_tests() {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 9,
         partition_column_types: BTreeMap::new(),
+        required_capabilities: CapabilityReport::default(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
             url: "http://127.0.0.1:8787/object?sig=super-secret#fragment".to_string(),
@@ -2094,14 +2268,7 @@ fn summarize_reports_sorted_partition_columns() {
 
 #[test]
 fn bootstrap_snapshot_metadata_enforces_the_snapshot_preflight_deadline() {
-    let footer = b"serialized-parquet-footer";
-    let prefix = b"row-group-bytes";
-    let object = parquet_like_object(prefix, footer);
-    let object_for_server = object.clone();
-    let (url, _, server) = spawn_multi_request_server(2, move |request, _| {
-        thread::sleep(Duration::from_millis(70));
-        full_or_ranged_response(request, &object_for_server)
-    });
+    let (url, server) = spawn_stalling_server(Duration::from_millis(150));
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig {
         request_timeout_ms: 200,
         snapshot_preflight_timeout_ms: 100,
@@ -2116,7 +2283,7 @@ fn bootstrap_snapshot_metadata_enforces_the_snapshot_preflight_deadline() {
         9,
         vec![MaterializedBrowserFile::new(
             "part-000.parquet",
-            object.len() as u64,
+            100,
             BTreeMap::new(),
             source,
         )],

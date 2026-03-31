@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use delta_runtime_support::{
-    canonical_table_policy_key_from_url, map_delta_error, normalize_table_uri, run_on_runtime,
-    validate_snapshot_version,
+    canonical_table_policy_key_from_url, map_delta_error, normalize_table_uri,
+    required_table_capabilities, run_on_runtime, validate_snapshot_version,
 };
 use deltalake::kernel::scalars::ScalarExt;
 use deltalake::kernel::{DataType, PrimitiveType, StructField};
@@ -112,6 +112,7 @@ pub fn resolve_snapshot_with_policy(
                 table_uri: normalized_uri.to_string(),
                 snapshot_version: snapshot.version(),
                 partition_column_types,
+                required_capabilities: required_table_capabilities(snapshot),
                 active_files,
             })
         },
@@ -208,6 +209,7 @@ pub fn attach_browser_http_urls(
         table_uri: resolved_snapshot.table_uri,
         snapshot_version: resolved_snapshot.snapshot_version,
         partition_column_types: resolved_snapshot.partition_column_types,
+        required_capabilities: resolved_snapshot.required_capabilities,
         active_files,
     })
 }

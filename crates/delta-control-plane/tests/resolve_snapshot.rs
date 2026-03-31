@@ -19,6 +19,14 @@ fn resolve_snapshot_returns_latest_descriptor_with_sorted_active_files() {
 
     assert_eq!(descriptor.table_uri, fixture.table_uri);
     assert_eq!(descriptor.snapshot_version, 1);
+    assert_eq!(
+        descriptor.partition_column_types,
+        std::collections::BTreeMap::from([(
+            "category".to_string(),
+            query_contract::PartitionColumnType::String,
+        )])
+    );
+    assert!(descriptor.required_capabilities.capabilities.is_empty());
     assert_eq!(descriptor.active_files, fixture.expected_active_files(None));
 }
 

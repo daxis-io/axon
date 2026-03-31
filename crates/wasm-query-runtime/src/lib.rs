@@ -21,9 +21,9 @@ use futures_util::{
 use parquet::record::Field as ParquetField;
 use query_contract::{
     validate_browser_object_url, BrowserHttpSnapshotDescriptor, BrowserObjectUrlPolicy,
-    CapabilityKey, CapabilityState, ExecutionTarget, FallbackReason, PartitionColumnType,
-    QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest, ResolvedFileDescriptor,
-    ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
+    CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason,
+    PartitionColumnType, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest,
+    ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 use reqwest::Url;
 use sqlparser::ast::{
@@ -244,6 +244,7 @@ pub struct MaterializedBrowserSnapshot {
     snapshot_version: i64,
     active_files: Vec<MaterializedBrowserFile>,
     partition_column_types: BTreeMap<String, PartitionColumnType>,
+    required_capabilities: CapabilityReport,
 }
 
 impl MaterializedBrowserSnapshot {
@@ -266,6 +267,22 @@ impl MaterializedBrowserSnapshot {
         active_files: Vec<MaterializedBrowserFile>,
         partition_column_types: BTreeMap<String, PartitionColumnType>,
     ) -> Result<Self, QueryError> {
+        Self::new_with_partition_metadata(
+            table_uri,
+            snapshot_version,
+            active_files,
+            partition_column_types,
+            CapabilityReport::default(),
+        )
+    }
+
+    pub fn new_with_partition_metadata(
+        table_uri: impl Into<String>,
+        snapshot_version: i64,
+        active_files: Vec<MaterializedBrowserFile>,
+        partition_column_types: BTreeMap<String, PartitionColumnType>,
+        required_capabilities: CapabilityReport,
+    ) -> Result<Self, QueryError> {
         validate_unique_materialized_paths(&active_files)?;
 
         Ok(Self {
@@ -273,6 +290,7 @@ impl MaterializedBrowserSnapshot {
             snapshot_version,
             active_files,
             partition_column_types,
+            required_capabilities,
         })
     }
 
@@ -290,6 +308,10 @@ impl MaterializedBrowserSnapshot {
 
     pub fn partition_column_types(&self) -> &BTreeMap<String, PartitionColumnType> {
         &self.partition_column_types
+    }
+
+    pub fn required_capabilities(&self) -> &CapabilityReport {
+        &self.required_capabilities
     }
 }
 
@@ -615,6 +637,7 @@ pub struct BootstrappedBrowserSnapshot {
     snapshot_version: i64,
     active_files: Vec<BootstrappedBrowserFile>,
     partition_column_types: BTreeMap<String, PartitionColumnType>,
+    required_capabilities: CapabilityReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1029,6 +1052,22 @@ impl BootstrappedBrowserSnapshot {
         active_files: Vec<BootstrappedBrowserFile>,
         partition_column_types: BTreeMap<String, PartitionColumnType>,
     ) -> Result<Self, QueryError> {
+        Self::new_with_partition_metadata(
+            table_uri,
+            snapshot_version,
+            active_files,
+            partition_column_types,
+            CapabilityReport::default(),
+        )
+    }
+
+    pub fn new_with_partition_metadata(
+        table_uri: impl Into<String>,
+        snapshot_version: i64,
+        active_files: Vec<BootstrappedBrowserFile>,
+        partition_column_types: BTreeMap<String, PartitionColumnType>,
+        required_capabilities: CapabilityReport,
+    ) -> Result<Self, QueryError> {
         validate_unique_bootstrapped_paths(&active_files)?;
 
         Ok(Self {
@@ -1036,6 +1075,7 @@ impl BootstrappedBrowserSnapshot {
             snapshot_version,
             active_files,
             partition_column_types,
+            required_capabilities,
         })
     }
 
@@ -1053,6 +1093,10 @@ impl BootstrappedBrowserSnapshot {
 
     pub fn partition_column_types(&self) -> &BTreeMap<String, PartitionColumnType> {
         &self.partition_column_types
+    }
+
+    pub fn required_capabilities(&self) -> &CapabilityReport {
+        &self.required_capabilities
     }
 
     pub fn validate_uniform_schema(&self) -> Result<BrowserSnapshotSchema, QueryError> {
@@ -1172,6 +1216,7 @@ impl BrowserRuntimeSession {
         request: &QueryRequest,
     ) -> Result<BrowserPlannedQuery, QueryError> {
         validate_snapshot_request_match(snapshot, request)?;
+        validate_required_snapshot_capabilities(snapshot.required_capabilities())?;
         let analyzed = analyze_browser_query(&request.sql)?;
         self.plan_query_from_analyzed(snapshot, &analyzed)
     }
@@ -1182,6 +1227,7 @@ impl BrowserRuntimeSession {
         request: &QueryRequest,
     ) -> Result<BrowserExecutionPlan, QueryError> {
         validate_snapshot_request_match(snapshot, request)?;
+        validate_required_snapshot_capabilities(snapshot.required_capabilities())?;
         let analyzed = analyze_browser_query(&request.sql)?;
         let planned = self.plan_query_from_analyzed(snapshot, &analyzed)?;
         lower_browser_execution_plan(analyzed.query.as_ref(), snapshot, &planned)
@@ -1232,6 +1278,7 @@ impl BrowserRuntimeSession {
         request: &QueryRequest,
     ) -> Result<PreparedBrowserExecution, QueryError> {
         validate_materialized_snapshot_request_match(snapshot, request)?;
+        validate_required_snapshot_capabilities(snapshot.required_capabilities())?;
         let analyzed = analyze_browser_query(&request.sql)?;
         let bootstrap_selection = select_materialized_files_for_bootstrap(snapshot, &analyzed)?;
         let bootstrapped_snapshot = self
@@ -1391,6 +1438,7 @@ impl BrowserRuntimeSession {
             table_uri: descriptor.table_uri.clone(),
             snapshot_version: descriptor.snapshot_version,
             partition_column_types: descriptor.partition_column_types.clone(),
+            required_capabilities: descriptor.required_capabilities.clone(),
             active_files: descriptor
                 .active_files
                 .iter()
@@ -1438,11 +1486,12 @@ impl BrowserRuntimeSession {
             })
             .collect::<Result<Vec<_>, QueryError>>()?;
 
-        MaterializedBrowserSnapshot::new_with_partition_column_types(
+        MaterializedBrowserSnapshot::new_with_partition_metadata(
             descriptor.table_uri.clone(),
             descriptor.snapshot_version,
             active_files,
             descriptor.partition_column_types.clone(),
+            descriptor.required_capabilities.clone(),
         )
     }
 
@@ -1495,6 +1544,7 @@ impl BrowserRuntimeSession {
         snapshot: &MaterializedBrowserSnapshot,
         active_files: &[&MaterializedBrowserFile],
     ) -> Result<BootstrappedBrowserSnapshot, QueryError> {
+        validate_required_snapshot_capabilities(snapshot.required_capabilities())?;
         let fetches = stream::iter(active_files.iter().copied())
             .map(|file| self.bootstrap_file_metadata(file))
             .buffered(self.config.snapshot_preflight_max_concurrency)
@@ -1517,11 +1567,12 @@ impl BrowserRuntimeSession {
             }
         };
 
-        BootstrappedBrowserSnapshot::new_with_partition_column_types(
+        BootstrappedBrowserSnapshot::new_with_partition_metadata(
             snapshot.table_uri(),
             snapshot.snapshot_version(),
             active_files,
             snapshot.partition_column_types().clone(),
+            snapshot.required_capabilities().clone(),
         )
     }
 
@@ -1709,6 +1760,31 @@ fn validate_materialized_snapshot_plan_match(
             snapshot.snapshot_version(),
             plan.snapshot_version(),
         )));
+    }
+
+    Ok(())
+}
+
+fn validate_required_snapshot_capabilities(
+    required_capabilities: &CapabilityReport,
+) -> Result<(), QueryError> {
+    if let Some((capability, required_state)) = required_capabilities
+        .capabilities
+        .iter()
+        .find(|(_, state)| **state != CapabilityState::Supported)
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::FallbackRequired,
+            format!(
+                "browser execution requires capability '{:?}' at state '{:?}'",
+                capability, required_state
+            ),
+            runtime_target(),
+        )
+        .with_fallback_reason(FallbackReason::CapabilityGate {
+            capability: *capability,
+            required_state: *required_state,
+        }));
     }
 
     Ok(())

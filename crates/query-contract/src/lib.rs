@@ -204,6 +204,8 @@ pub struct ResolvedSnapshotDescriptor {
     pub snapshot_version: i64,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub partition_column_types: BTreeMap<String, PartitionColumnType>,
+    #[serde(default, skip_serializing_if = "capability_report_is_empty")]
+    pub required_capabilities: CapabilityReport,
     pub active_files: Vec<ResolvedFileDescriptor>,
 }
 
@@ -221,7 +223,13 @@ pub struct BrowserHttpSnapshotDescriptor {
     pub snapshot_version: i64,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub partition_column_types: BTreeMap<String, PartitionColumnType>,
+    #[serde(default, skip_serializing_if = "capability_report_is_empty")]
+    pub required_capabilities: CapabilityReport,
     pub active_files: Vec<BrowserHttpFileDescriptor>,
+}
+
+fn capability_report_is_empty(report: &CapabilityReport) -> bool {
+    report.capabilities.is_empty()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

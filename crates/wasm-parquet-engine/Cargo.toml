@@ -10,5 +10,8 @@ parquet = { version = "=57.3.0", default-features = false }
 query-contract = { path = "../query-contract" }
 wasm-http-object-store = { path = "../wasm-http-object-store" }
 
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.64"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { version = "=1.50.0", features = ["macros", "rt-multi-thread"] }

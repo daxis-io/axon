@@ -33,6 +33,10 @@ fn attach_browser_http_urls_maps_latest_snapshot_files_with_stable_order() {
         resolved_snapshot.partition_column_types
     );
     assert_eq!(
+        browser_snapshot.required_capabilities,
+        resolved_snapshot.required_capabilities
+    );
+    assert_eq!(
         browser_snapshot.active_files.len(),
         resolved_snapshot.active_files.len()
     );
@@ -72,6 +76,10 @@ fn attach_browser_http_urls_preserves_historical_snapshot_version_and_file_set()
     assert_eq!(
         browser_snapshot.partition_column_types,
         resolved_snapshot.partition_column_types
+    );
+    assert_eq!(
+        browser_snapshot.required_capabilities,
+        resolved_snapshot.required_capabilities
     );
     assert_eq!(
         browser_snapshot.active_files.len(),
@@ -320,6 +328,7 @@ fn attach_browser_http_urls_rejects_duplicate_resolved_paths() {
             "category".to_string(),
             PartitionColumnType::String,
         )]),
+        required_capabilities: query_contract::CapabilityReport::default(),
         active_files: vec![
             ResolvedFileDescriptor {
                 path: duplicate_path.clone(),
@@ -354,6 +363,10 @@ fn attach_browser_http_urls_preserves_partition_column_types() {
             ("category".to_string(), PartitionColumnType::String),
             ("year_code".to_string(), PartitionColumnType::String),
         ]),
+        required_capabilities: query_contract::CapabilityReport::from_pairs([(
+            query_contract::CapabilityKey::DeletionVectors,
+            query_contract::CapabilityState::NativeOnly,
+        )]),
         active_files: vec![ResolvedFileDescriptor {
             path: "year_code=2024/part-000.parquet".to_string(),
             size_bytes: 128,
@@ -373,6 +386,13 @@ fn attach_browser_http_urls_preserves_partition_column_types() {
             ("category".to_string(), PartitionColumnType::String),
             ("year_code".to_string(), PartitionColumnType::String),
         ])
+    );
+    assert_eq!(
+        browser_snapshot.required_capabilities,
+        query_contract::CapabilityReport::from_pairs([(
+            query_contract::CapabilityKey::DeletionVectors,
+            query_contract::CapabilityState::NativeOnly,
+        )])
     );
 }
 

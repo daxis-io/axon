@@ -1,6 +1,6 @@
 //! Browser-safe Delta snapshot reconstruction.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 #[cfg(all(not(target_arch = "wasm32"), unix))]
@@ -22,10 +22,12 @@ use bytes::Bytes;
 use parquet::file::reader::{FileReader as ParquetFileReader, SerializedFileReader};
 use parquet::record::Field as ParquetField;
 use query_contract::{
-    ExecutionTarget, QueryError, QueryErrorCode, ResolvedFileDescriptor,
-    ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
+    CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, PartitionColumnType,
+    QueryError, QueryErrorCode, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
+    SnapshotResolutionRequest,
 };
 use serde::Deserialize;
+use serde_json::Value as JsonValue;
 
 pub const OWNER: &str = "Runtime / engine team";
 pub const RESPONSIBILITY: &str = "Browser-safe Delta snapshot reconstruction.";
@@ -120,9 +122,9 @@ where
         let selected_checkpoint = self
             .select_checkpoint(&request.table_uri, target_version, &log_entries)
             .await?;
-        let mut active_files = BTreeMap::new();
+        let mut replay_state = SnapshotReplayState::default();
         let replay_start_version = if let Some(checkpoint) = &selected_checkpoint {
-            self.apply_checkpoint(&request.table_uri, checkpoint, &mut active_files)
+            self.apply_checkpoint(&request.table_uri, checkpoint, &mut replay_state)
                 .await?;
             checkpoint.version + 1
         } else {
@@ -143,15 +145,19 @@ where
                         ))
                     })?;
                 let actions = self.json.parse_log_actions(bytes.as_ref())?;
-                apply_actions(&mut active_files, actions)?;
+                apply_actions(&mut replay_state, actions)?;
             }
         }
+        let schema_derivations = derive_schema_derivations(replay_state.current_metadata.as_ref())?;
+        let required_capabilities =
+            required_capabilities_from_replay_state(&replay_state, &schema_derivations);
 
         Ok(ResolvedSnapshotDescriptor {
             table_uri: request.table_uri,
             snapshot_version: target_version,
-            partition_column_types: BTreeMap::new(),
-            active_files: active_files.into_values().collect(),
+            partition_column_types: schema_derivations.partition_column_types,
+            required_capabilities,
+            active_files: replay_state.active_files.into_values().collect(),
         })
     }
 
@@ -196,7 +202,7 @@ where
         &self,
         table_uri: &str,
         checkpoint: &SelectedCheckpoint,
-        active_files: &mut BTreeMap<String, ResolvedFileDescriptor>,
+        replay_state: &mut SnapshotReplayState,
     ) -> Result<(), QueryError> {
         let mut actions = Vec::new();
         for part_path in &checkpoint.part_paths {
@@ -217,7 +223,7 @@ where
                 _ => None,
             })
             .collect::<Vec<_>>();
-        apply_actions(active_files, actions)?;
+        apply_actions(replay_state, actions)?;
 
         for sidecar_path in sidecar_paths {
             let resolved_sidecar_path = resolve_sidecar_path(&sidecar_path);
@@ -232,7 +238,7 @@ where
                     ))
                 })?;
             let actions = self.parse_checkpoint_actions(&resolved_sidecar_path, bytes)?;
-            apply_actions(active_files, actions)?;
+            apply_actions(replay_state, actions)?;
         }
 
         Ok(())
@@ -259,9 +265,57 @@ pub struct LastCheckpointHint {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SnapshotLogAction {
-    Add(ResolvedFileDescriptor),
-    Remove { path: String },
-    Sidecar { path: String },
+    Add {
+        file: ResolvedFileDescriptor,
+        uses_deletion_vector: bool,
+    },
+    Remove {
+        path: String,
+    },
+    Sidecar {
+        path: String,
+    },
+    Protocol {
+        min_reader_version: i32,
+        min_writer_version: i32,
+        reader_features: BTreeSet<String>,
+        writer_features: BTreeSet<String>,
+    },
+    Metadata {
+        schema_string: String,
+        partition_columns: Vec<String>,
+        configuration: BTreeMap<String, String>,
+    },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct SnapshotReplayState {
+    active_files: BTreeMap<String, ResolvedFileDescriptor>,
+    active_deletion_vector_paths: BTreeSet<String>,
+    current_protocol: Option<SnapshotProtocol>,
+    current_metadata: Option<SnapshotMetadata>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SnapshotProtocol {
+    min_reader_version: i32,
+    min_writer_version: i32,
+    reader_features: BTreeSet<String>,
+    writer_features: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SnapshotMetadata {
+    schema_string: String,
+    partition_columns: Vec<String>,
+    configuration: BTreeMap<String, String>,
+}
+
+#[derive(Default)]
+struct SchemaDerivations {
+    partition_column_types: BTreeMap<String, PartitionColumnType>,
+    uses_column_mapping: bool,
+    uses_timestamp_ntz: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -342,6 +396,10 @@ struct JsonActionEnvelope {
     remove: Option<JsonRemoveAction>,
     #[serde(default)]
     sidecar: Option<JsonSidecarAction>,
+    #[serde(default)]
+    protocol: Option<JsonProtocolAction>,
+    #[serde(default, rename = "metaData")]
+    metadata: Option<JsonMetadataAction>,
 }
 
 #[derive(Deserialize)]
@@ -350,6 +408,8 @@ struct JsonAddAction {
     size: i64,
     #[serde(default, rename = "partitionValues")]
     partition_values: BTreeMap<String, Option<String>>,
+    #[serde(default, rename = "deletionVector")]
+    deletion_vector: Option<JsonValue>,
 }
 
 #[derive(Deserialize)]
@@ -360,6 +420,27 @@ struct JsonRemoveAction {
 #[derive(Deserialize)]
 struct JsonSidecarAction {
     path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonProtocolAction {
+    min_reader_version: i32,
+    min_writer_version: i32,
+    #[serde(default)]
+    reader_features: Vec<String>,
+    #[serde(default)]
+    writer_features: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonMetadataAction {
+    schema_string: String,
+    #[serde(default)]
+    partition_columns: Vec<String>,
+    #[serde(default)]
+    configuration: BTreeMap<String, String>,
 }
 
 impl JsonHandler for DefaultJsonHandler {
@@ -864,18 +945,52 @@ fn selected_checkpoint_from_hint(
 }
 
 fn apply_actions(
-    active_files: &mut BTreeMap<String, ResolvedFileDescriptor>,
+    replay_state: &mut SnapshotReplayState,
     actions: Vec<SnapshotLogAction>,
 ) -> Result<(), QueryError> {
     for action in actions {
         match action {
-            SnapshotLogAction::Add(file) => {
-                active_files.insert(file.path.clone(), file);
+            SnapshotLogAction::Add {
+                file,
+                uses_deletion_vector,
+            } => {
+                let path = file.path.clone();
+                replay_state.active_files.insert(path.clone(), file);
+                if uses_deletion_vector {
+                    replay_state.active_deletion_vector_paths.insert(path);
+                } else {
+                    replay_state.active_deletion_vector_paths.remove(&path);
+                }
             }
             SnapshotLogAction::Remove { path } => {
-                active_files.remove(&path);
+                replay_state.active_files.remove(&path);
+                replay_state.active_deletion_vector_paths.remove(&path);
             }
             SnapshotLogAction::Sidecar { .. } => {}
+            SnapshotLogAction::Protocol {
+                min_reader_version,
+                min_writer_version,
+                reader_features,
+                writer_features,
+            } => {
+                replay_state.current_protocol = Some(SnapshotProtocol {
+                    min_reader_version,
+                    min_writer_version,
+                    reader_features,
+                    writer_features,
+                });
+            }
+            SnapshotLogAction::Metadata {
+                schema_string,
+                partition_columns,
+                configuration,
+            } => {
+                replay_state.current_metadata = Some(SnapshotMetadata {
+                    schema_string,
+                    partition_columns,
+                    configuration,
+                });
+            }
         }
     }
     Ok(())
@@ -885,13 +1000,16 @@ fn snapshot_action_from_json(
     envelope: JsonActionEnvelope,
 ) -> Result<Option<SnapshotLogAction>, QueryError> {
     if let Some(add) = envelope.add {
-        return Ok(Some(SnapshotLogAction::Add(ResolvedFileDescriptor {
-            path: add.path,
-            size_bytes: u64::try_from(add.size).map_err(|_| {
-                execution_error("delta add action size must be non-negative".to_string())
-            })?,
-            partition_values: add.partition_values,
-        })));
+        return Ok(Some(SnapshotLogAction::Add {
+            file: ResolvedFileDescriptor {
+                path: add.path,
+                size_bytes: u64::try_from(add.size).map_err(|_| {
+                    execution_error("delta add action size must be non-negative".to_string())
+                })?,
+                partition_values: add.partition_values,
+            },
+            uses_deletion_vector: add.deletion_vector.is_some(),
+        }));
     }
 
     if let Some(remove) = envelope.remove {
@@ -900,6 +1018,23 @@ fn snapshot_action_from_json(
 
     if let Some(sidecar) = envelope.sidecar {
         return Ok(Some(SnapshotLogAction::Sidecar { path: sidecar.path }));
+    }
+
+    if let Some(protocol) = envelope.protocol {
+        return Ok(Some(SnapshotLogAction::Protocol {
+            min_reader_version: protocol.min_reader_version,
+            min_writer_version: protocol.min_writer_version,
+            reader_features: protocol.reader_features.into_iter().collect(),
+            writer_features: protocol.writer_features.into_iter().collect(),
+        }));
+    }
+
+    if let Some(metadata) = envelope.metadata {
+        return Ok(Some(SnapshotLogAction::Metadata {
+            schema_string: metadata.schema_string,
+            partition_columns: metadata.partition_columns,
+            configuration: metadata.configuration,
+        }));
     }
 
     Ok(None)
@@ -932,6 +1067,18 @@ fn snapshot_action_from_checkpoint_row(
         }
     }
 
+    if let Some(field) = fields.get("protocol") {
+        if let Some(action) = checkpoint_protocol_action(field)? {
+            return Ok(Some(action));
+        }
+    }
+
+    if let Some(field) = fields.get("metaData") {
+        if let Some(action) = checkpoint_metadata_action(field)? {
+            return Ok(Some(action));
+        }
+    }
+
     Ok(None)
 }
 
@@ -954,16 +1101,19 @@ fn checkpoint_add_action(
     })?;
     let partition_values = group_string_map(group, "partitionValues")?;
 
-    Ok(Some(SnapshotLogAction::Add(ResolvedFileDescriptor {
-        path: path.expect("path should exist when action is present"),
-        size_bytes: u64::try_from(size).map_err(|_| {
-            execution_error(format!(
-                "checkpoint add action in '{}' reported a negative size",
-                relative_path
-            ))
-        })?,
-        partition_values,
-    })))
+    Ok(Some(SnapshotLogAction::Add {
+        file: ResolvedFileDescriptor {
+            path: path.expect("path should exist when action is present"),
+            size_bytes: u64::try_from(size).map_err(|_| {
+                execution_error(format!(
+                    "checkpoint add action in '{}' reported a negative size",
+                    relative_path
+                ))
+            })?,
+            partition_values,
+        },
+        uses_deletion_vector: group_has_non_null_field(group, "deletionVector")?,
+    }))
 }
 
 fn checkpoint_remove_action(field: &ParquetField) -> Result<Option<SnapshotLogAction>, QueryError> {
@@ -986,6 +1136,55 @@ fn checkpoint_sidecar_action(
         return Ok(None);
     };
     Ok(Some(SnapshotLogAction::Sidecar { path }))
+}
+
+fn checkpoint_protocol_action(
+    field: &ParquetField,
+) -> Result<Option<SnapshotLogAction>, QueryError> {
+    let Some(group) = as_group(field) else {
+        return Ok(None);
+    };
+    let Some(min_reader_version) = group_i64(group, "minReaderVersion")? else {
+        return Ok(None);
+    };
+    let min_writer_version = group_i64(group, "minWriterVersion")?.ok_or_else(|| {
+        execution_error("checkpoint protocol action was missing minWriterVersion".to_string())
+    })?;
+
+    Ok(Some(SnapshotLogAction::Protocol {
+        min_reader_version: i32::try_from(min_reader_version).map_err(|_| {
+            execution_error("checkpoint protocol minReaderVersion overflowed i32".to_string())
+        })?,
+        min_writer_version: i32::try_from(min_writer_version).map_err(|_| {
+            execution_error("checkpoint protocol minWriterVersion overflowed i32".to_string())
+        })?,
+        reader_features: group_string_list(group, "readerFeatures")?
+            .into_iter()
+            .collect(),
+        writer_features: group_string_list(group, "writerFeatures")?
+            .into_iter()
+            .collect(),
+    }))
+}
+
+fn checkpoint_metadata_action(
+    field: &ParquetField,
+) -> Result<Option<SnapshotLogAction>, QueryError> {
+    let Some(group) = as_group(field) else {
+        return Ok(None);
+    };
+    let Some(schema_string) = group_string(group, "schemaString")? else {
+        return Ok(None);
+    };
+
+    Ok(Some(SnapshotLogAction::Metadata {
+        schema_string,
+        partition_columns: group_string_list(group, "partitionColumns")?,
+        configuration: group_string_map(group, "configuration")?
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|value| (key, value)))
+            .collect(),
+    }))
 }
 
 fn as_group(field: &ParquetField) -> Option<&parquet::record::Row> {
@@ -1036,6 +1235,38 @@ fn group_i64(group: &parquet::record::Row, name: &str) -> Result<Option<i64>, Qu
     }
 }
 
+fn group_string_list(group: &parquet::record::Row, name: &str) -> Result<Vec<String>, QueryError> {
+    match group_field(group, name)? {
+        Some(ParquetField::ListInternal(list)) => list
+            .elements()
+            .iter()
+            .map(|element| match element {
+                ParquetField::Str(value) => Ok(value.clone()),
+                ParquetField::Null => Err(execution_error(format!(
+                    "delta checkpoint list field '{}' contained a null element",
+                    name
+                ))),
+                other => Err(execution_error(format!(
+                    "delta checkpoint list field '{}' had a non-string element '{:?}'",
+                    name, other
+                ))),
+            })
+            .collect(),
+        Some(ParquetField::Null) | None => Ok(Vec::new()),
+        Some(other) => Err(execution_error(format!(
+            "delta checkpoint field '{}' had unexpected type '{:?}'",
+            name, other
+        ))),
+    }
+}
+
+fn group_has_non_null_field(group: &parquet::record::Row, name: &str) -> Result<bool, QueryError> {
+    Ok(match group_field(group, name)? {
+        Some(ParquetField::Null) | None => false,
+        Some(_) => true,
+    })
+}
+
 fn group_string_map(
     group: &parquet::record::Row,
     name: &str,
@@ -1069,6 +1300,270 @@ fn group_string_map(
             "delta checkpoint field '{}' had unexpected type '{:?}'",
             name, other
         ))),
+    }
+}
+
+fn derive_schema_derivations(
+    metadata: Option<&SnapshotMetadata>,
+) -> Result<SchemaDerivations, QueryError> {
+    let Some(metadata) = metadata else {
+        return Ok(SchemaDerivations::default());
+    };
+    let schema = parse_schema_json(&metadata.schema_string)?;
+    let fields = schema_fields(schema.as_ref(), "Delta schema root")?;
+    let mut partition_column_types = BTreeMap::new();
+    for partition_column in &metadata.partition_columns {
+        let field = schema_field_by_name(fields, partition_column).ok_or_else(|| {
+            execution_error(format!(
+                "partition column '{}' was absent from the Delta schema during browser snapshot reconstruction",
+                partition_column
+            ))
+        })?;
+        partition_column_types.insert(
+            partition_column.clone(),
+            partition_column_type_from_schema_field(field)?,
+        );
+    }
+
+    Ok(SchemaDerivations {
+        partition_column_types,
+        uses_column_mapping: schema_fields_use_column_mapping(fields)?,
+        uses_timestamp_ntz: schema_fields_use_timestamp_ntz(fields)?,
+    })
+}
+
+fn required_capabilities_from_replay_state(
+    replay_state: &SnapshotReplayState,
+    schema_derivations: &SchemaDerivations,
+) -> CapabilityReport {
+    let mut report = CapabilityReport::default();
+
+    if metadata_flag_enabled(
+        replay_state.current_metadata.as_ref(),
+        "delta.enableChangeDataFeed",
+    ) && protocol_supports_change_data_feed(replay_state.current_protocol.as_ref())
+    {
+        report.insert(CapabilityKey::ChangeDataFeed, CapabilityState::NativeOnly);
+    }
+
+    if schema_derivations.uses_column_mapping {
+        report.insert(CapabilityKey::ColumnMapping, CapabilityState::NativeOnly);
+    }
+
+    if !replay_state.active_deletion_vector_paths.is_empty()
+        || (metadata_flag_enabled(
+            replay_state.current_metadata.as_ref(),
+            "delta.enableDeletionVectors",
+        ) && protocol_supports_deletion_vectors(replay_state.current_protocol.as_ref()))
+    {
+        report.insert(CapabilityKey::DeletionVectors, CapabilityState::NativeOnly);
+    }
+
+    if schema_derivations.uses_timestamp_ntz {
+        report.insert(CapabilityKey::TimestampNtz, CapabilityState::NativeOnly);
+    }
+
+    report
+}
+
+fn metadata_flag_enabled(metadata: Option<&SnapshotMetadata>, key: &str) -> bool {
+    metadata
+        .and_then(|metadata| metadata.configuration.get(key))
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+}
+
+fn protocol_supports_change_data_feed(protocol: Option<&SnapshotProtocol>) -> bool {
+    let Some(protocol) = protocol else {
+        return false;
+    };
+
+    if protocol.min_writer_version == 7 {
+        return protocol.writer_features.contains("changeDataFeed");
+    }
+
+    protocol.min_writer_version >= 4
+}
+
+fn protocol_supports_deletion_vectors(protocol: Option<&SnapshotProtocol>) -> bool {
+    let Some(protocol) = protocol else {
+        return false;
+    };
+
+    protocol.reader_features.contains("deletionVectors")
+        || protocol.writer_features.contains("deletionVectors")
+}
+
+fn parse_schema_json(schema_string: &str) -> Result<Box<JsonValue>, QueryError> {
+    serde_json::from_str(schema_string).map_err(|error| {
+        execution_error(format!(
+            "Delta schemaString could not be parsed during browser snapshot reconstruction: {error}"
+        ))
+    })
+}
+
+fn schema_fields<'a>(schema: &'a JsonValue, context: &str) -> Result<&'a [JsonValue], QueryError> {
+    let type_name = schema
+        .get("type")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| execution_error(format!("{context} was missing a string 'type' field")))?;
+    if type_name != "struct" {
+        return Err(execution_error(format!(
+            "{context} expected 'type' == 'struct', found '{type_name}'"
+        )));
+    }
+
+    schema
+        .get("fields")
+        .and_then(JsonValue::as_array)
+        .map(Vec::as_slice)
+        .ok_or_else(|| execution_error(format!("{context} was missing a 'fields' array")))
+}
+
+fn schema_field_by_name<'a>(fields: &'a [JsonValue], name: &str) -> Option<&'a JsonValue> {
+    fields.iter().find(|field| {
+        field
+            .get("name")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|field_name| field_name == name)
+    })
+}
+
+fn partition_column_type_from_schema_field(
+    field: &JsonValue,
+) -> Result<PartitionColumnType, QueryError> {
+    let data_type = field.get("type").ok_or_else(|| {
+        execution_error("Delta schema field was missing a 'type' value".to_string())
+    })?;
+    Ok(partition_column_type_from_schema_type(data_type))
+}
+
+fn partition_column_type_from_schema_type(data_type: &JsonValue) -> PartitionColumnType {
+    match data_type {
+        JsonValue::String(value) => match value.as_str() {
+            "string" => PartitionColumnType::String,
+            "boolean" => PartitionColumnType::Boolean,
+            "byte" | "short" | "integer" | "long" => PartitionColumnType::Int64,
+            _ => PartitionColumnType::Unsupported,
+        },
+        JsonValue::Object(_) => PartitionColumnType::Unsupported,
+        _ => PartitionColumnType::Unsupported,
+    }
+}
+
+fn schema_fields_use_column_mapping(fields: &[JsonValue]) -> Result<bool, QueryError> {
+    for field in fields {
+        if schema_field_uses_column_mapping(field)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn schema_field_uses_column_mapping(field: &JsonValue) -> Result<bool, QueryError> {
+    if let Some(metadata) = field.get("metadata").and_then(JsonValue::as_object) {
+        if metadata
+            .keys()
+            .any(|key| key.starts_with("delta.columnMapping."))
+        {
+            return Ok(true);
+        }
+    }
+
+    let data_type = field.get("type").ok_or_else(|| {
+        execution_error("Delta schema field was missing a 'type' value".to_string())
+    })?;
+    schema_type_uses_column_mapping(data_type)
+}
+
+fn schema_type_uses_column_mapping(data_type: &JsonValue) -> Result<bool, QueryError> {
+    match data_type {
+        JsonValue::String(_) => Ok(false),
+        JsonValue::Object(object) => match object.get("type").and_then(JsonValue::as_str) {
+            Some("array") => {
+                schema_type_uses_column_mapping(object.get("elementType").ok_or_else(|| {
+                    execution_error("Delta array type was missing elementType".to_string())
+                })?)
+            }
+            Some("map") => Ok(
+                schema_type_uses_column_mapping(object.get("keyType").ok_or_else(|| {
+                    execution_error("Delta map type was missing keyType".to_string())
+                })?)?
+                    || schema_type_uses_column_mapping(object.get("valueType").ok_or_else(
+                        || execution_error("Delta map type was missing valueType".to_string()),
+                    )?)?,
+            ),
+            Some("struct") | Some("variant") => {
+                let fields = object
+                    .get("fields")
+                    .and_then(JsonValue::as_array)
+                    .map(Vec::as_slice)
+                    .ok_or_else(|| {
+                        execution_error("Delta nested struct type was missing fields".to_string())
+                    })?;
+                schema_fields_use_column_mapping(fields)
+            }
+            Some(_) => Ok(false),
+            None => Err(execution_error(
+                "Delta complex type was missing a string 'type' field".to_string(),
+            )),
+        },
+        _ => Err(execution_error(
+            "Delta schema type was neither a string nor an object".to_string(),
+        )),
+    }
+}
+
+fn schema_fields_use_timestamp_ntz(fields: &[JsonValue]) -> Result<bool, QueryError> {
+    for field in fields {
+        if schema_field_uses_timestamp_ntz(field)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn schema_field_uses_timestamp_ntz(field: &JsonValue) -> Result<bool, QueryError> {
+    let data_type = field.get("type").ok_or_else(|| {
+        execution_error("Delta schema field was missing a 'type' value".to_string())
+    })?;
+    schema_type_uses_timestamp_ntz(data_type)
+}
+
+fn schema_type_uses_timestamp_ntz(data_type: &JsonValue) -> Result<bool, QueryError> {
+    match data_type {
+        JsonValue::String(value) => Ok(value == "timestamp_ntz"),
+        JsonValue::Object(object) => match object.get("type").and_then(JsonValue::as_str) {
+            Some("array") => {
+                schema_type_uses_timestamp_ntz(object.get("elementType").ok_or_else(|| {
+                    execution_error("Delta array type was missing elementType".to_string())
+                })?)
+            }
+            Some("map") => Ok(
+                schema_type_uses_timestamp_ntz(object.get("keyType").ok_or_else(|| {
+                    execution_error("Delta map type was missing keyType".to_string())
+                })?)?
+                    || schema_type_uses_timestamp_ntz(object.get("valueType").ok_or_else(
+                        || execution_error("Delta map type was missing valueType".to_string()),
+                    )?)?,
+            ),
+            Some("struct") | Some("variant") => {
+                let fields = object
+                    .get("fields")
+                    .and_then(JsonValue::as_array)
+                    .map(Vec::as_slice)
+                    .ok_or_else(|| {
+                        execution_error("Delta nested struct type was missing fields".to_string())
+                    })?;
+                schema_fields_use_timestamp_ntz(fields)
+            }
+            Some(_) => Ok(false),
+            None => Err(execution_error(
+                "Delta complex type was missing a string 'type' field".to_string(),
+            )),
+        },
+        _ => Err(execution_error(
+            "Delta schema type was neither a string nor an object".to_string(),
+        )),
     }
 }
 

@@ -1,8 +1,8 @@
 #![cfg(target_arch = "wasm32")]
 
 use query_contract::{
-    BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget, PartitionColumnType,
-    QueryErrorCode, QueryRequest,
+    BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityReport, ExecutionTarget,
+    PartitionColumnType, QueryErrorCode, QueryRequest,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 use wasm_query_runtime::{
@@ -124,6 +124,7 @@ fn browser_runtime_materializes_https_descriptors_in_wasm() {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 4,
         partition_column_types: std::collections::BTreeMap::new(),
+        required_capabilities: CapabilityReport::default(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
             url: "https://example.com/object".to_string(),
@@ -427,6 +428,7 @@ fn materialize_snapshot_rejects_loopback_http_in_wasm() {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 4,
         partition_column_types: std::collections::BTreeMap::new(),
+        required_capabilities: CapabilityReport::default(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
             url: "http://127.0.0.1:8080/object".to_string(),

@@ -1,12 +1,18 @@
+#[cfg(feature = "datafusion")]
 use std::error::Error as StdError;
 use std::future::Future;
 use std::path::PathBuf;
 
 #[cfg(feature = "datafusion")]
 use deltalake::datafusion::common::DataFusionError;
+use deltalake::kernel::{DataType, PrimitiveType, StructField};
+use deltalake::table::config::TablePropertiesExt;
 use deltalake::table::normalize_table_url;
+use deltalake::table::state::DeltaTableState;
 use deltalake::{DeltaTableError, ObjectStoreError};
-use query_contract::{ExecutionTarget, QueryError, QueryErrorCode};
+use query_contract::{
+    CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, QueryError, QueryErrorCode,
+};
 use url::Url;
 
 pub fn run_on_runtime<F, T>(
@@ -100,6 +106,29 @@ pub fn canonical_table_policy_key(
 
 pub fn canonical_table_policy_key_from_url(table_uri: &Url) -> String {
     normalize_table_url(table_uri).to_string()
+}
+
+pub fn required_table_capabilities(snapshot: &DeltaTableState) -> CapabilityReport {
+    let schema = snapshot.schema();
+    let mut report = CapabilityReport::default();
+
+    if table_uses_change_data_feed(snapshot) {
+        report.insert(CapabilityKey::ChangeDataFeed, CapabilityState::NativeOnly);
+    }
+
+    if schema.fields().any(field_uses_column_mapping) {
+        report.insert(CapabilityKey::ColumnMapping, CapabilityState::NativeOnly);
+    }
+
+    if table_uses_deletion_vectors(snapshot) {
+        report.insert(CapabilityKey::DeletionVectors, CapabilityState::NativeOnly);
+    }
+
+    if schema.fields().any(field_uses_timestamp_ntz) {
+        report.insert(CapabilityKey::TimestampNtz, CapabilityState::NativeOnly);
+    }
+
+    report
 }
 
 pub fn map_delta_error(error: DeltaTableError, target: ExecutionTarget) -> QueryError {
@@ -218,6 +247,7 @@ pub fn query_error_from_unavailable_snapshot_message(
     })
 }
 
+#[cfg(feature = "datafusion")]
 fn find_object_store_error<'a>(
     error: &'a (dyn StdError + 'static),
 ) -> Option<&'a ObjectStoreError> {
@@ -229,6 +259,90 @@ fn find_object_store_error<'a>(
         current = candidate.source();
     }
     None
+}
+
+fn table_uses_change_data_feed(snapshot: &DeltaTableState) -> bool {
+    if !snapshot.table_config().enable_change_data_feed() {
+        return false;
+    }
+
+    let protocol = snapshot.protocol();
+    if protocol.min_writer_version() == 7 {
+        return protocol_has_writer_feature(protocol, "changeDataFeed");
+    }
+
+    protocol.min_writer_version() >= 4
+}
+
+fn table_uses_deletion_vectors(snapshot: &DeltaTableState) -> bool {
+    if snapshot
+        .log_data()
+        .iter()
+        .any(|file| file.deletion_vector_descriptor().is_some())
+    {
+        return true;
+    }
+
+    snapshot.table_config().enable_deletion_vectors == Some(true)
+        && (protocol_has_reader_feature(snapshot.protocol(), "deletionVectors")
+            || protocol_has_writer_feature(snapshot.protocol(), "deletionVectors"))
+}
+
+fn protocol_has_reader_feature(protocol: &deltalake::kernel::Protocol, feature_name: &str) -> bool {
+    protocol.reader_features().is_some_and(|features| {
+        features
+            .iter()
+            .any(|feature| feature.to_string() == feature_name)
+    })
+}
+
+fn protocol_has_writer_feature(protocol: &deltalake::kernel::Protocol, feature_name: &str) -> bool {
+    protocol.writer_features().is_some_and(|features| {
+        features
+            .iter()
+            .any(|feature| feature.to_string() == feature_name)
+    })
+}
+
+fn field_uses_timestamp_ntz(field: &StructField) -> bool {
+    data_type_uses_timestamp_ntz(&field.data_type)
+}
+
+fn data_type_uses_timestamp_ntz(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Primitive(PrimitiveType::TimestampNtz) => true,
+        DataType::Array(array_type) => data_type_uses_timestamp_ntz(array_type.element_type()),
+        DataType::Struct(struct_type) | DataType::Variant(struct_type) => {
+            struct_type.fields().any(field_uses_timestamp_ntz)
+        }
+        DataType::Map(map_type) => {
+            data_type_uses_timestamp_ntz(map_type.key_type())
+                || data_type_uses_timestamp_ntz(map_type.value_type())
+        }
+        DataType::Primitive(_) => false,
+    }
+}
+
+fn field_uses_column_mapping(field: &StructField) -> bool {
+    field
+        .metadata
+        .keys()
+        .any(|key| key.starts_with("delta.columnMapping."))
+        || data_type_uses_column_mapping(&field.data_type)
+}
+
+fn data_type_uses_column_mapping(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Array(array_type) => data_type_uses_column_mapping(array_type.element_type()),
+        DataType::Struct(struct_type) | DataType::Variant(struct_type) => {
+            struct_type.fields().any(field_uses_column_mapping)
+        }
+        DataType::Map(map_type) => {
+            data_type_uses_column_mapping(map_type.key_type())
+                || data_type_uses_column_mapping(map_type.value_type())
+        }
+        DataType::Primitive(_) => false,
+    }
 }
 
 #[cfg(feature = "datafusion")]

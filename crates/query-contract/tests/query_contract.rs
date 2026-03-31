@@ -232,6 +232,10 @@ fn resolved_snapshot_descriptor_serializes_metadata_only_file_descriptors() {
             ("category".to_string(), PartitionColumnType::String),
             ("year".to_string(), PartitionColumnType::Int64),
         ]),
+        required_capabilities: CapabilityReport::from_pairs([
+            (CapabilityKey::DeletionVectors, CapabilityState::NativeOnly),
+            (CapabilityKey::RangeReads, CapabilityState::Supported),
+        ]),
         active_files: vec![
             ResolvedFileDescriptor {
                 path: "category=A/part-000.parquet".to_string(),
@@ -261,6 +265,12 @@ fn resolved_snapshot_descriptor_serializes_metadata_only_file_descriptors() {
                 "category": "string",
                 "year": "int64"
             },
+            "required_capabilities": {
+                "capabilities": {
+                    "deletion_vectors": "native_only",
+                    "range_reads": "supported"
+                }
+            },
             "active_files": [
                 {
                     "path": "category=A/part-000.parquet",
@@ -288,6 +298,10 @@ fn browser_http_snapshot_descriptor_serializes_browser_safe_file_urls() {
         partition_column_types: std::collections::BTreeMap::from([
             ("category".to_string(), PartitionColumnType::String),
             ("year".to_string(), PartitionColumnType::Int64),
+        ]),
+        required_capabilities: CapabilityReport::from_pairs([
+            (CapabilityKey::DeletionVectors, CapabilityState::NativeOnly),
+            (CapabilityKey::RangeReads, CapabilityState::Supported),
         ]),
         active_files: vec![
             BrowserHttpFileDescriptor {
@@ -319,6 +333,12 @@ fn browser_http_snapshot_descriptor_serializes_browser_safe_file_urls() {
             "partition_column_types": {
                 "category": "string",
                 "year": "int64"
+            },
+            "required_capabilities": {
+                "capabilities": {
+                    "deletion_vectors": "native_only",
+                    "range_reads": "supported"
+                }
             },
             "active_files": [
                 {
@@ -357,7 +377,9 @@ fn snapshot_descriptors_default_partition_column_types_when_omitted() {
     .expect("browser http snapshot descriptor should deserialize");
 
     assert!(resolved.partition_column_types.is_empty());
+    assert_eq!(resolved.required_capabilities, CapabilityReport::default());
     assert!(browser.partition_column_types.is_empty());
+    assert_eq!(browser.required_capabilities, CapabilityReport::default());
 }
 
 #[test]

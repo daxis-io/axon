@@ -57,6 +57,9 @@ Local validation:
 ```bash
 cargo install wasm-bindgen-cli --version 0.2.114 --locked
 cargo test -p wasm-query-runtime --locked
+cargo test -p browser-sdk --target wasm32-unknown-unknown --locked --test wasm_smoke
+cargo test -p wasm-parquet-engine --target wasm32-unknown-unknown --locked --test wasm_smoke
+cargo test -p wasm-delta-snapshot --target wasm32-unknown-unknown --locked --test wasm_smoke
 cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --locked --test wasm_smoke
 ```
 
@@ -216,8 +219,7 @@ Browser launch readiness is now tracked in the release checklist and supporting 
 - `docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md` captures the browser compatibility, Delta compatibility, security reporting, and size-budget gates for the new architecture.
 - `tests/perf/README.md` documents the provisional release-artifact size proxy and the browser performance baseline commands.
 - `tests/security/README.md` points at the in-repo security checks and the private reporting path in `SECURITY.md`.
-- CI now checks `wasm32-unknown-unknown` compatibility for `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-sdk`, runs host tests for the new split crates, and keeps the existing `wasm-query-runtime` wasm smoke test.
-- Dedicated wasm execution suites for `browser-sdk`, `wasm-parquet-engine`, and `wasm-delta-snapshot` remain future work.
+- CI now checks `wasm32-unknown-unknown` compatibility for `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-sdk`, runs host tests for the new split crates, and runs dedicated `wasm32-unknown-unknown` smoke suites for `browser-sdk`, `wasm-parquet-engine`, `wasm-delta-snapshot`, and `wasm-query-runtime`.
 - The browser size budget currently uses the release `.rlib` artifact as a provisional proxy for bundle size. Startup and memory budgets are documented as future work. That is a limitation of the current repo surface; the final application bundle is not yet produced here.
 
 ## Repository Layout

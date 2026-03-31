@@ -66,6 +66,15 @@ jobs:
       - name: Run wasm query runtime smoke
         run: cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --locked --test wasm_smoke
 
+      - name: Run browser SDK wasm smoke
+        run: cargo test -p browser-sdk --target wasm32-unknown-unknown --locked --test wasm_smoke
+
+      - name: Run wasm Parquet engine smoke
+        run: cargo test -p wasm-parquet-engine --target wasm32-unknown-unknown --locked --test wasm_smoke
+
+      - name: Run wasm Delta snapshot smoke
+        run: cargo test -p wasm-delta-snapshot --target wasm32-unknown-unknown --locked --test wasm_smoke
+
       - name: Report browser wasm size proxy
         run: |
           rm -f target/wasm32-unknown-unknown/release/deps/libwasm_http_object_store-*.rlib \

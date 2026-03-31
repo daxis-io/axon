@@ -442,6 +442,7 @@ dependencies = [
  "query-contract",
  "serde",
  "serde_json",
+ "wasm-bindgen-test",
 ]
 
 [[package]]
@@ -4177,6 +4178,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "wasm-bindgen-test",
 ]
 
 [[package]]
@@ -4219,6 +4221,7 @@ dependencies = [
  "parquet",
  "query-contract",
  "tokio",
+ "wasm-bindgen-test",
  "wasm-http-object-store",
 ]
 
