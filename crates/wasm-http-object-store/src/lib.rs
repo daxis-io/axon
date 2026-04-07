@@ -1,5 +1,6 @@
 //! HTTP range-read adapter for browser-safe object access over exact HTTP byte ranges.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -270,6 +271,73 @@ impl ExtentCacheEntry {
     pub fn can_satisfy(&self, request_key: &ExtentCacheKey, request_extent: ByteExtent) -> bool {
         &self.key == request_key && self.extent.contains(request_extent)
     }
+
+    pub fn slice(&self, request_extent: ByteExtent) -> Result<Bytes, QueryError> {
+        if !self.extent.contains(request_extent) {
+            return Err(invalid_request(format!(
+                "cached extent {}..{} cannot satisfy requested extent {}..{}",
+                self.extent.offset,
+                self.extent.end_exclusive()?,
+                request_extent.offset,
+                request_extent.end_exclusive()?
+            )));
+        }
+
+        let start = request_extent
+            .offset
+            .checked_sub(self.extent.offset)
+            .ok_or_else(|| invalid_request("requested cached extent underflowed u64"))?;
+        let end = start
+            .checked_add(request_extent.length)
+            .ok_or_else(|| invalid_request("requested cached extent overflowed u64"))?;
+        let start = usize::try_from(start)
+            .map_err(|_| invalid_request("requested cached extent start overflowed usize"))?;
+        let end = usize::try_from(end)
+            .map_err(|_| invalid_request("requested cached extent end overflowed usize"))?;
+
+        Ok(self.bytes.slice(start..end))
+    }
+
+    fn merge(self, other: Self) -> Result<Self, QueryError> {
+        if self.key != other.key {
+            return Err(invalid_request(
+                "cached extents with different cache keys cannot be merged",
+            ));
+        }
+        if !self.extent.touches_or_overlaps(other.extent) {
+            return Err(invalid_request(
+                "cached extents must touch or overlap before they can be merged",
+            ));
+        }
+
+        let merged_extent = self.extent.merge(other.extent)?;
+        let merged_len = usize::try_from(merged_extent.length)
+            .map_err(|_| invalid_request("merged cached extent length overflowed usize"))?;
+        let mut merged_bytes = vec![0_u8; merged_len];
+        copy_extent_bytes(&mut merged_bytes, merged_extent.offset, &self)?;
+        copy_extent_bytes(&mut merged_bytes, merged_extent.offset, &other)?;
+
+        Self::new(self.key, merged_extent, Bytes::from(merged_bytes))
+    }
+}
+
+fn copy_extent_bytes(
+    destination: &mut [u8],
+    merged_offset: u64,
+    entry: &ExtentCacheEntry,
+) -> Result<(), QueryError> {
+    let start = entry
+        .extent
+        .offset
+        .checked_sub(merged_offset)
+        .ok_or_else(|| invalid_request("merged cached extent underflowed u64"))?;
+    let start = usize::try_from(start)
+        .map_err(|_| invalid_request("merged cached extent start overflowed usize"))?;
+    let end = start
+        .checked_add(entry.bytes.len())
+        .ok_or_else(|| invalid_request("merged cached extent end overflowed usize"))?;
+    destination[start..end].copy_from_slice(entry.bytes.as_ref());
+    Ok(())
 }
 
 pub fn coalesce_extents(mut extents: Vec<ByteExtent>) -> Result<Vec<ByteExtent>, QueryError> {
@@ -296,6 +364,391 @@ pub fn coalesce_extents(mut extents: Vec<ByteExtent>) -> Result<Vec<ByteExtent>,
     coalesced.push(current);
 
     Ok(coalesced)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrowserCacheMode {
+    MemoryOnly,
+    Persistent,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BrowserTransportMetrics {
+    pub bytes_fetched: u64,
+    pub bytes_reused: u64,
+    pub validation_misses: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserObjectMetadata {
+    pub resource: String,
+    pub size_bytes: u64,
+    pub identity: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserObjectReadResult {
+    pub metadata: BrowserObjectMetadata,
+    pub extent: ByteExtent,
+    pub bytes: Bytes,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserLocalObject {
+    resource: String,
+    bytes: Bytes,
+    identity: String,
+}
+
+impl BrowserLocalObject {
+    pub fn from_bytes(resource: impl Into<String>, bytes: impl Into<Bytes>) -> Self {
+        let resource = resource.into();
+        let bytes = bytes.into();
+        let identity = derive_local_identity(&bytes);
+
+        Self {
+            resource,
+            bytes,
+            identity,
+        }
+    }
+
+    pub fn from_bytes_with_identity(
+        resource: impl Into<String>,
+        bytes: impl Into<Bytes>,
+        identity: impl Into<String>,
+    ) -> Self {
+        Self {
+            resource: resource.into(),
+            bytes: bytes.into(),
+            identity: identity.into(),
+        }
+    }
+
+    fn metadata(&self) -> BrowserObjectMetadata {
+        BrowserObjectMetadata {
+            resource: self.resource.clone(),
+            size_bytes: self.bytes.len() as u64,
+            identity: self.identity.clone(),
+        }
+    }
+
+    fn read_extent(&self, extent: ByteExtent) -> Result<Bytes, QueryError> {
+        let object_len = self.bytes.len() as u64;
+        let end = extent.end_exclusive()?;
+        if end > object_len {
+            return Err(protocol_error(format!(
+                "browser-local object '{}' only exposes {} bytes, but extent {}..{} was requested",
+                self.resource, object_len, extent.offset, end
+            )));
+        }
+
+        let start = usize::try_from(extent.offset)
+            .map_err(|_| invalid_request("browser-local extent start overflowed usize"))?;
+        let end = usize::try_from(end)
+            .map_err(|_| invalid_request("browser-local extent end overflowed usize"))?;
+
+        Ok(self.bytes.slice(start..end))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BrowserObject {
+    Http { url: String },
+    Local(BrowserLocalObject),
+}
+
+impl BrowserObject {
+    pub fn http(url: impl Into<String>) -> Self {
+        Self::Http { url: url.into() }
+    }
+
+    pub fn local(object: BrowserLocalObject) -> Self {
+        Self::Local(object)
+    }
+}
+
+pub trait PersistentExtentCache: Send + Sync {
+    fn load(
+        &self,
+        key: &ExtentCacheKey,
+        requested_extent: ByteExtent,
+    ) -> Result<Option<ExtentCacheEntry>, QueryError>;
+
+    fn store(&self, entry: &ExtentCacheEntry) -> Result<(), QueryError>;
+}
+
+pub struct BrowserObjectRangeReader {
+    http: HttpRangeReader,
+    memory_cache: Vec<ExtentCacheEntry>,
+    persistent_cache: Option<Arc<dyn PersistentExtentCache>>,
+    metrics: BrowserTransportMetrics,
+}
+
+impl Default for BrowserObjectRangeReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BrowserObjectRangeReader {
+    pub fn new() -> Self {
+        Self::with_http_reader(HttpRangeReader::new())
+    }
+
+    pub fn with_http_reader(http: HttpRangeReader) -> Self {
+        Self {
+            http,
+            memory_cache: Vec::new(),
+            persistent_cache: None,
+            metrics: BrowserTransportMetrics::default(),
+        }
+    }
+
+    pub fn with_persistent_cache(persistent_cache: Arc<dyn PersistentExtentCache>) -> Self {
+        Self::with_http_reader_and_persistent_cache(HttpRangeReader::new(), persistent_cache)
+    }
+
+    pub fn with_http_reader_and_persistent_cache(
+        http: HttpRangeReader,
+        persistent_cache: Arc<dyn PersistentExtentCache>,
+    ) -> Self {
+        Self {
+            http,
+            memory_cache: Vec::new(),
+            persistent_cache: Some(persistent_cache),
+            metrics: BrowserTransportMetrics::default(),
+        }
+    }
+
+    pub fn cache_mode(&self) -> BrowserCacheMode {
+        match self.persistent_cache {
+            Some(_) => BrowserCacheMode::Persistent,
+            None => BrowserCacheMode::MemoryOnly,
+        }
+    }
+
+    pub fn metrics(&self) -> BrowserTransportMetrics {
+        self.metrics
+    }
+
+    pub fn cached_extents(&self) -> &[ExtentCacheEntry] {
+        &self.memory_cache
+    }
+
+    pub async fn read_extent(
+        &mut self,
+        object: &BrowserObject,
+        extent: ByteExtent,
+        known_metadata: Option<BrowserObjectMetadata>,
+    ) -> Result<BrowserObjectReadResult, QueryError> {
+        match object {
+            BrowserObject::Http { url } => self.read_http_extent(url, extent, known_metadata).await,
+            BrowserObject::Local(local) => self.read_local_extent(local, extent),
+        }
+    }
+
+    async fn read_http_extent(
+        &mut self,
+        url: &str,
+        extent: ByteExtent,
+        known_metadata: Option<BrowserObjectMetadata>,
+    ) -> Result<BrowserObjectReadResult, QueryError> {
+        let resolved = self
+            .http
+            .resolve_metadata_with_timeout(
+                url,
+                known_http_metadata(url, known_metadata),
+                HttpMetadataProbeRequirements {
+                    require_size: true,
+                    require_etag: true,
+                },
+                None,
+            )
+            .await?;
+        let metadata = metadata_from_http(resolved)?;
+        let key = cache_key_for(&metadata);
+        self.record_identity_validation(&metadata);
+
+        if let Some(bytes) = self.try_reuse_extent(&key, extent)? {
+            return Ok(BrowserObjectReadResult {
+                metadata,
+                extent,
+                bytes,
+            });
+        }
+
+        let fetched = self
+            .http
+            .read_range_with_validation(
+                url,
+                HttpByteRange::Bounded {
+                    offset: extent.offset,
+                    length: extent.length,
+                },
+                Some(HttpRangeValidation::if_range_etag(
+                    metadata.identity.clone(),
+                )),
+                None,
+            )
+            .await?;
+        let bytes = fetched.bytes;
+        let fetched_metadata = metadata_from_http(fetched.metadata)?;
+        self.metrics.bytes_fetched = self.metrics.bytes_fetched.saturating_add(extent.length);
+        let entry = ExtentCacheEntry::new(key, extent, bytes.clone())?;
+        let merged = self.upsert_memory_entry(entry)?;
+        if let Some(persistent_cache) = &self.persistent_cache {
+            persistent_cache.store(&merged)?;
+        }
+
+        Ok(BrowserObjectReadResult {
+            metadata: fetched_metadata,
+            extent,
+            bytes,
+        })
+    }
+
+    fn read_local_extent(
+        &mut self,
+        object: &BrowserLocalObject,
+        extent: ByteExtent,
+    ) -> Result<BrowserObjectReadResult, QueryError> {
+        let metadata = object.metadata();
+        let key = cache_key_for(&metadata);
+        self.record_identity_validation(&metadata);
+
+        if let Some(bytes) = self.try_reuse_extent(&key, extent)? {
+            return Ok(BrowserObjectReadResult {
+                metadata,
+                extent,
+                bytes,
+            });
+        }
+
+        let bytes = object.read_extent(extent)?;
+        self.metrics.bytes_fetched = self.metrics.bytes_fetched.saturating_add(extent.length);
+        let entry = ExtentCacheEntry::new(key, extent, bytes.clone())?;
+        let merged = self.upsert_memory_entry(entry)?;
+        if let Some(persistent_cache) = &self.persistent_cache {
+            persistent_cache.store(&merged)?;
+        }
+
+        Ok(BrowserObjectReadResult {
+            metadata,
+            extent,
+            bytes,
+        })
+    }
+
+    fn try_reuse_extent(
+        &mut self,
+        key: &ExtentCacheKey,
+        extent: ByteExtent,
+    ) -> Result<Option<Bytes>, QueryError> {
+        if let Some(entry) = self
+            .memory_cache
+            .iter()
+            .find(|entry| entry.can_satisfy(key, extent))
+            .cloned()
+        {
+            self.metrics.bytes_reused = self.metrics.bytes_reused.saturating_add(extent.length);
+            return Ok(Some(entry.slice(extent)?));
+        }
+
+        if let Some(persistent_cache) = &self.persistent_cache {
+            if let Some(entry) = persistent_cache.load(key, extent)? {
+                let bytes = entry.slice(extent)?;
+                self.metrics.bytes_reused = self.metrics.bytes_reused.saturating_add(extent.length);
+                let _ = self.upsert_memory_entry(entry)?;
+                return Ok(Some(bytes));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn upsert_memory_entry(
+        &mut self,
+        mut new_entry: ExtentCacheEntry,
+    ) -> Result<ExtentCacheEntry, QueryError> {
+        let mut retained = Vec::with_capacity(self.memory_cache.len() + 1);
+        for entry in self.memory_cache.drain(..) {
+            if entry.key == new_entry.key && entry.extent.touches_or_overlaps(new_entry.extent) {
+                new_entry = entry.merge(new_entry)?;
+            } else {
+                retained.push(entry);
+            }
+        }
+        retained.push(new_entry.clone());
+        self.memory_cache = retained;
+
+        Ok(new_entry)
+    }
+
+    fn record_identity_validation(&mut self, metadata: &BrowserObjectMetadata) {
+        let expected_identity = metadata.identity.as_str();
+        let stale_count = self
+            .memory_cache
+            .iter()
+            .filter(|entry| {
+                entry.key.resource == metadata.resource
+                    && entry.key.identity.as_deref() != Some(expected_identity)
+            })
+            .count() as u64;
+        if stale_count == 0 {
+            return;
+        }
+
+        self.memory_cache.retain(|entry| {
+            !(entry.key.resource == metadata.resource
+                && entry.key.identity.as_deref() != Some(expected_identity))
+        });
+        self.metrics.validation_misses = self.metrics.validation_misses.saturating_add(stale_count);
+    }
+}
+
+fn cache_key_for(metadata: &BrowserObjectMetadata) -> ExtentCacheKey {
+    ExtentCacheKey::new(metadata.resource.clone(), Some(metadata.identity.clone()))
+}
+
+fn known_http_metadata(
+    url: &str,
+    known_metadata: Option<BrowserObjectMetadata>,
+) -> Option<HttpObjectMetadata> {
+    known_metadata.and_then(|metadata| {
+        (metadata.resource == url).then_some(HttpObjectMetadata {
+            url: metadata.resource,
+            size_bytes: Some(metadata.size_bytes),
+            etag: Some(metadata.identity),
+        })
+    })
+}
+
+fn metadata_from_http(metadata: HttpObjectMetadata) -> Result<BrowserObjectMetadata, QueryError> {
+    Ok(BrowserObjectMetadata {
+        resource: metadata.url,
+        size_bytes: metadata.size_bytes.ok_or_else(|| {
+            protocol_error("validated object reads require browser-visible object size metadata")
+        })?,
+        identity: metadata.etag.ok_or_else(|| {
+            protocol_error("validated object reads require an exposed object identity header")
+        })?,
+    })
+}
+
+fn derive_local_identity(bytes: &Bytes) -> String {
+    let prefix_len = bytes.len().min(4);
+    let suffix_len = bytes.len().saturating_sub(prefix_len).min(4);
+    let prefix = bytes[..prefix_len]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let suffix = bytes[bytes.len().saturating_sub(suffix_len)..]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+
+    format!("local:{}:{prefix}:{suffix}", bytes.len())
 }
 
 #[derive(Clone, Debug)]

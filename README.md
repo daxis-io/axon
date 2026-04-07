@@ -8,7 +8,7 @@ Axon is a Rust workspace for building a hybrid query platform with native and br
 - `crates/native-query-runtime` is the native execution reference runtime.
 - `crates/wasm-query-runtime` is the browser-oriented runtime envelope for constrained object access and the narrow in-repo browser execution-plan path.
 - `crates/delta-control-plane` contains the in-repo control-plane slice for snapshot resolution and table policy enforcement.
-- `crates/wasm-http-object-store` contains the thin EPIC-04 HTTP byte-range slice for browser-safe object reads.
+- `crates/wasm-http-object-store` contains the browser transport substrate for validated HTTP byte-range reads, extent caching, and browser-local object access.
 - `crates/wasm-parquet-engine` contains browser-side Parquet planning and scan primitives.
 - `crates/wasm-delta-snapshot` contains browser-safe Delta snapshot reconstruction.
 - `crates/query-router` contains browser-vs-native routing policy and structured fallback decisions.
@@ -209,15 +209,19 @@ cargo test -p delta-control-plane --locked
 
 Cross-crate handoff coverage in `crates/delta-control-plane/tests` checks the resolved `table_uri` / `snapshot_version` pair against `crates/native-query-runtime`, validates the descriptor's active-file metadata and `partition_column_types` against the local fixture without changing `QueryRequest`, proves browser HTTP URL attachment preserves file order and metadata, proves invalid or duplicate browser URL inputs fail deterministically without leaking query strings, and confirms the resulting HTTPS descriptors materialize cleanly into `crates/wasm-query-runtime` runtime-owned object sources.
 Additional cross-crate browser-preflight coverage now resolves real local Delta snapshots, serves their Parquet files over loopback HTTP in host-side tests, bootstraps runtime-owned Parquet metadata and snapshot summaries through `crates/wasm-query-runtime`, proves the resulting `file_count`, `snapshot_version`, `total_bytes`, `total_rows`, integer footer stats, and curated browser-planning candidate-file counts remain aligned with the resolved snapshot descriptor and the native `COUNT(*)` / `files_touched` / `files_skipped` oracle, asserts typed browser execution-plan shape over the curated supported-browser SQL corpus, and now also executes that curated non-aggregate and aggregate browser corpus with normalized native-result parity across mixed-case integer and numeric-looking string partitions while keeping explicit native-only divergence checks and fail-closed identity-drift coverage so browser-envelope drift is caught in CI.
+`docs/program/browser-lakehouse-release-handoff.md` now serves as the repo-owned release handoff bundle for this seam and points at canonical JSON examples under `docs/program/browser-lakehouse-release-handoff-examples/`.
 Authenticated HTTP service work remains out of repo: there is still no `services/query-api` directory here, so signed URL issuance, proxy reads, audit logging, request correlation, and CORS/origin validation remain external blockers rather than shipped repository scope.
 
 ## HTTP Range-Read Slice
 
-`crates/wasm-http-object-store` now contains the thin in-repo EPIC-04 opening slice:
+`crates/wasm-http-object-store` now contains the Sprint 2 browser transport substrate:
 
 - `HttpByteRange` models full, bounded, from-offset, and suffix reads without introducing signing or proxy assumptions.
 - `HttpRangeReader::with_client(client)` allows callers to inject a preconfigured `reqwest::Client` for timeout or redirect policy control.
 - `HttpRangeReader::read_range(url, range)` performs exact HTTP byte-range requests and returns `bytes::Bytes` plus `HttpObjectMetadata` without an extra payload copy.
+- `BrowserObjectRangeReader::read_extent(object, extent, known_metadata)` resolves object size and identity before validated HTTP reuse, merges adjacent or overlapping extents into reusable cache entries, and can serve the same extent seam from browser-local file/blob-like objects.
+- `BrowserTransportMetrics` reports extent-body bytes fetched, bytes reused, and validation misses, while `BrowserObjectRangeReader::cache_mode()` distinguishes memory-only operation from a persistent-cache hook.
+- `BrowserLocalObject` is the browser-local adapter for file/blob-backed reads, and the optional `PersistentExtentCache` trait is only a hook surface in this sprint; no OPFS or IndexedDB backend ships in-repo yet.
 - Returned metadata and error messages redact URL query strings and fragments so signed URL secrets do not leak past the transport boundary.
 - Deterministic local HTTP tests cover footer-style reads plus `401`, `403`, `404`, `416`, and malformed partial-response handling.
 - The crate maps transport failures to `ExecutionFailed`, auth failures to `AccessDenied`, and range/protocol failures to `ObjectStoreProtocol` using the existing shared query error taxonomy.
@@ -227,6 +231,7 @@ Local validation:
 ```bash
 cargo test -p wasm-http-object-store --locked
 cargo check -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p browser-sdk --target wasm32-unknown-unknown --locked
+cargo test -p wasm-http-object-store --target wasm32-unknown-unknown --locked --test wasm_smoke
 ```
 
 This slice is intentionally small: it does not register tables with DataFusion, execute browser SQL, expose a browser SDK surface, or implement any `services/query-api` behavior. Signed URL issuance, read-proxy mode, audit logging, request correlation, and production-shape CORS/origin validation remain external blockers outside this repository.
@@ -236,9 +241,11 @@ This slice is intentionally small: it does not register tables with DataFusion, 
 Browser launch readiness is now tracked in the release checklist and supporting docs:
 
 - `docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md` captures the browser compatibility, Delta compatibility, security reporting, and size-budget gates for the new architecture.
+- `docs/release-gates/browser-wasm-delta-gcs-release-evidence.md` maps the current release claims to repo-owned commands and artifacts.
+- `docs/release-gates/browser-wasm-delta-gcs-external-blockers.md` records the service, security, and SRE work that still sits outside this repository.
 - `tests/perf/README.md` documents the real `browser-engine-worker.wasm` size gate plus the startup and memory baseline commands.
 - `tests/security/README.md` points at the in-repo policy tests, dependency guardrails, bundle inspection, and the private reporting path in `SECURITY.md`.
-- CI now checks `wasm32-unknown-unknown` compatibility for `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, `browser-sdk`, and `browser-engine-worker`, runs host tests for the split browser crates, runs dedicated `wasm32-unknown-unknown` smoke suites for `browser-sdk`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-engine-worker`, enforces a real `browser-engine-worker.wasm` size budget, publishes host-proxy startup plus footprint reports from the worker baseline tests, and regression-checks the browser dependency guardrail parser.
+- CI now checks `wasm32-unknown-unknown` compatibility for `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, `browser-sdk`, and `browser-engine-worker`, runs host tests for the split browser crates, runs dedicated `wasm32-unknown-unknown` smoke suites for `browser-sdk`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-engine-worker`, enforces a real `browser-engine-worker.wasm` size budget, publishes host-proxy startup plus footprint reports from the worker baseline tests, regression-checks the browser dependency guardrail parser, and now guards patch-inventory state against template drift.
 
 ## Repository Layout
 

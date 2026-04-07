@@ -6,8 +6,8 @@ use std::thread::{self, JoinHandle};
 
 use query_contract::QueryErrorCode;
 use wasm_http_object_store::{
-    HttpByteRange, HttpMetadataProbeRequirements, HttpObjectMetadata, HttpRangeReader,
-    HttpRangeValidation,
+    BrowserObject, BrowserObjectRangeReader, ByteExtent, HttpByteRange,
+    HttpMetadataProbeRequirements, HttpObjectMetadata, HttpRangeReader, HttpRangeValidation,
 };
 
 const PARQUET_LIKE_BYTES: &[u8] = b"PAR1abcdefghijklmnoPAR1";
@@ -700,6 +700,104 @@ async fn surfaces_missing_exposed_headers_as_protocol_errors() {
     assert!(error.message.contains("ETag"));
 }
 
+#[tokio::test]
+async fn metadata_probe_learns_size_and_identity_before_range_reuse() {
+    let (url, requests, server) = spawn_test_server_sequence(vec![
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "1".to_string()),
+                ("Content-Range".to_string(), "bytes 0-0/10".to_string()),
+                ("ETag".to_string(), "\"v1\"".to_string()),
+            ],
+            body: b"a".to_vec(),
+        },
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "4".to_string()),
+                ("Content-Range".to_string(), "bytes 2-5/10".to_string()),
+                ("ETag".to_string(), "\"v1\"".to_string()),
+            ],
+            body: b"cdef".to_vec(),
+        },
+    ]);
+
+    let mut reader = BrowserObjectRangeReader::new();
+    let result = reader
+        .read_extent(
+            &BrowserObject::http(url.clone()),
+            ByteExtent::new(2, 4).expect("valid extent"),
+            None,
+        )
+        .await
+        .expect("metadata probe should precede the validated extent read");
+
+    let requests = finish_requests(server, requests);
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].headers.get("range"),
+        Some(&"bytes=0-0".to_string())
+    );
+    assert_eq!(requests[0].headers.get("if-range"), None);
+    assert_eq!(
+        requests[1].headers.get("range"),
+        Some(&"bytes=2-5".to_string())
+    );
+    assert_eq!(
+        requests[1].headers.get("if-range"),
+        Some(&"\"v1\"".to_string())
+    );
+    assert_eq!(result.metadata.resource, url);
+    assert_eq!(result.metadata.size_bytes, 10);
+    assert_eq!(result.metadata.identity, "\"v1\"");
+    assert_eq!(result.bytes.as_ref(), b"cdef");
+}
+
+#[tokio::test]
+async fn transport_surfaces_protocol_errors_when_validation_headers_are_unavailable() {
+    let (url, requests, server) = spawn_test_server_sequence(vec![
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "1".to_string()),
+                ("Content-Range".to_string(), "bytes 0-0/10".to_string()),
+                ("ETag".to_string(), "\"v1\"".to_string()),
+            ],
+            body: b"a".to_vec(),
+        },
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "4".to_string()),
+                ("Content-Range".to_string(), "bytes 2-5/10".to_string()),
+            ],
+            body: b"cdef".to_vec(),
+        },
+    ]);
+
+    let mut reader = BrowserObjectRangeReader::new();
+    let error = reader
+        .read_extent(
+            &BrowserObject::http(url),
+            ByteExtent::new(2, 4).expect("valid extent"),
+            None,
+        )
+        .await
+        .expect_err(
+            "validated range reads must fail when the response ETag is not browser-visible",
+        );
+
+    let requests = finish_requests(server, requests);
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1].headers.get("if-range"),
+        Some(&"\"v1\"".to_string())
+    );
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert!(error.message.contains("ETag"));
+}
+
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Runtime::new().expect("tokio runtime should be created for tests")
 }
@@ -729,6 +827,38 @@ fn finish_request(server: JoinHandle<()>, requests: Receiver<CapturedRequest>) -
     requests
         .recv()
         .expect("test should receive the captured request")
+}
+
+fn spawn_test_server_sequence(
+    responses: Vec<TestResponse>,
+) -> (String, Receiver<Vec<CapturedRequest>>, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+    let address = listener.local_addr().expect("listener addr should resolve");
+    let url = format!("http://{address}/object");
+    let (request_tx, request_rx) = mpsc::channel();
+
+    let server = thread::spawn(move || {
+        let mut captured = Vec::with_capacity(responses.len());
+        for response in responses {
+            let (mut stream, _) = listener.accept().expect("test client should connect");
+            let request = read_request(&mut stream);
+            write_response(&mut stream, response);
+            captured.push(request);
+        }
+        let _ = request_tx.send(captured);
+    });
+
+    (url, request_rx, server)
+}
+
+fn finish_requests(
+    server: JoinHandle<()>,
+    requests: Receiver<Vec<CapturedRequest>>,
+) -> Vec<CapturedRequest> {
+    server.join().expect("test server should shut down cleanly");
+    requests
+        .recv()
+        .expect("test should receive the captured requests")
 }
 
 fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
