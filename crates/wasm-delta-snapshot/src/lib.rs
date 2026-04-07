@@ -22,9 +22,12 @@ use bytes::Bytes;
 use parquet::file::reader::{FileReader as ParquetFileReader, SerializedFileReader};
 use parquet::record::Field as ParquetField;
 use query_contract::{
-    CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, PartitionColumnType,
-    QueryError, QueryErrorCode, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
-    SnapshotResolutionRequest,
+    delta_protocol_feature, CapabilityKey, CapabilityReport, CapabilityState,
+    DeltaProtocolFeature as KnownDeltaFeature, DeltaProtocolFeatureClass as KnownFeatureClass,
+    DeltaProtocolFeatureEnablement as KnownFeatureEnablement,
+    DeltaProtocolFeatureKind as KnownFeatureKind, ExecutionTarget, PartitionColumnType, QueryError,
+    QueryErrorCode, ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
+    KNOWN_DELTA_PROTOCOL_FEATURES as KNOWN_DELTA_FEATURES,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -67,11 +70,22 @@ pub trait ParquetHandler {
     ) -> Result<Vec<SnapshotLogAction>, QueryError>;
 }
 
+trait CompatibilityHandler {
+    fn classify(
+        &self,
+        replay_state: &SnapshotReplayState,
+        schema_derivations: &SchemaDerivations,
+    ) -> Result<CapabilityReport, QueryError>;
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DefaultJsonHandler;
 
 #[derive(Clone, Debug, Default)]
 pub struct DefaultParquetHandler;
+
+#[derive(Clone, Debug, Default)]
+struct DefaultCompatibilityHandler;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug, Default)]
@@ -82,6 +96,7 @@ pub struct SnapshotResolver<S, J, P> {
     storage: S,
     json: J,
     parquet: P,
+    compatibility: DefaultCompatibilityHandler,
 }
 
 impl<S, J, P> SnapshotResolver<S, J, P> {
@@ -90,6 +105,7 @@ impl<S, J, P> SnapshotResolver<S, J, P> {
             storage,
             json,
             parquet,
+            compatibility: DefaultCompatibilityHandler,
         }
     }
 }
@@ -149,16 +165,9 @@ where
             }
         }
         let schema_derivations = derive_schema_derivations(replay_state.current_metadata.as_ref())?;
-        let unknown_protocol_features =
-            unknown_protocol_features(replay_state.current_protocol.as_ref());
-        if !unknown_protocol_features.is_empty() {
-            return Err(unsupported_feature(format!(
-                "browser snapshot reconstruction does not support Delta protocol feature(s): {}",
-                unknown_protocol_features.join(", ")
-            )));
-        }
-        let browser_compatibility =
-            required_capabilities_from_replay_state(&replay_state, &schema_derivations);
+        let browser_compatibility = self
+            .compatibility
+            .classify(&replay_state, &schema_derivations)?;
 
         Ok(ResolvedSnapshotDescriptor {
             table_uri: request.table_uri,
@@ -324,6 +333,9 @@ struct SnapshotMetadata {
 struct SchemaDerivations {
     partition_column_types: BTreeMap<String, PartitionColumnType>,
     uses_column_mapping: bool,
+    uses_generated_columns: bool,
+    uses_identity_columns: bool,
+    uses_invariants: bool,
     uses_timestamp_ntz: bool,
 }
 
@@ -417,6 +429,8 @@ struct JsonAddAction {
     size: i64,
     #[serde(default, rename = "partitionValues")]
     partition_values: BTreeMap<String, Option<String>>,
+    #[serde(default)]
+    stats: Option<String>,
     #[serde(default, rename = "deletionVector")]
     deletion_vector: Option<JsonValue>,
 }
@@ -517,6 +531,37 @@ impl ParquetHandler for DefaultParquetHandler {
             }
         }
         Ok(actions)
+    }
+}
+
+impl CompatibilityHandler for DefaultCompatibilityHandler {
+    fn classify(
+        &self,
+        replay_state: &SnapshotReplayState,
+        schema_derivations: &SchemaDerivations,
+    ) -> Result<CapabilityReport, QueryError> {
+        let terminally_unsupported =
+            terminally_unsupported_features(replay_state, schema_derivations);
+        if !terminally_unsupported.is_empty() {
+            return Err(unsupported_feature(format!(
+                "browser snapshot reconstruction classifies Delta feature(s) as terminal unsupported for browser routing: {}",
+                terminally_unsupported.join(", ")
+            )));
+        }
+
+        let unknown_protocol_features =
+            unknown_protocol_features(replay_state.current_protocol.as_ref());
+        if !unknown_protocol_features.is_empty() {
+            return Err(unsupported_feature(format!(
+                "browser snapshot reconstruction does not support unknown Delta protocol feature(s): {}",
+                unknown_protocol_features.join(", ")
+            )));
+        }
+
+        Ok(required_capabilities_from_replay_state(
+            replay_state,
+            schema_derivations,
+        ))
     }
 }
 
@@ -1016,6 +1061,7 @@ fn snapshot_action_from_json(
                     execution_error("delta add action size must be non-negative".to_string())
                 })?,
                 partition_values: add.partition_values,
+                stats: add.stats,
             },
             uses_deletion_vector: add.deletion_vector.is_some(),
         }));
@@ -1109,6 +1155,7 @@ fn checkpoint_add_action(
         ))
     })?;
     let partition_values = group_string_map(group, "partitionValues")?;
+    let stats = group_string(group, "stats")?;
 
     Ok(Some(SnapshotLogAction::Add {
         file: ResolvedFileDescriptor {
@@ -1120,6 +1167,7 @@ fn checkpoint_add_action(
                 ))
             })?,
             partition_values,
+            stats,
         },
         uses_deletion_vector: group_has_non_null_field(group, "deletionVector")?,
     }))
@@ -1337,6 +1385,9 @@ fn derive_schema_derivations(
     Ok(SchemaDerivations {
         partition_column_types,
         uses_column_mapping: schema_fields_use_column_mapping(fields)?,
+        uses_generated_columns: schema_fields_use_generated_columns(fields)?,
+        uses_identity_columns: schema_fields_use_identity_columns(fields)?,
+        uses_invariants: schema_fields_use_invariants(fields)?,
         uses_timestamp_ntz: schema_fields_use_timestamp_ntz(fields)?,
     })
 }
@@ -1402,7 +1453,33 @@ fn protocol_supports_deletion_vectors(protocol: Option<&SnapshotProtocol>) -> bo
         || protocol.writer_features.contains("deletionVectors")
 }
 
+fn terminally_unsupported_features(
+    replay_state: &SnapshotReplayState,
+    schema_derivations: &SchemaDerivations,
+) -> Vec<String> {
+    enabled_delta_features(
+        replay_state.current_protocol.as_ref(),
+        replay_state.current_metadata.as_ref(),
+        schema_derivations,
+    )
+    .into_iter()
+    .filter(|feature| feature.class == KnownFeatureClass::TerminalUnsupported)
+    .map(|feature| feature.name.to_string())
+    .collect::<BTreeSet<_>>()
+    .into_iter()
+    .collect()
+}
+
 fn unknown_protocol_features(protocol: Option<&SnapshotProtocol>) -> Vec<String> {
+    protocol_feature_set(protocol)
+        .into_iter()
+        .filter(|feature| !protocol_feature_is_known(feature))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn protocol_feature_set(protocol: Option<&SnapshotProtocol>) -> Vec<String> {
     let Some(protocol) = protocol else {
         return Vec::new();
     };
@@ -1411,18 +1488,88 @@ fn unknown_protocol_features(protocol: Option<&SnapshotProtocol>) -> Vec<String>
         .reader_features
         .iter()
         .chain(protocol.writer_features.iter())
-        .filter(|feature| !protocol_feature_is_classified(feature))
         .cloned()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
         .collect()
 }
 
-fn protocol_feature_is_classified(feature_name: &str) -> bool {
-    matches!(
-        feature_name,
-        "changeDataFeed" | "columnMapping" | "deletionVectors" | "timestampNtz"
-    )
+fn enabled_delta_features(
+    protocol: Option<&SnapshotProtocol>,
+    metadata: Option<&SnapshotMetadata>,
+    schema_derivations: &SchemaDerivations,
+) -> Vec<&'static KnownDeltaFeature> {
+    KNOWN_DELTA_FEATURES
+        .iter()
+        .filter(|feature| delta_feature_is_enabled(protocol, metadata, schema_derivations, feature))
+        .collect()
+}
+
+fn delta_feature_is_enabled(
+    protocol: Option<&SnapshotProtocol>,
+    metadata: Option<&SnapshotMetadata>,
+    schema_derivations: &SchemaDerivations,
+    feature: &KnownDeltaFeature,
+) -> bool {
+    if !delta_feature_is_supported_in_protocol(protocol, feature) {
+        return false;
+    }
+
+    match feature.enablement {
+        KnownFeatureEnablement::AlwaysIfSupported => true,
+        KnownFeatureEnablement::BoolFlag(key) => metadata_flag_enabled(metadata, key),
+        KnownFeatureEnablement::ColumnMappingMode => metadata
+            .and_then(|metadata| metadata.configuration.get("delta.columnMapping.mode"))
+            .is_some_and(|value| !value.eq_ignore_ascii_case("none")),
+        KnownFeatureEnablement::ConfigurationPrefix(prefix) => metadata.is_some_and(|metadata| {
+            metadata
+                .configuration
+                .keys()
+                .any(|key| key.starts_with(prefix))
+        }),
+        KnownFeatureEnablement::RowTracking => {
+            metadata_flag_enabled(metadata, "delta.enableRowTracking")
+                && !metadata_flag_enabled(metadata, "delta.rowTrackingSuspended")
+        }
+        KnownFeatureEnablement::SchemaGeneratedColumns => schema_derivations.uses_generated_columns,
+        KnownFeatureEnablement::SchemaIdentityColumns => schema_derivations.uses_identity_columns,
+        KnownFeatureEnablement::SchemaInvariants => schema_derivations.uses_invariants,
+    }
+}
+
+fn delta_feature_is_supported_in_protocol(
+    protocol: Option<&SnapshotProtocol>,
+    feature: &KnownDeltaFeature,
+) -> bool {
+    let Some(protocol) = protocol else {
+        return false;
+    };
+
+    match feature.kind {
+        KnownFeatureKind::Writer => {
+            if protocol.min_writer_version < 7 {
+                protocol.min_writer_version >= feature.min_writer_version
+            } else {
+                protocol.writer_features.contains(feature.name)
+            }
+        }
+        KnownFeatureKind::ReaderWriter => {
+            let reader_supported = if protocol.min_reader_version < 3 {
+                protocol.min_reader_version >= feature.min_reader_version
+            } else {
+                protocol.reader_features.contains(feature.name)
+            };
+            let writer_supported = if protocol.min_writer_version < 7 {
+                protocol.min_writer_version >= feature.min_writer_version
+            } else {
+                protocol.writer_features.contains(feature.name)
+            };
+
+            reader_supported && writer_supported
+        }
+    }
+}
+
+fn protocol_feature_is_known(feature_name: &str) -> bool {
+    delta_protocol_feature(feature_name).is_some()
 }
 
 fn parse_schema_json(schema_string: &str) -> Result<Box<JsonValue>, QueryError> {
@@ -1483,20 +1630,39 @@ fn partition_column_type_from_schema_type(data_type: &JsonValue) -> PartitionCol
 }
 
 fn schema_fields_use_column_mapping(fields: &[JsonValue]) -> Result<bool, QueryError> {
+    schema_fields_have_matching_metadata(fields, &|key| key.starts_with("delta.columnMapping."))
+}
+
+fn schema_fields_use_generated_columns(fields: &[JsonValue]) -> Result<bool, QueryError> {
+    schema_fields_have_matching_metadata(fields, &|key| key == "delta.generationExpression")
+}
+
+fn schema_fields_use_identity_columns(fields: &[JsonValue]) -> Result<bool, QueryError> {
+    schema_fields_have_matching_metadata(fields, &|key| key.starts_with("delta.identity."))
+}
+
+fn schema_fields_use_invariants(fields: &[JsonValue]) -> Result<bool, QueryError> {
+    schema_fields_have_matching_metadata(fields, &|key| key == "delta.invariants")
+}
+
+fn schema_fields_have_matching_metadata(
+    fields: &[JsonValue],
+    predicate: &dyn Fn(&str) -> bool,
+) -> Result<bool, QueryError> {
     for field in fields {
-        if schema_field_uses_column_mapping(field)? {
+        if schema_field_has_matching_metadata(field, predicate)? {
             return Ok(true);
         }
     }
     Ok(false)
 }
 
-fn schema_field_uses_column_mapping(field: &JsonValue) -> Result<bool, QueryError> {
+fn schema_field_has_matching_metadata(
+    field: &JsonValue,
+    predicate: &dyn Fn(&str) -> bool,
+) -> Result<bool, QueryError> {
     if let Some(metadata) = field.get("metadata").and_then(JsonValue::as_object) {
-        if metadata
-            .keys()
-            .any(|key| key.starts_with("delta.columnMapping."))
-        {
+        if metadata.keys().any(|key| predicate(key)) {
             return Ok(true);
         }
     }
@@ -1504,26 +1670,33 @@ fn schema_field_uses_column_mapping(field: &JsonValue) -> Result<bool, QueryErro
     let data_type = field.get("type").ok_or_else(|| {
         execution_error("Delta schema field was missing a 'type' value".to_string())
     })?;
-    schema_type_uses_column_mapping(data_type)
+    schema_type_has_matching_metadata(data_type, predicate)
 }
 
-fn schema_type_uses_column_mapping(data_type: &JsonValue) -> Result<bool, QueryError> {
+fn schema_type_has_matching_metadata(
+    data_type: &JsonValue,
+    predicate: &dyn Fn(&str) -> bool,
+) -> Result<bool, QueryError> {
     match data_type {
         JsonValue::String(_) => Ok(false),
         JsonValue::Object(object) => match object.get("type").and_then(JsonValue::as_str) {
-            Some("array") => {
-                schema_type_uses_column_mapping(object.get("elementType").ok_or_else(|| {
+            Some("array") => schema_type_has_matching_metadata(
+                object.get("elementType").ok_or_else(|| {
                     execution_error("Delta array type was missing elementType".to_string())
-                })?)
-            }
-            Some("map") => Ok(
-                schema_type_uses_column_mapping(object.get("keyType").ok_or_else(|| {
-                    execution_error("Delta map type was missing keyType".to_string())
-                })?)?
-                    || schema_type_uses_column_mapping(object.get("valueType").ok_or_else(
-                        || execution_error("Delta map type was missing valueType".to_string()),
-                    )?)?,
+                })?,
+                predicate,
             ),
+            Some("map") => Ok(schema_type_has_matching_metadata(
+                object.get("keyType").ok_or_else(|| {
+                    execution_error("Delta map type was missing keyType".to_string())
+                })?,
+                predicate,
+            )? || schema_type_has_matching_metadata(
+                object.get("valueType").ok_or_else(|| {
+                    execution_error("Delta map type was missing valueType".to_string())
+                })?,
+                predicate,
+            )?),
             Some("struct") | Some("variant") => {
                 let fields = object
                     .get("fields")
@@ -1532,7 +1705,7 @@ fn schema_type_uses_column_mapping(data_type: &JsonValue) -> Result<bool, QueryE
                     .ok_or_else(|| {
                         execution_error("Delta nested struct type was missing fields".to_string())
                     })?;
-                schema_fields_use_column_mapping(fields)
+                schema_fields_have_matching_metadata(fields, predicate)
             }
             Some(_) => Ok(false),
             None => Err(execution_error(

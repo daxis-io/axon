@@ -1,6 +1,12 @@
 #[path = "../../delta-control-plane/tests/support/mod.rs"]
 mod support;
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
+use async_trait::async_trait;
+use bytes::Bytes;
 use delta_control_plane::resolve_snapshot as resolve_control_plane_snapshot;
 use deltalake::kernel::{Action, DataType, PrimitiveType, Protocol, StructField};
 use deltalake::DeltaTable;
@@ -12,6 +18,7 @@ use support::TestTableFixture;
 use tempfile::TempDir;
 use wasm_delta_snapshot::{
     DefaultJsonHandler, DefaultParquetHandler, LocalFileStorageHandler, SnapshotResolver,
+    StorageHandler,
 };
 
 #[test]
@@ -53,7 +60,7 @@ fn reconstructs_active_files_with_paths_sizes_and_partition_values() {
         snapshot.required_capabilities,
         native_snapshot.required_capabilities
     );
-    assert_eq!(snapshot.active_files, fixture.expected_active_files(None));
+    assert_active_file_facts_match(&snapshot.active_files, &fixture.expected_active_files(None));
 }
 
 #[test]
@@ -98,7 +105,10 @@ fn snapshot_reconstruction_matches_control_plane_for_latest_snapshot() {
         browser_snapshot.required_capabilities,
         native_snapshot.required_capabilities
     );
-    assert_eq!(browser_snapshot.active_files, native_snapshot.active_files);
+    assert_active_file_facts_match(
+        &browser_snapshot.active_files,
+        &native_snapshot.active_files,
+    );
 }
 
 #[test]
@@ -143,7 +153,10 @@ fn snapshot_reconstruction_matches_control_plane_for_historical_snapshot() {
         browser_snapshot.required_capabilities,
         native_snapshot.required_capabilities
     );
-    assert_eq!(browser_snapshot.active_files, native_snapshot.active_files);
+    assert_active_file_facts_match(
+        &browser_snapshot.active_files,
+        &native_snapshot.active_files,
+    );
 }
 
 #[test]
@@ -263,6 +276,64 @@ fn snapshot_reconstruction_rejects_unknown_protocol_features() {
     assert!(native_error.message.contains("mysteryFeature"));
 }
 
+#[test]
+fn add_actions_expose_pruning_facts_without_opening_parquet() {
+    let stats =
+        r#"{"numRecords":3,"minValues":{"id":1},"maxValues":{"id":3},"nullCount":{"id":0}}"#;
+    let reads = Rc::new(RefCell::new(Vec::new()));
+    let resolver = SnapshotResolver::new(
+        TrackingStorageHandler::new(
+            vec!["_delta_log/00000000000000000000.json".to_string()],
+            BTreeMap::from([(
+                "_delta_log/00000000000000000000.json".to_string(),
+                Bytes::from(format!(
+                    "{{\"protocol\":{{\"minReaderVersion\":1,\"minWriterVersion\":2}}}}\n\
+{{\"metaData\":{{\"id\":\"test\",\"format\":{{\"provider\":\"parquet\",\"options\":{{}}}},\
+\"schemaString\":\"{{\\\"type\\\":\\\"struct\\\",\\\"fields\\\":[{{\\\"name\\\":\\\"id\\\",\\\"type\\\":\\\"integer\\\",\\\"nullable\\\":false,\\\"metadata\\\":{{}}}}]}}\",\
+\"partitionColumns\":[],\"configuration\":{{}}}}}}\n\
+{{\"add\":{{\"path\":\"data/part-000.parquet\",\"size\":10,\"partitionValues\":{{}},\"stats\":{stats:?}}}}}\n"
+                )),
+            )]),
+            reads.clone(),
+        ),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+
+    let snapshot = tokio::runtime::Runtime::new()
+        .expect("runtime should be created")
+        .block_on(async {
+            resolver
+                .resolve_snapshot(SnapshotResolutionRequest {
+                    table_uri: "memory://fixture".to_string(),
+                    snapshot_version: None,
+                })
+                .await
+        })
+        .expect("snapshot should resolve");
+
+    assert_eq!(
+        snapshot.active_files,
+        vec![ResolvedFileDescriptor {
+            path: "data/part-000.parquet".to_string(),
+            size_bytes: 10,
+            partition_values: BTreeMap::new(),
+            stats: Some(stats.to_string()),
+        }]
+    );
+    assert!(
+        reads
+            .borrow()
+            .iter()
+            .all(|path| path.starts_with("_delta_log/")),
+        "snapshot resolution should only read Delta log files: {:?}",
+        reads.borrow()
+    );
+
+    let snapshot_json = serde_json::to_value(&snapshot).expect("snapshot should serialize");
+    assert_eq!(snapshot_json["active_files"][0]["stats"], json!(stats));
+}
+
 fn deletion_vector_protocol_action() -> Action {
     let protocol: Protocol = serde_json::from_value(json!({
         "minReaderVersion": 3,
@@ -282,4 +353,68 @@ fn unknown_protocol_feature_protocol() -> serde_json::Value {
         "readerFeatures": ["mysteryFeature"],
         "writerFeatures": ["mysteryFeature"],
     })
+}
+
+#[derive(Clone, Debug)]
+struct TrackingStorageHandler {
+    listed_paths: Vec<String>,
+    bytes_by_path: BTreeMap<String, Bytes>,
+    reads: Rc<RefCell<Vec<String>>>,
+}
+
+impl TrackingStorageHandler {
+    fn new(
+        listed_paths: Vec<String>,
+        bytes_by_path: BTreeMap<String, Bytes>,
+        reads: Rc<RefCell<Vec<String>>>,
+    ) -> Self {
+        Self {
+            listed_paths,
+            bytes_by_path,
+            reads,
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl StorageHandler for TrackingStorageHandler {
+    async fn list_paths(
+        &self,
+        _table_uri: &str,
+        prefix: &str,
+    ) -> Result<Vec<String>, query_contract::QueryError> {
+        Ok(self
+            .listed_paths
+            .iter()
+            .filter(|path| path.starts_with(prefix))
+            .cloned()
+            .collect())
+    }
+
+    async fn read_bytes(
+        &self,
+        _table_uri: &str,
+        relative_path: &str,
+    ) -> Result<Option<Bytes>, query_contract::QueryError> {
+        self.reads.borrow_mut().push(relative_path.to_string());
+        Ok(self.bytes_by_path.get(relative_path).cloned())
+    }
+}
+
+fn assert_active_file_facts_match(
+    actual: &[ResolvedFileDescriptor],
+    expected: &[ResolvedFileDescriptor],
+) {
+    let normalize = |file: &ResolvedFileDescriptor| {
+        (
+            file.path.clone(),
+            file.size_bytes,
+            file.partition_values.clone(),
+        )
+    };
+
+    assert_eq!(
+        actual.iter().map(normalize).collect::<Vec<_>>(),
+        expected.iter().map(normalize).collect::<Vec<_>>()
+    );
 }

@@ -1505,6 +1505,7 @@ impl BrowserRuntimeSession {
                     path: file.path.clone(),
                     size_bytes: file.size_bytes,
                     partition_values: file.partition_values.clone(),
+                    stats: file.stats.clone(),
                 })
                 .collect(),
         };

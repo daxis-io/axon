@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use delta_runtime_support::{
     canonical_table_policy_key_from_url, map_delta_error, normalize_table_uri,
-    required_table_capabilities, run_on_runtime, unknown_table_protocol_features,
-    validate_snapshot_version,
+    required_table_capabilities, run_on_runtime, terminally_unsupported_table_features,
+    unknown_table_protocol_features, validate_snapshot_version,
 };
 use deltalake::kernel::scalars::ScalarExt;
 use deltalake::kernel::{DataType, PrimitiveType, StructField};
@@ -106,6 +106,17 @@ pub fn resolve_snapshot_with_policy(
             let snapshot = table
                 .snapshot()
                 .map_err(|error| map_delta_error(error, control_plane_target()))?;
+            let terminally_unsupported_features = terminally_unsupported_table_features(snapshot);
+            if !terminally_unsupported_features.is_empty() {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedFeature,
+                    format!(
+                        "trusted snapshot resolution classifies Delta feature(s) as terminal unsupported for browser routing: {}",
+                        terminally_unsupported_features.join(", ")
+                    ),
+                    control_plane_target(),
+                ));
+            }
             let unknown_protocol_features = unknown_table_protocol_features(snapshot);
             if !unknown_protocol_features.is_empty() {
                 return Err(QueryError::new(
@@ -215,6 +226,7 @@ pub fn attach_browser_http_urls(
                 url: url.clone(),
                 size_bytes: file.size_bytes,
                 partition_values: file.partition_values,
+                stats: file.stats,
             })
         })
         .collect::<Result<Vec<_>, QueryError>>()?;
@@ -319,6 +331,7 @@ fn collect_active_files(
                             .collect::<BTreeMap<_, _>>()
                     })
                     .unwrap_or_default(),
+                stats: None,
             })
         })
         .collect::<Result<Vec<_>, QueryError>>()?;

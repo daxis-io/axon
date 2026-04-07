@@ -1,11 +1,53 @@
 use query_contract::{
-    validate_browser_object_url, BrowserAccessMode, BrowserHttpFileDescriptor,
-    BrowserHttpSnapshotDescriptor, BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport,
-    CapabilityState, ExecutionTarget, FallbackReason, PartitionColumnType, QueryError,
-    QueryErrorCode, QueryExecutionOptions, QueryMetricsSummary, QueryRequest, QueryResponse,
+    delta_protocol_feature, delta_protocol_feature_names, validate_browser_object_url,
+    BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor,
+    BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport, CapabilityState,
+    DeltaProtocolFeatureClass, DeltaProtocolFeatureEnablement, DeltaProtocolFeatureKind,
+    ExecutionTarget, FallbackReason, PartitionColumnType, QueryError, QueryErrorCode,
+    QueryExecutionOptions, QueryMetricsSummary, QueryRequest, QueryResponse,
     ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 use serde_json::json;
+
+#[test]
+fn delta_protocol_feature_catalog_covers_browser_routing_matrix() {
+    assert_eq!(
+        delta_protocol_feature("appendOnly").map(|feature| feature.class),
+        Some(DeltaProtocolFeatureClass::TerminalUnsupported)
+    );
+    assert_eq!(
+        delta_protocol_feature("changeDataFeed").map(|feature| feature.class),
+        Some(DeltaProtocolFeatureClass::NativeOnly)
+    );
+    assert_eq!(
+        delta_protocol_feature("v2Checkpoint").map(|feature| feature.class),
+        Some(DeltaProtocolFeatureClass::SupportedInBrowser)
+    );
+    assert_eq!(
+        delta_protocol_feature("checkConstraints").map(|feature| feature.enablement),
+        Some(DeltaProtocolFeatureEnablement::ConfigurationPrefix(
+            "delta.constraints."
+        ))
+    );
+    assert_eq!(
+        delta_protocol_feature("catalogManaged").map(|feature| feature.kind),
+        Some(DeltaProtocolFeatureKind::ReaderWriter)
+    );
+}
+
+#[test]
+fn delta_protocol_feature_catalog_reserves_unknown_for_unrecognized_features() {
+    let names = delta_protocol_feature_names().collect::<Vec<_>>();
+
+    assert!(names.contains(&"catalogManaged"));
+    assert!(names.contains(&"catalogOwned-preview"));
+    assert!(names.contains(&"clustering"));
+    assert!(names.contains(&"materializePartitionColumns"));
+    assert!(names.contains(&"variantType"));
+    assert!(names.contains(&"variantType-preview"));
+    assert!(names.contains(&"variantShredding-preview"));
+    assert!(delta_protocol_feature("mysteryFeature").is_none());
+}
 
 #[test]
 fn capability_report_serializes_with_snake_case_keys_and_states() {
@@ -296,11 +338,13 @@ fn resolved_snapshot_descriptor_serializes_metadata_only_file_descriptors() {
                     ("category".to_string(), Some("A".to_string())),
                     ("region".to_string(), None),
                 ]),
+                stats: None,
             },
             ResolvedFileDescriptor {
                 path: "category=B/part-001.parquet".to_string(),
                 size_bytes: 256,
                 partition_values: std::collections::BTreeMap::new(),
+                stats: None,
             },
         ],
     };
@@ -374,12 +418,14 @@ fn browser_http_snapshot_descriptor_serializes_browser_safe_file_urls() {
                     ("category".to_string(), Some("A".to_string())),
                     ("region".to_string(), None),
                 ]),
+                stats: None,
             },
             BrowserHttpFileDescriptor {
                 path: "category=B/part-001.parquet".to_string(),
                 url: "https://proxy.example.test/read/category=B/part-001.parquet".to_string(),
                 size_bytes: 256,
                 partition_values: std::collections::BTreeMap::new(),
+                stats: None,
             },
         ],
     };

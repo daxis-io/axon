@@ -335,11 +335,13 @@ fn attach_browser_http_urls_rejects_duplicate_resolved_paths() {
                 path: duplicate_path.clone(),
                 size_bytes: 128,
                 partition_values: Default::default(),
+                stats: None,
             },
             ResolvedFileDescriptor {
                 path: duplicate_path.clone(),
                 size_bytes: 256,
                 partition_values: Default::default(),
+                stats: None,
             },
         ],
     };
@@ -376,6 +378,7 @@ fn attach_browser_http_urls_preserves_partition_column_types() {
             path: "year_code=2024/part-000.parquet".to_string(),
             size_bytes: 128,
             partition_values: BTreeMap::from([("year_code".to_string(), Some("2024".to_string()))]),
+            stats: None,
         }],
     };
     let object_urls_by_path = build_url_map(&resolved_snapshot, |path| {

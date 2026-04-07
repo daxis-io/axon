@@ -12,7 +12,11 @@ use deltalake::table::normalize_table_url;
 use deltalake::table::state::DeltaTableState;
 use deltalake::{DeltaTableError, ObjectStoreError};
 use query_contract::{
-    CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, QueryError, QueryErrorCode,
+    delta_protocol_feature, CapabilityKey, CapabilityReport, CapabilityState,
+    DeltaProtocolFeature as KnownDeltaFeature, DeltaProtocolFeatureClass as KnownFeatureClass,
+    DeltaProtocolFeatureEnablement as KnownFeatureEnablement,
+    DeltaProtocolFeatureKind as KnownFeatureKind, ExecutionTarget, QueryError, QueryErrorCode,
+    KNOWN_DELTA_PROTOCOL_FEATURES as KNOWN_DELTA_FEATURES,
 };
 use url::Url;
 
@@ -130,6 +134,16 @@ pub fn required_table_capabilities(snapshot: &DeltaTableState) -> CapabilityRepo
     }
 
     report
+}
+
+pub fn terminally_unsupported_table_features(snapshot: &DeltaTableState) -> Vec<String> {
+    enabled_delta_features(snapshot)
+        .into_iter()
+        .filter(|feature| feature.class == KnownFeatureClass::TerminalUnsupported)
+        .map(|feature| feature.name.to_string())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 pub fn map_delta_error(error: DeltaTableError, target: ExecutionTarget) -> QueryError {
@@ -261,8 +275,11 @@ fn query_error_from_unsupported_protocol_feature_message(
     target: ExecutionTarget,
 ) -> Option<QueryError> {
     let normalized = message.to_ascii_lowercase();
-    let unsupported_protocol_feature =
-        normalized.contains("unknown feature") || normalized.contains("unsupported feature");
+    let unsupported_protocol_feature = normalized.contains("unknown feature")
+        || normalized.contains("unsupported feature")
+        || (normalized.contains("feature '") && normalized.contains("is not supported"))
+        || normalized.contains("unsupported minimum reader version")
+        || normalized.contains("unsupported minimum writer version");
 
     unsupported_protocol_feature.then(|| {
         QueryError::new(
@@ -323,6 +340,15 @@ pub fn table_uses_unknown_protocol_features(snapshot: &DeltaTableState) -> bool 
 }
 
 fn unknown_protocol_features(protocol: &deltalake::kernel::Protocol) -> Vec<String> {
+    protocol_feature_set(protocol)
+        .into_iter()
+        .filter(|feature| !protocol_feature_is_known(feature))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn protocol_feature_set(protocol: &deltalake::kernel::Protocol) -> Vec<String> {
     protocol
         .reader_features()
         .into_iter()
@@ -334,10 +360,84 @@ fn unknown_protocol_features(protocol: &deltalake::kernel::Protocol) -> Vec<Stri
                 .flat_map(|features| features.iter()),
         )
         .map(ToString::to_string)
-        .filter(|feature| !protocol_feature_is_classified(feature))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
         .collect()
+}
+
+fn enabled_delta_features(snapshot: &DeltaTableState) -> Vec<&'static KnownDeltaFeature> {
+    KNOWN_DELTA_FEATURES
+        .iter()
+        .filter(|feature| delta_feature_is_enabled(snapshot, feature))
+        .collect()
+}
+
+fn delta_feature_is_enabled(snapshot: &DeltaTableState, feature: &KnownDeltaFeature) -> bool {
+    if !delta_feature_is_supported_in_protocol(snapshot.protocol(), feature) {
+        return false;
+    }
+
+    let configuration = snapshot.metadata().configuration();
+
+    match feature.enablement {
+        KnownFeatureEnablement::AlwaysIfSupported => true,
+        KnownFeatureEnablement::BoolFlag(key) => configuration_value_is_true(configuration, key),
+        KnownFeatureEnablement::ColumnMappingMode => configuration
+            .get("delta.columnMapping.mode")
+            .is_some_and(|value| !value.eq_ignore_ascii_case("none")),
+        KnownFeatureEnablement::ConfigurationPrefix(prefix) => {
+            configuration.keys().any(|key| key.starts_with(prefix))
+        }
+        KnownFeatureEnablement::RowTracking => {
+            configuration_value_is_true(configuration, "delta.enableRowTracking")
+                && !configuration_value_is_true(configuration, "delta.rowTrackingSuspended")
+        }
+        KnownFeatureEnablement::SchemaGeneratedColumns => {
+            snapshot.schema().fields().any(field_uses_generated_columns)
+        }
+        KnownFeatureEnablement::SchemaIdentityColumns => {
+            snapshot.schema().fields().any(field_uses_identity_columns)
+        }
+        KnownFeatureEnablement::SchemaInvariants => {
+            snapshot.schema().fields().any(field_uses_invariants)
+        }
+    }
+}
+
+fn delta_feature_is_supported_in_protocol(
+    protocol: &deltalake::kernel::Protocol,
+    feature: &KnownDeltaFeature,
+) -> bool {
+    match feature.kind {
+        KnownFeatureKind::Writer => {
+            if protocol.min_writer_version() < 7 {
+                protocol.min_writer_version() >= feature.min_writer_version
+            } else {
+                protocol_has_writer_feature(protocol, feature.name)
+            }
+        }
+        KnownFeatureKind::ReaderWriter => {
+            let reader_supported = if protocol.min_reader_version() < 3 {
+                protocol.min_reader_version() >= feature.min_reader_version
+            } else {
+                protocol_has_reader_feature(protocol, feature.name)
+            };
+            let writer_supported = if protocol.min_writer_version() < 7 {
+                protocol.min_writer_version() >= feature.min_writer_version
+            } else {
+                protocol_has_writer_feature(protocol, feature.name)
+            };
+
+            reader_supported && writer_supported
+        }
+    }
+}
+
+fn configuration_value_is_true(
+    configuration: &std::collections::HashMap<String, String>,
+    key: &str,
+) -> bool {
+    configuration
+        .get(key)
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"))
 }
 
 fn protocol_has_reader_feature(protocol: &deltalake::kernel::Protocol, feature_name: &str) -> bool {
@@ -356,11 +456,8 @@ fn protocol_has_writer_feature(protocol: &deltalake::kernel::Protocol, feature_n
     })
 }
 
-fn protocol_feature_is_classified(feature_name: &str) -> bool {
-    matches!(
-        feature_name,
-        "changeDataFeed" | "columnMapping" | "deletionVectors" | "timestampNtz"
-    )
+fn protocol_feature_is_known(feature_name: &str) -> bool {
+    delta_protocol_feature(feature_name).is_some()
 }
 
 fn field_uses_timestamp_ntz(field: &StructField) -> bool {
@@ -383,22 +480,37 @@ fn data_type_uses_timestamp_ntz(data_type: &DataType) -> bool {
 }
 
 fn field_uses_column_mapping(field: &StructField) -> bool {
-    field
-        .metadata
-        .keys()
-        .any(|key| key.starts_with("delta.columnMapping."))
-        || data_type_uses_column_mapping(&field.data_type)
+    field_has_matching_metadata(field, &|key| key.starts_with("delta.columnMapping."))
 }
 
-fn data_type_uses_column_mapping(data_type: &DataType) -> bool {
+fn field_uses_generated_columns(field: &StructField) -> bool {
+    field_has_matching_metadata(field, &|key| key == "delta.generationExpression")
+}
+
+fn field_uses_identity_columns(field: &StructField) -> bool {
+    field_has_matching_metadata(field, &|key| key.starts_with("delta.identity."))
+}
+
+fn field_uses_invariants(field: &StructField) -> bool {
+    field_has_matching_metadata(field, &|key| key == "delta.invariants")
+}
+
+fn field_has_matching_metadata(field: &StructField, predicate: &dyn Fn(&str) -> bool) -> bool {
+    field.metadata.keys().any(|key| predicate(key))
+        || data_type_has_matching_metadata(&field.data_type, predicate)
+}
+
+fn data_type_has_matching_metadata(data_type: &DataType, predicate: &dyn Fn(&str) -> bool) -> bool {
     match data_type {
-        DataType::Array(array_type) => data_type_uses_column_mapping(array_type.element_type()),
-        DataType::Struct(struct_type) | DataType::Variant(struct_type) => {
-            struct_type.fields().any(field_uses_column_mapping)
+        DataType::Array(array_type) => {
+            data_type_has_matching_metadata(array_type.element_type(), predicate)
         }
+        DataType::Struct(struct_type) | DataType::Variant(struct_type) => struct_type
+            .fields()
+            .any(|field| field_has_matching_metadata(field, predicate)),
         DataType::Map(map_type) => {
-            data_type_uses_column_mapping(map_type.key_type())
-                || data_type_uses_column_mapping(map_type.value_type())
+            data_type_has_matching_metadata(map_type.key_type(), predicate)
+                || data_type_has_matching_metadata(map_type.value_type(), predicate)
         }
         DataType::Primitive(_) => false,
     }

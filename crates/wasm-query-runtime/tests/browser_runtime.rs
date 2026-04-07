@@ -1263,6 +1263,7 @@ fn materialize_snapshot_preserves_descriptor_metadata_and_file_order() {
                 url: "https://example.com/z-last.parquet".to_string(),
                 size_bytes: 333,
                 partition_values: BTreeMap::from([("category".to_string(), Some("z".to_string()))]),
+                stats: None,
             },
             BrowserHttpFileDescriptor {
                 path: "a-first.parquet".to_string(),
@@ -1272,6 +1273,7 @@ fn materialize_snapshot_preserves_descriptor_metadata_and_file_order() {
                     ("category".to_string(), Some("a".to_string())),
                     ("region".to_string(), None),
                 ]),
+                stats: None,
             },
         ],
     };
@@ -1547,6 +1549,7 @@ fn runtime_rejects_local_delta_snapshots_requiring_native_only_capabilities_befo
                     path: "part-000.parquet".to_string(),
                     size_bytes: 128,
                     partition_values: BTreeMap::new(),
+                    stats: None,
                 }],
             },
             |file| BrowserObjectSource::from_url(server.url_for_path(&file.path)),
@@ -1600,6 +1603,7 @@ fn bootstrap_snapshot_metadata_rejects_native_only_capabilities_before_network_i
                     path: "part-000.parquet".to_string(),
                     size_bytes: object.len() as u64,
                     partition_values: BTreeMap::new(),
+                    stats: None,
                 }],
             },
             |file| BrowserObjectSource::from_url(server.url_for_path(&file.path)),
@@ -1648,6 +1652,7 @@ fn bootstrap_snapshot_metadata_hard_fails_unsupported_capabilities_before_networ
                     path: "part-000.parquet".to_string(),
                     size_bytes: object.len() as u64,
                     partition_values: BTreeMap::new(),
+                    stats: None,
                 }],
             },
             |file| BrowserObjectSource::from_url(server.url_for_path(&file.path)),
@@ -1837,12 +1842,14 @@ fn materialize_snapshot_rejects_duplicate_paths() {
                 url: "https://example.com/one.parquet".to_string(),
                 size_bytes: 128,
                 partition_values: BTreeMap::new(),
+                stats: None,
             },
             BrowserHttpFileDescriptor {
                 path: duplicate_path.clone(),
                 url: "https://example.com/two.parquet".to_string(),
                 size_bytes: 256,
                 partition_values: BTreeMap::new(),
+                stats: None,
             },
         ],
     };
@@ -1870,6 +1877,7 @@ fn materialize_snapshot_rejects_invalid_url_syntax_without_leaking_query_or_frag
             url: "https://signed example.test/object?sig=super-secret#fragment".to_string(),
             size_bytes: 128,
             partition_values: BTreeMap::new(),
+            stats: None,
         }],
     };
 
@@ -1898,6 +1906,7 @@ fn materialize_snapshot_rejects_unsupported_schemes_without_leaking_query_or_fra
             url: "ftp://signed.example.test/object?sig=super-secret#fragment".to_string(),
             size_bytes: 128,
             partition_values: BTreeMap::new(),
+            stats: None,
         }],
     };
 
@@ -1926,6 +1935,7 @@ fn materialize_snapshot_rejects_non_loopback_plain_http_urls() {
             url: "http://example.com/object?sig=super-secret#fragment".to_string(),
             size_bytes: 128,
             partition_values: BTreeMap::new(),
+            stats: None,
         }],
     };
 
@@ -1979,6 +1989,7 @@ fn materialize_snapshot_rejects_loopback_http_even_in_host_tests() {
             url: "http://127.0.0.1:8787/object?sig=super-secret#fragment".to_string(),
             size_bytes: 10,
             partition_values: BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
+            stats: None,
         }],
     };
     let session =

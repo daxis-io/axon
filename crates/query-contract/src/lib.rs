@@ -1,8 +1,15 @@
 //! Shared contracts for query execution across browser, native, and control-plane layers.
 
+mod delta_protocol_features;
+
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 
+pub use delta_protocol_features::{
+    delta_protocol_feature, delta_protocol_feature_names, DeltaProtocolFeature,
+    DeltaProtocolFeatureClass, DeltaProtocolFeatureEnablement, DeltaProtocolFeatureKind,
+    KNOWN_DELTA_PROTOCOL_FEATURES,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -188,6 +195,8 @@ pub struct ResolvedFileDescriptor {
     pub path: String,
     pub size_bytes: u64,
     pub partition_values: BTreeMap<String, Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -218,6 +227,8 @@ pub struct BrowserHttpFileDescriptor {
     pub url: String,
     pub size_bytes: u64,
     pub partition_values: BTreeMap<String, Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

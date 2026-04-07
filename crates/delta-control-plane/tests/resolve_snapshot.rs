@@ -3,8 +3,9 @@ mod support;
 use std::path::PathBuf;
 
 use delta_control_plane::{resolve_snapshot, resolve_snapshot_with_policy, SnapshotAccessPolicy};
-use deltalake::kernel::{DataType, PrimitiveType, StructField};
-use query_contract::{QueryErrorCode, SnapshotResolutionRequest};
+use deltalake::kernel::{DataType, MetadataValue, PrimitiveType, StructField};
+use deltalake::table::config::TableProperty;
+use query_contract::{CapabilityKey, CapabilityState, QueryErrorCode, SnapshotResolutionRequest};
 use serde_json::json;
 use support::TestTableFixture;
 use tempfile::TempDir;
@@ -56,6 +57,140 @@ fn resolve_snapshot_rejects_unknown_protocol_features() {
 
     assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
     assert!(error.message.contains("mysteryFeature"));
+}
+
+#[test]
+fn resolve_snapshot_reports_change_data_feed_as_native_only_browser_compatibility() {
+    let fixture = TestTableFixture::create_with_columns_and_configuration(
+        vec![StructField::new(
+            "id".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            false,
+        )],
+        vec![(
+            TableProperty::EnableChangeDataFeed.as_ref().to_string(),
+            Some("true".to_string()),
+        )],
+    );
+
+    let descriptor = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri,
+        snapshot_version: None,
+    })
+    .expect("change data feed tables should still resolve into a metadata descriptor");
+
+    assert_eq!(
+        descriptor
+            .browser_compatibility
+            .state(CapabilityKey::ChangeDataFeed),
+        Some(CapabilityState::NativeOnly)
+    );
+    assert_eq!(
+        descriptor.required_capabilities,
+        descriptor.browser_compatibility
+    );
+}
+
+#[test]
+fn resolve_snapshot_rejects_append_only_tables_as_terminal_browser_unsupported() {
+    let fixture = TestTableFixture::create_with_columns_and_configuration(
+        vec![StructField::new(
+            "id".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            false,
+        )],
+        vec![("delta.appendOnly".to_string(), Some("true".to_string()))],
+    );
+
+    let error = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri,
+        snapshot_version: None,
+    })
+    .expect_err("append-only tables are outside the browser compatibility matrix");
+
+    assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+    assert!(error.message.contains("appendOnly"));
+}
+
+#[test]
+fn resolve_snapshot_rejects_legacy_writer_terminal_features() {
+    let fixture = TestTableFixture::create_with_columns_and_configuration(
+        vec![legacy_terminal_feature_field()],
+        vec![],
+    );
+    fixture.overwrite_initial_metadata_configuration(vec![(
+        "delta.constraints.id_positive".to_string(),
+        Some("id > 0".to_string()),
+    )]);
+    fixture.overwrite_initial_protocol(json!({
+        "minReaderVersion": 1,
+        "minWriterVersion": 4,
+    }));
+
+    let error = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri,
+        snapshot_version: None,
+    })
+    .expect_err("legacy writer feature inference should still reject terminal browser states");
+
+    assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+    assert!(error.message.contains("checkConstraints"));
+    assert!(error.message.contains("generatedColumns"));
+    assert!(error.message.contains("invariants"));
+}
+
+#[test]
+fn resolve_snapshot_allows_known_but_disabled_v7_features() {
+    let fixture = TestTableFixture::create_with_columns_and_configuration(
+        vec![StructField::new(
+            "id".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            false,
+        )],
+        vec![],
+    );
+    fixture.overwrite_initial_protocol(json!({
+        "minReaderVersion": 3,
+        "minWriterVersion": 7,
+        "readerFeatures": ["typeWidening"],
+        "writerFeatures": ["typeWidening", "rowTracking", "inCommitTimestamp", "icebergCompatV1"],
+    }));
+
+    let descriptor = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri,
+        snapshot_version: None,
+    })
+    .expect("known but disabled property-gated features should not hard fail");
+
+    assert!(descriptor.required_capabilities.capabilities.is_empty());
+}
+
+#[test]
+fn resolve_snapshot_classifies_known_protocol_features_before_unknown_feature_failures() {
+    let fixture = TestTableFixture::create_with_columns_and_configuration(
+        vec![StructField::new(
+            "id".to_string(),
+            DataType::Primitive(PrimitiveType::Integer),
+            false,
+        )],
+        vec![],
+    );
+    fixture.overwrite_initial_protocol(json!({
+        "minReaderVersion": 3,
+        "minWriterVersion": 7,
+        "readerFeatures": ["catalogManaged"],
+        "writerFeatures": ["catalogManaged"],
+    }));
+
+    let error = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri,
+        snapshot_version: None,
+    })
+    .expect_err("known unsupported features should not fall through as unknown");
+
+    assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+    assert!(error.message.contains("catalogManaged"));
+    assert!(!error.message.contains("unknown Delta protocol"));
 }
 
 #[test]
@@ -311,4 +446,22 @@ fn denied_invalid_table_locations_return_security_policy_violation_before_storag
 
     assert_eq!(denied_error.code, QueryErrorCode::SecurityPolicyViolation);
     assert_eq!(permissive_error.code, QueryErrorCode::InvalidRequest);
+}
+
+fn legacy_terminal_feature_field() -> StructField {
+    StructField::new(
+        "id".to_string(),
+        DataType::Primitive(PrimitiveType::Integer),
+        false,
+    )
+    .with_metadata([
+        (
+            "delta.generationExpression",
+            MetadataValue::String("id".to_string()),
+        ),
+        (
+            "delta.invariants",
+            MetadataValue::String("{\"expression\":{\"expression\":\"id > 0\"}}".to_string()),
+        ),
+    ])
 }

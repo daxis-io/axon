@@ -14,6 +14,7 @@ use parquet::arrow::ArrowWriter;
 use query_contract::{
     QueryError, QueryErrorCode, ResolvedFileDescriptor, SnapshotResolutionRequest,
 };
+use serde_json::json;
 use tempfile::TempDir;
 use wasm_delta_snapshot::{
     DefaultJsonHandler, DefaultParquetHandler, LocalFileStorageHandler, SnapshotResolver,
@@ -78,13 +79,111 @@ async fn prefers_latest_complete_checkpoint_before_json_replay() {
                 path: "data/b.parquet".to_string(),
                 size_bytes: 20,
                 partition_values: BTreeMap::new(),
+                stats: None,
             },
             ResolvedFileDescriptor {
                 path: "data/c.parquet".to_string(),
                 size_bytes: 30,
                 partition_values: BTreeMap::new(),
+                stats: None,
             },
         ]
+    );
+}
+
+#[tokio::test]
+async fn snapshot_prefers_latest_complete_checkpoint_and_sidecars() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    let checkpoint_stats =
+        r#"{"numRecords":2,"minValues":{"id":2},"maxValues":{"id":5},"nullCount":{"id":0}}"#;
+    let replay_stats =
+        r#"{"numRecords":1,"minValues":{"id":9},"maxValues":{"id":9},"nullCount":{"id":0}}"#;
+    write_json_commit(
+        fixture.path(),
+        0,
+        &[r#"{"add":{"path":"data/a.parquet","size":10,"partitionValues":{"category":"A"}}}"#],
+    );
+    write_uuid_checkpoint(
+        fixture.path(),
+        1,
+        "11111111-1111-1111-1111-111111111111",
+        &[CheckpointRow::sidecar("part-00001.parquet")],
+    );
+    write_sidecar(
+        fixture.path(),
+        "part-00001.parquet",
+        &[CheckpointRow::add_with_stats(
+            "data/b.parquet",
+            20,
+            BTreeMap::from([("category".to_string(), Some("B".to_string()))]),
+            checkpoint_stats,
+        )],
+    );
+    write_multipart_checkpoint_part(
+        fixture.path(),
+        2,
+        1,
+        2,
+        &[CheckpointRow::add(
+            "data/ignored.parquet",
+            999,
+            BTreeMap::new(),
+        )],
+    );
+    write_last_checkpoint(fixture.path(), 2, Some(2));
+    write_json_commit(
+        fixture.path(),
+        2,
+        &[r#"{"remove":{"path":"data/a.parquet"}}"#],
+    );
+    write_json_commit(
+        fixture.path(),
+        3,
+        &[&format!(
+            r#"{{"add":{{"path":"data/c.parquet","size":30,"partitionValues":{{"category":"C"}},"stats":{replay_stats:?}}}}}"#
+        )],
+    );
+
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+    let snapshot = resolver
+        .resolve_snapshot(SnapshotResolutionRequest {
+            table_uri: fixture.path().display().to_string(),
+            snapshot_version: None,
+        })
+        .await
+        .expect("snapshot should resolve");
+
+    assert_eq!(snapshot.snapshot_version, 3);
+    assert_active_file_facts_match(
+        &snapshot.active_files,
+        &[
+            ResolvedFileDescriptor {
+                path: "data/b.parquet".to_string(),
+                size_bytes: 20,
+                partition_values: BTreeMap::from([("category".to_string(), Some("B".to_string()))]),
+                stats: None,
+            },
+            ResolvedFileDescriptor {
+                path: "data/c.parquet".to_string(),
+                size_bytes: 30,
+                partition_values: BTreeMap::from([("category".to_string(), Some("C".to_string()))]),
+                stats: None,
+            },
+        ],
+    );
+
+    let snapshot_json = serde_json::to_value(&snapshot).expect("snapshot should serialize");
+    assert_eq!(
+        snapshot_json["active_files"][0]["stats"],
+        json!(checkpoint_stats)
+    );
+    assert_eq!(
+        snapshot_json["active_files"][1]["stats"],
+        json!(replay_stats)
     );
 }
 
@@ -158,6 +257,7 @@ async fn loads_v2_checkpoint_sidecars_when_present() {
                 partition_values: BTreeMap::from([
                     ("category".to_string(), Some("B".to_string()),)
                 ]),
+                stats: None,
             },
             ResolvedFileDescriptor {
                 path: "data/c.parquet".to_string(),
@@ -165,6 +265,7 @@ async fn loads_v2_checkpoint_sidecars_when_present() {
                 partition_values: BTreeMap::from([
                     ("category".to_string(), Some("C".to_string()),)
                 ]),
+                stats: None,
             },
         ]
     );
@@ -240,6 +341,7 @@ async fn loads_v2_json_checkpoint_sidecars_when_present() {
                 partition_values: BTreeMap::from([
                     ("category".to_string(), Some("B".to_string()),)
                 ]),
+                stats: None,
             },
             ResolvedFileDescriptor {
                 path: "data/c.parquet".to_string(),
@@ -247,6 +349,7 @@ async fn loads_v2_json_checkpoint_sidecars_when_present() {
                 partition_values: BTreeMap::from([
                     ("category".to_string(), Some("C".to_string()),)
                 ]),
+                stats: None,
             },
         ]
     );
@@ -297,6 +400,7 @@ async fn preserves_absolute_sidecar_paths() {
             path: "data/b.parquet".to_string(),
             size_bytes: 20,
             partition_values: BTreeMap::from([("category".to_string(), Some("B".to_string()),)]),
+            stats: None,
         }]
     );
 }
@@ -618,8 +722,13 @@ async fn rejects_sidecar_symlinks_that_escape_the_table_root() {
 
 #[derive(Clone)]
 enum CheckpointRow {
-    Add(ResolvedFileDescriptor),
-    Sidecar { path: String },
+    Add {
+        file: ResolvedFileDescriptor,
+        stats: Option<String>,
+    },
+    Sidecar {
+        path: String,
+    },
 }
 
 impl CheckpointRow {
@@ -628,11 +737,32 @@ impl CheckpointRow {
         size_bytes: u64,
         partition_values: BTreeMap<String, Option<String>>,
     ) -> Self {
-        Self::Add(ResolvedFileDescriptor {
-            path: path.into(),
-            size_bytes,
-            partition_values,
-        })
+        Self::Add {
+            file: ResolvedFileDescriptor {
+                path: path.into(),
+                size_bytes,
+                partition_values,
+                stats: None,
+            },
+            stats: None,
+        }
+    }
+
+    fn add_with_stats(
+        path: impl Into<String>,
+        size_bytes: u64,
+        partition_values: BTreeMap<String, Option<String>>,
+        stats: impl Into<String>,
+    ) -> Self {
+        Self::Add {
+            file: ResolvedFileDescriptor {
+                path: path.into(),
+                size_bytes,
+                partition_values,
+                stats: None,
+            },
+            stats: Some(stats.into()),
+        }
     }
 
     fn sidecar(path: impl Into<String>) -> Self {
@@ -737,6 +867,7 @@ fn checkpoint_record_batch(rows: &[CheckpointRow]) -> RecordBatch {
     let add_fields = Fields::from(vec![
         Field::new("path", DataType::Utf8, true),
         Field::new("size", DataType::Int64, true),
+        Field::new("stats", DataType::Utf8, true),
         Field::new(
             "partitionValues",
             DataType::Map(
@@ -761,6 +892,7 @@ fn checkpoint_record_batch(rows: &[CheckpointRow]) -> RecordBatch {
         vec![
             Box::new(StringBuilder::new()),
             Box::new(Int64Builder::new()),
+            Box::new(StringBuilder::new()),
             Box::new(MapBuilder::new(
                 Some(MapFieldNames {
                     entry: "entries".to_string(),
@@ -779,7 +911,7 @@ fn checkpoint_record_batch(rows: &[CheckpointRow]) -> RecordBatch {
 
     for row in rows {
         match row {
-            CheckpointRow::Add(file) => {
+            CheckpointRow::Add { file, stats } => {
                 add_builder
                     .field_builder::<StringBuilder>(0)
                     .expect("path builder")
@@ -788,8 +920,18 @@ fn checkpoint_record_batch(rows: &[CheckpointRow]) -> RecordBatch {
                     .field_builder::<Int64Builder>(1)
                     .expect("size builder")
                     .append_value(i64::try_from(file.size_bytes).expect("size should fit in i64"));
+                match stats {
+                    Some(stats) => add_builder
+                        .field_builder::<StringBuilder>(2)
+                        .expect("stats builder")
+                        .append_value(stats),
+                    None => add_builder
+                        .field_builder::<StringBuilder>(2)
+                        .expect("stats builder")
+                        .append_null(),
+                }
                 let map_builder = add_builder
-                    .field_builder::<MapBuilder<StringBuilder, StringBuilder>>(2)
+                    .field_builder::<MapBuilder<StringBuilder, StringBuilder>>(3)
                     .expect("partition map builder");
                 for (key, value) in &file.partition_values {
                     map_builder.keys().append_value(key);
@@ -825,7 +967,11 @@ fn checkpoint_record_batch(rows: &[CheckpointRow]) -> RecordBatch {
                     .expect("size builder")
                     .append_null();
                 add_builder
-                    .field_builder::<MapBuilder<StringBuilder, StringBuilder>>(2)
+                    .field_builder::<StringBuilder>(2)
+                    .expect("stats builder")
+                    .append_null();
+                add_builder
+                    .field_builder::<MapBuilder<StringBuilder, StringBuilder>>(3)
                     .expect("partition map builder")
                     .append(false)
                     .expect("null partition map should append");
@@ -894,4 +1040,22 @@ impl StorageHandler for InMemoryStorageHandler {
     ) -> Result<Option<Bytes>, QueryError> {
         Ok(self.bytes_by_path.get(relative_path).cloned())
     }
+}
+
+fn assert_active_file_facts_match(
+    actual: &[ResolvedFileDescriptor],
+    expected: &[ResolvedFileDescriptor],
+) {
+    let normalize = |file: &ResolvedFileDescriptor| {
+        (
+            file.path.clone(),
+            file.size_bytes,
+            file.partition_values.clone(),
+        )
+    };
+
+    assert_eq!(
+        actual.iter().map(normalize).collect::<Vec<_>>(),
+        expected.iter().map(normalize).collect::<Vec<_>>()
+    );
 }

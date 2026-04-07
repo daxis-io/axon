@@ -302,6 +302,58 @@ impl TestTableFixture {
             .expect("rewritten delta log commit should be written");
     }
 
+    pub fn overwrite_initial_metadata_configuration(
+        &self,
+        configuration: Vec<(String, Option<String>)>,
+    ) {
+        let commit_path = self
+            ._tempdir
+            .path()
+            .join("_delta_log")
+            .join("00000000000000000000.json");
+        let contents =
+            fs::read_to_string(&commit_path).expect("initial delta log commit should be readable");
+        let mut saw_metadata = false;
+        let rewritten = contents
+            .lines()
+            .map(|line| {
+                let mut action: JsonValue =
+                    serde_json::from_str(line).expect("delta log action should parse");
+                let metadata = if let Some(metadata) = action.get_mut("metaData") {
+                    metadata.as_object_mut()
+                } else if let Some(metadata) = action.get_mut("metadata") {
+                    metadata.as_object_mut()
+                } else {
+                    None
+                };
+
+                if let Some(metadata) = metadata {
+                    let mut rewritten_configuration = serde_json::Map::new();
+                    for (key, value) in &configuration {
+                        if let Some(value) = value {
+                            rewritten_configuration
+                                .insert(key.clone(), JsonValue::String(value.clone()));
+                        }
+                    }
+                    metadata.insert(
+                        "configuration".to_string(),
+                        JsonValue::Object(rewritten_configuration),
+                    );
+                    saw_metadata = true;
+                }
+                serde_json::to_string(&action).expect("delta log action should serialize")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            saw_metadata,
+            "initial delta log commit should contain metadata"
+        );
+        fs::write(commit_path, format!("{rewritten}\n"))
+            .expect("rewritten delta log commit should be written");
+    }
+
     pub fn expected_active_files(
         &self,
         snapshot_version: Option<i64>,
@@ -353,6 +405,7 @@ impl TestTableFixture {
                             .collect::<BTreeMap<_, _>>()
                     })
                     .unwrap_or_default(),
+                stats: None,
             })
             .collect::<Vec<_>>();
 

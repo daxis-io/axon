@@ -130,6 +130,7 @@ fn browser_runtime_materializes_https_descriptors_in_wasm() {
             url: "https://example.com/object".to_string(),
             size_bytes: 128,
             partition_values: std::collections::BTreeMap::new(),
+            stats: None,
         }],
     };
 
@@ -434,6 +435,7 @@ fn materialize_snapshot_rejects_loopback_http_in_wasm() {
             url: "http://127.0.0.1:8080/object".to_string(),
             size_bytes: 128,
             partition_values: std::collections::BTreeMap::new(),
+            stats: None,
         }],
     };
 

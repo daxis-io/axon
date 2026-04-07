@@ -69,6 +69,7 @@ async fn delta_snapshot_resolver_reconstructs_metadata_and_capabilities_in_wasm(
             path: "year=2024/part-000.parquet".to_string(),
             size_bytes: 10,
             partition_values: BTreeMap::from([("year".to_string(), Some("2024".to_string()))]),
+            stats: None,
         }]
     );
 }
