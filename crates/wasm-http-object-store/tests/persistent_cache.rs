@@ -71,9 +71,12 @@ async fn stale_extents_are_rejected_when_object_identity_changes() {
     assert_eq!(reader.metrics().bytes_fetched, 8);
     assert_eq!(reader.metrics().bytes_reused, 0);
     assert_eq!(reader.metrics().validation_misses, 1);
-    assert_eq!(reader.cached_extents().len(), 1);
+    assert_eq!(reader.cached_extents_for_testing().len(), 1);
     assert_eq!(
-        reader.cached_extents()[0].key.identity.as_deref(),
+        reader.cached_extents_for_testing()[0]
+            .key
+            .identity
+            .as_deref(),
         Some("v2")
     );
 }

@@ -21,3 +21,28 @@ async fn local_file_adapter_exposes_range_reads_from_blob_like_sources() {
     assert!(!result.metadata.identity.is_empty());
     assert_eq!(result.bytes.as_ref(), b"cdef");
 }
+
+#[tokio::test]
+async fn local_file_default_identity_distinguishes_distinct_contents() {
+    let mut reader = BrowserObjectRangeReader::new();
+    let first = BrowserObject::local(BrowserLocalObject::from_bytes(
+        "blob:fixture",
+        Bytes::from_static(b"abcd1111wxyz"),
+    ));
+    let second = BrowserObject::local(BrowserLocalObject::from_bytes(
+        "blob:fixture",
+        Bytes::from_static(b"abcd2222wxyz"),
+    ));
+
+    let original = reader
+        .read_extent(&first, ByteExtent::new(4, 4).expect("valid extent"), None)
+        .await
+        .expect("first local object read should succeed");
+    let updated = reader
+        .read_extent(&second, ByteExtent::new(4, 4).expect("valid extent"), None)
+        .await
+        .expect("distinct local contents must not reuse stale cached extents");
+
+    assert_eq!(original.bytes.as_ref(), b"1111");
+    assert_eq!(updated.bytes.as_ref(), b"2222");
+}

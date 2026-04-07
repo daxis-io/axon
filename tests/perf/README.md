@@ -17,9 +17,8 @@ Current expectations:
 
 Supporting docs:
 
-- `docs/program/browser-observability-contract.md` defines the repo-owned metric fields and external dashboard boundary.
-- `docs/release-gates/browser-wasm-delta-gcs-release-evidence.md` maps the perf claims to concrete repo commands.
 - `README.md` documents the transport cache contract, cache-mode reporting, and the current persistent-cache deferral.
+- `docs/program/browser-release-integration-runbook.md` covers the repo-owned transport troubleshooting path.
 
 Useful local commands:
 

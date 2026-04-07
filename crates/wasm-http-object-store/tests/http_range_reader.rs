@@ -798,6 +798,121 @@ async fn transport_surfaces_protocol_errors_when_validation_headers_are_unavaila
     assert!(error.message.contains("ETag"));
 }
 
+#[tokio::test]
+async fn transport_metrics_count_metadata_probe_bytes_as_fetched_bytes() {
+    let (url, requests, server) = spawn_test_server_sequence(vec![
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "1".to_string()),
+                ("Content-Range".to_string(), "bytes 0-0/10".to_string()),
+                ("ETag".to_string(), "\"v1\"".to_string()),
+            ],
+            body: b"a".to_vec(),
+        },
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "4".to_string()),
+                ("Content-Range".to_string(), "bytes 2-5/10".to_string()),
+                ("ETag".to_string(), "\"v1\"".to_string()),
+            ],
+            body: b"cdef".to_vec(),
+        },
+    ]);
+
+    let mut reader = BrowserObjectRangeReader::new();
+    let result = reader
+        .read_extent(
+            &BrowserObject::http(url.clone()),
+            ByteExtent::new(2, 4).expect("valid extent"),
+            None,
+        )
+        .await
+        .expect("probe-plus-read transport flow should succeed");
+
+    let requests = finish_requests(server, requests);
+    assert_eq!(requests.len(), 2);
+    assert_eq!(result.bytes.as_ref(), b"cdef");
+    assert_eq!(
+        reader.metrics().bytes_fetched,
+        5,
+        "transport metrics should count the 1-byte metadata probe and the 4-byte range body"
+    );
+}
+
+#[tokio::test]
+async fn signed_url_metadata_round_trips_without_forcing_a_reprobe() {
+    let (base_url, requests, server) = spawn_test_server_sequence(vec![
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "1".to_string()),
+                ("Content-Range".to_string(), "bytes 0-0/10".to_string()),
+                ("ETag".to_string(), "\"v1\"".to_string()),
+            ],
+            body: b"a".to_vec(),
+        },
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "4".to_string()),
+                ("Content-Range".to_string(), "bytes 2-5/10".to_string()),
+                ("ETag".to_string(), "\"v1\"".to_string()),
+            ],
+            body: b"cdef".to_vec(),
+        },
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "2".to_string()),
+                ("Content-Range".to_string(), "bytes 6-7/10".to_string()),
+                ("ETag".to_string(), "\"v1\"".to_string()),
+            ],
+            body: b"gh".to_vec(),
+        },
+    ]);
+    let signed_url = format!("{base_url}?sig=secret&expires=30");
+
+    let mut reader = BrowserObjectRangeReader::new();
+    let first = reader
+        .read_extent(
+            &BrowserObject::http(signed_url.clone()),
+            ByteExtent::new(2, 4).expect("valid extent"),
+            None,
+        )
+        .await
+        .expect("first signed-url extent read should succeed");
+    let second = reader
+        .read_extent(
+            &BrowserObject::http(signed_url),
+            ByteExtent::new(6, 2).expect("valid extent"),
+            Some(first.metadata),
+        )
+        .await
+        .expect("returned metadata should be reusable on the same signed URL without a reprobe");
+
+    let requests = finish_requests(server, requests);
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[0].headers.get("range"),
+        Some(&"bytes=0-0".to_string())
+    );
+    assert_eq!(
+        requests[1].headers.get("if-range"),
+        Some(&"\"v1\"".to_string())
+    );
+    assert_eq!(
+        requests[2].headers.get("if-range"),
+        Some(&"\"v1\"".to_string())
+    );
+    assert_eq!(
+        requests[2].headers.get("range"),
+        Some(&"bytes=6-7".to_string())
+    );
+    assert_eq!(second.bytes.as_ref(), b"gh");
+}
+
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Runtime::new().expect("tokio runtime should be created for tests")
 }

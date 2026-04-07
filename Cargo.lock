@@ -1507,6 +1507,7 @@ dependencies = [
 name = "delta-control-plane"
 version = "0.1.0"
 dependencies = [
+ "browser-sdk",
  "delta-runtime-support",
  "deltalake",
  "native-query-runtime",
@@ -4213,7 +4214,9 @@ dependencies = [
  "bytes",
  "query-contract",
  "reqwest",
+ "sha2",
  "tokio",
+ "wasm-bindgen-test",
 ]
 
 [[package]]

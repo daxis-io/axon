@@ -22,6 +22,5 @@ Useful local commands:
 Supporting docs:
 
 - `docs/program/browser-release-integration-runbook.md` covers repo-owned troubleshooting for guardrail failures and fallback behavior.
-- `docs/release-gates/browser-wasm-delta-gcs-external-blockers.md` records the service/security items that remain out of repo.
 
 This directory still does not contain service-level EPIC-03 security checks because `services/query-api` is not in this repository. Secret-leakage tests, signed URL behavior, audit logging checks, and production-shape origin/CORS validation remain blocked on that external service layer.

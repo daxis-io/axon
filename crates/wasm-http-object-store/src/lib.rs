@@ -1,5 +1,6 @@
 //! HTTP range-read adapter for browser-safe object access over exact HTTP byte ranges.
 
+use std::fmt::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,6 +8,7 @@ use bytes::Bytes;
 use query_contract::{ExecutionTarget, QueryError, QueryErrorCode};
 use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_RANGE, RANGE};
 use reqwest::{StatusCode, Url};
+use sha2::{Digest, Sha256};
 
 pub const OWNER: &str = "Runtime / engine team";
 pub const RESPONSIBILITY: &str = "Browser-safe object reads over HTTP range requests.";
@@ -532,7 +534,8 @@ impl BrowserObjectRangeReader {
         self.metrics
     }
 
-    pub fn cached_extents(&self) -> &[ExtentCacheEntry] {
+    #[doc(hidden)]
+    pub fn cached_extents_for_testing(&self) -> &[ExtentCacheEntry] {
         &self.memory_cache
     }
 
@@ -554,21 +557,15 @@ impl BrowserObjectRangeReader {
         extent: ByteExtent,
         known_metadata: Option<BrowserObjectMetadata>,
     ) -> Result<BrowserObjectReadResult, QueryError> {
-        let resolved = self
-            .http
-            .resolve_metadata_with_timeout(
-                url,
-                known_http_metadata(url, known_metadata),
-                HttpMetadataProbeRequirements {
-                    require_size: true,
-                    require_etag: true,
-                },
-                None,
-            )
+        let (metadata, probe_bytes_fetched) = self
+            .resolve_http_metadata_for_extent(url, known_metadata)
             .await?;
-        let metadata = metadata_from_http(resolved)?;
         let key = cache_key_for(&metadata);
         self.record_identity_validation(&metadata);
+        self.metrics.bytes_fetched = self
+            .metrics
+            .bytes_fetched
+            .saturating_add(probe_bytes_fetched);
 
         if let Some(bytes) = self.try_reuse_extent(&key, extent)? {
             return Ok(BrowserObjectReadResult {
@@ -606,6 +603,34 @@ impl BrowserObjectRangeReader {
             extent,
             bytes,
         })
+    }
+
+    async fn resolve_http_metadata_for_extent(
+        &self,
+        url: &str,
+        known_metadata: Option<BrowserObjectMetadata>,
+    ) -> Result<(BrowserObjectMetadata, u64), QueryError> {
+        let requested_resource = canonical_http_resource(url)?;
+        if let Some(known_metadata) = known_metadata {
+            if canonical_http_resource(&known_metadata.resource)? == requested_resource {
+                return Ok((known_metadata, 0));
+            }
+        }
+
+        let metadata = self
+            .http
+            .probe_metadata_with_timeout(
+                url,
+                HttpMetadataProbeRequirements {
+                    require_size: true,
+                    require_etag: true,
+                },
+                None,
+            )
+            .await?;
+        let metadata = metadata_from_http(metadata)?;
+
+        Ok((metadata.clone(), metadata_probe_body_len(&metadata)))
     }
 
     fn read_local_extent(
@@ -711,19 +736,6 @@ fn cache_key_for(metadata: &BrowserObjectMetadata) -> ExtentCacheKey {
     ExtentCacheKey::new(metadata.resource.clone(), Some(metadata.identity.clone()))
 }
 
-fn known_http_metadata(
-    url: &str,
-    known_metadata: Option<BrowserObjectMetadata>,
-) -> Option<HttpObjectMetadata> {
-    known_metadata.and_then(|metadata| {
-        (metadata.resource == url).then_some(HttpObjectMetadata {
-            url: metadata.resource,
-            size_bytes: Some(metadata.size_bytes),
-            etag: Some(metadata.identity),
-        })
-    })
-}
-
 fn metadata_from_http(metadata: HttpObjectMetadata) -> Result<BrowserObjectMetadata, QueryError> {
     Ok(BrowserObjectMetadata {
         resource: metadata.url,
@@ -736,19 +748,27 @@ fn metadata_from_http(metadata: HttpObjectMetadata) -> Result<BrowserObjectMetad
     })
 }
 
-fn derive_local_identity(bytes: &Bytes) -> String {
-    let prefix_len = bytes.len().min(4);
-    let suffix_len = bytes.len().saturating_sub(prefix_len).min(4);
-    let prefix = bytes[..prefix_len]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let suffix = bytes[bytes.len().saturating_sub(suffix_len)..]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+fn metadata_probe_body_len(metadata: &BrowserObjectMetadata) -> u64 {
+    if metadata.size_bytes == 0 {
+        0
+    } else {
+        1
+    }
+}
 
-    format!("local:{}:{prefix}:{suffix}", bytes.len())
+fn canonical_http_resource(url: &str) -> Result<String, QueryError> {
+    parse_url(url).map(|url| redacted_url(&url))
+}
+
+fn derive_local_identity(bytes: &Bytes) -> String {
+    let digest = Sha256::digest(bytes.as_ref());
+    let mut identity = String::with_capacity("local:sha256:".len() + digest.len() * 2);
+    identity.push_str("local:sha256:");
+    for byte in digest {
+        let _ = write!(&mut identity, "{byte:02x}");
+    }
+
+    identity
 }
 
 #[derive(Clone, Debug)]

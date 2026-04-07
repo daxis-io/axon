@@ -68,9 +68,9 @@ async fn extent_cache_coalesces_adjacent_ranges_and_reuses_subranges() {
         .expect("subrange should be served from the merged extent cache");
 
     assert_eq!(reused.bytes.as_ref(), b"cdef");
-    assert_eq!(reader.cached_extents().len(), 1);
+    assert_eq!(reader.cached_extents_for_testing().len(), 1);
     assert_eq!(
-        reader.cached_extents()[0].extent,
+        reader.cached_extents_for_testing()[0].extent,
         ByteExtent::new(0, 8).expect("valid extent")
     );
     assert_eq!(reader.metrics().bytes_fetched, 8);
