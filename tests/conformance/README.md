@@ -5,6 +5,7 @@ This directory holds checks that keep browser and native behavior aligned, plus 
 Current contents:
 
 - `verify_workspace_layout.sh`: verifies the EPIC-01 scaffold exists before feature work begins.
+- `verify_patch_inventory_state.sh`: verifies the patch inventory is real state, not a template, and that vendoring or `[patch]` sections cannot appear without an inventory entry.
 - `native-runtime-sql-corpus.json`: 12-case unpartitioned latest-snapshot SQL corpus with golden result tables and an explicit `assert_scan_metrics` contract so scan metrics are only asserted where they are stable.
 - `native-runtime-partitioned-sql-corpus.json`: 10-case partitioned latest-snapshot SQL corpus with golden results and an explicit `assert_scan_metrics` contract for pruning-visible metric assertions.
 - `native-runtime-snapshot-version-sql-corpus.json`: 4-case historical snapshot-version SQL corpus for the local multi-version fixture.
@@ -17,3 +18,9 @@ Sprint 9 adds deterministic local browser-runtime envelope coverage in `crates/w
 The partitioned native SQL corpus now doubles as the local pruning oracle for cross-crate browser-planning parity checks in `crates/delta-control-plane/tests/browser_snapshot_preflight.rs`, where resolved snapshots are served over loopback HTTP, bootstrapped into browser metadata, and compared against native `files_touched` / `files_skipped` metrics for curated full-scan, partition-pruned, no-match, and integer-stats-pruned cases.
 That same cross-crate suite now also carries a supported-browser SQL parity corpus over the shared native/browser envelope, asserts the typed execution-plan shape for those curated cases, executes the curated non-aggregate and aggregate browser cases against the real loopback fixture with normalized native-result parity, and keeps explicit tests for intentional native-only divergences such as wildcard projections and set operations, so semantic drift is visible before broader browser execution claims are made.
 Fixture provisioning and IAM setup for those env-gated GCS paths are external to this repository.
+
+Useful local commands:
+
+- `bash tests/conformance/verify_workspace_layout.sh`
+- `bash tests/conformance/verify_patch_inventory_state.sh`
+- `bash tests/conformance/verify_patch_inventory_state_test.sh`

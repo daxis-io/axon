@@ -1,0 +1,15 @@
+{
+  "sql": {
+    "request_id": "req-supported-001",
+    "name": "supported_table",
+    "request": {
+      "table_uri": "gs://axon-fixtures/partitioned-table",
+      "sql": "SELECT COUNT(*) AS row_count FROM axon_table",
+      "preferred_target": "browser_wasm",
+      "options": {
+        "include_explain": false,
+        "collect_metrics": true
+      }
+    }
+  }
+}

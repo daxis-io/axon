@@ -16,9 +16,19 @@ The recommended shape is:
 
 - keep `crates/delta-control-plane` native and trusted
 - keep `crates/wasm-http-object-store` as the browser-safe byte-range transport seam
-- add `crates/wasm-parquet-engine` for browser-side Parquet planning and scan primitives
-- add `crates/wasm-delta-snapshot` for browser-safe Delta snapshot reconstruction
+- keep `crates/wasm-parquet-engine` for browser-side Parquet planning and streamed scan primitives
+- keep `crates/wasm-delta-snapshot` for browser-safe Delta snapshot reconstruction
 - keep `crates/wasm-query-runtime` as the orchestration layer for query-shape analysis, pruning, planning, fallback, metrics, and the browser-facing runtime API
+- add `crates/wasm-query-session` as the thin in-memory browser session shell above the runtime and below the worker contract
+
+The repo-grounded V1 is therefore:
+
+- Delta snapshot reconstruction in repo-owned browser-safe code
+- streamed Parquet scan primitives inside `crates/wasm-parquet-engine`
+- runtime-owned Arrow IPC output from `crates/wasm-query-runtime`
+- a worker-owned in-memory session shell in `crates/wasm-query-session`
+
+Broad browser DataFusion remains deferred. V1 should not be described as a browser DataFusion launch.
 
 `parquet-viewer` is useful here as a reference implementation for the scan path only. It validates that browser-side storage adapters, byte-range reads, Parquet access, and optional Arrow/DataFusion execution are viable in WebAssembly. It is not the Delta layer and should not be treated as the reason to collapse Delta protocol work into the same crate or split Axon into a separate repository.
 
@@ -85,6 +95,9 @@ browser-sdk / embedding host
         worker host
             |
             v
+    crates/wasm-query-session
+            |
+            v
     crates/wasm-query-runtime
       |                 |
       |                 +--> Arrow IPC result boundary
@@ -126,8 +139,9 @@ The key handoff is explicit:
 | `crates/wasm-parquet-engine` | Footer reads, metadata decode, Parquet planning, Arrow batch scans | `parquet`, Arrow-facing helpers, `wasm-http-object-store` | Parse `_delta_log`, own query routing, own browser SDK bindings |
 | `crates/wasm-delta-snapshot` | `_delta_log` listing and reads, checkpoint selection, sidecars, commit replay, active-file reconstruction | `wasm-http-object-store`, JSON decode, Parquet checkpoint readers, shared contracts | Own SQL planning, own UI bindings, depend on native `deltalake` |
 | `crates/wasm-query-runtime` | Query-shape analysis, pruning, planning, fallback, metrics, browser runtime API | `query-contract`, `wasm-delta-snapshot`, `wasm-parquet-engine` | Reimplement low-level transport or Delta protocol parsing |
+| `crates/wasm-query-session` | In-memory table/session shell over runtime-owned snapshots | `query-contract`, `wasm-query-runtime` | Add persistence, cache SDK envelopes, or imply browser DataFusion |
 | `crates/delta-control-plane` | Trusted-side snapshot resolution, policy enforcement, future signed URL / proxy issuance | native `deltalake`, `query-contract` | Become the browser Delta engine |
-| `crates/browser-sdk` | Worker host, IPC boundary, browser embedding API | `wasm-query-runtime`, Arrow IPC surface | Own Delta or Parquet internals |
+| `crates/browser-sdk` | Worker command and IPC boundary, browser embedding API | `query-contract`, Arrow IPC surface | Own Delta, Parquet, or runtime/session internals |
 
 `wasm-delta-snapshot` is the recommended working name because it describes scope clearly. If the crate later grows into a broader kernel-like reusable package, it can be renamed or published separately then.
 
@@ -163,9 +177,9 @@ The browser I/O layer should move from exact requested ranges toward coalesced e
 
 The remote HTTP path should assume single-range `Range` requests, `206 Partial Content` responses for partial fetches, and explicit exposure of the response headers needed for object identity and range validation when browser code must inspect them.
 
-### 7. DataFusion Is Optional At Build Time
+### 7. Browser DataFusion Is Deferred For The Default SKU
 
-The runtime should support a smaller scan / filter / project profile and a larger SQL/DataFusion profile. SQL breadth should not silently become a bundle-size regression for every browser deployment.
+The runtime should support a smaller scan / filter / project profile and a larger SQL/DataFusion profile. SQL breadth should not silently become a bundle-size regression for every browser deployment, and the larger browser DataFusion SKU should remain explicitly deferred or experimental until code and release gates exist in repo.
 
 ### 8. Bounded Streaming Over Unbounded Materialization
 
@@ -210,7 +224,8 @@ Deliverables:
 - `wasm-query-runtime` becomes an orchestrator over snapshot + scan crates
 - pruning uses Delta add-file facts before opening Parquet whenever possible
 - browser SDK and worker host use Arrow IPC for result transport
-- optional SQL/DataFusion feature split is defined
+- `wasm-query-session` provides an in-memory-only table/session shell for repeated queries
+- optional SQL/DataFusion feature split is defined but remains deferred for the default SKU
 
 Exit criteria:
 
@@ -248,6 +263,7 @@ This strategy is successful when Axon can do all of the following without changi
 ## Non-Goals
 
 - browser write-path support
+- OPFS or IndexedDB persistent-cache backends
 - direct browser cloud credentials
 - forcing the native `deltalake` crate into the browser
 - making multithreaded WASM a launch prerequisite
@@ -256,6 +272,6 @@ This strategy is successful when Axon can do all of the following without changi
 ## Open Questions To Resolve During Execution
 
 - Whether the first remote-store iteration should stay HTTP-first or immediately adopt an OpenDAL bridge behind a feature flag
-- How broad the first optional SQL/DataFusion SKU should be before bundle size becomes unacceptable
+- How broad the first optional browser DataFusion SKU should be before bundle size becomes unacceptable
 - Whether browser-local Delta directories should target OPFS first, drag-and-drop file trees first, or both
 - Whether `wasm-delta-snapshot` should accept a control-plane-produced file listing as an override path for hosted deployments that do not want browser-side log replay

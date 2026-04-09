@@ -1,0 +1,109 @@
+name: Upgrade Rehearsal
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 14 * * 1"
+
+jobs:
+  rehearsal:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm bindgen test runner
+        run: cargo install wasm-bindgen-cli --version 0.2.114 --locked
+
+      - name: Refresh candidate dependency set
+        run: cargo update
+
+      - name: Capture Cargo.lock diff
+        run: git diff --binary -- Cargo.lock > upgrade-rehearsal-cargo-lock.diff
+
+      - name: Upload Cargo.lock diff artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-rehearsal-cargo-lock-diff
+          path: upgrade-rehearsal-cargo-lock.diff
+
+      - name: Check workspace on candidate dependency set
+        run: cargo check --workspace
+
+      - name: Test shared query contract
+        run: cargo test -p query-contract
+
+      - name: Test shared delta runtime support
+        run: cargo test -p delta-runtime-support
+
+      - name: Test delta control plane
+        run: cargo test -p delta-control-plane
+
+      - name: Test native query runtime
+        run: cargo test -p native-query-runtime
+
+      - name: Test wasm query runtime
+        run: cargo test -p wasm-query-runtime
+
+      - name: Test wasm HTTP object store
+        run: cargo test -p wasm-http-object-store
+
+      - name: Test wasm Parquet engine
+        run: cargo test -p wasm-parquet-engine
+
+      - name: Test wasm Delta snapshot
+        run: cargo test -p wasm-delta-snapshot
+
+      - name: Test browser SDK
+        run: cargo test -p browser-sdk
+
+      - name: Test browser engine worker
+        run: cargo test -p browser-engine-worker
+
+      - name: Check wasm targets
+        run: cargo check -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p browser-sdk -p browser-engine-worker --target wasm32-unknown-unknown
+
+      - name: Run wasm query runtime smoke
+        run: cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --test wasm_smoke
+
+      - name: Run browser SDK wasm smoke
+        run: cargo test -p browser-sdk --target wasm32-unknown-unknown --test wasm_smoke
+
+      - name: Run wasm Parquet engine smoke
+        run: cargo test -p wasm-parquet-engine --target wasm32-unknown-unknown --test wasm_smoke
+
+      - name: Run wasm Delta snapshot smoke
+        run: cargo test -p wasm-delta-snapshot --target wasm32-unknown-unknown --test wasm_smoke
+
+      - name: Run browser engine worker wasm smoke
+        run: cargo test -p browser-engine-worker --target wasm32-unknown-unknown --test wasm_smoke -- --nocapture
+
+      - name: Report host-proxy browser worker startup and footprint baselines
+        run: cargo test -p browser-engine-worker report_worker_artifact_baseline -- --exact --nocapture
+
+      - name: Enforce browser worker artifact size budget
+        run: bash tests/perf/report_browser_worker_artifact.sh
+
+      - name: Run browser dependency guardrail regression
+        run: bash tests/security/verify_browser_dependency_guardrails_test.sh
+
+      - name: Verify browser dependency and bundle guardrails
+        run: bash tests/security/verify_browser_dependency_guardrails.sh
+
+      - name: Run patch inventory guard regression
+        run: bash tests/conformance/verify_patch_inventory_state_test.sh
+
+      - name: Verify patch inventory state
+        run: bash tests/conformance/verify_patch_inventory_state.sh
+
+      - name: Verify workspace layout
+        run: bash tests/conformance/verify_workspace_layout.sh

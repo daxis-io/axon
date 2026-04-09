@@ -124,6 +124,7 @@ fn browser_runtime_materializes_https_descriptors_in_wasm() {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 4,
         partition_column_types: std::collections::BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
         required_capabilities: CapabilityReport::default(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),
@@ -429,6 +430,7 @@ fn materialize_snapshot_rejects_loopback_http_in_wasm() {
         table_uri: "gs://axon-fixtures/sample_table".to_string(),
         snapshot_version: 4,
         partition_column_types: std::collections::BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
         required_capabilities: CapabilityReport::default(),
         active_files: vec![BrowserHttpFileDescriptor {
             path: "part-000.parquet".to_string(),

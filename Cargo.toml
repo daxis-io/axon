@@ -12,6 +12,7 @@ members = [
   "crates/wasm-http-object-store",
   "crates/wasm-parquet-engine",
   "crates/wasm-delta-snapshot",
+  "crates/wasm-query-session",
   "crates/wasm-query-runtime",
 ]
 resolver = "2"

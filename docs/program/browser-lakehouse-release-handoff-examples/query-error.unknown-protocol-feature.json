@@ -1,0 +1,5 @@
+{
+  "code": "unsupported_feature",
+  "message": "trusted snapshot resolution does not support Delta protocol feature(s): mysteryFeature",
+  "target": "native"
+}

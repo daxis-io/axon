@@ -1,5 +1,6 @@
 mod support;
 
+use browser_sdk::{ArrowIpcFormat, ArrowIpcResultEnvelope, BrowserWorkerResponseEnvelope};
 use delta_control_plane::resolve_snapshot;
 use deltalake::arrow::array::{
     Array, Float64Array, Int32Array, Int64Array, StringArray, UInt64Array,
@@ -8,7 +9,8 @@ use deltalake::arrow::datatypes::DataType as ArrowDataType;
 use deltalake::arrow::util::display::array_value_to_string;
 use native_query_runtime::{execute_query, NativeQueryResult, DEFAULT_TABLE_NAME};
 use query_contract::{
-    ExecutionTarget, PartitionColumnType, QueryErrorCode, QueryRequest, SnapshotResolutionRequest,
+    ExecutionTarget, PartitionColumnType, QueryErrorCode, QueryRequest, QueryResponse,
+    SnapshotResolutionRequest,
 };
 use support::{LoopbackObjectServer, LoopbackObjectServerOptions, TestTableFixture};
 use wasm_query_runtime::{
@@ -158,6 +160,62 @@ fn latest_resolved_snapshot_bootstraps_browser_preflight_and_matches_native_row_
     );
     assert_eq!(first_file.metadata().row_group_count, 1);
     assert_eq!(first_file.metadata().row_count, 2);
+}
+
+#[test]
+fn supported_resolved_snapshot_executes_and_round_trips_through_browser_worker_envelope() {
+    let fixture = TestTableFixture::create_partitioned();
+    let resolved_snapshot = resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: fixture.table_uri.clone(),
+        snapshot_version: None,
+    })
+    .expect("latest snapshot should resolve");
+    let server = LoopbackObjectServer::from_fixture_paths(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+    );
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default browser runtime config should be supported");
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let request = QueryRequest::new(
+        resolved_snapshot.table_uri.clone(),
+        format!("SELECT COUNT(*) AS row_count FROM {DEFAULT_TABLE_NAME}"),
+        ExecutionTarget::BrowserWasm,
+    );
+
+    let prepared = runtime()
+        .block_on(session.prepare_execution(&materialized, &request))
+        .expect("supported snapshots should prepare browser execution");
+    let result = runtime()
+        .block_on(session.execute_plan(&materialized, prepared.execution_plan()))
+        .expect("supported snapshots should execute in the browser runtime");
+    let envelope = BrowserWorkerResponseEnvelope::success(
+        "req-supported-seam",
+        QueryResponse {
+            executed_on: ExecutionTarget::BrowserWasm,
+            capabilities: resolved_snapshot.required_capabilities.clone(),
+            fallback_reason: None,
+            metrics: result.metrics().clone(),
+        },
+        ArrowIpcResultEnvelope::new(ArrowIpcFormat::Stream, vec![1, 2, 3, 4]),
+    );
+
+    let round_tripped: BrowserWorkerResponseEnvelope =
+        serde_json::from_value(serde_json::to_value(&envelope).expect("envelope serializes"))
+            .expect("envelope deserializes");
+    let success = round_tripped
+        .success_envelope()
+        .expect("success envelope should be present");
+
+    assert_eq!(success.request_id, "req-supported-seam");
+    assert_eq!(success.response.executed_on, ExecutionTarget::BrowserWasm);
+    assert_eq!(success.result.format, ArrowIpcFormat::Stream);
+    assert!(success.response.metrics.bytes_fetched > 0);
+    assert!(success.response.metrics.files_touched > 0);
+    assert_eq!(round_tripped.fallback_reason(), None);
 }
 
 #[test]

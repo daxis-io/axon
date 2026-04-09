@@ -4,16 +4,19 @@ This directory defines the performance gate contract for the browser engine slic
 
 Current expectations:
 
-- CI compiles `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, `browser-sdk`, and `browser-engine-worker` for `wasm32-unknown-unknown`, runs host tests for the split browser crates, and runs dedicated `wasm32-unknown-unknown` smoke suites for `browser-sdk`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-engine-worker`.
+- CI compiles `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, `wasm-query-session`, `browser-sdk`, and `browser-engine-worker` for `wasm32-unknown-unknown`, runs host tests for the split browser crates, and runs dedicated `wasm32-unknown-unknown` smoke suites for `browser-sdk`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-engine-worker`.
 - `crates/wasm-http-object-store` now exposes transport-local metrics for extent-body bytes fetched, bytes reused from cache, and validation misses caused by object-identity drift.
+- `crates/wasm-query-session` keeps repeated browser-query bootstrap costs in-memory only; persistent-cache backends remain deferred.
+- The repo-grounded browser V1 is narrow runtime + streaming scan + in-memory session shell, not broad browser DataFusion.
 - The blocking artifact budget now targets the real `target/wasm32-unknown-unknown/release/browser_engine_worker.wasm` bundle through `tests/perf/report_browser_worker_artifact.sh`.
-- CI publishes a report-only host-proxy worker startup and memory baseline from `cargo test -p browser-engine-worker --locked report_worker_artifact_baseline -- --exact --nocapture`, while the wasm smoke validates the same report path on the browser target.
+- CI publishes a report-only host-proxy worker startup and memory baseline from `cargo test -p browser-engine-worker --locked report_worker_artifact_baseline -- --exact --nocapture`, while the wasm smoke validates the same report path on the browser target and the artifact report now states `session_shell = true` and `browser_datafusion = false`.
 - Local crate coverage still matters for regression detection:
   - `cargo test -p wasm-http-object-store --locked`
-  - `cargo test -p wasm-parquet-engine --locked`
-  - `cargo test -p wasm-delta-snapshot --locked`
-  - `cargo test -p browser-sdk --locked`
-  - `cargo test -p browser-engine-worker --locked`
+- `cargo test -p wasm-parquet-engine --locked`
+- `cargo test -p wasm-delta-snapshot --locked`
+- `cargo test -p wasm-query-session --locked`
+- `cargo test -p browser-sdk --locked`
+- `cargo test -p browser-engine-worker --locked`
 
 Supporting docs:
 

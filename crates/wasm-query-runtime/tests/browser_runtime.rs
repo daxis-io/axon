@@ -4,6 +4,7 @@
 mod support;
 
 use std::collections::BTreeMap;
+use std::io::Cursor;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -13,6 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use arrow_array::{Array, BooleanArray, Int64Array, StringArray};
+use arrow_ipc::reader::StreamReader;
 use query_contract::{
     BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey,
     CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, PartitionColumnType,
@@ -27,8 +30,8 @@ use wasm_delta_snapshot::{
 use wasm_http_object_store::{HttpByteRange, HttpRangeReader};
 use wasm_query_runtime::{
     runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserAggregateFunction,
-    BrowserComparisonOp, BrowserExecutionOutputKind, BrowserFilterExpr, BrowserObjectAccessMode,
-    BrowserObjectSource, BrowserParquetConvertedType, BrowserParquetField,
+    BrowserComparisonOp, BrowserExecutionBudget, BrowserExecutionOutputKind, BrowserFilterExpr,
+    BrowserObjectAccessMode, BrowserObjectSource, BrowserParquetConvertedType, BrowserParquetField,
     BrowserParquetFieldStats, BrowserParquetFileMetadata, BrowserParquetLogicalType,
     BrowserParquetPhysicalType, BrowserParquetRepetition, BrowserRuntimeConfig,
     BrowserRuntimeSession, BrowserScalarValue, MaterializedBrowserFile,
@@ -720,67 +723,81 @@ fn execute_plan_enforces_the_execution_deadline() {
 fn execute_plan_rejects_entity_tag_mismatches_between_bootstrap_and_execution() {
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
         .expect("default config should be supported");
-    let snapshot = BootstrappedBrowserSnapshot::new(
-        "gs://axon-fixtures/sample_table",
-        7,
-        vec![bootstrapped_file_with_etag(
-            "part-000.parquet",
-            4,
-            BTreeMap::new(),
-            BrowserParquetFileMetadata {
-                object_size_bytes: 4,
-                footer_length_bytes: 2,
-                row_group_count: 1,
-                row_count: 1,
-                fields: vec![required_field("id", BrowserParquetPhysicalType::Int32)],
-                field_stats: BTreeMap::new(),
+    let fixture = TestTableFixture::create_partitioned();
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+    let resolved = runtime()
+        .block_on(session.resolve_delta_snapshot(
+            &resolver,
+            SnapshotResolutionRequest {
+                table_uri: fixture.raw_table_path(),
+                snapshot_version: None,
             },
-            Some("\"v1\""),
-        )],
-    )
-    .expect("single-file snapshots should construct");
-    let plan = session
-        .build_execution_plan(
-            &snapshot,
-            &QueryRequest::new(
-                snapshot.table_uri(),
-                "SELECT id FROM axon_table",
-                ExecutionTarget::BrowserWasm,
-            ),
-        )
-        .expect("direct projection execution plans should build");
-    let (url, requests, server) = spawn_test_server(|request| {
-        assert!(!request.headers.contains_key("range"));
-        TestResponse {
-            status_line: "200 OK",
-            headers: vec![
-                ("Content-Length".to_string(), "4".to_string()),
-                ("ETag".to_string(), "\"v2\"".to_string()),
-            ],
-            body: b"ABCD".to_vec(),
-        }
+        ))
+        .expect("delta snapshot should resolve");
+    let planning_server = RequestCapturingObjectServer::from_fixture_paths(
+        &fixture,
+        resolved.active_files.iter().map(|file| file.path.clone()),
+    );
+    let planning_materialized = session
+        .materialize_resolved_snapshot(&resolved, |file| {
+            BrowserObjectSource::from_url(planning_server.url_for_path(&file.path))
+        })
+        .expect("resolved snapshot should materialize into browser object sources");
+    let request = QueryRequest::new(
+        planning_materialized.table_uri(),
+        "SELECT id FROM axon_table WHERE category = 'A'",
+        ExecutionTarget::BrowserWasm,
+    );
+    let prepared = runtime()
+        .block_on(session.prepare_execution(&planning_materialized, &request))
+        .expect("browser execution should prepare from bootstrapped metadata");
+    let candidate_file = prepared
+        .bootstrapped_snapshot()
+        .active_files()
+        .first()
+        .expect("category-pruned execution should retain one candidate");
+    let expected_etag = format!("\"fixture-{:016x}\"", candidate_file.size_bytes());
+    let object_bytes = std::fs::read(fixture.table_root().join(candidate_file.path()))
+        .expect("candidate parquet object should be readable");
+    drop(planning_server);
+
+    let expected_if_range = expected_etag.clone();
+    let (url, requests, server) = spawn_test_server(move |request| {
+        assert!(request.headers.contains_key("range"));
+        assert_eq!(
+            request.headers.get("if-range"),
+            Some(&expected_if_range),
+            "execution reads should enforce the bootstrapped entity tag",
+        );
+        full_or_ranged_response_with_custom_etag(request, &object_bytes, "\"v2\"")
     });
-    let materialized = MaterializedBrowserSnapshot::new(
-        snapshot.table_uri(),
-        snapshot.snapshot_version(),
+    let materialized = MaterializedBrowserSnapshot::new_with_partition_column_types(
+        prepared.bootstrapped_snapshot().table_uri(),
+        prepared.bootstrapped_snapshot().snapshot_version(),
         vec![MaterializedBrowserFile::new(
-            "part-000.parquet",
-            4,
-            BTreeMap::new(),
+            candidate_file.path(),
+            candidate_file.size_bytes(),
+            candidate_file.partition_values().clone(),
             BrowserObjectSource::from_url(&url)
                 .expect("loopback HTTP should be allowed in host tests"),
         )],
+        planning_materialized.partition_column_types().clone(),
     )
     .expect("duplicate-free snapshots should construct");
 
     let error = runtime()
-        .block_on(session.execute_plan(&materialized, &plan))
+        .block_on(session.execute_plan(&materialized, prepared.execution_plan()))
         .expect_err("bootstrap-to-execution entity-tag drift should fail");
 
     let request = finish_request(server, requests);
-    assert!(!request.headers.contains_key("range"));
+    assert!(request.headers.contains_key("range"));
+    assert_eq!(request.headers.get("if-range"), Some(&expected_etag));
     assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
-    assert!(error.message.contains("entity tag"));
+    assert!(error.message.contains("ETag"));
 }
 
 #[test]
@@ -1520,6 +1537,225 @@ fn runtime_executes_partition_group_by_from_local_delta_snapshot() {
                 BrowserScalarValue::Int64(60),
             ],
         ]
+    );
+}
+
+#[test]
+fn execute_plan_to_arrow_ipc_streams_supported_query_results() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let fixture = TestTableFixture::create_partitioned();
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+    let resolved = runtime()
+        .block_on(session.resolve_delta_snapshot(
+            &resolver,
+            SnapshotResolutionRequest {
+                table_uri: fixture.raw_table_path(),
+                snapshot_version: None,
+            },
+        ))
+        .expect("delta snapshot should resolve");
+    let server = RequestCapturingObjectServer::from_fixture_paths(
+        &fixture,
+        resolved.active_files.iter().map(|file| file.path.clone()),
+    );
+    let materialized = session
+        .materialize_resolved_snapshot(&resolved, |file| {
+            BrowserObjectSource::from_url(server.url_for_path(&file.path))
+        })
+        .expect("resolved snapshot should materialize into browser object sources");
+    let request = QueryRequest::new(
+        materialized.table_uri(),
+        "SELECT category, SUM(value) AS total_value FROM axon_table GROUP BY category ORDER BY category",
+        ExecutionTarget::BrowserWasm,
+    );
+
+    let prepared = runtime()
+        .block_on(session.prepare_execution(&materialized, &request))
+        .expect("partition-typed local snapshots should prepare grouped execution");
+    let execution = runtime()
+        .block_on(session.execute_plan_to_arrow_ipc(&materialized, prepared.execution_plan()))
+        .expect("supported browser execution should encode Arrow IPC");
+    let (output_names, rows) = decode_arrow_ipc_rows(&execution.ipc_bytes);
+
+    assert_eq!(
+        output_names,
+        ["category".to_string(), "total_value".to_string()]
+    );
+    assert_eq!(
+        rows,
+        vec![
+            vec![
+                BrowserScalarValue::String("A".to_string()),
+                BrowserScalarValue::Int64(40),
+            ],
+            vec![
+                BrowserScalarValue::String("B".to_string()),
+                BrowserScalarValue::Int64(110),
+            ],
+            vec![
+                BrowserScalarValue::String("C".to_string()),
+                BrowserScalarValue::Int64(60),
+            ],
+        ]
+    );
+    assert_eq!(execution.row_count, 3);
+    assert_eq!(execution.encoded_bytes, execution.ipc_bytes.len() as u64);
+    assert_eq!(
+        execution
+            .scan_metrics
+            .iter()
+            .map(|metrics| metrics.files_opened)
+            .sum::<u64>(),
+        prepared.planned_query().candidate_file_count
+    );
+    assert_eq!(
+        execution
+            .scan_metrics
+            .iter()
+            .map(|metrics| metrics.rows_emitted)
+            .sum::<u64>(),
+        prepared.planned_query().candidate_rows
+    );
+}
+
+#[test]
+fn runtime_stops_scanning_when_execution_future_is_cancelled() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let fixture = TestTableFixture::create_partitioned();
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+    let resolved = runtime()
+        .block_on(session.resolve_delta_snapshot(
+            &resolver,
+            SnapshotResolutionRequest {
+                table_uri: fixture.raw_table_path(),
+                snapshot_version: None,
+            },
+        ))
+        .expect("delta snapshot should resolve");
+    let planning_server = RequestCapturingObjectServer::from_fixture_paths(
+        &fixture,
+        resolved.active_files.iter().map(|file| file.path.clone()),
+    );
+    let materialized_for_prepare = session
+        .materialize_resolved_snapshot(&resolved, |file| {
+            BrowserObjectSource::from_url(planning_server.url_for_path(&file.path))
+        })
+        .expect("resolved snapshot should materialize into browser object sources");
+    let request = QueryRequest::new(
+        materialized_for_prepare.table_uri(),
+        "SELECT id FROM axon_table ORDER BY id",
+        ExecutionTarget::BrowserWasm,
+    );
+    let prepared = runtime()
+        .block_on(session.prepare_execution(&materialized_for_prepare, &request))
+        .expect("browser execution should prepare");
+    drop(planning_server);
+
+    let execution_server = StallingRequestCapturingObjectServer::from_fixture_paths(
+        &fixture,
+        resolved.active_files.iter().map(|file| file.path.clone()),
+        Duration::from_millis(200),
+    );
+    let materialized_for_execute = session
+        .materialize_resolved_snapshot(&resolved, |file| {
+            BrowserObjectSource::from_url(execution_server.url_for_path(&file.path))
+        })
+        .expect("resolved snapshot should materialize into browser object sources");
+
+    let runtime = runtime();
+    let handle = runtime.spawn({
+        let session = session.clone();
+        let materialized_for_execute = materialized_for_execute.clone();
+        let execution_plan = prepared.execution_plan().clone();
+        async move {
+            session
+                .execute_plan_to_arrow_ipc(&materialized_for_execute, &execution_plan)
+                .await
+        }
+    });
+
+    thread::sleep(Duration::from_millis(40));
+    handle.abort();
+    let join_error = runtime
+        .block_on(handle)
+        .expect_err("aborted browser execution should report cancellation");
+
+    assert!(join_error.is_cancelled());
+    thread::sleep(Duration::from_millis(260));
+    assert_eq!(
+        execution_server.recorded_paths().len() <= 1,
+        true,
+        "cancelling execution should prevent later scan targets from opening"
+    );
+}
+
+#[test]
+fn runtime_rejects_over_budget_queries_with_structured_fallback_before_scanning() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig {
+        execution_budget: Some(BrowserExecutionBudget {
+            max_rows: 1,
+            max_bytes: 1,
+        }),
+        ..BrowserRuntimeConfig::default()
+    })
+    .expect("budgeted config should be supported");
+    let fixture = TestTableFixture::create_partitioned();
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+    let resolved = runtime()
+        .block_on(session.resolve_delta_snapshot(
+            &resolver,
+            SnapshotResolutionRequest {
+                table_uri: fixture.raw_table_path(),
+                snapshot_version: None,
+            },
+        ))
+        .expect("delta snapshot should resolve");
+    let server = RequestCapturingObjectServer::from_fixture_paths(
+        &fixture,
+        resolved.active_files.iter().map(|file| file.path.clone()),
+    );
+    let materialized = session
+        .materialize_resolved_snapshot(&resolved, |file| {
+            BrowserObjectSource::from_url(server.url_for_path(&file.path))
+        })
+        .expect("resolved snapshot should materialize into browser object sources");
+    let request = QueryRequest::new(
+        materialized.table_uri(),
+        "SELECT id FROM axon_table ORDER BY id",
+        ExecutionTarget::BrowserWasm,
+    );
+    let prepared = runtime()
+        .block_on(session.prepare_execution(&materialized, &request))
+        .expect("browser execution should prepare");
+    let bootstrapped_paths = server.recorded_paths();
+
+    let error = runtime()
+        .block_on(session.execute_plan_to_arrow_ipc(&materialized, prepared.execution_plan()))
+        .expect_err("over-budget browser execution should fail closed before scan collection");
+
+    assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+    assert_eq!(
+        error.fallback_reason,
+        Some(FallbackReason::BrowserRuntimeConstraint)
+    );
+    assert_eq!(
+        server.recorded_paths(),
+        bootstrapped_paths,
+        "budget fallback should not trigger additional scan reads after bootstrap"
     );
 }
 
@@ -2815,6 +3051,53 @@ fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Runtime::new().expect("tokio runtime should be created for tests")
 }
 
+fn decode_arrow_ipc_rows(ipc_bytes: &[u8]) -> (Vec<String>, Vec<Vec<BrowserScalarValue>>) {
+    let mut reader = StreamReader::try_new(Cursor::new(ipc_bytes.to_vec()), None)
+        .expect("runtime Arrow IPC output should decode");
+    let output_names = reader
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().to_string())
+        .collect::<Vec<_>>();
+    let mut rows = Vec::new();
+
+    for batch in &mut reader {
+        let batch = batch.expect("Arrow IPC batch should decode");
+        for row_index in 0..batch.num_rows() {
+            let row = batch
+                .columns()
+                .iter()
+                .map(|column| arrow_value_to_browser_scalar(column.as_ref(), row_index))
+                .collect::<Vec<_>>();
+            rows.push(row);
+        }
+    }
+
+    (output_names, rows)
+}
+
+fn arrow_value_to_browser_scalar(column: &dyn Array, row_index: usize) -> BrowserScalarValue {
+    if column.is_null(row_index) {
+        return BrowserScalarValue::Null;
+    }
+
+    if let Some(column) = column.as_any().downcast_ref::<Int64Array>() {
+        return BrowserScalarValue::Int64(column.value(row_index));
+    }
+    if let Some(column) = column.as_any().downcast_ref::<StringArray>() {
+        return BrowserScalarValue::String(column.value(row_index).to_string());
+    }
+    if let Some(column) = column.as_any().downcast_ref::<BooleanArray>() {
+        return BrowserScalarValue::Boolean(column.value(row_index));
+    }
+
+    panic!(
+        "unexpected Arrow IPC data type in runtime test: {:?}",
+        column.data_type()
+    );
+}
+
 #[derive(Debug)]
 struct CapturedRequest {
     path: String,
@@ -2873,30 +3156,60 @@ fn spawn_stalling_footer_read_server(
     let (request_tx, request_rx) = mpsc::channel();
 
     let server = thread::spawn(move || {
-        {
-            let (mut trailer_stream, _) = listener.accept().expect("test client should connect");
-            let trailer_request = read_request(&mut trailer_stream);
-            write_response(
-                &mut trailer_stream,
-                TestResponse {
-                    status_line: "206 Partial Content",
-                    headers: vec![
-                        ("Content-Length".to_string(), trailer.len().to_string()),
-                        (
-                            "Content-Range".to_string(),
-                            format!("bytes {}-{}/{}", object_len - 8, object_len - 1, object_len),
-                        ),
-                    ],
-                    body: trailer,
-                },
-            );
-            let _ = request_tx.send(trailer_request);
-        }
+        let (mut trailer_stream, _) = listener.accept().expect("test client should connect");
+        let trailer_request = read_request(&mut trailer_stream);
+        write_response(
+            &mut trailer_stream,
+            TestResponse {
+                status_line: "206 Partial Content",
+                headers: vec![
+                    ("Content-Length".to_string(), trailer.len().to_string()),
+                    (
+                        "Content-Range".to_string(),
+                        format!("bytes {}-{}/{}", object_len - 8, object_len - 1, object_len),
+                    ),
+                ],
+                body: trailer,
+            },
+        );
+        let _ = request_tx.send(trailer_request);
 
-        let (mut footer_stream, _) = listener.accept().expect("test client should connect");
-        let footer_request = read_request(&mut footer_stream);
-        let _ = request_tx.send(footer_request);
-        thread::sleep(delay);
+        trailer_stream
+            .set_nonblocking(true)
+            .expect("accepted streams should allow bounded footer reads");
+        listener
+            .set_nonblocking(true)
+            .expect("listener should allow bounded second accepts");
+
+        let deadline = std::time::Instant::now() + delay + Duration::from_secs(1);
+        loop {
+            if let Some(footer_request) = try_read_request(&mut trailer_stream) {
+                let _ = request_tx.send(footer_request);
+                thread::sleep(delay);
+                break;
+            }
+
+            match listener.accept() {
+                Ok((mut footer_stream, _)) => {
+                    footer_stream
+                        .set_read_timeout(Some(Duration::from_millis(50)))
+                        .expect("accepted streams should allow bounded footer reads");
+                    if let Some(footer_request) = try_read_request(&mut footer_stream) {
+                        let _ = request_tx.send(footer_request);
+                        thread::sleep(delay);
+                    }
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => panic!("test client should connect for footer read: {error}"),
+            }
+
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+
+            thread::sleep(Duration::from_millis(5));
+        }
     });
 
     (url, request_rx, server)
@@ -2918,20 +3231,37 @@ fn finish_requests(
     (0..expected_count)
         .map(|_| {
             requests
-                .recv()
+                .recv_timeout(Duration::from_millis(250))
                 .expect("test should receive the captured request")
         })
         .collect()
 }
 
 fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
+    try_read_request(stream).unwrap_or_else(|| CapturedRequest {
+        path: String::new(),
+        headers: BTreeMap::new(),
+    })
+}
+
+fn try_read_request(stream: &mut std::net::TcpStream) -> Option<CapturedRequest> {
     let mut buffer = [0_u8; 4096];
     let mut request = Vec::new();
 
     loop {
-        let bytes_read = stream
-            .read(&mut buffer)
-            .expect("request bytes should be readable");
+        let bytes_read = match stream.read(&mut buffer) {
+            Ok(bytes_read) => bytes_read,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return None;
+            }
+            Err(error) if is_expected_client_disconnect(&error) => return None,
+            Err(error) => panic!("request bytes should be readable: {error}"),
+        };
         if bytes_read == 0 {
             break;
         }
@@ -2941,24 +3271,22 @@ fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
         }
     }
 
-    let text = String::from_utf8(request).expect("request should be valid ASCII");
+    if request.is_empty() {
+        return None;
+    }
+
+    let text = String::from_utf8(request).ok()?;
     let mut lines = text.split("\r\n");
-    let request_line = lines.next().expect("request line should be present");
-    let path = request_line
-        .split_whitespace()
-        .nth(1)
-        .expect("request line should include a path")
-        .to_string();
+    let request_line = lines.next()?;
+    let path = request_line.split_whitespace().nth(1)?.to_string();
     let mut headers = BTreeMap::new();
 
     for line in lines.take_while(|line| !line.is_empty()) {
-        let (name, value) = line
-            .split_once(':')
-            .expect("header line should contain a colon");
+        let (name, value) = line.split_once(':')?;
         headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
     }
 
-    CapturedRequest { path, headers }
+    Some(CapturedRequest { path, headers })
 }
 
 fn write_response(stream: &mut std::net::TcpStream, response: TestResponse) {
@@ -3280,23 +3608,6 @@ fn bootstrapped_file_without_etag(
         .expect("valid bootstrapped files should construct")
 }
 
-fn bootstrapped_file_with_etag(
-    path: &str,
-    size_bytes: u64,
-    partition_values: BTreeMap<String, Option<String>>,
-    metadata: BrowserParquetFileMetadata,
-    object_etag: Option<&str>,
-) -> BootstrappedBrowserFile {
-    BootstrappedBrowserFile::new_with_object_etag(
-        path,
-        size_bytes,
-        partition_values,
-        metadata,
-        object_etag.map(str::to_string),
-    )
-    .expect("valid bootstrapped files should construct")
-}
-
 fn required_field(name: &str, physical_type: BrowserParquetPhysicalType) -> BrowserParquetField {
     BrowserParquetField {
         name: name.to_string(),
@@ -3526,6 +3837,108 @@ struct RequestCapturingObjectServer {
     thread: Option<JoinHandle<()>>,
 }
 
+struct StallingRequestCapturingObjectServer {
+    address: std::net::SocketAddr,
+    stop: Arc<AtomicBool>,
+    requests: Arc<Mutex<Vec<String>>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl StallingRequestCapturingObjectServer {
+    fn from_fixture_paths(
+        fixture: &TestTableFixture,
+        relative_paths: impl IntoIterator<Item = String>,
+        delay: Duration,
+    ) -> Self {
+        let objects_by_path = relative_paths
+            .into_iter()
+            .map(|relative_path| {
+                let absolute_path = fixture.table_root().join(&relative_path);
+                let bytes = std::fs::read(&absolute_path).unwrap_or_else(|error| {
+                    panic!(
+                        "fixture object '{}' should be readable: {error}",
+                        absolute_path.display()
+                    )
+                });
+                (format!("/{}", relative_path), bytes)
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        Self::from_objects(objects_by_path, delay)
+    }
+
+    fn from_objects(objects_by_path: BTreeMap<String, Vec<u8>>, delay: Duration) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("listener should allow nonblocking accept");
+        let address = listener
+            .local_addr()
+            .expect("listener should expose a local address");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = Arc::clone(&stop);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let requests_for_thread = Arc::clone(&requests);
+
+        let thread = thread::spawn(move || {
+            while !stop_for_thread.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        if stop_for_thread.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        stream
+                            .set_nonblocking(false)
+                            .expect("accepted streams should allow blocking reads");
+                        handle_stalling_request_capturing_connection(
+                            &mut stream,
+                            &objects_by_path,
+                            &requests_for_thread,
+                            delay,
+                        );
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => {
+                        panic!("loopback object server accept should succeed: {error}")
+                    }
+                }
+            }
+        });
+
+        Self {
+            address,
+            stop,
+            requests,
+            thread: Some(thread),
+        }
+    }
+
+    fn url_for_path(&self, relative_path: &str) -> String {
+        format!("http://{}/{}", self.address, relative_path)
+    }
+
+    fn recorded_paths(&self) -> Vec<String> {
+        self.requests
+            .lock()
+            .expect("recorded requests should be readable")
+            .clone()
+    }
+}
+
+impl Drop for StallingRequestCapturingObjectServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(self.address);
+        if let Some(thread) = self.thread.take() {
+            thread
+                .join()
+                .expect("stalling request-capturing object server should shut down cleanly");
+        }
+    }
+}
+
 impl RequestCapturingObjectServer {
     fn from_fixture_paths(
         fixture: &TestTableFixture,
@@ -3624,7 +4037,9 @@ fn handle_request_capturing_connection(
     objects_by_path: &BTreeMap<String, Vec<u8>>,
     requests: &Arc<Mutex<Vec<String>>>,
 ) {
-    let request = read_request(stream);
+    let Some(request) = try_read_request(stream) else {
+        return;
+    };
     requests
         .lock()
         .expect("request log should be writable")
@@ -3640,11 +4055,46 @@ fn handle_request_capturing_connection(
     write_response(stream, response);
 }
 
+fn handle_stalling_request_capturing_connection(
+    stream: &mut std::net::TcpStream,
+    objects_by_path: &BTreeMap<String, Vec<u8>>,
+    requests: &Arc<Mutex<Vec<String>>>,
+    delay: Duration,
+) {
+    let request = read_request(stream);
+    requests
+        .lock()
+        .expect("request log should be writable")
+        .push(request.path.clone());
+    thread::sleep(delay);
+    let response = objects_by_path
+        .get(&request.path)
+        .map(|object| full_or_ranged_response_with_etag(&request, object))
+        .unwrap_or_else(|| TestResponse {
+            status_line: "404 Not Found",
+            headers: vec![("Content-Length".to_string(), "0".to_string())],
+            body: Vec::new(),
+        });
+    let _ = try_write_response(stream, response);
+}
+
 fn full_or_ranged_response_with_etag(request: &CapturedRequest, body: &[u8]) -> TestResponse {
     let mut response = full_or_ranged_response(request, body);
     response.headers.push((
         "ETag".to_string(),
         format!("\"fixture-{:016x}\"", body.len()),
     ));
+    response
+}
+
+fn full_or_ranged_response_with_custom_etag(
+    request: &CapturedRequest,
+    body: &[u8],
+    etag: &str,
+) -> TestResponse {
+    let mut response = full_or_ranged_response(request, body);
+    response
+        .headers
+        .push(("ETag".to_string(), etag.to_string()));
     response
 }

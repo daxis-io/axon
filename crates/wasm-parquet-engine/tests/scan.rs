@@ -3,9 +3,11 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use parquet::data_type::Int64Type;
 use parquet::file::properties::WriterProperties;
@@ -33,13 +35,10 @@ async fn scan_target_reads_footer_and_row_groups_from_object_source() {
         footer_offset + u64::from(footer_length) - 1
     );
 
-    let object_for_server = object.clone();
-    let (url, requests, server) = spawn_multi_request_server(3, move |request, _| {
-        full_or_ranged_response(request, &object_for_server)
-    });
+    let server = RequestCapturingServer::new(object);
     let reader = HttpRangeReader::new();
     let scan_target = ScanTarget {
-        object_source: ObjectSource::new(url),
+        object_source: ObjectSource::new(server.url()),
         object_etag: None,
         path: "part-000.parquet".to_string(),
         size_bytes: object_size,
@@ -59,7 +58,8 @@ async fn scan_target_reads_footer_and_row_groups_from_object_source() {
     .await
     .expect("scan reads should succeed");
 
-    let requests = finish_requests(server, requests, 3);
+    let requests = server.recorded_requests();
+    assert!(requests.len() >= 4);
     assert_eq!(
         requests[0].headers.get("range"),
         Some(&expected_trailer_range)
@@ -68,7 +68,17 @@ async fn scan_target_reads_footer_and_row_groups_from_object_source() {
         requests[1].headers.get("range"),
         Some(&expected_footer_range)
     );
-    assert!(requests[2].headers.get("range").is_none());
+    assert_eq!(
+        requests[2].headers.get("range"),
+        Some(&expected_trailer_range)
+    );
+    assert_eq!(
+        requests[3].headers.get("range"),
+        Some(&expected_footer_range)
+    );
+    assert!(requests
+        .iter()
+        .all(|request| request.headers.contains_key("range")));
     assert_eq!(metadata.row_group_count, 1);
     assert_eq!(metadata.row_count, 3);
     assert_eq!(
@@ -136,7 +146,7 @@ fn parquet_footer_length(object: &[u8]) -> u32 {
     )
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct CapturedRequest {
     headers: BTreeMap<String, String>,
 }
@@ -145,31 +155,6 @@ struct TestResponse {
     status_line: &'static str,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
-}
-
-fn spawn_multi_request_server<F>(
-    request_count: usize,
-    handler: F,
-) -> (String, Receiver<CapturedRequest>, JoinHandle<()>)
-where
-    F: Fn(&CapturedRequest, usize) -> TestResponse + Send + 'static,
-{
-    let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
-    let address = listener.local_addr().expect("listener addr should resolve");
-    let url = format!("http://{address}/object");
-    let (request_tx, request_rx) = mpsc::channel();
-
-    let server = thread::spawn(move || {
-        for index in 0..request_count {
-            let (mut stream, _) = listener.accept().expect("test client should connect");
-            let request = read_request(&mut stream);
-            let response = handler(&request, index);
-            write_response(&mut stream, response);
-            let _ = request_tx.send(request);
-        }
-    });
-
-    (url, request_rx, server)
 }
 
 fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
@@ -264,15 +249,70 @@ fn resolve_range(range_header: &str, object_len: usize) -> (usize, usize) {
     (start, end.min(object_len.saturating_sub(1)))
 }
 
-fn finish_requests(
-    server: JoinHandle<()>,
-    requests: Receiver<CapturedRequest>,
-    expected_count: usize,
-) -> Vec<CapturedRequest> {
-    let mut captured = Vec::with_capacity(expected_count);
-    for _ in 0..expected_count {
-        captured.push(requests.recv().expect("expected captured request"));
+struct RequestCapturingServer {
+    address: std::net::SocketAddr,
+    stop: Arc<AtomicBool>,
+    requests: Arc<Mutex<Vec<CapturedRequest>>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl RequestCapturingServer {
+    fn new(body: Vec<u8>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("listener should allow nonblocking accept");
+        let address = listener.local_addr().expect("listener addr should resolve");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = Arc::clone(&stop);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let requests_for_thread = Arc::clone(&requests);
+
+        let thread = thread::spawn(move || {
+            while !stop_for_thread.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let request = read_request(&mut stream);
+                        requests_for_thread
+                            .lock()
+                            .expect("recorded requests should be writable")
+                            .push(request.clone());
+                        write_response(&mut stream, full_or_ranged_response(&request, &body));
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("test server accept should succeed: {error}"),
+                }
+            }
+        });
+
+        Self {
+            address,
+            stop,
+            requests,
+            thread: Some(thread),
+        }
     }
-    server.join().expect("test server should shut down cleanly");
-    captured
+
+    fn url(&self) -> String {
+        format!("http://{}/object", self.address)
+    }
+
+    fn recorded_requests(&self) -> Vec<CapturedRequest> {
+        self.requests
+            .lock()
+            .expect("recorded requests should be readable")
+            .clone()
+    }
+}
+
+impl Drop for RequestCapturingServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(self.address);
+        if let Some(thread) = self.thread.take() {
+            thread.join().expect("test server should shut down cleanly");
+        }
+    }
 }

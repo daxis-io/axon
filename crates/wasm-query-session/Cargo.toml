@@ -1,0 +1,18 @@
+[package]
+name = "wasm-query-session"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+query-contract = { path = "../query-contract" }
+wasm-query-runtime = { path = "../wasm-query-runtime" }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+delta-control-plane = { path = "../delta-control-plane" }
+deltalake = { version = "=0.31.1", features = ["datafusion", "gcs"] }
+tempfile = "=3.27.0"
+tokio = { version = "=1.50.0", features = ["rt-multi-thread"] }

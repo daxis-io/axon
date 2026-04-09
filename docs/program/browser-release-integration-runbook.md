@@ -5,7 +5,37 @@
 
 This runbook covers only what exists in the repository today. It does not cover production control-plane deployment, signed URL issuance, live dashboard operation, or oncall procedures for an external service.
 
-## 1. Capability-Gated Native Fallback
+The shipped browser V1 here is narrow runtime + streaming scan + in-memory session shell. It is not a broad browser DataFusion launch.
+
+## 1. Session Shell Regression
+
+Symptom:
+
+- `open_table` / `sql` / `dispose` commands stop round-tripping
+- repeated browser queries rebuild snapshot state unexpectedly
+- cache eviction or dispose no longer releases in-memory table state
+
+What it means:
+
+- the repo-owned V1 session shell drifted away from the worker contract
+
+Local commands:
+
+```bash
+cargo test -p wasm-query-session --locked
+cargo test -p browser-sdk --locked
+cargo test -p browser-engine-worker --locked
+```
+
+Focus areas:
+
+- `crates/wasm-query-session/src/lib.rs`
+- `crates/browser-sdk/src/lib.rs`
+- `crates/browser-engine-worker/src/lib.rs`
+
+The current session layer is in-memory only. OPFS / IndexedDB persistence is still deferred.
+
+## 2. Capability-Gated Native Fallback
 
 Symptom:
 
@@ -30,7 +60,7 @@ Focus areas:
 - `crates/query-router/src/lib.rs`
 - `crates/browser-sdk/tests/ipc.rs`
 
-## 2. Terminal Unsupported Failure
+## 3. Terminal Unsupported Failure
 
 Symptom:
 
@@ -53,7 +83,7 @@ Focus areas:
 - unknown Delta protocol features must fail during trusted snapshot resolution
 - descriptor-less failure is expected for unknown protocol features
 
-## 3. Worker Artifact Regression
+## 4. Worker Artifact Regression
 
 Symptom:
 
@@ -71,10 +101,11 @@ cargo test -p browser-engine-worker --locked report_worker_memory_baseline -- --
 Focus areas:
 
 - unexpected dependency additions into the worker
-- serialization envelope growth
+- command or response envelope growth
 - wasm-target package drift
+- worker artifact claims `session_shell = true` and `browser_datafusion = false`
 
-## 4. Browser Dependency Guardrail Failure
+## 5. Browser Dependency Guardrail Failure
 
 Symptom:
 
@@ -92,7 +123,7 @@ Interpretation:
 - browser-target dependencies crossed the current trust boundary
 - fix the dependency tree before treating the build as releaseable
 
-## 5. Transport Validation Or Cache-Mode Drift
+## 6. Transport Validation Or Cache-Mode Drift
 
 Symptom:
 
@@ -115,7 +146,7 @@ Interpretation:
 - browser-local access should still use the same extent seam, but it must remain distinct from signed-URL or proxy-backed access
 - Sprint 2 only ships persistent-cache hooks and reporting; an actual OPFS or IndexedDB backend is still deferred
 
-## 6. Env-Gated Native GCS Smoke Failure
+## 7. Env-Gated Native GCS Smoke Failure
 
 Symptom:
 
@@ -132,12 +163,13 @@ Interpretation:
 - local deterministic tests still prove repo behavior
 - GCS fixture provisioning, IAM, credentials, and CI variable population are external dependencies
 
-## 7. Explicit External Boundary
+## 8. Explicit External Boundary
 
 Do not troubleshoot these as repo bugs unless new code lands:
 
 - `services/query-api`
 - signed URL issuance or TTL policy
+- proxy-mode read issuance
 - audit logging or request correlation
 - production CORS/origin behavior
 - live dashboards

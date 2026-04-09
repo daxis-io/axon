@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::future::Future;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -45,16 +46,19 @@ mod execution;
 mod lowering;
 mod parquet_support;
 
-use execution::{execute_aggregate_plan_rows, execute_non_aggregate_plan_rows};
+use execution::{
+    encode_execution_result_to_arrow_ipc, execute_aggregate_plan_rows,
+    execute_non_aggregate_plan_rows,
+};
 use lowering::{
     lower_browser_execution_plan, lower_browser_execution_plan_with_applied_partition_constraints,
 };
 #[cfg(test)]
 use parquet_support::parquet_row_to_input_row;
 use parquet_support::{
-    browser_footer_from_engine, browser_metadata_from_engine, engine_object_source,
-    engine_scan_target, engine_scan_target_with_object_etag, format_browser_fields,
-    format_partition_columns, scan_target_input_rows,
+    browser_footer_from_engine, browser_metadata_from_engine, browser_rows_from_record_batch,
+    engine_object_source, engine_scan_target, engine_scan_target_with_object_etag,
+    format_browser_fields, format_partition_columns, stream_scan_target_batches,
 };
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -67,6 +71,12 @@ const DEFAULT_SNAPSHOT_PREFLIGHT_MAX_CONCURRENCY: usize = 4;
 
 pub fn runtime_target() -> ExecutionTarget {
     ExecutionTarget::BrowserWasm
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BrowserExecutionBudget {
+    pub max_rows: u64,
+    pub max_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -92,6 +102,9 @@ pub struct BrowserRuntimeConfig {
     pub snapshot_preflight_timeout_ms: u64,
     /// Maximum number of files whose metadata bootstrap may be in flight concurrently.
     pub snapshot_preflight_max_concurrency: usize,
+    /// Optional execution budget that forces browser-native fallback before scan collection
+    /// exhausts local memory.
+    pub execution_budget: Option<BrowserExecutionBudget>,
 }
 
 impl Default for BrowserRuntimeConfig {
@@ -104,6 +117,7 @@ impl Default for BrowserRuntimeConfig {
             execution_timeout_ms: DEFAULT_EXECUTION_TIMEOUT_MS,
             snapshot_preflight_timeout_ms: DEFAULT_SNAPSHOT_PREFLIGHT_TIMEOUT_MS,
             snapshot_preflight_max_concurrency: DEFAULT_SNAPSHOT_PREFLIGHT_MAX_CONCURRENCY,
+            execution_budget: None,
         }
     }
 }
@@ -140,6 +154,24 @@ impl BrowserRuntimeConfig {
                 "browser snapshot preflight concurrency must be at least 1 file",
                 runtime_target(),
             ));
+        }
+
+        if let Some(execution_budget) = self.execution_budget {
+            if execution_budget.max_rows == 0 {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidRequest,
+                    "browser execution row budget must be at least 1 row",
+                    runtime_target(),
+                ));
+            }
+
+            if execution_budget.max_bytes == 0 {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidRequest,
+                    "browser execution byte budget must be at least 1 byte",
+                    runtime_target(),
+                ));
+            }
         }
 
         if self.allow_cloud_credentials {
@@ -797,6 +829,13 @@ pub enum BrowserExecutionOutputKind {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BrowserExecutionValueType {
+    Int64,
+    String,
+    Boolean,
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum BrowserScalarValue {
     Int64(i64),
@@ -840,6 +879,7 @@ pub enum BrowserFilterExpr {
 pub struct BrowserExecutionOutput {
     output_name: String,
     kind: BrowserExecutionOutputKind,
+    value_type: Option<BrowserExecutionValueType>,
 }
 
 impl BrowserExecutionOutput {
@@ -849,6 +889,10 @@ impl BrowserExecutionOutput {
 
     pub fn kind(&self) -> &BrowserExecutionOutputKind {
         &self.kind
+    }
+
+    pub fn value_type(&self) -> Option<BrowserExecutionValueType> {
+        self.value_type
     }
 }
 
@@ -898,6 +942,14 @@ impl BrowserExecutionResult {
     pub fn metrics(&self) -> &QueryMetricsSummary {
         &self.metrics
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeArrowIpcResult {
+    pub ipc_bytes: Bytes,
+    pub row_count: u64,
+    pub encoded_bytes: u64,
+    pub scan_metrics: Vec<wasm_parquet_engine::ScanTargetMetricsSnapshot>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -988,6 +1040,11 @@ impl PreparedBrowserExecution {
 }
 
 type BrowserInputRow = BTreeMap<String, BrowserScalarValue>;
+
+struct RuntimeExecutionArtifacts {
+    result: BrowserExecutionResult,
+    scan_metrics: Vec<wasm_parquet_engine::ScanTargetMetricsSnapshot>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct BrowserProjectedRow {
@@ -1307,24 +1364,45 @@ impl BrowserRuntimeSession {
         plan: &BrowserExecutionPlan,
     ) -> Result<BrowserExecutionResult, QueryError> {
         validate_materialized_snapshot_plan_match(snapshot, plan)?;
+        validate_execution_budget(plan, self.config.execution_budget)?;
         let candidate_files =
             candidate_materialized_files(snapshot, plan.scan().candidate_paths())?;
         let operation_started_at = Instant::now();
         let execution =
             self.execute_plan_inner(snapshot, plan, &candidate_files, operation_started_at);
-        let timeout = Delay::new(Duration::from_millis(self.config.execution_timeout_ms));
-        pin_mut!(execution);
-        pin_mut!(timeout);
 
-        match select(execution, timeout).await {
-            Either::Left((result, _)) => result,
-            Either::Right((_, _)) => Err(execution_timeout_error(
-                snapshot.table_uri(),
-                snapshot.snapshot_version(),
-                candidate_files.len(),
-                self.config.execution_timeout_ms,
-            )),
-        }
+        self.run_with_execution_timeout(snapshot, candidate_files.len(), execution)
+            .await
+            .map(|artifacts| artifacts.result)
+    }
+
+    pub async fn execute_plan_to_arrow_ipc(
+        &self,
+        snapshot: &MaterializedBrowserSnapshot,
+        plan: &BrowserExecutionPlan,
+    ) -> Result<RuntimeArrowIpcResult, QueryError> {
+        validate_materialized_snapshot_plan_match(snapshot, plan)?;
+        validate_execution_budget(plan, self.config.execution_budget)?;
+        let candidate_files =
+            candidate_materialized_files(snapshot, plan.scan().candidate_paths())?;
+        let operation_started_at = Instant::now();
+        let execution =
+            self.execute_plan_inner(snapshot, plan, &candidate_files, operation_started_at);
+        let artifacts = self
+            .run_with_execution_timeout(snapshot, candidate_files.len(), execution)
+            .await?;
+        let ipc_bytes = encode_execution_result_to_arrow_ipc(plan, &artifacts.result)?;
+        let row_count = u64::try_from(artifacts.result.rows().len())
+            .map_err(|_| execution_runtime_error("browser execution row counts overflowed u64"))?;
+        let encoded_bytes = u64::try_from(ipc_bytes.len())
+            .map_err(|_| execution_runtime_error("Arrow IPC byte lengths overflowed u64"))?;
+
+        Ok(RuntimeArrowIpcResult {
+            ipc_bytes,
+            row_count,
+            encoded_bytes,
+            scan_metrics: artifacts.scan_metrics,
+        })
     }
 
     pub async fn prepare_execution(
@@ -1699,31 +1777,64 @@ impl BrowserRuntimeSession {
         snapshot: &MaterializedBrowserSnapshot,
         candidate_files: &[&MaterializedBrowserFile],
         scan: &BrowserScanPlan,
-    ) -> Result<(Vec<BrowserInputRow>, u64), QueryError> {
+    ) -> Result<
+        (
+            Vec<BrowserInputRow>,
+            Vec<wasm_parquet_engine::ScanTargetMetricsSnapshot>,
+        ),
+        QueryError,
+    > {
         let mut rows = Vec::new();
+        let mut scan_metrics = Vec::with_capacity(candidate_files.len());
+        let mut rows_scanned = 0_u64;
         let mut bytes_fetched = 0_u64;
 
         for file in candidate_files {
             let target =
                 engine_scan_target_with_object_etag(file, scan.candidate_object_etag(file.path()));
+            let scanned = stream_scan_target_batches(
+                &self.reader,
+                &target,
+                scan.required_columns(),
+                snapshot.partition_column_types(),
+                Some(Duration::from_millis(self.config.request_timeout_ms)),
+            )
+            .await?;
+            let metrics = scanned.metrics;
+            let batches = scanned.batches;
+            pin_mut!(batches);
+
+            while let Some(batch) = batches.next().await {
+                let batch = batch?;
+                let batch_row_count = u64::try_from(batch.num_rows()).map_err(|_| {
+                    execution_runtime_error("browser execution row counts overflowed u64")
+                })?;
+                rows_scanned = rows_scanned.checked_add(batch_row_count).ok_or_else(|| {
+                    execution_runtime_error("browser execution row counts overflowed u64")
+                })?;
+                validate_runtime_scan_budget(
+                    self.config.execution_budget,
+                    rows_scanned,
+                    bytes_fetched,
+                )?;
+                rows.extend(browser_rows_from_record_batch(&batch)?);
+            }
+
+            let metrics_snapshot = metrics.snapshot();
             bytes_fetched = bytes_fetched
-                .checked_add(file.size_bytes())
+                .checked_add(metrics_snapshot.bytes_fetched)
                 .ok_or_else(|| {
                     execution_runtime_error("browser execution byte totals overflowed u64")
                 })?;
-            rows.extend(
-                scan_target_input_rows(
-                    &self.reader,
-                    &target,
-                    scan.required_columns(),
-                    snapshot.partition_column_types(),
-                    Some(Duration::from_millis(self.config.request_timeout_ms)),
-                )
-                .await?,
-            );
+            validate_runtime_scan_budget(
+                self.config.execution_budget,
+                rows_scanned,
+                bytes_fetched,
+            )?;
+            scan_metrics.push(metrics_snapshot);
         }
 
-        Ok((rows, bytes_fetched))
+        Ok((rows, scan_metrics))
     }
 
     async fn bootstrap_file_metadata(
@@ -1751,8 +1862,8 @@ impl BrowserRuntimeSession {
         plan: &BrowserExecutionPlan,
         candidate_files: &[&MaterializedBrowserFile],
         operation_started_at: Instant,
-    ) -> Result<BrowserExecutionResult, QueryError> {
-        let (rows, bytes_fetched) = self
+    ) -> Result<RuntimeExecutionArtifacts, QueryError> {
+        let (rows, scan_metrics) = self
             .read_candidate_input_rows(snapshot, candidate_files, plan.scan())
             .await?;
         let mut result = if plan.aggregation().is_some() {
@@ -1760,8 +1871,35 @@ impl BrowserRuntimeSession {
         } else {
             execute_non_aggregate_plan_rows(plan, rows)?
         };
-        result.metrics = execution_metrics(snapshot, plan, bytes_fetched, operation_started_at)?;
-        Ok(result)
+        result.metrics = execution_metrics(snapshot, plan, &scan_metrics, operation_started_at)?;
+        Ok(RuntimeExecutionArtifacts {
+            result,
+            scan_metrics,
+        })
+    }
+
+    async fn run_with_execution_timeout<T, F>(
+        &self,
+        snapshot: &MaterializedBrowserSnapshot,
+        candidate_file_count: usize,
+        execution: F,
+    ) -> Result<T, QueryError>
+    where
+        F: Future<Output = Result<T, QueryError>>,
+    {
+        let timeout = Delay::new(Duration::from_millis(self.config.execution_timeout_ms));
+        pin_mut!(execution);
+        pin_mut!(timeout);
+
+        match select(execution, timeout).await {
+            Either::Left((result, _)) => result,
+            Either::Right((_, _)) => Err(execution_timeout_error(
+                snapshot.table_uri(),
+                snapshot.snapshot_version(),
+                candidate_file_count,
+                self.config.execution_timeout_ms,
+            )),
+        }
     }
 }
 
@@ -1940,12 +2078,87 @@ fn execution_runtime_error(message: impl Into<String>) -> QueryError {
     QueryError::new(QueryErrorCode::ExecutionFailed, message, runtime_target())
 }
 
+fn validate_execution_budget(
+    plan: &BrowserExecutionPlan,
+    execution_budget: Option<BrowserExecutionBudget>,
+) -> Result<(), QueryError> {
+    let Some(execution_budget) = execution_budget else {
+        return Ok(());
+    };
+
+    if plan.scan().candidate_rows() > execution_budget.max_rows {
+        return Err(execution_budget_exceeded_error(
+            "row estimate",
+            plan.scan().candidate_rows(),
+            execution_budget.max_rows,
+        ));
+    }
+
+    if plan.scan().candidate_bytes() > execution_budget.max_bytes {
+        return Err(execution_budget_exceeded_error(
+            "byte estimate",
+            plan.scan().candidate_bytes(),
+            execution_budget.max_bytes,
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_runtime_scan_budget(
+    execution_budget: Option<BrowserExecutionBudget>,
+    rows_scanned: u64,
+    bytes_fetched: u64,
+) -> Result<(), QueryError> {
+    let Some(execution_budget) = execution_budget else {
+        return Ok(());
+    };
+
+    if rows_scanned > execution_budget.max_rows {
+        return Err(execution_budget_exceeded_error(
+            "scanned rows",
+            rows_scanned,
+            execution_budget.max_rows,
+        ));
+    }
+
+    if bytes_fetched > execution_budget.max_bytes {
+        return Err(execution_budget_exceeded_error(
+            "fetched bytes",
+            bytes_fetched,
+            execution_budget.max_bytes,
+        ));
+    }
+
+    Ok(())
+}
+
+fn execution_budget_exceeded_error(
+    observed_kind: &str,
+    observed: u64,
+    max_allowed: u64,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::FallbackRequired,
+        format!(
+            "browser execution exceeded the configured {observed_kind} budget ({observed} > {max_allowed})"
+        ),
+        runtime_target(),
+    )
+    .with_fallback_reason(FallbackReason::BrowserRuntimeConstraint)
+}
+
 fn execution_metrics(
     _snapshot: &MaterializedBrowserSnapshot,
     plan: &BrowserExecutionPlan,
-    bytes_fetched: u64,
+    scan_metrics: &[wasm_parquet_engine::ScanTargetMetricsSnapshot],
     operation_started_at: Instant,
 ) -> Result<QueryMetricsSummary, QueryError> {
+    let bytes_fetched = scan_metrics.iter().try_fold(0_u64, |acc, metrics| {
+        acc.checked_add(metrics.bytes_fetched)
+            .ok_or_else(|| execution_runtime_error("browser execution byte totals overflowed u64"))
+    })?;
+
     Ok(QueryMetricsSummary {
         bytes_fetched,
         duration_ms: wall_clock_duration_ms(operation_started_at),
@@ -3736,12 +3949,14 @@ mod tests {
                     kind: BrowserExecutionOutputKind::Passthrough {
                         source_column: "category".to_string(),
                     },
+                    value_type: Some(BrowserExecutionValueType::String),
                 },
                 BrowserExecutionOutput {
                     output_name: "id".to_string(),
                     kind: BrowserExecutionOutputKind::Passthrough {
                         source_column: "id".to_string(),
                     },
+                    value_type: Some(BrowserExecutionValueType::Int64),
                 },
             ],
             vec![BrowserSortKey {
@@ -3818,6 +4033,7 @@ mod tests {
                 kind: BrowserExecutionOutputKind::Passthrough {
                     source_column: "value".to_string(),
                 },
+                value_type: Some(BrowserExecutionValueType::Int64),
             }],
             vec![BrowserSortKey {
                 output_name: "total".to_string(),
@@ -3852,6 +4068,7 @@ mod tests {
                 kind: BrowserExecutionOutputKind::Passthrough {
                     source_column: "value".to_string(),
                 },
+                value_type: Some(BrowserExecutionValueType::Int64),
             }],
             vec![BrowserSortKey {
                 output_name: "value".to_string(),
@@ -3886,6 +4103,7 @@ mod tests {
                 kind: BrowserExecutionOutputKind::Passthrough {
                     source_column: "value".to_string(),
                 },
+                value_type: Some(BrowserExecutionValueType::Int64),
             }],
             vec![BrowserSortKey {
                 output_name: "value".to_string(),
@@ -3924,6 +4142,7 @@ mod tests {
                 kind: BrowserExecutionOutputKind::Passthrough {
                     source_column: "id".to_string(),
                 },
+                value_type: Some(BrowserExecutionValueType::Int64),
             }],
             vec![BrowserSortKey {
                 output_name: "id".to_string(),
@@ -3950,6 +4169,7 @@ mod tests {
                         function: BrowserAggregateFunction::Count,
                         source_column: Some("value".to_string()),
                     },
+                    value_type: Some(BrowserExecutionValueType::Int64),
                 },
                 BrowserExecutionOutput {
                     output_name: "min_value".to_string(),
@@ -3957,6 +4177,7 @@ mod tests {
                         function: BrowserAggregateFunction::Min,
                         source_column: Some("value".to_string()),
                     },
+                    value_type: Some(BrowserExecutionValueType::Int64),
                 },
                 BrowserExecutionOutput {
                     output_name: "max_value".to_string(),
@@ -3964,6 +4185,7 @@ mod tests {
                         function: BrowserAggregateFunction::Max,
                         source_column: Some("value".to_string()),
                     },
+                    value_type: Some(BrowserExecutionValueType::Int64),
                 },
             ],
             None,
@@ -4002,6 +4224,7 @@ mod tests {
                         function: BrowserAggregateFunction::CountStar,
                         source_column: None,
                     },
+                    value_type: Some(BrowserExecutionValueType::Int64),
                 },
                 BrowserExecutionOutput {
                     output_name: "sum_value".to_string(),
@@ -4009,6 +4232,7 @@ mod tests {
                         function: BrowserAggregateFunction::Sum,
                         source_column: Some("value".to_string()),
                     },
+                    value_type: Some(BrowserExecutionValueType::Int64),
                 },
                 BrowserExecutionOutput {
                     output_name: "avg_value".to_string(),
@@ -4016,6 +4240,7 @@ mod tests {
                         function: BrowserAggregateFunction::Avg,
                         source_column: Some("value".to_string()),
                     },
+                    value_type: Some(BrowserExecutionValueType::Int64),
                 },
                 BrowserExecutionOutput {
                     output_name: "min_value".to_string(),
@@ -4023,6 +4248,7 @@ mod tests {
                         function: BrowserAggregateFunction::Min,
                         source_column: Some("value".to_string()),
                     },
+                    value_type: Some(BrowserExecutionValueType::Int64),
                 },
                 BrowserExecutionOutput {
                     output_name: "max_value".to_string(),
@@ -4030,6 +4256,7 @@ mod tests {
                         function: BrowserAggregateFunction::Max,
                         source_column: Some("value".to_string()),
                     },
+                    value_type: Some(BrowserExecutionValueType::Int64),
                 },
             ],
             None,
@@ -4061,6 +4288,7 @@ mod tests {
                     function: BrowserAggregateFunction::ArrayAgg,
                     source_column: Some("value".to_string()),
                 },
+                value_type: None,
             }],
             None,
         );

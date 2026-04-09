@@ -1,48 +1,71 @@
+use std::collections::BTreeMap;
+
 use browser_sdk::{
-    ArrowIpcFormat, ArrowIpcResultEnvelope, BrowserWorkerRequestEnvelope,
-    BrowserWorkerResponseEnvelope,
+    ArrowIpcFormat, ArrowIpcResultEnvelope, BrowserWorkerCommand, BrowserWorkerResponseEnvelope,
 };
 use query_contract::{
-    BrowserAccessMode, CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget,
-    FallbackReason, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse,
+    BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey,
+    CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, QueryError, QueryErrorCode,
+    QueryMetricsSummary, QueryRequest, QueryResponse,
 };
 
 #[test]
-fn browser_sdk_exposes_arrow_ipc_result_envelope() {
-    let request = BrowserWorkerRequestEnvelope::new(
-        "req-1",
+fn browser_sdk_round_trips_open_table_query_and_dispose_commands() {
+    let snapshot = sample_snapshot_descriptor();
+    let open_table = BrowserWorkerCommand::open_table("req-open", "events", snapshot.clone());
+    let sql = BrowserWorkerCommand::sql(
+        "req-sql",
+        "events",
         QueryRequest::new(
-            "s3://bucket/table",
+            snapshot.table_uri.clone(),
             "select count(*) from axon_table",
             ExecutionTarget::BrowserWasm,
         ),
     );
+    let dispose = BrowserWorkerCommand::dispose("req-dispose", "events");
 
-    let round_tripped_request: BrowserWorkerRequestEnvelope =
-        serde_json::from_value(serde_json::to_value(&request).expect("request serializes"))
-            .expect("request deserializes");
-    assert_eq!(round_tripped_request.request_id, "req-1");
-    assert_eq!(
-        round_tripped_request.request.sql,
-        "select count(*) from axon_table"
-    );
+    let round_tripped_open: BrowserWorkerCommand =
+        serde_json::from_value(serde_json::to_value(&open_table).expect("open table serializes"))
+            .expect("open table deserializes");
+    let round_tripped_sql: BrowserWorkerCommand =
+        serde_json::from_value(serde_json::to_value(&sql).expect("sql serializes"))
+            .expect("sql deserializes");
+    let round_tripped_dispose: BrowserWorkerCommand =
+        serde_json::from_value(serde_json::to_value(&dispose).expect("dispose serializes"))
+            .expect("dispose deserializes");
 
+    match round_tripped_open {
+        BrowserWorkerCommand::OpenTable(command) => {
+            assert_eq!(command.request_id, "req-open");
+            assert_eq!(command.name, "events");
+            assert_eq!(command.snapshot, snapshot);
+        }
+        _ => panic!("expected open_table command"),
+    }
+
+    match round_tripped_sql {
+        BrowserWorkerCommand::Sql(command) => {
+            assert_eq!(command.request_id, "req-sql");
+            assert_eq!(command.name, "events");
+            assert_eq!(command.request.sql, "select count(*) from axon_table");
+        }
+        _ => panic!("expected sql command"),
+    }
+
+    match round_tripped_dispose {
+        BrowserWorkerCommand::Dispose(command) => {
+            assert_eq!(command.request_id, "req-dispose");
+            assert_eq!(command.name, "events");
+        }
+        _ => panic!("expected dispose command"),
+    }
+}
+
+#[test]
+fn browser_sdk_exposes_arrow_ipc_result_envelope() {
     let response = BrowserWorkerResponseEnvelope::success(
         "req-1",
-        QueryResponse {
-            executed_on: ExecutionTarget::BrowserWasm,
-            capabilities: CapabilityReport::default(),
-            fallback_reason: None,
-            metrics: QueryMetricsSummary {
-                bytes_fetched: 128,
-                duration_ms: 4,
-                files_touched: 1,
-                files_skipped: 0,
-                footer_reads: None,
-                snapshot_bootstrap_duration_ms: None,
-                access_mode: None,
-            },
-        },
+        sample_query_response(ExecutionTarget::BrowserWasm, None),
         ArrowIpcResultEnvelope::new(ArrowIpcFormat::Stream, vec![0xff, 0xff, 0x00, 0x01]),
     );
 
@@ -74,23 +97,7 @@ fn browser_sdk_preserves_structured_fallback_reason() {
     };
     let response = BrowserWorkerResponseEnvelope::success(
         "req-2",
-        QueryResponse {
-            executed_on: ExecutionTarget::Native,
-            capabilities: CapabilityReport::from_pairs([(
-                CapabilityKey::TimeTravel,
-                CapabilityState::NativeOnly,
-            )]),
-            fallback_reason: Some(fallback_reason.clone()),
-            metrics: QueryMetricsSummary {
-                bytes_fetched: 512,
-                duration_ms: 12,
-                files_touched: 2,
-                files_skipped: 3,
-                footer_reads: None,
-                snapshot_bootstrap_duration_ms: None,
-                access_mode: None,
-            },
-        },
+        sample_query_response(ExecutionTarget::Native, Some(fallback_reason.clone())),
         ArrowIpcResultEnvelope::new(ArrowIpcFormat::File, vec![1, 2, 3]),
     );
 
@@ -101,6 +108,36 @@ fn browser_sdk_preserves_structured_fallback_reason() {
         .fallback_reason()
         .expect("fallback reason survives worker envelope");
     assert_eq!(preserved, &fallback_reason);
+}
+
+#[test]
+fn browser_sdk_round_trips_opened_and_disposed_responses() {
+    let opened = BrowserWorkerResponseEnvelope::opened("req-open", "events");
+    let disposed = BrowserWorkerResponseEnvelope::disposed("req-dispose", "events");
+
+    let round_tripped_opened: BrowserWorkerResponseEnvelope =
+        serde_json::from_value(serde_json::to_value(&opened).expect("opened serializes"))
+            .expect("opened deserializes");
+    let round_tripped_disposed: BrowserWorkerResponseEnvelope =
+        serde_json::from_value(serde_json::to_value(&disposed).expect("disposed serializes"))
+            .expect("disposed deserializes");
+
+    assert_eq!(
+        round_tripped_opened
+            .opened_envelope()
+            .expect("opened envelope should exist")
+            .name,
+        "events"
+    );
+    assert_eq!(
+        round_tripped_disposed
+            .disposed_envelope()
+            .expect("disposed envelope should exist")
+            .name,
+        "events"
+    );
+    assert_eq!(round_tripped_opened.fallback_reason(), None);
+    assert_eq!(round_tripped_disposed.fallback_reason(), None);
 }
 
 #[test]
@@ -163,6 +200,42 @@ fn browser_sdk_rejects_mismatched_arrow_ipc_content_type() {
 }
 
 #[test]
+fn browser_sdk_rejects_legacy_row_payloads_in_success_envelope() {
+    let invalid = serde_json::json!({
+        "success": {
+            "request_id": "req-legacy-rows",
+            "response": {
+                "executed_on": "browser_wasm",
+                "capabilities": {
+                    "capabilities": {}
+                },
+                "metrics": {
+                    "bytes_fetched": 128,
+                    "duration_ms": 4,
+                    "files_touched": 1,
+                    "files_skipped": 0
+                }
+            },
+            "result": {
+                "format": "stream",
+                "content_type": "application/vnd.apache.arrow.stream",
+                "bytes": [255, 255, 0, 1],
+                "rows": [
+                    {"row_count": 1}
+                ]
+            }
+        }
+    });
+
+    let error = serde_json::from_value::<BrowserWorkerResponseEnvelope>(invalid)
+        .expect_err("legacy row payloads must be rejected at the worker boundary");
+    assert!(
+        error.to_string().contains("unknown field `rows`"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn browser_sdk_round_trips_error_envelope_with_fallback_reason() {
     let fallback_reason = FallbackReason::NetworkFailure;
     let response = BrowserWorkerResponseEnvelope::error(
@@ -184,4 +257,71 @@ fn browser_sdk_round_trips_error_envelope_with_fallback_reason() {
         .fallback_reason()
         .expect("error fallback reason survives worker envelope");
     assert_eq!(preserved, &fallback_reason);
+}
+
+#[test]
+fn browser_sdk_preserves_terminal_error_metadata_without_result_payload() {
+    let response = BrowserWorkerResponseEnvelope::error(
+        "req-hard-fail",
+        QueryError::new(
+            QueryErrorCode::UnsupportedFeature,
+            "unknown Delta protocol feature",
+            ExecutionTarget::Native,
+        ),
+    );
+
+    let round_tripped: BrowserWorkerResponseEnvelope =
+        serde_json::from_value(serde_json::to_value(&response).expect("error response serializes"))
+            .expect("error response deserializes");
+
+    assert!(round_tripped.success_envelope().is_none());
+    assert_eq!(round_tripped.fallback_reason(), None);
+    assert_eq!(round_tripped.request_id(), "req-hard-fail");
+
+    match round_tripped {
+        BrowserWorkerResponseEnvelope::Error(error) => {
+            assert_eq!(error.request_id, "req-hard-fail");
+            assert_eq!(error.error.code, QueryErrorCode::UnsupportedFeature);
+            assert_eq!(error.error.target, ExecutionTarget::Native);
+            assert_eq!(error.error.message, "unknown Delta protocol feature");
+        }
+        _ => panic!("hard-fail response must remain an error envelope"),
+    }
+}
+
+fn sample_snapshot_descriptor() -> BrowserHttpSnapshotDescriptor {
+    BrowserHttpSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/partitioned-table".to_string(),
+        snapshot_version: 7,
+        partition_column_types: BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
+        required_capabilities: CapabilityReport::default(),
+        active_files: vec![BrowserHttpFileDescriptor {
+            path: "part-000.parquet".to_string(),
+            url: "https://example.invalid/part-000.parquet".to_string(),
+            size_bytes: 128,
+            partition_values: BTreeMap::new(),
+            stats: None,
+        }],
+    }
+}
+
+fn sample_query_response(
+    executed_on: ExecutionTarget,
+    fallback_reason: Option<FallbackReason>,
+) -> QueryResponse {
+    QueryResponse {
+        executed_on,
+        capabilities: CapabilityReport::default(),
+        fallback_reason,
+        metrics: QueryMetricsSummary {
+            bytes_fetched: 128,
+            duration_ms: 4,
+            files_touched: 1,
+            files_skipped: 0,
+            footer_reads: None,
+            snapshot_bootstrap_duration_ms: None,
+            access_mode: None,
+        },
+    }
 }

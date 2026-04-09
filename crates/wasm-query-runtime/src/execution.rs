@@ -1,12 +1,16 @@
 use std::{cmp::Ordering, collections::BTreeMap};
 
+use arrow_array::{ArrayRef, BooleanArray, Int64Array, NullArray, RecordBatch, StringArray};
+use arrow_ipc::writer::StreamWriter;
+use arrow_schema::{DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema};
+use bytes::Bytes;
 use query_contract::{FallbackReason, QueryError, QueryErrorCode, QueryMetricsSummary};
 
 use crate::{
     execution_runtime_error, runtime_target, BrowserAggregateFunction, BrowserAggregationPlan,
-    BrowserComparisonOp, BrowserExecutionOutputKind, BrowserExecutionPlan, BrowserExecutionResult,
-    BrowserExecutionRow, BrowserFilterExpr, BrowserInputRow, BrowserProjectedRow,
-    BrowserScalarValue, BrowserSortKey,
+    BrowserComparisonOp, BrowserExecutionOutput, BrowserExecutionOutputKind, BrowserExecutionPlan,
+    BrowserExecutionResult, BrowserExecutionRow, BrowserExecutionValueType, BrowserFilterExpr,
+    BrowserInputRow, BrowserProjectedRow, BrowserScalarValue, BrowserSortKey,
 };
 
 pub(super) fn execute_non_aggregate_plan_rows(
@@ -448,5 +452,277 @@ fn scalar_variant_rank(value: &BrowserScalarValue) -> u8 {
         BrowserScalarValue::Boolean(_) => 1,
         BrowserScalarValue::Int64(_) => 2,
         BrowserScalarValue::String(_) => 3,
+    }
+}
+
+pub(super) fn encode_execution_result_to_arrow_ipc(
+    plan: &BrowserExecutionPlan,
+    result: &BrowserExecutionResult,
+) -> Result<Bytes, QueryError> {
+    let batch = execution_result_to_record_batch(plan, result)?;
+    let mut encoded = Vec::new();
+    let mut writer =
+        StreamWriter::try_new(&mut encoded, batch.schema().as_ref()).map_err(|error| {
+            execution_runtime_error(format!(
+                "browser runtime could not open Arrow IPC writer: {error}"
+            ))
+        })?;
+    writer.write(&batch).map_err(|error| {
+        execution_runtime_error(format!(
+            "browser runtime could not encode Arrow IPC batch: {error}"
+        ))
+    })?;
+    writer.finish().map_err(|error| {
+        execution_runtime_error(format!(
+            "browser runtime could not finish Arrow IPC stream: {error}"
+        ))
+    })?;
+
+    Ok(Bytes::from(encoded))
+}
+
+fn execution_result_to_record_batch(
+    plan: &BrowserExecutionPlan,
+    result: &BrowserExecutionResult,
+) -> Result<RecordBatch, QueryError> {
+    let mut fields = Vec::with_capacity(result.output_names().len());
+    let mut columns = Vec::with_capacity(result.output_names().len());
+
+    for (column_index, output) in plan.outputs().iter().enumerate() {
+        let column_values = result
+            .rows()
+            .iter()
+            .map(|row| {
+                row.values().get(column_index).ok_or_else(|| {
+                    execution_runtime_error(format!(
+                        "browser execution row was missing output column '{}' at index {}",
+                        output.output_name(),
+                        column_index,
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, QueryError>>()?;
+        let data_type = infer_output_arrow_data_type(output, &column_values)?;
+        let array = arrow_array_from_scalar_values(&data_type, &column_values)?;
+        fields.push(ArrowField::new(output.output_name(), data_type, true));
+        columns.push(array);
+    }
+
+    RecordBatch::try_new(std::sync::Arc::new(ArrowSchema::new(fields)), columns).map_err(|error| {
+        execution_runtime_error(format!(
+            "browser runtime could not assemble Arrow IPC output batch: {error}"
+        ))
+    })
+}
+
+fn infer_output_arrow_data_type(
+    output: &BrowserExecutionOutput,
+    values: &[&BrowserScalarValue],
+) -> Result<ArrowDataType, QueryError> {
+    let fallback_type = output.value_type().map(arrow_data_type_for_value_type);
+    let mut observed = None;
+
+    for value in values {
+        let candidate = match value {
+            BrowserScalarValue::Int64(_) => ArrowDataType::Int64,
+            BrowserScalarValue::String(_) => ArrowDataType::Utf8,
+            BrowserScalarValue::Boolean(_) => ArrowDataType::Boolean,
+            BrowserScalarValue::Null => continue,
+        };
+
+        match &observed {
+            Some(observed) if observed != &candidate => {
+                return Err(execution_runtime_error(format!(
+                    "browser runtime could not encode mixed output scalar types {:?} and {:?} into Arrow IPC",
+                    observed, candidate
+                )))
+            }
+            Some(_) => {}
+            None => observed = Some(candidate),
+        }
+    }
+
+    if let (Some(observed), Some(fallback_type)) = (&observed, &fallback_type) {
+        if observed != fallback_type {
+            return Err(execution_runtime_error(format!(
+                "browser runtime planned Arrow IPC output '{}' as {:?}, but observed {:?}",
+                output.output_name(),
+                fallback_type,
+                observed
+            )));
+        }
+    }
+
+    Ok(observed.or(fallback_type).unwrap_or(ArrowDataType::Null))
+}
+
+fn arrow_data_type_for_value_type(value_type: BrowserExecutionValueType) -> ArrowDataType {
+    match value_type {
+        BrowserExecutionValueType::Int64 => ArrowDataType::Int64,
+        BrowserExecutionValueType::String => ArrowDataType::Utf8,
+        BrowserExecutionValueType::Boolean => ArrowDataType::Boolean,
+    }
+}
+
+fn arrow_array_from_scalar_values(
+    data_type: &ArrowDataType,
+    values: &[&BrowserScalarValue],
+) -> Result<ArrayRef, QueryError> {
+    match data_type {
+        ArrowDataType::Int64 => Ok(std::sync::Arc::new(Int64Array::from(
+            values
+                .iter()
+                .map(|value| match value {
+                    BrowserScalarValue::Int64(value) => Ok(Some(*value)),
+                    BrowserScalarValue::Null => Ok(None),
+                    other => Err(unexpected_scalar_type_for_arrow("Int64", other)),
+                })
+                .collect::<Result<Vec<_>, QueryError>>()?,
+        ))),
+        ArrowDataType::Utf8 => Ok(std::sync::Arc::new(StringArray::from(
+            values
+                .iter()
+                .map(|value| match value {
+                    BrowserScalarValue::String(value) => Ok(Some(value.as_str())),
+                    BrowserScalarValue::Null => Ok(None),
+                    other => Err(unexpected_scalar_type_for_arrow("Utf8", other)),
+                })
+                .collect::<Result<Vec<_>, QueryError>>()?,
+        ))),
+        ArrowDataType::Boolean => Ok(std::sync::Arc::new(BooleanArray::from(
+            values
+                .iter()
+                .map(|value| match value {
+                    BrowserScalarValue::Boolean(value) => Ok(Some(*value)),
+                    BrowserScalarValue::Null => Ok(None),
+                    other => Err(unexpected_scalar_type_for_arrow("Boolean", other)),
+                })
+                .collect::<Result<Vec<_>, QueryError>>()?,
+        ))),
+        ArrowDataType::Null => Ok(std::sync::Arc::new(NullArray::new(values.len()))),
+        other => Err(execution_runtime_error(format!(
+            "browser runtime cannot encode Arrow IPC output data type '{other:?}'"
+        ))),
+    }
+}
+
+fn unexpected_scalar_type_for_arrow(expected: &str, actual: &BrowserScalarValue) -> QueryError {
+    execution_runtime_error(format!(
+        "browser runtime expected {expected} output values for Arrow IPC encoding, but observed {actual:?}"
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use arrow_ipc::reader::StreamReader;
+
+    use super::encode_execution_result_to_arrow_ipc;
+    use crate::{
+        BrowserExecutionOutput, BrowserExecutionOutputKind, BrowserExecutionPlan,
+        BrowserExecutionResult, BrowserExecutionRow, BrowserExecutionValueType,
+        BrowserPruningSummary, BrowserScalarValue, BrowserScanPlan,
+    };
+
+    #[test]
+    fn encode_execution_result_to_arrow_ipc_preserves_passthrough_schema_for_empty_results() {
+        let plan = BrowserExecutionPlan {
+            table_uri: "gs://axon-fixtures/table".to_string(),
+            snapshot_version: 1,
+            scan: BrowserScanPlan {
+                candidate_paths: vec!["part-000.parquet".to_string()],
+                candidate_file_count: 1,
+                candidate_bytes: 128,
+                candidate_rows: 0,
+                partition_columns: Vec::new(),
+                candidate_object_etags: Default::default(),
+                required_columns: vec!["id".to_string()],
+            },
+            filter: None,
+            outputs: vec![BrowserExecutionOutput {
+                output_name: "id".to_string(),
+                kind: BrowserExecutionOutputKind::Passthrough {
+                    source_column: "id".to_string(),
+                },
+                value_type: Some(BrowserExecutionValueType::Int64),
+            }],
+            aggregation: None,
+            order_by: Vec::new(),
+            limit: None,
+            pruning: BrowserPruningSummary::default(),
+            footer_reads: None,
+            snapshot_bootstrap_duration_ms: None,
+            access_mode: None,
+        };
+        let result = BrowserExecutionResult {
+            output_names: vec!["id".to_string()],
+            rows: Vec::new(),
+            metrics: Default::default(),
+        };
+
+        let ipc = encode_execution_result_to_arrow_ipc(&plan, &result)
+            .expect("empty result should still encode with the planned Arrow schema");
+        let reader =
+            StreamReader::try_new(Cursor::new(ipc.to_vec()), None).expect("ipc should decode");
+
+        assert_eq!(
+            reader.schema().field(0).data_type(),
+            &arrow_schema::DataType::Int64
+        );
+    }
+
+    #[test]
+    fn encode_execution_result_to_arrow_ipc_preserves_passthrough_schema_for_all_null_results() {
+        let plan = BrowserExecutionPlan {
+            table_uri: "gs://axon-fixtures/table".to_string(),
+            snapshot_version: 1,
+            scan: BrowserScanPlan {
+                candidate_paths: vec!["part-000.parquet".to_string()],
+                candidate_file_count: 1,
+                candidate_bytes: 128,
+                candidate_rows: 2,
+                partition_columns: Vec::new(),
+                candidate_object_etags: Default::default(),
+                required_columns: vec!["id".to_string()],
+            },
+            filter: None,
+            outputs: vec![BrowserExecutionOutput {
+                output_name: "id".to_string(),
+                kind: BrowserExecutionOutputKind::Passthrough {
+                    source_column: "id".to_string(),
+                },
+                value_type: Some(BrowserExecutionValueType::Int64),
+            }],
+            aggregation: None,
+            order_by: Vec::new(),
+            limit: None,
+            pruning: BrowserPruningSummary::default(),
+            footer_reads: None,
+            snapshot_bootstrap_duration_ms: None,
+            access_mode: None,
+        };
+        let result = BrowserExecutionResult {
+            output_names: vec!["id".to_string()],
+            rows: vec![
+                BrowserExecutionRow {
+                    values: vec![BrowserScalarValue::Null],
+                },
+                BrowserExecutionRow {
+                    values: vec![BrowserScalarValue::Null],
+                },
+            ],
+            metrics: Default::default(),
+        };
+
+        let ipc = encode_execution_result_to_arrow_ipc(&plan, &result)
+            .expect("all-null result should still encode with the planned Arrow schema");
+        let reader =
+            StreamReader::try_new(Cursor::new(ipc.to_vec()), None).expect("ipc should decode");
+
+        assert_eq!(
+            reader.schema().field(0).data_type(),
+            &arrow_schema::DataType::Int64
+        );
     }
 }

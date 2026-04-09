@@ -10,6 +10,7 @@ delta-runtime-support = { path = "../delta-runtime-support", default-features = 
 query-contract = { path = "../query-contract" }
 
 [dev-dependencies]
+browser-sdk = { path = "../browser-sdk" }
 native-query-runtime = { path = "../native-query-runtime" }
 serde_json.workspace = true
 tempfile = "=3.27.0"

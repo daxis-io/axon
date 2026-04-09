@@ -6,6 +6,7 @@ required_files=(
   "Cargo.toml"
   "Cargo.lock"
   ".github/workflows/ci.yml"
+  ".github/workflows/upgrade-rehearsal.yml"
   "CODEOWNERS"
   "docs/program/package-owners.md"
   "docs/program/upstream-patch-inventory.md"

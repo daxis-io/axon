@@ -1,13 +1,18 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use arrow_array::{
+    Array, BooleanArray, Int16Array, Int32Array, Int64Array, Int8Array, RecordBatch, StringArray,
+    UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+};
 use bytes::Bytes;
-use query_contract::{PartitionColumnType, QueryError};
+use futures_util::Stream;
+use query_contract::{FallbackReason, PartitionColumnType, QueryError, QueryErrorCode};
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine as parquet_engine;
 
 use crate::{
-    BrowserInputRow, BrowserObjectSource, BrowserParquetConvertedType,
+    runtime_target, BrowserInputRow, BrowserObjectSource, BrowserParquetConvertedType,
     BrowserParquetEdgeInterpolationAlgorithm, BrowserParquetField, BrowserParquetFieldStats,
     BrowserParquetFileMetadata, BrowserParquetFooter, BrowserParquetLogicalType,
     BrowserParquetPhysicalType, BrowserParquetRepetition, BrowserParquetTimeUnit,
@@ -67,22 +72,43 @@ pub(super) fn browser_metadata_from_engine(
     }
 }
 
-pub(super) async fn scan_target_input_rows(
+pub(super) async fn stream_scan_target_batches(
     reader: &HttpRangeReader,
     target: &parquet_engine::ScanTarget,
     required_columns: &[String],
     partition_column_types: &BTreeMap<String, PartitionColumnType>,
     request_timeout: Option<Duration>,
-) -> Result<Vec<BrowserInputRow>, QueryError> {
-    let rows = parquet_engine::scan_target_input_rows(
+) -> Result<
+    parquet_engine::ScanTargetBatchStream<impl Stream<Item = Result<RecordBatch, QueryError>>>,
+    QueryError,
+> {
+    parquet_engine::stream_scan_target_batches(
         reader,
         target,
         required_columns,
         partition_column_types,
         request_timeout,
     )
-    .await?;
-    Ok(rows.into_iter().map(browser_row_from_engine).collect())
+    .await
+}
+
+pub(super) fn browser_rows_from_record_batch(
+    batch: &RecordBatch,
+) -> Result<Vec<BrowserInputRow>, QueryError> {
+    let mut rows = (0..batch.num_rows())
+        .map(|_| BTreeMap::new())
+        .collect::<Vec<BrowserInputRow>>();
+
+    for (field, column) in batch.schema().fields().iter().zip(batch.columns().iter()) {
+        for (row_index, row) in rows.iter_mut().enumerate() {
+            row.insert(
+                field.name().to_string(),
+                browser_scalar_from_arrow_array(field.name(), column.as_ref(), row_index)?,
+            );
+        }
+    }
+
+    Ok(rows)
 }
 
 #[cfg(test)]
@@ -105,12 +131,14 @@ pub(super) fn parquet_row_to_input_row(
     Ok(browser_row_from_engine(row))
 }
 
+#[cfg(test)]
 fn browser_row_from_engine(row: parquet_engine::ParquetInputRow) -> BrowserInputRow {
     row.into_iter()
         .map(|(column, value)| (column, browser_scalar_from_engine(value)))
         .collect()
 }
 
+#[cfg(test)]
 fn browser_scalar_from_engine(value: parquet_engine::ParquetScalarValue) -> BrowserScalarValue {
     match value {
         parquet_engine::ParquetScalarValue::Null => BrowserScalarValue::Null,
@@ -118,6 +146,86 @@ fn browser_scalar_from_engine(value: parquet_engine::ParquetScalarValue) -> Brow
         parquet_engine::ParquetScalarValue::Int64(value) => BrowserScalarValue::Int64(value),
         parquet_engine::ParquetScalarValue::String(value) => BrowserScalarValue::String(value),
     }
+}
+
+fn browser_scalar_from_arrow_array(
+    column_name: &str,
+    column: &dyn Array,
+    row_index: usize,
+) -> Result<BrowserScalarValue, QueryError> {
+    if column.is_null(row_index) {
+        return Ok(BrowserScalarValue::Null);
+    }
+
+    match column.data_type() {
+        arrow_schema::DataType::Boolean => column
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .map(|column| BrowserScalarValue::Boolean(column.value(row_index)))
+            .ok_or_else(|| unsupported_execution_array(column_name, column.data_type())),
+        arrow_schema::DataType::Int8 => column
+            .as_any()
+            .downcast_ref::<Int8Array>()
+            .map(|column| BrowserScalarValue::Int64(i64::from(column.value(row_index))))
+            .ok_or_else(|| unsupported_execution_array(column_name, column.data_type())),
+        arrow_schema::DataType::Int16 => column
+            .as_any()
+            .downcast_ref::<Int16Array>()
+            .map(|column| BrowserScalarValue::Int64(i64::from(column.value(row_index))))
+            .ok_or_else(|| unsupported_execution_array(column_name, column.data_type())),
+        arrow_schema::DataType::Int32 => column
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .map(|column| BrowserScalarValue::Int64(i64::from(column.value(row_index))))
+            .ok_or_else(|| unsupported_execution_array(column_name, column.data_type())),
+        arrow_schema::DataType::Int64 => column
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .map(|column| BrowserScalarValue::Int64(column.value(row_index)))
+            .ok_or_else(|| unsupported_execution_array(column_name, column.data_type())),
+        arrow_schema::DataType::UInt8 => column
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .map(|column| BrowserScalarValue::Int64(i64::from(column.value(row_index))))
+            .ok_or_else(|| unsupported_execution_array(column_name, column.data_type())),
+        arrow_schema::DataType::UInt16 => column
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .map(|column| BrowserScalarValue::Int64(i64::from(column.value(row_index))))
+            .ok_or_else(|| unsupported_execution_array(column_name, column.data_type())),
+        arrow_schema::DataType::UInt32 => column
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .map(|column| BrowserScalarValue::Int64(i64::from(column.value(row_index))))
+            .ok_or_else(|| unsupported_execution_array(column_name, column.data_type())),
+        arrow_schema::DataType::UInt64 => column
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .and_then(|column| i64::try_from(column.value(row_index)).ok())
+            .map(BrowserScalarValue::Int64)
+            .ok_or_else(|| unsupported_execution_array(column_name, column.data_type())),
+        arrow_schema::DataType::Utf8 => column
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .map(|column| BrowserScalarValue::String(column.value(row_index).to_string()))
+            .ok_or_else(|| unsupported_execution_array(column_name, column.data_type())),
+        _ => Err(unsupported_execution_array(column_name, column.data_type())),
+    }
+}
+
+fn unsupported_execution_array(
+    column_name: &str,
+    data_type: &arrow_schema::DataType,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::FallbackRequired,
+        format!(
+            "browser runtime cannot execute Arrow field '{}' with data type '{data_type:?}'",
+            column_name
+        ),
+        runtime_target(),
+    )
+    .with_fallback_reason(FallbackReason::NativeRequired)
 }
 
 fn browser_field_from_engine(field: parquet_engine::ParquetColumnField) -> BrowserParquetField {

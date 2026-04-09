@@ -1,0 +1,27 @@
+{
+  "table_uri": "gs://axon-fixtures/change-data-feed-table",
+  "snapshot_version": 7,
+  "partition_column_types": {
+    "category": "string"
+  },
+  "browser_compatibility": {
+    "capabilities": {
+      "change_data_feed": "native_only"
+    }
+  },
+  "required_capabilities": {
+    "capabilities": {
+      "change_data_feed": "native_only"
+    }
+  },
+  "active_files": [
+    {
+      "path": "category=A/part-000.parquet",
+      "url": "https://signed.example.test/category=A/part-000.parquet?X-Goog-Signature=redacted",
+      "size_bytes": 128,
+      "partition_values": {
+        "category": "A"
+      }
+    }
+  ]
+}

@@ -12,9 +12,11 @@ use crate::{
     browser_scan_plan, execution_plan_error, expr_i64_literal, expr_named_column, normalize_name,
     object_name_to_relation_name, reverse_binary_operator, BootstrappedBrowserSnapshot,
     BrowserAggregateFunction, BrowserAggregateMeasure, BrowserAggregationPlan, BrowserComparisonOp,
-    BrowserExecutionOutput, BrowserExecutionOutputKind, BrowserExecutionPlan, BrowserFilterExpr,
-    BrowserPlannedQuery, BrowserScalarValue, BrowserSortKey, PartitionPruningConstraints,
-    PartitionValueConstraint, DEFAULT_TABLE_NAME,
+    BrowserExecutionOutput, BrowserExecutionOutputKind, BrowserExecutionPlan,
+    BrowserExecutionValueType, BrowserFilterExpr, BrowserParquetConvertedType,
+    BrowserParquetLogicalType, BrowserParquetPhysicalType, BrowserPlannedQuery, BrowserScalarValue,
+    BrowserSnapshotSchema, BrowserSortKey, PartitionPruningConstraints, PartitionValueConstraint,
+    DEFAULT_TABLE_NAME,
 };
 
 #[derive(Clone, Debug)]
@@ -60,7 +62,8 @@ pub(super) fn lower_browser_execution_plan_with_applied_partition_constraints(
         ));
     }
 
-    let (outputs, measures) = lower_select_outputs(select, &source_bindings)?;
+    let summary = snapshot.summarize()?;
+    let (outputs, measures) = lower_select_outputs(select, &source_bindings, &summary.schema)?;
     validate_unique_execution_output_names(&outputs)?;
     let grouped_query = !group_by_columns.is_empty();
     let aggregate_query = grouped_query || !measures.is_empty();
@@ -315,16 +318,9 @@ fn lower_query_passthrough_bindings(
     let source_bindings = lower_table_factor_bindings(&source.relation, cte_bindings)?;
     let mut bindings = BTreeMap::new();
     for select_item in &select.projection {
-        let output = lower_passthrough_output(select_item, &source_bindings)?;
-        let BrowserExecutionOutputKind::Passthrough { source_column } = output.kind else {
-            return Err(execution_plan_error(
-                "CTE and derived queries must remain pure passthrough projections in browser execution plans",
-            ));
-        };
-        if bindings
-            .insert(output.output_name.clone(), source_column.clone())
-            .is_some()
-        {
+        let (output_name, source_column) =
+            passthrough_output_binding(select_item, &source_bindings)?;
+        if bindings.insert(output_name, source_column).is_some() {
             return Err(execution_plan_error(
                 "duplicate output columns are not supported in browser execution plans",
             ));
@@ -332,6 +328,38 @@ fn lower_query_passthrough_bindings(
     }
 
     Ok(bindings)
+}
+
+fn passthrough_output_binding(
+    select_item: &SelectItem,
+    source_bindings: &BrowserSourceBindings,
+) -> Result<(String, String), QueryError> {
+    match select_item {
+        SelectItem::ExprWithAlias { expr, alias } => {
+            let source_column = source_bindings.resolve_passthrough_expr(expr).ok_or_else(|| {
+                execution_plan_error(
+                    "projection expressions must be passthrough column references in browser execution plans",
+                )
+            })?;
+            Ok((normalize_name(&alias.value), source_column))
+        }
+        SelectItem::UnnamedExpr(expr) => {
+            let source_column = source_bindings.resolve_passthrough_expr(expr).ok_or_else(|| {
+                execution_plan_error(
+                    "projection expressions must be passthrough column references in browser execution plans",
+                )
+            })?;
+            let output_name = passthrough_output_name(expr).ok_or_else(|| {
+                execution_plan_error(
+                    "projection expressions must be passthrough column references in browser execution plans",
+                )
+            })?;
+            Ok((output_name, source_column))
+        }
+        SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => Err(execution_plan_error(
+            "wildcard projections are not supported in browser execution plans",
+        )),
+    }
 }
 
 fn lower_group_by_columns(
@@ -360,16 +388,23 @@ fn lower_group_by_columns(
 fn lower_select_outputs(
     select: &Select,
     source_bindings: &BrowserSourceBindings,
+    schema: &BrowserSnapshotSchema,
 ) -> Result<(Vec<BrowserExecutionOutput>, Vec<BrowserAggregateMeasure>), QueryError> {
     let mut outputs = Vec::new();
     let mut measures = Vec::new();
 
     for select_item in &select.projection {
-        if let Some((output, measure)) = lower_aggregate_output(select_item, source_bindings)? {
+        if let Some((output, measure)) =
+            lower_aggregate_output(select_item, source_bindings, schema)?
+        {
             outputs.push(output);
             measures.push(measure);
         } else {
-            outputs.push(lower_passthrough_output(select_item, source_bindings)?);
+            outputs.push(lower_passthrough_output(
+                select_item,
+                source_bindings,
+                schema,
+            )?);
         }
     }
 
@@ -379,6 +414,7 @@ fn lower_select_outputs(
 fn lower_aggregate_output(
     select_item: &SelectItem,
     source_bindings: &BrowserSourceBindings,
+    schema: &BrowserSnapshotSchema,
 ) -> Result<Option<(BrowserExecutionOutput, BrowserAggregateMeasure)>, QueryError> {
     let (expr, output_name) = match select_item {
         SelectItem::ExprWithAlias { expr, alias } => (expr, Some(normalize_name(&alias.value))),
@@ -453,6 +489,7 @@ fn lower_aggregate_output(
             function: measure.function.clone(),
             source_column: measure.source_column.clone(),
         },
+        value_type: aggregate_output_value_type(schema, &measure),
     };
 
     Ok(Some((output, measure)))
@@ -555,38 +592,93 @@ fn single_function_argument(
 fn lower_passthrough_output(
     select_item: &SelectItem,
     source_bindings: &BrowserSourceBindings,
+    schema: &BrowserSnapshotSchema,
 ) -> Result<BrowserExecutionOutput, QueryError> {
-    match select_item {
-        SelectItem::ExprWithAlias { expr, alias } => {
-            let source_column = source_bindings.resolve_passthrough_expr(expr).ok_or_else(|| {
-                execution_plan_error(
-                    "projection expressions must be passthrough column references in browser execution plans",
-                )
-            })?;
-            Ok(BrowserExecutionOutput {
-                output_name: normalize_name(&alias.value),
-                kind: BrowserExecutionOutputKind::Passthrough { source_column },
+    let (output_name, source_column) = passthrough_output_binding(select_item, source_bindings)?;
+    let value_type = execution_value_type_for_source_column(schema, &source_column);
+    Ok(BrowserExecutionOutput {
+        output_name,
+        kind: BrowserExecutionOutputKind::Passthrough { source_column },
+        value_type,
+    })
+}
+
+fn aggregate_output_value_type(
+    schema: &BrowserSnapshotSchema,
+    measure: &BrowserAggregateMeasure,
+) -> Option<BrowserExecutionValueType> {
+    match measure.function() {
+        BrowserAggregateFunction::Count
+        | BrowserAggregateFunction::CountStar
+        | BrowserAggregateFunction::Sum
+        | BrowserAggregateFunction::Avg => Some(BrowserExecutionValueType::Int64),
+        BrowserAggregateFunction::Min | BrowserAggregateFunction::Max => {
+            measure.source_column().and_then(|source_column| {
+                execution_value_type_for_source_column(schema, source_column)
             })
         }
-        SelectItem::UnnamedExpr(expr) => {
-            let source_column = source_bindings.resolve_passthrough_expr(expr).ok_or_else(|| {
-                execution_plan_error(
-                    "projection expressions must be passthrough column references in browser execution plans",
+        BrowserAggregateFunction::ArrayAgg
+        | BrowserAggregateFunction::BoolAnd
+        | BrowserAggregateFunction::BoolOr => None,
+    }
+}
+
+fn execution_value_type_for_source_column(
+    schema: &BrowserSnapshotSchema,
+    source_column: &str,
+) -> Option<BrowserExecutionValueType> {
+    let normalized_source = normalize_name(source_column);
+    if let Some(partition_type) = schema
+        .partition_column_types
+        .iter()
+        .find_map(|(name, ty)| (normalize_name(name) == normalized_source).then_some(*ty))
+    {
+        return match partition_type {
+            query_contract::PartitionColumnType::String => Some(BrowserExecutionValueType::String),
+            query_contract::PartitionColumnType::Boolean => {
+                Some(BrowserExecutionValueType::Boolean)
+            }
+            query_contract::PartitionColumnType::Int64 => Some(BrowserExecutionValueType::Int64),
+            query_contract::PartitionColumnType::Unsupported => None,
+        };
+    }
+
+    schema
+        .fields
+        .iter()
+        .find(|field| normalize_name(&field.name) == normalized_source)
+        .and_then(execution_value_type_for_field)
+}
+
+fn execution_value_type_for_field(
+    field: &crate::BrowserParquetField,
+) -> Option<BrowserExecutionValueType> {
+    match field.physical_type {
+        BrowserParquetPhysicalType::Boolean => Some(BrowserExecutionValueType::Boolean),
+        BrowserParquetPhysicalType::Int32 | BrowserParquetPhysicalType::Int64 => {
+            if field.converted_type == Some(BrowserParquetConvertedType::Decimal)
+                || matches!(
+                    field.logical_type,
+                    Some(BrowserParquetLogicalType::Decimal { .. })
                 )
-            })?;
-            let output_name = passthrough_output_name(expr).ok_or_else(|| {
-                execution_plan_error(
-                    "projection expressions must be passthrough column references in browser execution plans",
-                )
-            })?;
-            Ok(BrowserExecutionOutput {
-                output_name,
-                kind: BrowserExecutionOutputKind::Passthrough { source_column },
-            })
+            {
+                None
+            } else {
+                Some(BrowserExecutionValueType::Int64)
+            }
         }
-        SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => Err(execution_plan_error(
-            "wildcard projections are not supported in browser execution plans",
-        )),
+        BrowserParquetPhysicalType::ByteArray | BrowserParquetPhysicalType::FixedLenByteArray => {
+            match (&field.logical_type, &field.converted_type) {
+                (Some(BrowserParquetLogicalType::String), _)
+                | (_, Some(BrowserParquetConvertedType::Utf8)) => {
+                    Some(BrowserExecutionValueType::String)
+                }
+                _ => None,
+            }
+        }
+        BrowserParquetPhysicalType::Int96
+        | BrowserParquetPhysicalType::Float
+        | BrowserParquetPhysicalType::Double => None,
     }
 }
 

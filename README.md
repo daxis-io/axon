@@ -12,6 +12,7 @@ Axon is a Rust workspace for building a hybrid query platform with native and br
 - `crates/wasm-parquet-engine` contains browser-side Parquet planning and scan primitives.
 - `crates/wasm-delta-snapshot` contains browser-safe Delta snapshot reconstruction.
 - `crates/query-router` contains browser-vs-native routing policy and structured fallback decisions.
+- `crates/wasm-query-session` contains the in-memory browser session shell that caches runtime-owned descriptors plus materialized and bootstrapped snapshot state between queries.
 - `crates/browser-sdk` contains the thin browser embedding surface: worker request envelopes, Arrow IPC result transport, and structured fallback propagation.
 - `crates/browser-engine-worker` contains the internal browser worker artifact used for wasm size, startup, and footprint reporting.
 - `crates/udf-abi` and `crates/udf-host-wasi` remain scaffolds around hosted UDF execution.
@@ -66,6 +67,10 @@ cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --locked --test
 ```
 
 This slice is intentionally small: it does not register tables with DataFusion or implement any `services/query-api` behavior. The current browser output is a deterministic planning/pruning plus narrow execution-plan interpreter over the curated supported SQL corpus, not a broad browser SQL or DataFusion engine. The worker-facing embedding boundary now lives in `crates/browser-sdk`, which carries `QueryRequest` into a worker envelope and returns Arrow IPC bytes plus structured fallback metadata instead of row-oriented JSON.
+
+Browser V1 in this repository is narrow runtime + streaming scan + in-memory session shell. It is not a broad browser DataFusion launch.
+
+`crates/wasm-query-session` adds the thin in-memory layer above that runtime: it caches browser snapshot descriptors together with runtime-owned materialized and bootstrapped snapshots, reuses that state across repeated queries, and performs best-effort in-memory eviction by cached table bytes. It does not add persistence, cache SDK envelope types, or introduce browser DataFusion as a dependency. Persistent-cache hooks exist lower in the stack, but OPFS / IndexedDB backends remain deferred.
 
 ## Browser Worker Artifact
 

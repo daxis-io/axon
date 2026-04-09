@@ -1,10 +1,17 @@
 # Upstream Patch Inventory
 
-Track every downstream patch that diverges from upstream dependencies.
+Current state: no private downstream patches are checked into this repository.
+
+## Verification
+
+- No `vendor/` directory exists in this repository.
+- No workspace manifest contains a `[patch]` section.
+- The browser lakehouse release baseline at git commit `0e19f1d` is built from workspace crates plus upstream registry dependencies pinned in `Cargo.lock`.
+
+If a downstream patch becomes necessary, add it here before merge and keep the row current until removal.
 
 | Patch | Local Path | Owner | Upstream Disposition | Removal Condition | Tracking Issue |
 | --- | --- | --- | --- | --- | --- |
-| Example: browser range-read fix | `vendor/datafusion-wasm-bindings` | Runtime / engine team | `proposed` | Remove after upstream release with fix | `TBD` |
 
 Allowed values for `Upstream Disposition`:
 

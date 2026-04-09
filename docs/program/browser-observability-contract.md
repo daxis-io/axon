@@ -1,0 +1,77 @@
+# Browser Observability Contract
+
+- Date: 2026-04-07
+- Scope: repo-owned metrics and evidence emitted by the browser lakehouse worker boundary and runtime artifact path
+
+This document defines the metrics and routing signals the repository already emits today. It does not claim that dashboards, alert routing, or service-level telemetry pipelines exist in this repository.
+
+## Repo-Owned Execution Fields
+
+`QueryMetricsSummary`
+
+- `bytes_fetched`: bytes read for the executed query path
+- `duration_ms`: wall-clock query duration
+- `files_touched`: files opened for execution
+- `files_skipped`: files skipped by pruning
+- `footer_reads`: browser snapshot-bootstrap footer reads when tracked
+- `snapshot_bootstrap_duration_ms`: browser snapshot-bootstrap wall-clock duration when tracked
+- `access_mode`: browser object access mode when tracked
+
+`QueryResponse`
+
+- `executed_on`: `browser_wasm` or `native`
+- `capabilities`: capability report returned by the runtime chosen for execution
+- `fallback_reason`: structured reroute reason when the browser path required native execution
+- `QueryResponse` does not carry row-shaped result payloads; large results stay in the SDK worker envelope as Arrow IPC bytes.
+
+`BrowserWorkerArtifactReport`
+
+- `runtime_sku`: `narrow` for the shipped browser runtime, with `sql` reserved as the larger future SKU label
+- `result_transport`: `arrow_ipc`, the only large-result transport across the worker boundary
+- `identity.package_name`: Cargo package name for the shipped worker artifact
+- `identity.package_version`: Cargo package version for the shipped worker artifact
+- `identity.wasm_artifact`: canonical wasm artifact filename used by perf and release gates
+- `startup.access_mode`: browser object access mode used by the runtime defaults
+
+## Current Evidence Sources
+
+- `crates/wasm-query-runtime` computes browser metrics and structured fallback outcomes.
+- `crates/browser-sdk` preserves those fields through the worker envelope.
+- `crates/browser-engine-worker` reports runtime SKU, Arrow IPC result transport, artifact identity, startup, and memory baselines.
+- `tests/perf/report_browser_worker_artifact.sh` enforces the shipped worker artifact size budget.
+- `tests/security/verify_browser_dependency_guardrails.sh` proves the worker dependency tree and artifact remain inside the current trust boundary.
+
+## Dashboard Inputs For External Teams
+
+The following inputs are ready for an external dashboard pipeline once the trusted service and telemetry plumbing exist:
+
+- bytes fetched
+- files touched
+- files skipped
+- footer reads
+- snapshot bootstrap duration
+- access mode
+- fallback reason
+- runtime SKU
+- result transport
+- worker artifact identity
+- worker artifact size
+- worker startup baseline
+- worker memory baseline
+
+## Alert Candidates
+
+These are the repo-owned thresholds or trend candidates that external dashboards may choose to monitor:
+
+- worker artifact size budget failure
+- unexpected worker SKU or artifact identity drift across release evidence
+- unexpected rise in browser fallback frequency by capability gate
+- loss of pruning effectiveness shown by `files_skipped`
+- browser startup or memory baseline drift
+- dependency guardrail failures
+
+## Explicit Non-Claims
+
+- No dashboard or alerting system is implemented in this repository.
+- No control-plane or service-level request correlation exists in this repository.
+- Cache-hit ratio remains deferred until an in-repo browser cache layer exists.

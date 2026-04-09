@@ -1,28 +1,48 @@
 //! Browser-side Parquet planning and scan primitives.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::error::Error as StdError;
+use std::ops::Range;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use arrow_array::{
+    Array, ArrayRef, BooleanArray, Int16Array, Int32Array, Int64Array, Int8Array, RecordBatch,
+    StringArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+};
+use arrow_schema::{DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema};
 use bytes::Bytes;
+use futures_util::{future::BoxFuture, FutureExt, Stream, StreamExt, TryStreamExt};
+use parquet::arrow::arrow_reader::ArrowReaderOptions;
+use parquet::arrow::async_reader::AsyncFileReader;
+use parquet::arrow::ParquetRecordBatchStreamBuilder;
+use parquet::arrow::ProjectionMask;
 use parquet::basic::{
     ConvertedType as RawParquetConvertedType,
     EdgeInterpolationAlgorithm as RawParquetEdgeInterpolationAlgorithm,
     LogicalType as RawParquetLogicalType, Repetition as RawParquetRepetition,
     TimeUnit as RawParquetTimeUnit, Type as RawParquetPhysicalType,
 };
+use parquet::errors::ParquetError;
 use parquet::file::reader::{FileReader as ParquetFileReader, SerializedFileReader};
-use parquet::file::{metadata::ParquetMetaDataReader, statistics::Statistics as ParquetStatistics};
+use parquet::file::{
+    metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader},
+    statistics::Statistics as ParquetStatistics,
+};
 use parquet::record::Field as ParquetField;
 use query_contract::{
     ExecutionTarget, FallbackReason, PartitionColumnType, QueryError, QueryErrorCode,
 };
-use wasm_http_object_store::{HttpByteRange, HttpRangeReadResult, HttpRangeReader};
+use wasm_http_object_store::{
+    HttpByteRange, HttpRangeReadResult, HttpRangeReader, HttpRangeValidation,
+};
 
 pub const OWNER: &str = "Runtime / engine team";
 pub const RESPONSIBILITY: &str = "Browser-side Parquet planning and scan primitives.";
 pub const MAX_PARQUET_FOOTER_SIZE_BYTES: u64 = 16 * 1024 * 1024;
 pub const PARQUET_TRAILER_SIZE_BYTES: u64 = 8;
 pub const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
+pub const DEFAULT_STREAM_BATCH_SIZE: usize = 1024;
 
 pub fn runtime_target() -> ExecutionTarget {
     ExecutionTarget::BrowserWasm
@@ -221,6 +241,259 @@ pub enum ParquetScalarValue {
 
 pub type ParquetInputRow = BTreeMap<String, ParquetScalarValue>;
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ScanTargetMetricsSnapshot {
+    pub files_opened: u64,
+    pub rows_emitted: u64,
+    pub bytes_fetched: u64,
+    pub metadata_probe_round_trips: u64,
+}
+
+pub trait ScanTargetMetricsHandle {
+    fn snapshot(&self) -> ScanTargetMetricsSnapshot;
+}
+
+pub struct ScanTargetBatchStream<S> {
+    pub batches: S,
+    pub metrics: Arc<dyn ScanTargetMetricsHandle + Send + Sync>,
+}
+
+#[derive(Clone, Default)]
+struct SharedScanTargetMetricsHandle {
+    snapshot: Arc<Mutex<ScanTargetMetricsSnapshot>>,
+}
+
+impl SharedScanTargetMetricsHandle {
+    fn new(snapshot: ScanTargetMetricsSnapshot) -> Self {
+        Self {
+            snapshot: Arc::new(Mutex::new(snapshot)),
+        }
+    }
+
+    fn record_rows_emitted(&self, rows_emitted: u64) -> Result<(), QueryError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| {
+            execution_runtime_error("scan target metrics handle was poisoned during execution")
+        })?;
+        snapshot.rows_emitted = snapshot
+            .rows_emitted
+            .checked_add(rows_emitted)
+            .ok_or_else(|| execution_runtime_error("scan target metrics row counts overflowed"))?;
+        Ok(())
+    }
+
+    fn record_bytes_fetched(&self, bytes_fetched: u64) -> Result<(), QueryError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| {
+            execution_runtime_error("scan target metrics handle was poisoned during execution")
+        })?;
+        snapshot.bytes_fetched = snapshot
+            .bytes_fetched
+            .checked_add(bytes_fetched)
+            .ok_or_else(|| execution_runtime_error("scan byte totals overflowed u64"))?;
+        Ok(())
+    }
+
+    fn set_metadata_probe_round_trips(&self, round_trips: u64) -> Result<(), QueryError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| {
+            execution_runtime_error("scan target metrics handle was poisoned during execution")
+        })?;
+        snapshot.metadata_probe_round_trips = round_trips;
+        Ok(())
+    }
+}
+
+impl ScanTargetMetricsHandle for SharedScanTargetMetricsHandle {
+    fn snapshot(&self) -> ScanTargetMetricsSnapshot {
+        self.snapshot
+            .lock()
+            .expect("scan target metrics handle should not be poisoned")
+            .clone()
+    }
+}
+
+#[derive(Debug)]
+struct WrappedQueryError(QueryError);
+
+impl std::fmt::Display for WrappedQueryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.0)
+    }
+}
+
+impl StdError for WrappedQueryError {}
+
+fn parquet_error_from_query_error(error: QueryError) -> ParquetError {
+    ParquetError::External(Box::new(WrappedQueryError(error)))
+}
+
+fn query_error_from_parquet_error(
+    error: ParquetError,
+    context: impl FnOnce(&str) -> String,
+) -> QueryError {
+    match error {
+        ParquetError::External(external) => match external.downcast::<WrappedQueryError>() {
+            Ok(wrapped) => wrapped.0,
+            Err(external) => execution_runtime_error(context(&external.to_string())),
+        },
+        other => execution_runtime_error(context(&other.to_string())),
+    }
+}
+
+#[derive(Clone)]
+struct HttpRangeAsyncFileReader {
+    reader: HttpRangeReader,
+    target: ScanTarget,
+    request_timeout: Option<Duration>,
+    metrics: SharedScanTargetMetricsHandle,
+    count_metadata_fetches: bool,
+    metadata_probe_round_trips: u64,
+}
+
+impl HttpRangeAsyncFileReader {
+    fn new(
+        reader: HttpRangeReader,
+        target: ScanTarget,
+        request_timeout: Option<Duration>,
+        metrics: SharedScanTargetMetricsHandle,
+    ) -> Self {
+        Self {
+            reader,
+            target,
+            request_timeout,
+            metrics,
+            count_metadata_fetches: false,
+            metadata_probe_round_trips: 0,
+        }
+    }
+
+    fn validation(&self) -> Option<HttpRangeValidation> {
+        self.target
+            .object_etag
+            .clone()
+            .map(HttpRangeValidation::if_range_etag)
+    }
+
+    async fn fetch_range_owned(
+        reader: HttpRangeReader,
+        object_url: String,
+        validation: Option<HttpRangeValidation>,
+        request_timeout: Option<Duration>,
+        metrics: SharedScanTargetMetricsHandle,
+        range: Range<u64>,
+    ) -> Result<Bytes, QueryError> {
+        let length = range
+            .end
+            .checked_sub(range.start)
+            .ok_or_else(|| execution_runtime_error("parquet byte range underflowed u64"))?;
+        if length == 0 {
+            return Ok(Bytes::new());
+        }
+
+        let read = reader
+            .read_range_with_validation(
+                &object_url,
+                HttpByteRange::Bounded {
+                    offset: range.start,
+                    length,
+                },
+                validation,
+                request_timeout,
+            )
+            .await?;
+        metrics.record_bytes_fetched(
+            u64::try_from(read.bytes.len())
+                .map_err(|_| execution_runtime_error("scan byte totals overflowed u64"))?,
+        )?;
+        Ok(read.bytes)
+    }
+
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    async fn fetch_range(&mut self, range: Range<u64>) -> Result<Bytes, QueryError> {
+        Self::fetch_range_owned(
+            self.reader.clone(),
+            self.target.object_source.url.clone(),
+            self.validation(),
+            self.request_timeout,
+            self.metrics.clone(),
+            range,
+        )
+        .await
+    }
+}
+
+impl AsyncFileReader for HttpRangeAsyncFileReader {
+    fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            if self.count_metadata_fetches {
+                self.metadata_probe_round_trips = self
+                    .metadata_probe_round_trips
+                    .checked_add(1)
+                    .expect("metadata probe round trips should not overflow");
+            }
+            let reader = self.reader.clone();
+            let object_url = self.target.object_source.url.clone();
+            let validation = self.validation();
+            let request_timeout = self.request_timeout;
+            let metrics = self.metrics.clone();
+            let (future, handle) = async move {
+                Self::fetch_range_owned(
+                    reader,
+                    object_url,
+                    validation,
+                    request_timeout,
+                    metrics,
+                    range,
+                )
+                .await
+                .map_err(parquet_error_from_query_error)
+            }
+            .remote_handle();
+            wasm_bindgen_futures::spawn_local(future);
+            return async move { handle.await }.boxed();
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        async move {
+            if self.count_metadata_fetches {
+                self.metadata_probe_round_trips = self
+                    .metadata_probe_round_trips
+                    .checked_add(1)
+                    .expect("metadata probe round trips should not overflow");
+            }
+            self.fetch_range(range)
+                .await
+                .map_err(parquet_error_from_query_error)
+        }
+        .boxed()
+    }
+
+    fn get_metadata<'a>(
+        &'a mut self,
+        options: Option<&'a ArrowReaderOptions>,
+    ) -> BoxFuture<'a, parquet::errors::Result<Arc<ParquetMetaData>>> {
+        async move {
+            self.count_metadata_fetches = true;
+            self.metadata_probe_round_trips = 0;
+            let file_size = self.target.size_bytes;
+            let metadata_options = options.map(|option| option.metadata_options().clone());
+            let metadata = ParquetMetaDataReader::new()
+                .with_page_index_policy(PageIndexPolicy::from(
+                    options.is_some_and(|option| option.page_index()),
+                ))
+                .with_metadata_options(metadata_options)
+                .load_and_finish(&mut *self, file_size)
+                .await;
+            self.count_metadata_fetches = false;
+            let metadata = metadata?;
+            self.metrics
+                .set_metadata_probe_round_trips(self.metadata_probe_round_trips)
+                .map_err(parquet_error_from_query_error)?;
+            Ok(Arc::new(metadata))
+        }
+        .boxed()
+    }
+}
+
 pub async fn read_parquet_footer(
     reader: &HttpRangeReader,
     source: &ObjectSource,
@@ -300,6 +573,76 @@ pub async fn read_parquet_metadata_for_target(
     parse_parquet_metadata(target, &footer)
 }
 
+pub async fn stream_scan_target_batches(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    required_columns: &[String],
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    request_timeout: Option<Duration>,
+) -> Result<ScanTargetBatchStream<impl Stream<Item = Result<RecordBatch, QueryError>>>, QueryError>
+{
+    let metrics_handle = SharedScanTargetMetricsHandle::new(ScanTargetMetricsSnapshot {
+        files_opened: 1,
+        rows_emitted: 0,
+        bytes_fetched: 0,
+        metadata_probe_round_trips: 0,
+    });
+    let metrics: Arc<dyn ScanTargetMetricsHandle + Send + Sync> = Arc::new(metrics_handle.clone());
+    let builder = ParquetRecordBatchStreamBuilder::new(HttpRangeAsyncFileReader::new(
+        reader.clone(),
+        target.clone(),
+        request_timeout,
+        metrics_handle.clone(),
+    ))
+    .await
+    .map_err(|error| {
+        query_error_from_parquet_error(error, |message| {
+            format!(
+                "browser runtime could not open parquet file '{}' for batch decoding: {message}",
+                target.path
+            )
+        })
+    })?;
+    let projection =
+        projection_mask_for_required_columns(builder.parquet_schema(), target, required_columns);
+    let target_for_stream = target.clone();
+    let required_columns = required_columns.to_vec();
+    let partition_column_types = partition_column_types.clone();
+    let batches = builder
+        .with_projection(projection)
+        .with_batch_size(DEFAULT_STREAM_BATCH_SIZE)
+        .build()
+        .map_err(|error| {
+            query_error_from_parquet_error(error, |message| {
+                format!(
+                    "browser runtime could not build a parquet batch reader for file '{}': {message}",
+                    target.path
+                )
+            })
+        })?
+        .map(move |result| {
+            let batch = result.map_err(|error| {
+                query_error_from_parquet_error(error, |message| {
+                    format!(
+                        "browser runtime could not decode a parquet record batch for file '{}': {message}",
+                        target_for_stream.path
+                    )
+                })
+            })?;
+            let rows_emitted = u64::try_from(batch.num_rows())
+                .map_err(|_| execution_runtime_error("record batch row counts overflowed u64"))?;
+            metrics_handle.record_rows_emitted(rows_emitted)?;
+            merge_partition_columns_into_batch(
+                batch,
+                &target_for_stream,
+                &partition_column_types,
+                &required_columns,
+            )
+        });
+
+    Ok(ScanTargetBatchStream { batches, metrics })
+}
+
 pub async fn scan_target_input_rows(
     reader: &HttpRangeReader,
     target: &ScanTarget,
@@ -307,20 +650,21 @@ pub async fn scan_target_input_rows(
     partition_column_types: &BTreeMap<String, PartitionColumnType>,
     request_timeout: Option<Duration>,
 ) -> Result<Vec<ParquetInputRow>, QueryError> {
-    let read = reader
-        .read_range_with_timeout(
-            &target.object_source.url,
-            HttpByteRange::Full,
-            request_timeout,
-        )
-        .await?;
-    validate_full_object_read(target, &read)?;
-    decode_parquet_input_rows(target, read.bytes, required_columns)?
-        .into_iter()
-        .map(|row| {
-            merge_partition_values_into_row(row, target, partition_column_types, required_columns)
+    let stream = stream_scan_target_batches(
+        reader,
+        target,
+        required_columns,
+        partition_column_types,
+        request_timeout,
+    )
+    .await?;
+    stream
+        .batches
+        .try_fold(Vec::new(), |mut rows, batch| async move {
+            rows.extend(record_batch_to_input_rows(target, &batch)?);
+            Ok(rows)
         })
-        .collect()
+        .await
 }
 
 pub fn decode_parquet_input_rows(
@@ -383,6 +727,247 @@ pub fn parquet_row_to_input_row(
     }
 
     Ok(values)
+}
+
+fn projection_mask_for_required_columns(
+    schema: &parquet::schema::types::SchemaDescriptor,
+    target: &ScanTarget,
+    required_columns: &[String],
+) -> ProjectionMask {
+    if required_columns.is_empty() {
+        return ProjectionMask::none(schema.num_columns());
+    }
+
+    let required_columns = required_columns
+        .iter()
+        .map(|column| normalize_name(column))
+        .collect::<BTreeSet<_>>();
+    let partition_columns = target
+        .partition_values
+        .keys()
+        .map(|column| normalize_name(column))
+        .collect::<BTreeSet<_>>();
+    let projected_columns = schema
+        .columns()
+        .iter()
+        .map(|column| column.path().string())
+        .filter(|column| {
+            let normalized = normalize_name(column);
+            required_columns.contains(&normalized) && !partition_columns.contains(&normalized)
+        })
+        .collect::<Vec<_>>();
+
+    if projected_columns.is_empty() {
+        ProjectionMask::none(schema.num_columns())
+    } else {
+        ProjectionMask::columns(schema, projected_columns.iter().map(String::as_str))
+    }
+}
+
+fn merge_partition_columns_into_batch(
+    batch: RecordBatch,
+    target: &ScanTarget,
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    required_columns: &[String],
+) -> Result<RecordBatch, QueryError> {
+    let required_columns = required_columns
+        .iter()
+        .map(|column| normalize_name(column))
+        .collect::<BTreeSet<_>>();
+    let mut fields = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| {
+            Arc::new(ArrowField::new(
+                normalize_name(field.name()),
+                field.data_type().clone(),
+                field.is_nullable(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let mut columns = batch.columns().to_vec();
+
+    for (column, value) in &target.partition_values {
+        let normalized_column = normalize_name(column);
+        if !required_columns.is_empty() && !required_columns.contains(&normalized_column) {
+            continue;
+        }
+
+        let partition_type = partition_column_type_for_name(partition_column_types, column)
+            .ok_or_else(|| missing_partition_column_type_error(column))?;
+        columns.push(partition_value_to_array(
+            column,
+            value,
+            partition_type,
+            batch.num_rows(),
+        )?);
+        fields.push(Arc::new(ArrowField::new(
+            normalized_column,
+            columns
+                .last()
+                .expect("pushed partition array should exist")
+                .data_type()
+                .clone(),
+            true,
+        )));
+    }
+
+    let schema = Arc::new(ArrowSchema::new(fields));
+    if columns.is_empty() {
+        return Ok(batch);
+    }
+
+    RecordBatch::try_new(schema, columns).map_err(|error| {
+        execution_runtime_error(format!(
+            "browser runtime could not assemble a projected record batch for file '{}': {error}",
+            target.path
+        ))
+    })
+}
+
+fn partition_value_to_array(
+    column: &str,
+    value: &Option<String>,
+    partition_type: PartitionColumnType,
+    row_count: usize,
+) -> Result<ArrayRef, QueryError> {
+    match partition_type {
+        PartitionColumnType::String => Ok(Arc::new(StringArray::from(
+            std::iter::repeat(value.as_deref())
+                .take(row_count)
+                .collect::<Vec<_>>(),
+        ))),
+        PartitionColumnType::Boolean => match value {
+            Some(value) => parse_canonical_partition_bool(value)
+                .map(|value| {
+                    Arc::new(BooleanArray::from(
+                        std::iter::repeat(Some(value))
+                            .take(row_count)
+                            .collect::<Vec<_>>(),
+                    )) as ArrayRef
+                })
+                .ok_or_else(|| invalid_partition_value_error(column, value, partition_type)),
+            None => Ok(Arc::new(BooleanArray::from(
+                std::iter::repeat(None::<bool>)
+                    .take(row_count)
+                    .collect::<Vec<_>>(),
+            ))),
+        },
+        PartitionColumnType::Int64 => match value {
+            Some(value) => parse_canonical_partition_i64(value)
+                .map(|value| {
+                    Arc::new(Int64Array::from(
+                        std::iter::repeat(Some(value))
+                            .take(row_count)
+                            .collect::<Vec<_>>(),
+                    )) as ArrayRef
+                })
+                .ok_or_else(|| invalid_partition_value_error(column, value, partition_type)),
+            None => Ok(Arc::new(Int64Array::from(
+                std::iter::repeat(None::<i64>)
+                    .take(row_count)
+                    .collect::<Vec<_>>(),
+            ))),
+        },
+        PartitionColumnType::Unsupported => Err(unsupported_partition_type_error(column)),
+    }
+}
+
+fn record_batch_to_input_rows(
+    target: &ScanTarget,
+    batch: &RecordBatch,
+) -> Result<Vec<ParquetInputRow>, QueryError> {
+    let mut rows = (0..batch.num_rows())
+        .map(|_| BTreeMap::new())
+        .collect::<Vec<ParquetInputRow>>();
+
+    for (field, column) in batch.schema().fields().iter().zip(batch.columns().iter()) {
+        let normalized_name = normalize_name(field.name());
+        for (row_index, row) in rows.iter_mut().enumerate() {
+            row.insert(
+                normalized_name.clone(),
+                arrow_array_value_to_scalar(
+                    &target.path,
+                    field.name(),
+                    column.as_ref(),
+                    row_index,
+                )?,
+            );
+        }
+    }
+
+    Ok(rows)
+}
+
+fn arrow_array_value_to_scalar(
+    file_path: &str,
+    column_name: &str,
+    column: &dyn Array,
+    row_index: usize,
+) -> Result<ParquetScalarValue, QueryError> {
+    if matches!(column.data_type(), ArrowDataType::Null) || column.is_null(row_index) {
+        return Ok(ParquetScalarValue::Null);
+    }
+
+    match column.data_type() {
+        ArrowDataType::Boolean => column
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .map(|column| ParquetScalarValue::Boolean(column.value(row_index)))
+            .ok_or_else(|| unsupported_execution_array(file_path, column_name, column.data_type())),
+        ArrowDataType::Int8 => column
+            .as_any()
+            .downcast_ref::<Int8Array>()
+            .map(|column| ParquetScalarValue::Int64(i64::from(column.value(row_index))))
+            .ok_or_else(|| unsupported_execution_array(file_path, column_name, column.data_type())),
+        ArrowDataType::Int16 => column
+            .as_any()
+            .downcast_ref::<Int16Array>()
+            .map(|column| ParquetScalarValue::Int64(i64::from(column.value(row_index))))
+            .ok_or_else(|| unsupported_execution_array(file_path, column_name, column.data_type())),
+        ArrowDataType::Int32 => column
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .map(|column| ParquetScalarValue::Int64(i64::from(column.value(row_index))))
+            .ok_or_else(|| unsupported_execution_array(file_path, column_name, column.data_type())),
+        ArrowDataType::Int64 => column
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .map(|column| ParquetScalarValue::Int64(column.value(row_index)))
+            .ok_or_else(|| unsupported_execution_array(file_path, column_name, column.data_type())),
+        ArrowDataType::UInt8 => column
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .map(|column| ParquetScalarValue::Int64(i64::from(column.value(row_index))))
+            .ok_or_else(|| unsupported_execution_array(file_path, column_name, column.data_type())),
+        ArrowDataType::UInt16 => column
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .map(|column| ParquetScalarValue::Int64(i64::from(column.value(row_index))))
+            .ok_or_else(|| unsupported_execution_array(file_path, column_name, column.data_type())),
+        ArrowDataType::UInt32 => column
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .map(|column| ParquetScalarValue::Int64(i64::from(column.value(row_index))))
+            .ok_or_else(|| unsupported_execution_array(file_path, column_name, column.data_type())),
+        ArrowDataType::UInt64 => column
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .and_then(|column| i64::try_from(column.value(row_index)).ok())
+            .map(ParquetScalarValue::Int64)
+            .ok_or_else(|| unsupported_execution_array(file_path, column_name, column.data_type())),
+        ArrowDataType::Utf8 => column
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .map(|column| ParquetScalarValue::String(column.value(row_index).to_string()))
+            .ok_or_else(|| unsupported_execution_array(file_path, column_name, column.data_type())),
+        _ => Err(unsupported_execution_array(
+            file_path,
+            column_name,
+            column.data_type(),
+        )),
+    }
 }
 
 pub fn parse_parquet_metadata(
@@ -575,105 +1160,6 @@ fn validate_parquet_footer_read_consistency(
     }
 }
 
-fn validate_full_object_read(
-    target: &ScanTarget,
-    read: &HttpRangeReadResult,
-) -> Result<(), QueryError> {
-    if let Some(object_size_bytes) = read.metadata.size_bytes {
-        if object_size_bytes != target.size_bytes {
-            return Err(parquet_protocol_error(format!(
-                "browser execution for file '{}' observed object size {} bytes, but the descriptor declared {} bytes",
-                target.path, object_size_bytes, target.size_bytes,
-            )));
-        }
-    }
-
-    let read_len = u64::try_from(read.bytes.len())
-        .map_err(|_| parquet_protocol_error("full-object read length overflowed u64"))?;
-    if read_len != target.size_bytes {
-        return Err(parquet_protocol_error(format!(
-            "browser execution for file '{}' read {} bytes, but the descriptor declared {} bytes",
-            target.path, read_len, target.size_bytes,
-        )));
-    }
-
-    if let Some(expected_object_etag) = target.object_etag.as_deref() {
-        match read.metadata.etag.as_deref() {
-            Some(actual_object_etag) if actual_object_etag == expected_object_etag => {}
-            Some(actual_object_etag) => {
-                return Err(parquet_protocol_error(format!(
-                    "browser execution for file '{}' observed entity tag {} during bootstrap but {} during execution",
-                    target.path, expected_object_etag, actual_object_etag,
-                )))
-            }
-            None => {
-                return Err(parquet_protocol_error(format!(
-                    "browser execution for file '{}' expected entity tag metadata {} from bootstrap, but the full-object read returned none",
-                    target.path, expected_object_etag,
-                )))
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn merge_partition_values_into_row(
-    mut row: ParquetInputRow,
-    target: &ScanTarget,
-    partition_column_types: &BTreeMap<String, PartitionColumnType>,
-    required_columns: &[String],
-) -> Result<ParquetInputRow, QueryError> {
-    let required_columns = required_columns
-        .iter()
-        .map(|column| normalize_name(column))
-        .collect::<BTreeSet<_>>();
-
-    for (column, value) in &target.partition_values {
-        let normalized_column = normalize_name(column);
-        if !required_columns.is_empty() && !required_columns.contains(&normalized_column) {
-            continue;
-        }
-
-        let partition_type = partition_column_type_for_name(partition_column_types, column)
-            .ok_or_else(|| missing_partition_column_type_error(column))?;
-        row.insert(
-            normalized_column,
-            partition_value_to_scalar(column, value, partition_type)?,
-        );
-    }
-
-    Ok(row)
-}
-
-fn partition_value_to_scalar(
-    column: &str,
-    value: &Option<String>,
-    partition_type: PartitionColumnType,
-) -> Result<ParquetScalarValue, QueryError> {
-    match value {
-        None => Ok(ParquetScalarValue::Null),
-        Some(value) => typed_partition_scalar(column, value, partition_type),
-    }
-}
-
-fn typed_partition_scalar(
-    column: &str,
-    value: &str,
-    partition_type: PartitionColumnType,
-) -> Result<ParquetScalarValue, QueryError> {
-    match partition_type {
-        PartitionColumnType::String => Ok(ParquetScalarValue::String(value.to_string())),
-        PartitionColumnType::Boolean => parse_canonical_partition_bool(value)
-            .map(ParquetScalarValue::Boolean)
-            .ok_or_else(|| invalid_partition_value_error(column, value, partition_type)),
-        PartitionColumnType::Int64 => parse_canonical_partition_i64(value)
-            .map(ParquetScalarValue::Int64)
-            .ok_or_else(|| invalid_partition_value_error(column, value, partition_type)),
-        PartitionColumnType::Unsupported => Err(unsupported_partition_type_error(column)),
-    }
-}
-
 fn partition_column_type_for_name(
     partition_column_types: &BTreeMap<String, PartitionColumnType>,
     column: &str,
@@ -771,6 +1257,22 @@ fn unsupported_execution_scalar(
         QueryErrorCode::FallbackRequired,
         format!(
             "browser runtime cannot execute parquet field '{}' in file '{}' with value kind '{field:?}'",
+            column_name, file_path
+        ),
+        runtime_target(),
+    )
+    .with_fallback_reason(FallbackReason::NativeRequired)
+}
+
+fn unsupported_execution_array(
+    file_path: &str,
+    column_name: &str,
+    data_type: &ArrowDataType,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::FallbackRequired,
+        format!(
+            "browser runtime cannot execute arrow field '{}' in file '{}' with data type '{data_type:?}'",
             column_name, file_path
         ),
         runtime_target(),

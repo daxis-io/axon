@@ -13,6 +13,7 @@ js-sys = "=0.3.91"
 query-contract = { path = "../query-contract" }
 serde.workspace = true
 serde_json.workspace = true
+wasm-query-session = { path = "../wasm-query-session" }
 wasm-query-runtime = { path = "../wasm-query-runtime" }
 
 [dev-dependencies]

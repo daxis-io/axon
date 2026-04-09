@@ -1,0 +1,34 @@
+{
+  "runtime_sku": "narrow",
+  "result_transport": "arrow_ipc",
+  "capabilities": {
+    "session_shell": true,
+    "browser_datafusion": false
+  },
+  "identity": {
+    "package_name": "browser-engine-worker",
+    "package_version": "0.1.0",
+    "wasm_artifact": "browser_engine_worker.wasm"
+  },
+  "startup": {
+    "target": "browser_wasm",
+    "access_mode": "browser_safe_http",
+    "startup_duration_ms": 38,
+    "command_envelope_bytes": 272,
+    "error_envelope_bytes": 231,
+    "request_timeout_ms": 30000,
+    "execution_timeout_ms": 120000,
+    "snapshot_preflight_timeout_ms": 120000,
+    "snapshot_preflight_max_concurrency": 4
+  },
+  "memory": {
+    "runtime_session_bytes": 56,
+    "query_session_bytes": 80,
+    "runtime_config_bytes": 48,
+    "command_struct_bytes": 96,
+    "response_envelope_struct_bytes": 184,
+    "query_metrics_struct_bytes": 72,
+    "command_envelope_json_bytes": 272,
+    "error_envelope_json_bytes": 231
+  }
+}

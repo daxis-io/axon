@@ -1,27 +1,57 @@
 #![cfg(target_arch = "wasm32")]
 
+use std::collections::BTreeMap;
+
 use browser_sdk::{
-    preferred_target, ArrowIpcFormat, ArrowIpcResultEnvelope, BrowserWorkerRequestEnvelope,
+    preferred_target, ArrowIpcFormat, ArrowIpcResultEnvelope, BrowserWorkerCommand,
     BrowserWorkerResponseEnvelope,
 };
 use query_contract::{
-    BrowserAccessMode, CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget,
-    FallbackReason, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse,
+    BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey,
+    CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, QueryError, QueryErrorCode,
+    QueryMetricsSummary, QueryRequest, QueryResponse,
 };
 use wasm_bindgen_test::wasm_bindgen_test;
 
 #[wasm_bindgen_test]
-fn browser_sdk_round_trips_worker_success_envelopes_in_wasm() {
-    let request = BrowserWorkerRequestEnvelope::new(
-        "req-1",
+fn browser_sdk_round_trips_worker_commands_in_wasm() {
+    let snapshot = sample_snapshot_descriptor();
+    let open_table = BrowserWorkerCommand::open_table("req-open", "events", snapshot.clone());
+    let sql = BrowserWorkerCommand::sql(
+        "req-sql",
+        "events",
         QueryRequest::new(
-            "gs://axon-fixtures/sample_table",
+            snapshot.table_uri.clone(),
             "SELECT id FROM axon_table ORDER BY id",
             ExecutionTarget::BrowserWasm,
         ),
     );
-    let response = BrowserWorkerResponseEnvelope::success(
-        "req-1",
+    let dispose = BrowserWorkerCommand::dispose("req-dispose", "events");
+
+    let round_tripped_open: BrowserWorkerCommand =
+        serde_json::from_value(serde_json::to_value(&open_table).expect("open table serializes"))
+            .expect("open table deserializes in wasm");
+    let round_tripped_sql: BrowserWorkerCommand =
+        serde_json::from_value(serde_json::to_value(&sql).expect("sql serializes"))
+            .expect("sql deserializes in wasm");
+    let round_tripped_dispose: BrowserWorkerCommand =
+        serde_json::from_value(serde_json::to_value(&dispose).expect("dispose serializes"))
+            .expect("dispose deserializes in wasm");
+
+    assert_eq!(preferred_target(), ExecutionTarget::BrowserWasm);
+    assert_eq!(round_tripped_open.request_id(), "req-open");
+    assert_eq!(round_tripped_open.table_name(), "events");
+    assert_eq!(round_tripped_sql.request_id(), "req-sql");
+    assert_eq!(round_tripped_sql.table_name(), "events");
+    assert_eq!(round_tripped_dispose.request_id(), "req-dispose");
+    assert_eq!(round_tripped_dispose.table_name(), "events");
+}
+
+#[wasm_bindgen_test]
+fn browser_sdk_round_trips_worker_responses_in_wasm() {
+    let opened = BrowserWorkerResponseEnvelope::opened("req-open", "events");
+    let success = BrowserWorkerResponseEnvelope::success(
+        "req-sql",
         QueryResponse {
             executed_on: ExecutionTarget::BrowserWasm,
             capabilities: CapabilityReport::from_pairs([(
@@ -41,24 +71,39 @@ fn browser_sdk_round_trips_worker_success_envelopes_in_wasm() {
         },
         ArrowIpcResultEnvelope::new(ArrowIpcFormat::Stream, vec![1, 2, 3, 4]),
     );
+    let disposed = BrowserWorkerResponseEnvelope::disposed("req-dispose", "events");
 
-    let round_tripped_request: BrowserWorkerRequestEnvelope =
-        serde_json::from_value(serde_json::to_value(&request).expect("request serializes"))
-            .expect("request deserializes in wasm");
-    let round_tripped_response: BrowserWorkerResponseEnvelope =
-        serde_json::from_value(serde_json::to_value(&response).expect("response serializes"))
-            .expect("response deserializes in wasm");
+    let round_tripped_opened: BrowserWorkerResponseEnvelope =
+        serde_json::from_value(serde_json::to_value(&opened).expect("opened serializes"))
+            .expect("opened deserializes in wasm");
+    let round_tripped_success: BrowserWorkerResponseEnvelope =
+        serde_json::from_value(serde_json::to_value(&success).expect("success serializes"))
+            .expect("success deserializes in wasm");
+    let round_tripped_disposed: BrowserWorkerResponseEnvelope =
+        serde_json::from_value(serde_json::to_value(&disposed).expect("disposed serializes"))
+            .expect("disposed deserializes in wasm");
 
-    assert_eq!(preferred_target(), ExecutionTarget::BrowserWasm);
-    assert_eq!(round_tripped_request.request_id, "req-1");
-    assert_eq!(round_tripped_request.request.sql, request.request.sql);
     assert_eq!(
-        round_tripped_response
+        round_tripped_opened
+            .opened_envelope()
+            .expect("opened envelope should be present")
+            .name,
+        "events"
+    );
+    assert_eq!(
+        round_tripped_success
             .success_envelope()
             .expect("success envelope should be present")
             .result
             .content_type,
         ArrowIpcFormat::Stream.content_type()
+    );
+    assert_eq!(
+        round_tripped_disposed
+            .disposed_envelope()
+            .expect("disposed envelope should be present")
+            .name,
+        "events"
     );
 }
 
@@ -93,6 +138,39 @@ fn browser_sdk_preserves_structured_fallbacks_and_content_type_validation_in_was
     assert!(error
         .to_string()
         .contains("does not match expected content type"));
+}
+
+#[wasm_bindgen_test]
+fn browser_sdk_rejects_legacy_row_payloads_in_wasm() {
+    let invalid = serde_json::json!({
+        "success": {
+            "request_id": "req-legacy-rows",
+            "response": {
+                "executed_on": "browser_wasm",
+                "capabilities": {
+                    "capabilities": {}
+                },
+                "metrics": {
+                    "bytes_fetched": 128,
+                    "duration_ms": 4,
+                    "files_touched": 1,
+                    "files_skipped": 0
+                }
+            },
+            "result": {
+                "format": "stream",
+                "content_type": "application/vnd.apache.arrow.stream",
+                "bytes": [1, 2, 3, 4],
+                "rows": [
+                    {"row_count": 1}
+                ]
+            }
+        }
+    });
+
+    let error = serde_json::from_value::<BrowserWorkerResponseEnvelope>(invalid)
+        .expect_err("legacy row payloads must fail in wasm");
+    assert!(error.to_string().contains("unknown field `rows`"));
 }
 
 #[wasm_bindgen_test]
@@ -134,4 +212,21 @@ fn browser_sdk_round_trips_browser_telemetry_fields_in_wasm() {
         metrics.access_mode,
         Some(BrowserAccessMode::BrowserSafeHttp)
     );
+}
+
+fn sample_snapshot_descriptor() -> BrowserHttpSnapshotDescriptor {
+    BrowserHttpSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        snapshot_version: 1,
+        partition_column_types: BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
+        required_capabilities: CapabilityReport::default(),
+        active_files: vec![BrowserHttpFileDescriptor {
+            path: "part-000.parquet".to_string(),
+            url: "https://example.invalid/part-000.parquet".to_string(),
+            size_bytes: 128,
+            partition_values: BTreeMap::new(),
+            stats: None,
+        }],
+    }
 }

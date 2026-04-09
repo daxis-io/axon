@@ -1,6 +1,9 @@
 //! Public browser SDK contracts for worker-hosted query execution.
 
-use query_contract::{ExecutionTarget, FallbackReason, QueryError, QueryRequest, QueryResponse};
+use query_contract::{
+    BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, QueryError, QueryRequest,
+    QueryResponse,
+};
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
@@ -16,16 +19,81 @@ pub fn preferred_target() -> ExecutionTarget {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct BrowserWorkerRequestEnvelope {
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerOpenTableCommand {
     pub request_id: String,
+    pub name: String,
+    pub snapshot: BrowserHttpSnapshotDescriptor,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerSqlCommand {
+    pub request_id: String,
+    pub name: String,
     pub request: QueryRequest,
 }
 
-impl BrowserWorkerRequestEnvelope {
-    pub fn new(request_id: impl Into<String>, request: QueryRequest) -> Self {
-        Self {
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerDisposeCommand {
+    pub request_id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserWorkerCommand {
+    OpenTable(BrowserWorkerOpenTableCommand),
+    Sql(BrowserWorkerSqlCommand),
+    Dispose(BrowserWorkerDisposeCommand),
+}
+
+impl BrowserWorkerCommand {
+    pub fn open_table(
+        request_id: impl Into<String>,
+        name: impl Into<String>,
+        snapshot: BrowserHttpSnapshotDescriptor,
+    ) -> Self {
+        Self::OpenTable(BrowserWorkerOpenTableCommand {
             request_id: request_id.into(),
+            name: name.into(),
+            snapshot,
+        })
+    }
+
+    pub fn sql(
+        request_id: impl Into<String>,
+        name: impl Into<String>,
+        request: QueryRequest,
+    ) -> Self {
+        Self::Sql(BrowserWorkerSqlCommand {
+            request_id: request_id.into(),
+            name: name.into(),
             request,
+        })
+    }
+
+    pub fn dispose(request_id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::Dispose(BrowserWorkerDisposeCommand {
+            request_id: request_id.into(),
+            name: name.into(),
+        })
+    }
+
+    pub fn request_id(&self) -> &str {
+        match self {
+            Self::OpenTable(command) => &command.request_id,
+            Self::Sql(command) => &command.request_id,
+            Self::Dispose(command) => &command.request_id,
+        }
+    }
+
+    pub fn table_name(&self) -> &str {
+        match self {
+            Self::OpenTable(command) => &command.name,
+            Self::Sql(command) => &command.name,
+            Self::Dispose(command) => &command.name,
         }
     }
 }
@@ -69,6 +137,7 @@ impl<'de> Deserialize<'de> for ArrowIpcResultEnvelope {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct RawArrowIpcResultEnvelope {
             format: ArrowIpcFormat,
             content_type: String,
@@ -94,6 +163,14 @@ impl<'de> Deserialize<'de> for ArrowIpcResultEnvelope {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerOpenedEnvelope {
+    pub request_id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserWorkerSuccessEnvelope {
     pub request_id: String,
     pub response: QueryResponse,
@@ -101,6 +178,14 @@ pub struct BrowserWorkerSuccessEnvelope {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerDisposedEnvelope {
+    pub request_id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserWorkerErrorEnvelope {
     pub request_id: String,
     pub error: QueryError,
@@ -109,11 +194,20 @@ pub struct BrowserWorkerErrorEnvelope {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserWorkerResponseEnvelope {
+    Opened(BrowserWorkerOpenedEnvelope),
     Success(BrowserWorkerSuccessEnvelope),
+    Disposed(BrowserWorkerDisposedEnvelope),
     Error(BrowserWorkerErrorEnvelope),
 }
 
 impl BrowserWorkerResponseEnvelope {
+    pub fn opened(request_id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::Opened(BrowserWorkerOpenedEnvelope {
+            request_id: request_id.into(),
+            name: name.into(),
+        })
+    }
+
     pub fn success(
         request_id: impl Into<String>,
         response: QueryResponse,
@@ -126,6 +220,13 @@ impl BrowserWorkerResponseEnvelope {
         })
     }
 
+    pub fn disposed(request_id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::Disposed(BrowserWorkerDisposedEnvelope {
+            request_id: request_id.into(),
+            name: name.into(),
+        })
+    }
+
     pub fn error(request_id: impl Into<String>, error: QueryError) -> Self {
         Self::Error(BrowserWorkerErrorEnvelope {
             request_id: request_id.into(),
@@ -133,15 +234,39 @@ impl BrowserWorkerResponseEnvelope {
         })
     }
 
+    pub fn opened_envelope(&self) -> Option<&BrowserWorkerOpenedEnvelope> {
+        match self {
+            Self::Opened(opened) => Some(opened),
+            _ => None,
+        }
+    }
+
     pub fn success_envelope(&self) -> Option<&BrowserWorkerSuccessEnvelope> {
         match self {
             Self::Success(success) => Some(success),
-            Self::Error(_) => None,
+            _ => None,
+        }
+    }
+
+    pub fn disposed_envelope(&self) -> Option<&BrowserWorkerDisposedEnvelope> {
+        match self {
+            Self::Disposed(disposed) => Some(disposed),
+            _ => None,
+        }
+    }
+
+    pub fn request_id(&self) -> &str {
+        match self {
+            Self::Opened(opened) => &opened.request_id,
+            Self::Success(success) => &success.request_id,
+            Self::Disposed(disposed) => &disposed.request_id,
+            Self::Error(error) => &error.request_id,
         }
     }
 
     pub fn fallback_reason(&self) -> Option<&FallbackReason> {
         match self {
+            Self::Opened(_) | Self::Disposed(_) => None,
             Self::Success(success) => success.response.fallback_reason.as_ref(),
             Self::Error(error) => error.error.fallback_reason.as_ref(),
         }
