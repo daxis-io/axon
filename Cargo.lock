@@ -4173,6 +4173,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfe29135b180b72b04c74aa97b2b4a2ef275161eff9a6c7955ea9eaedc7e1d4e"
 
 [[package]]
+name = "wasm-datafusion-poc"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "bytes",
+ "datafusion",
+ "futures-util",
+ "parquet",
+ "query-contract",
+ "serde_json",
+ "tokio",
+ "wasm-bindgen-test",
+ "wasm-http-object-store",
+ "wasm-parquet-engine",
+]
+
+[[package]]
 name = "wasm-delta-snapshot"
 version = "0.1.0"
 dependencies = [
@@ -4190,6 +4208,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "wasm-bindgen-test",
+ "wasm-http-object-store",
 ]
 
 [[package]]

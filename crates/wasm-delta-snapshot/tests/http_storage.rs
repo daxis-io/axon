@@ -1,4 +1,13 @@
-use wasm_delta_snapshot::{BrowserDeltaLogManifest, BrowserDeltaLogObject};
+use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::thread::{self, JoinHandle};
+
+use query_contract::SnapshotResolutionRequest;
+use wasm_delta_snapshot::{
+    BrowserDeltaLogManifest, BrowserDeltaLogObject, BrowserHttpDeltaLogStorageHandler,
+    DefaultJsonHandler, DefaultParquetHandler, SnapshotResolver,
+};
 
 #[test]
 fn browser_delta_log_manifest_lists_delta_log_paths_in_sorted_order() {
@@ -53,4 +62,129 @@ fn browser_delta_log_manifest_rejects_duplicate_or_escaping_paths() {
     )
     .expect_err("escaping paths should fail");
     assert!(escaping.message.contains("_delta_log"));
+}
+
+#[tokio::test]
+async fn browser_http_delta_log_storage_replays_json_commits() {
+    let server = StaticHttpServer::new([
+        (
+            "/_delta_log/00000000000000000000.json",
+            concat!(
+                "{\"protocol\":{\"minReaderVersion\":1,\"minWriterVersion\":2}}\n",
+                "{\"metaData\":{\"id\":\"test\",\"format\":{\"provider\":\"parquet\",\"options\":{}},",
+                "\"schemaString\":\"{\\\"type\\\":\\\"struct\\\",\\\"fields\\\":[{\\\"name\\\":\\\"id\\\",\\\"type\\\":\\\"integer\\\",\\\"nullable\\\":false,\\\"metadata\\\":{}}]}\",",
+                "\"partitionColumns\":[],\"configuration\":{}}}\n",
+                "{\"add\":{\"path\":\"data/a.parquet\",\"size\":10,\"partitionValues\":{}}}\n"
+            ),
+        ),
+        (
+            "/_delta_log/00000000000000000001.json",
+            "{\"remove\":{\"path\":\"data/a.parquet\"}}\n{\"add\":{\"path\":\"data/b.parquet\",\"size\":20,\"partitionValues\":{}}}\n",
+        ),
+    ]);
+    let manifest = BrowserDeltaLogManifest::new(
+        "gs://bucket/table",
+        vec![
+            BrowserDeltaLogObject::new(
+                "_delta_log/00000000000000000000.json",
+                server.url("/_delta_log/00000000000000000000.json"),
+            ),
+            BrowserDeltaLogObject::new(
+                "_delta_log/00000000000000000001.json",
+                server.url("/_delta_log/00000000000000000001.json"),
+            ),
+        ],
+    )
+    .expect("manifest should validate");
+
+    let resolver = SnapshotResolver::new(
+        BrowserHttpDeltaLogStorageHandler::new(manifest),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+    let snapshot = resolver
+        .resolve_snapshot(SnapshotResolutionRequest {
+            table_uri: "gs://bucket/table".to_string(),
+            snapshot_version: None,
+        })
+        .await
+        .expect("HTTP Delta log should resolve");
+
+    assert_eq!(snapshot.snapshot_version, 1);
+    assert_eq!(snapshot.active_files[0].path, "data/b.parquet");
+}
+
+struct StaticHttpServer {
+    address: String,
+    _server: JoinHandle<()>,
+}
+
+impl StaticHttpServer {
+    fn new(routes: impl IntoIterator<Item = (&'static str, &'static str)>) -> Self {
+        let bodies = routes
+            .into_iter()
+            .map(|(path, body)| (path.to_string(), body.as_bytes().to_vec()))
+            .collect::<BTreeMap<_, _>>();
+        let request_count = bodies.len();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+        let address = listener.local_addr().expect("listener addr should resolve");
+        let server = thread::spawn(move || {
+            for _ in 0..request_count {
+                let (mut stream, _) = listener.accept().expect("test client should connect");
+                let path = read_request_path(&mut stream);
+                let Some(body) = bodies.get(&path) else {
+                    write_response(&mut stream, "404 Not Found", b"");
+                    continue;
+                };
+                write_response(&mut stream, "200 OK", body);
+            }
+        });
+
+        Self {
+            address: address.to_string(),
+            _server: server,
+        }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("http://{}{}", self.address, path)
+    }
+}
+
+fn read_request_path(stream: &mut std::net::TcpStream) -> String {
+    let mut buffer = [0_u8; 4096];
+    let mut request = Vec::new();
+    loop {
+        let bytes_read = stream
+            .read(&mut buffer)
+            .expect("request bytes should be readable");
+        if bytes_read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..bytes_read]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+
+    let text = String::from_utf8(request).expect("request should be valid ASCII");
+    let request_line = text.lines().next().expect("request line should exist");
+    request_line
+        .split_whitespace()
+        .nth(1)
+        .expect("request path should exist")
+        .to_string()
+}
+
+fn write_response(stream: &mut std::net::TcpStream, status_line: &str, body: &[u8]) {
+    let response = format!(
+        "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .expect("response headers should be written");
+    stream
+        .write_all(body)
+        .expect("response body should be written");
 }

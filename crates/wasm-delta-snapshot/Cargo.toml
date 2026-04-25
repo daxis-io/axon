@@ -11,6 +11,7 @@ parquet = { version = "=57.3.0", default-features = false }
 query-contract = { path = "../query-contract" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+wasm-http-object-store = { path = "../wasm-http-object-store" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.183"

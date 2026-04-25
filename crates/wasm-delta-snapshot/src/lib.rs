@@ -5,9 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 #[cfg(all(not(target_arch = "wasm32"), unix))]
 use std::io::Read;
-use std::path::{Component, Path};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
+use std::path::{Component, Path};
+use std::time::Duration;
 #[cfg(all(not(target_arch = "wasm32"), unix))]
 use std::{
     ffi::CString,
@@ -26,12 +27,13 @@ use query_contract::{
     CapabilityReport, CapabilityState, DeltaProtocolFeature as KnownDeltaFeature,
     DeltaProtocolFeatureClass as KnownFeatureClass,
     DeltaProtocolFeatureEnablement as KnownFeatureEnablement,
-    DeltaProtocolFeatureKind as KnownFeatureKind, ExecutionTarget, PartitionColumnType,
-    QueryError, QueryErrorCode, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
-    SnapshotResolutionRequest, KNOWN_DELTA_PROTOCOL_FEATURES as KNOWN_DELTA_FEATURES,
+    DeltaProtocolFeatureKind as KnownFeatureKind, ExecutionTarget, PartitionColumnType, QueryError,
+    QueryErrorCode, ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
+    KNOWN_DELTA_PROTOCOL_FEATURES as KNOWN_DELTA_FEATURES,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
+use wasm_http_object_store::{HttpByteRange, HttpRangeReader, HttpRangeValidation};
 
 pub const OWNER: &str = "Runtime / engine team";
 pub const RESPONSIBILITY: &str = "Browser-safe Delta snapshot reconstruction.";
@@ -99,7 +101,10 @@ impl BrowserDeltaLogManifest {
                 BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTests,
                 "Delta log object URL",
             )?;
-            if by_path.insert(object.relative_path.clone(), object).is_some() {
+            if by_path
+                .insert(object.relative_path.clone(), object)
+                .is_some()
+            {
                 return Err(invalid_request(
                     "duplicate Delta log object path in manifest".to_string(),
                 ));
@@ -125,6 +130,75 @@ impl BrowserDeltaLogManifest {
 
     fn object(&self, relative_path: &str) -> Option<&BrowserDeltaLogObject> {
         self.objects.get(relative_path)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BrowserHttpDeltaLogStorageHandler {
+    manifest: BrowserDeltaLogManifest,
+    reader: HttpRangeReader,
+    request_timeout: Option<Duration>,
+}
+
+impl BrowserHttpDeltaLogStorageHandler {
+    pub fn new(manifest: BrowserDeltaLogManifest) -> Self {
+        Self {
+            manifest,
+            reader: HttpRangeReader::new(),
+            request_timeout: None,
+        }
+    }
+
+    pub fn with_reader(manifest: BrowserDeltaLogManifest, reader: HttpRangeReader) -> Self {
+        Self {
+            manifest,
+            reader,
+            request_timeout: None,
+        }
+    }
+
+    pub fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = Some(request_timeout);
+        self
+    }
+}
+
+#[async_trait(?Send)]
+impl StorageHandler for BrowserHttpDeltaLogStorageHandler {
+    async fn list_paths(&self, table_uri: &str, prefix: &str) -> Result<Vec<String>, QueryError> {
+        if table_uri != self.manifest.table_uri() {
+            return Err(invalid_request(
+                "Delta log manifest table_uri did not match request".to_string(),
+            ));
+        }
+        Ok(self.manifest.list_paths(prefix))
+    }
+
+    async fn read_bytes(
+        &self,
+        table_uri: &str,
+        relative_path: &str,
+    ) -> Result<Option<Bytes>, QueryError> {
+        if table_uri != self.manifest.table_uri() {
+            return Err(invalid_request(
+                "Delta log manifest table_uri did not match request".to_string(),
+            ));
+        }
+        let Some(object) = self.manifest.object(relative_path) else {
+            return Ok(None);
+        };
+        let validation = object.etag.clone().map(HttpRangeValidation::if_range_etag);
+        let result = self
+            .reader
+            .read_range_with_validation(
+                &object.url,
+                HttpByteRange::Full,
+                validation,
+                self.request_timeout,
+            )
+            .await?;
+        validate_manifest_object_metadata(object, &result.metadata)?;
+        Ok(Some(result.bytes))
     }
 }
 
@@ -950,6 +1024,37 @@ fn validate_delta_log_relative_path(relative_path: &str) -> Result<(), QueryErro
         )));
     }
 
+    Ok(())
+}
+
+fn validate_manifest_object_metadata(
+    object: &BrowserDeltaLogObject,
+    metadata: &wasm_http_object_store::HttpObjectMetadata,
+) -> Result<(), QueryError> {
+    if let (Some(expected), Some(actual)) = (object.size_bytes, metadata.size_bytes) {
+        if expected != actual {
+            return Err(QueryError::new(
+                QueryErrorCode::ObjectStoreProtocol,
+                format!(
+                    "Delta log object '{}' size changed between manifest and read",
+                    object.relative_path
+                ),
+                runtime_target(),
+            ));
+        }
+    }
+    if let (Some(expected), Some(actual)) = (object.etag.as_deref(), metadata.etag.as_deref()) {
+        if expected != actual {
+            return Err(QueryError::new(
+                QueryErrorCode::ObjectStoreProtocol,
+                format!(
+                    "Delta log object '{}' identity changed between manifest and read",
+                    object.relative_path
+                ),
+                runtime_target(),
+            ));
+        }
+    }
     Ok(())
 }
 
