@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 #[cfg(all(not(target_arch = "wasm32"), unix))]
 use std::io::Read;
-use std::path::Path;
+use std::path::{Component, Path};
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::{Component, PathBuf};
+use std::path::PathBuf;
 #[cfg(all(not(target_arch = "wasm32"), unix))]
 use std::{
     ffi::CString,
@@ -22,12 +22,13 @@ use bytes::Bytes;
 use parquet::file::reader::{FileReader as ParquetFileReader, SerializedFileReader};
 use parquet::record::Field as ParquetField;
 use query_contract::{
-    delta_protocol_feature, CapabilityKey, CapabilityReport, CapabilityState,
-    DeltaProtocolFeature as KnownDeltaFeature, DeltaProtocolFeatureClass as KnownFeatureClass,
+    delta_protocol_feature, validate_browser_object_url, BrowserObjectUrlPolicy, CapabilityKey,
+    CapabilityReport, CapabilityState, DeltaProtocolFeature as KnownDeltaFeature,
+    DeltaProtocolFeatureClass as KnownFeatureClass,
     DeltaProtocolFeatureEnablement as KnownFeatureEnablement,
-    DeltaProtocolFeatureKind as KnownFeatureKind, ExecutionTarget, PartitionColumnType, QueryError,
-    QueryErrorCode, ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
-    KNOWN_DELTA_PROTOCOL_FEATURES as KNOWN_DELTA_FEATURES,
+    DeltaProtocolFeatureKind as KnownFeatureKind, ExecutionTarget, PartitionColumnType,
+    QueryError, QueryErrorCode, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
+    SnapshotResolutionRequest, KNOWN_DELTA_PROTOCOL_FEATURES as KNOWN_DELTA_FEATURES,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -51,6 +52,80 @@ pub trait StorageHandler {
         table_uri: &str,
         relative_path: &str,
     ) -> Result<Option<Bytes>, QueryError>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserDeltaLogObject {
+    relative_path: String,
+    url: String,
+    size_bytes: Option<u64>,
+    etag: Option<String>,
+}
+
+impl BrowserDeltaLogObject {
+    pub fn new(relative_path: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            relative_path: relative_path.into(),
+            url: url.into(),
+            size_bytes: None,
+            etag: None,
+        }
+    }
+
+    pub fn with_metadata(mut self, size_bytes: Option<u64>, etag: Option<String>) -> Self {
+        self.size_bytes = size_bytes;
+        self.etag = etag;
+        self
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserDeltaLogManifest {
+    table_uri: String,
+    objects: BTreeMap<String, BrowserDeltaLogObject>,
+}
+
+impl BrowserDeltaLogManifest {
+    pub fn new(
+        table_uri: impl Into<String>,
+        objects: Vec<BrowserDeltaLogObject>,
+    ) -> Result<Self, QueryError> {
+        let mut by_path = BTreeMap::new();
+        for object in objects {
+            validate_delta_log_relative_path(&object.relative_path)?;
+            validate_browser_object_url(
+                &object.url,
+                runtime_target(),
+                BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTests,
+                "Delta log object URL",
+            )?;
+            if by_path.insert(object.relative_path.clone(), object).is_some() {
+                return Err(invalid_request(
+                    "duplicate Delta log object path in manifest".to_string(),
+                ));
+            }
+        }
+        Ok(Self {
+            table_uri: table_uri.into(),
+            objects: by_path,
+        })
+    }
+
+    pub fn table_uri(&self) -> &str {
+        &self.table_uri
+    }
+
+    pub fn list_paths(&self, prefix: &str) -> Vec<String> {
+        self.objects
+            .keys()
+            .filter(|path| path.starts_with(prefix))
+            .cloned()
+            .collect()
+    }
+
+    fn object(&self, relative_path: &str) -> Option<&BrowserDeltaLogObject> {
+        self.objects.get(relative_path)
+    }
 }
 
 pub trait JsonHandler {
@@ -848,6 +923,33 @@ fn validate_snapshot_version(snapshot_version: Option<i64>) -> Result<(), QueryE
             "snapshot_version must be zero or greater".to_string(),
         ));
     }
+    Ok(())
+}
+
+fn validate_delta_log_relative_path(relative_path: &str) -> Result<(), QueryError> {
+    if relative_path.is_empty()
+        || is_absolute_uri(relative_path)
+        || is_absolute_native_path(relative_path)
+        || !relative_path.starts_with("_delta_log/")
+    {
+        return Err(invalid_request(format!(
+            "Delta log object path '{}' must stay under _delta_log/",
+            relative_path
+        )));
+    }
+
+    if Path::new(relative_path).components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(invalid_request(format!(
+            "Delta log object path '{}' must stay under _delta_log/",
+            relative_path
+        )));
+    }
+
     Ok(())
 }
 
