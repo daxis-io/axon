@@ -10,6 +10,7 @@ members = [
   "crates/udf-abi",
   "crates/udf-host-wasi",
   "crates/wasm-http-object-store",
+  "crates/wasm-datafusion-poc",
   "crates/wasm-parquet-engine",
   "crates/wasm-delta-snapshot",
   "crates/wasm-query-session",
