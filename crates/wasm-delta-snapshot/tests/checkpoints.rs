@@ -1,9 +1,13 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use arrow_array::builder::{Int64Builder, MapBuilder, MapFieldNames, StringBuilder, StructBuilder};
 use arrow_array::RecordBatch;
@@ -17,6 +21,7 @@ use query_contract::{
 use serde_json::json;
 use tempfile::TempDir;
 use wasm_delta_snapshot::{
+    BrowserDeltaLogManifest, BrowserDeltaLogObject, BrowserHttpDeltaLogStorageHandler,
     DefaultJsonHandler, DefaultParquetHandler, LocalFileStorageHandler, SnapshotResolver,
     StorageHandler,
 };
@@ -184,6 +189,75 @@ async fn snapshot_prefers_latest_complete_checkpoint_and_sidecars() {
     assert_eq!(
         snapshot_json["active_files"][1]["stats"],
         json!(replay_stats)
+    );
+}
+
+#[tokio::test]
+async fn browser_http_storage_loads_v2_checkpoint_sidecars_and_replays_json() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    write_json_commit(
+        fixture.path(),
+        0,
+        &[r#"{"add":{"path":"data/a.parquet","size":10,"partitionValues":{"category":"A"}}}"#],
+    );
+    write_uuid_checkpoint(
+        fixture.path(),
+        1,
+        "11111111-1111-1111-1111-111111111111",
+        &[CheckpointRow::sidecar("part-00001.parquet")],
+    );
+    write_sidecar(
+        fixture.path(),
+        "part-00001.parquet",
+        &[CheckpointRow::add(
+            "data/b.parquet",
+            20,
+            BTreeMap::from([("category".to_string(), Some("B".to_string()))]),
+        )],
+    );
+    write_last_checkpoint(fixture.path(), 1, None);
+    write_json_commit(
+        fixture.path(),
+        2,
+        &[r#"{"add":{"path":"data/c.parquet","size":30,"partitionValues":{"category":"C"}}}"#],
+    );
+
+    let server = StaticDirectoryHttpServer::serve(fixture.path());
+    let manifest = BrowserDeltaLogManifest::new(
+        "gs://bucket/table",
+        vec![
+            server.object("_delta_log/00000000000000000000.json"),
+            server.object(
+                "_delta_log/00000000000000000001.checkpoint.11111111-1111-1111-1111-111111111111.parquet",
+            ),
+            server.object("_delta_log/_sidecars/part-00001.parquet"),
+            server.object("_delta_log/_last_checkpoint"),
+            server.object("_delta_log/00000000000000000002.json"),
+        ],
+    )
+    .expect("manifest should validate");
+
+    let resolver = SnapshotResolver::new(
+        BrowserHttpDeltaLogStorageHandler::new(manifest),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+    let snapshot = resolver
+        .resolve_snapshot(SnapshotResolutionRequest {
+            table_uri: "gs://bucket/table".to_string(),
+            snapshot_version: None,
+        })
+        .await
+        .expect("HTTP checkpoint should resolve");
+
+    assert_eq!(snapshot.snapshot_version, 2);
+    assert_eq!(
+        snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["data/b.parquet", "data/c.parquet"]
     );
 }
 
@@ -1040,6 +1114,132 @@ impl StorageHandler for InMemoryStorageHandler {
     ) -> Result<Option<Bytes>, QueryError> {
         Ok(self.bytes_by_path.get(relative_path).cloned())
     }
+}
+
+struct StaticDirectoryHttpServer {
+    address: String,
+    stop_tx: Option<mpsc::Sender<()>>,
+    server: Option<JoinHandle<()>>,
+}
+
+impl StaticDirectoryHttpServer {
+    fn serve(root: &Path) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("test listener should become nonblocking");
+        let address = listener.local_addr().expect("listener addr should resolve");
+        let root = root.to_path_buf();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let server = thread::spawn(move || serve_directory_requests(listener, root, stop_rx));
+
+        Self {
+            address: address.to_string(),
+            stop_tx: Some(stop_tx),
+            server: Some(server),
+        }
+    }
+
+    fn object(&self, relative_path: &str) -> BrowserDeltaLogObject {
+        BrowserDeltaLogObject::new(relative_path, self.url(relative_path))
+    }
+
+    fn url(&self, relative_path: &str) -> String {
+        format!("http://{}/{}", self.address, relative_path)
+    }
+}
+
+impl Drop for StaticDirectoryHttpServer {
+    fn drop(&mut self) {
+        if let Some(stop_tx) = self.stop_tx.take() {
+            let _ = stop_tx.send(());
+        }
+        if let Some(server) = self.server.take() {
+            server.join().expect("test server should shut down cleanly");
+        }
+    }
+}
+
+fn serve_directory_requests(listener: TcpListener, root: PathBuf, stop_rx: mpsc::Receiver<()>) {
+    loop {
+        if stop_rx.try_recv().is_ok() {
+            break;
+        }
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let request_path = read_request_path(&mut stream);
+                let Some(path) = confined_http_path(&root, &request_path) else {
+                    write_response(&mut stream, "404 Not Found", b"");
+                    continue;
+                };
+                match fs::read(path) {
+                    Ok(bytes) => write_response(&mut stream, "200 OK", &bytes),
+                    Err(_) => write_response(&mut stream, "404 Not Found", b""),
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+fn confined_http_path(root: &Path, request_path: &str) -> Option<PathBuf> {
+    let relative_path = request_path
+        .split_once('?')
+        .map(|(path, _)| path)
+        .unwrap_or(request_path)
+        .strip_prefix('/')?;
+    if relative_path.is_empty()
+        || Path::new(relative_path).components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return None;
+    }
+    Some(root.join(relative_path))
+}
+
+fn read_request_path(stream: &mut std::net::TcpStream) -> String {
+    let mut buffer = [0_u8; 4096];
+    let mut request = Vec::new();
+    loop {
+        let bytes_read = stream
+            .read(&mut buffer)
+            .expect("request bytes should be readable");
+        if bytes_read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..bytes_read]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+
+    let text = String::from_utf8(request).expect("request should be valid ASCII");
+    let request_line = text.lines().next().expect("request line should exist");
+    request_line
+        .split_whitespace()
+        .nth(1)
+        .expect("request path should exist")
+        .to_string()
+}
+
+fn write_response(stream: &mut std::net::TcpStream, status_line: &str, body: &[u8]) {
+    let response = format!(
+        "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .expect("response headers should be written");
+    stream
+        .write_all(body)
+        .expect("response body should be written");
 }
 
 fn assert_active_file_facts_match(
