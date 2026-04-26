@@ -1167,6 +1167,9 @@ fn serve_directory_requests(listener: TcpListener, root: PathBuf, stop_rx: mpsc:
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("accepted test stream should become blocking");
                 let request_path = read_request_path(&mut stream);
                 let Some(path) = confined_http_path(&root, &request_path) else {
                     write_response(&mut stream, "404 Not Found", b"");
