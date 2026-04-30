@@ -6,7 +6,8 @@ Current expectations:
 
 - CI compiles `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, `wasm-query-session`, `browser-sdk`, and `browser-engine-worker` for `wasm32-unknown-unknown`, runs host tests for the split browser crates, and runs dedicated `wasm32-unknown-unknown` smoke suites for `browser-sdk`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-engine-worker`.
 - `crates/wasm-http-object-store` now exposes transport-local metrics for extent-body bytes fetched, bytes reused from cache, and validation misses caused by object-identity drift.
-- `crates/wasm-query-session` keeps repeated browser-query bootstrap costs in-memory only; persistent-cache backends remain deferred.
+- Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`.
+- `crates/wasm-query-session` keeps repeated browser-query bootstrap costs in-memory only; persistent-cache hooks may exist lower in the stack, but OPFS / IndexedDB backends remain deferred.
 - The repo-grounded browser V1 is narrow runtime + streaming scan + in-memory session shell, not broad browser DataFusion.
 - The blocking artifact budget now targets the real `target/wasm32-unknown-unknown/release/browser_engine_worker.wasm` bundle through `tests/perf/report_browser_worker_artifact.sh`.
 - CI publishes a report-only host-proxy worker startup and memory baseline from `cargo test -p browser-engine-worker --locked report_worker_artifact_baseline -- --exact --nocapture`, while the wasm smoke validates the same report path on the browser target and the artifact report now states `session_shell = true` and `browser_datafusion = false`.
@@ -42,3 +43,4 @@ Benchmark work that should live here once the repo grows a stable browser bundle
 - bundle-size trend lines for the shipped worker artifact and any future app-level bundle
 
 These docs do not imply that live dashboards exist in this repository. Dashboarding remains external until a service-side telemetry pipeline exists.
+These docs also do not claim signed URL issuance, proxy-mode request issuance, audit logging, or production CORS/origin validation. Those remain external blockers outside repo-owned performance claims.

@@ -21,7 +21,8 @@ This evidence pack maps the repository-owned release claims to commands and arti
 | Browser dependency and artifact guardrails are enforced | `bash tests/security/verify_browser_dependency_guardrails.sh` |
 | Patch inventory state is verified | `bash tests/conformance/verify_patch_inventory_state.sh` |
 | The control-plane and browser seam is documented with canonical examples | `docs/program/browser-lakehouse-release-handoff.md` and `docs/program/browser-lakehouse-release-handoff-examples/` |
-| Supported browser queries keep native parity | `cargo test -p delta-control-plane --locked` and `cargo test -p wasm-query-runtime --locked` |
+| Supported browser queries keep native parity and structured fallback routing | `cargo test -p delta-control-plane --locked` and `cargo test -p wasm-query-runtime -p query-router --locked` |
+| The in-memory session shell and session-backed worker contract stay repo-owned and testable | `cargo test -p wasm-query-session --locked` and `cargo test -p browser-sdk -p browser-engine-worker --locked` |
 
 ## Verification Commands
 
@@ -34,15 +35,16 @@ cargo test -p native-query-runtime --locked
 cargo test -p wasm-http-object-store --locked
 cargo test -p wasm-parquet-engine --locked
 cargo test -p wasm-delta-snapshot --locked
-cargo test -p wasm-query-runtime --locked
-cargo test -p browser-sdk --locked
-cargo test -p browser-engine-worker --locked
-cargo check -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p browser-sdk -p browser-engine-worker --target wasm32-unknown-unknown --locked
+cargo test -p wasm-query-runtime -p query-router --locked
+cargo test -p wasm-query-session --locked
+cargo test -p browser-sdk -p browser-engine-worker --locked
+cargo check -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p wasm-query-session -p browser-sdk -p browser-engine-worker --target wasm32-unknown-unknown --locked
 cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --locked --test wasm_smoke
 cargo test -p browser-sdk --target wasm32-unknown-unknown --locked --test wasm_smoke
 cargo test -p wasm-parquet-engine --target wasm32-unknown-unknown --locked --test wasm_smoke
 cargo test -p wasm-delta-snapshot --target wasm32-unknown-unknown --locked --test wasm_smoke
 cargo test -p browser-engine-worker --target wasm32-unknown-unknown --locked --test wasm_smoke -- --nocapture
+cargo check -p wasm-query-session --target wasm32-unknown-unknown --locked
 bash tests/perf/report_browser_worker_artifact.sh
 bash tests/security/verify_browser_dependency_guardrails_test.sh
 bash tests/security/verify_browser_dependency_guardrails.sh

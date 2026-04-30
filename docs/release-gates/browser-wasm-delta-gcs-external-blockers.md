@@ -3,7 +3,7 @@
 - Date: 2026-03-31
 - Scope: work required for launch that is not implemented in this repository
 
-The repository can prove the browser engine, control-plane descriptor seam, worker artifact, and repo-level guardrails. It cannot prove the service and operational items below because the required code or infrastructure is not present here.
+The repository can prove the browser engine, control-plane descriptor seam, worker artifact, and repo-level guardrails. Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`, and the shipped V1 remains narrow runtime + streaming scan + in-memory session shell. It cannot prove the service and operational items below because the required code or infrastructure is not present here, and signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation stay outside repo-owned success claims.
 
 | Blocker | Owner | Current repo state | Required external proof |
 | --- | --- | --- | --- |

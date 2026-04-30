@@ -28,6 +28,7 @@ fn session_reuses_bootstrapped_snapshot_across_repeated_queries() {
             .map(|file| file.path.clone()),
     );
     let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let materialized_file_count = materialized.active_files().len();
     let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
         .expect("default browser runtime config should be supported");
 
@@ -51,36 +52,37 @@ fn session_reuses_bootstrapped_snapshot_across_repeated_queries() {
         .bootstrapped_snapshot()
         .cloned()
         .expect("first query should populate cached bootstrap state");
+    assert!(
+        cached_bootstrapped.active_files().len() < materialized_file_count,
+        "first-query bootstrap should stay pruned to the query-relevant files"
+    );
     let narrow_plan = session
         .build_execution_plan("events", &narrow_request)
         .expect("cached bootstrap state should support repeated narrow planning");
+    assert_eq!(narrow_plan.limit(), Some(2));
+    assert_eq!(
+        narrow_plan.scan().candidate_file_count(),
+        u64::try_from(cached_bootstrapped.active_files().len())
+            .expect("candidate file counts should fit into u64")
+    );
 
     drop(server);
+
+    let repeated_narrow_plan = session
+        .build_execution_plan("events", &narrow_request)
+        .expect("repeated planning should reuse the cached request-scoped bootstrap");
+    assert_eq!(repeated_narrow_plan, narrow_plan);
 
     let broad_request = query_request(
         &resolved_snapshot.table_uri,
         resolved_snapshot.snapshot_version,
         "SELECT id FROM axon_table ORDER BY id LIMIT 6",
     );
-    let broad_plan = session
+    let broad_error = session
         .build_execution_plan("events", &broad_request)
-        .expect("cached table state should still support broader follow-up planning");
+        .expect_err("broader follow-up planning must not reuse an incompatible cached bootstrap");
+    assert_eq!(broad_error.code, QueryErrorCode::ExecutionFailed);
 
-    let missing_request = query_request(
-        &resolved_snapshot.table_uri,
-        resolved_snapshot.snapshot_version,
-        "SELECT id FROM axon_table WHERE category = 'missing' LIMIT 1",
-    );
-    let second_result = runtime()
-        .block_on(session.sql("events", &missing_request))
-        .expect(
-            "repeated queries should reuse cached bootstrap state when pruning removes all files",
-        );
-
-    assert!(narrow_plan.scan().candidate_file_count() <= broad_plan.scan().candidate_file_count());
-    assert_eq!(narrow_plan.limit(), Some(2));
-    assert_eq!(broad_plan.limit(), Some(6));
-    assert_eq!(second_result.runtime_result.row_count, 0);
     assert_eq!(
         session
             .table("events")
@@ -103,26 +105,36 @@ fn session_evicts_cached_tables_when_memory_budget_is_exceeded() {
     );
     let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
     let materialized_bytes = materialized_bytes(&materialized);
-    let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), materialized_bytes)
-        .expect("default browser runtime config should be supported");
-    let bootstrapped = runtime()
-        .block_on(session.runtime().bootstrap_snapshot_metadata(&materialized))
-        .expect("loopback snapshot metadata bootstrap should succeed");
+    let mut session =
+        BrowserQuerySession::new(BrowserRuntimeConfig::default(), materialized_bytes * 2)
+            .expect("default browser runtime config should be supported");
+    let narrow_request = query_request(
+        &resolved_snapshot.table_uri,
+        resolved_snapshot.snapshot_version,
+        "SELECT id FROM axon_table WHERE category = 'A' ORDER BY id LIMIT 2",
+    );
 
     session
-        .cache_table("events_a", materialized.clone(), Some(bootstrapped.clone()))
+        .cache_table("events_a", materialized.clone(), None)
         .expect("first table should cache");
     assert!(session.contains_table("events_a"));
     assert_eq!(session.table_count(), 1);
 
     session
-        .cache_table("events_b", materialized, Some(bootstrapped))
-        .expect("second table should cache and force eviction");
+        .cache_table("events_b", materialized, None)
+        .expect("second table should fit exactly at the materialized-only budget");
+    assert_eq!(session.table_count(), 2);
+    assert_eq!(session.cached_bytes(), materialized_bytes * 2);
+
+    let query_result = runtime()
+        .block_on(session.sql("events_b", &narrow_request))
+        .expect("bootstrapping the active table should re-enforce the cache budget");
+    assert_eq!(query_result.runtime_result.row_count, 2);
 
     assert!(!session.contains_table("events_a"));
     assert!(session.contains_table("events_b"));
     assert_eq!(session.table_count(), 1);
-    assert_eq!(session.cached_bytes(), materialized_bytes);
+    assert!(session.cached_bytes() > materialized_bytes);
     assert!(session
         .table("events_b")
         .expect("remaining table should stay cached")
@@ -142,6 +154,7 @@ fn disposing_a_table_releases_cached_snapshot_state() {
             .map(|file| file.path.clone()),
     );
     let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let materialized_bytes = materialized_bytes(&materialized);
     let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
         .expect("default browser runtime config should be supported");
     let bootstrapped = runtime()
@@ -152,7 +165,7 @@ fn disposing_a_table_releases_cached_snapshot_state() {
         .cache_table("events", materialized, Some(bootstrapped))
         .expect("table should cache");
     let cached_bytes = session.cached_bytes();
-    assert!(cached_bytes > 0);
+    assert!(cached_bytes > materialized_bytes);
 
     let removed = session
         .remove_table("events")

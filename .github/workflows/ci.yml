@@ -45,8 +45,8 @@ jobs:
       - name: Test native query runtime
         run: cargo test -p native-query-runtime --locked
 
-      - name: Test wasm query runtime
-        run: cargo test -p wasm-query-runtime --locked
+      - name: Test wasm query runtime and router
+        run: cargo test -p wasm-query-runtime -p query-router --locked
 
       - name: Test wasm query session
         run: cargo test -p wasm-query-session --locked
@@ -86,13 +86,34 @@ jobs:
 
       - name: Validate repo-grounded browser V1 docs
         run: |
-          rg -q "narrow runtime \+ streaming scan \+ in-memory session shell" README.md docs/program/browser-lakehouse-release-handoff.md docs/program/browser-release-integration-runbook.md docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md tests/perf/README.md tests/security/README.md
-          rg -q "Delta snapshot reconstruction is already repo-owned" docs/program/browser-lakehouse-release-handoff.md
-          rg -q "browser DataFusion remains deferred|browser DataFusion as the default execution SKU" README.md docs/program/browser-lakehouse-engine-strategy.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md
-          rg -q "signed URL issuance" docs/program/browser-lakehouse-release-handoff.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md
-          rg -q "proxy-mode request issuance|Proxy-mode request issuance" docs/program/browser-lakehouse-release-handoff.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md
-          rg -q "audit logging" docs/program/browser-lakehouse-release-handoff.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md tests/security/README.md
-          rg -q "CORS/origin validation|CORS is validated" docs/program/browser-lakehouse-release-handoff.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md
+          for file in README.md docs/program/browser-lakehouse-release-handoff.md docs/program/browser-release-integration-runbook.md docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md tests/perf/README.md tests/security/README.md; do
+            rg -q "narrow runtime \+ streaming scan \+ in-memory session shell" "$file"
+          done
+          for file in README.md docs/program/browser-lakehouse-engine-strategy.md docs/program/browser-lakehouse-release-handoff.md docs/program/browser-release-integration-runbook.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md tests/perf/README.md tests/security/README.md; do
+            rg -q "Delta snapshot reconstruction is already repo-owned" "$file"
+          done
+          for file in README.md docs/program/browser-lakehouse-release-handoff.md docs/program/browser-release-integration-runbook.md docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md tests/perf/README.md tests/security/README.md; do
+            rg -q "in-memory only" "$file"
+          done
+          for file in README.md docs/program/browser-lakehouse-engine-strategy.md docs/program/browser-lakehouse-release-handoff.md docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md tests/perf/README.md tests/security/README.md; do
+            rg -q "OPFS / IndexedDB" "$file"
+          done
+          for file in README.md docs/program/browser-lakehouse-engine-strategy.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md tests/perf/README.md tests/security/README.md; do
+            rg -q "browser DataFusion remains deferred|browser DataFusion as the default execution SKU|broad browser DataFusion" "$file"
+          done
+          for file in README.md docs/program/browser-lakehouse-release-handoff.md docs/program/browser-release-integration-runbook.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md; do
+            rg -q "signed URL issuance" "$file"
+            rg -q "proxy-mode request issuance|Proxy-mode request issuance" "$file"
+          done
+          for file in README.md docs/program/browser-lakehouse-release-handoff.md docs/program/browser-release-integration-runbook.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md tests/security/README.md; do
+            rg -q "audit logging" "$file"
+          done
+          for file in README.md docs/program/browser-lakehouse-release-handoff.md docs/program/browser-release-integration-runbook.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md tests/security/README.md; do
+            rg -q "CORS/origin validation|CORS is validated" "$file"
+          done
+          for file in docs/program/browser-lakehouse-release-handoff.md docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md tests/security/README.md; do
+            rg -q "outside repo-owned success claims|remain external blockers|External blocker" "$file"
+          done
 
       - name: Report host-proxy browser worker startup and footprint baselines
         run: cargo test -p browser-engine-worker --locked report_worker_artifact_baseline -- --exact --nocapture

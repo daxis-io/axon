@@ -23,10 +23,13 @@ The recommended shape is:
 
 The repo-grounded V1 is therefore:
 
-- Delta snapshot reconstruction in repo-owned browser-safe code
+- Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`
 - streamed Parquet scan primitives inside `crates/wasm-parquet-engine`
 - runtime-owned Arrow IPC output from `crates/wasm-query-runtime`
 - a worker-owned in-memory session shell in `crates/wasm-query-session`
+
+The session shell remains in-memory only. Persistent-cache hooks may exist below it, but OPFS / IndexedDB backends remain deferred.
+Signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation stay outside repo-owned V1 success claims.
 
 Broad browser DataFusion remains deferred. V1 should not be described as a browser DataFusion launch.
 

@@ -6,14 +6,15 @@
 ## Documentation
 
 - [x] Browser compatibility is documented in `README.md` and backed by CI checks for `wasm32-unknown-unknown` coverage across the browser crates plus the internal worker artifact.
-- [x] Delta compatibility is documented in `README.md` and the browser engine strategy docs, including the `wasm-delta-snapshot`, `wasm-parquet-engine`, and `wasm-query-session` split.
+- [x] Delta compatibility is documented in `README.md` and the browser engine strategy docs, including already repo-owned snapshot reconstruction in `wasm-delta-snapshot` plus the `wasm-parquet-engine` / `wasm-query-session` split.
 - [x] Security reporting is documented in `SECURITY.md` and `tests/security/README.md`.
 - [x] Canonical handoff examples live in `docs/program/browser-lakehouse-release-handoff.md` and `docs/program/browser-lakehouse-release-handoff-examples/`, including the session-backed worker command contract and the worker artifact report contract for runtime SKU, session capability, Arrow IPC transport, and artifact identity.
+- [x] Repo-owned release evidence keeps shipped scope separate from external blockers: V1 is narrow runtime + streaming scan + in-memory session shell, while signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation remain outside repo-owned success claims.
 
 ## Release Gates
 
 - [x] `wasm32-unknown-unknown` compile coverage includes `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, `wasm-query-session`, `browser-sdk`, and `browser-engine-worker`.
-- [x] Host tests run for `wasm-parquet-engine`, `wasm-delta-snapshot`, `browser-sdk`, and `browser-engine-worker`.
+- [x] Host tests run for `wasm-query-runtime`, `query-router`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `browser-sdk`, and `browser-engine-worker`.
 - [x] Host tests run for `wasm-query-session` to verify repeated-query reuse, in-memory eviction, and dispose semantics.
 - [x] Dedicated `wasm32-unknown-unknown` smoke suites run in CI for `browser-sdk`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-engine-worker`.
 - [x] Browser release-artifact size reporting is enforced in CI on the real `browser-engine-worker.wasm` artifact.
@@ -44,6 +45,7 @@
 
 - [x] Browser runtime ships single-partition by default.
 - [x] Browser V1 is documented as narrow runtime + streaming scan + in-memory session shell, not broad browser DataFusion.
+- [x] The shipped session shell is documented as in-memory only; persistent-cache hooks may exist below it, but OPFS / IndexedDB backends remain deferred.
 - [x] Browser bundle size is tracked in CI on the real worker artifact.
 - [x] Browser packages do not depend on signing or service-account code.
 - [x] Hosted UDF runtime remains separate from browser runtime dependencies.

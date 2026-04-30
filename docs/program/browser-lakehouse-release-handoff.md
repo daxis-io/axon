@@ -15,6 +15,8 @@ This document is the repo-owned handoff bundle for the browser lakehouse release
 - Persistent-cache hooks exist in repo, but OPFS / IndexedDB backends are still deferred.
 - Signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation remain external blockers.
 
+Those external blockers stay outside repo-owned success claims in this handoff bundle.
+
 ## Canonical Contract Examples
 
 All examples below are checked into [`docs/program/browser-lakehouse-release-handoff-examples/`](./browser-lakehouse-release-handoff-examples).

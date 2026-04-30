@@ -3192,6 +3192,9 @@ fn spawn_stalling_footer_read_server(
             match listener.accept() {
                 Ok((mut footer_stream, _)) => {
                     footer_stream
+                        .set_nonblocking(false)
+                        .expect("accepted streams should allow blocking reads");
+                    footer_stream
                         .set_read_timeout(Some(Duration::from_millis(50)))
                         .expect("accepted streams should allow bounded footer reads");
                     if let Some(footer_request) = try_read_request(&mut footer_stream) {

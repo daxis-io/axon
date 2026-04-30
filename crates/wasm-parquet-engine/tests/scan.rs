@@ -272,6 +272,12 @@ impl RequestCapturingServer {
             while !stop_for_thread.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        if stop_for_thread.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        stream
+                            .set_nonblocking(false)
+                            .expect("accepted streams should allow blocking reads");
                         let request = read_request(&mut stream);
                         requests_for_thread
                             .lock()

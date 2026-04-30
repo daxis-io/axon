@@ -6,6 +6,7 @@
 This runbook covers only what exists in the repository today. It does not cover production control-plane deployment, signed URL issuance, live dashboard operation, or oncall procedures for an external service.
 
 The shipped browser V1 here is narrow runtime + streaming scan + in-memory session shell. It is not a broad browser DataFusion launch.
+Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`, while signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation remain external blockers rather than repo-owned release regressions.
 
 ## 1. Session Shell Regression
 

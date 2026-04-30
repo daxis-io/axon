@@ -1,258 +1,183 @@
 # Axon
 
-Axon is a Rust workspace for building a hybrid query platform with native and browser runtimes, shared query contracts, and supporting infrastructure for control-plane and UDF execution.
+Axon is a Rust workspace for a hybrid query engine over Delta Lake tables. The same `QueryRequest` runs inside a browser tab against cloud hosted Parquet files, or falls back to a native DataFusion runtime when the query needs more than the browser slice supports.
 
-## Workspace
+Status: early. The browser path is narrow today. It ships a deterministic planner and a small executor over a curated SQL subset. The native path is the correctness oracle. See [Scope and status](#scope-and-status).
 
-- `crates/query-contract` contains shared request and response types, capability flags, and fallback reasons.
-- `crates/native-query-runtime` is the native execution reference runtime.
-- `crates/wasm-query-runtime` is the browser-oriented runtime envelope for constrained object access and the narrow in-repo browser execution-plan path.
-- `crates/delta-control-plane` contains the in-repo control-plane slice for snapshot resolution and table policy enforcement.
-- `crates/wasm-http-object-store` contains the browser transport substrate for validated HTTP byte-range reads, extent caching, and browser-local object access.
-- `crates/wasm-parquet-engine` contains browser-side Parquet planning and scan primitives.
-- `crates/wasm-delta-snapshot` contains browser-safe Delta snapshot reconstruction.
-- `crates/query-router` contains browser-vs-native routing policy and structured fallback decisions.
-- `crates/wasm-query-session` contains the in-memory browser session shell that caches runtime-owned descriptors plus materialized and bootstrapped snapshot state between queries.
-- `crates/browser-sdk` contains the thin browser embedding surface: worker request envelopes, Arrow IPC result transport, and structured fallback propagation.
-- `crates/browser-engine-worker` contains the internal browser worker artifact used for wasm size, startup, and footprint reporting.
-- `crates/udf-abi` and `crates/udf-host-wasi` remain scaffolds around hosted UDF execution.
+## Why it exists
 
-## Getting Started
+Most analytics stacks round-trip every query through a query service. The browser asks the service, the service reads object storage, the service returns rows. Every dashboard needs that service running, and interactive exploration is bottlenecked by it.
+
+Axon takes a different approach:
+
+* If a query is safe to run in a browser tab, fetch only the Parquet byte ranges it needs over signed URLs and run it there.
+* Otherwise, route the same `QueryRequest` to the native DataFusion runtime.
+* Share one query contract, one Delta snapshot resolver, and one fallback taxonomy across both tiers.
+
+## How it works
+
+```text
+            ┌──────────────────────────────┐
+            │       Caller (browser)       │
+            │   QueryRequest → axon_table  │
+            └──────────────┬───────────────┘
+                           │
+                           ▼
+            ┌──────────────────────────────┐
+            │   query-router: browser?     │
+            │   (capabilities + policy)    │
+            └────────┬───────────┬─────────┘
+            yes      │           │     no / fallback
+                     ▼           ▼
+   ┌──────────────────────┐   ┌──────────────────────┐
+   │  Browser runtime     │   │  Native runtime      │
+   │  (WASM)              │   │  (DataFusion +       │
+   │   HTTP range reads   │   │   delta-rs)          │
+   │   Parquet planning   │   │   Full SQL           │
+   │   Narrow executor    │   │   Oracle for tests   │
+   └──────────┬───────────┘   └──────────┬───────────┘
+              │                          │
+              └────────────┬─────────────┘
+                           ▼
+            ┌──────────────────────────────┐
+            │   delta-control-plane        │
+            │   (snapshot resolution +     │
+            │    table policy)             │
+            └──────────────────────────────┘
+```
+
+Three rules keep the tiers consistent:
+
+1. **One contract.** `query-contract` defines the request, response, capability flags, and structured fallback reasons that both runtimes return.
+2. **Native is the oracle.** Every browser SQL case has a native counterpart in the test corpus. Results must match or the browser path fails closed to the native runtime.
+3. **No silent capability drift.** Anything the browser cannot do (unsupported aggregate, partition without a known type, multi-partition execution, missing footer stats, identity drift between bootstrap and read) returns a structured fallback instead of a wrong answer.
+
+## Repo tour
+
+The Rust workspace lives in [`crates/`](crates/), grouped by role.
+
+### Shared contract
+
+* [`query-contract`](crates/query-contract/). Request and response types, capability flags, fallback reasons.
+* [`query-router`](crates/query-router/). Decides browser vs. native and produces structured fallback decisions.
+
+### Native tier
+
+* [`native-query-runtime`](crates/native-query-runtime/). DataFusion plus delta-rs reference runtime. The correctness oracle.
+* [`delta-runtime-support`](crates/delta-runtime-support/). Feature detection and error mapping shared by Delta aware code.
+
+### Browser tier (compiles to `wasm32-unknown-unknown`)
+
+* [`wasm-http-object-store`](crates/wasm-http-object-store/). Validated HTTP byte range reads with extent caching. Redacts URL secrets in errors.
+* [`wasm-parquet-engine`](crates/wasm-parquet-engine/). Browser side Parquet planning and async footer plus scan primitives.
+* [`wasm-delta-snapshot`](crates/wasm-delta-snapshot/). Browser safe Delta snapshot reconstruction (log replay plus checkpoints).
+* [`wasm-query-runtime`](crates/wasm-query-runtime/). Constrained browser runtime envelope. Bootstraps snapshots, plans, prunes, and runs the supported SQL subset.
+* [`wasm-query-session`](crates/wasm-query-session/). In memory session shell. Caches materialized and bootstrapped snapshots across queries with a memory budget.
+* [`browser-sdk`](crates/browser-sdk/). Embedding surface. Worker request envelopes, Arrow IPC results, fallback propagation.
+* [`browser-engine-worker`](crates/browser-engine-worker/). Linked worker artifact used to measure WASM size, cold start, and memory footprint.
+
+### Trusted control plane
+
+* [`delta-control-plane`](crates/delta-control-plane/). Snapshot resolution and table policy enforcement. Mints the descriptor seam that a (not yet shipped) signing service will fill in with per file URLs.
+
+### Scaffolds (not yet wired up)
+
+* [`udf-abi`](crates/udf-abi/), [`udf-host-wasi`](crates/udf-host-wasi/). Placeholders for hosted UDF execution.
+
+## Scope and status
+
+### What works in repo today
+
+* Native SQL over Delta tables, with snapshot pinning, partition pruning, and execution derived metrics.
+* A browser runtime that bootstraps a snapshot, plans a candidate file set, prunes partitions and integer footer stats, and executes a curated SQL subset (filter, project, group, the common aggregates, output aligned `ORDER BY` / `LIMIT`).
+* Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`; the shipped browser V1 remains narrow runtime + streaming scan + in-memory session shell.
+* A query router that returns structured fallback decisions instead of guessing.
+* CI gates for `wasm32` build, host tests, WASM smoke tests, a real `browser-engine-worker.wasm` size budget, and dependency guardrails that prevent cloud SDKs from leaking into browser bundles.
+
+### What is not in this repo yet
+
+* A `services/query-api` HTTP service. signed URL issuance, proxy-mode request issuance, audit logging, request correlation, and CORS/origin validation are external blockers.
+* OPFS / IndexedDB persistent caches. The hook trait exists lower in the stack, but the session shell is in-memory only and no backend ships.
+* A broad browser DataFusion engine. The browser path is a focused interpreter, not a general SQL engine.
+
+The full launch checklist lives in [`docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md`](docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md). External dependencies are tracked in [`docs/release-gates/browser-wasm-delta-gcs-external-blockers.md`](docs/release-gates/browser-wasm-delta-gcs-external-blockers.md).
+
+## Quick start
 
 ```bash
+# Build the workspace.
 cargo check --workspace
+
+# Run the host side tests for the contract and the two runtimes.
 cargo test -p query-contract
 cargo test -p native-query-runtime
 cargo test -p wasm-query-runtime
-cargo test -p browser-engine-worker
-cargo test -p wasm-http-object-store
-cargo check -p wasm-query-runtime -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p browser-sdk -p browser-engine-worker --target wasm32-unknown-unknown
-cargo check -p wasm-parquet-engine -p wasm-delta-snapshot --locked
+
+# Confirm the browser crates still compile to wasm.
+cargo check \
+  -p wasm-query-runtime -p wasm-http-object-store \
+  -p wasm-parquet-engine -p wasm-delta-snapshot \
+  -p browser-sdk -p browser-engine-worker \
+  --target wasm32-unknown-unknown
 ```
 
-## Browser Runtime Envelope
+For the WASM smoke suites and the worker artifact gates, see [Development](#development).
 
-`crates/wasm-query-runtime` now contains the current in-repo EPIC-04 browser preflight slice:
+## Going deeper
 
-- `BrowserRuntimeConfig` validates the constrained browser envelope before any object access is attempted, including nonzero request, execution, and snapshot-preflight timeouts for runtime-owned reads and end-to-end browser execution.
-- `BrowserRuntimeConfig` also carries bounded metadata-fetch concurrency so browser snapshot bootstrap is not forced into unbounded serial I/O.
-- `BrowserRuntimeSession::new(config)` constructs a runtime handle with runtime-owned HTTP client timeout policy, while `BrowserRuntimeSession::with_reader(config, reader)` remains available for injected host-side readers and tests.
-- `BrowserObjectSource::from_url(url)` is the typed browser object source boundary for URL-backed access and only accepts HTTPS object URLs in production browser mode, with loopback-only plain HTTP reserved for native host-side tests.
-- `MaterializedBrowserFile::new(...)` and `MaterializedBrowserSnapshot::{new,new_with_partition_column_types}(...)` provide runtime-owned constructors for already-validated object sources while preserving explicit partition typing when the shared descriptor includes it.
-- `BrowserRuntimeSession::materialize_snapshot(&descriptor)` converts a shared HTTPS-only `BrowserHttpSnapshotDescriptor` into runtime-owned validated object sources while preserving file order, partition metadata, and partition column types without performing any network I/O.
-- `BrowserRuntimeSession::probe(&source, range)` delegates exact range reads to `crates/wasm-http-object-store` without reimplementing HTTP logic.
-- `BrowserRuntimeSession::read_parquet_footer_for_file(&file)` validates descriptor size against observed object metadata while bootstrapping raw footer bytes.
-- `BrowserRuntimeSession::read_parquet_metadata_for_file(&file)` decodes strongly typed Parquet file metadata from those footer bytes, including per-file integer `BrowserParquetFieldStats` min/max/null-count summaries when footer statistics are present.
-- `BootstrappedBrowserFile::new(...)` and `BootstrappedBrowserSnapshot::{new,new_with_partition_column_types}(...)` now validate size/path invariants up front, preserve bootstrapped object identity metadata when available, and expose bootstrapped state through read-only accessors instead of public mutable fields.
-- `BrowserRuntimeSession::bootstrap_snapshot_metadata(&snapshot)` now buffers metadata fetches up to the configured concurrency limit and enforces a snapshot-level deadline, while `BootstrappedBrowserSnapshot::{validate_uniform_schema,summarize}` produces deterministic Parquet payload-field summaries plus sorted partition-column names, explicit partition column types, and row/byte totals without attempting browser SQL execution.
-- `BrowserRuntimeSession::analyze_query_shape(&self, sql)` validates the current read-only browser SQL envelope over `axon_table` and returns a deterministic `BrowserQueryShape` without attempting execution.
-- `BrowserRuntimeSession::plan_query(&self, snapshot, request)` binds a supported `QueryRequest` to a bootstrapped snapshot and returns a `BrowserPlannedQuery` candidate-file set plus `BrowserPruningSummary`, including lossless partition pruning for `=`, `IN`, `IS NULL`, and `IS NOT NULL` filters and integer footer-stat pruning for `=`, `>`, `>=`, `<`, and `<=` predicates when complete file stats are available.
-- `BrowserRuntimeSession::build_execution_plan(&self, snapshot, request)` now lowers the currently accepted browser SQL subset into a typed `BrowserExecutionPlan` over the already-planned candidate-file set, including required scan columns, typed `WHERE` filters, passthrough output columns, grouped columns, and aliased aggregate measures for `AVG`, `ARRAY_AGG`, `BOOL_AND`, `BOOL_OR`, `COUNT`, `SUM`, `MIN`, and `MAX`, plus output-aligned `ORDER BY` / `LIMIT` metadata. `DISTINCT`, `HAVING`, wildcard projections, non-lossless projections, and non-output-aligned `ORDER BY` expressions remain rejected without attempting execution.
-- `BrowserRuntimeSession::execute_plan(&self, snapshot, plan)` now executes the current supported execution-plan subset against materialized browser HTTP objects by reading the planned candidate Parquet files, synthesizing partition columns from per-file `partition_values`, applying typed row filters, projecting passthrough outputs, executing narrow grouped and ungrouped aggregates, and preserving output-aligned `ORDER BY` / `LIMIT`.
-- `BrowserExecutionResult` now carries `QueryMetricsSummary` execution metrics including fetched bytes, wall-clock duration, touched files, and skipped files.
-- Browser execution plans now carry bootstrapped object ETags for candidate files, and execution rejects bootstrap-to-read identity drift instead of reading through object replacement.
-- Browser execution now fails closed to native fallback when a required partition column has no explicit type metadata or an unsupported partition type, so numeric-looking string partitions do not get reinterpreted during browser execution.
-- Deferred aggregate functions such as `ARRAY_AGG`, `BOOL_AND`, and `BOOL_OR` return structured native fallback instead of overclaiming browser support.
-- The runtime rejects multi-partition execution as a structured native fallback, rejects unsupported object URL schemes during source construction, rejects cloud credentials as a security policy violation, and allows plain HTTP only for loopback host-side tests.
+* Architecture and intent: [`docs/program/browser-lakehouse-engine-strategy.md`](docs/program/browser-lakehouse-engine-strategy.md)
+* Release handoff and integration runbook: [`docs/program/browser-lakehouse-release-handoff.md`](docs/program/browser-lakehouse-release-handoff.md), [`docs/program/browser-release-integration-runbook.md`](docs/program/browser-release-integration-runbook.md)
+* Browser dependency review: [`docs/program/browser-dependency-compatibility-review-checklist.md`](docs/program/browser-dependency-compatibility-review-checklist.md)
+* Observability contract: [`docs/program/browser-observability-contract.md`](docs/program/browser-observability-contract.md)
+* ADRs and epic notes: [`docs/adr/`](docs/adr/), [`docs/epics/`](docs/epics/)
+* Security reporting: [`SECURITY.md`](SECURITY.md)
 
-Local validation:
+## Development
+
+### WASM smoke suites
 
 ```bash
 cargo install wasm-bindgen-cli --version 0.2.114 --locked
-cargo test -p wasm-query-runtime --locked
-cargo test -p browser-sdk --target wasm32-unknown-unknown --locked --test wasm_smoke
-cargo test -p wasm-parquet-engine --target wasm32-unknown-unknown --locked --test wasm_smoke
-cargo test -p wasm-delta-snapshot --target wasm32-unknown-unknown --locked --test wasm_smoke
-cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --locked --test wasm_smoke
+
+cargo test -p browser-sdk            --target wasm32-unknown-unknown --locked --test wasm_smoke
+cargo test -p wasm-parquet-engine    --target wasm32-unknown-unknown --locked --test wasm_smoke
+cargo test -p wasm-delta-snapshot    --target wasm32-unknown-unknown --locked --test wasm_smoke
+cargo test -p wasm-query-runtime     --target wasm32-unknown-unknown --locked --test wasm_smoke
+cargo test -p wasm-http-object-store --target wasm32-unknown-unknown --locked --test wasm_smoke
+cargo test -p browser-engine-worker  --target wasm32-unknown-unknown --locked --test wasm_smoke -- --nocapture
 ```
 
-This slice is intentionally small: it does not register tables with DataFusion or implement any `services/query-api` behavior. The current browser output is a deterministic planning/pruning plus narrow execution-plan interpreter over the curated supported SQL corpus, not a broad browser SQL or DataFusion engine. The worker-facing embedding boundary now lives in `crates/browser-sdk`, which carries `QueryRequest` into a worker envelope and returns Arrow IPC bytes plus structured fallback metadata instead of row-oriented JSON.
-
-Browser V1 in this repository is narrow runtime + streaming scan + in-memory session shell. It is not a broad browser DataFusion launch.
-
-`crates/wasm-query-session` adds the thin in-memory layer above that runtime: it caches browser snapshot descriptors together with runtime-owned materialized and bootstrapped snapshots, reuses that state across repeated queries, and performs best-effort in-memory eviction by cached table bytes. It does not add persistence, cache SDK envelope types, or introduce browser DataFusion as a dependency. Persistent-cache hooks exist lower in the stack, but OPFS / IndexedDB backends remain deferred.
-
-## Browser Worker Artifact
-
-`crates/browser-engine-worker` is the internal wasm artifact that now links the browser runtime and SDK into one measurable worker-sized bundle:
-
-- `cold_start_report()` constructs the default browser runtime session, measures a local worker-initialization proxy inside the current host or wasm target, and reports serialized request/error envelope sizes plus the default access mode and timeout configuration.
-- `memory_baseline_report()` reports a non-blocking footprint proxy for the worker-facing runtime/session/config and envelope structs together with serialized JSON sizes.
-- `artifact_report()` combines both sections for host-side baseline publication, while the wasm smoke validates the same report path for the browser target.
-
-Local validation:
+### Worker artifact and security gates
 
 ```bash
 cargo test -p browser-engine-worker --locked
-cargo test -p browser-engine-worker --target wasm32-unknown-unknown --locked --test wasm_smoke -- --nocapture
 bash tests/perf/report_browser_worker_artifact.sh
 bash tests/security/verify_browser_dependency_guardrails.sh
 ```
 
-## Native Runtime Slice
+See [`tests/perf/README.md`](tests/perf/README.md) and [`tests/security/README.md`](tests/security/README.md) for the size, startup, footprint, and dependency guardrail gates.
 
-`crates/native-query-runtime` now contains the first callable EPIC-02 slice:
+### Optional GCS smokes
 
-- `bootstrap_table(table_uri)` opens a Delta table and validates the Sprint 1 compatibility envelope.
-- `execute_query(request)` registers the table as `axon_table`, executes read-only SQL, and returns Arrow batches, execution-derived scan metrics, wall-clock duration, and optional explain output.
-- `QueryRequest.snapshot_version` optionally pins execution to a specific Delta snapshot version; omitting it keeps the current latest-snapshot behavior.
-
-Local/offline validation:
-
-```bash
-cargo test -p native-query-runtime --locked
-```
-
-Sprint 2 tightens native metrics around the executed plan:
-
-- `bytes_fetched` is sourced from scan-level `bytes_scanned` metrics when available.
-- `files_touched` reports scanned files rather than total active snapshot files.
-- `files_skipped` reports partition/file pruning outcomes when the scan path exposes them, and otherwise falls back to `active_files - files_touched`.
-
-Offline native coverage now includes both the original unpartitioned SQL corpus and a partitioned latest-snapshot corpus that asserts pruning-visible metrics.
-Sprint 4 expands that local oracle coverage to:
-
-- a 12-case latest-snapshot unpartitioned SQL corpus,
-- a 10-case latest-snapshot partitioned SQL corpus with explicit scan-metric assertion flags so pruning expectations are only enforced where they are stable,
-- a 4-case snapshot-version SQL corpus over the local multi-version fixture.
-
-The local `cargo test -p native-query-runtime --locked` suite also carries deterministic negative-path coverage for:
-
-- invalid table locations,
-- unavailable or negative snapshot versions,
-- missing local data files,
-- Unix permission-denied local data files.
-
-These local failures are the baseline oracle checks; the GCS smokes below remain optional environment-backed coverage for cloud-specific paths.
-
-Env-gated GCS smoke validation:
+The native runtime ships env gated smokes against real Google Cloud Storage Delta tables. They assume Application Default Credentials are already available and the configured tables match a narrow fixture contract (partition column, expected snapshot versions, and so on). See [`crates/native-query-runtime`](crates/native-query-runtime/) for the full set. The most common starting points:
 
 ```bash
 AXON_GCS_TEST_TABLE_URI=gs://your-bucket/your-table \
-cargo test -p native-query-runtime --locked bootstrap_table_supports_env_gated_gcs_smoke -- --exact --nocapture
-```
+  cargo test -p native-query-runtime --locked \
+  bootstrap_table_supports_env_gated_gcs_smoke -- --exact --nocapture
 
-Env-gated GCS query execution smoke:
-
-```bash
 AXON_GCS_TEST_TABLE_URI=gs://your-bucket/your-table \
-cargo test -p native-query-runtime --locked execute_query_supports_env_gated_gcs_smoke -- --exact --nocapture
+  cargo test -p native-query-runtime --locked \
+  execute_query_supports_env_gated_gcs_smoke -- --exact --nocapture
 ```
 
-The GCS smoke path assumes standard Google ADC is already available in the shell or runner environment, and the configured table should be non-empty so the query smoke can assert `LIMIT 1` execution.
-GitHub Actions uses the same command behind an explicit `google-github-actions/auth` step and requires the `AXON_GCP_CREDENTIALS_JSON` secret when any env-gated GCS fixture is configured.
+CI runs the same commands behind `google-github-actions/auth` when `AXON_GCP_CREDENTIALS_JSON` is configured. Negative smokes (forbidden, not found, stale history, missing object) and the partitioned pruning and snapshot version smokes use additional `AXON_GCS_TEST_*` variables documented alongside their tests.
 
-Env-gated partitioned GCS pruning smoke:
+## Repository layout
 
-```bash
-AXON_GCS_TEST_PARTITIONED_TABLE_URI=gs://your-bucket/your-partitioned-table \
-cargo test -p native-query-runtime --locked execute_query_supports_env_gated_partitioned_gcs_pruning_smoke -- --exact --nocapture
-```
-
-Env-gated partitioned GCS snapshot-version smoke:
-
-```bash
-AXON_GCS_TEST_PARTITIONED_TABLE_URI=gs://your-bucket/your-partitioned-table \
-AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION=1 \
-cargo test -p native-query-runtime --locked execute_query_supports_env_gated_partitioned_gcs_snapshot_version_smoke -- --exact --nocapture
-```
-
-The partitioned GCS fixture contract is intentionally narrow:
-
-- the table must be partitioned by a `category` column,
-- the latest snapshot must include at least one row in the `category = 'C'` partition,
-- the pinned historical snapshot version must be readable and return a different `COUNT(*)` result than latest,
-- the latest pruning query should visibly skip at least one file so the smoke can assert `files_skipped > 0`.
-
-Env-gated negative GCS smokes:
-
-```bash
-AXON_GCS_TEST_FORBIDDEN_TABLE_URI=gs://your-bucket/forbidden-table \
-cargo test -p native-query-runtime --locked bootstrap_table_rejects_env_gated_forbidden_gcs_smoke -- --exact --nocapture
-
-AXON_GCS_TEST_NOT_FOUND_TABLE_URI=gs://your-bucket/missing-table \
-cargo test -p native-query-runtime --locked bootstrap_table_rejects_env_gated_not_found_gcs_smoke -- --exact --nocapture
-
-AXON_GCS_TEST_STALE_HISTORY_TABLE_URI=gs://your-bucket/history-trimmed-table \
-AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION=1 \
-cargo test -p native-query-runtime --locked execute_query_rejects_env_gated_stale_history_gcs_smoke -- --exact --nocapture
-
-AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI=gs://your-bucket/missing-object-table \
-cargo test -p native-query-runtime --locked execute_query_rejects_env_gated_missing_object_gcs_smoke -- --exact --nocapture
-```
-
-Negative fixture contract:
-
-- `AXON_GCS_TEST_FORBIDDEN_TABLE_URI` must point at a table path that exists but returns `403` or equivalent access denial for the runner identity.
-- `AXON_GCS_TEST_NOT_FOUND_TABLE_URI` must point at a table path that returns `404` or equivalent not-found behavior during bootstrap.
-- `AXON_GCS_TEST_STALE_HISTORY_TABLE_URI` and `AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION` must be configured together, and the table must have a readable latest snapshot whose configured historical version is no longer available.
-- `AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI` must point at a table whose log is readable but whose current snapshot references at least one missing data object; the smoke issues a full-table aggregate to force every current file to be opened.
-
-Fixture provisioning, IAM policy, and CI variable population for these negative smokes remain external dependencies outside this repository.
-Among the negative GCS fixtures, only the paired stale-history env vars are hard-validated in CI; the single-variable negative fixture URIs remain independently optional and simply skip when unset.
-
-## Trusted Control-Plane Slice
-
-`crates/delta-control-plane` now contains the first in-repo EPIC-03 slice:
-
-- `resolve_snapshot(request)` validates the table locator, resolves the latest or explicit historical Delta snapshot, and returns a metadata-only descriptor.
-- `resolve_snapshot_with_policy(request, policy)` applies exact-match per-table allow/deny rules after URI normalization and before snapshot I/O.
-- `attach_browser_http_urls(resolved_snapshot, object_urls_by_path)` converts a resolved metadata-only snapshot into a browser HTTP descriptor once a trusted caller supplies exact per-file URLs.
-- `SnapshotAccessPolicy` canonicalizes equivalent locators so raw local paths, `file://` URLs, remote bucket/root variants, redundant-slash variants, whitespace variants, and trailing-slash variants cannot bypass table policy.
-- `SnapshotResolutionRequest` carries `table_uri` plus an optional `snapshot_version`.
-- `ResolvedSnapshotDescriptor` returns the normalized `table_uri`, the concrete resolved `snapshot_version`, explicit `partition_column_types`, and deterministically ordered active file metadata as `ResolvedFileDescriptor` entries.
-- `BrowserHttpSnapshotDescriptor` and `BrowserHttpFileDescriptor` provide the shared in-repo browser-facing contract for explicit per-file HTTPS access while preserving snapshot-level partition column typing for browser execution.
-
-This slice still does not mint signed URLs or proxy endpoints. Instead, it now defines and validates the descriptor seam that future trusted service code will use after it generates exact per-file browser-safe URLs. Tokens, credentials, audit fields, TTL, request correlation, and CORS/origin behavior remain out of repo.
-
-Local validation:
-
-```bash
-cargo test -p delta-runtime-support --locked
-cargo test -p delta-control-plane --locked
-```
-
-Cross-crate handoff coverage in `crates/delta-control-plane/tests` checks the resolved `table_uri` / `snapshot_version` pair against `crates/native-query-runtime`, validates the descriptor's active-file metadata and `partition_column_types` against the local fixture without changing `QueryRequest`, proves browser HTTP URL attachment preserves file order and metadata, proves invalid or duplicate browser URL inputs fail deterministically without leaking query strings, and confirms the resulting HTTPS descriptors materialize cleanly into `crates/wasm-query-runtime` runtime-owned object sources.
-Additional cross-crate browser-preflight coverage now resolves real local Delta snapshots, serves their Parquet files over loopback HTTP in host-side tests, bootstraps runtime-owned Parquet metadata and snapshot summaries through `crates/wasm-query-runtime`, proves the resulting `file_count`, `snapshot_version`, `total_bytes`, `total_rows`, integer footer stats, and curated browser-planning candidate-file counts remain aligned with the resolved snapshot descriptor and the native `COUNT(*)` / `files_touched` / `files_skipped` oracle, asserts typed browser execution-plan shape over the curated supported-browser SQL corpus, and now also executes that curated non-aggregate and aggregate browser corpus with normalized native-result parity across mixed-case integer and numeric-looking string partitions while keeping explicit native-only divergence checks and fail-closed identity-drift coverage so browser-envelope drift is caught in CI.
-Authenticated HTTP service work remains out of repo: there is still no `services/query-api` directory here, so signed URL issuance, proxy reads, audit logging, request correlation, and CORS/origin validation remain external blockers rather than shipped repository scope.
-
-## HTTP Range-Read Slice
-
-`crates/wasm-http-object-store` now contains the Sprint 2 browser transport substrate:
-
-- `HttpByteRange` models full, bounded, from-offset, and suffix reads without introducing signing or proxy assumptions.
-- `HttpRangeReader::with_client(client)` allows callers to inject a preconfigured `reqwest::Client` for timeout or redirect policy control.
-- `HttpRangeReader::read_range(url, range)` performs exact HTTP byte-range requests and returns `bytes::Bytes` plus `HttpObjectMetadata` without an extra payload copy.
-- `BrowserObjectRangeReader::read_extent(object, extent, known_metadata)` resolves object size and identity before validated HTTP reuse, merges adjacent or overlapping extents into reusable cache entries, and can serve the same extent seam from browser-local file/blob-like objects.
-- `BrowserTransportMetrics` reports extent-body bytes fetched, bytes reused, and validation misses, while `BrowserObjectRangeReader::cache_mode()` distinguishes memory-only operation from a persistent-cache hook.
-- `BrowserLocalObject` is the browser-local adapter for file/blob-backed reads, and the optional `PersistentExtentCache` trait is only a hook surface in this sprint; no OPFS or IndexedDB backend ships in-repo yet.
-- Returned metadata and error messages redact URL query strings and fragments so signed URL secrets do not leak past the transport boundary.
-- Deterministic local HTTP tests cover footer-style reads plus `401`, `403`, `404`, `416`, and malformed partial-response handling.
-- The crate maps transport failures to `ExecutionFailed`, auth failures to `AccessDenied`, and range/protocol failures to `ObjectStoreProtocol` using the existing shared query error taxonomy.
-
-Local validation:
-
-```bash
-cargo test -p wasm-http-object-store --locked
-cargo check -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p browser-sdk --target wasm32-unknown-unknown --locked
-cargo test -p wasm-http-object-store --target wasm32-unknown-unknown --locked --test wasm_smoke
-```
-
-This slice is intentionally small: it does not register tables with DataFusion, execute browser SQL, expose a browser SDK surface, or implement any `services/query-api` behavior. Signed URL issuance, read-proxy mode, audit logging, request correlation, and production-shape CORS/origin validation remain external blockers outside this repository.
-
-## Release Gates
-
-Browser launch readiness is now tracked in the release checklist and supporting docs:
-
-- `docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md` captures the browser compatibility, Delta compatibility, security reporting, and size-budget gates for the new architecture.
-- `tests/perf/README.md` documents the real `browser-engine-worker.wasm` size gate plus the startup and memory baseline commands.
-- `tests/security/README.md` points at the in-repo policy tests, dependency guardrails, bundle inspection, and the private reporting path in `SECURITY.md`.
-- CI now checks `wasm32-unknown-unknown` compatibility for `wasm-http-object-store`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, `browser-sdk`, and `browser-engine-worker`, runs host tests for the split browser crates, runs dedicated `wasm32-unknown-unknown` smoke suites for `browser-sdk`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-engine-worker`, enforces a real `browser-engine-worker.wasm` size budget, publishes host-proxy startup plus footprint reports from the worker baseline tests, regression-checks the browser dependency guardrail parser, and now guards patch-inventory state against template drift.
-
-## Repository Layout
-
-- `crates/` contains the Rust workspace packages.
-- `tests/conformance/` contains scaffold checks plus native SQL corpora whose partition-pruning expectations now serve as the local oracle for narrow browser-planning parity coverage.
-- `tests/perf/` contains performance budget notes, the browser worker artifact size gate, and benchmark scaffolding.
-- `tests/security/` contains security reporting guidance, browser dependency and bundle guardrails, and will grow into service-level secret/CORS coverage once `services/query-api` exists.
-- `.github/workflows/ci.yml` contains the CI configuration.
+* [`crates/`](crates/). Rust workspace packages. See [Repo tour](#repo-tour).
+* [`tests/conformance/`](tests/conformance/). Native SQL corpora that double as the oracle for the browser planner and executor.
+* [`tests/perf/`](tests/perf/). Performance budgets, the `browser-engine-worker.wasm` size gate, and benchmark scaffolding.
+* [`tests/security/`](tests/security/). Security reporting guidance, browser dependency and bundle guardrails.
+* [`docs/`](docs/). Program, ADR, epic, plan, and release gate documentation.
+* [`.github/workflows/ci.yml`](.github/workflows/ci.yml). CI configuration.
