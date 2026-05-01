@@ -40,6 +40,12 @@ test('maps a prod-like Delta fixture from log inputs to resolved active output',
   );
   await expect(page.getByTestId('active-data-file-urls')).not.toContainText('category=A');
   await expect(page.getByTestId('active-data-file-urls')).not.toContainText('category=C');
+  await expect(page.getByTestId('pruning-preflight')).toContainText('value >= 90');
+  await expect(page.getByTestId('pruning-preflight')).toContainText('files_touched 1');
+  await expect(page.getByTestId('pruning-preflight')).toContainText('files_skipped 1');
+  await expect(page.getByTestId('pruning-preflight')).toContainText('category=B');
+  await expect(page.getByTestId('pruning-preflight')).toContainText('skipped');
+  await expect(page.getByTestId('pruning-preflight')).toContainText('category=D');
   await expect(page.getByTestId('parquet-preflight')).toContainText('category=B');
   await expect(page.getByTestId('parquet-preflight')).toContainText('category=D');
   await expect(page.getByTestId('parquet-preflight')).toContainText('rows 2');

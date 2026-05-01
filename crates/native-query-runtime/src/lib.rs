@@ -659,7 +659,10 @@ fn collect_query_metrics(
         duration_ms: wall_clock_duration_ms(operation_started_at),
         files_touched,
         files_skipped,
+        row_groups_touched: 0,
+        row_groups_skipped: 0,
         footer_reads: None,
+        rows_emitted: 0,
         snapshot_bootstrap_duration_ms: None,
         access_mode: None,
     })

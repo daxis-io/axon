@@ -150,7 +150,10 @@ fn query_response_serializes_without_absent_fallback_reason() {
             duration_ms: 12,
             files_touched: 3,
             files_skipped: 1,
+            row_groups_touched: 5,
+            row_groups_skipped: 2,
             footer_reads: None,
+            rows_emitted: 7,
             snapshot_bootstrap_duration_ms: None,
             access_mode: None,
         },
@@ -172,7 +175,10 @@ fn query_response_serializes_without_absent_fallback_reason() {
                 "bytes_fetched": 4096,
                 "duration_ms": 12,
                 "files_touched": 3,
-                "files_skipped": 1
+                "files_skipped": 1,
+                "row_groups_touched": 5,
+                "row_groups_skipped": 2,
+                "rows_emitted": 7
             }
         })
     );
@@ -192,7 +198,10 @@ fn query_response_serializes_browser_telemetry_when_present() {
             duration_ms: 12,
             files_touched: 3,
             files_skipped: 1,
+            row_groups_touched: 5,
+            row_groups_skipped: 2,
             footer_reads: Some(3),
+            rows_emitted: 7,
             snapshot_bootstrap_duration_ms: Some(8),
             access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
         },
@@ -215,7 +224,10 @@ fn query_response_serializes_browser_telemetry_when_present() {
                 "duration_ms": 12,
                 "files_touched": 3,
                 "files_skipped": 1,
+                "row_groups_touched": 5,
+                "row_groups_skipped": 2,
                 "footer_reads": 3,
+                "rows_emitted": 7,
                 "snapshot_bootstrap_duration_ms": 8,
                 "access_mode": "browser_safe_http"
             }

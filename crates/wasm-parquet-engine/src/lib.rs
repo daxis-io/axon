@@ -15,7 +15,7 @@ use bytes::Bytes;
 use futures_util::{
     future::BoxFuture,
     stream::{self, BoxStream},
-    FutureExt, Stream, StreamExt, TryStreamExt,
+    FutureExt, StreamExt, TryStreamExt,
 };
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::AsyncFileReader;
@@ -245,11 +245,37 @@ pub enum ParquetScalarValue {
 
 pub type ParquetInputRow = BTreeMap<String, ParquetScalarValue>;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ParquetIntegerComparison {
+    Eq(i64),
+    Gt(i64),
+    Gte(i64),
+    Lt(i64),
+    Lte(i64),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParquetRowGroupPruningPredicate {
+    pub column: String,
+    pub comparison: ParquetIntegerComparison,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ParquetRowGroupPlan {
+    pub row_groups: Vec<usize>,
+    pub row_groups_touched: u64,
+    pub row_groups_skipped: u64,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ScanTargetMetricsSnapshot {
-    pub files_opened: u64,
+    pub files_touched: u64,
+    pub files_skipped: u64,
+    pub row_groups_touched: u64,
+    pub row_groups_skipped: u64,
     pub rows_emitted: u64,
     pub bytes_fetched: u64,
+    pub footer_reads: u64,
     pub metadata_probe_round_trips: u64,
 }
 
@@ -342,13 +368,25 @@ impl ScanTargetMetricsHandle for AggregateScanTargetMetricsHandle {
             .fold(
                 ScanTargetMetricsSnapshot::default(),
                 |mut aggregate, snapshot| {
-                    aggregate.files_opened =
-                        aggregate.files_opened.saturating_add(snapshot.files_opened);
+                    aggregate.files_touched = aggregate
+                        .files_touched
+                        .saturating_add(snapshot.files_touched);
+                    aggregate.files_skipped = aggregate
+                        .files_skipped
+                        .saturating_add(snapshot.files_skipped);
+                    aggregate.row_groups_touched = aggregate
+                        .row_groups_touched
+                        .saturating_add(snapshot.row_groups_touched);
+                    aggregate.row_groups_skipped = aggregate
+                        .row_groups_skipped
+                        .saturating_add(snapshot.row_groups_skipped);
                     aggregate.rows_emitted =
                         aggregate.rows_emitted.saturating_add(snapshot.rows_emitted);
                     aggregate.bytes_fetched = aggregate
                         .bytes_fetched
                         .saturating_add(snapshot.bytes_fetched);
+                    aggregate.footer_reads =
+                        aggregate.footer_reads.saturating_add(snapshot.footer_reads);
                     aggregate.metadata_probe_round_trips = aggregate
                         .metadata_probe_round_trips
                         .saturating_add(snapshot.metadata_probe_round_trips);
@@ -627,14 +665,36 @@ pub async fn stream_scan_target_batches(
     required_columns: &[String],
     partition_column_types: &BTreeMap<String, PartitionColumnType>,
     request_timeout: Option<Duration>,
-) -> Result<
-    ScanTargetBatchStream<impl Stream<Item = Result<RecordBatch, QueryError>> + 'static>,
-    QueryError,
-> {
+) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
+{
+    stream_scan_target_batches_with_row_group_pruning(
+        reader,
+        target,
+        required_columns,
+        partition_column_types,
+        request_timeout,
+        None,
+    )
+    .await
+}
+
+pub async fn stream_scan_target_batches_with_row_group_pruning(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    required_columns: &[String],
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    request_timeout: Option<Duration>,
+    row_group_predicate: Option<&ParquetRowGroupPruningPredicate>,
+) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
+{
     let metrics_handle = SharedScanTargetMetricsHandle::new(ScanTargetMetricsSnapshot {
-        files_opened: 1,
+        files_touched: 1,
+        files_skipped: 0,
+        row_groups_touched: 0,
+        row_groups_skipped: 0,
         rows_emitted: 0,
         bytes_fetched: 0,
+        footer_reads: 1,
         metadata_probe_round_trips: 0,
     });
     let metrics: Arc<dyn ScanTargetMetricsHandle + Send + Sync> = Arc::new(metrics_handle.clone());
@@ -653,12 +713,27 @@ pub async fn stream_scan_target_batches(
             )
         })
     })?;
+    let row_group_plan = plan_parquet_row_groups(builder.metadata(), row_group_predicate)?;
+    {
+        let mut snapshot = metrics_handle.snapshot.lock().map_err(|_| {
+            execution_runtime_error("scan target metrics handle was poisoned during planning")
+        })?;
+        snapshot.row_groups_touched = row_group_plan.row_groups_touched;
+        snapshot.row_groups_skipped = row_group_plan.row_groups_skipped;
+    }
+    if row_group_plan.row_groups.is_empty() {
+        return Ok(ScanTargetBatchStream {
+            batches: stream::empty().boxed(),
+            metrics,
+        });
+    }
     let projection =
         projection_mask_for_required_columns(builder.parquet_schema(), target, required_columns);
     let target_for_stream = target.clone();
     let required_columns = required_columns.to_vec();
     let partition_column_types = partition_column_types.clone();
     let batches = builder
+        .with_row_groups(row_group_plan.row_groups)
         .with_projection(projection)
         .with_batch_size(DEFAULT_STREAM_BATCH_SIZE)
         .build()
@@ -688,7 +763,8 @@ pub async fn stream_scan_target_batches(
                 &partition_column_types,
                 &required_columns,
             )
-        });
+        })
+        .boxed();
 
     Ok(ScanTargetBatchStream { batches, metrics })
 }
@@ -785,6 +861,50 @@ pub async fn scan_target_input_rows(
             Ok(rows)
         })
         .await
+}
+
+pub fn plan_parquet_row_groups(
+    metadata: &ParquetMetaData,
+    predicate: Option<&ParquetRowGroupPruningPredicate>,
+) -> Result<ParquetRowGroupPlan, QueryError> {
+    let row_group_count = metadata.num_row_groups();
+    let all_row_groups = (0..row_group_count).collect::<Vec<_>>();
+    let Some(predicate) = predicate else {
+        return Ok(ParquetRowGroupPlan {
+            row_groups_touched: u64::try_from(row_group_count)
+                .map_err(|_| execution_runtime_error("parquet row-group counts overflowed u64"))?,
+            row_groups_skipped: 0,
+            row_groups: all_row_groups,
+        });
+    };
+    let Some(column_index) = parquet_column_index_for_name(metadata, &predicate.column) else {
+        return Ok(ParquetRowGroupPlan {
+            row_groups_touched: u64::try_from(row_group_count)
+                .map_err(|_| execution_runtime_error("parquet row-group counts overflowed u64"))?,
+            row_groups_skipped: 0,
+            row_groups: all_row_groups,
+        });
+    };
+
+    let mut retained = Vec::new();
+    let mut skipped = 0_u64;
+    for row_group_index in 0..row_group_count {
+        let row_group = metadata.row_group(row_group_index);
+        if row_group_integer_stats_match(row_group, column_index, &predicate.comparison) {
+            retained.push(row_group_index);
+        } else {
+            skipped = skipped.checked_add(1).ok_or_else(|| {
+                execution_runtime_error("parquet row-group skipped counts overflowed u64")
+            })?;
+        }
+    }
+
+    Ok(ParquetRowGroupPlan {
+        row_groups_touched: u64::try_from(retained.len())
+            .map_err(|_| execution_runtime_error("parquet row-group counts overflowed u64"))?,
+        row_groups_skipped: skipped,
+        row_groups: retained,
+    })
 }
 
 pub fn decode_parquet_input_rows(
@@ -1499,6 +1619,37 @@ fn parquet_integer_min_max(stats: &ParquetStatistics) -> Option<(Option<i64>, Op
             Some((stats.min_opt().copied(), stats.max_opt().copied()))
         }
         _ => None,
+    }
+}
+
+fn parquet_column_index_for_name(metadata: &ParquetMetaData, column_name: &str) -> Option<usize> {
+    let normalized_column = normalize_name(column_name);
+    metadata
+        .file_metadata()
+        .schema_descr()
+        .columns()
+        .iter()
+        .position(|column| normalize_name(&column.path().string()) == normalized_column)
+}
+
+fn row_group_integer_stats_match(
+    row_group: &parquet::file::metadata::RowGroupMetaData,
+    column_index: usize,
+    comparison: &ParquetIntegerComparison,
+) -> bool {
+    let Some(stats) = row_group.column(column_index).statistics() else {
+        return true;
+    };
+    let Some((Some(min_i64), Some(max_i64))) = parquet_integer_min_max(stats) else {
+        return true;
+    };
+
+    match comparison {
+        ParquetIntegerComparison::Eq(value) => min_i64 <= *value && max_i64 >= *value,
+        ParquetIntegerComparison::Gt(value) => max_i64 > *value,
+        ParquetIntegerComparison::Gte(value) => max_i64 >= *value,
+        ParquetIntegerComparison::Lt(value) => min_i64 < *value,
+        ParquetIntegerComparison::Lte(value) => min_i64 <= *value,
     }
 }
 

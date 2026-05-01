@@ -455,13 +455,58 @@ fn execution_metrics(
                 )
             })
         })?;
+    let row_groups_touched =
+        runtime_result
+            .scan_metrics
+            .iter()
+            .try_fold(0_u64, |total, metrics| {
+                total
+                    .checked_add(metrics.row_groups_touched)
+                    .ok_or_else(|| {
+                        QueryError::new(
+                            QueryErrorCode::ExecutionFailed,
+                            "browser session row-group touched totals overflowed u64",
+                            runtime_target(),
+                        )
+                    })
+            })?;
+    let row_groups_skipped =
+        runtime_result
+            .scan_metrics
+            .iter()
+            .try_fold(0_u64, |total, metrics| {
+                total
+                    .checked_add(metrics.row_groups_skipped)
+                    .ok_or_else(|| {
+                        QueryError::new(
+                            QueryErrorCode::ExecutionFailed,
+                            "browser session row-group skipped totals overflowed u64",
+                            runtime_target(),
+                        )
+                    })
+            })?;
+    let rows_emitted = runtime_result
+        .scan_metrics
+        .iter()
+        .try_fold(0_u64, |total, metrics| {
+            total.checked_add(metrics.rows_emitted).ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::ExecutionFailed,
+                    "browser session emitted-row totals overflowed u64",
+                    runtime_target(),
+                )
+            })
+        })?;
 
     Ok(QueryMetricsSummary {
         bytes_fetched,
         duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
         files_touched: plan.scan().candidate_file_count(),
         files_skipped: plan.pruning().files_pruned,
+        row_groups_touched,
+        row_groups_skipped,
         footer_reads: plan.footer_reads(),
+        rows_emitted,
         snapshot_bootstrap_duration_ms: plan.snapshot_bootstrap_duration_ms(),
         access_mode: plan.access_mode(),
     })

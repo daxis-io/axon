@@ -86,6 +86,19 @@ type ParquetPreflightFieldStats = {
   null_count?: DecimalString;
 };
 
+type PruningPreflightFile = {
+  path: string;
+  status: 'touch' | 'skip';
+  detail: string;
+};
+
+type PruningPreflightResult = {
+  filter: string;
+  files_touched: number;
+  files_skipped: number;
+  files: PruningPreflightFile[];
+};
+
 type ObjectKind = 'commit_json' | 'checkpoint_parquet' | 'last_checkpoint';
 
 type LogObjectDetail = FixtureManifest['objects'][number] & {
@@ -129,6 +142,7 @@ const commitActionsNode = requiredNode('[data-testid="commit-actions"]');
 const dataFilesNode = requiredNode('[data-testid="data-files"]');
 const activeFilesNode = requiredNode('[data-testid="active-files"]');
 const activeDataFileUrlsNode = requiredNode('[data-testid="active-data-file-urls"]');
+const pruningPreflightNode = requiredNode('[data-testid="pruning-preflight"]');
 const parquetPreflightNode = requiredNode('[data-testid="parquet-preflight"]');
 const inputOutputMapNode = requiredNode('[data-testid="input-output-map"]');
 const errorPanel = requiredNode('.error-panel') as HTMLElement;
@@ -189,6 +203,7 @@ function renderSnapshot(
   renderCommitActions(logObjectDetails);
   renderDataFiles(fixture, snapshot);
   renderActiveDataFileUrls(activeFiles);
+  renderPruningPreflight(planDeltaStatsPruning(activeFiles));
   renderParquetPreflight(parquetPreflight);
   activeFilesNode.replaceChildren(
     ...snapshot.active_files.map((file) => {
@@ -371,6 +386,64 @@ function renderParquetPreflight(files: ParquetPreflightFile[]): void {
   );
 }
 
+function renderPruningPreflight(result: PruningPreflightResult): void {
+  const summary = document.createElement('li');
+  summary.className = 'file-row active';
+  summary.append(
+    textBlock('path', result.filter),
+    textBlock(
+      'meta',
+      `files_touched ${result.files_touched}, files_skipped ${result.files_skipped}`,
+    ),
+  );
+
+  pruningPreflightNode.replaceChildren(
+    summary,
+    ...result.files.map((file) => {
+      const item = document.createElement('li');
+      item.className = `file-row ${file.status === 'skip' ? 'inactive' : 'active'}`;
+      item.append(
+        textBlock('status', file.status === 'skip' ? 'skipped' : 'touched'),
+        textBlock('path', file.path),
+        textBlock('detail', file.detail),
+      );
+      return item;
+    }),
+  );
+}
+
+function planDeltaStatsPruning(files: ActiveDataFile[]): PruningPreflightResult {
+  const column = 'value';
+  const threshold = 90;
+  const plannedFiles = files.map((file) => {
+    const stats = parseDeltaStats(file.stats);
+    const max = stats?.maxValues?.[column];
+    if (typeof max === 'number' && max < threshold) {
+      return {
+        path: file.path,
+        status: 'skip' as const,
+        detail: `max ${column} ${max} < ${threshold}`,
+      };
+    }
+    const min = stats?.minValues?.[column];
+    return {
+      path: file.path,
+      status: 'touch' as const,
+      detail:
+        typeof min === 'number' && typeof max === 'number'
+          ? `${column} range ${min}-${max}`
+          : 'stats unavailable',
+    };
+  });
+
+  return {
+    filter: `${column} >= ${threshold}`,
+    files_touched: plannedFiles.filter((file) => file.status === 'touch').length,
+    files_skipped: plannedFiles.filter((file) => file.status === 'skip').length,
+    files: plannedFiles,
+  };
+}
+
 function renderInputOutputMap(
   fixture: FixtureManifest,
   objects: LogObjectDetail[],
@@ -525,6 +598,22 @@ function formatStats(stats: string): string {
   }
 }
 
+function parseDeltaStats(
+  stats: string | undefined,
+): { minValues?: Record<string, number>; maxValues?: Record<string, number> } | undefined {
+  if (!stats) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(stats) as {
+      minValues?: Record<string, number>;
+      maxValues?: Record<string, number>;
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function formatParquetField(field: ParquetPreflightField): string {
   const logicalType = field.logical_type ?? field.converted_type;
   const typeLabel = logicalType ? `${field.physical_type}/${logicalType}` : field.physical_type;
@@ -571,6 +660,7 @@ function clearDetails(): void {
   dataFilesNode.replaceChildren();
   activeFilesNode.replaceChildren();
   activeDataFileUrlsNode.replaceChildren();
+  pruningPreflightNode.replaceChildren();
   parquetPreflightNode.replaceChildren();
   inputOutputMapNode.replaceChildren();
 }

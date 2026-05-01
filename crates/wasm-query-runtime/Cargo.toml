@@ -14,6 +14,7 @@ futures-util = "=0.3.32"
 parquet = { version = "=57.3.0", default-features = false }
 query-contract = { path = "../query-contract" }
 reqwest = { version = "=0.12.28", default-features = false }
+serde_json.workspace = true
 sqlparser = "=0.59.0"
 wasm-delta-snapshot = { path = "../wasm-delta-snapshot" }
 wasm-http-object-store = { path = "../wasm-http-object-store" }
@@ -21,7 +22,6 @@ wasm-parquet-engine = { path = "../wasm-parquet-engine" }
 
 [dev-dependencies]
 serde.workspace = true
-serde_json.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 deltalake = { version = "=0.31.1", features = ["datafusion", "gcs"] }

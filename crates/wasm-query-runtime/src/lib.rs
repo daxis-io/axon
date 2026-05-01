@@ -235,6 +235,7 @@ pub struct MaterializedBrowserFile {
     size_bytes: u64,
     partition_values: BTreeMap<String, Option<String>>,
     object_source: BrowserObjectSource,
+    delta_stats: Option<DeltaFileStats>,
 }
 
 impl MaterializedBrowserFile {
@@ -249,6 +250,7 @@ impl MaterializedBrowserFile {
             size_bytes,
             partition_values,
             object_source,
+            delta_stats: None,
         }
     }
 
@@ -267,6 +269,11 @@ impl MaterializedBrowserFile {
     pub fn object_source(&self) -> &BrowserObjectSource {
         &self.object_source
     }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct DeltaFileStats {
+    field_stats: BTreeMap<String, BrowserParquetFieldStats>,
 }
 
 /// Runtime-owned snapshot metadata derived from a validated browser HTTP snapshot descriptor.
@@ -1424,7 +1431,10 @@ impl BrowserRuntimeSession {
         } else {
             let mut planned = self.plan_query_from_analyzed(&bootstrapped_snapshot, &analyzed)?;
             if bootstrap_selection.files_pruned_before_bootstrap > 0 {
-                planned.pruning.used_partition_pruning = true;
+                planned.pruning.used_partition_pruning |=
+                    bootstrap_selection.used_partition_pruning;
+                planned.pruning.used_file_stats_pruning |=
+                    bootstrap_selection.used_file_stats_pruning;
                 planned.pruning.files_pruned = planned
                     .pruning
                     .files_pruned
@@ -1615,12 +1625,13 @@ impl BrowserRuntimeSession {
             .active_files
             .iter()
             .map(|file| {
-                Ok(MaterializedBrowserFile::new(
-                    file.path.clone(),
-                    file.size_bytes,
-                    file.partition_values.clone(),
-                    object_source_for_file(file)?,
-                ))
+                Ok(MaterializedBrowserFile {
+                    path: file.path.clone(),
+                    size_bytes: file.size_bytes,
+                    partition_values: file.partition_values.clone(),
+                    object_source: object_source_for_file(file)?,
+                    delta_stats: parse_delta_file_stats(file.stats.as_deref()),
+                })
             })
             .collect::<Result<Vec<_>, QueryError>>()?;
 
@@ -1777,6 +1788,7 @@ impl BrowserRuntimeSession {
         snapshot: &MaterializedBrowserSnapshot,
         candidate_files: &[&MaterializedBrowserFile],
         scan: &BrowserScanPlan,
+        filter: Option<&BrowserFilterExpr>,
     ) -> Result<
         (
             Vec<BrowserInputRow>,
@@ -1788,6 +1800,7 @@ impl BrowserRuntimeSession {
         let mut scan_metrics = Vec::with_capacity(candidate_files.len());
         let mut rows_scanned = 0_u64;
         let mut bytes_fetched = 0_u64;
+        let row_group_predicate = parquet_row_group_predicate_for_filter(filter);
 
         for file in candidate_files {
             let target =
@@ -1798,6 +1811,7 @@ impl BrowserRuntimeSession {
                 scan.required_columns(),
                 snapshot.partition_column_types(),
                 Some(Duration::from_millis(self.config.request_timeout_ms)),
+                row_group_predicate.as_ref(),
             )
             .await?;
             let metrics = scanned.metrics;
@@ -1864,7 +1878,7 @@ impl BrowserRuntimeSession {
         operation_started_at: Instant,
     ) -> Result<RuntimeExecutionArtifacts, QueryError> {
         let (rows, scan_metrics) = self
-            .read_candidate_input_rows(snapshot, candidate_files, plan.scan())
+            .read_candidate_input_rows(snapshot, candidate_files, plan.scan(), plan.filter())
             .await?;
         let mut result = if plan.aggregation().is_some() {
             execute_aggregate_plan_rows(plan, rows)?
@@ -2068,6 +2082,8 @@ struct MaterializedBootstrapSelection<'a> {
     files_pruned_before_bootstrap: u64,
     partition_columns: Vec<String>,
     applied_partition_constraints: Option<PartitionPruningConstraints>,
+    used_partition_pruning: bool,
+    used_file_stats_pruning: bool,
 }
 
 fn execution_plan_error(message: impl Into<String>) -> QueryError {
@@ -2158,16 +2174,79 @@ fn execution_metrics(
         acc.checked_add(metrics.bytes_fetched)
             .ok_or_else(|| execution_runtime_error("browser execution byte totals overflowed u64"))
     })?;
+    let row_groups_touched = scan_metrics.iter().try_fold(0_u64, |acc, metrics| {
+        acc.checked_add(metrics.row_groups_touched).ok_or_else(|| {
+            execution_runtime_error("browser execution row-group touched totals overflowed u64")
+        })
+    })?;
+    let row_groups_skipped = scan_metrics.iter().try_fold(0_u64, |acc, metrics| {
+        acc.checked_add(metrics.row_groups_skipped).ok_or_else(|| {
+            execution_runtime_error("browser execution row-group skipped totals overflowed u64")
+        })
+    })?;
+    let rows_emitted = scan_metrics.iter().try_fold(0_u64, |acc, metrics| {
+        acc.checked_add(metrics.rows_emitted).ok_or_else(|| {
+            execution_runtime_error("browser execution emitted-row totals overflowed u64")
+        })
+    })?;
 
     Ok(QueryMetricsSummary {
         bytes_fetched,
         duration_ms: wall_clock_duration_ms(operation_started_at),
         files_touched: plan.scan().candidate_file_count(),
         files_skipped: plan.pruning().files_pruned,
+        row_groups_touched,
+        row_groups_skipped,
         footer_reads: plan.footer_reads(),
+        rows_emitted,
         snapshot_bootstrap_duration_ms: plan.snapshot_bootstrap_duration_ms(),
         access_mode: plan.access_mode(),
     })
+}
+
+fn parquet_row_group_predicate_for_filter(
+    filter: Option<&BrowserFilterExpr>,
+) -> Option<wasm_parquet_engine::ParquetRowGroupPruningPredicate> {
+    let (column, comparison) = parquet_integer_comparison_for_filter(filter?)?;
+    Some(wasm_parquet_engine::ParquetRowGroupPruningPredicate { column, comparison })
+}
+
+fn parquet_integer_comparison_for_filter(
+    filter: &BrowserFilterExpr,
+) -> Option<(String, wasm_parquet_engine::ParquetIntegerComparison)> {
+    match filter {
+        BrowserFilterExpr::Compare {
+            source_column,
+            comparison,
+            literal: BrowserScalarValue::Int64(value),
+        } => {
+            let comparison = match comparison {
+                BrowserComparisonOp::Eq => {
+                    wasm_parquet_engine::ParquetIntegerComparison::Eq(*value)
+                }
+                BrowserComparisonOp::Gt => {
+                    wasm_parquet_engine::ParquetIntegerComparison::Gt(*value)
+                }
+                BrowserComparisonOp::Gte => {
+                    wasm_parquet_engine::ParquetIntegerComparison::Gte(*value)
+                }
+                BrowserComparisonOp::Lt => {
+                    wasm_parquet_engine::ParquetIntegerComparison::Lt(*value)
+                }
+                BrowserComparisonOp::Lte => {
+                    wasm_parquet_engine::ParquetIntegerComparison::Lte(*value)
+                }
+            };
+            Some((source_column.clone(), comparison))
+        }
+        BrowserFilterExpr::And { children } => children
+            .iter()
+            .find_map(parquet_integer_comparison_for_filter),
+        BrowserFilterExpr::Compare { .. }
+        | BrowserFilterExpr::InList { .. }
+        | BrowserFilterExpr::IsNull { .. }
+        | BrowserFilterExpr::IsNotNull { .. } => None,
+    }
 }
 
 fn wall_clock_duration_ms(operation_started_at: Instant) -> u64 {
@@ -2184,34 +2263,54 @@ fn select_materialized_files_for_bootstrap<'a>(
         .iter()
         .map(|column| normalize_name(column))
         .collect::<BTreeSet<_>>();
-    let partition_constraints = extract_browser_pruning_constraints(
+    let delta_stats_columns = materialized_delta_stats_columns(&all_files);
+    let pruning_constraints = extract_browser_pruning_constraints(
         analyzed.query.as_ref(),
         &normalized_partition_columns,
-        &BTreeSet::new(),
-    )
-    .map(|constraints| constraints.partition)
-    .filter(|constraints| !constraints.by_column.is_empty());
+        &delta_stats_columns,
+    );
 
-    let Some(partition_constraints) = partition_constraints else {
-        return Ok(MaterializedBootstrapSelection {
-            files: all_files,
-            files_pruned_before_bootstrap: 0,
-            partition_columns,
-            applied_partition_constraints: None,
-        });
-    };
+    let mut candidate_files = all_files.clone();
+    let mut applied_partition_constraints = None;
+    let mut used_partition_pruning = false;
 
-    let candidate_files = all_files
-        .iter()
-        .copied()
-        .filter(|file| materialized_partition_constraints_match(file, &partition_constraints))
-        .collect::<Vec<_>>();
+    if let Some(partition_constraints) = pruning_constraints
+        .as_ref()
+        .map(|constraints| &constraints.partition)
+        .filter(|constraints| !constraints.by_column.is_empty())
+    {
+        let partition_candidates = candidate_files
+            .iter()
+            .copied()
+            .filter(|file| materialized_partition_constraints_match(file, partition_constraints))
+            .collect::<Vec<_>>();
+        if partition_candidates.len() < candidate_files.len() {
+            used_partition_pruning = true;
+            applied_partition_constraints = Some(partition_constraints.clone());
+            candidate_files = partition_candidates;
+        }
+    }
+
+    let file_stats_constraint = pruning_constraints
+        .as_ref()
+        .and_then(|constraints| constraints.file_stats.as_ref());
+    let mut used_file_stats_pruning = false;
+    if let Some(file_stats_constraint) = file_stats_constraint.filter(|constraint| {
+        can_apply_materialized_file_stats_pruning(&candidate_files, constraint)
+    }) {
+        used_file_stats_pruning = true;
+        candidate_files
+            .retain(|file| materialized_file_stats_constraint_matches(file, file_stats_constraint));
+    }
+
     if candidate_files.len() == all_files.len() {
         return Ok(MaterializedBootstrapSelection {
             files: all_files,
             files_pruned_before_bootstrap: 0,
             partition_columns,
             applied_partition_constraints: None,
+            used_partition_pruning: false,
+            used_file_stats_pruning: false,
         });
     }
 
@@ -2226,7 +2325,9 @@ fn select_materialized_files_for_bootstrap<'a>(
         files: candidate_files,
         files_pruned_before_bootstrap,
         partition_columns,
-        applied_partition_constraints: Some(partition_constraints),
+        applied_partition_constraints,
+        used_partition_pruning,
+        used_file_stats_pruning,
     })
 }
 
@@ -2251,8 +2352,8 @@ fn planned_query_for_empty_bootstrap(
         candidate_rows: 0,
         partition_columns: bootstrap_selection.partition_columns.clone(),
         pruning: BrowserPruningSummary {
-            used_partition_pruning: bootstrap_selection.applied_partition_constraints.is_some(),
-            used_file_stats_pruning: false,
+            used_partition_pruning: bootstrap_selection.used_partition_pruning,
+            used_file_stats_pruning: bootstrap_selection.used_file_stats_pruning,
             files_retained: 0,
             files_pruned: total_file_count,
         },
@@ -3604,6 +3705,39 @@ fn materialized_partition_constraints_match(
     })
 }
 
+fn materialized_delta_stats_columns(files: &[&MaterializedBrowserFile]) -> BTreeSet<String> {
+    files
+        .iter()
+        .filter_map(|file| file.delta_stats.as_ref())
+        .flat_map(|stats| stats.field_stats.keys().cloned())
+        .collect()
+}
+
+fn can_apply_materialized_file_stats_pruning(
+    candidate_files: &[&MaterializedBrowserFile],
+    constraint: &FileStatsPruningConstraint,
+) -> bool {
+    !candidate_files.is_empty()
+        && candidate_files.iter().all(|file| {
+            materialized_file_delta_field_stats(file, &constraint.column)
+                .is_some_and(|stats| stats.min_i64.is_some() && stats.max_i64.is_some())
+        })
+}
+
+fn materialized_file_stats_constraint_matches(
+    file: &MaterializedBrowserFile,
+    constraint: &FileStatsPruningConstraint,
+) -> bool {
+    let Some(stats) = materialized_file_delta_field_stats(file, &constraint.column) else {
+        return false;
+    };
+    let (Some(min_i64), Some(max_i64)) = (stats.min_i64, stats.max_i64) else {
+        return false;
+    };
+
+    integer_stats_constraint_matches(min_i64, max_i64, constraint.comparison)
+}
+
 fn partition_constraints_match(
     file: &BootstrappedBrowserFile,
     constraints: &PartitionPruningConstraints,
@@ -3645,13 +3779,7 @@ fn file_stats_constraint_matches(
         return false;
     };
 
-    match constraint.comparison {
-        IntegerLiteralComparison::Eq(value) => min_i64 <= value && max_i64 >= value,
-        IntegerLiteralComparison::Gt(value) => max_i64 > value,
-        IntegerLiteralComparison::Gte(value) => max_i64 >= value,
-        IntegerLiteralComparison::Lt(value) => min_i64 < value,
-        IntegerLiteralComparison::Lte(value) => min_i64 <= value,
-    }
+    integer_stats_constraint_matches(min_i64, max_i64, constraint.comparison)
 }
 
 fn file_field_stats<'a>(
@@ -3662,6 +3790,64 @@ fn file_field_stats<'a>(
         .field_stats
         .iter()
         .find_map(|(key, value)| (normalize_name(key) == column).then_some(value))
+}
+
+fn integer_stats_constraint_matches(
+    min_i64: i64,
+    max_i64: i64,
+    comparison: IntegerLiteralComparison,
+) -> bool {
+    match comparison {
+        IntegerLiteralComparison::Eq(value) => min_i64 <= value && max_i64 >= value,
+        IntegerLiteralComparison::Gt(value) => max_i64 > value,
+        IntegerLiteralComparison::Gte(value) => max_i64 >= value,
+        IntegerLiteralComparison::Lt(value) => min_i64 < value,
+        IntegerLiteralComparison::Lte(value) => min_i64 <= value,
+    }
+}
+
+fn parse_delta_file_stats(stats: Option<&str>) -> Option<DeltaFileStats> {
+    let value = serde_json::from_str::<serde_json::Value>(stats?).ok()?;
+    let min_values = value.get("minValues")?.as_object()?;
+    let max_values = value.get("maxValues")?.as_object()?;
+    let null_counts = value
+        .get("nullCount")
+        .and_then(serde_json::Value::as_object);
+    let mut field_stats = BTreeMap::new();
+
+    for (column, min_value) in min_values {
+        let Some(min_i64) = min_value.as_i64() else {
+            continue;
+        };
+        let Some(max_i64) = max_values.get(column).and_then(serde_json::Value::as_i64) else {
+            continue;
+        };
+        let null_count = null_counts
+            .and_then(|values| values.get(column))
+            .and_then(serde_json::Value::as_u64);
+        field_stats.insert(
+            normalize_name(column),
+            BrowserParquetFieldStats {
+                min_i64: Some(min_i64),
+                max_i64: Some(max_i64),
+                null_count,
+            },
+        );
+    }
+
+    (!field_stats.is_empty()).then_some(DeltaFileStats { field_stats })
+}
+
+fn materialized_file_delta_field_stats<'a>(
+    file: &'a MaterializedBrowserFile,
+    column: &str,
+) -> Option<&'a BrowserParquetFieldStats> {
+    let normalized_column = normalize_name(column);
+    file.delta_stats
+        .as_ref()?
+        .field_stats
+        .iter()
+        .find_map(|(name, stats)| (normalize_name(name) == normalized_column).then_some(stats))
 }
 
 fn parse_limit_clause(limit_clause: &LimitClause) -> Result<Option<u64>, QueryError> {

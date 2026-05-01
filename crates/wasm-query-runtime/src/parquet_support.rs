@@ -78,16 +78,18 @@ pub(super) async fn stream_scan_target_batches(
     required_columns: &[String],
     partition_column_types: &BTreeMap<String, PartitionColumnType>,
     request_timeout: Option<Duration>,
+    row_group_predicate: Option<&parquet_engine::ParquetRowGroupPruningPredicate>,
 ) -> Result<
     parquet_engine::ScanTargetBatchStream<impl Stream<Item = Result<RecordBatch, QueryError>>>,
     QueryError,
 > {
-    parquet_engine::stream_scan_target_batches(
+    parquet_engine::stream_scan_target_batches_with_row_group_pruning(
         reader,
         target,
         required_columns,
         partition_column_types,
         request_timeout,
+        row_group_predicate,
     )
     .await
 }

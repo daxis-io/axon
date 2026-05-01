@@ -350,9 +350,18 @@ pub struct QueryMetricsSummary {
     pub files_touched: u64,
     /// Data files skipped by partition or file pruning when the runtime can report them; otherwise `0`.
     pub files_skipped: u64,
+    /// Parquet row groups decoded by the executed query plan when the runtime can report them.
+    #[serde(default)]
+    pub row_groups_touched: u64,
+    /// Parquet row groups skipped by row-group pruning when the runtime can report them.
+    #[serde(default)]
+    pub row_groups_skipped: u64,
     /// Footer-range reads performed during browser snapshot bootstrap when tracked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footer_reads: Option<u64>,
+    /// Rows emitted by the scan layer when the runtime can report them; otherwise `0`.
+    #[serde(default)]
+    pub rows_emitted: u64,
     /// Wall-clock duration of browser snapshot bootstrap when tracked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_bootstrap_duration_ms: Option<u64>,

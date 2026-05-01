@@ -16,6 +16,10 @@ use std::time::Duration;
 
 use arrow_array::{Array, BooleanArray, Int64Array, StringArray};
 use arrow_ipc::reader::StreamReader;
+use parquet::data_type::Int64Type;
+use parquet::file::properties::WriterProperties;
+use parquet::file::writer::SerializedFileWriter;
+use parquet::schema::parser::parse_message_type;
 use query_contract::{
     BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey,
     CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, PartitionColumnType,
@@ -1419,6 +1423,77 @@ fn runtime_prunes_files_from_delta_snapshot_before_opening_parquet() {
 }
 
 #[test]
+fn runtime_prunes_files_from_delta_stats_before_opening_parquet() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let fixture = TestTableFixture::create_partitioned();
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+    let mut resolved = runtime()
+        .block_on(session.resolve_delta_snapshot(
+            &resolver,
+            SnapshotResolutionRequest {
+                table_uri: fixture.raw_table_path(),
+                snapshot_version: None,
+            },
+        ))
+        .expect("delta snapshot should resolve");
+    for file in &mut resolved.active_files {
+        let category = file
+            .partition_values
+            .get("category")
+            .and_then(Option::as_deref)
+            .expect("partitioned fixture files should have category values");
+        file.stats = Some(match category {
+            "A" => delta_i64_stats(2, "value", 10, 30),
+            "B" => delta_i64_stats(3, "value", 20, 50),
+            "C" => delta_i64_stats(4, "value", 60, 60),
+            other => panic!("unexpected fixture category {other}"),
+        });
+    }
+    let server = RequestCapturingObjectServer::from_fixture_paths(
+        &fixture,
+        resolved.active_files.iter().map(|file| file.path.clone()),
+    );
+    let materialized = session
+        .materialize_resolved_snapshot(&resolved, |file| {
+            BrowserObjectSource::from_url(server.url_for_path(&file.path))
+        })
+        .expect("resolved snapshot should materialize into browser object sources");
+    let request = QueryRequest::new(
+        materialized.table_uri(),
+        "SELECT id FROM axon_table WHERE value >= 40 ORDER BY id",
+        ExecutionTarget::BrowserWasm,
+    );
+
+    let prepared = runtime()
+        .block_on(session.prepare_execution(&materialized, &request))
+        .expect("runtime should prune from Delta stats before parquet bootstrap");
+    let result = runtime()
+        .block_on(session.execute_plan(&materialized, prepared.execution_plan()))
+        .expect("delta-stats-pruned browser execution should succeed");
+    let fetched_paths = server.recorded_paths();
+
+    assert_eq!(prepared.planned_query().candidate_file_count, 2);
+    assert!(prepared.planned_query().pruning.used_file_stats_pruning);
+    assert_eq!(prepared.planned_query().pruning.files_pruned, 1);
+    assert_eq!(result.metrics().files_touched, 2);
+    assert_eq!(result.metrics().files_skipped, 1);
+    assert_eq!(result.metrics().footer_reads, Some(2));
+    assert_eq!(result.metrics().row_groups_touched, 2);
+    assert_eq!(result.metrics().row_groups_skipped, 0);
+    assert!(
+        fetched_paths
+            .iter()
+            .all(|path| !path.contains("category=A/")),
+        "Delta stats should skip the A file before any parquet fetch"
+    );
+}
+
+#[test]
 fn runtime_prunes_all_files_from_delta_snapshot_before_opening_parquet() {
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
         .expect("default config should be supported");
@@ -1466,6 +1541,66 @@ fn runtime_prunes_all_files_from_delta_snapshot_before_opening_parquet() {
     assert_eq!(result.metrics().files_touched, 0);
     assert_eq!(result.metrics().files_skipped, 3);
     assert!(result.rows().is_empty());
+}
+
+#[test]
+fn runtime_pushes_integer_filters_into_parquet_row_group_pruning() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let object = parquet_bytes_with_i64_row_groups(&[&[1_i64, 2, 3], &[10_i64, 11, 12]]);
+    let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+    let server = RequestCapturingObjectServer::from_objects(BTreeMap::from([(
+        "/part-000.parquet".to_string(),
+        object,
+    )]));
+    let resolved = ResolvedSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/row-group-pruning".to_string(),
+        snapshot_version: 0,
+        partition_column_types: BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
+        required_capabilities: CapabilityReport::default(),
+        active_files: vec![ResolvedFileDescriptor {
+            path: "part-000.parquet".to_string(),
+            size_bytes: object_size,
+            partition_values: BTreeMap::new(),
+            stats: None,
+        }],
+    };
+    let materialized = session
+        .materialize_resolved_snapshot(&resolved, |file| {
+            BrowserObjectSource::from_url(server.url_for_path(&file.path))
+        })
+        .expect("resolved snapshot should materialize into browser object sources");
+    let request = QueryRequest::new(
+        materialized.table_uri(),
+        "SELECT id FROM axon_table WHERE id >= 10 ORDER BY id",
+        ExecutionTarget::BrowserWasm,
+    );
+
+    let prepared = runtime()
+        .block_on(session.prepare_execution(&materialized, &request))
+        .expect("single parquet file should prepare");
+    let result = runtime()
+        .block_on(session.execute_plan(&materialized, prepared.execution_plan()))
+        .expect("row-group-pruned browser execution should succeed");
+
+    assert_eq!(
+        result
+            .rows()
+            .iter()
+            .map(|row| row.values()[0].clone())
+            .collect::<Vec<_>>(),
+        vec![
+            BrowserScalarValue::Int64(10),
+            BrowserScalarValue::Int64(11),
+            BrowserScalarValue::Int64(12),
+        ]
+    );
+    assert_eq!(result.metrics().files_touched, 1);
+    assert_eq!(result.metrics().files_skipped, 0);
+    assert_eq!(result.metrics().row_groups_touched, 1);
+    assert_eq!(result.metrics().row_groups_skipped, 1);
+    assert_eq!(result.metrics().rows_emitted, 3);
 }
 
 #[test]
@@ -1609,7 +1744,7 @@ fn execute_plan_to_arrow_ipc_streams_supported_query_results() {
         execution
             .scan_metrics
             .iter()
-            .map(|metrics| metrics.files_opened)
+            .map(|metrics| metrics.files_touched)
             .sum::<u64>(),
         prepared.planned_query().candidate_file_count
     );
@@ -3417,6 +3552,46 @@ fn parquet_like_object(prefix: &[u8], footer: &[u8]) -> Vec<u8> {
     object.extend_from_slice(&(footer.len() as u32).to_le_bytes());
     object.extend_from_slice(PARQUET_MAGIC);
     object
+}
+
+fn parquet_bytes_with_i64_row_groups(row_groups: &[&[i64]]) -> Vec<u8> {
+    let schema = Arc::new(
+        parse_message_type("message schema { REQUIRED INT64 id; }")
+            .expect("parquet schema should parse"),
+    );
+    let mut bytes = Vec::new();
+    let mut writer = SerializedFileWriter::new(
+        &mut bytes,
+        schema,
+        Arc::new(WriterProperties::builder().build()),
+    )
+    .expect("parquet writer should construct");
+
+    for values in row_groups {
+        let mut row_group = writer
+            .next_row_group()
+            .expect("row-group writer should construct");
+        if let Some(mut column) = row_group
+            .next_column()
+            .expect("column writer should be returned")
+        {
+            column
+                .typed::<Int64Type>()
+                .write_batch(values, None, None)
+                .expect("test parquet rows should write");
+            column.close().expect("column writer should close");
+        }
+        row_group.close().expect("row-group writer should close");
+    }
+
+    writer.close().expect("parquet writer should close");
+    bytes
+}
+
+fn delta_i64_stats(num_records: u64, column: &str, min: i64, max: i64) -> String {
+    format!(
+        r#"{{"numRecords":{num_records},"minValues":{{"{column}":{min}}},"maxValues":{{"{column}":{max}}},"nullCount":{{"{column}":0}}}}"#
+    )
 }
 
 fn execution_plan_corpus_path() -> PathBuf {

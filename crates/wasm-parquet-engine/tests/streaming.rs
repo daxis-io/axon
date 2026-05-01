@@ -12,13 +12,16 @@ use arrow_array::{Array, Int64Array, StringArray};
 use futures_util::TryStreamExt;
 use parquet::data_type::Int64Type;
 use parquet::file::properties::WriterProperties;
+use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
 use query_contract::PartitionColumnType;
 use tokio::time::timeout;
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{
-    stream_scan_target_batches, stream_scan_targets, ObjectSource, ScanTarget,
+    stream_scan_target_batches, stream_scan_target_batches_with_row_group_pruning,
+    stream_scan_targets, ObjectSource, ParquetIntegerComparison, ParquetRowGroupPruningPredicate,
+    ScanTarget,
 };
 
 #[tokio::test]
@@ -153,7 +156,11 @@ async fn streamed_scan_reports_rows_and_bytes_per_target() {
         .expect("batch stream should decode");
 
     let requests = server.recorded_requests();
-    assert_eq!(metrics.snapshot().files_opened, 1);
+    assert_eq!(metrics.snapshot().files_touched, 1);
+    assert_eq!(metrics.snapshot().files_skipped, 0);
+    assert_eq!(metrics.snapshot().row_groups_touched, 1);
+    assert_eq!(metrics.snapshot().row_groups_skipped, 0);
+    assert_eq!(metrics.snapshot().footer_reads, 1);
     assert_eq!(metrics.snapshot().rows_emitted, 3);
     assert_eq!(
         metrics.snapshot().bytes_fetched,
@@ -164,6 +171,66 @@ async fn streamed_scan_reports_rows_and_bytes_per_target() {
     );
     assert_eq!(metrics.snapshot().metadata_probe_round_trips, 2);
     assert_eq!(batches.len(), 1);
+}
+
+#[tokio::test]
+async fn row_group_stats_pruning_skips_ranges_after_footer_read() {
+    let object = parquet_bytes_with_i64_row_groups(&[&[1_i64, 2, 3], &[10_i64, 11, 12]]);
+    let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+    let first_row_group_range = first_row_group_byte_range(&object);
+    let server = RequestCapturingServer::new(object, Duration::from_millis(0), false);
+
+    let scan = stream_scan_target_batches_with_row_group_pruning(
+        &HttpRangeReader::new(),
+        &ScanTarget {
+            object_source: ObjectSource::new(server.url()),
+            object_etag: None,
+            path: "part-000.parquet".to_string(),
+            size_bytes: object_size,
+            partition_values: BTreeMap::new(),
+        },
+        &["id".to_string()],
+        &BTreeMap::new(),
+        None,
+        Some(&ParquetRowGroupPruningPredicate {
+            column: "id".to_string(),
+            comparison: ParquetIntegerComparison::Gte(10),
+        }),
+    )
+    .await
+    .expect("row-group-pruned stream should construct");
+
+    let metrics = Arc::clone(&scan.metrics);
+    let batches = scan
+        .batches
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("row-group-pruned stream should decode");
+
+    let requests = server.recorded_requests();
+    assert_eq!(
+        batches
+            .iter()
+            .flat_map(|batch| batch_i64_values(batch, "id"))
+            .collect::<Vec<_>>(),
+        vec![10, 11, 12]
+    );
+    assert_eq!(metrics.snapshot().files_touched, 1);
+    assert_eq!(metrics.snapshot().files_skipped, 0);
+    assert_eq!(metrics.snapshot().row_groups_touched, 1);
+    assert_eq!(metrics.snapshot().row_groups_skipped, 1);
+    assert_eq!(metrics.snapshot().footer_reads, 1);
+    assert_eq!(metrics.snapshot().rows_emitted, 3);
+    assert!(
+        requests.iter().skip(2).all(|request| {
+            request
+                .headers
+                .get("range")
+                .and_then(|range| bounded_request_range(range, object_size))
+                .is_none_or(|range| !ranges_overlap(range, first_row_group_range))
+        }),
+        "row group 0 data ranges should not be fetched after footer pruning"
+    );
 }
 
 #[tokio::test]
@@ -228,8 +295,11 @@ async fn stream_scan_targets_yields_batches_across_files_with_aggregate_metrics(
         batch_string_values(&batches[1], "category"),
         vec!["B".to_string(), "B".to_string(), "B".to_string()]
     );
-    assert_eq!(metrics.snapshot().files_opened, 2);
+    assert_eq!(metrics.snapshot().files_touched, 2);
     assert_eq!(metrics.snapshot().rows_emitted, 5);
+    assert_eq!(metrics.snapshot().row_groups_touched, 2);
+    assert_eq!(metrics.snapshot().row_groups_skipped, 0);
+    assert_eq!(metrics.snapshot().footer_reads, 2);
     assert_eq!(metrics.snapshot().metadata_probe_round_trips, 4);
     assert_eq!(
         metrics.snapshot().bytes_fetched,
@@ -245,6 +315,10 @@ async fn stream_scan_targets_yields_batches_across_files_with_aggregate_metrics(
 }
 
 fn parquet_bytes_with_single_i64_column(values: &[i64]) -> Vec<u8> {
+    parquet_bytes_with_i64_row_groups(&[values])
+}
+
+fn parquet_bytes_with_i64_row_groups(row_groups: &[&[i64]]) -> Vec<u8> {
     let schema = Arc::new(
         parse_message_type("message schema { REQUIRED INT64 id; }")
             .expect("parquet schema should parse"),
@@ -257,22 +331,30 @@ fn parquet_bytes_with_single_i64_column(values: &[i64]) -> Vec<u8> {
     )
     .expect("parquet writer should construct");
 
-    let mut row_group = writer
-        .next_row_group()
-        .expect("row-group writer should construct");
-    if let Some(mut column) = row_group
-        .next_column()
-        .expect("column writer should be returned")
-    {
-        column
-            .typed::<Int64Type>()
-            .write_batch(values, None, None)
-            .expect("test parquet rows should write");
-        column.close().expect("column writer should close");
+    for values in row_groups {
+        let mut row_group = writer
+            .next_row_group()
+            .expect("row-group writer should construct");
+        if let Some(mut column) = row_group
+            .next_column()
+            .expect("column writer should be returned")
+        {
+            column
+                .typed::<Int64Type>()
+                .write_batch(values, None, None)
+                .expect("test parquet rows should write");
+            column.close().expect("column writer should close");
+        }
+        row_group.close().expect("row-group writer should close");
     }
-    row_group.close().expect("row-group writer should close");
     writer.close().expect("file writer should close");
     bytes
+}
+
+fn first_row_group_byte_range(object: &[u8]) -> (u64, u64) {
+    let reader = SerializedFileReader::new(bytes::Bytes::copy_from_slice(object))
+        .expect("parquet object should decode");
+    reader.metadata().row_group(0).column(0).byte_range()
 }
 
 fn batch_i64_values(batch: &arrow_array::RecordBatch, column_name: &str) -> Vec<i64> {
@@ -419,6 +501,25 @@ fn requested_bytes(request: &CapturedRequest, object_size: u64) -> u64 {
     end.checked_sub(start)
         .and_then(|length| length.checked_add(1))
         .expect("bounded range length should not overflow")
+}
+
+fn bounded_request_range(range_header: &str, object_size: u64) -> Option<(u64, u64)> {
+    let range = range_header.strip_prefix("bytes=")?;
+    if let Some(length) = range.strip_prefix('-') {
+        let length = length.parse::<u64>().ok()?;
+        let start = object_size.checked_sub(length)?;
+        return Some((start, object_size.checked_sub(1)?));
+    }
+    let (start, end) = range.split_once('-')?;
+    let start = start.parse::<u64>().ok()?;
+    if end.is_empty() {
+        return Some((start, object_size.checked_sub(1)?));
+    }
+    Some((start, end.parse::<u64>().ok()?))
+}
+
+fn ranges_overlap(left: (u64, u64), right: (u64, u64)) -> bool {
+    left.0 <= right.1 && right.0 <= left.1
 }
 
 struct RequestCapturingServer {
