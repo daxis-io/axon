@@ -32,6 +32,14 @@ test('maps a prod-like Delta fixture from log inputs to resolved active output',
   await expect(page.getByTestId('data-files')).toContainText('inactive');
   await expect(page.getByTestId('active-files')).toContainText('category=B');
   await expect(page.getByTestId('active-files')).toContainText('category=D');
+  await expect(page.getByTestId('active-data-file-urls')).toContainText(
+    '/fixtures/prod-like/table/category=B/',
+  );
+  await expect(page.getByTestId('active-data-file-urls')).toContainText(
+    '/fixtures/prod-like/table/category=D/',
+  );
+  await expect(page.getByTestId('active-data-file-urls')).not.toContainText('category=A');
+  await expect(page.getByTestId('active-data-file-urls')).not.toContainText('category=C');
   await expect(page.getByTestId('input-output-map')).toContainText('checkpoint seed');
   await expect(page.getByTestId('input-output-map')).toContainText('replay commit 3');
 });

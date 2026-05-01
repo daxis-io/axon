@@ -18,12 +18,14 @@ type FixtureManifest = {
     size_bytes?: number;
     etag?: string;
   }>;
-  data_files?: Array<{
-    relative_path: string;
-    url_path: string;
-    size_bytes: number;
-    partition_values: Record<string, string>;
-  }>;
+  data_files?: BrowserDataFileInventory[];
+};
+
+type BrowserDataFileInventory = {
+  relative_path: string;
+  url_path: string;
+  size_bytes: number;
+  partition_values: Record<string, string>;
 };
 
 type ResolvedSnapshot = {
@@ -36,6 +38,11 @@ type ResolvedSnapshot = {
     partition_values: Record<string, string | null>;
     stats?: string;
   }>;
+};
+
+type ActiveDataFile = ResolvedSnapshot['active_files'][number] & {
+  url_path: string;
+  absolute_url: string;
 };
 
 type ObjectKind = 'commit_json' | 'checkpoint_parquet' | 'last_checkpoint';
@@ -80,6 +87,7 @@ const logObjectsNode = requiredNode('[data-testid="log-objects"]');
 const commitActionsNode = requiredNode('[data-testid="commit-actions"]');
 const dataFilesNode = requiredNode('[data-testid="data-files"]');
 const activeFilesNode = requiredNode('[data-testid="active-files"]');
+const activeDataFileUrlsNode = requiredNode('[data-testid="active-data-file-urls"]');
 const inputOutputMapNode = requiredNode('[data-testid="input-output-map"]');
 const errorPanel = requiredNode('.error-panel') as HTMLElement;
 const errorNode = requiredNode('[data-testid="error"]');
@@ -132,6 +140,9 @@ function renderSnapshot(
   renderLogObjects(logObjectDetails);
   renderCommitActions(logObjectDetails);
   renderDataFiles(fixture, snapshot);
+  renderActiveDataFileUrls(
+    fixture.data_files === undefined ? [] : activeDataFiles(fixture, snapshot),
+  );
   activeFilesNode.replaceChildren(
     ...snapshot.active_files.map((file) => {
       const item = document.createElement('li');
@@ -150,6 +161,25 @@ function renderSnapshot(
     }),
   );
   renderInputOutputMap(fixture, logObjectDetails, snapshot);
+}
+
+function activeDataFiles(fixture: FixtureManifest, snapshot: ResolvedSnapshot): ActiveDataFile[] {
+  const dataFilesByPath = new Map(
+    (fixture.data_files ?? []).map((file) => [file.relative_path, file]),
+  );
+
+  return snapshot.active_files.map((file) => {
+    const manifestFile = dataFilesByPath.get(file.path);
+    if (!manifestFile) {
+      throw new Error(`active file ${file.path} was missing from fixture data_files`);
+    }
+
+    return {
+      ...file,
+      url_path: manifestFile.url_path,
+      absolute_url: new URL(manifestFile.url_path, window.location.href).toString(),
+    };
+  });
 }
 
 function snapshotStatus(fixture: FixtureManifest, snapshot: ResolvedSnapshot): string {
@@ -223,6 +253,28 @@ function renderDataFiles(fixture: FixtureManifest, snapshot: ResolvedSnapshot): 
         textBlock('path', file.relative_path),
         textBlock('meta', `${formatBytes(file.size_bytes)}, ${formatPartitions(file.partition_values)}`),
       );
+      return item;
+    }),
+  );
+}
+
+function renderActiveDataFileUrls(files: ActiveDataFile[]): void {
+  activeDataFileUrlsNode.replaceChildren(
+    ...files.map((file) => {
+      const item = document.createElement('li');
+      item.className = 'file-row active';
+      item.append(
+        textBlock('path', file.path),
+        textBlock('detail', file.url_path),
+        textBlock('meta', `absolute ${file.absolute_url}`),
+        textBlock(
+          'meta',
+          `${formatBytes(file.size_bytes)}, ${formatPartitions(file.partition_values)}`,
+        ),
+      );
+      if (file.stats) {
+        item.append(textBlock('stats', `stats ${formatStats(file.stats)}`));
+      }
       return item;
     }),
   );
@@ -405,6 +457,7 @@ function clearDetails(): void {
   commitActionsNode.replaceChildren();
   dataFilesNode.replaceChildren();
   activeFilesNode.replaceChildren();
+  activeDataFileUrlsNode.replaceChildren();
   inputOutputMapNode.replaceChildren();
 }
 
