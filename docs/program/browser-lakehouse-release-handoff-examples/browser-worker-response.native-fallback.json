@@ -18,7 +18,10 @@
         "bytes_fetched": 4096,
         "duration_ms": 23,
         "files_touched": 3,
-        "files_skipped": 2
+        "files_skipped": 2,
+        "row_groups_touched": 0,
+        "row_groups_skipped": 0,
+        "rows_emitted": 0
       }
     },
     "result": {

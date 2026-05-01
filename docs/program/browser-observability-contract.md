@@ -1,6 +1,6 @@
 # Browser Observability Contract
 
-- Date: 2026-04-07
+- Date: 2026-05-01
 - Scope: repo-owned metrics and evidence emitted by the browser lakehouse worker boundary and runtime artifact path
 
 This document defines the metrics and routing signals the repository already emits today. It does not claim that dashboards, alert routing, or service-level telemetry pipelines exist in this repository.
@@ -13,7 +13,10 @@ This document defines the metrics and routing signals the repository already emi
 - `duration_ms`: wall-clock query duration
 - `files_touched`: files opened for execution
 - `files_skipped`: files skipped by pruning
+- `row_groups_touched`: Parquet row groups decoded by the browser scan layer when tracked; native responses currently report `0`
+- `row_groups_skipped`: Parquet row groups skipped by browser row-group pruning when tracked; native responses currently report `0`
 - `footer_reads`: browser snapshot-bootstrap footer reads when tracked
+- `rows_emitted`: rows emitted by the scan layer before projection, filtering, aggregation, ordering, or limit are applied
 - `snapshot_bootstrap_duration_ms`: browser snapshot-bootstrap wall-clock duration when tracked
 - `access_mode`: browser object access mode when tracked
 
@@ -48,7 +51,10 @@ The following inputs are ready for an external dashboard pipeline once the trust
 - bytes fetched
 - files touched
 - files skipped
+- row groups touched
+- row groups skipped
 - footer reads
+- rows emitted
 - snapshot bootstrap duration
 - access mode
 - fallback reason
@@ -67,6 +73,7 @@ These are the repo-owned thresholds or trend candidates that external dashboards
 - unexpected worker SKU or artifact identity drift across release evidence
 - unexpected rise in browser fallback frequency by capability gate
 - loss of pruning effectiveness shown by `files_skipped`
+- loss of row-group pruning effectiveness shown by `row_groups_skipped`
 - browser startup or memory baseline drift
 - dependency guardrail failures
 

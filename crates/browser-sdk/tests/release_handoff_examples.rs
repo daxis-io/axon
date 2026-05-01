@@ -90,6 +90,12 @@ fn browser_worker_success_response_example_matches_contract() {
         .expect("success envelope should be present");
     assert_eq!(success.request_id, "req-supported-001");
     assert_eq!(success.response.executed_on, ExecutionTarget::BrowserWasm);
+    assert_eq!(success.response.metrics.files_touched, 2);
+    assert_eq!(success.response.metrics.files_skipped, 1);
+    assert_eq!(success.response.metrics.row_groups_touched, 2);
+    assert_eq!(success.response.metrics.row_groups_skipped, 1);
+    assert_eq!(success.response.metrics.footer_reads, Some(2));
+    assert_eq!(success.response.metrics.rows_emitted, 3);
     assert_eq!(success.result.format, ArrowIpcFormat::Stream);
     assert_eq!(response.fallback_reason(), None);
 }
@@ -105,6 +111,12 @@ fn browser_worker_native_fallback_response_example_matches_contract() {
         .success_envelope()
         .expect("success envelope should be present");
     assert_eq!(success.response.executed_on, ExecutionTarget::Native);
+    assert_eq!(success.response.metrics.files_touched, 3);
+    assert_eq!(success.response.metrics.files_skipped, 2);
+    assert_eq!(success.response.metrics.row_groups_touched, 0);
+    assert_eq!(success.response.metrics.row_groups_skipped, 0);
+    assert_eq!(success.response.metrics.footer_reads, None);
+    assert_eq!(success.response.metrics.rows_emitted, 0);
     assert_eq!(
         response.fallback_reason(),
         Some(&FallbackReason::CapabilityGate {

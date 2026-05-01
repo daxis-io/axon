@@ -11,7 +11,10 @@
         "duration_ms": 15,
         "files_touched": 2,
         "files_skipped": 1,
+        "row_groups_touched": 2,
+        "row_groups_skipped": 1,
         "footer_reads": 2,
+        "rows_emitted": 3,
         "snapshot_bootstrap_duration_ms": 6,
         "access_mode": "browser_safe_http"
       }
