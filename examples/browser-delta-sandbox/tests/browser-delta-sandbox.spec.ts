@@ -3,6 +3,8 @@ import { expect, test } from '@playwright/test';
 test('resolves a Delta snapshot from same-origin browser HTTP log objects', async ({ page }) => {
   await page.goto('/');
 
+  await expect(page.getByRole('button', { name: 'Resolve Prod-like Snapshot' })).toHaveCount(0);
+  await expect(page.getByRole('radio', { name: 'Simple snapshot' })).toBeChecked();
   await page.getByRole('button', { name: 'Resolve Snapshot' }).click();
 
   await expect(page.getByTestId('status')).toHaveText('Snapshot 1 resolved');
@@ -13,7 +15,8 @@ test('resolves a Delta snapshot from same-origin browser HTTP log objects', asyn
 test('maps a prod-like Delta fixture from log inputs to resolved active output', async ({ page }) => {
   await page.goto('/');
 
-  await page.getByRole('button', { name: 'Resolve Prod-like Snapshot' }).click();
+  await page.getByRole('radio', { name: 'Prod-like snapshot' }).check();
+  await page.getByRole('button', { name: 'Resolve Snapshot' }).click();
 
   await expect(page.getByTestId('status')).toHaveText(
     'Snapshot 3 resolved from checkpoint 2 + 1 replay commit',

@@ -54,8 +54,22 @@ type ParsedAction = {
   source: string;
 };
 
+type FixtureChoice = {
+  manifestUrl: string;
+  fallbackName?: string;
+};
+
+const FIXTURES: Record<string, FixtureChoice> = {
+  simple: {
+    manifestUrl: '/fixtures/delta-log-manifest.json',
+    fallbackName: 'Delta JSON log smoke fixture',
+  },
+  'prod-like': {
+    manifestUrl: '/fixtures/prod-like/delta-log-manifest.json',
+  },
+};
+
 const resolveButton = document.querySelector<HTMLButtonElement>('#resolve-snapshot');
-const resolveProdButton = document.querySelector<HTMLButtonElement>('#resolve-prod-snapshot');
 const statusNode = requiredNode('[data-testid="status"]');
 const fixtureNameNode = requiredNode('[data-testid="fixture-name"]');
 const tableUriNode = requiredNode('[data-testid="table-uri"]');
@@ -73,13 +87,8 @@ const errorNode = requiredNode('[data-testid="error"]');
 let wasmReady: Promise<void> | undefined;
 
 resolveButton?.addEventListener('click', () => {
-  resolveSnapshot('/fixtures/delta-log-manifest.json', 'Delta JSON log smoke fixture').catch((error: unknown) => {
-    renderError(error);
-  });
-});
-
-resolveProdButton?.addEventListener('click', () => {
-  resolveSnapshot('/fixtures/prod-like/delta-log-manifest.json').catch((error: unknown) => {
+  const fixture = selectedFixture();
+  resolveSnapshot(fixture.manifestUrl, fixture.fallbackName).catch((error: unknown) => {
     renderError(error);
   });
 });
@@ -397,6 +406,11 @@ function clearDetails(): void {
   dataFilesNode.replaceChildren();
   activeFilesNode.replaceChildren();
   inputOutputMapNode.replaceChildren();
+}
+
+function selectedFixture(): FixtureChoice {
+  const checked = document.querySelector<HTMLInputElement>('input[name="fixture"]:checked');
+  return FIXTURES[checked?.value ?? 'simple'] ?? FIXTURES.simple;
 }
 
 function renderError(error: unknown): void {

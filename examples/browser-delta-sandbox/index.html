@@ -13,8 +13,17 @@
           <h1>Delta WASM Sandbox</h1>
         </div>
         <div class="actions">
+          <fieldset class="fixture-selector" aria-label="Snapshot fixture">
+            <label>
+              <input type="radio" name="fixture" value="simple" checked />
+              <span>Simple snapshot</span>
+            </label>
+            <label>
+              <input type="radio" name="fixture" value="prod-like" />
+              <span>Prod-like snapshot</span>
+            </label>
+          </fieldset>
           <button id="resolve-snapshot" type="button">Resolve Snapshot</button>
-          <button id="resolve-prod-snapshot" type="button">Resolve Prod-like Snapshot</button>
         </div>
       </header>
 
