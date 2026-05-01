@@ -439,9 +439,13 @@ dependencies = [
 name = "browser-delta-sandbox"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "deltalake",
  "query-contract",
  "serde",
  "serde_json",
+ "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-delta-snapshot",

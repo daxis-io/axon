@@ -4,10 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "build:fixture": "cargo run --locked -p browser-delta-sandbox --features fixture-generator --bin generate-prod-fixture -- public/fixtures/prod-like",
     "build:wasm": "cargo build -p browser-delta-sandbox --target wasm32-unknown-unknown --release --locked && wasm-bindgen ../../target/wasm32-unknown-unknown/release/browser_delta_sandbox.wasm --target web --out-dir src/wasm --typescript",
-    "dev": "vite --host 127.0.0.1",
-    "build": "npm run build:wasm && tsc --noEmit && vite build",
-    "test:e2e": "npm run build:wasm && playwright test"
+    "dev": "npm run build:fixture && npm run build:wasm && vite --host 127.0.0.1",
+    "build": "npm run build:fixture && npm run build:wasm && tsc --noEmit && vite build",
+    "test:e2e": "npm run build:fixture && npm run build:wasm && playwright test"
   },
   "devDependencies": {
     "@playwright/test": "1.57.0",

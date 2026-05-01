@@ -1,6 +1,6 @@
 :root {
   color: #172026;
-  background: #f4f7f9;
+  background: #f3f5f6;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
@@ -18,9 +18,9 @@ body {
 
 button {
   min-height: 40px;
-  border: 1px solid #1f5f74;
+  border: 1px solid #24566a;
   border-radius: 6px;
-  background: #1f6f86;
+  background: #24657a;
   color: #fff;
   cursor: pointer;
   font: inherit;
@@ -29,12 +29,12 @@ button {
 }
 
 button:hover {
-  background: #195c70;
+  background: #1d5061;
 }
 
 .app-shell {
-  width: min(960px, calc(100vw - 32px));
-  margin: 32px auto;
+  width: min(1280px, calc(100vw - 32px));
+  margin: 28px auto;
 }
 
 .topbar {
@@ -45,8 +45,15 @@ button:hover {
   margin-bottom: 24px;
 }
 
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .eyebrow {
-  color: #587078;
+  color: #607078;
   font-size: 0.82rem;
   font-weight: 700;
   margin: 0 0 4px;
@@ -69,7 +76,7 @@ h2 {
 
 .status-strip,
 .summary-grid article,
-.file-panel,
+.detail-panel,
 .error-panel {
   background: #fff;
   border: 1px solid #d5e1e6;
@@ -86,7 +93,7 @@ h2 {
 
 .status-strip span,
 .summary-grid span {
-  color: #587078;
+  color: #607078;
   font-size: 0.82rem;
   font-weight: 650;
 }
@@ -94,7 +101,7 @@ h2 {
 .summary-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1.3fr 1.7fr 0.7fr 0.7fr 0.7fr;
   margin-bottom: 16px;
 }
 
@@ -110,12 +117,25 @@ h2 {
   overflow-wrap: anywhere;
 }
 
-.file-panel,
+.detail-layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.detail-panel,
 .error-panel {
   padding: 16px;
 }
 
-.file-panel ul {
+.wide-panel {
+  grid-column: 1 / -1;
+}
+
+.object-list,
+.action-list,
+.file-list,
+.mapping-list {
   display: grid;
   gap: 8px;
   list-style: none;
@@ -123,10 +143,56 @@ h2 {
   padding: 0;
 }
 
-.file-panel li {
-  border-top: 1px solid #e5eef2;
+.object-row,
+.action-row,
+.file-row,
+.mapping-row {
+  border: 1px solid #e5eef2;
+  border-radius: 6px;
+  display: grid;
+  gap: 4px;
   overflow-wrap: anywhere;
-  padding-top: 8px;
+  padding: 10px;
+}
+
+.object-row.checkpoint_parquet {
+  border-color: #b8d4c2;
+}
+
+.object-row.last_checkpoint {
+  border-color: #d5c08a;
+}
+
+.action-row.add,
+.file-row.active {
+  border-color: #9cc9ab;
+  background: #f5fbf7;
+}
+
+.action-row.remove,
+.file-row.inactive {
+  border-color: #d8a4a4;
+  background: #fff8f8;
+}
+
+.path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86rem;
+}
+
+.meta,
+.detail,
+.stats,
+.status,
+.badge {
+  color: #5e6d75;
+  font-size: 0.82rem;
+}
+
+.status,
+.badge {
+  font-weight: 700;
+  text-transform: uppercase;
 }
 
 .error-panel {
@@ -145,7 +211,19 @@ h2 {
     flex-direction: column;
   }
 
+  .actions {
+    justify-content: stretch;
+  }
+
+  .actions button {
+    flex: 1 1 180px;
+  }
+
   .summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-layout {
     grid-template-columns: 1fr;
   }
 }
