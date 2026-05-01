@@ -28,6 +28,8 @@ serde_json = { workspace = true }
 wasm-bindgen = "=0.2.114"
 wasm-bindgen-futures = "=0.4.64"
 wasm-delta-snapshot = { path = "../../crates/wasm-delta-snapshot" }
+wasm-http-object-store = { path = "../../crates/wasm-http-object-store" }
+wasm-parquet-engine = { path = "../../crates/wasm-parquet-engine" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 arrow-array = { version = "=57.3.0", optional = true }

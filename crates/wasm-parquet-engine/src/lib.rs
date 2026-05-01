@@ -12,7 +12,11 @@ use arrow_array::{
 };
 use arrow_schema::{DataType as ArrowDataType, Field as ArrowField, Schema as ArrowSchema};
 use bytes::Bytes;
-use futures_util::{future::BoxFuture, FutureExt, Stream, StreamExt, TryStreamExt};
+use futures_util::{
+    future::BoxFuture,
+    stream::{self, BoxStream},
+    FutureExt, Stream, StreamExt, TryStreamExt,
+};
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
 use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
@@ -310,6 +314,50 @@ impl ScanTargetMetricsHandle for SharedScanTargetMetricsHandle {
     }
 }
 
+#[derive(Clone, Default)]
+struct AggregateScanTargetMetricsHandle {
+    children: Arc<Mutex<Vec<Arc<dyn ScanTargetMetricsHandle + Send + Sync>>>>,
+}
+
+impl AggregateScanTargetMetricsHandle {
+    fn add_child(
+        &self,
+        child: Arc<dyn ScanTargetMetricsHandle + Send + Sync>,
+    ) -> Result<(), QueryError> {
+        self.children
+            .lock()
+            .map_err(|_| execution_runtime_error("aggregate scan metrics handle was poisoned"))?
+            .push(child);
+        Ok(())
+    }
+}
+
+impl ScanTargetMetricsHandle for AggregateScanTargetMetricsHandle {
+    fn snapshot(&self) -> ScanTargetMetricsSnapshot {
+        self.children
+            .lock()
+            .expect("aggregate scan metrics handle should not be poisoned")
+            .iter()
+            .map(|child| child.snapshot())
+            .fold(
+                ScanTargetMetricsSnapshot::default(),
+                |mut aggregate, snapshot| {
+                    aggregate.files_opened =
+                        aggregate.files_opened.saturating_add(snapshot.files_opened);
+                    aggregate.rows_emitted =
+                        aggregate.rows_emitted.saturating_add(snapshot.rows_emitted);
+                    aggregate.bytes_fetched = aggregate
+                        .bytes_fetched
+                        .saturating_add(snapshot.bytes_fetched);
+                    aggregate.metadata_probe_round_trips = aggregate
+                        .metadata_probe_round_trips
+                        .saturating_add(snapshot.metadata_probe_round_trips);
+                    aggregate
+                },
+            )
+    }
+}
+
 #[derive(Debug)]
 struct WrappedQueryError(QueryError);
 
@@ -579,8 +627,10 @@ pub async fn stream_scan_target_batches(
     required_columns: &[String],
     partition_column_types: &BTreeMap<String, PartitionColumnType>,
     request_timeout: Option<Duration>,
-) -> Result<ScanTargetBatchStream<impl Stream<Item = Result<RecordBatch, QueryError>>>, QueryError>
-{
+) -> Result<
+    ScanTargetBatchStream<impl Stream<Item = Result<RecordBatch, QueryError>> + 'static>,
+    QueryError,
+> {
     let metrics_handle = SharedScanTargetMetricsHandle::new(ScanTargetMetricsSnapshot {
         files_opened: 1,
         rows_emitted: 0,
@@ -639,6 +689,76 @@ pub async fn stream_scan_target_batches(
                 &required_columns,
             )
         });
+
+    Ok(ScanTargetBatchStream { batches, metrics })
+}
+
+struct MultiScanState {
+    reader: HttpRangeReader,
+    targets: Vec<ScanTarget>,
+    next_target_index: usize,
+    current: Option<BoxStream<'static, Result<RecordBatch, QueryError>>>,
+    required_columns: Vec<String>,
+    partition_column_types: BTreeMap<String, PartitionColumnType>,
+    request_timeout: Option<Duration>,
+    aggregate_metrics: AggregateScanTargetMetricsHandle,
+}
+
+/// Streams record batches across multiple scan targets in target order.
+///
+/// The returned stream opens each file lazily as the previous file is drained, and its metrics
+/// handle aggregates the per-file snapshots for all files opened so far. This is the planned
+/// multi-file primitive for runtime scan orchestration.
+pub async fn stream_scan_targets(
+    reader: &HttpRangeReader,
+    targets: &[ScanTarget],
+    required_columns: &[String],
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    request_timeout: Option<Duration>,
+) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
+{
+    let aggregate_handle = AggregateScanTargetMetricsHandle::default();
+    let metrics: Arc<dyn ScanTargetMetricsHandle + Send + Sync> =
+        Arc::new(aggregate_handle.clone());
+    let state = MultiScanState {
+        reader: reader.clone(),
+        targets: targets.to_vec(),
+        next_target_index: 0,
+        current: None,
+        required_columns: required_columns.to_vec(),
+        partition_column_types: partition_column_types.clone(),
+        request_timeout,
+        aggregate_metrics: aggregate_handle,
+    };
+    let batches = stream::try_unfold(state, |mut state| async move {
+        loop {
+            if let Some(current) = &mut state.current {
+                match current.next().await {
+                    Some(batch) => return batch.map(|batch| Some((batch, state))),
+                    None => state.current = None,
+                }
+            }
+
+            let Some(target) = state.targets.get(state.next_target_index).cloned() else {
+                return Ok(None);
+            };
+            state.next_target_index += 1;
+
+            let stream = stream_scan_target_batches(
+                &state.reader,
+                &target,
+                &state.required_columns,
+                &state.partition_column_types,
+                state.request_timeout,
+            )
+            .await?;
+            state
+                .aggregate_metrics
+                .add_child(Arc::clone(&stream.metrics))?;
+            state.current = Some(stream.batches.boxed());
+        }
+    })
+    .boxed();
 
     Ok(ScanTargetBatchStream { batches, metrics })
 }

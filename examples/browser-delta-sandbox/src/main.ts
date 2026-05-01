@@ -1,4 +1,7 @@
-import init, { resolve_delta_snapshot_from_manifest } from './wasm/browser_delta_sandbox';
+import init, {
+  preflight_parquet_metadata_for_targets,
+  resolve_delta_snapshot_from_manifest,
+} from './wasm/browser_delta_sandbox';
 import './styles.css';
 
 type FixtureManifest = {
@@ -45,6 +48,44 @@ type ActiveDataFile = ResolvedSnapshot['active_files'][number] & {
   absolute_url: string;
 };
 
+type DecimalString = string;
+
+type ParquetPreflightTarget = {
+  path: string;
+  url: string;
+  size_bytes: number;
+  partition_values: Record<string, string | null>;
+  stats?: string;
+};
+
+type ParquetPreflightFile = {
+  path: string;
+  url: string;
+  size_bytes: DecimalString;
+  partition_values: Record<string, string | null>;
+  delta_stats?: string;
+  footer_length_bytes: DecimalString;
+  row_group_count: DecimalString;
+  row_count: DecimalString;
+  fields: ParquetPreflightField[];
+  field_stats: Record<string, ParquetPreflightFieldStats>;
+};
+
+type ParquetPreflightField = {
+  name: string;
+  physical_type: string;
+  logical_type?: string;
+  converted_type?: string;
+  repetition: string;
+  nullable: boolean;
+};
+
+type ParquetPreflightFieldStats = {
+  min_i64?: DecimalString;
+  max_i64?: DecimalString;
+  null_count?: DecimalString;
+};
+
 type ObjectKind = 'commit_json' | 'checkpoint_parquet' | 'last_checkpoint';
 
 type LogObjectDetail = FixtureManifest['objects'][number] & {
@@ -88,6 +129,7 @@ const commitActionsNode = requiredNode('[data-testid="commit-actions"]');
 const dataFilesNode = requiredNode('[data-testid="data-files"]');
 const activeFilesNode = requiredNode('[data-testid="active-files"]');
 const activeDataFileUrlsNode = requiredNode('[data-testid="active-data-file-urls"]');
+const parquetPreflightNode = requiredNode('[data-testid="parquet-preflight"]');
 const inputOutputMapNode = requiredNode('[data-testid="input-output-map"]');
 const errorPanel = requiredNode('.error-panel') as HTMLElement;
 const errorNode = requiredNode('[data-testid="error"]');
@@ -121,13 +163,19 @@ async function resolveSnapshot(manifestUrl: string, fallbackName?: string): Prom
     JSON.stringify(wasmManifest),
     fixture.table_uri,
   );
-  renderSnapshot(fixture, logObjectDetails, JSON.parse(snapshotJson) as ResolvedSnapshot, fallbackName);
+  const snapshot = JSON.parse(snapshotJson) as ResolvedSnapshot;
+  const activeFiles = fixture.data_files === undefined ? [] : activeDataFiles(fixture, snapshot);
+  setStatus('Preflighting Parquet');
+  const parquetPreflight = await preflightActiveParquetFiles(activeFiles);
+  renderSnapshot(fixture, logObjectDetails, snapshot, activeFiles, parquetPreflight, fallbackName);
 }
 
 function renderSnapshot(
   fixture: FixtureManifest,
   logObjectDetails: LogObjectDetail[],
   snapshot: ResolvedSnapshot,
+  activeFiles: ActiveDataFile[],
+  parquetPreflight: ParquetPreflightFile[],
   fallbackName?: string,
 ): void {
   setStatus(snapshotStatus(fixture, snapshot));
@@ -140,9 +188,8 @@ function renderSnapshot(
   renderLogObjects(logObjectDetails);
   renderCommitActions(logObjectDetails);
   renderDataFiles(fixture, snapshot);
-  renderActiveDataFileUrls(
-    fixture.data_files === undefined ? [] : activeDataFiles(fixture, snapshot),
-  );
+  renderActiveDataFileUrls(activeFiles);
+  renderParquetPreflight(parquetPreflight);
   activeFilesNode.replaceChildren(
     ...snapshot.active_files.map((file) => {
       const item = document.createElement('li');
@@ -180,6 +227,24 @@ function activeDataFiles(fixture: FixtureManifest, snapshot: ResolvedSnapshot): 
       absolute_url: new URL(manifestFile.url_path, window.location.href).toString(),
     };
   });
+}
+
+async function preflightActiveParquetFiles(
+  activeFiles: ActiveDataFile[],
+): Promise<ParquetPreflightFile[]> {
+  if (activeFiles.length === 0) {
+    return [];
+  }
+
+  const targets: ParquetPreflightTarget[] = activeFiles.map((file) => ({
+    path: file.path,
+    url: file.absolute_url,
+    size_bytes: file.size_bytes,
+    partition_values: file.partition_values,
+    stats: file.stats,
+  }));
+  const preflightJson = await preflight_parquet_metadata_for_targets(JSON.stringify(targets));
+  return JSON.parse(preflightJson) as ParquetPreflightFile[];
 }
 
 function snapshotStatus(fixture: FixtureManifest, snapshot: ResolvedSnapshot): string {
@@ -274,6 +339,32 @@ function renderActiveDataFileUrls(files: ActiveDataFile[]): void {
       );
       if (file.stats) {
         item.append(textBlock('stats', `stats ${formatStats(file.stats)}`));
+      }
+      return item;
+    }),
+  );
+}
+
+function renderParquetPreflight(files: ParquetPreflightFile[]): void {
+  parquetPreflightNode.replaceChildren(
+    ...files.map((file) => {
+      const item = document.createElement('li');
+      item.className = 'file-row active';
+      item.append(
+        textBlock('path', file.path),
+        textBlock(
+          'meta',
+          `file ${formatBytes(file.size_bytes)}, footer ${formatBytes(file.footer_length_bytes)}, rows ${file.row_count}, row groups ${file.row_group_count}`,
+        ),
+        textBlock('detail', `partitions ${formatPartitions(file.partition_values)}`),
+        textBlock('detail', `schema ${file.fields.map(formatParquetField).join(', ')}`),
+      );
+      const stats = formatParquetFieldStats(file.field_stats);
+      if (stats) {
+        item.append(textBlock('stats', `parquet stats ${stats}`));
+      }
+      if (file.delta_stats) {
+        item.append(textBlock('stats', `delta stats ${formatStats(file.delta_stats)}`));
       }
       return item;
     }),
@@ -409,11 +500,13 @@ function kindLabel(kind: ObjectKind): string {
   return kind.replaceAll('_', ' ');
 }
 
-function formatBytes(size: number): string {
-  if (size < 1024) {
-    return `${size} bytes`;
+function formatBytes(size: number | DecimalString): string {
+  const bytes = BigInt(size);
+  if (bytes < 1024n) {
+    return `${bytes.toString()} bytes`;
   }
-  return `${(size / 1024).toFixed(1)} KB`;
+  const kibTenths = (bytes * 10n + 512n) / 1024n;
+  return `${kibTenths / 10n}.${kibTenths % 10n} KB`;
 }
 
 function formatPartitions(partitions: Record<string, string | null>): string {
@@ -430,6 +523,26 @@ function formatStats(stats: string): string {
   } catch {
     return compactJson(stats);
   }
+}
+
+function formatParquetField(field: ParquetPreflightField): string {
+  const logicalType = field.logical_type ?? field.converted_type;
+  const typeLabel = logicalType ? `${field.physical_type}/${logicalType}` : field.physical_type;
+  return `${field.name}: ${typeLabel} ${field.repetition.toLowerCase()}`;
+}
+
+function formatParquetFieldStats(statsByField: Record<string, ParquetPreflightFieldStats>): string {
+  return Object.entries(statsByField)
+    .map(([field, stats]) => {
+      const parts = [
+        stats.min_i64 === undefined ? undefined : `min ${stats.min_i64}`,
+        stats.max_i64 === undefined ? undefined : `max ${stats.max_i64}`,
+        stats.null_count === undefined ? undefined : `nulls ${stats.null_count}`,
+      ].filter((part): part is string => part !== undefined);
+      return parts.length === 0 ? undefined : `${field} ${parts.join(' ')}`;
+    })
+    .filter((part): part is string => part !== undefined)
+    .join('; ');
 }
 
 function compactJson(text: string): string {
@@ -458,6 +571,7 @@ function clearDetails(): void {
   dataFilesNode.replaceChildren();
   activeFilesNode.replaceChildren();
   activeDataFileUrlsNode.replaceChildren();
+  parquetPreflightNode.replaceChildren();
   inputOutputMapNode.replaceChildren();
 }
 

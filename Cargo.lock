@@ -449,6 +449,8 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-delta-snapshot",
+ "wasm-http-object-store",
+ "wasm-parquet-engine",
 ]
 
 [[package]]

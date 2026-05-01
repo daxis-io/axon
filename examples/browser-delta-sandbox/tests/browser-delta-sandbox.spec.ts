@@ -40,6 +40,16 @@ test('maps a prod-like Delta fixture from log inputs to resolved active output',
   );
   await expect(page.getByTestId('active-data-file-urls')).not.toContainText('category=A');
   await expect(page.getByTestId('active-data-file-urls')).not.toContainText('category=C');
+  await expect(page.getByTestId('parquet-preflight')).toContainText('category=B');
+  await expect(page.getByTestId('parquet-preflight')).toContainText('category=D');
+  await expect(page.getByTestId('parquet-preflight')).toContainText('rows 2');
+  await expect(page.getByTestId('parquet-preflight')).toContainText('row groups 1');
+  await expect(page.getByTestId('parquet-preflight')).toContainText('id: Int32 required');
+  await expect(page.getByTestId('parquet-preflight')).toContainText('value: Int32 required');
+  await expect(page.getByTestId('parquet-preflight')).toContainText('parquet stats id min 7');
+  await expect(page.getByTestId('parquet-preflight')).toContainText('delta stats 2 rows');
+  await expect(page.getByTestId('parquet-preflight')).not.toContainText('category=A');
+  await expect(page.getByTestId('parquet-preflight')).not.toContainText('category=C');
   await expect(page.getByTestId('input-output-map')).toContainText('checkpoint seed');
   await expect(page.getByTestId('input-output-map')).toContainText('replay commit 3');
 });

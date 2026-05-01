@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use arrow_array::{Array, Int64Array, StringArray};
 use futures_util::TryStreamExt;
 use parquet::data_type::Int64Type;
 use parquet::file::properties::WriterProperties;
@@ -16,7 +17,9 @@ use parquet::schema::parser::parse_message_type;
 use query_contract::PartitionColumnType;
 use tokio::time::timeout;
 use wasm_http_object_store::HttpRangeReader;
-use wasm_parquet_engine::{stream_scan_target_batches, ObjectSource, ScanTarget};
+use wasm_parquet_engine::{
+    stream_scan_target_batches, stream_scan_targets, ObjectSource, ScanTarget,
+};
 
 #[tokio::test]
 async fn stream_scan_target_batches_yields_incremental_record_batches() {
@@ -163,6 +166,84 @@ async fn streamed_scan_reports_rows_and_bytes_per_target() {
     assert_eq!(batches.len(), 1);
 }
 
+#[tokio::test]
+async fn stream_scan_targets_yields_batches_across_files_with_aggregate_metrics() {
+    let first_object = parquet_bytes_with_single_i64_column(&[1_i64, 2]);
+    let second_object = parquet_bytes_with_single_i64_column(&[3_i64, 4, 5]);
+    let first_size = u64::try_from(first_object.len()).expect("object size should fit in u64");
+    let second_size = u64::try_from(second_object.len()).expect("object size should fit in u64");
+    let first_server = RequestCapturingServer::new(first_object, Duration::from_millis(0), false);
+    let second_server = RequestCapturingServer::new(second_object, Duration::from_millis(0), false);
+
+    let scan = stream_scan_targets(
+        &HttpRangeReader::new(),
+        &[
+            ScanTarget {
+                object_source: ObjectSource::new(first_server.url()),
+                object_etag: None,
+                path: "category=A/part-000.parquet".to_string(),
+                size_bytes: first_size,
+                partition_values: BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
+            },
+            ScanTarget {
+                object_source: ObjectSource::new(second_server.url()),
+                object_etag: None,
+                path: "category=B/part-000.parquet".to_string(),
+                size_bytes: second_size,
+                partition_values: BTreeMap::from([("category".to_string(), Some("B".to_string()))]),
+            },
+        ],
+        &["id".to_string(), "category".to_string()],
+        &BTreeMap::from([("category".to_string(), PartitionColumnType::String)]),
+        None,
+    )
+    .await
+    .expect("multi-file streaming scan should construct");
+
+    let metrics = Arc::clone(&scan.metrics);
+    let batches = scan
+        .batches
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("multi-file batches should decode");
+
+    let first_requests = first_server.recorded_requests();
+    let second_requests = second_server.recorded_requests();
+    assert!(first_requests
+        .iter()
+        .chain(second_requests.iter())
+        .all(|request| request.headers.contains_key("range")));
+    assert_eq!(batches.len(), 2);
+    assert_eq!(
+        batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+        5
+    );
+    assert_eq!(batch_i64_values(&batches[0], "id"), vec![1, 2]);
+    assert_eq!(
+        batch_string_values(&batches[0], "category"),
+        vec!["A".to_string(), "A".to_string()]
+    );
+    assert_eq!(batch_i64_values(&batches[1], "id"), vec![3, 4, 5]);
+    assert_eq!(
+        batch_string_values(&batches[1], "category"),
+        vec!["B".to_string(), "B".to_string(), "B".to_string()]
+    );
+    assert_eq!(metrics.snapshot().files_opened, 2);
+    assert_eq!(metrics.snapshot().rows_emitted, 5);
+    assert_eq!(metrics.snapshot().metadata_probe_round_trips, 4);
+    assert_eq!(
+        metrics.snapshot().bytes_fetched,
+        first_requests
+            .iter()
+            .map(|request| requested_bytes(request, first_size))
+            .sum::<u64>()
+            + second_requests
+                .iter()
+                .map(|request| requested_bytes(request, second_size))
+                .sum::<u64>()
+    );
+}
+
 fn parquet_bytes_with_single_i64_column(values: &[i64]) -> Vec<u8> {
     let schema = Arc::new(
         parse_message_type("message schema { REQUIRED INT64 id; }")
@@ -192,6 +273,34 @@ fn parquet_bytes_with_single_i64_column(values: &[i64]) -> Vec<u8> {
     row_group.close().expect("row-group writer should close");
     writer.close().expect("file writer should close");
     bytes
+}
+
+fn batch_i64_values(batch: &arrow_array::RecordBatch, column_name: &str) -> Vec<i64> {
+    let column_index = batch
+        .schema()
+        .index_of(column_name)
+        .expect("column should exist");
+    let column = batch
+        .column(column_index)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("column should be int64");
+    (0..column.len()).map(|index| column.value(index)).collect()
+}
+
+fn batch_string_values(batch: &arrow_array::RecordBatch, column_name: &str) -> Vec<String> {
+    let column_index = batch
+        .schema()
+        .index_of(column_name)
+        .expect("column should exist");
+    let column = batch
+        .column(column_index)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("column should be utf8");
+    (0..column.len())
+        .map(|index| column.value(index).to_string())
+        .collect()
 }
 
 #[derive(Clone, Debug)]
