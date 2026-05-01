@@ -436,6 +436,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "browser-delta-sandbox"
+version = "0.1.0"
+dependencies = [
+ "query-contract",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-delta-snapshot",
+]
+
+[[package]]
 name = "browser-engine-worker"
 version = "0.1.0"
 dependencies = [

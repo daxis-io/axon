@@ -1,0 +1,17 @@
+[package]
+name = "browser-delta-sandbox"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+query-contract = { path = "../../crates/query-contract" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen = "=0.2.114"
+wasm-bindgen-futures = "=0.4.64"
+wasm-delta-snapshot = { path = "../../crates/wasm-delta-snapshot" }

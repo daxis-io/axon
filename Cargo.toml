@@ -15,6 +15,7 @@ members = [
   "crates/wasm-delta-snapshot",
   "crates/wasm-query-session",
   "crates/wasm-query-runtime",
+  "examples/browser-delta-sandbox",
 ]
 resolver = "2"
 

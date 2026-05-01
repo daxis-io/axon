@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Delta WASM Sandbox</title>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Axon</p>
+          <h1>Delta WASM Sandbox</h1>
+        </div>
+        <button id="resolve-snapshot" type="button">Resolve Snapshot</button>
+      </header>
+
+      <section class="status-strip" aria-live="polite">
+        <span>Status</span>
+        <strong data-testid="status">Idle</strong>
+      </section>
+
+      <section class="summary-grid">
+        <article>
+          <span>Table</span>
+          <strong data-testid="table-uri">-</strong>
+        </article>
+        <article>
+          <span>Version</span>
+          <strong data-testid="snapshot-version">-</strong>
+        </article>
+        <article>
+          <span>Active Files</span>
+          <strong data-testid="file-count">0</strong>
+        </article>
+      </section>
+
+      <section class="file-panel">
+        <h2>Active Files</h2>
+        <ul data-testid="active-files"></ul>
+      </section>
+
+      <section class="error-panel" hidden>
+        <h2>Error</h2>
+        <pre data-testid="error"></pre>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
