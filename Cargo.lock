@@ -4195,6 +4195,7 @@ name = "wasm-datafusion-poc"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
+ "arrow-ipc",
  "arrow-schema",
  "bytes",
  "chrono",
@@ -4205,6 +4206,8 @@ dependencies = [
  "query-contract",
  "serde_json",
  "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "wasm-http-object-store",
  "wasm-parquet-engine",
