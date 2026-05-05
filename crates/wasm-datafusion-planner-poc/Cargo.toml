@@ -1,0 +1,22 @@
+[package]
+name = "wasm-datafusion-planner-poc"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+arrow-schema = "=57.3.0"
+datafusion-common = { version = "=52.4.0", default-features = false, features = ["sql"] }
+datafusion-expr = { version = "=52.4.0", default-features = false, features = ["sql"] }
+datafusion-sql = { version = "=52.4.0", default-features = false }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "=0.3.4", features = ["wasm_js"] }
+wasm-bindgen = "=0.2.114"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.64"

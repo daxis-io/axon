@@ -4191,6 +4191,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfe29135b180b72b04c74aa97b2b4a2ef275161eff9a6c7955ea9eaedc7e1d4e"
 
 [[package]]
+name = "wasm-datafusion-planner-poc"
+version = "0.1.0"
+dependencies = [
+ "arrow-schema",
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-sql",
+ "getrandom 0.3.4",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
+]
+
+[[package]]
 name = "wasm-datafusion-poc"
 version = "0.1.0"
 dependencies = [

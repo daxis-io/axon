@@ -149,9 +149,11 @@ and Axon runtime experiments comparable.
 
 ## Current Baseline
 
-The isolated `crates/wasm-datafusion-poc` crate is the only workspace crate that depends on
-DataFusion for browser WASM. The shipped worker and default browser runtime still report
-`browser_datafusion = false`.
+DataFusion remains isolated from the shipped browser worker and default browser runtime, which still
+report `browser_datafusion = false`. The workspace now has two browser WASM DataFusion experiments:
+`crates/wasm-datafusion-poc`, a full umbrella-runtime POC that depends on `datafusion`, and
+`crates/wasm-datafusion-planner-poc`, a planner-only POC that depends directly on
+`datafusion-common`, `datafusion-expr`, and `datafusion-sql`.
 
 The current POC proves:
 
@@ -188,6 +190,7 @@ Release-profile matrix, measured with `tests/perf/report_datafusion_wasm_size.sh
 | opt-level z | 41,031,540 | 21,594,406 | 5,601,010 | 3,504,722 | Independent temporary profile; `wasm-bindgen` output was 36,590,159 bytes; end-to-end run `real 130.74s`. |
 | lto + codegen-units 1 | 53,597,447 | 37,021,684 | 9,192,354 | 5,141,782 | Independent temporary profile; `wasm-bindgen` output was 49,881,686 bytes; end-to-end run `real 360.17s`. |
 | panic abort + strip | 71,416,095 | n/a | n/a | n/a | Independent temporary profile; `wasm-bindgen` output was 67,707,622 bytes, then the script failed at `wasm-opt -Oz` with Binaryen feature validation errors for stripped bulk-memory and nontrapping-float-to-int instructions; failing run `real 111.28s`. |
+| planner-only direct subcrates | 29,046,852 | 19,380,579 | 3,902,861 | 2,098,754 | Isolated `wasm-datafusion-planner-poc` using `datafusion-common`, `datafusion-expr`, and `datafusion-sql` directly, with exported `plan_sql_to_display` retaining the planner surface; `wasm-bindgen` output was 26,748,414 bytes. Passes the lazy planner/compiler hard Brotli gate, but is just over the 2 MiB preferred target. |
 
 Interpretation:
 
