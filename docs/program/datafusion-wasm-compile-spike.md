@@ -3,11 +3,15 @@
 - Status: Complete
 - Date: 2026-05-03
 - Scope: isolated DataFusion browser compile and in-memory Arrow query proof
+- Related:
+  - [Browser DataFusion Size Audit](./browser-datafusion-size-audit.md)
+  - [Browser Lakehouse Engine Strategy](./browser-lakehouse-engine-strategy.md)
 
 ## Summary
 
-`crates/wasm-datafusion-poc` is the isolated Axon browser DataFusion spike. It is not a
-dependency of the shipped custom browser query runtime, worker, session shell, or browser SDK.
+`crates/wasm-datafusion-poc` is the seed for Axon's browser DataFusion engine. It proves that the
+DataFusion runtime can compile and execute in `wasm32-unknown-unknown`; the next product step is to
+promote this shape into `wasm-datafusion-engine`.
 
 The spike proves:
 
@@ -18,8 +22,13 @@ The spike proves:
 - Query results can be returned as Arrow IPC stream bytes.
 - A wasm-bindgen export can run the synthetic query and return Arrow IPC bytes to JavaScript.
 
-Delta files, Delta snapshot reconstruction, browser range reads, and the shipped custom query
-runtime are intentionally out of scope for this phase.
+Delta files, Delta snapshot reconstruction, browser range reads, and DataFusion table-provider
+registration are intentionally out of scope for this compile spike. They are the next integration
+work, not a reason to keep DataFusion out of the product engine.
+
+The 30-day browser DataFusion gate result is recorded canonically in the browser DataFusion size
+audit: continue toward a DataFusion physical execution engine for browser Delta/Parquet queries.
+This spike remains compile and runtime evidence for that decision.
 
 ## Crate And API Surface
 
@@ -51,8 +60,9 @@ The expected result rows are `(2, 12)` and `(3, 25)`.
   - `wasm-bindgen-futures = "=0.4.64"`
 - Crate type: `cdylib` and `rlib`
 
-No DataFusion feature is enabled on `wasm-query-runtime`, `wasm-query-session`,
-`browser-engine-worker`, or `browser-sdk`.
+The current shipped worker/runtime still does not depend on this POC by default. That is the current
+implementation state, not the destination architecture. The browser engine target is a promoted
+DataFusion engine crate with custom Axon Delta/Parquet table access.
 
 ## Verification
 
@@ -78,9 +88,9 @@ Measured from the release build without wasm-opt, gzip, Brotli, or application b
 - wasm-bindgen generated wasm: `73M`
 - wasm-bindgen JS shim: `12K`
 
-This is too large for Axon's default browser runtime SKU. Any DataFusion browser path should stay
-behind an explicit experimental SKU or feature gate until size budgets and operator scope are
-defined.
+This is large enough to require explicit browser budgets, but it is not disqualifying for the target
+DataFusion browser engine. The measured transfer and startup profile says optimize, split, cache,
+and benchmark rather than replacing DataFusion physical execution with a custom runtime.
 
 ## Blockers And Risks
 
@@ -88,14 +98,15 @@ defined.
 - The wasm debug test artifact is large enough to require substantial temporary disk space during
   `wasm-bindgen-test-runner`; the first smoke attempt failed while the local data volume had only a
   few hundred MB free. Clearing generated Cargo build artifacts resolved the environment issue.
-- Bundle size is the main product blocker for enabling this in the default browser path.
+- Bundle size is a product budget for the DataFusion engine, not a reason by itself to avoid
+  DataFusion execution.
 - This spike only proves in-memory `RecordBatch` execution; it does not prove DataFusion over
   browser HTTP range reads, Parquet scans, Delta active-file descriptors, or query budget handling.
 
 ## Next Integration Step
 
-Keep the custom browser runtime unchanged. The next step is an experimental DataFusion table
-registration path that takes resolved Delta descriptors, obtains streamed `RecordBatch` values from
-`wasm-parquet-engine`, registers them with DataFusion, runs a narrow SQL profile, and returns Arrow
-IPC through the same worker result boundary. Delta file integration should wait until that bridge has
-size, memory, and fallback guardrails.
+Promote the POC toward `wasm-datafusion-engine`. The next step is a custom
+`AxonDeltaTableProvider` that registers Delta snapshot descriptors with DataFusion and a custom
+`AxonParquetScanExec` that streams browser-read Parquet `RecordBatch` values through DataFusion
+physical execution. The old custom runtime remains useful as fallback and correctness scaffold during
+the migration, but it is not the destination query engine.

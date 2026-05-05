@@ -2,79 +2,117 @@
 
 - Status: Draft
 - Date: 2026-05-04
-- Scope: measurement-driven audit for reducing an experimental Axon browser DataFusion WASM SKU
+- Scope: measurement-driven audit for making Axon's DataFusion-powered Delta/Parquet browser engine viable
 - Related:
   - [DataFusion WASM Compile Spike](./datafusion-wasm-compile-spike.md)
   - [Browser Lakehouse Engine Strategy](./browser-lakehouse-engine-strategy.md)
 
 ## Summary
 
-Axon's browser DataFusion hypothesis is narrower than general-purpose DataFusion:
+Axon's browser DataFusion product goal is a browser-resident Delta/Parquet query engine powered by
+Apache DataFusion:
 
-> A browser DataFusion build for Axon probably does not need the full general-purpose DataFusion
-> surface. If Axon defines the exact SQL, operator, and file-format profile it needs, then removes
-> or feature-gates unused DataFusion functionality, it may materially reduce the WASM artifact while
-> preserving performance for Axon's use case.
+> DataFusion is the browser query engine. Axon's strategic work is to make Delta Lake and Parquet
+> data appear to DataFusion as browser-native, pushdown-capable tables.
 
-The current evidence supports investigating this, but not by deleting dependencies first. The first
-step is to compare Axon's required browser SQL profile with measured retained WASM symbols and the
-actual DataFusion feature boundaries.
+This is not the same as using DataFusion only as a SQL planner and lowering into an Axon-owned query
+IR. DataFusion should own SQL planning, logical optimization, physical planning, expression
+evaluation, physical execution, and Arrow `RecordBatch` output. Axon should own Delta snapshot
+resolution, active Parquet file descriptors, browser-safe range I/O, scan pushdown, query budgets,
+and the Arrow IPC worker boundary.
 
-This audit also carries the DataFusion-specific strategy decision: use DataFusion as a planning and
-semantics substrate where measurements justify it, but keep the full umbrella runtime out of the
-default browser core for now.
+This audit also carries the DataFusion-specific strategy decision: DataFusion physical execution is
+the target browser engine. Axon will minimize and adapt DataFusion for browser use, but not replace
+DataFusion's execution model with a custom runtime as the destination architecture.
 
-The likely product shape remains:
+The likely product shape is:
 
-- default browser runtime: small custom/narrow engine
-- lazy SQL compiler: DataFusion SQL/logical planning and selected optimizer rules, if its measured
-  bundle is acceptable
-- experimental SQL runtime: lazy-loaded full DataFusion WASM bundle for parity, benchmarks, and
-  advanced-SQL experiments
-- optimized DataFusion build: reduced feature set, `wasm-opt`, HTTP compression, and possibly
-  upstream DataFusion feature splits
+- browser query engine: DataFusion `SessionContext`, SQL planner, optimizer, physical planner, and
+  execution in a browser Worker
+- table access: `AxonDeltaTableProvider` registered with DataFusion
+- scan node: `AxonParquetScanExec` over Axon's browser Delta snapshot, Parquet, and HTTP range
+  components
+- result boundary: Arrow `RecordBatch` stream encoded as Arrow IPC to JavaScript
+- legacy custom runtime: fallback, correctness scaffold, and migration bridge only
 
-The strongest current recommendation is not to replace Axon's existing browser runtime with the full
-umbrella `datafusion` runtime. Instead, treat DataFusion as the semantic/planning upstream and lower
-the supported read-only SQL profile into Axon's compact browser execution plan. Full DataFusion stays
-valuable as a conformance oracle and lazy experimental SKU, but it should not become an always-loaded
-browser dependency without passing explicit size, startup, memory, and correctness gates.
+The important constraint is not "ship the full default `datafusion` crate and accept whatever it
+pulls in." The constraint is: keep DataFusion as the execution engine while tailoring the table,
+scan, feature, codec, and packaging surface to Axon's browser Delta/Parquet workload.
 
 ## Decision Table
 
 | Decision | Current verdict |
 | --- | --- |
 | Use DataFusion in the browser strategy | Go |
-| Make full umbrella `datafusion` the default browser runtime core | No-go for now |
-| Use narrow DataFusion crates for SQL planning and logical optimization | Go, behind measurement gates |
-| Lower optimized logical plans into an Axon-owned browser execution IR | Recommended path |
-| Keep full DataFusion WASM as a lazy advanced or fallback bundle | Conditional go |
+| Make DataFusion physical execution the browser query engine target | Go |
+| Ship the unmodified full default DataFusion surface without browser-focused trimming | No-go |
+| Build `AxonDeltaTableProvider` plus `AxonParquetScanExec` for browser Delta/Parquet access | Primary path |
+| Replace DataFusion runtime execution with an Axon-owned query IR | No-go as product strategy |
+| Keep the old custom runtime | Legacy fallback, correctness scaffold, and migration bridge |
 | Make Substrait or DataFusion proto the hot-path browser IR | No-go for now; keep as optional diagnostics/interchange |
 
-## Planner Feature Floor Decisions
+## Feature Floor Measurement Readout
 
-| Variant | Lazy planner hard gate | Worth pursuing |
+| Variant | Measurement readout | Product implication |
 | --- | --- | --- |
-| planner-only direct subcrates | Inside gate at 2,108,131 Brotli bytes | Yes; remains the preferred lazy SQL planning baseline. |
-| planner plus optimizer floor | Inside gate at 2,945,395 Brotli bytes | Yes; optimizer rules are plausible for Axon logical-plan lowering. |
-| planner plus physical-expr floor | Inside gate at 2,113,465 Brotli bytes | Conditional; useful as a compile and retention floor, but not enough to justify a DataFusion physical runtime. |
-| planner plus physical-plan floor | Inside gate at 2,104,480 Brotli bytes | Conditional; keep measuring with real operators before treating this as runtime evidence. |
+| full umbrella runtime POC | 5,775,497 Brotli bytes and 53,644,227 optimized wasm bytes | Encouraging for an initial serious browser analytics engine; optimize and budget rather than abandon DataFusion. |
+| planner-only direct subcrates | 2,108,131 Brotli bytes | Useful floor, but no longer the target architecture by itself. |
+| planner plus optimizer floor | 2,945,395 Brotli bytes | Confirms planner/optimizer pieces fit inside the engine budget. |
+| planner plus physical-expr floor | 2,113,465 Brotli bytes | Useful compile and retention floor, not representative of full physical execution. |
+| planner plus physical-plan floor | 2,104,480 Brotli bytes | Useful symbol floor; next measurements must retain real scan and operator paths. |
+
+## 30-Day Gate Result
+
+The 30-day browser DataFusion gate is complete. The recorded evidence is:
+
+- full umbrella DataFusion POC size: raw `82,406,683`, `wasm-opt` `53,644,227`, gzip
+  `11,282,641`, Brotli `5,775,497`
+- planner-only direct-subcrate size: Brotli `2,108,131`
+- planner-plus-optimizer size: Brotli `2,945,395`
+- physical-expr floor: Brotli `2,113,465`
+- physical-plan floor: Brotli `2,104,480`
+- the previous projection, filter, and limit lowering spike works as scaffolding evidence
+- the previous projected-output `ORDER BY` and aggregate/grouped aggregate summary corpus works through
+  `tests/conformance/browser-datafusion-lowering-corpus.json`
+- default worker/runtime DataFusion dependency guardrails still pass
+
+Decision: Continue to 60-day DataFusion Delta/Parquet engine work. The next target is a custom
+`AxonDeltaTableProvider` plus `AxonParquetScanExec` that feeds browser-native Arrow batches into
+DataFusion physical execution.
+
+This supersedes the prior "lazy planner/compiler into Axon IR" recommendation. Bundle size remains a
+release gate, but it is no longer the deciding architecture principle. The product target is a
+DataFusion-backed browser Delta/Parquet query engine.
 
 ## Strategic Recommendation
 
-Use a staged architecture:
+Use a DataFusion execution architecture:
+
+```text
+Delta snapshot descriptor
+  -> active Parquet file descriptors
+  -> AxonDeltaTableProvider
+  -> AxonParquetScanExec
+  -> wasm-http-object-store range reads
+  -> Arrow RecordBatch stream
+  -> DataFusion physical execution
+  -> Arrow IPC stream to browser app
+```
+
+SQL enters the same engine through DataFusion:
 
 ```text
 SQL text
-  -> optional lazy DataFusion SQL/logical planner
-  -> selected logical optimizer rules
-  -> Axon lowering pass
-  -> compact Axon browser execution plan
-  -> wasm-query-runtime + wasm-parquet-engine + wasm-http-object-store
+  -> DataFusion SQL planner
+  -> DataFusion logical optimizer
+  -> DataFusion physical planner
+  -> AxonDeltaTableProvider scan
+  -> AxonParquetScanExec batches
+  -> DataFusion operators
   -> Arrow IPC result stream
 ```
 
-This keeps the hard browser-owned pieces in Axon:
+This keeps the browser-owned table-access pieces in Axon:
 
 - Delta snapshot facts and active file descriptors
 - browser-safe HTTP range I/O
@@ -82,62 +120,51 @@ This keeps the hard browser-owned pieces in Axon:
 - query budgets, deterministic fallback, and browser metrics
 - Arrow IPC result transport
 
-DataFusion is still the right upstream to study for SQL semantics, type coercion, logical plan shape,
-optimizer rules, and native parity. The measured POC shows the runtime is feasible, but the size and
-cold-start costs are too high for the default SKU, especially because the current POC does not yet
-include a Parquet-backed DataFusion table path.
-
-The strongest boundary is the optimized logical plan. DataFusion's layering separates SQL planning,
-logical expressions, logical optimization, physical planning, and streaming `RecordBatch` execution.
-That maps well to Axon's current browser split: DataFusion can supply SQL semantics and selected
-logical rewrites, while Delta snapshot resolution, Parquet/range I/O, query budgets, fallback, and
-Arrow IPC output stay in Axon-owned crates.
+DataFusion owns SQL planning, logical expressions, logical optimization, physical planning, physical
+expression evaluation, streaming execution, and `RecordBatch` output. Axon owns table access. That is
+the strategic boundary.
 
 ## Axon Constraints
 
-Axon's browser engine is not a generic database product. The default browser SKU already has a
+Axon's browser engine is not a generic database product. The browser SKU already has a
 repo-owned lakehouse path: `wasm-delta-snapshot` reconstructs browser-safe Delta snapshots,
 `wasm-http-object-store` owns HTTP range reads, `wasm-parquet-engine` owns Parquet metadata and scan
-primitives, and `wasm-query-runtime` owns query-shape analysis, pruning, fallback, metrics, and
-Arrow IPC output.
+primitives, and the DataFusion engine wrapper should own DataFusion session registration, execution,
+fallback, metrics, and Arrow IPC output.
 
 That means Axon does not need a browser SQL engine to solve broad catalog management, generic file
 listing, generic object-store integration, CSV/JSON datasources, or bring-your-own-source
-ergonomics. The production question is narrower: can Axon reuse DataFusion's SQL planning semantics
-without linking a general-purpose execution engine into the default browser core?
+ergonomics. The production question is narrower: can Axon make Delta/Parquet tables readable by
+DataFusion in a browser Worker while preserving pushdown, memory, cancellation, and range-read
+constraints?
 
-The V1 browser SQL envelope should remain read-only and bounded: projection, aliases, filters,
+The initial browser SQL envelope should remain read-only and bounded: projection, aliases, filters,
 `ORDER BY`, `LIMIT`, global aggregates, grouped aggregates, Arrow input/output, and eventual
 Parquet-backed table access. Joins, recursive CTEs, `DISTINCT`, `HAVING`, broad scalar-function
-catalogs, window functions, DDL/DML, and table functions remain outside the default browser
+catalogs, window functions, DDL/DML, and table functions remain outside the initial browser
 execution envelope until product requirements and size budgets justify them.
 
-Browser delivery also constrains the decision. The default path should run in a worker, use Arrow
+Browser delivery also constrains the decision. The DataFusion engine path should run in a worker, use Arrow
 IPC rather than row JSON for large results, load WASM through streaming instantiation where hosting
 allows it, and treat single-threaded WASM as the product baseline. `SharedArrayBuffer`, shared WASM
 memory, high-precision memory APIs, and threaded execution depend on cross-origin isolation, so they
 are acceleration tiers rather than V1 assumptions. OPFS-backed persistent caches may become useful
-for metadata, footers, and selected byte ranges, but the default engine should not require OPFS to
-be correct.
+for metadata, footers, and selected byte ranges, but the engine should not require OPFS to be
+correct.
 
 ## Candidate Architecture Matrix
 
 | Candidate | Browser shape | Bundle outlook | Current recommendation |
 | --- | --- | --- | --- |
-| Full DataFusion runtime | Lazy worker module owns planning and execution | Poor to medium; current POC is 51.2 MiB raw after `wasm-opt` | Keep as prototype, benchmark, and conformance oracle |
-| Narrow DataFusion subcrate runtime | Direct DataFusion subcrates plus selected physical execution | Unknown; must measure `physical-expr` and `physical-plan` separately | Measure seriously before committing |
-| DataFusion planner plus Axon runtime | DataFusion emits logical plan; Axon lowers to compact execution plan | Best chance for a small default runtime; planner can be lazy | Primary production architecture candidate |
-| Serialized plan boundary | DataFusion/server/lazy compiler emits Substrait or DataFusion proto | Good only with a restricted Axon consumer; full DataFusion serializers may be large | Spike after planner/runtime split is clearer |
-| Hybrid staged runtime | Small default runtime, lazy planner, optional full DataFusion fallback | Best product flexibility | Recommended implementation path |
+| DataFusion engine plus Axon table provider | DataFusion owns SQL and execution; Axon owns Delta table registration and browser scan execution | Current POC is 5.5 MiB Brotli before real Delta/Parquet scan integration | Primary production architecture |
+| DataFusion built-in Parquet plus browser `object_store` adapter | DataFusion owns Parquet file source as well as execution | Unknown; likely more fragile in browser WASM first | Later evaluation path |
+| Full default DataFusion surface | Use broad upstream crate and defaults without browser trimming | Risky; likely pulls unneeded datasource/codecs/functions | Avoid as a packaging stance |
+| DataFusion planner plus Axon IR | DataFusion plans; Axon replaces execution | Smallest potential bundle | Superseded; keep only as scaffold/test harness |
+| Legacy custom runtime only | Axon owns planner and execution | Already exists for a narrow subset | Fallback and migration bridge, not the destination |
 
-The repo already points toward the staged option: `crates/wasm-query-runtime` owns the constrained
-execution envelope, `crates/wasm-delta-snapshot` owns browser-safe snapshot reconstruction, and the
-DataFusion POC is isolated from the shipped worker/runtime dependency graph.
-
-The hybrid path is the safest migration strategy. Supported queries should take the Axon IR fast
-path. Unsupported queries can continue to use native fallback, and a fully lazy DataFusion worker can
-remain available for developer conformance, benchmarks, or advanced SQL experiments. That keeps the
-large runtime exceptional instead of making it the default cost of opening the browser product.
+The repo should now point toward `wasm-datafusion-engine`: a browser Worker engine that registers
+`AxonDeltaTableProvider` instances in a DataFusion `SessionContext`, executes SQL through DataFusion,
+and streams Arrow IPC results back to JavaScript.
 
 ## Proposed Product Gates
 
@@ -146,20 +173,25 @@ experiments run:
 
 | Gate | Working target | Notes |
 | --- | ---: | --- |
-| Always-loaded browser query runtime Brotli | <= 2 MiB preferred, <= 3 MiB hard gate | Applies to the default narrow runtime, not the lazy DataFusion SKU |
-| Lazy SQL planner/compiler Brotli | <= 1-2 MiB preferred, <= 5-6 MiB hard gate | Acceptable only if cached and not loaded for every page view |
-| First tiny query after warm worker | <= 50 ms p50, <= 150 ms p95 | Current full DataFusion POC first query is about 78-80 ms |
+| DataFusion browser engine Brotli | Current 5.5 MiB class initially acceptable; reduce with measured feature work | Applies to the target query engine, not a separate optional experiment |
+| Streaming init | Keep near current 83-87 ms or improve | Track cold and warm separately |
+| First tiny query after warm worker | <= 150 ms p95 initially | Current full DataFusion POC first query is about 78-80 ms |
 | Repeated tiny query | <= 2 ms p50 | Current full DataFusion POC is about 0.6 ms median |
 | Cold init plus first tiny query | Track separately | Current full DataFusion POC is roughly 160-170 ms combined |
+| First Delta/Parquet metadata query | Measure separately | Remote I/O and metadata decode dominate different budgets than engine init |
+| First real Delta/Parquet query | Measure separately | Includes range reads, decompression, row-group pruning, aggregation, and result transfer |
 | Peak browser working set | Bounded and streaming by default | Full global sort and high-cardinality group-by need explicit budgets or fallback |
+| Worker-only execution | Required | DataFusion engine work stays off the main thread |
+| Arrow IPC streaming | Required | Output should stream `RecordBatch` values, not force row JSON materialization |
 
 These are audit gates, not a release promise. They exist to make future DataFusion feature-splitting
 and Axon runtime experiments comparable.
 
 ## Current Baseline
 
-DataFusion remains isolated from the shipped browser worker and default browser runtime, which still
-report `browser_datafusion = false`. The workspace now has two browser WASM DataFusion experiments:
+DataFusion remains isolated from the current shipped browser worker/runtime, which still reports
+`browser_datafusion = false`. That is the current implementation state, not the target strategy. The
+workspace now has two browser WASM DataFusion experiments:
 `crates/wasm-datafusion-poc`, a full umbrella-runtime POC that depends on `datafusion`, and
 `crates/wasm-datafusion-planner-poc`, a planner-only POC that depends directly on
 `datafusion-common`, `datafusion-expr`, and `datafusion-sql`.
@@ -171,10 +203,8 @@ The current POC proves:
 - `datafusion::prelude::SessionContext` can execute SQL over that table.
 - Results can be returned as Arrow IPC bytes through a `wasm-bindgen` export.
 - `wasm-query-runtime` can opt into a compiler-boundary lowering spike through its
-  `datafusion-planner-poc` feature without adding DataFusion crates to its default dependency
-  graph. The spike uses direct DataFusion subcrates to plan SQL and summarize the supported
-  projection, filter, limit, projected-output `ORDER BY`, global aggregate, and grouped aggregate
-  shape into Axon-owned fields.
+  `datafusion-planner-poc` feature. That spike is useful scaffolding and a corpus harness, but it is
+  no longer the product destination.
 - Task 6 added `tests/conformance/browser-datafusion-lowering-corpus.json` as the differential SQL
   corpus for the lowering spike. It covers projection/filter/limit, projected-output `ORDER BY`,
   unsupported join rejection before browser runtime planning, `COUNT(*)`, grouped `COUNT(*)`, and
@@ -187,8 +217,9 @@ The current POC does not yet prove:
 - Parquet-backed DataFusion table registration in WASM
 - memory-budgeted DataFusion execution
 - parity gates against the native DataFusion runtime
-- execution of the `wasm-query-runtime` lowering output; joins and other broad SQL operators remain
-  explicit unsupported-shape failures before browser runtime planning
+- DataFusion execution over Axon Delta active-file descriptors
+- a custom DataFusion `TableProvider` backed by Axon's browser Parquet/range stack
+- a custom DataFusion `ExecutionPlan` that streams `RecordBatch` values from browser range reads
 
 ## Measured Artifact Sizes
 
@@ -210,18 +241,20 @@ Release-profile matrix, measured with `tests/perf/report_datafusion_wasm_size.sh
 | opt-level z | 41,031,540 | 21,594,406 | 5,601,010 | 3,504,722 | Independent temporary profile; `wasm-bindgen` output was 36,590,159 bytes; end-to-end run `real 130.74s`. |
 | lto + codegen-units 1 | 53,597,447 | 37,021,684 | 9,192,354 | 5,141,782 | Independent temporary profile; `wasm-bindgen` output was 49,881,686 bytes; end-to-end run `real 360.17s`. |
 | panic abort + strip | 71,416,095 | n/a | n/a | n/a | Independent temporary profile; `wasm-bindgen` output was 67,707,622 bytes, then the script failed at `wasm-opt -Oz` with Binaryen feature validation errors for stripped bulk-memory and nontrapping-float-to-int instructions; failing run `real 111.28s`. |
-| planner-only direct subcrates | 29,029,645 | 19,363,360 | 3,901,323 | 2,108,131 | Isolated `wasm-datafusion-planner-poc` using `datafusion-common`, `datafusion-expr`, and `datafusion-sql` directly, with exported `plan_sql_to_display` retaining the planner surface; `wasm-bindgen` output was 26,732,143 bytes. Passes the lazy planner/compiler hard Brotli gate, but is just over the 2 MiB preferred target. |
-| planner plus optimizer floor | 42,300,914 | 28,444,112 | 5,735,339 | 2,945,395 | Adds optional `datafusion-optimizer` and exported `optimizer_surface_marker_wasm`, retaining the default logical optimizer rule list; `wasm-bindgen` output was 39,236,537 bytes. Inside the lazy planner/compiler hard Brotli gate and worth pursuing for Axon logical-plan lowering. |
+| planner-only direct subcrates | 29,029,645 | 19,363,360 | 3,901,323 | 2,108,131 | Isolated `wasm-datafusion-planner-poc` using `datafusion-common`, `datafusion-expr`, and `datafusion-sql` directly, with exported `plan_sql_to_display` retaining the planner surface; `wasm-bindgen` output was 26,732,143 bytes. Useful as a lower bound, but not the product engine by itself. |
+| planner plus optimizer floor | 42,300,914 | 28,444,112 | 5,735,339 | 2,945,395 | Adds optional `datafusion-optimizer` and exported `optimizer_surface_marker_wasm`, retaining the default logical optimizer rule list; `wasm-bindgen` output was 39,236,537 bytes. Confirms planner and optimizer pieces fit inside the emerging engine budget. |
 | planner plus physical-expr floor | 29,153,447 | 19,417,295 | 3,916,000 | 2,113,465 | Adds optional `datafusion-physical-expr` and exported `physical_expr_surface_marker_wasm`, retaining a column physical expression marker; `wasm-bindgen` output was 26,845,560 bytes. Inside the hard gate, but this is only a tiny symbol floor, not evidence for broad physical expression execution. |
 | planner plus physical-plan floor | 29,186,424 | 19,422,327 | 3,907,415 | 2,104,480 | Adds optional `datafusion-physical-plan` and exported `physical_plan_surface_marker_wasm`, retaining `PlaceholderRowExec`; `wasm-bindgen` output was 26,875,287 bytes. Inside the hard gate, but this remains a narrow execution-plan symbol floor rather than a real physical runtime measurement. The wasm compile required a target-only `uuid/js` feature unifier because `datafusion-physical-plan` pulls `datafusion-functions` default string functions, which enable `uuid/v4`. |
 
 Interpretation:
 
-- Browser compile/instantiate cost is still large even after `wasm-opt -Oz`.
-- Brotli transfer cost is much smaller than raw cost, so lazy-loading is plausible.
-- This is not suitable for Axon's default browser runtime SKU without an explicit opt-in.
+- Browser compile/instantiate cost is real and must be budgeted.
+- Brotli transfer cost is much smaller than raw cost, so browser caching and streaming
+  instantiation are important product tools.
+- The current 5.5 MiB Brotli class is not disqualifying for a serious browser analytics engine; it
+  says optimize, split, cache, and benchmark.
 - The optimizer floor is the first measured feature row that materially increases retained planner
-  size, but it remains well inside the lazy planner hard gate.
+  size, but it remains inside the emerging DataFusion engine budget.
 - The physical expression and physical plan rows are lower bounds only. They prove those optional
   subcrate surfaces can compile for wasm and be retained through browser exports, but they do not
   measure a representative DataFusion physical runtime.
@@ -320,28 +353,26 @@ enabled:
 
 That points to a feature-boundary problem more than a simple Axon dependency problem.
 
-The reusable center of gravity is narrower than the umbrella crate:
+The reusable center of gravity is the DataFusion execution stack plus a browser-specific table and
+scan layer:
 
-- `datafusion-sql` is the likely planner entry point for a DataFusion-backed SQL-to-logical-plan
-  experiment.
-- `datafusion-expr` owns `Expr` and `LogicalPlan` structures that can carry SQL semantics across a
-  compiler boundary.
-- `datafusion-optimizer` is valuable if Axon can apply selected logical rules before lowering to its
-  own IR, but it must be measured because it pulls physical-expression machinery.
-- `datafusion-physical-expr` is worth measuring only if direct batch expression evaluation saves
-  enough implementation complexity to justify the extra bytes.
-- `datafusion-physical-plan`, `datafusion-execution`, `datafusion-session`, DataFusion datasource
-  crates, and broad function packages should not enter the default browser core until measurements
-  prove they fit the budget.
+- `datafusion-sql`, `datafusion-expr`, and `datafusion-optimizer` remain required for SQL semantics.
+- `datafusion-physical-expr`, `datafusion-physical-plan`, `datafusion-execution`, and
+  `datafusion-session` are part of the target engine surface, but must be measured and feature-gated
+  to Axon's browser workload.
+- DataFusion datasource crates for CSV, JSON, Avro, generic listing, and broad function catalogs are
+  candidates for feature splitting because Axon's browser SKU is Delta/Parquet-first.
+- The first production scan path should be an Axon `TableProvider` and `ExecutionPlan`, not a
+  wholesale dependency on every built-in DataFusion file source.
 
 ## Profile Versus Retained Surface
 
 | Retained surface | Needed by Axon profile? | Audit action |
 | --- | --- | --- |
-| `datafusion-sql` and `sqlparser` | Yes, but only SELECT profile is needed | Keep, investigate whether parser/planner can avoid broad statement operations |
+| `datafusion-sql` and `sqlparser` | Yes | Keep; measure parser breadth but do not replace DataFusion SQL ownership |
 | `datafusion-datasource-csv` | No | Candidate for upstream feature split or direct subcrate usage |
 | `datafusion-datasource-json` | No | Candidate for upstream feature split or direct subcrate usage |
-| `datafusion-datasource-arrow` | Maybe | Needed only if it is the cleanest path for Arrow table registration |
+| `datafusion-datasource-arrow` | Maybe | Needed only if it helps table registration or in-memory fixtures |
 | `datafusion-functions` broad registry | Partially | Gate to required scalar functions, or avoid registering broad built-ins |
 | aggregate functions | Yes, narrow subset | Gate to `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`; defer arrays/booleans unless required |
 | window/table functions | No for V1 | Candidate for feature split |
@@ -359,16 +390,18 @@ should load through the browser streaming path when hosting supports the correct
 and large results should cross the worker boundary as Arrow IPC. JSON is acceptable for control
 messages and small diagnostics, not for large result materialization.
 
-The executor should remain a streaming `RecordBatch` pipeline with explicit budgets. Filter and
-projection should run batch-by-batch, aggregates should keep partial state, and `ORDER BY ... LIMIT`
-should prefer bounded `TopK` behavior where semantics allow it. Full global `ORDER BY` without a
-limit, high-cardinality grouping, and unsupported expression/type combinations should have observable
-fallback or failure modes rather than silently collecting unbounded data in browser memory.
+The executor should be DataFusion's streaming `RecordBatch` pipeline with explicit browser budgets.
+Filter and projection should run batch-by-batch, aggregates should keep partial state, and
+`ORDER BY ... LIMIT` should prefer bounded `TopK` behavior where semantics allow it. Full global
+`ORDER BY` without a limit, high-cardinality grouping, and unsupported expression/type combinations
+should have observable fallback or failure modes rather than silently collecting unbounded data in
+browser memory.
 
 The scan boundary is the highest-leverage performance point. Lowered plans should annotate required
 columns, exact and inexact pushdown predicates, limit hints, row-group pruning predicates, dictionary
-filter opportunities, and output ordering when known. The browser runtime should avoid decoding
-Parquet columns or row groups that a later operator will discard.
+filter opportunities, and output ordering when known. `AxonDeltaTableProvider::scan` should turn
+DataFusion projection, filters, and limit into an `AxonParquetScanExec` that avoids decoding Parquet
+columns, files, or row groups that DataFusion will discard later.
 
 Caching should be layered but optional for correctness. Plan caches should key on normalized SQL,
 schema fingerprint, planner version, and Delta snapshot identity. Metadata and footer caches can
@@ -394,56 +427,60 @@ compress, profile, and run correctness tests.
      reduced default features without breaking the POC.
    - Measure whether the direct dependencies matter once umbrella DataFusion pulls `arrow`.
 
-4. Replace umbrella `datafusion` with direct subcrates where possible.
-   - Start from the exact APIs needed by the POC: `SessionContext`, `MemTable`, SQL planning, and
-     collect.
-   - If the public API forces the umbrella crate, document that boundary as an upstream issue.
+4. Promote `wasm-datafusion-poc` toward `wasm-datafusion-engine`.
+   - Keep `SessionContext`, SQL planning, optimizer, physical planning, and execution in the engine.
+   - Replace the synthetic `MemTable` fixture with registered Axon Delta/Parquet table providers.
+   - Preserve Arrow IPC output as the worker result boundary.
 
-5. Measure planner/compiler-only DataFusion.
-   - Build `datafusion-common`, `datafusion-expr`, `datafusion-sql`, and `datafusion-optimizer`
-     without `datafusion-physical-plan`, datasource crates, or DataFusion Parquet.
-   - Record raw, bindgen, `wasm-opt`, gzip, Brotli, init time, and `twiggy` output.
-   - Treat this as the candidate lazy SQL compiler bundle, not the default runtime.
+5. Build `AxonDeltaTableProvider`.
+   - Consume Delta snapshot descriptors with schema, table version, partition columns, active files,
+     file sizes, partition values, optional stats, and optional deletion-vector descriptors.
+   - Implement DataFusion's scan contract so projection, filters, and limit become scan-planning
+     inputs rather than post-scan guesses.
+   - Classify pushdown as partition pruning, file-stat pruning, row-group pruning, projection
+     pruning, early limit, and residual predicates that DataFusion applies above the scan.
 
-6. Measure reusable execution pieces.
-   - Add `datafusion-physical-expr` alone and compare against an Axon expression evaluator.
-   - Add `datafusion-physical-plan` separately to find the real floor for a narrow DataFusion
-     runtime.
-   - Stop pursuing the DataFusion physical runtime for browser V1 if the floor is close to the
-     umbrella POC.
+6. Build `AxonParquetScanExec`.
+   - Return a DataFusion `ExecutionPlan` that streams Arrow `RecordBatch` values from
+     `wasm-parquet-engine` and `wasm-http-object-store`.
+   - Enforce worker cancellation, memory budgets, range-read validation, row-group pruning, and
+     projection pushdown.
+   - Start with one browser partition and add partitioning only after memory and scheduling budgets
+     are observable.
 
-7. Build an Axon lowering spike.
-   - Lower a DataFusion logical plan for projection, filter, limit, global aggregate, grouped
-     aggregate, and sort/limit into `BrowserExecutionPlan` or its successor IR.
-   - Compare outputs against native DataFusion and the existing custom runtime.
+7. Compare against a later browser `object_store` path.
+   - Keep the first production path on Axon's existing browser-safe Parquet/range stack.
+   - Evaluate a DataFusion-native Parquet reader plus browser `object_store` adapter only if it
+     reduces Axon-owned scan complexity or improves performance.
 
 8. Test DataFusion feature splits locally.
    - Prototype optional gating for CSV/JSON datasource crates, window/table functions, broad scalar
      function registration, and Arrow default features.
    - Measure each split independently before combining them.
 
-9. Add Parquet-backed profile only after the in-memory profile is understood.
-   - Introduce the minimum Parquet registration path.
+9. Add Delta/Parquet query profiles.
+   - Measure first metadata query separately from first data query.
    - Gate codecs by actual browser table requirements.
-   - Re-run size and performance baselines because Parquet will change the byte owners.
+   - Re-run size, memory, startup, and query-latency baselines because Parquet changes the byte and
+     memory owners.
 
 10. Re-run correctness and performance after every reduction.
    - Host DataFusion POC tests.
    - WASM DataFusion smoke tests.
    - Native parity tests once Parquet/Delta integration exists.
-   - Browser startup/instantiate timing and query latency for the lazy-loaded SKU.
+   - Browser startup/instantiate timing, scan latency, peak memory, cancellation, and query latency
+     for the DataFusion engine SKU.
 
 ## Decision Gates
 
 | Result | Product decision |
 | --- | --- |
-| Optimized DataFusion is small enough for default budgets | Consider an optional browser SQL SKU, not default replacement |
-| Optimized DataFusion is large but compressed transfer is acceptable | Lazy-load only when DataFusion mode is requested |
-| DataFusion remains large because needed planner/execution surface is broad | Keep custom runtime as default and DataFusion as advanced mode |
-| Planner/compiler-only DataFusion is acceptable | Use DataFusion as a lazy SQL compiler into the Axon execution plan |
-| Planner/compiler-only DataFusion is still too large | Keep SQL lowering on the current `sqlparser` path or compile plans outside the browser |
-| DataFusion physical runtime is close to umbrella size | Do not use it for browser V1 execution |
-| Axon lowering drifts semantically from DataFusion | Expand differential tests or narrow the browser SQL contract |
+| DataFusion engine size remains in the current 5.5 MiB Brotli class | Continue; optimize and cache rather than replace DataFusion execution |
+| DataFusion engine grows materially after Delta/Parquet scan integration | Split features, codecs, and datasource surfaces before reconsidering architecture |
+| DataFusion scan pushdown cannot use Axon's Delta/Parquet facts | Improve `AxonDeltaTableProvider` and `AxonParquetScanExec`; do not fall back to an Axon IR by default |
+| DataFusion physical execution cannot meet memory/cancellation budgets | Add browser budget controls, fallback rules, and operator limits |
+| DataFusion-native Parquet/browser object-store path proves simpler and faster | Consider replacing `AxonParquetScanExec` later |
+| DataFusion-native Parquet/browser object-store path is fragile | Keep custom scan ExecutionPlan over Axon's browser stack |
 | Size is dominated by removable modules without feature boundaries | Prepare upstream feature-splitting proposals |
 | Size reductions break correctness or broad type coercion unexpectedly | Keep the functionality and document why it is required |
 
@@ -453,57 +490,47 @@ compress, profile, and run correctness tests.
 
 - Add a repeatable DataFusion POC size-report script.
 - Measure umbrella-min, planner-only, planner-plus-optimizer, and planner-plus-physical-expr builds.
-- Prove SQL to logical plan to Axon lowering for projection, filter, limit, projected-output
-  `ORDER BY`, and the required aggregate corpus.
-- Publish a strict SQL/operator/type support matrix for the browser default SKU and experimental SQL
-  SKU.
+- Prove DataFusion compiles and executes in browser wasm, with Arrow IPC output.
+- Decide that DataFusion physical execution is the browser engine target, while Axon owns table
+  access and browser scan integration.
 
 ### 60-Day Gate
 
-- Lower an optimized DataFusion logical plan into the existing Axon execution-plan model or a small
-  successor IR.
-- Run differential tests against native DataFusion or the native query runtime for the supported SQL
-  subset.
-- Decide whether `datafusion-physical-expr` is worth its measured size delta.
-- Preserve current fallback behavior for unsupported SQL, unsupported Delta features, and browser
-  runtime constraints.
+- Register a Delta snapshot descriptor as an `AxonDeltaTableProvider` in DataFusion.
+- Execute DataFusion SQL over an `AxonParquetScanExec` backed by `wasm-parquet-engine` and
+  `wasm-http-object-store`.
+- Stream Arrow `RecordBatch` output through Arrow IPC from the worker.
+- Run native/DataFusion parity tests for projection, filter, limit, order-by-limit, global
+  aggregates, and grouped aggregates over Delta-derived Parquet descriptors.
+- Measure browser engine size, startup, first metadata query, first real query, repeated query,
+  peak memory, and cancellation.
 
 ### 90-Day Gate
 
-- Decide whether the planner-only path becomes the default browser SQL frontend.
-- Decide whether full DataFusion remains only a POC, becomes a lazy advanced module, or is dropped
-  from browser product plans.
-- Add CI budget reporting for the chosen browser query module.
+- Decide whether `wasm-datafusion-poc` is renamed/promoted to `wasm-datafusion-engine`.
+- Decide whether the custom scan ExecutionPlan remains the production path or a browser
+  `object_store` adapter should be prioritized.
+- Add CI budget reporting for the DataFusion browser engine module.
 - Open upstream issues or PRs only for measured blockers.
 
 ## Open Questions
 
-- What exact SQL grammar should the experimental DataFusion SKU accept in browser V1?
+- What exact SQL grammar should the DataFusion browser engine accept in V1?
 - Which scalar functions are product requirements rather than convenience?
 - Which Parquet encodings and compression codecs are mandatory for target datasets?
-- Is browser-only SQL compilation required, or can some deployments compile/cache plans outside the
-  browser?
-- Is a full DataFusion lazy fallback acceptable as a product dependency, or should it remain a
-  developer-only conformance tool?
+- Should query-plan caching happen only in the browser, or can some deployments compile/cache plans
+  outside the browser?
+- Which DataFusion built-in datasources should be excluded from the browser engine package?
 - Can DataFusion expose an in-memory/session profile that does not include CSV/JSON datasources?
 - Can Arrow default features be narrowed through DataFusion without forking?
-- What is the acceptable browser compile/instantiate budget for a lazy-loaded SQL SKU?
+- What is the acceptable browser compile/instantiate budget for the DataFusion engine SKU?
 
 ## Next Concrete Task
 
-Use `tests/perf/report_datafusion_wasm_size.sh` to emit the repeatable `wasm-datafusion-poc`
-artifact table and profiler summaries in one command. Generated files live under package-scoped
-directories in `target/df-size`, such as `target/df-size/wasm-datafusion-poc`, and should remain
-uncommitted.
-
-After that script exists, run the first three matrix rows in order:
-
-1. current umbrella POC with current release profile
-2. planner/compiler-only subcrate build
-3. `datafusion-physical-expr` and `datafusion-physical-plan` size floors
-
-Those measurements decide whether the next implementation task is a DataFusion-to-Axon lowering
-spike or an upstream feature-splitting spike.
+Begin the 60-day DataFusion engine work. Promote the POC toward `wasm-datafusion-engine`, register a
+Delta snapshot descriptor as an `AxonDeltaTableProvider`, implement an `AxonParquetScanExec` that
+streams browser-read Parquet batches into DataFusion physical execution, and return Arrow IPC from
+the Worker.
 
 ## Primary References
 

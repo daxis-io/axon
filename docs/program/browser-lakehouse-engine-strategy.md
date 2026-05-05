@@ -7,6 +7,7 @@
   - [WASM + Delta Lake on GCS Program Bundle](./wasm-delta-gcs-program.md)
   - [EPIC-04: Browser DataFusion WASM Runtime And HTTP Object-Store Hardening](../epics/EPIC-04-browser-datafusion-wasm-runtime-and-http-object-store-hardening.md)
   - [Browser Lakehouse Engine Implementation Plan](../plans/2026-03-28-browser-lakehouse-engine-implementation-plan.md)
+  - [Browser DataFusion Size Audit](./browser-datafusion-size-audit.md)
 
 ## Decision Summary
 
@@ -18,20 +19,28 @@ The recommended shape is:
 - keep `crates/wasm-http-object-store` as the browser-safe byte-range transport seam
 - keep `crates/wasm-parquet-engine` for browser-side Parquet planning and streamed scan primitives
 - keep `crates/wasm-delta-snapshot` for browser-safe Delta snapshot reconstruction
-- keep `crates/wasm-query-runtime` as the orchestration layer for query-shape analysis, pruning, planning, fallback, metrics, and the browser-facing runtime API
+- promote the DataFusion POC into a first-class `wasm-datafusion-engine` that owns SQL planning,
+  optimization, physical planning, execution, and Arrow `RecordBatch` output in a browser Worker
+- keep `crates/wasm-query-runtime` as a legacy fallback, correctness scaffold, and migration bridge
 - add `crates/wasm-query-session` as the thin in-memory browser session shell above the runtime and below the worker contract
 
-The repo-grounded V1 is therefore:
+The target browser SKU is therefore:
 
 - Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`
 - streamed Parquet scan primitives inside `crates/wasm-parquet-engine`
-- runtime-owned Arrow IPC output from `crates/wasm-query-runtime`
+- DataFusion physical execution in a browser Worker
+- `AxonDeltaTableProvider` and `AxonParquetScanExec` connect Axon's Delta/Parquet stack to DataFusion
+- Arrow IPC output from the DataFusion engine wrapper
 - a worker-owned in-memory session shell in `crates/wasm-query-session`
 
 The session shell remains in-memory only. Persistent-cache hooks may exist below it, but OPFS / IndexedDB backends remain deferred.
 Signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation stay outside repo-owned V1 success claims.
 
-Broad browser DataFusion remains deferred. V1 should not be described as a browser DataFusion launch.
+Broad browser DataFusion is no longer deferred as a product direction. The browser query engine
+target is DataFusion-backed Delta/Parquet execution. The 30-day gate result, recorded canonically in
+the browser DataFusion size audit, is to continue toward a DataFusion physical execution engine with
+custom Axon table and scan integration. Bundle size remains a release budget; it is not the
+architecture reason to replace DataFusion execution with an Axon IR.
 
 `parquet-viewer` is useful here as a reference implementation for the scan path only. It validates that browser-side storage adapters, byte-range reads, Parquet access, and optional Arrow/DataFusion execution are viable in WebAssembly. It is not the Delta layer and should not be treated as the reason to collapse Delta protocol work into the same crate or split Axon into a separate repository.
 
@@ -101,9 +110,25 @@ browser-sdk / embedding host
     crates/wasm-query-session
             |
             v
-    crates/wasm-query-runtime
+    crates/wasm-datafusion-engine
       |                 |
       |                 +--> Arrow IPC result boundary
+      |
+      +--> DataFusion SessionContext
+      |      - SQL planning
+      |      - logical optimization
+      |      - physical planning
+      |      - physical execution
+      |
+      +--> AxonDeltaTableProvider
+      |      - DataFusion table registration
+      |      - projection / filter / limit pushdown contract
+      |      - Delta active-file descriptors
+      |
+      +--> AxonParquetScanExec
+      |      - DataFusion ExecutionPlan
+      |      - RecordBatch stream
+      |      - cancellation / memory / scan metrics
       |
       +--> crates/wasm-delta-snapshot
       |      - _delta_log listing / reads
@@ -131,8 +156,10 @@ native side:
 The key handoff is explicit:
 
 - `wasm-delta-snapshot` produces active file descriptors with path, size, partition values, and optional stats
-- `wasm-parquet-engine` consumes those descriptors without rediscovering file size or table state
-- `wasm-query-runtime` owns query planning and decides whether the request stays in browser or falls back to native
+- `AxonDeltaTableProvider` exposes those descriptors to DataFusion as a registered table
+- `AxonParquetScanExec` consumes DataFusion projection, filter, and limit pushdown inputs
+- `wasm-parquet-engine` and `wasm-http-object-store` produce Arrow `RecordBatch` streams from browser-safe range reads
+- DataFusion owns SQL planning, optimization, physical planning, physical execution, and result batches
 
 ## Proposed Crate Map
 
@@ -141,8 +168,9 @@ The key handoff is explicit:
 | `crates/wasm-http-object-store` | Browser-safe remote and local byte-range I/O | `reqwest`, `bytes`, browser bindings, cache helpers | Parse Delta logs, decode Parquet schema, own SQL semantics |
 | `crates/wasm-parquet-engine` | Footer reads, metadata decode, Parquet planning, Arrow batch scans | `parquet`, Arrow-facing helpers, `wasm-http-object-store` | Parse `_delta_log`, own query routing, own browser SDK bindings |
 | `crates/wasm-delta-snapshot` | `_delta_log` listing and reads, checkpoint selection, sidecars, commit replay, active-file reconstruction | `wasm-http-object-store`, JSON decode, Parquet checkpoint readers, shared contracts | Own SQL planning, own UI bindings, depend on native `deltalake` |
-| `crates/wasm-query-runtime` | Query-shape analysis, pruning, planning, fallback, metrics, browser runtime API | `query-contract`, `wasm-delta-snapshot`, `wasm-parquet-engine` | Reimplement low-level transport or Delta protocol parsing |
-| `crates/wasm-query-session` | In-memory table/session shell over runtime-owned snapshots | `query-contract`, `wasm-query-runtime` | Add persistence, cache SDK envelopes, or imply browser DataFusion |
+| `crates/wasm-datafusion-engine` | DataFusion `SessionContext`, table registration, SQL execution, Arrow IPC streaming | DataFusion, Arrow, `wasm-delta-snapshot`, `wasm-parquet-engine`, `wasm-http-object-store` | Own raw Delta protocol parsing or browser HTTP range internals |
+| `crates/wasm-query-runtime` | Legacy narrow runtime, fallback, correctness scaffold during migration | `query-contract`, `wasm-delta-snapshot`, `wasm-parquet-engine` | Be the destination SQL execution engine once DataFusion scan integration is viable |
+| `crates/wasm-query-session` | In-memory table/session shell over opened browser tables | `query-contract`, `wasm-datafusion-engine`, fallback runtime as needed | Add persistence or own SQL/Delta/Parquet internals |
 | `crates/delta-control-plane` | Trusted-side snapshot resolution, policy enforcement, future signed URL / proxy issuance | native `deltalake`, `query-contract` | Become the browser Delta engine |
 | `crates/browser-sdk` | Worker command and IPC boundary, browser embedding API | `query-contract`, Arrow IPC surface | Own Delta, Parquet, or runtime/session internals |
 
@@ -180,9 +208,23 @@ The browser I/O layer should move from exact requested ranges toward coalesced e
 
 The remote HTTP path should assume single-range `Range` requests, `206 Partial Content` responses for partial fetches, and explicit exposure of the response headers needed for object identity and range validation when browser code must inspect them.
 
-### 7. Browser DataFusion Is Deferred For The Default SKU
+### 7. Browser DataFusion Is The Query Engine Target
 
-The runtime should support a smaller scan / filter / project profile and a larger SQL/DataFusion profile. SQL breadth should not silently become a bundle-size regression for every browser deployment, and the larger browser DataFusion SKU should remain explicitly deferred or experimental until code and release gates exist in repo.
+The browser SKU should be a DataFusion-powered Delta/Parquet query engine. SQL breadth should still
+be gated by browser size, memory, and latency budgets, but DataFusion physical execution is the
+destination architecture rather than an optional planner feeding a custom Axon IR.
+
+The browser DataFusion size audit remains canonical for DataFusion details: measured WASM artifact
+sizes, retained dependency surface, feature-splitting candidates, startup/runtime budgets, and the
+30-day decision. The strategic boundary is explicit: Axon owns table access, Delta snapshot facts,
+browser HTTP range reads, Parquet scan integration, query budgets, fallback, and Arrow IPC delivery;
+DataFusion owns SQL planning, logical optimization, physical planning, expression evaluation,
+physical execution, and Arrow `RecordBatch` output.
+
+The first production-oriented DataFusion integration should be a custom `AxonDeltaTableProvider`
+plus custom `AxonParquetScanExec` over Axon's existing browser-safe Parquet/range stack. A
+DataFusion-native Parquet reader with a browser `object_store` adapter is a later evaluation path,
+not the first production dependency.
 
 ### 8. Bounded Streaming Over Unbounded Materialization
 
@@ -228,7 +270,8 @@ Deliverables:
 - pruning uses Delta add-file facts before opening Parquet whenever possible
 - browser SDK and worker host use Arrow IPC for result transport
 - `wasm-query-session` provides an in-memory-only table/session shell for repeated queries
-- optional SQL/DataFusion feature split is defined but remains deferred for the default SKU
+- `wasm-datafusion-engine` can register Delta-derived tables in a DataFusion `SessionContext`
+- DataFusion SQL executes over `AxonParquetScanExec` and returns Arrow IPC from the worker
 
 Exit criteria:
 
@@ -275,6 +318,7 @@ This strategy is successful when Axon can do all of the following without changi
 ## Open Questions To Resolve During Execution
 
 - Whether the first remote-store iteration should stay HTTP-first or immediately adopt an OpenDAL bridge behind a feature flag
-- How broad the first optional browser DataFusion SKU should be before bundle size becomes unacceptable
+- How to package, cache, and budget the DataFusion browser engine while excluding unneeded
+  datasource/function/codecs
 - Whether browser-local Delta directories should target OPFS first, drag-and-drop file trees first, or both
 - Whether `wasm-delta-snapshot` should accept a control-plane-produced file listing as an override path for hosted deployments that do not want browser-side log replay
