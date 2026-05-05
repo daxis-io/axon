@@ -180,6 +180,15 @@ Measured artifacts from the current release build and `wasm-bindgen` output:
 | `gzip -9` of optimized wasm | 11,282,641 | 10.8 MiB |
 | Brotli `-q 11` of optimized wasm | 5,775,497 | 5.5 MiB |
 
+Release-profile matrix, measured with `tests/perf/report_datafusion_wasm_size.sh` on May 5, 2026:
+
+| Variant | Raw wasm | wasm-opt | gzip | Brotli | Notes |
+| --- | ---: | ---: | ---: | ---: | --- |
+| umbrella current profile | 82,406,683 | 53,644,227 | 11,282,641 | 5,775,497 | Baseline; `wasm-bindgen` output was 76,742,693 bytes. |
+| opt-level z | 41,031,540 | 21,594,406 | 5,601,010 | 3,504,722 | Independent temporary profile; `wasm-bindgen` output was 36,590,159 bytes; end-to-end run `real 130.74s`. |
+| lto + codegen-units 1 | 53,597,447 | 37,021,684 | 9,192,354 | 5,141,782 | Independent temporary profile; `wasm-bindgen` output was 49,881,686 bytes; end-to-end run `real 360.17s`. |
+| panic abort + strip | 71,416,095 | n/a | n/a | n/a | Independent temporary profile; `wasm-bindgen` output was 67,707,622 bytes, then the script failed at `wasm-opt -Oz` with Binaryen feature validation errors for stripped bulk-memory and nontrapping-float-to-int instructions; failing run `real 111.28s`. |
+
 Interpretation:
 
 - Browser compile/instantiate cost is still large even after `wasm-opt -Oz`.
