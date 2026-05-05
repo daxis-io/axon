@@ -1,0 +1,122 @@
+[
+  {
+    "name": "projection_filter_limit",
+    "sql": "SELECT id, value FROM axon_table WHERE value > 10 LIMIT 2",
+    "expected": {
+      "required_columns": ["id", "value"],
+      "filter_columns": ["value"],
+      "order_by_columns": [],
+      "group_by_columns": [],
+      "aggregate_measures": [],
+      "limit": 2
+    }
+  },
+  {
+    "name": "order_by_projected_output",
+    "sql": "SELECT id, value FROM axon_table WHERE category = 'B' ORDER BY id LIMIT 5",
+    "expected": {
+      "required_columns": ["category", "id", "value"],
+      "filter_columns": ["category"],
+      "order_by_columns": ["id"],
+      "group_by_columns": [],
+      "aggregate_measures": [],
+      "limit": 5
+    }
+  },
+  {
+    "name": "order_by_projected_alias",
+    "sql": "SELECT value AS v FROM axon_table ORDER BY v LIMIT 3",
+    "expected": {
+      "required_columns": ["value"],
+      "filter_columns": [],
+      "order_by_columns": ["v"],
+      "group_by_columns": [],
+      "aggregate_measures": [],
+      "limit": 3
+    }
+  },
+  {
+    "name": "unsupported_order_by_non_output_column",
+    "sql": "SELECT id FROM axon_table WHERE value > 10 ORDER BY value",
+    "expected_error_contains": "ORDER BY expressions must reference projected output columns"
+  },
+  {
+    "name": "unsupported_join",
+    "sql": "SELECT a.id FROM axon_table a JOIN other b ON a.id = b.id",
+    "expected_error_contains": "joins are not supported"
+  },
+  {
+    "name": "count_star",
+    "sql": "SELECT COUNT(*) FROM axon_table",
+    "expected": {
+      "required_columns": [],
+      "filter_columns": [],
+      "order_by_columns": [],
+      "group_by_columns": [],
+      "aggregate_measures": [
+        {
+          "function": "count_star",
+          "source_column": null
+        }
+      ],
+      "limit": null
+    }
+  },
+  {
+    "name": "grouped_count_star",
+    "sql": "SELECT category, COUNT(*) FROM axon_table GROUP BY category",
+    "expected": {
+      "required_columns": ["category"],
+      "filter_columns": [],
+      "order_by_columns": [],
+      "group_by_columns": ["category"],
+      "aggregate_measures": [
+        {
+          "function": "count_star",
+          "source_column": null
+        }
+      ],
+      "limit": null
+    }
+  },
+  {
+    "name": "unsupported_having_aggregate_filter",
+    "sql": "SELECT category, COUNT(*) FROM axon_table GROUP BY category HAVING COUNT(*) > 1",
+    "expected_error_contains": "aggregate output filters are not supported"
+  },
+  {
+    "name": "unsupported_computed_aggregate_projection",
+    "sql": "SELECT COUNT(*) + 1 FROM axon_table",
+    "expected_error_contains": "aggregate projection expression is not supported"
+  },
+  {
+    "name": "unsupported_cast_aggregate_argument",
+    "sql": "SELECT MIN(CAST(value AS VARCHAR)) FROM axon_table",
+    "expected_error_contains": "aggregate argument is not supported"
+  },
+  {
+    "name": "grouped_sum_min_max",
+    "sql": "SELECT category, SUM(value), MIN(value), MAX(value) FROM axon_table GROUP BY category",
+    "expected": {
+      "required_columns": ["category", "value"],
+      "filter_columns": [],
+      "order_by_columns": [],
+      "group_by_columns": ["category"],
+      "aggregate_measures": [
+        {
+          "function": "sum",
+          "source_column": "value"
+        },
+        {
+          "function": "min",
+          "source_column": "value"
+        },
+        {
+          "function": "max",
+          "source_column": "value"
+        }
+      ],
+      "limit": null
+    }
+  }
+]

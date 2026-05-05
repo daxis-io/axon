@@ -173,7 +173,12 @@ The current POC proves:
 - `wasm-query-runtime` can opt into a compiler-boundary lowering spike through its
   `datafusion-planner-poc` feature without adding DataFusion crates to its default dependency
   graph. The spike uses direct DataFusion subcrates to plan SQL and summarize the supported
-  projection, filter, and limit shape into Axon-owned fields.
+  projection, filter, limit, projected-output `ORDER BY`, global aggregate, and grouped aggregate
+  shape into Axon-owned fields.
+- Task 6 added `tests/conformance/browser-datafusion-lowering-corpus.json` as the differential SQL
+  corpus for the lowering spike. It covers projection/filter/limit, projected-output `ORDER BY`,
+  unsupported join rejection before browser runtime planning, `COUNT(*)`, grouped `COUNT(*)`, and
+  grouped `SUM`/`MIN`/`MAX`.
 
 The current POC does not yet prove:
 
@@ -236,8 +241,8 @@ This profile should be treated as the minimum investigation target, not as a fin
 | Primitive and string columns | Required | Custom runtime handles integer, boolean, string, null scalar values |
 | Arrow `RecordBatch` input | Required | POC proves in-memory `RecordBatch` input |
 | Arrow IPC output | Required | POC and custom runtime use Arrow IPC output |
-| Basic aggregates | Required | Custom runtime supports `COUNT`, `COUNT(*)`, `SUM`, integral `AVG`, `MIN`, `MAX` |
-| Group by | Required | Custom runtime has grouped aggregate execution coverage |
+| Basic aggregates | Required | Custom runtime supports `COUNT`, `COUNT(*)`, `SUM`, integral `AVG`, `MIN`, `MAX`; DataFusion lowering now summarizes `COUNT(*)`, `COUNT(column)`, `SUM`, `MIN`, and `MAX` |
+| Group by | Required | Custom runtime has grouped aggregate execution coverage; DataFusion lowering now records grouped aggregate columns |
 | Parquet-backed table registration | Eventual | Not proven in DataFusion POC yet |
 | Delta active-file registration | Eventual | Should come after Parquet-backed registration |
 
@@ -448,7 +453,8 @@ compress, profile, and run correctness tests.
 
 - Add a repeatable DataFusion POC size-report script.
 - Measure umbrella-min, planner-only, planner-plus-optimizer, and planner-plus-physical-expr builds.
-- Prove SQL to logical plan to Axon lowering for projection, filter, and limit.
+- Prove SQL to logical plan to Axon lowering for projection, filter, limit, projected-output
+  `ORDER BY`, and the required aggregate corpus.
 - Publish a strict SQL/operator/type support matrix for the browser default SKU and experimental SQL
   SKU.
 
