@@ -33,6 +33,20 @@ Useful local commands:
 - `cargo test -p browser-engine-worker --locked report_worker_artifact_baseline -- --exact --nocapture`
 - `cargo test -p browser-engine-worker --locked report_worker_memory_baseline -- --exact --nocapture`
 
+## DataFusion WASM size reporting
+
+The repeatable DataFusion size report requires local `cargo`, `wasm-bindgen`, `wasm-opt`, `gzip`,
+`brotli`, and `twiggy` tools. It writes generated artifacts under `target/df-size`.
+
+```bash
+bash tests/perf/report_datafusion_wasm_size.sh
+AXON_DF_SIZE_PACKAGE=wasm-datafusion-planner-poc \
+  bash tests/perf/report_datafusion_wasm_size.sh
+AXON_DF_SIZE_PACKAGE=wasm-datafusion-planner-poc \
+  AXON_DF_SIZE_CARGO_FLAGS="--features optimizer" \
+  bash tests/perf/report_datafusion_wasm_size.sh
+```
+
 Benchmark work that should live here once the repo grows a stable browser bundle:
 
 - warm-start latency for the browser worker entrypoint after instantiation
