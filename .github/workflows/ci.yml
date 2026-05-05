@@ -6,6 +6,17 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      report_datafusion_wasm_size:
+        description: "Run experimental/lazy browser DataFusion WASM size reporting"
+        required: false
+        default: false
+        type: boolean
+      datafusion_brotli_budget_bytes:
+        description: "Optional Brotli budget for the experimental/lazy DataFusion SKU; leave empty for report-only"
+        required: false
+        default: ""
+        type: string
 
 jobs:
   rust:
@@ -208,3 +219,43 @@ jobs:
           AXON_GCS_TEST_PARTITIONED_TABLE_URI: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI }}
           AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION }}
         run: cargo test -p native-query-runtime --locked execute_query_supports_env_gated_partitioned_gcs_snapshot_version_smoke -- --exact --nocapture
+
+  browser-datafusion-wasm-size:
+    name: Experimental browser DataFusion WASM size report
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.report_datafusion_wasm_size }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install WASM size tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binaryen brotli gzip
+
+      - name: Install Rust WASM reporting tools
+        run: |
+          cargo install wasm-bindgen-cli --version 0.2.114 --locked
+          cargo install twiggy --locked
+
+      - name: Run experimental/lazy DataFusion size report
+        env:
+          AXON_DF_BROTLI_BUDGET_BYTES: ${{ inputs.datafusion_brotli_budget_bytes }}
+        run: bash tests/perf/report_datafusion_wasm_size.sh
+
+      - name: Upload experimental/lazy DataFusion size artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: experimental-datafusion-wasm-size-report
+          path: target/df-size
+          if-no-files-found: warn

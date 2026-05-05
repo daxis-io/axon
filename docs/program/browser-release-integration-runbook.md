@@ -5,7 +5,9 @@
 
 This runbook covers only what exists in the repository today. It does not cover production control-plane deployment, signed URL issuance, live dashboard operation, or oncall procedures for an external service.
 
-The shipped browser V1 here is narrow runtime + streaming scan + in-memory session shell. It is not a broad browser DataFusion launch.
+The currently shipped browser V1 here is narrow runtime + streaming scan + in-memory session shell.
+The product target is a DataFusion-powered Delta/Parquet browser engine once the DataFusion table
+provider and scan integration gates pass.
 Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`, while signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation remain external blockers rather than repo-owned release regressions.
 
 ## 1. Session Shell Regression
@@ -105,6 +107,12 @@ Focus areas:
 - command or response envelope growth
 - wasm-target package drift
 - worker artifact claims `session_shell = true` and `browser_datafusion = false`
+
+The enforced size budget in CI still applies to the currently shipped browser worker artifact. The
+DataFusion WASM size report tracks the target DataFusion engine budget separately until that engine
+becomes the shipped browser query path: use `bash tests/perf/report_datafusion_wasm_size.sh` or the
+manual CI dispatch input for size evidence, and set `AXON_DF_BROTLI_BUDGET_BYTES` for opt-in Brotli
+budget checks.
 
 ## 5. Browser Dependency Guardrail Failure
 

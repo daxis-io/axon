@@ -112,3 +112,15 @@ Additional outputs:
 SUMMARY
 
 cat "${out_dir}/summary.md"
+
+if [[ -n "${AXON_DF_BROTLI_BUDGET_BYTES:-}" ]]; then
+  if [[ ! "$AXON_DF_BROTLI_BUDGET_BYTES" =~ ^[0-9]+$ ]]; then
+    echo "AXON_DF_BROTLI_BUDGET_BYTES must be an unsigned integer byte count: ${AXON_DF_BROTLI_BUDGET_BYTES}" >&2
+    exit 1
+  fi
+
+  if (( brotli_bytes > AXON_DF_BROTLI_BUDGET_BYTES )); then
+    echo "DataFusion Brotli budget exceeded: ${brotli_bytes} bytes > ${AXON_DF_BROTLI_BUDGET_BYTES} bytes" >&2
+    exit 1
+  fi
+fi

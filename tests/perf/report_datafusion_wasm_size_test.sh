@@ -8,6 +8,8 @@ rg -q 'twiggy monos' tests/perf/report_datafusion_wasm_size.sh
 rg -F -q 'target/df-size/${package}' tests/perf/report_datafusion_wasm_size.sh
 rg -q 'wasm-opt -Oz generated wasm' tests/perf/report_datafusion_wasm_size.sh
 rg -q 'Brotli -q 11 of optimized wasm' tests/perf/report_datafusion_wasm_size.sh
+rg -q 'AXON_DF_BROTLI_BUDGET_BYTES' tests/perf/report_datafusion_wasm_size.sh
+rg -q 'DataFusion Brotli budget exceeded' tests/perf/report_datafusion_wasm_size.sh
 
 dangerous_out_dirs=(
   ""

@@ -18,6 +18,7 @@
 - [x] Host tests run for `wasm-query-session` to verify repeated-query reuse, in-memory eviction, and dispose semantics.
 - [x] Dedicated `wasm32-unknown-unknown` smoke suites run in CI for `browser-sdk`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-engine-worker`.
 - [x] Browser release-artifact size reporting is enforced in CI on the real `browser-engine-worker.wasm` artifact.
+- [x] Browser DataFusion engine size reporting is optional and manual in CI while the engine is not yet the shipped browser query path, separate from the current worker budget.
 - [x] Host-proxy worker startup baseline is reported in CI from the worker baseline tests, and wasm smoke validates the same artifact-report path on the browser target.
 - [x] The worker artifact report names the runtime SKU, session-shell capability, Arrow IPC result transport, browser access mode, and shipped wasm artifact identity on both host and wasm paths.
 - [x] Host-proxy worker memory baseline is reported in CI from the worker baseline tests; blocking thresholds remain deferred.
@@ -44,9 +45,10 @@
 ## Runtime Constraints
 
 - [x] Browser runtime ships single-partition by default.
-- [x] Browser V1 is documented as narrow runtime + streaming scan + in-memory session shell, not broad browser DataFusion.
+- [x] Current browser V1 is documented as narrow runtime + streaming scan + in-memory session shell, while the target browser query engine is DataFusion-backed Delta/Parquet execution.
 - [x] The shipped session shell is documented as in-memory only; persistent-cache hooks may exist below it, but OPFS / IndexedDB backends remain deferred.
 - [x] Browser bundle size is tracked in CI on the real worker artifact.
+- [x] Browser DataFusion engine budget reporting is tracked separately until DataFusion becomes the shipped browser query path; optional Brotli budget checks are not the current worker size gate.
 - [x] Browser packages do not depend on signing or service-account code.
 - [x] Hosted UDF runtime remains separate from browser runtime dependencies.
 
