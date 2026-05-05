@@ -42,6 +42,9 @@ use wasm_delta_snapshot::{
 };
 use wasm_http_object_store::{HttpByteRange, HttpRangeReadResult, HttpRangeReader};
 
+#[cfg(feature = "datafusion-planner-poc")]
+pub mod datafusion_planner_poc;
+
 mod execution;
 mod lowering;
 mod parquet_support;

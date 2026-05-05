@@ -4,11 +4,23 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
+[features]
+default = []
+datafusion-planner-poc = [
+    "dep:datafusion-common",
+    "dep:datafusion-expr",
+    "dep:datafusion-sql",
+    "dep:getrandom",
+]
+
 [dependencies]
 arrow-array = "=57.3.0"
 arrow-ipc = "=57.3.0"
 arrow-schema = "=57.3.0"
 bytes = "=1.11.1"
+datafusion-common = { version = "=52.4.0", default-features = false, features = ["sql"], optional = true }
+datafusion-expr = { version = "=52.4.0", default-features = false, features = ["sql"], optional = true }
+datafusion-sql = { version = "=52.4.0", default-features = false, optional = true }
 futures-timer = { version = "=3.0.3", features = ["wasm-bindgen"] }
 futures-util = "=0.3.32"
 parquet = { version = "=57.3.0", default-features = false }
@@ -27,6 +39,9 @@ serde.workspace = true
 deltalake = { version = "=0.31.1", features = ["datafusion", "gcs"] }
 tempfile = "=3.27.0"
 tokio = { version = "=1.50.0", features = ["rt-multi-thread"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "=0.3.4", features = ["wasm_js"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.64"

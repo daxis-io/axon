@@ -170,6 +170,10 @@ The current POC proves:
 - A synthetic Arrow `RecordBatch` can be registered through `datafusion::datasource::MemTable`.
 - `datafusion::prelude::SessionContext` can execute SQL over that table.
 - Results can be returned as Arrow IPC bytes through a `wasm-bindgen` export.
+- `wasm-query-runtime` can opt into a compiler-boundary lowering spike through its
+  `datafusion-planner-poc` feature without adding DataFusion crates to its default dependency
+  graph. The spike uses direct DataFusion subcrates to plan SQL and summarize the supported
+  projection, filter, and limit shape into Axon-owned fields.
 
 The current POC does not yet prove:
 
@@ -178,6 +182,8 @@ The current POC does not yet prove:
 - Parquet-backed DataFusion table registration in WASM
 - memory-budgeted DataFusion execution
 - parity gates against the native DataFusion runtime
+- execution of the `wasm-query-runtime` lowering output; joins and other broad SQL operators remain
+  explicit unsupported-shape failures before browser runtime planning
 
 ## Measured Artifact Sizes
 
