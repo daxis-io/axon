@@ -51,6 +51,15 @@ browser dependency without passing explicit size, startup, memory, and correctne
 | Keep full DataFusion WASM as a lazy advanced or fallback bundle | Conditional go |
 | Make Substrait or DataFusion proto the hot-path browser IR | No-go for now; keep as optional diagnostics/interchange |
 
+## Planner Feature Floor Decisions
+
+| Variant | Lazy planner hard gate | Worth pursuing |
+| --- | --- | --- |
+| planner-only direct subcrates | Inside gate at 2,108,131 Brotli bytes | Yes; remains the preferred lazy SQL planning baseline. |
+| planner plus optimizer floor | Inside gate at 2,945,395 Brotli bytes | Yes; optimizer rules are plausible for Axon logical-plan lowering. |
+| planner plus physical-expr floor | Inside gate at 2,113,465 Brotli bytes | Conditional; useful as a compile and retention floor, but not enough to justify a DataFusion physical runtime. |
+| planner plus physical-plan floor | Inside gate at 2,104,480 Brotli bytes | Conditional; keep measuring with real operators before treating this as runtime evidence. |
+
 ## Strategic Recommendation
 
 Use a staged architecture:
@@ -190,13 +199,21 @@ Release-profile matrix, measured with `tests/perf/report_datafusion_wasm_size.sh
 | opt-level z | 41,031,540 | 21,594,406 | 5,601,010 | 3,504,722 | Independent temporary profile; `wasm-bindgen` output was 36,590,159 bytes; end-to-end run `real 130.74s`. |
 | lto + codegen-units 1 | 53,597,447 | 37,021,684 | 9,192,354 | 5,141,782 | Independent temporary profile; `wasm-bindgen` output was 49,881,686 bytes; end-to-end run `real 360.17s`. |
 | panic abort + strip | 71,416,095 | n/a | n/a | n/a | Independent temporary profile; `wasm-bindgen` output was 67,707,622 bytes, then the script failed at `wasm-opt -Oz` with Binaryen feature validation errors for stripped bulk-memory and nontrapping-float-to-int instructions; failing run `real 111.28s`. |
-| planner-only direct subcrates | 29,046,852 | 19,380,579 | 3,902,861 | 2,098,754 | Isolated `wasm-datafusion-planner-poc` using `datafusion-common`, `datafusion-expr`, and `datafusion-sql` directly, with exported `plan_sql_to_display` retaining the planner surface; `wasm-bindgen` output was 26,748,414 bytes. Passes the lazy planner/compiler hard Brotli gate, but is just over the 2 MiB preferred target. |
+| planner-only direct subcrates | 29,029,645 | 19,363,360 | 3,901,323 | 2,108,131 | Isolated `wasm-datafusion-planner-poc` using `datafusion-common`, `datafusion-expr`, and `datafusion-sql` directly, with exported `plan_sql_to_display` retaining the planner surface; `wasm-bindgen` output was 26,732,143 bytes. Passes the lazy planner/compiler hard Brotli gate, but is just over the 2 MiB preferred target. |
+| planner plus optimizer floor | 42,300,914 | 28,444,112 | 5,735,339 | 2,945,395 | Adds optional `datafusion-optimizer` and exported `optimizer_surface_marker_wasm`, retaining the default logical optimizer rule list; `wasm-bindgen` output was 39,236,537 bytes. Inside the lazy planner/compiler hard Brotli gate and worth pursuing for Axon logical-plan lowering. |
+| planner plus physical-expr floor | 29,153,447 | 19,417,295 | 3,916,000 | 2,113,465 | Adds optional `datafusion-physical-expr` and exported `physical_expr_surface_marker_wasm`, retaining a column physical expression marker; `wasm-bindgen` output was 26,845,560 bytes. Inside the hard gate, but this is only a tiny symbol floor, not evidence for broad physical expression execution. |
+| planner plus physical-plan floor | 29,186,424 | 19,422,327 | 3,907,415 | 2,104,480 | Adds optional `datafusion-physical-plan` and exported `physical_plan_surface_marker_wasm`, retaining `PlaceholderRowExec`; `wasm-bindgen` output was 26,875,287 bytes. Inside the hard gate, but this remains a narrow execution-plan symbol floor rather than a real physical runtime measurement. The wasm compile required a target-only `uuid/js` feature unifier because `datafusion-physical-plan` pulls `datafusion-functions` default string functions, which enable `uuid/v4`. |
 
 Interpretation:
 
 - Browser compile/instantiate cost is still large even after `wasm-opt -Oz`.
 - Brotli transfer cost is much smaller than raw cost, so lazy-loading is plausible.
 - This is not suitable for Axon's default browser runtime SKU without an explicit opt-in.
+- The optimizer floor is the first measured feature row that materially increases retained planner
+  size, but it remains well inside the lazy planner hard gate.
+- The physical expression and physical plan rows are lower bounds only. They prove those optional
+  subcrate surfaces can compile for wasm and be retained through browser exports, but they do not
+  measure a representative DataFusion physical runtime.
 
 ## Required Browser SQL Profile
 

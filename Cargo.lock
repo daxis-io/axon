@@ -4197,8 +4197,12 @@ dependencies = [
  "arrow-schema",
  "datafusion-common",
  "datafusion-expr",
+ "datafusion-optimizer",
+ "datafusion-physical-expr",
+ "datafusion-physical-plan",
  "datafusion-sql",
  "getrandom 0.3.4",
+ "uuid",
  "wasm-bindgen",
  "wasm-bindgen-test",
 ]
