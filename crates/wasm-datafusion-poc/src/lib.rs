@@ -2,14 +2,14 @@
 //!
 //! This crate is intentionally isolated from Axon's default browser runtime and worker artifact.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use arrow_array::{Int32Array, RecordBatch, StringArray};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::MemTable;
 use datafusion::prelude::SessionContext;
-use query_contract::{ExecutionTarget, QueryError, QueryErrorCode};
+use query_contract::{ExecutionTarget, PartitionColumnType, QueryError, QueryErrorCode};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
@@ -46,6 +46,36 @@ pub fn datafusion_compile_marker() -> DataFusionCompileMarker {
 pub struct ExperimentalQueryResult {
     pub row_count: usize,
     pub column_names: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeltaTableDescriptor {
+    pub table_name: String,
+    pub table_version: i64,
+    pub schema: SchemaRef,
+    pub partition_columns: Vec<String>,
+    pub partition_column_types: BTreeMap<String, PartitionColumnType>,
+    pub active_files: Vec<DeltaActiveFile>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeltaActiveFile {
+    pub path: String,
+    pub url: String,
+    pub size_bytes: u64,
+    pub partition_values: BTreeMap<String, Option<String>>,
+    pub object_etag: Option<String>,
+    pub stats_json: Option<String>,
+    pub deletion_vector: Option<DeletionVectorDescriptor>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeletionVectorDescriptor {
+    pub storage_type: String,
+    pub path_or_inline_dv: String,
+    pub offset: Option<i64>,
+    pub size_in_bytes: Option<i64>,
+    pub cardinality: Option<i64>,
 }
 
 pub struct WasmDataFusionEngine {
