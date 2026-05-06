@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use arrow_array::{Int32Array, RecordBatch, StringArray};
 use arrow_ipc::writer::StreamWriter;
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::datasource::MemTable;
 use datafusion::prelude::SessionContext;
 use query_contract::{ExecutionTarget, QueryError, QueryErrorCode};
@@ -38,7 +38,7 @@ pub fn datafusion_compile_marker() -> DataFusionCompileMarker {
     let _context = SessionContext::new();
     DataFusionCompileMarker {
         table_name: DEFAULT_TABLE_NAME,
-        datafusion_version: "52.4.0",
+        datafusion_version: datafusion::DATAFUSION_VERSION,
     }
 }
 
@@ -48,23 +48,64 @@ pub struct ExperimentalQueryResult {
     pub column_names: Vec<String>,
 }
 
+pub struct WasmDataFusionEngine {
+    ctx: SessionContext,
+}
+
+impl WasmDataFusionEngine {
+    pub fn new() -> Self {
+        Self {
+            ctx: SessionContext::new(),
+        }
+    }
+
+    pub async fn register_record_batches(
+        &mut self,
+        table_name: &str,
+        schema: SchemaRef,
+        batches: Vec<RecordBatch>,
+    ) -> Result<(), QueryError> {
+        let table = MemTable::try_new(schema, vec![batches]).map_err(map_datafusion_error)?;
+        self.ctx
+            .register_table(table_name, Arc::new(table))
+            .map_err(map_datafusion_error)?;
+
+        Ok(())
+    }
+
+    pub async fn sql_to_record_batches(
+        &self,
+        sql: &str,
+    ) -> Result<(SchemaRef, Vec<RecordBatch>), QueryError> {
+        let frame = self.ctx.sql(sql).await.map_err(map_datafusion_error)?;
+        let output_schema = frame.schema().inner().clone();
+        let batches = frame.collect().await.map_err(map_datafusion_error)?;
+        Ok((output_schema, batches))
+    }
+
+    pub async fn sql_to_arrow_ipc(&self, sql: &str) -> Result<Vec<u8>, QueryError> {
+        let (schema, batches) = self.sql_to_record_batches(sql).await?;
+        encode_record_batches_to_arrow_ipc(schema, &batches)
+    }
+}
+
+impl Default for WasmDataFusionEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub async fn query_record_batch(
     sql: &str,
     batch: RecordBatch,
 ) -> Result<ExperimentalQueryResult, QueryError> {
-    let batches = query_record_batches(sql, batch).await?;
+    let (schema, batches) = query_record_batches_with_schema(sql, batch).await?;
     let row_count = batches.iter().map(RecordBatch::num_rows).sum();
-    let column_names = batches
-        .first()
-        .map(|batch| {
-            batch
-                .schema()
-                .fields()
-                .iter()
-                .map(|field| field.name().to_string())
-                .collect()
-        })
-        .unwrap_or_default();
+    let column_names = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().to_string())
+        .collect();
 
     Ok(ExperimentalQueryResult {
         row_count,
@@ -76,22 +117,28 @@ pub async fn query_record_batches(
     sql: &str,
     batch: RecordBatch,
 ) -> Result<Vec<RecordBatch>, QueryError> {
+    let (_schema, batches) = query_record_batches_with_schema(sql, batch).await?;
+    Ok(batches)
+}
+
+async fn query_record_batches_with_schema(
+    sql: &str,
+    batch: RecordBatch,
+) -> Result<(SchemaRef, Vec<RecordBatch>), QueryError> {
     let schema = batch.schema();
-    let table = MemTable::try_new(schema, vec![vec![batch]]).map_err(map_datafusion_error)?;
-    let context = SessionContext::new();
-    context
-        .register_table(DEFAULT_TABLE_NAME, Arc::new(table))
-        .map_err(map_datafusion_error)?;
-    let frame = context.sql(sql).await.map_err(map_datafusion_error)?;
-    frame.collect().await.map_err(map_datafusion_error)
+    let mut engine = WasmDataFusionEngine::new();
+    engine
+        .register_record_batches(DEFAULT_TABLE_NAME, schema, vec![batch])
+        .await?;
+    engine.sql_to_record_batches(sql).await
 }
 
 pub async fn query_record_batch_to_arrow_ipc(
     sql: &str,
     batch: RecordBatch,
 ) -> Result<Vec<u8>, QueryError> {
-    let batches = query_record_batches(sql, batch).await?;
-    encode_record_batches_to_arrow_ipc(&batches)
+    let (schema, batches) = query_record_batches_with_schema(sql, batch).await?;
+    encode_record_batches_to_arrow_ipc(schema, &batches)
 }
 
 pub fn synthetic_record_batch() -> Result<RecordBatch, QueryError> {
@@ -117,14 +164,10 @@ pub fn synthetic_record_batch() -> Result<RecordBatch, QueryError> {
     })
 }
 
-fn encode_record_batches_to_arrow_ipc(batches: &[RecordBatch]) -> Result<Vec<u8>, QueryError> {
-    let schema = batches.first().map(RecordBatch::schema).ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::ExecutionFailed,
-            "experimental browser DataFusion query returned no Arrow batches",
-            runtime_target(),
-        )
-    })?;
+fn encode_record_batches_to_arrow_ipc(
+    schema: SchemaRef,
+    batches: &[RecordBatch],
+) -> Result<Vec<u8>, QueryError> {
     let mut encoded = Vec::new();
     let mut writer = StreamWriter::try_new(&mut encoded, schema.as_ref()).map_err(|error| {
         QueryError::new(
