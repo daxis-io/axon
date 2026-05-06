@@ -27,7 +27,7 @@ async fn open_delta_table_allows_sql_planning_over_descriptor_schema() {
     let mut engine = WasmDataFusionEngine::new();
 
     engine
-        .open_delta_table(delta_descriptor("events"))
+        .open_delta_table_with_record_batch_partitions(delta_descriptor("events"), vec![Vec::new()])
         .await
         .expect("Delta descriptor should register as a DataFusion table");
 

@@ -2,20 +2,30 @@
 //!
 //! This crate is intentionally isolated from Axon's default browser runtime and worker artifact.
 
-use std::{any::Any, collections::BTreeMap, future::Future, pin::Pin, sync::Arc};
+use std::{any::Any, collections::BTreeMap, fmt, future::Future, pin::Pin, sync::Arc};
 
-use arrow_array::{Int32Array, RecordBatch, StringArray};
+use arrow_array::{Int32Array, RecordBatch, RecordBatchOptions, StringArray};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
+use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Expr, TableType};
-use datafusion::physical_plan::{empty::EmptyExec, ExecutionPlan};
+use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_plan::{
+    execution_plan::{Boundedness, EmissionType},
+    stream::RecordBatchStreamAdapter,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream,
+};
 use datafusion::prelude::SessionContext;
+use futures_util::{stream, TryStreamExt};
 use query_contract::{ExecutionTarget, PartitionColumnType, QueryError, QueryErrorCode};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
+use wasm_http_object_store::HttpRangeReader;
+use wasm_parquet_engine::{stream_scan_targets, ObjectSource, ScanTarget};
 
 const DEFAULT_CATALOG_NAME: &str = "datafusion";
 const DEFAULT_SCHEMA_NAME: &str = "public";
@@ -91,11 +101,25 @@ pub struct DeletionVectorDescriptor {
 #[derive(Clone, Debug)]
 pub struct AxonDeltaTableProvider {
     descriptor: DeltaTableDescriptor,
+    in_memory_partitions: Vec<Vec<RecordBatch>>,
 }
 
 impl AxonDeltaTableProvider {
     pub fn new(descriptor: DeltaTableDescriptor) -> Self {
-        Self { descriptor }
+        Self {
+            descriptor,
+            in_memory_partitions: Vec::new(),
+        }
+    }
+
+    pub fn with_record_batch_partitions(
+        descriptor: DeltaTableDescriptor,
+        partitions: Vec<Vec<RecordBatch>>,
+    ) -> Self {
+        Self {
+            descriptor,
+            in_memory_partitions: partitions,
+        }
     }
 
     fn projected_schema(&self, projection: Option<&Vec<usize>>) -> DataFusionResult<SchemaRef> {
@@ -140,9 +164,270 @@ impl TableProvider for AxonDeltaTableProvider {
     {
         Box::pin(async move {
             let schema = self.projected_schema(projection)?;
-            Ok(Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>)
+            Ok(Arc::new(AxonParquetScanExec::new(
+                self.descriptor.clone(),
+                schema,
+                projection.cloned(),
+                self.in_memory_partitions.clone(),
+            )) as Arc<dyn ExecutionPlan>)
         })
     }
+}
+
+#[derive(Debug)]
+pub struct AxonParquetScanExec {
+    descriptor: DeltaTableDescriptor,
+    projected_schema: SchemaRef,
+    projection: Option<Vec<usize>>,
+    partitions: Vec<Vec<RecordBatch>>,
+    properties: PlanProperties,
+}
+
+impl AxonParquetScanExec {
+    fn new(
+        descriptor: DeltaTableDescriptor,
+        projected_schema: SchemaRef,
+        projection: Option<Vec<usize>>,
+        partitions: Vec<Vec<RecordBatch>>,
+    ) -> Self {
+        let partition_count = partitions.len().max(1);
+        let properties = Self::compute_properties(Arc::clone(&projected_schema), partition_count);
+
+        Self {
+            descriptor,
+            projected_schema,
+            projection,
+            partitions,
+            properties,
+        }
+    }
+
+    fn compute_properties(schema: SchemaRef, partition_count: usize) -> PlanProperties {
+        PlanProperties::new(
+            EquivalenceProperties::new(schema),
+            Partitioning::UnknownPartitioning(partition_count),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        )
+    }
+
+    fn partition_count(&self) -> usize {
+        if self.partitions.is_empty() {
+            1
+        } else {
+            self.partitions.len()
+        }
+    }
+
+    fn scan_targets(&self) -> DataFusionResult<Vec<ScanTarget>> {
+        self.descriptor
+            .active_files
+            .iter()
+            .map(delta_active_file_to_scan_target)
+            .collect()
+    }
+
+    fn required_columns(&self) -> Vec<String> {
+        self.projected_schema
+            .fields()
+            .iter()
+            .map(|field| field.name().to_string())
+            .collect()
+    }
+
+    fn execute_in_memory(&self, partition: usize) -> DataFusionResult<SendableRecordBatchStream> {
+        let batches = self.partitions.get(partition).cloned().unwrap_or_default();
+        let projection = self.projection.clone();
+        let projected_batches = batches.into_iter().map(move |batch| {
+            if let Some(projection) = &projection {
+                batch
+                    .project(projection)
+                    .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))
+            } else {
+                Ok(batch)
+            }
+        });
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            Arc::clone(&self.projected_schema),
+            stream::iter(projected_batches),
+        )))
+    }
+
+    fn execute_parquet_scan(&self) -> DataFusionResult<SendableRecordBatchStream> {
+        let reader = HttpRangeReader::new();
+        let targets = self.scan_targets()?;
+        let required_columns = self.required_columns();
+        let partition_column_types = self.descriptor.partition_column_types.clone();
+        let stream_schema = Arc::clone(&self.projected_schema);
+        let projected_schema = Arc::clone(&self.projected_schema);
+        let parquet_batches = stream::once(async move {
+            stream_scan_targets(
+                &reader,
+                &targets,
+                &required_columns,
+                &partition_column_types,
+                None,
+            )
+            .await
+            .map(|scan| {
+                scan.batches
+                    .map_err(map_parquet_query_error)
+                    .and_then(move |batch| {
+                        let projected_schema = Arc::clone(&projected_schema);
+                        async move { align_record_batch_to_schema(batch, projected_schema) }
+                    })
+            })
+            .map_err(map_parquet_query_error)
+        })
+        .try_flatten();
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            stream_schema,
+            parquet_batches,
+        )))
+    }
+}
+
+impl DisplayAs for AxonParquetScanExec {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
+                f,
+                "AxonParquetScanExec: table={}, active_files={}, partitions={}",
+                self.descriptor.table_name,
+                self.descriptor.active_files.len(),
+                self.partition_count()
+            ),
+            DisplayFormatType::TreeRender => write!(f, ""),
+        }
+    }
+}
+
+impl ExecutionPlan for AxonParquetScanExec {
+    fn name(&self) -> &str {
+        "AxonParquetScanExec"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        Vec::new()
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if !children.is_empty() {
+            return Err(DataFusionError::Internal(
+                "AxonParquetScanExec does not accept child execution plans".to_string(),
+            ));
+        }
+
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        _context: Arc<TaskContext>,
+    ) -> DataFusionResult<SendableRecordBatchStream> {
+        if partition >= self.partition_count() {
+            return Err(DataFusionError::Internal(format!(
+                "AxonParquetScanExec invalid partition {partition} (expected less than {})",
+                self.partition_count()
+            )));
+        }
+
+        if self.partitions.is_empty() {
+            self.execute_parquet_scan()
+        } else {
+            self.execute_in_memory(partition)
+        }
+    }
+}
+
+fn delta_active_file_to_scan_target(active_file: &DeltaActiveFile) -> DataFusionResult<ScanTarget> {
+    if active_file.deletion_vector.is_some() {
+        return Err(DataFusionError::NotImplemented(
+            "AxonParquetScanExec does not yet support Delta deletion vectors".to_string(),
+        ));
+    }
+
+    Ok(ScanTarget {
+        object_source: ObjectSource::new(active_file.url.clone()),
+        object_etag: active_file.object_etag.clone(),
+        path: active_file.path.clone(),
+        size_bytes: active_file.size_bytes,
+        partition_values: active_file.partition_values.clone(),
+    })
+}
+
+fn align_record_batch_to_schema(
+    batch: RecordBatch,
+    schema: SchemaRef,
+) -> DataFusionResult<RecordBatch> {
+    let batch_schema = batch.schema();
+    let projection = schema
+        .fields()
+        .iter()
+        .map(|field| decoded_batch_index_for_projected_field(&batch_schema, field.name()))
+        .collect::<DataFusionResult<Vec<_>>>()?;
+    let projected = batch
+        .project(&projection)
+        .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))?;
+
+    let options = RecordBatchOptions::new().with_row_count(Some(projected.num_rows()));
+    RecordBatch::try_new_with_options(schema, projected.columns().to_vec(), &options)
+        .map_err(|error| DataFusionError::ArrowError(Box::new(error), None))
+}
+
+fn decoded_batch_index_for_projected_field(
+    batch_schema: &SchemaRef,
+    projected_field_name: &str,
+) -> DataFusionResult<usize> {
+    if let Ok(index) = batch_schema.index_of(projected_field_name) {
+        return Ok(index);
+    }
+
+    let normalized_projected_name = normalize_column_name(projected_field_name);
+    let mut matches = batch_schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_index, field)| normalize_column_name(field.name()) == normalized_projected_name)
+        .map(|(index, _field)| index);
+
+    let Some(index) = matches.next() else {
+        return Err(DataFusionError::Execution(format!(
+            "AxonParquetScanExec could not align decoded batch to projected schema column '{projected_field_name}'"
+        )));
+    };
+    if matches.next().is_some() {
+        return Err(DataFusionError::Execution(format!(
+            "AxonParquetScanExec decoded batch has multiple columns matching projected schema column '{projected_field_name}' after name normalization"
+        )));
+    }
+
+    Ok(index)
+}
+
+fn normalize_column_name(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
+fn map_parquet_query_error(error: QueryError) -> DataFusionError {
+    DataFusionError::Execution(format!(
+        "experimental browser DataFusion parquet scan failed: {:?}: {}",
+        error.code, error.message
+    ))
 }
 
 pub struct WasmDataFusionEngine {
@@ -165,6 +450,28 @@ impl WasmDataFusionEngine {
             .register_table(
                 table_name,
                 Arc::new(AxonDeltaTableProvider::new(descriptor)),
+            )
+            .map_err(map_datafusion_error)?;
+
+        Ok(())
+    }
+
+    /// Registers a descriptor-backed table with controlled in-memory scan partitions.
+    ///
+    /// This proof-of-concept hook keeps DataFusion execution tests deterministic
+    /// while normal descriptor-backed scans stream browser Parquet batches.
+    pub async fn open_delta_table_with_record_batch_partitions(
+        &mut self,
+        descriptor: DeltaTableDescriptor,
+        partitions: Vec<Vec<RecordBatch>>,
+    ) -> Result<(), QueryError> {
+        let table_name = descriptor.table_name.clone();
+        self.ctx
+            .register_table(
+                table_name,
+                Arc::new(AxonDeltaTableProvider::with_record_batch_partitions(
+                    descriptor, partitions,
+                )),
             )
             .map_err(map_datafusion_error)?;
 
