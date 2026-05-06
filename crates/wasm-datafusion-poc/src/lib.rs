@@ -2,16 +2,26 @@
 //!
 //! This crate is intentionally isolated from Axon's default browser runtime and worker artifact.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{any::Any, collections::BTreeMap, future::Future, pin::Pin, sync::Arc};
 
 use arrow_array::{Int32Array, RecordBatch, StringArray};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use datafusion::catalog::{Session, TableProvider};
 use datafusion::datasource::MemTable;
+use datafusion::error::{DataFusionError, Result as DataFusionResult};
+use datafusion::logical_expr::{Expr, TableType};
+use datafusion::physical_plan::{empty::EmptyExec, ExecutionPlan};
 use datafusion::prelude::SessionContext;
 use query_contract::{ExecutionTarget, PartitionColumnType, QueryError, QueryErrorCode};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
+
+const DEFAULT_CATALOG_NAME: &str = "datafusion";
+const DEFAULT_SCHEMA_NAME: &str = "public";
+
+type TableScanFuture<'a> =
+    Pin<Box<dyn Future<Output = DataFusionResult<Arc<dyn ExecutionPlan>>> + Send + 'a>>;
 
 pub const OWNER: &str = "Runtime / engine team";
 pub const RESPONSIBILITY: &str =
@@ -78,6 +88,63 @@ pub struct DeletionVectorDescriptor {
     pub cardinality: Option<i64>,
 }
 
+#[derive(Clone, Debug)]
+pub struct AxonDeltaTableProvider {
+    descriptor: DeltaTableDescriptor,
+}
+
+impl AxonDeltaTableProvider {
+    pub fn new(descriptor: DeltaTableDescriptor) -> Self {
+        Self { descriptor }
+    }
+
+    fn projected_schema(&self, projection: Option<&Vec<usize>>) -> DataFusionResult<SchemaRef> {
+        match projection {
+            Some(projection) => self
+                .descriptor
+                .schema
+                .project(projection)
+                .map(Arc::new)
+                .map_err(|error| DataFusionError::ArrowError(Box::new(error), None)),
+            None => Ok(Arc::clone(&self.descriptor.schema)),
+        }
+    }
+}
+
+impl TableProvider for AxonDeltaTableProvider {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.descriptor.schema)
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    fn scan<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        _state: &'life1 dyn Session,
+        projection: Option<&'life2 Vec<usize>>,
+        _filters: &'life3 [Expr],
+        _limit: Option<usize>,
+    ) -> TableScanFuture<'async_trait>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let schema = self.projected_schema(projection)?;
+            Ok(Arc::new(EmptyExec::new(schema)) as Arc<dyn ExecutionPlan>)
+        })
+    }
+}
+
 pub struct WasmDataFusionEngine {
     ctx: SessionContext,
 }
@@ -87,6 +154,32 @@ impl WasmDataFusionEngine {
         Self {
             ctx: SessionContext::new(),
         }
+    }
+
+    pub async fn open_delta_table(
+        &mut self,
+        descriptor: DeltaTableDescriptor,
+    ) -> Result<(), QueryError> {
+        let table_name = descriptor.table_name.clone();
+        self.ctx
+            .register_table(
+                table_name,
+                Arc::new(AxonDeltaTableProvider::new(descriptor)),
+            )
+            .map_err(map_datafusion_error)?;
+
+        Ok(())
+    }
+
+    pub fn table_names(&self) -> Vec<String> {
+        let mut names = self
+            .ctx
+            .catalog(DEFAULT_CATALOG_NAME)
+            .and_then(|catalog| catalog.schema(DEFAULT_SCHEMA_NAME))
+            .map(|schema| schema.table_names())
+            .unwrap_or_default();
+        names.sort();
+        names
     }
 
     pub async fn register_record_batches(
