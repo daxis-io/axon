@@ -201,7 +201,7 @@ experiments run:
 | Cold init plus first tiny query | Track separately | Current full DataFusion POC is roughly 160-170 ms combined |
 | First Delta/Parquet metadata query | Measure separately | Remote I/O and metadata decode dominate different budgets than engine init |
 | First real Delta/Parquet query | Measure separately | Includes range reads, decompression, row-group pruning, aggregation, and result transfer |
-| Browser query budgets | Required before default enablement | Enforce scan bytes, Arrow IPC bytes, output rows, and collected batch count with structured fallback errors |
+| Browser query budgets | Required before default enablement | Enforce scan bytes, Arrow IPC bytes, output rows, and in-flight output batches with structured fallback errors |
 | Peak browser working set | Bounded and streaming by default | Full global sort and high-cardinality group-by need explicit budgets or fallback |
 | Worker-only execution | Required | DataFusion engine work stays off the main thread |
 | Arrow IPC streaming | Required | Output should stream `RecordBatch` values, not force row JSON materialization |
@@ -211,23 +211,35 @@ and Axon runtime experiments comparable.
 
 ## Current Baseline
 
-DataFusion remains isolated from the current shipped browser worker/runtime, which still reports
-`browser_datafusion = false`. That is the current implementation state, not the target strategy. The
-workspace now has two browser WASM DataFusion experiments:
-`crates/wasm-datafusion-poc`, a full umbrella-runtime POC that depends on `datafusion`, and
-`crates/wasm-datafusion-planner-poc`, a planner-only POC that depends directly on
-`datafusion-common`, `datafusion-expr`, and `datafusion-sql`.
+DataFusion is now wired through the browser query-session and worker contract as the
+`OpenDeltaTable` / SQL Arrow IPC path. The implementation still lives under
+`crates/wasm-datafusion-poc`, but the crate now has a product-shaped engine facade over
+`SessionContext`, descriptor-backed table registration, custom scan execution, browser Parquet range
+I/O, pushdown traces, query budgets, cancellation shape, and Arrow IPC output. The older
+`wasm-datafusion-planner-poc` remains useful as a planner-only lower-bound measurement, not as the
+target browser execution architecture.
 
 The current POC proves:
 
 - `datafusion = "=52.4.0"` compiles for `wasm32-unknown-unknown`.
-- A synthetic Arrow `RecordBatch` can be registered through `datafusion::datasource::MemTable`.
-- `datafusion::prelude::SessionContext` can execute SQL over that table.
+- A long-lived `WasmDataFusionEngine` can register Arrow `RecordBatch` input under table names and
+  run SQL repeatedly through DataFusion.
 - Results can be returned as Arrow IPC bytes through a `wasm-bindgen` export.
+- Delta active-file descriptors can be registered as DataFusion tables through
+  `AxonDeltaTableProvider`.
+- DataFusion can execute filter, order, limit, and aggregate operators above Axon's custom
+  `AxonParquetScanExec`.
+- `AxonParquetScanExec` can stream local/browser-style Parquet range-read batches through
+  `wasm-parquet-engine` and `wasm-http-object-store`.
+- Projection, limit, exact partition pruning, inexact residual predicates, and row-group pruning are
+  reflected in scan planning and trace metrics.
+- `wasm-query-session`, `browser-engine-worker`, and `browser-sdk` expose `OpenDeltaTable` plus SQL
+  Arrow IPC stream commands without exposing DataFusion internals.
 - Browser DataFusion query budgets now have explicit controls for `max_scan_bytes`,
-  `max_output_ipc_bytes`, `max_batches_in_flight`, and `max_rows_returned`. Budget failures return
-  structured `QueryError` values with `FallbackReason::BrowserRuntimeConstraint`; cancellation
-  returns a structured browser DataFusion cancellation error.
+  `max_output_ipc_bytes`, `max_batches_in_flight`, and `max_rows_returned`. The Arrow IPC path
+  writes batches as DataFusion yields them instead of collecting the full output first. Budget
+  failures return structured `QueryError` values with `FallbackReason::BrowserRuntimeConstraint`;
+  cancellation returns a structured browser DataFusion cancellation error.
 - `tests/perf/browser_datafusion_engine_smoke.sh` records optional smoke timings for streaming init,
   first and repeated tiny queries, first Parquet metadata query, first real Delta/Parquet query, and
   scan metrics. `tests/perf/report_datafusion_wasm_size.sh` remains the Brotli-size source of truth.
@@ -239,16 +251,9 @@ The current POC proves:
   unsupported join rejection before browser runtime planning, `COUNT(*)`, grouped `COUNT(*)`, and
   grouped `SUM`/`MIN`/`MAX`.
 
-The current POC does not yet prove:
-
-- Delta active-file registration in DataFusion
-- browser HTTP range reads feeding DataFusion directly
-- Parquet-backed DataFusion table registration in WASM
-- memory-budgeted DataFusion execution
-- parity gates against the native DataFusion runtime
-- DataFusion execution over Axon Delta active-file descriptors
-- a custom DataFusion `TableProvider` backed by Axon's browser Parquet/range stack
-- a custom DataFusion `ExecutionPlan` that streams `RecordBatch` values from browser range reads
+The current engine still does not yet prove full Delta Kernel snapshot resolution in the browser.
+`wasm-delta-kernel-engine` and Kernel-derived descriptor conversion remain the next protocol-layer
+work before this path can become the default Delta open implementation.
 
 ## Measured Artifact Sizes
 
@@ -305,8 +310,8 @@ This profile should be treated as the minimum investigation target, not as a fin
 | Arrow IPC output | Required | POC and custom runtime use Arrow IPC output |
 | Basic aggregates | Required | Custom runtime supports `COUNT`, `COUNT(*)`, `SUM`, integral `AVG`, `MIN`, `MAX`; DataFusion lowering now summarizes `COUNT(*)`, `COUNT(column)`, `SUM`, `MIN`, and `MAX` |
 | Group by | Required | Custom runtime has grouped aggregate execution coverage; DataFusion lowering now records grouped aggregate columns |
-| Parquet-backed table registration | Eventual | Not proven in DataFusion POC yet |
-| Delta active-file registration | Eventual | Should come after Parquet-backed registration |
+| Parquet-backed table registration | Required | Proven in `wasm-datafusion-poc` host tests through `AxonParquetScanExec` and browser range I/O |
+| Delta active-file registration | Required | Proven for trusted descriptors through `AxonDeltaTableProvider`; Kernel-derived descriptors remain future protocol-layer work |
 
 ## Out Of Browser V1 Profile
 
@@ -588,12 +593,12 @@ compress, profile, and run correctness tests.
 
 ## Next Concrete Task
 
-Begin the 60-day engine work by proving the Delta Kernel browser dependency first. Add a
-`wasm-delta-kernel-engine` compile spike with the default engine disabled and cargo-tree gates for
-unwanted native/runtime dependencies, then implement cached read-only snapshot resolution. After that,
-promote the POC toward `wasm-datafusion-engine`, register Kernel-derived Delta descriptors as an
-`AxonDeltaTableProvider`, implement an `AxonParquetScanExec` that streams browser-read Parquet
-batches into DataFusion physical execution, and return Arrow IPC from the Worker.
+Continue the 60-day engine work at the Delta protocol boundary. The DataFusion facade, trusted
+descriptor registration, custom scan, browser Parquet range-read path, pushdown traces, worker Arrow
+IPC flow, budgets, cancellation shape, and optional size/perf gates are now in place under
+`crates/wasm-datafusion-poc`. The remaining critical path is proving `wasm-delta-kernel-engine` with
+the default engine disabled, implementing cached read-only snapshot resolution, and converting Kernel
+scan output into the descriptor contract consumed by `AxonDeltaTableProvider`.
 
 ## Primary References
 

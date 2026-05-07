@@ -108,6 +108,32 @@ async fn query_budget_rejects_zero_batch_budget_before_scanning() {
 }
 
 #[tokio::test]
+async fn arrow_ipc_budget_allows_one_batch_in_flight_across_multiple_output_batches() {
+    let mut engine = WasmDataFusionEngine::with_budget(BrowserQueryBudget {
+        max_batches_in_flight: Some(1),
+        ..Default::default()
+    });
+    let schema = descriptor_schema();
+    let partitions = controlled_partitions(Arc::clone(&schema))
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+    engine
+        .register_record_batches("events", schema, partitions)
+        .await
+        .expect("record batches should register");
+
+    let result = engine
+        .sql_to_arrow_ipc_result("SELECT id, value, category FROM events")
+        .await
+        .expect("streamed Arrow IPC should keep only one output batch in flight");
+
+    assert!(!result.ipc_bytes.is_empty());
+    assert_eq!(result.row_count, 5);
+}
+
+#[tokio::test]
 async fn query_budget_rejects_row_budget_before_scanning_later_files() {
     let first_object = parquet_bytes_with_i64_columns(&[(1, 10), (2, 20), (3, 30)]);
     let first_object_size = u64::try_from(first_object.len()).expect("object size should fit");

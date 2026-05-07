@@ -1527,6 +1527,81 @@ async fn collect_record_batches_with_controls(
     Ok(batches)
 }
 
+async fn encode_execution_plan_to_arrow_ipc_with_controls(
+    plan: Arc<dyn ExecutionPlan>,
+    task_ctx: Arc<TaskContext>,
+    schema: SchemaRef,
+    query_budget: BrowserQueryBudget,
+    cancellation: &BrowserQueryCancellation,
+) -> Result<(Vec<u8>, u64), QueryError> {
+    if matches!(query_budget.max_batches_in_flight, Some(0)) {
+        return Err(query_budget_exceeded_error("max_batches_in_flight", 1, 0));
+    }
+
+    cancellation.check_cancelled()?;
+    let mut stream = execute_stream(plan, task_ctx).map_err(map_datafusion_error)?;
+    let buffer = BudgetedArrowIpcBuffer::new(query_budget);
+    let mut writer = StreamWriter::try_new(buffer, schema.as_ref()).map_err(|error| {
+        map_arrow_ipc_error(error, |error| {
+            format!("experimental browser DataFusion could not open Arrow IPC writer: {error}")
+        })
+    })?;
+    let mut rows_returned = 0_u64;
+
+    while let Some(batch) = stream.next().await {
+        cancellation.check_cancelled()?;
+        let batch = batch.map_err(map_datafusion_error)?;
+        validate_query_budget_value_option(
+            "max_batches_in_flight",
+            1,
+            query_budget
+                .max_batches_in_flight
+                .map(|max| u64::try_from(max).unwrap_or(u64::MAX)),
+        )?;
+
+        let batch_rows = u64::try_from(batch.num_rows()).map_err(|_| {
+            QueryError::new(
+                QueryErrorCode::ExecutionFailed,
+                "experimental browser DataFusion row counts overflowed u64",
+                runtime_target(),
+            )
+        })?;
+        let next_rows_returned = rows_returned.checked_add(batch_rows).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::ExecutionFailed,
+                "experimental browser DataFusion row totals overflowed u64",
+                runtime_target(),
+            )
+        })?;
+        validate_query_budget_value_option(
+            "max_rows_returned",
+            next_rows_returned,
+            query_budget.max_rows_returned,
+        )?;
+
+        writer.write(&batch).map_err(|error| {
+            map_arrow_ipc_error(error, |error| {
+                format!("experimental browser DataFusion could not encode Arrow IPC batch: {error}")
+            })
+        })?;
+        rows_returned = next_rows_returned;
+        cancellation.check_cancelled()?;
+    }
+
+    writer.finish().map_err(|error| {
+        map_arrow_ipc_error(error, |error| {
+            format!("experimental browser DataFusion could not finish Arrow IPC stream: {error}")
+        })
+    })?;
+
+    let buffer = writer.into_inner().map_err(|error| {
+        map_arrow_ipc_error(error, |error| {
+            format!("experimental browser DataFusion could not close Arrow IPC stream: {error}")
+        })
+    })?;
+    Ok((buffer.into_inner(), rows_returned))
+}
+
 #[derive(Clone)]
 pub struct WasmDataFusionEngine {
     ctx: SessionContext,
@@ -1714,13 +1789,31 @@ impl WasmDataFusionEngine {
         &self,
         sql: &str,
     ) -> Result<DataFusionArrowIpcResult, QueryError> {
-        let (schema, batches, scan_metrics) = self.sql_to_record_batches_with_metrics(sql).await?;
-        let row_count = record_batch_row_count(&batches)?;
-        let ipc_bytes = encode_record_batches_to_arrow_ipc_with_controls(
-            schema,
-            &batches,
+        self.cancellation.check_cancelled()?;
+        let frame = self.ctx.sql(sql).await.map_err(map_datafusion_error)?;
+        self.cancellation.check_cancelled()?;
+        let output_schema = frame.schema().inner().clone();
+        let task_ctx = self.ctx.task_ctx();
+        let plan = frame
+            .create_physical_plan()
+            .await
+            .map_err(map_datafusion_error)?;
+        validate_query_budget_for_plan(&plan, self.query_budget)?;
+        self.cancellation.check_cancelled()?;
+        let (ipc_bytes, row_count) = encode_execution_plan_to_arrow_ipc_with_controls(
+            Arc::clone(&plan),
+            task_ctx,
+            output_schema,
             self.query_budget,
             &self.cancellation,
+        )
+        .await?;
+        self.cancellation.check_cancelled()?;
+        let scan_metrics = datafusion_scan_metrics_from_plan(&plan)?;
+        validate_query_budget_value_option(
+            "max_scan_bytes",
+            scan_metrics.bytes_fetched,
+            self.query_budget.max_scan_bytes,
         )?;
         let encoded_bytes = u64::try_from(ipc_bytes.len()).map_err(|_| {
             QueryError::new(
@@ -1936,25 +2029,6 @@ fn map_arrow_ipc_error(
         context(&error),
         runtime_target(),
     )
-}
-
-fn record_batch_row_count(batches: &[RecordBatch]) -> Result<u64, QueryError> {
-    batches.iter().try_fold(0_u64, |total, batch| {
-        let rows = u64::try_from(batch.num_rows()).map_err(|_| {
-            QueryError::new(
-                QueryErrorCode::ExecutionFailed,
-                "experimental browser DataFusion row counts overflowed u64",
-                runtime_target(),
-            )
-        })?;
-        total.checked_add(rows).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::ExecutionFailed,
-                "experimental browser DataFusion row totals overflowed u64",
-                runtime_target(),
-            )
-        })
-    })
 }
 
 fn datafusion_scan_metrics_from_plan(
