@@ -64,14 +64,14 @@ fn report_worker_artifact_baseline() {
 }
 
 #[test]
-fn worker_artifact_reports_session_capability_without_claiming_browser_datafusion() {
+fn worker_artifact_reports_datafusion_sql_capability() {
     let report = artifact_report().expect("combined artifact report should be produced");
 
-    assert_eq!(report.runtime_sku, BrowserRuntimeSku::Narrow);
+    assert_eq!(report.runtime_sku, BrowserRuntimeSku::Sql);
     assert_eq!(report.result_transport, BrowserResultTransport::ArrowIpc);
     assert_eq!(report.capabilities, capabilities());
     assert!(report.capabilities.session_shell);
-    assert!(!report.capabilities.browser_datafusion);
+    assert!(report.capabilities.browser_datafusion);
     assert_eq!(report.identity.package_name, "browser-engine-worker");
     assert_eq!(report.identity.package_version, env!("CARGO_PKG_VERSION"));
     assert_eq!(report.identity.wasm_artifact, "browser_engine_worker.wasm");
@@ -83,7 +83,7 @@ fn worker_artifact_example_matches_contract() {
         serde_json::from_str(&read_example("browser-worker-artifact-report.narrow.json"))
             .expect("worker artifact example should deserialize");
 
-    assert_eq!(report.runtime_sku, BrowserRuntimeSku::Narrow);
+    assert_eq!(report.runtime_sku, BrowserRuntimeSku::Sql);
     assert_eq!(report.result_transport, BrowserResultTransport::ArrowIpc);
     assert_eq!(report.capabilities, capabilities());
     assert_eq!(report.identity.package_name, "browser-engine-worker");

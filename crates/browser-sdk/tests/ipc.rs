@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use browser_sdk::{
     ArrowIpcFormat, ArrowIpcResultEnvelope, BrowserWorkerCommand, BrowserWorkerResponseEnvelope,
+    BrowserWorkerSqlOutput,
 };
 use query_contract::{
     BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey,
@@ -58,6 +59,63 @@ fn browser_sdk_round_trips_open_table_query_and_dispose_commands() {
             assert_eq!(command.name, "events");
         }
         _ => panic!("expected dispose command"),
+    }
+}
+
+#[test]
+fn browser_sdk_round_trips_open_delta_table_and_arrow_ipc_sql_output() {
+    let snapshot = sample_snapshot_descriptor();
+    let open_delta_table =
+        BrowserWorkerCommand::open_delta_table("req-open-delta", "events", snapshot.clone());
+    let sql = BrowserWorkerCommand::sql(
+        "req-sql-ipc",
+        "events",
+        QueryRequest::new(
+            snapshot.table_uri.clone(),
+            "select count(*) as rows from events",
+            ExecutionTarget::BrowserWasm,
+        ),
+    );
+
+    let serialized_open =
+        serde_json::to_value(&open_delta_table).expect("open delta table serializes");
+    assert!(
+        serialized_open.get("open_delta_table").is_some(),
+        "OpenDeltaTable should use the browser open_delta_table command tag"
+    );
+
+    let round_tripped_open: BrowserWorkerCommand =
+        serde_json::from_value(serialized_open).expect("open delta table deserializes");
+    match round_tripped_open {
+        BrowserWorkerCommand::OpenDeltaTable(command) => {
+            assert_eq!(command.request_id, "req-open-delta");
+            assert_eq!(command.name, "events");
+            assert_eq!(command.snapshot, snapshot);
+        }
+        _ => panic!("expected open_delta_table command"),
+    }
+
+    let serialized_sql = serde_json::to_value(&sql).expect("sql serializes");
+    assert_eq!(
+        serialized_sql["sql"]["output"],
+        serde_json::json!("arrow_ipc_stream")
+    );
+    assert_eq!(
+        serialized_sql["sql"]["query"]["sql"],
+        serde_json::json!("select count(*) as rows from events")
+    );
+    assert!(serialized_sql["sql"].get("request").is_none());
+
+    let round_tripped_sql: BrowserWorkerCommand =
+        serde_json::from_value(serialized_sql).expect("sql deserializes");
+    match round_tripped_sql {
+        BrowserWorkerCommand::Sql(command) => {
+            assert_eq!(command.request_id, "req-sql-ipc");
+            assert_eq!(command.name, "events");
+            assert_eq!(command.output, BrowserWorkerSqlOutput::ArrowIpcStream);
+            assert_eq!(command.request.sql, "select count(*) as rows from events");
+        }
+        _ => panic!("expected sql command"),
     }
 }
 

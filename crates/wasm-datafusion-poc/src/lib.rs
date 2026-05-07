@@ -4,7 +4,7 @@
 
 use std::{
     any::Any,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     future::Future,
     pin::Pin,
@@ -22,6 +22,7 @@ use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Expr, Operator, TableProviderFilterPushDown, TableType};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::{
+    collect,
     execution_plan::{Boundedness, EmissionType},
     stream::RecordBatchStreamAdapter,
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
@@ -32,7 +33,9 @@ use futures_util::{
     stream::{self, BoxStream},
     StreamExt, TryStreamExt,
 };
-use query_contract::{ExecutionTarget, PartitionColumnType, QueryError, QueryErrorCode};
+use query_contract::{
+    BrowserHttpSnapshotDescriptor, ExecutionTarget, PartitionColumnType, QueryError, QueryErrorCode,
+};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 use wasm_http_object_store::HttpRangeReader;
@@ -83,6 +86,97 @@ pub struct ExperimentalQueryResult {
     pub column_names: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DataFusionArrowIpcResult {
+    pub ipc_bytes: Vec<u8>,
+    pub row_count: u64,
+    pub encoded_bytes: u64,
+    pub scan_metrics: DataFusionScanMetricsSummary,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DataFusionScanMetricsSummary {
+    pub scan_count: u64,
+    pub files_touched: u64,
+    pub files_skipped: u64,
+    pub row_groups_touched: u64,
+    pub row_groups_skipped: u64,
+    pub rows_emitted: u64,
+    pub bytes_fetched: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeltaTableSchema {
+    pub fields: Vec<DeltaTableSchemaField>,
+}
+
+impl DeltaTableSchema {
+    pub fn new(fields: Vec<DeltaTableSchemaField>) -> Self {
+        Self { fields }
+    }
+
+    fn arrow_schema(&self) -> SchemaRef {
+        Arc::new(Schema::new(
+            self.fields
+                .iter()
+                .map(DeltaTableSchemaField::arrow_field)
+                .collect::<Vec<_>>(),
+        ))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeltaTableSchemaField {
+    pub name: String,
+    pub data_type: DeltaTableFieldDataType,
+    pub nullable: bool,
+}
+
+impl DeltaTableSchemaField {
+    pub fn new(
+        name: impl Into<String>,
+        data_type: DeltaTableFieldDataType,
+        nullable: bool,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            data_type,
+            nullable,
+        }
+    }
+
+    fn arrow_field(&self) -> Field {
+        Field::new(
+            self.name.clone(),
+            self.data_type.arrow_data_type(),
+            self.nullable,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeltaTableFieldDataType {
+    Boolean,
+    Int32,
+    Int64,
+    Float32,
+    Float64,
+    Utf8,
+}
+
+impl DeltaTableFieldDataType {
+    fn arrow_data_type(self) -> DataType {
+        match self {
+            Self::Boolean => DataType::Boolean,
+            Self::Int32 => DataType::Int32,
+            Self::Int64 => DataType::Int64,
+            Self::Float32 => DataType::Float32,
+            Self::Float64 => DataType::Float64,
+            Self::Utf8 => DataType::Utf8,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeltaTableDescriptor {
     pub table_name: String,
@@ -91,6 +185,44 @@ pub struct DeltaTableDescriptor {
     pub partition_columns: Vec<String>,
     pub partition_column_types: BTreeMap<String, PartitionColumnType>,
     pub active_files: Vec<DeltaActiveFile>,
+}
+
+impl DeltaTableDescriptor {
+    pub fn from_browser_http_snapshot(
+        table_name: impl Into<String>,
+        snapshot: &BrowserHttpSnapshotDescriptor,
+        schema: DeltaTableSchema,
+    ) -> Result<Self, QueryError> {
+        let table_name = table_name.into();
+        if table_name.trim().is_empty() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidRequest,
+                "browser DataFusion table names cannot be empty",
+                runtime_target(),
+            ));
+        }
+
+        Ok(Self {
+            table_name,
+            table_version: snapshot.snapshot_version,
+            schema: schema.arrow_schema(),
+            partition_columns: browser_snapshot_partition_columns(snapshot),
+            partition_column_types: snapshot.partition_column_types.clone(),
+            active_files: snapshot
+                .active_files
+                .iter()
+                .map(|file| DeltaActiveFile {
+                    path: file.path.clone(),
+                    url: file.url.clone(),
+                    size_bytes: file.size_bytes,
+                    partition_values: file.partition_values.clone(),
+                    object_etag: None,
+                    stats_json: file.stats.clone(),
+                    deletion_vector: None,
+                })
+                .collect(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,6 +245,18 @@ pub struct DeletionVectorDescriptor {
     pub cardinality: Option<i64>,
 }
 
+fn browser_snapshot_partition_columns(snapshot: &BrowserHttpSnapshotDescriptor) -> Vec<String> {
+    let mut partition_columns = snapshot
+        .partition_column_types
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for file in &snapshot.active_files {
+        partition_columns.extend(file.partition_values.keys().cloned());
+    }
+    partition_columns.into_iter().collect()
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AxonParquetScanTrace {
     pub projected_columns: Vec<String>,
@@ -124,6 +268,7 @@ pub struct AxonParquetScanTrace {
     pub files_planned: usize,
     pub planned_file_paths: Vec<String>,
     pub files_skipped: u64,
+    pub row_groups_touched: u64,
     pub row_groups_skipped: u64,
     pub bytes_fetched: u64,
     pub rows_emitted: u64,
@@ -458,6 +603,7 @@ impl AxonScanPlan {
             files_planned,
             planned_file_paths,
             files_skipped,
+            row_groups_touched: 0,
             row_groups_skipped: 0,
             bytes_fetched: 0,
             rows_emitted: 0,
@@ -730,6 +876,7 @@ fn record_trace_parquet_metrics(
     let mut trace = trace
         .lock()
         .expect("AxonParquetScanExec trace should not be poisoned");
+    trace.row_groups_touched = metrics.row_groups_touched;
     trace.row_groups_skipped = metrics.row_groups_skipped;
     trace.bytes_fetched = metrics.bytes_fetched;
 }
@@ -1040,8 +1187,16 @@ fn map_parquet_query_error(error: QueryError) -> DataFusionError {
     ))
 }
 
+#[derive(Clone)]
 pub struct WasmDataFusionEngine {
     ctx: SessionContext,
+}
+
+impl fmt::Debug for WasmDataFusionEngine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WasmDataFusionEngine")
+            .finish_non_exhaustive()
+    }
 }
 
 impl WasmDataFusionEngine {
@@ -1064,6 +1219,13 @@ impl WasmDataFusionEngine {
             .map_err(map_datafusion_error)?;
 
         Ok(())
+    }
+
+    pub fn deregister_table(&mut self, table_name: &str) -> Result<bool, QueryError> {
+        self.ctx
+            .deregister_table(table_name)
+            .map(|removed| removed.is_some())
+            .map_err(map_datafusion_error)
     }
 
     /// Registers a descriptor-backed table with controlled in-memory scan partitions.
@@ -1117,15 +1279,54 @@ impl WasmDataFusionEngine {
         &self,
         sql: &str,
     ) -> Result<(SchemaRef, Vec<RecordBatch>), QueryError> {
+        let (schema, batches, _scan_metrics) = self.sql_to_record_batches_with_metrics(sql).await?;
+        Ok((schema, batches))
+    }
+
+    pub async fn sql_to_record_batches_with_metrics(
+        &self,
+        sql: &str,
+    ) -> Result<(SchemaRef, Vec<RecordBatch>, DataFusionScanMetricsSummary), QueryError> {
         let frame = self.ctx.sql(sql).await.map_err(map_datafusion_error)?;
         let output_schema = frame.schema().inner().clone();
-        let batches = frame.collect().await.map_err(map_datafusion_error)?;
-        Ok((output_schema, batches))
+        let task_ctx = self.ctx.task_ctx();
+        let plan = frame
+            .create_physical_plan()
+            .await
+            .map_err(map_datafusion_error)?;
+        let batches = collect(Arc::clone(&plan), task_ctx)
+            .await
+            .map_err(map_datafusion_error)?;
+        let scan_metrics = datafusion_scan_metrics_from_plan(&plan)?;
+
+        Ok((output_schema, batches, scan_metrics))
     }
 
     pub async fn sql_to_arrow_ipc(&self, sql: &str) -> Result<Vec<u8>, QueryError> {
-        let (schema, batches) = self.sql_to_record_batches(sql).await?;
-        encode_record_batches_to_arrow_ipc(schema, &batches)
+        Ok(self.sql_to_arrow_ipc_result(sql).await?.ipc_bytes)
+    }
+
+    pub async fn sql_to_arrow_ipc_result(
+        &self,
+        sql: &str,
+    ) -> Result<DataFusionArrowIpcResult, QueryError> {
+        let (schema, batches, scan_metrics) = self.sql_to_record_batches_with_metrics(sql).await?;
+        let row_count = record_batch_row_count(&batches)?;
+        let ipc_bytes = encode_record_batches_to_arrow_ipc(schema, &batches)?;
+        let encoded_bytes = u64::try_from(ipc_bytes.len()).map_err(|_| {
+            QueryError::new(
+                QueryErrorCode::ExecutionFailed,
+                "experimental browser DataFusion Arrow IPC byte lengths overflowed u64",
+                runtime_target(),
+            )
+        })?;
+
+        Ok(DataFusionArrowIpcResult {
+            ipc_bytes,
+            row_count,
+            encoded_bytes,
+            scan_metrics,
+        })
     }
 }
 
@@ -1238,6 +1439,99 @@ fn encode_record_batches_to_arrow_ipc(
     Ok(encoded)
 }
 
+fn record_batch_row_count(batches: &[RecordBatch]) -> Result<u64, QueryError> {
+    batches.iter().try_fold(0_u64, |total, batch| {
+        let rows = u64::try_from(batch.num_rows()).map_err(|_| {
+            QueryError::new(
+                QueryErrorCode::ExecutionFailed,
+                "experimental browser DataFusion row counts overflowed u64",
+                runtime_target(),
+            )
+        })?;
+        total.checked_add(rows).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::ExecutionFailed,
+                "experimental browser DataFusion row totals overflowed u64",
+                runtime_target(),
+            )
+        })
+    })
+}
+
+fn datafusion_scan_metrics_from_plan(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> Result<DataFusionScanMetricsSummary, QueryError> {
+    let mut metrics = DataFusionScanMetricsSummary::default();
+    collect_datafusion_scan_metrics(plan, &mut metrics)?;
+    Ok(metrics)
+}
+
+fn collect_datafusion_scan_metrics(
+    plan: &Arc<dyn ExecutionPlan>,
+    metrics: &mut DataFusionScanMetricsSummary,
+) -> Result<(), QueryError> {
+    if let Some(scan) = plan.as_any().downcast_ref::<AxonParquetScanExec>() {
+        add_scan_trace_to_datafusion_metrics(metrics, &scan.pushdown_trace())?;
+    }
+
+    for child in plan.children() {
+        collect_datafusion_scan_metrics(child, metrics)?;
+    }
+
+    Ok(())
+}
+
+fn add_scan_trace_to_datafusion_metrics(
+    metrics: &mut DataFusionScanMetricsSummary,
+    trace: &AxonParquetScanTrace,
+) -> Result<(), QueryError> {
+    metrics.scan_count = checked_datafusion_metric_add(metrics.scan_count, 1, "scan count")?;
+    metrics.files_touched = checked_datafusion_metric_add(
+        metrics.files_touched,
+        datafusion_metric_from_usize(trace.files_planned, "files touched")?,
+        "files touched",
+    )?;
+    metrics.files_skipped =
+        checked_datafusion_metric_add(metrics.files_skipped, trace.files_skipped, "files skipped")?;
+    metrics.row_groups_touched = checked_datafusion_metric_add(
+        metrics.row_groups_touched,
+        trace.row_groups_touched,
+        "row groups touched",
+    )?;
+    metrics.row_groups_skipped = checked_datafusion_metric_add(
+        metrics.row_groups_skipped,
+        trace.row_groups_skipped,
+        "row groups skipped",
+    )?;
+    metrics.rows_emitted =
+        checked_datafusion_metric_add(metrics.rows_emitted, trace.rows_emitted, "rows emitted")?;
+    metrics.bytes_fetched =
+        checked_datafusion_metric_add(metrics.bytes_fetched, trace.bytes_fetched, "bytes fetched")?;
+
+    Ok(())
+}
+
+fn datafusion_metric_from_usize(value: usize, metric_name: &str) -> Result<u64, QueryError> {
+    u64::try_from(value).map_err(|_| datafusion_metric_overflow_error(metric_name))
+}
+
+fn checked_datafusion_metric_add(
+    left: u64,
+    right: u64,
+    metric_name: &str,
+) -> Result<u64, QueryError> {
+    left.checked_add(right)
+        .ok_or_else(|| datafusion_metric_overflow_error(metric_name))
+}
+
+fn datafusion_metric_overflow_error(metric_name: &str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::ExecutionFailed,
+        format!("experimental browser DataFusion {metric_name} metrics overflowed u64"),
+        runtime_target(),
+    )
+}
+
 fn map_datafusion_error(error: datafusion::error::DataFusionError) -> QueryError {
     QueryError::new(
         QueryErrorCode::ExecutionFailed,
@@ -1258,4 +1552,61 @@ pub async fn run_datafusion_smoke_query() -> Result<Vec<u8>, JsValue> {
 #[cfg(target_arch = "wasm32")]
 fn query_error_to_js_value(error: QueryError) -> JsValue {
     JsValue::from_str(&format!("{:?}: {}", error.code, error.message))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrow_ipc_result_reports_axon_scan_metrics() {
+        test_runtime().block_on(async {
+            let batch = synthetic_record_batch().expect("synthetic batch should build");
+            let descriptor = DeltaTableDescriptor {
+                table_name: DEFAULT_TABLE_NAME.to_string(),
+                table_version: 1,
+                schema: batch.schema(),
+                partition_columns: Vec::new(),
+                partition_column_types: BTreeMap::new(),
+                active_files: vec![DeltaActiveFile {
+                    path: "part-000.parquet".to_string(),
+                    url: "https://example.test/part-000.parquet".to_string(),
+                    size_bytes: 1024,
+                    partition_values: BTreeMap::new(),
+                    object_etag: None,
+                    stats_json: None,
+                    deletion_vector: None,
+                }],
+            };
+            let mut engine = WasmDataFusionEngine::new();
+            engine
+                .open_delta_table_with_record_batch_partitions(descriptor, vec![vec![batch]])
+                .await
+                .expect("descriptor table should register");
+
+            let result = engine
+                .sql_to_arrow_ipc_result("SELECT id FROM t LIMIT 1")
+                .await
+                .expect("DataFusion SQL should execute");
+
+            assert_eq!(result.row_count, 1);
+            assert!(!result.ipc_bytes.is_empty());
+            assert_eq!(
+                result.scan_metrics,
+                DataFusionScanMetricsSummary {
+                    scan_count: 1,
+                    files_touched: 1,
+                    files_skipped: 0,
+                    row_groups_touched: 0,
+                    row_groups_skipped: 0,
+                    rows_emitted: 1,
+                    bytes_fetched: 0,
+                }
+            );
+        });
+    }
+
+    fn test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Runtime::new().expect("test runtime should construct")
+    }
 }

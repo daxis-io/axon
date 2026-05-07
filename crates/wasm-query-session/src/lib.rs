@@ -1,16 +1,28 @@
 //! In-memory browser session shell over runtime-owned snapshot state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 use std::time::Instant;
 
 use query_contract::{
-    BrowserHttpSnapshotDescriptor, ExecutionTarget, QueryError, QueryErrorCode,
-    QueryMetricsSummary, QueryRequest, QueryResponse,
+    BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, PartitionColumnType,
+    QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse,
+};
+use sqlparser::ast::{
+    ObjectName, Query as SqlQuery, Select, SelectFlavor, SetExpr as SqlSetExpr,
+    Statement as SqlStatement, TableFactor as SqlTableFactor, TableWithJoins as SqlTableWithJoins,
+};
+use sqlparser::dialect::GenericDialect;
+use sqlparser::parser::Parser;
+use wasm_datafusion_poc::{
+    DataFusionArrowIpcResult, DataFusionScanMetricsSummary, DeltaTableDescriptor,
+    DeltaTableFieldDataType, DeltaTableSchema, DeltaTableSchemaField, WasmDataFusionEngine,
 };
 use wasm_query_runtime::{
-    runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserExecutionPlan,
-    BrowserPlannedQuery, BrowserRuntimeConfig, BrowserRuntimeSession, MaterializedBrowserSnapshot,
+    runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserExecutionBudget,
+    BrowserExecutionPlan, BrowserParquetConvertedType, BrowserParquetField,
+    BrowserParquetLogicalType, BrowserParquetPhysicalType, BrowserPlannedQuery,
+    BrowserRuntimeConfig, BrowserRuntimeSession, MaterializedBrowserSnapshot,
     RuntimeArrowIpcResult,
 };
 
@@ -27,6 +39,7 @@ pub struct BrowserSessionQueryResult {
 #[derive(Clone, Debug)]
 pub struct BrowserQuerySession {
     runtime: BrowserRuntimeSession,
+    datafusion: WasmDataFusionEngine,
     tables: BTreeMap<String, CachedTable>,
     max_cached_bytes: u64,
     next_access_millis: u64,
@@ -38,6 +51,7 @@ pub struct CachedTable {
     materialized: MaterializedBrowserSnapshot,
     bootstrapped: Option<BootstrappedBrowserSnapshot>,
     bootstrapped_request: Option<CachedBootstrapRequest>,
+    datafusion_registered: bool,
     cached_bytes: u64,
     last_used_millis: u64,
 }
@@ -53,6 +67,7 @@ impl BrowserQuerySession {
     pub fn new(config: BrowserRuntimeConfig, max_cached_bytes: u64) -> Result<Self, QueryError> {
         Ok(Self {
             runtime: BrowserRuntimeSession::new(config)?,
+            datafusion: WasmDataFusionEngine::new(),
             tables: BTreeMap::new(),
             max_cached_bytes,
             next_access_millis: 0,
@@ -91,7 +106,7 @@ impl BrowserQuerySession {
         materialized: MaterializedBrowserSnapshot,
         bootstrapped: Option<BootstrappedBrowserSnapshot>,
     ) -> Result<(), QueryError> {
-        self.insert_table(name.into(), None, materialized, bootstrapped, None)
+        self.insert_table(name.into(), None, materialized, bootstrapped, None, false)
     }
 
     pub fn open_table(
@@ -100,7 +115,45 @@ impl BrowserQuerySession {
         descriptor: BrowserHttpSnapshotDescriptor,
     ) -> Result<(), QueryError> {
         let materialized = self.runtime.materialize_snapshot(&descriptor)?;
-        self.insert_table(name.into(), Some(descriptor), materialized, None, None)
+        self.insert_table(
+            name.into(),
+            Some(descriptor),
+            materialized,
+            None,
+            None,
+            false,
+        )
+    }
+
+    pub async fn open_delta_table(
+        &mut self,
+        name: impl Into<String>,
+        descriptor: BrowserHttpSnapshotDescriptor,
+    ) -> Result<(), QueryError> {
+        let name = name.into();
+        let materialized = self.runtime.materialize_snapshot(&descriptor)?;
+        let bootstrapped = if materialized.active_files().is_empty() {
+            None
+        } else {
+            Some(
+                self.runtime
+                    .bootstrap_snapshot_metadata(&materialized)
+                    .await?,
+            )
+        };
+        let schema = datafusion_delta_schema(&descriptor, bootstrapped.as_ref())?;
+        let delta_descriptor =
+            DeltaTableDescriptor::from_browser_http_snapshot(name.clone(), &descriptor, schema)?;
+
+        self.datafusion.open_delta_table(delta_descriptor).await?;
+        self.insert_table(
+            name,
+            Some(descriptor),
+            materialized,
+            bootstrapped,
+            None,
+            true,
+        )
     }
 
     pub fn plan_query(
@@ -126,6 +179,10 @@ impl BrowserQuerySession {
         name: &str,
         request: &QueryRequest,
     ) -> Result<BrowserSessionQueryResult, QueryError> {
+        if self.touch_table(name)?.datafusion_registered {
+            return self.sql_datafusion(name, request).await;
+        }
+
         let materialized = self
             .table(name)
             .ok_or_else(|| missing_table_error(name))?
@@ -163,8 +220,71 @@ impl BrowserQuerySession {
         })
     }
 
+    async fn sql_datafusion(
+        &mut self,
+        name: &str,
+        request: &QueryRequest,
+    ) -> Result<BrowserSessionQueryResult, QueryError> {
+        let (capabilities, file_count, footer_reads, snapshot_bootstrap_duration_ms, access_mode) = {
+            let table = self.table(name).ok_or_else(|| missing_table_error(name))?;
+            validate_datafusion_request_match(table, request)?;
+            validate_datafusion_sql_scope(name, &request.sql)?;
+            validate_datafusion_execution_budget(table, self.runtime.config().execution_budget)?;
+            (
+                table.materialized.required_capabilities().clone(),
+                u64::try_from(table.materialized.active_files().len()).map_err(|_| {
+                    QueryError::new(
+                        QueryErrorCode::ExecutionFailed,
+                        "browser session DataFusion file counts overflowed u64",
+                        runtime_target(),
+                    )
+                })?,
+                table
+                    .bootstrapped
+                    .as_ref()
+                    .and_then(BootstrappedBrowserSnapshot::footer_reads),
+                table
+                    .bootstrapped
+                    .as_ref()
+                    .and_then(BootstrappedBrowserSnapshot::snapshot_bootstrap_duration_ms),
+                table
+                    .bootstrapped
+                    .as_ref()
+                    .and_then(BootstrappedBrowserSnapshot::access_mode),
+            )
+        };
+        let started_at = Instant::now();
+        let datafusion_result = self
+            .datafusion
+            .sql_to_arrow_ipc_result(&request.sql)
+            .await?;
+        let scan_metrics = datafusion_result.scan_metrics.clone();
+        let runtime_result = runtime_result_from_datafusion(datafusion_result);
+
+        Ok(BrowserSessionQueryResult {
+            response: QueryResponse {
+                executed_on: ExecutionTarget::BrowserWasm,
+                capabilities,
+                fallback_reason: None,
+                metrics: datafusion_query_metrics(
+                    scan_metrics,
+                    file_count,
+                    footer_reads,
+                    snapshot_bootstrap_duration_ms,
+                    access_mode,
+                    started_at,
+                ),
+            },
+            runtime_result,
+        })
+    }
+
     pub fn remove_table(&mut self, name: &str) -> Option<CachedTable> {
-        self.tables.remove(name)
+        let removed = self.tables.remove(name);
+        if let Some(table) = &removed {
+            let _ = self.deregister_removed_table(name, table);
+        }
+        removed
     }
 
     pub fn dispose_table(&mut self, name: &str) -> bool {
@@ -192,7 +312,7 @@ impl BrowserQuerySession {
         table.bootstrapped = Some(snapshot);
         table.bootstrapped_request = Some(request);
         table.cached_bytes = cached_table_bytes(&table.materialized, table.bootstrapped.as_ref())?;
-        self.evict_to_budget(&pinned_name);
+        self.evict_to_budget(&pinned_name)?;
         Ok(())
     }
 
@@ -203,9 +323,15 @@ impl BrowserQuerySession {
         materialized: MaterializedBrowserSnapshot,
         bootstrapped: Option<BootstrappedBrowserSnapshot>,
         bootstrapped_request: Option<CachedBootstrapRequest>,
+        datafusion_registered: bool,
     ) -> Result<(), QueryError> {
         let cached_bytes = cached_table_bytes(&materialized, bootstrapped.as_ref())?;
         let last_used_millis = self.bump_access_clock();
+
+        let replaced = self.tables.get(&name).cloned();
+        if let Some(replaced) = &replaced {
+            self.deregister_removed_table(&name, replaced)?;
+        }
 
         self.tables.insert(
             name.clone(),
@@ -214,11 +340,12 @@ impl BrowserQuerySession {
                 materialized,
                 bootstrapped,
                 bootstrapped_request,
+                datafusion_registered,
                 cached_bytes,
                 last_used_millis,
             },
         );
-        self.evict_to_budget(&name);
+        self.evict_to_budget(&name)?;
 
         Ok(())
     }
@@ -254,7 +381,7 @@ impl BrowserQuerySession {
         self.next_access_millis
     }
 
-    fn evict_to_budget(&mut self, pinned_name: &str) {
+    fn evict_to_budget(&mut self, pinned_name: &str) -> Result<(), QueryError> {
         while self.cached_bytes() > self.max_cached_bytes && self.tables.len() > 1 {
             let eviction_candidate = self
                 .tables
@@ -267,8 +394,23 @@ impl BrowserQuerySession {
                 break;
             };
 
-            self.tables.remove(&eviction_candidate);
+            if let Some(evicted) = self.tables.remove(&eviction_candidate) {
+                self.deregister_removed_table(&eviction_candidate, &evicted)?;
+            }
         }
+
+        Ok(())
+    }
+
+    fn deregister_removed_table(
+        &mut self,
+        name: &str,
+        table: &CachedTable,
+    ) -> Result<(), QueryError> {
+        if table.datafusion_registered {
+            self.datafusion.deregister_table(name)?;
+        }
+        Ok(())
     }
 }
 
@@ -283,6 +425,10 @@ impl CachedTable {
 
     pub fn bootstrapped_snapshot(&self) -> Option<&BootstrappedBrowserSnapshot> {
         self.bootstrapped.as_ref()
+    }
+
+    pub fn datafusion_registered(&self) -> bool {
+        self.datafusion_registered
     }
 
     pub fn cached_bytes(&self) -> u64 {
@@ -302,6 +448,398 @@ impl CachedBootstrapRequest {
             sql: request.sql.clone(),
         }
     }
+}
+
+fn datafusion_delta_schema(
+    descriptor: &BrowserHttpSnapshotDescriptor,
+    bootstrapped: Option<&BootstrappedBrowserSnapshot>,
+) -> Result<DeltaTableSchema, QueryError> {
+    let mut fields = Vec::new();
+    let mut field_names = BTreeSet::new();
+
+    if let Some(bootstrapped) = bootstrapped {
+        for field in bootstrapped.validate_uniform_schema()?.fields {
+            if field_names.insert(field.name.clone()) {
+                fields.push(datafusion_schema_field_from_parquet_field(&field)?);
+            }
+        }
+    }
+
+    for partition_column in descriptor_partition_columns(descriptor) {
+        if field_names.insert(partition_column.clone()) {
+            fields.push(DeltaTableSchemaField::new(
+                partition_column.clone(),
+                datafusion_partition_column_type(descriptor, &partition_column)?,
+                true,
+            ));
+        }
+    }
+
+    Ok(DeltaTableSchema::new(fields))
+}
+
+fn descriptor_partition_columns(descriptor: &BrowserHttpSnapshotDescriptor) -> Vec<String> {
+    let mut partition_columns = descriptor
+        .partition_column_types
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for file in &descriptor.active_files {
+        partition_columns.extend(file.partition_values.keys().cloned());
+    }
+    partition_columns.into_iter().collect()
+}
+
+fn datafusion_partition_column_type(
+    descriptor: &BrowserHttpSnapshotDescriptor,
+    column: &str,
+) -> Result<DeltaTableFieldDataType, QueryError> {
+    match descriptor.partition_column_types.get(column) {
+        Some(PartitionColumnType::String) | None => Ok(DeltaTableFieldDataType::Utf8),
+        Some(PartitionColumnType::Int64) => Ok(DeltaTableFieldDataType::Int64),
+        Some(PartitionColumnType::Boolean) => Ok(DeltaTableFieldDataType::Boolean),
+        Some(PartitionColumnType::Unsupported) => Err(QueryError::new(
+            QueryErrorCode::UnsupportedFeature,
+            format!("browser DataFusion does not support partition column '{column}' type"),
+            runtime_target(),
+        )),
+    }
+}
+
+fn datafusion_schema_field_from_parquet_field(
+    field: &BrowserParquetField,
+) -> Result<DeltaTableSchemaField, QueryError> {
+    Ok(DeltaTableSchemaField::new(
+        field.name.clone(),
+        datafusion_data_type_from_parquet_field(field)?,
+        field.nullable,
+    ))
+}
+
+fn datafusion_data_type_from_parquet_field(
+    field: &BrowserParquetField,
+) -> Result<DeltaTableFieldDataType, QueryError> {
+    if matches!(
+        field.logical_type.as_ref(),
+        Some(BrowserParquetLogicalType::String)
+    ) || matches!(
+        field.converted_type.as_ref(),
+        Some(BrowserParquetConvertedType::Utf8)
+    ) {
+        return Ok(DeltaTableFieldDataType::Utf8);
+    }
+
+    match &field.physical_type {
+        BrowserParquetPhysicalType::Boolean => Ok(DeltaTableFieldDataType::Boolean),
+        BrowserParquetPhysicalType::Int32 => Ok(DeltaTableFieldDataType::Int32),
+        BrowserParquetPhysicalType::Int64 => Ok(DeltaTableFieldDataType::Int64),
+        BrowserParquetPhysicalType::Float => Ok(DeltaTableFieldDataType::Float32),
+        BrowserParquetPhysicalType::Double => Ok(DeltaTableFieldDataType::Float64),
+        BrowserParquetPhysicalType::Int96
+        | BrowserParquetPhysicalType::ByteArray
+        | BrowserParquetPhysicalType::FixedLenByteArray => {
+            Err(unsupported_datafusion_parquet_field(field))
+        }
+    }
+}
+
+fn unsupported_datafusion_parquet_field(field: &BrowserParquetField) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::UnsupportedFeature,
+        format!(
+            "browser DataFusion does not yet support Parquet field '{}' with physical type {}",
+            field.name, field.physical_type
+        ),
+        runtime_target(),
+    )
+}
+
+fn runtime_result_from_datafusion(
+    datafusion_result: DataFusionArrowIpcResult,
+) -> RuntimeArrowIpcResult {
+    RuntimeArrowIpcResult {
+        ipc_bytes: datafusion_result.ipc_bytes.into(),
+        row_count: datafusion_result.row_count,
+        encoded_bytes: datafusion_result.encoded_bytes,
+        scan_metrics: Vec::new(),
+    }
+}
+
+fn datafusion_query_metrics(
+    scan_metrics: DataFusionScanMetricsSummary,
+    fallback_file_count: u64,
+    footer_reads: Option<u64>,
+    snapshot_bootstrap_duration_ms: Option<u64>,
+    access_mode: Option<query_contract::BrowserAccessMode>,
+    started_at: Instant,
+) -> QueryMetricsSummary {
+    QueryMetricsSummary {
+        bytes_fetched: scan_metrics.bytes_fetched,
+        duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+        files_touched: if scan_metrics.scan_count > 0 {
+            scan_metrics.files_touched
+        } else {
+            fallback_file_count
+        },
+        files_skipped: scan_metrics.files_skipped,
+        row_groups_touched: scan_metrics.row_groups_touched,
+        row_groups_skipped: scan_metrics.row_groups_skipped,
+        footer_reads,
+        rows_emitted: scan_metrics.rows_emitted,
+        snapshot_bootstrap_duration_ms,
+        access_mode,
+    }
+}
+
+fn validate_datafusion_request_match(
+    table: &CachedTable,
+    request: &QueryRequest,
+) -> Result<(), QueryError> {
+    let table_uri = table.materialized.table_uri();
+    if request.table_uri != table_uri {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidRequest,
+            format!(
+                "query table URI '{}' does not match open table URI '{}'",
+                request.table_uri, table_uri
+            ),
+            runtime_target(),
+        ));
+    }
+
+    if let Some(snapshot_version) = request.snapshot_version {
+        let table_snapshot_version = table.materialized.snapshot_version();
+        if snapshot_version != table_snapshot_version {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidRequest,
+                format!(
+                    "query snapshot version {snapshot_version} does not match open table snapshot version {table_snapshot_version}"
+                ),
+                runtime_target(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_datafusion_sql_scope(table_name: &str, sql: &str) -> Result<(), QueryError> {
+    let statements = Parser::parse_sql(&GenericDialect {}, sql)
+        .map_err(|error| invalid_datafusion_sql(format!("invalid SQL: {error}")))?;
+    if statements.len() != 1 {
+        return Err(invalid_datafusion_sql(
+            "sql must contain exactly one read-only SELECT statement",
+        ));
+    }
+
+    let statement = statements
+        .into_iter()
+        .next()
+        .expect("statement length already checked");
+    let SqlStatement::Query(query) = statement else {
+        return Err(invalid_datafusion_sql(
+            "only read-only SELECT statements are supported",
+        ));
+    };
+
+    validate_datafusion_query_scope(table_name, query.as_ref())
+}
+
+fn validate_datafusion_query_scope(table_name: &str, query: &SqlQuery) -> Result<(), QueryError> {
+    if query.fetch.is_some()
+        || !query.locks.is_empty()
+        || query.for_clause.is_some()
+        || query.settings.is_some()
+        || query.format_clause.is_some()
+        || !query.pipe_operators.is_empty()
+        || query.with.is_some()
+    {
+        return Err(invalid_datafusion_sql(
+            "only read-only SELECT statements are supported",
+        ));
+    }
+
+    match query.body.as_ref() {
+        SqlSetExpr::Select(select) => validate_datafusion_select_scope(table_name, select.as_ref()),
+        SqlSetExpr::Query(query) => validate_datafusion_query_scope(table_name, query.as_ref()),
+        _ => Err(invalid_datafusion_sql(
+            "only read-only SELECT statements are supported",
+        )),
+    }
+}
+
+fn validate_datafusion_select_scope(table_name: &str, select: &Select) -> Result<(), QueryError> {
+    if select.into.is_some()
+        || select.top.is_some()
+        || !select.lateral_views.is_empty()
+        || select.prewhere.is_some()
+        || !select.cluster_by.is_empty()
+        || !select.distribute_by.is_empty()
+        || !select.sort_by.is_empty()
+        || !select.named_window.is_empty()
+        || select.qualify.is_some()
+        || select.value_table_mode.is_some()
+        || select.connect_by.is_some()
+        || select.flavor != SelectFlavor::Standard
+    {
+        return Err(invalid_datafusion_sql(
+            "only read-only SELECT statements are supported",
+        ));
+    }
+
+    if select.from.len() != 1 {
+        return Err(wrong_datafusion_table_error(table_name));
+    }
+
+    validate_datafusion_table_with_joins(
+        table_name,
+        select.from.first().expect("select.from length checked"),
+    )
+}
+
+fn validate_datafusion_table_with_joins(
+    table_name: &str,
+    table_with_joins: &SqlTableWithJoins,
+) -> Result<(), QueryError> {
+    if !table_with_joins.joins.is_empty() {
+        return Err(wrong_datafusion_table_error(table_name));
+    }
+
+    match &table_with_joins.relation {
+        SqlTableFactor::Table {
+            name,
+            args,
+            with_hints,
+            version,
+            with_ordinality,
+            partitions,
+            json_path,
+            sample,
+            index_hints,
+            ..
+        } => {
+            if args.is_some()
+                || !with_hints.is_empty()
+                || version.is_some()
+                || *with_ordinality
+                || !partitions.is_empty()
+                || json_path.is_some()
+                || sample.is_some()
+                || !index_hints.is_empty()
+            {
+                return Err(wrong_datafusion_table_error(table_name));
+            }
+
+            let relation_name = object_name_to_relation_name(name)
+                .ok_or_else(|| wrong_datafusion_table_error(table_name))?;
+            if relation_name == table_name.to_ascii_lowercase() {
+                Ok(())
+            } else {
+                Err(wrong_datafusion_table_error(table_name))
+            }
+        }
+        SqlTableFactor::Derived { subquery, .. } => {
+            validate_datafusion_query_scope(table_name, subquery.as_ref())
+        }
+        _ => Err(wrong_datafusion_table_error(table_name)),
+    }
+}
+
+fn object_name_to_relation_name(name: &ObjectName) -> Option<String> {
+    let [part] = name.0.as_slice() else {
+        return None;
+    };
+
+    Some(part.as_ident()?.value.to_ascii_lowercase())
+}
+
+fn wrong_datafusion_table_error(table_name: &str) -> QueryError {
+    invalid_datafusion_sql(format!("query must read only from table '{table_name}'"))
+}
+
+fn invalid_datafusion_sql(message: impl Into<String>) -> QueryError {
+    QueryError::new(QueryErrorCode::InvalidRequest, message, runtime_target())
+}
+
+fn validate_datafusion_execution_budget(
+    table: &CachedTable,
+    execution_budget: Option<BrowserExecutionBudget>,
+) -> Result<(), QueryError> {
+    let Some(execution_budget) = execution_budget else {
+        return Ok(());
+    };
+
+    let estimated_rows = datafusion_table_estimated_rows(table)?;
+    if estimated_rows > execution_budget.max_rows {
+        return Err(datafusion_budget_exceeded_error(
+            "row estimate",
+            estimated_rows,
+            execution_budget.max_rows,
+        ));
+    }
+
+    let estimated_bytes = datafusion_table_estimated_bytes(table)?;
+    if estimated_bytes > execution_budget.max_bytes {
+        return Err(datafusion_budget_exceeded_error(
+            "byte estimate",
+            estimated_bytes,
+            execution_budget.max_bytes,
+        ));
+    }
+
+    Ok(())
+}
+
+fn datafusion_table_estimated_rows(table: &CachedTable) -> Result<u64, QueryError> {
+    table
+        .bootstrapped
+        .as_ref()
+        .map(|snapshot| {
+            snapshot
+                .active_files()
+                .iter()
+                .try_fold(0_u64, |total, file| {
+                    total
+                        .checked_add(file.metadata().row_count)
+                        .ok_or_else(|| datafusion_budget_total_overflow_error("row"))
+                })
+        })
+        .unwrap_or(Ok(0))
+}
+
+fn datafusion_table_estimated_bytes(table: &CachedTable) -> Result<u64, QueryError> {
+    table
+        .materialized
+        .active_files()
+        .iter()
+        .try_fold(0_u64, |total, file| {
+            total
+                .checked_add(file.size_bytes())
+                .ok_or_else(|| datafusion_budget_total_overflow_error("byte"))
+        })
+}
+
+fn datafusion_budget_total_overflow_error(total_kind: &str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::ExecutionFailed,
+        format!("browser DataFusion {total_kind} totals overflowed u64"),
+        runtime_target(),
+    )
+}
+
+fn datafusion_budget_exceeded_error(
+    observed_kind: &str,
+    observed: u64,
+    max_allowed: u64,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::FallbackRequired,
+        format!(
+            "browser DataFusion execution exceeded the configured {observed_kind} budget ({observed} > {max_allowed})"
+        ),
+        runtime_target(),
+    )
+    .with_fallback_reason(FallbackReason::BrowserRuntimeConstraint)
 }
 
 fn cached_table_bytes(
@@ -526,4 +1064,296 @@ fn missing_bootstrap_error(name: &str) -> QueryError {
         format!("browser session table '{name}' did not retain bootstrapped snapshot state"),
         runtime_target(),
     )
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    use query_contract::{BrowserHttpFileDescriptor, CapabilityReport};
+    use wasm_query_runtime::{
+        BrowserExecutionBudget, BrowserObjectSource, MaterializedBrowserFile,
+    };
+
+    #[test]
+    fn open_delta_table_registers_descriptor_and_sql_returns_arrow_ipc() {
+        let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
+            .expect("default browser runtime config should be supported");
+        let descriptor = empty_delta_descriptor();
+        let request = QueryRequest::new(
+            descriptor.table_uri.clone(),
+            "SELECT COUNT(*) AS rows FROM events",
+            ExecutionTarget::BrowserWasm,
+        );
+
+        test_runtime().block_on(async {
+            session
+                .open_delta_table("events", descriptor)
+                .await
+                .expect("open_delta_table should register the DataFusion table");
+
+            let result = session
+                .sql("events", &request)
+                .await
+                .expect("SQL should execute through the opened DataFusion table");
+
+            assert!(session.contains_table("events"));
+            assert!(!result.runtime_result.ipc_bytes.is_empty());
+            assert_eq!(result.runtime_result.row_count, 1);
+            assert_eq!(result.response.executed_on, ExecutionTarget::BrowserWasm);
+            assert_eq!(result.response.metrics.rows_emitted, 0);
+        });
+    }
+
+    #[test]
+    fn sql_requires_table_to_be_opened_before_query_execution() {
+        let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
+            .expect("default browser runtime config should be supported");
+        let request = QueryRequest::new(
+            "gs://axon-fixtures/empty",
+            "SELECT COUNT(*) AS rows FROM events",
+            ExecutionTarget::BrowserWasm,
+        );
+
+        let error = test_runtime()
+            .block_on(session.sql("events", &request))
+            .expect_err("SQL must fail before the table is opened");
+
+        assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+        assert!(error.message.contains("open table named 'events'"));
+    }
+
+    #[test]
+    fn datafusion_sql_rejects_request_for_a_different_table_uri() {
+        let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
+            .expect("default browser runtime config should be supported");
+        let descriptor = empty_delta_descriptor();
+        let request = QueryRequest::new(
+            "gs://axon-fixtures/different",
+            "SELECT COUNT(*) AS rows FROM events",
+            ExecutionTarget::BrowserWasm,
+        );
+
+        let error = test_runtime()
+            .block_on(async {
+                session
+                    .open_delta_table("events", descriptor)
+                    .await
+                    .expect("open_delta_table should register the DataFusion table");
+                session.sql("events", &request).await
+            })
+            .expect_err("DataFusion SQL should keep table/query descriptor matching");
+
+        assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+        assert!(error.message.contains("does not match open table"));
+    }
+
+    #[test]
+    fn disposed_datafusion_table_can_be_reopened_with_the_same_name() {
+        let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
+            .expect("default browser runtime config should be supported");
+
+        test_runtime().block_on(async {
+            session
+                .open_delta_table("events", empty_delta_descriptor())
+                .await
+                .expect("first open should register the DataFusion table");
+            assert!(session.dispose_table("events"));
+
+            session
+                .open_delta_table("events", empty_delta_descriptor())
+                .await
+                .expect("dispose should deregister the DataFusion table name");
+        });
+    }
+
+    #[test]
+    fn evicted_datafusion_table_can_be_reopened_with_the_same_name() {
+        let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), 1)
+            .expect("default browser runtime config should be supported");
+
+        test_runtime().block_on(async {
+            session
+                .open_delta_table("events", empty_delta_descriptor())
+                .await
+                .expect("first open should register the DataFusion table");
+            session
+                .cache_table("large_legacy", large_materialized_snapshot(), None)
+                .expect("large legacy table should force eviction");
+            assert!(!session.contains_table("events"));
+
+            session
+                .open_delta_table("events", empty_delta_descriptor())
+                .await
+                .expect("eviction should deregister the DataFusion table name");
+        });
+    }
+
+    #[test]
+    fn replaced_datafusion_table_can_be_reopened_with_the_same_name() {
+        let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
+            .expect("default browser runtime config should be supported");
+
+        test_runtime().block_on(async {
+            session
+                .open_delta_table("events", empty_delta_descriptor())
+                .await
+                .expect("first open should register the DataFusion table");
+            session
+                .cache_table("events", large_materialized_snapshot(), None)
+                .expect("replacement should deregister the prior DataFusion table");
+            assert!(!session
+                .table("events")
+                .expect("replacement table should be cached")
+                .datafusion_registered());
+
+            session
+                .open_delta_table("events", empty_delta_descriptor())
+                .await
+                .expect("replacement should free the DataFusion table name");
+        });
+    }
+
+    #[test]
+    fn datafusion_sql_rejects_non_select_statements_before_execution() {
+        let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
+            .expect("default browser runtime config should be supported");
+        let request = QueryRequest::new(
+            "gs://axon-fixtures/empty",
+            "CREATE TABLE copied AS SELECT * FROM events",
+            ExecutionTarget::BrowserWasm,
+        );
+
+        let error = test_runtime()
+            .block_on(async {
+                session
+                    .open_delta_table("events", empty_delta_descriptor())
+                    .await
+                    .expect("open_delta_table should register the DataFusion table");
+                session.sql("events", &request).await
+            })
+            .expect_err(
+                "DataFusion SQL should reject non-SELECT statements at the session boundary",
+            );
+
+        assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+        assert!(error.message.contains("read-only SELECT"));
+    }
+
+    #[test]
+    fn datafusion_sql_rejects_select_into_before_execution() {
+        let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
+            .expect("default browser runtime config should be supported");
+        let request = QueryRequest::new(
+            "gs://axon-fixtures/empty",
+            "SELECT * INTO copied FROM events",
+            ExecutionTarget::BrowserWasm,
+        );
+
+        let error = test_runtime()
+            .block_on(async {
+                session
+                    .open_delta_table("events", empty_delta_descriptor())
+                    .await
+                    .expect("open_delta_table should register the DataFusion table");
+                session.sql("events", &request).await
+            })
+            .expect_err("DataFusion SQL should reject SELECT INTO at the session boundary");
+
+        assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+        assert!(error.message.contains("read-only SELECT"));
+    }
+
+    #[test]
+    fn datafusion_sql_rejects_queries_against_other_open_tables() {
+        let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
+            .expect("default browser runtime config should be supported");
+        let request = QueryRequest::new(
+            "gs://axon-fixtures/empty",
+            "SELECT COUNT(*) AS rows FROM metrics",
+            ExecutionTarget::BrowserWasm,
+        );
+
+        let error = test_runtime()
+            .block_on(async {
+                session
+                    .open_delta_table("events", empty_delta_descriptor())
+                    .await
+                    .expect("events should open");
+                session
+                    .open_delta_table("metrics", metrics_delta_descriptor())
+                    .await
+                    .expect("metrics should open");
+                session.sql("events", &request).await
+            })
+            .expect_err("DataFusion SQL should stay scoped to the command table");
+
+        assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+        assert!(error
+            .message
+            .contains("query must read only from table 'events'"));
+    }
+
+    #[test]
+    fn datafusion_sql_rejects_tables_over_configured_byte_budget() {
+        let table = CachedTable {
+            descriptor: None,
+            materialized: large_materialized_snapshot(),
+            bootstrapped: None,
+            bootstrapped_request: None,
+            datafusion_registered: true,
+            cached_bytes: 128,
+            last_used_millis: 1,
+        };
+        let budget = BrowserExecutionBudget {
+            max_rows: u64::MAX,
+            max_bytes: 1,
+        };
+
+        let error = validate_datafusion_execution_budget(&table, Some(budget))
+            .expect_err("DataFusion SQL should reject tables over the byte budget");
+
+        assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+    }
+
+    fn empty_delta_descriptor() -> BrowserHttpSnapshotDescriptor {
+        BrowserHttpSnapshotDescriptor {
+            table_uri: "gs://axon-fixtures/empty".to_string(),
+            snapshot_version: 1,
+            partition_column_types: BTreeMap::new(),
+            browser_compatibility: CapabilityReport::default(),
+            required_capabilities: CapabilityReport::default(),
+            active_files: Vec::<BrowserHttpFileDescriptor>::new(),
+        }
+    }
+
+    fn metrics_delta_descriptor() -> BrowserHttpSnapshotDescriptor {
+        BrowserHttpSnapshotDescriptor {
+            table_uri: "gs://axon-fixtures/metrics".to_string(),
+            snapshot_version: 1,
+            partition_column_types: BTreeMap::new(),
+            browser_compatibility: CapabilityReport::default(),
+            required_capabilities: CapabilityReport::default(),
+            active_files: Vec::<BrowserHttpFileDescriptor>::new(),
+        }
+    }
+
+    fn large_materialized_snapshot() -> MaterializedBrowserSnapshot {
+        MaterializedBrowserSnapshot::new(
+            "gs://axon-fixtures/large",
+            1,
+            vec![MaterializedBrowserFile::new(
+                "part-000.parquet",
+                128,
+                BTreeMap::new(),
+                BrowserObjectSource::from_url("http://127.0.0.1:9/part-000.parquet")
+                    .expect("loopback object source should be allowed in host tests"),
+            )],
+        )
+        .expect("large materialized snapshot should construct")
+    }
+
+    fn test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Runtime::new().expect("test runtime should construct")
+    }
 }

@@ -122,6 +122,18 @@ impl BrowserWorker {
                     Err(error) => BrowserWorkerResponseEnvelope::error(command.request_id, error),
                 }
             }
+            BrowserWorkerCommand::OpenDeltaTable(command) => {
+                match self
+                    .session
+                    .open_delta_table(command.name.clone(), command.snapshot)
+                    .await
+                {
+                    Ok(()) => {
+                        BrowserWorkerResponseEnvelope::opened(command.request_id, command.name)
+                    }
+                    Err(error) => BrowserWorkerResponseEnvelope::error(command.request_id, error),
+                }
+            }
             BrowserWorkerCommand::Sql(command) => {
                 match self.session.sql(&command.name, &command.request).await {
                     Ok(result) => success_response(command.request_id, result),
@@ -154,7 +166,7 @@ pub fn worker_target() -> ExecutionTarget {
 }
 
 pub fn runtime_sku() -> BrowserRuntimeSku {
-    BrowserRuntimeSku::Narrow
+    BrowserRuntimeSku::Sql
 }
 
 pub fn result_transport() -> BrowserResultTransport {
@@ -164,7 +176,7 @@ pub fn result_transport() -> BrowserResultTransport {
 pub fn capabilities() -> BrowserWorkerCapabilities {
     BrowserWorkerCapabilities {
         session_shell: true,
-        browser_datafusion: false,
+        browser_datafusion: true,
     }
 }
 

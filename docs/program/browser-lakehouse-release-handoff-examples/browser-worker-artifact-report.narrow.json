@@ -1,9 +1,9 @@
 {
-  "runtime_sku": "narrow",
+  "runtime_sku": "sql",
   "result_transport": "arrow_ipc",
   "capabilities": {
     "session_shell": true,
-    "browser_datafusion": false
+    "browser_datafusion": true
   },
   "identity": {
     "package_name": "browser-engine-worker",

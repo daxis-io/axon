@@ -6,6 +6,8 @@ version.workspace = true
 
 [dependencies]
 query-contract = { path = "../query-contract" }
+sqlparser = "=0.59.0"
+wasm-datafusion-poc = { path = "../wasm-datafusion-poc" }
 wasm-query-runtime = { path = "../wasm-query-runtime" }
 
 [dev-dependencies]

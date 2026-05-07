@@ -462,6 +462,7 @@ dependencies = [
  "query-contract",
  "serde",
  "serde_json",
+ "tokio",
  "wasm-bindgen-test",
  "wasm-query-runtime",
  "wasm-query-session",
@@ -4338,8 +4339,10 @@ dependencies = [
  "deltalake",
  "query-contract",
  "serde_json",
+ "sqlparser",
  "tempfile",
  "tokio",
+ "wasm-datafusion-poc",
  "wasm-query-runtime",
 ]
 

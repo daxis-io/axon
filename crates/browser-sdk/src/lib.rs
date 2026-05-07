@@ -28,10 +28,33 @@ pub struct BrowserWorkerOpenTableCommand {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct BrowserWorkerOpenDeltaTableCommand {
+    pub request_id: String,
+    pub name: String,
+    pub snapshot: BrowserHttpSnapshotDescriptor,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserWorkerSqlOutput {
+    ArrowIpcStream,
+}
+
+impl Default for BrowserWorkerSqlOutput {
+    fn default() -> Self {
+        Self::ArrowIpcStream
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserWorkerSqlCommand {
     pub request_id: String,
     pub name: String,
+    #[serde(rename = "query", alias = "request")]
     pub request: QueryRequest,
+    #[serde(default)]
+    pub output: BrowserWorkerSqlOutput,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -45,6 +68,7 @@ pub struct BrowserWorkerDisposeCommand {
 #[serde(rename_all = "snake_case")]
 pub enum BrowserWorkerCommand {
     OpenTable(BrowserWorkerOpenTableCommand),
+    OpenDeltaTable(BrowserWorkerOpenDeltaTableCommand),
     Sql(BrowserWorkerSqlCommand),
     Dispose(BrowserWorkerDisposeCommand),
 }
@@ -62,6 +86,18 @@ impl BrowserWorkerCommand {
         })
     }
 
+    pub fn open_delta_table(
+        request_id: impl Into<String>,
+        name: impl Into<String>,
+        snapshot: BrowserHttpSnapshotDescriptor,
+    ) -> Self {
+        Self::OpenDeltaTable(BrowserWorkerOpenDeltaTableCommand {
+            request_id: request_id.into(),
+            name: name.into(),
+            snapshot,
+        })
+    }
+
     pub fn sql(
         request_id: impl Into<String>,
         name: impl Into<String>,
@@ -71,6 +107,7 @@ impl BrowserWorkerCommand {
             request_id: request_id.into(),
             name: name.into(),
             request,
+            output: BrowserWorkerSqlOutput::ArrowIpcStream,
         })
     }
 
@@ -84,6 +121,7 @@ impl BrowserWorkerCommand {
     pub fn request_id(&self) -> &str {
         match self {
             Self::OpenTable(command) => &command.request_id,
+            Self::OpenDeltaTable(command) => &command.request_id,
             Self::Sql(command) => &command.request_id,
             Self::Dispose(command) => &command.request_id,
         }
@@ -92,6 +130,7 @@ impl BrowserWorkerCommand {
     pub fn table_name(&self) -> &str {
         match self {
             Self::OpenTable(command) => &command.name,
+            Self::OpenDeltaTable(command) => &command.name,
             Self::Sql(command) => &command.name,
             Self::Dispose(command) => &command.name,
         }
