@@ -29,7 +29,9 @@ pub fn is_experimental() -> bool {
 
 #[cfg(feature = "optimizer")]
 pub fn optimizer_surface_marker() -> usize {
-    datafusion_optimizer::optimizer::Optimizer::new().rules.len()
+    datafusion_optimizer::optimizer::Optimizer::new()
+        .rules
+        .len()
 }
 
 #[cfg(feature = "physical-expr-floor")]
