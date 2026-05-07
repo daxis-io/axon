@@ -14,7 +14,7 @@ use query_contract::{
 };
 use serde::{Deserialize, Serialize};
 use wasm_query_runtime::{BrowserObjectAccessMode, BrowserRuntimeConfig, BrowserRuntimeSession};
-use wasm_query_session::{BrowserQuerySession, BrowserSessionQueryResult};
+use wasm_query_session::{BrowserQueryBudget, BrowserQuerySession, BrowserSessionQueryResult};
 
 pub const OWNER: &str = "Web platform team";
 pub const RESPONSIBILITY: &str =
@@ -59,6 +59,27 @@ pub struct BrowserWorkerStartupReport {
     pub execution_timeout_ms: u64,
     pub snapshot_preflight_timeout_ms: u64,
     pub snapshot_preflight_max_concurrency: usize,
+    #[serde(default)]
+    pub datafusion_query_budget: BrowserWorkerQueryBudgetReport,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BrowserWorkerQueryBudgetReport {
+    pub max_scan_bytes: Option<u64>,
+    pub max_output_ipc_bytes: Option<u64>,
+    pub max_batches_in_flight: Option<usize>,
+    pub max_rows_returned: Option<u64>,
+}
+
+impl BrowserWorkerQueryBudgetReport {
+    pub fn from_query_budget(query_budget: BrowserQueryBudget) -> Self {
+        Self {
+            max_scan_bytes: query_budget.max_scan_bytes,
+            max_output_ipc_bytes: query_budget.max_output_ipc_bytes,
+            max_batches_in_flight: query_budget.max_batches_in_flight,
+            max_rows_returned: query_budget.max_rows_returned,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -95,6 +116,20 @@ impl BrowserWorker {
     ) -> Result<Self, QueryError> {
         Ok(Self {
             session: BrowserQuerySession::new(runtime_config, max_cached_bytes)?,
+        })
+    }
+
+    pub fn new_with_query_budget(
+        runtime_config: BrowserRuntimeConfig,
+        max_cached_bytes: u64,
+        query_budget: BrowserQueryBudget,
+    ) -> Result<Self, QueryError> {
+        Ok(Self {
+            session: BrowserQuerySession::new_with_query_budget(
+                runtime_config,
+                max_cached_bytes,
+                query_budget,
+            )?,
         })
     }
 
@@ -205,6 +240,9 @@ pub fn cold_start_report() -> Result<BrowserWorkerStartupReport, QueryError> {
         execution_timeout_ms: config.execution_timeout_ms,
         snapshot_preflight_timeout_ms: config.snapshot_preflight_timeout_ms,
         snapshot_preflight_max_concurrency: config.snapshot_preflight_max_concurrency,
+        datafusion_query_budget: BrowserWorkerQueryBudgetReport::from_query_budget(
+            BrowserQueryBudget::default(),
+        ),
     })
 }
 

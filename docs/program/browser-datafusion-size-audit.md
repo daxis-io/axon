@@ -18,8 +18,8 @@ Apache DataFusion:
 This is not the same as using DataFusion only as a SQL planner and lowering into an Axon-owned query
 IR. DataFusion should own SQL planning, logical optimization, physical planning, expression
 evaluation, physical execution, and Arrow `RecordBatch` output. Axon should own Delta snapshot
-resolution, active Parquet file descriptors, browser-safe range I/O, scan pushdown, query budgets,
-and the Arrow IPC worker boundary.
+resolution through a browser Delta Kernel engine, active Parquet file descriptors, browser-safe range
+I/O, scan pushdown, query budgets, and the Arrow IPC worker boundary.
 
 This audit also carries the DataFusion-specific strategy decision: DataFusion physical execution is
 the target browser engine. Axon will minimize and adapt DataFusion for browser use, but not replace
@@ -29,9 +29,11 @@ The likely product shape is:
 
 - browser query engine: DataFusion `SessionContext`, SQL planner, optimizer, physical planner, and
   execution in a browser Worker
+- Delta protocol layer: `delta-kernel-rs` core with Axon-supplied browser Engine handlers and no
+  default Delta Kernel engine
 - table access: `AxonDeltaTableProvider` registered with DataFusion
-- scan node: `AxonParquetScanExec` over Axon's browser Delta snapshot, Parquet, and HTTP range
-  components
+- scan node: `AxonParquetScanExec` over Kernel-derived Delta descriptors, Axon's browser Parquet
+  engine, and HTTP range components
 - result boundary: Arrow `RecordBatch` stream encoded as Arrow IPC to JavaScript
 - legacy custom runtime: fallback, correctness scaffold, and migration bridge only
 
@@ -45,6 +47,10 @@ scan, feature, codec, and packaging surface to Axon's browser Delta/Parquet work
 | --- | --- |
 | Use DataFusion in the browser strategy | Go |
 | Make DataFusion physical execution the browser query engine target | Go |
+| Use `delta-kernel-rs` core for browser Delta protocol semantics | Go |
+| Implement an Axon browser Delta Kernel Engine over cached browser bytes | Go |
+| Import high-level `deltalake` into the browser engine | No-go pending a serious feature audit |
+| Enable Delta Kernel's default engine in the browser crate | No-go |
 | Ship the unmodified full default DataFusion surface without browser-focused trimming | No-go |
 | Build `AxonDeltaTableProvider` plus `AxonParquetScanExec` for browser Delta/Parquet access | Primary path |
 | Replace DataFusion runtime execution with an Axon-owned query IR | No-go as product strategy |
@@ -89,7 +95,12 @@ DataFusion-backed browser Delta/Parquet query engine.
 Use a DataFusion execution architecture:
 
 ```text
-Delta snapshot descriptor
+Delta table URL / trusted descriptor
+  -> async browser fetch and manifest prefetch
+  -> DeltaLogCache
+  -> delta-kernel-rs core
+  -> AxonBrowserKernelEngine handlers
+  -> Delta snapshot / Kernel scan descriptors
   -> active Parquet file descriptors
   -> AxonDeltaTableProvider
   -> AxonParquetScanExec
@@ -114,7 +125,7 @@ SQL text
 
 This keeps the browser-owned table-access pieces in Axon:
 
-- Delta snapshot facts and active file descriptors
+- Delta Kernel Engine handlers, cached log/checkpoint bytes, and active file descriptors
 - browser-safe HTTP range I/O
 - Parquet metadata bootstrap and scan primitives
 - query budgets, deterministic fallback, and browser metrics
@@ -124,13 +135,21 @@ DataFusion owns SQL planning, logical expressions, logical optimization, physica
 expression evaluation, streaming execution, and `RecordBatch` output. Axon owns table access. That is
 the strategic boundary.
 
+Delta Kernel owns the Delta protocol semantics. Axon should use `delta-kernel-rs` core with the
+default engine disabled, implement `StorageHandler`, `JsonHandler`, `ParquetHandler`, and
+`EvaluationHandler` for the browser, and keep async browser fetch outside synchronous Kernel
+callbacks by prefetching into a cache first. High-level `deltalake` stays native: reference
+implementation, correctness oracle, and DataFusion integration example.
+
 ## Axon Constraints
 
-Axon's browser engine is not a generic database product. The browser SKU already has a
-repo-owned lakehouse path: `wasm-delta-snapshot` reconstructs browser-safe Delta snapshots,
-`wasm-http-object-store` owns HTTP range reads, `wasm-parquet-engine` owns Parquet metadata and scan
-primitives, and the DataFusion engine wrapper should own DataFusion session registration, execution,
-fallback, metrics, and Arrow IPC output.
+Axon's browser engine is not a generic database product. The browser SKU already has a repo-owned
+lakehouse path, but its target Delta semantics should move behind Delta Kernel. The new center of
+gravity is `wasm-delta-kernel-engine` for browser-safe Kernel handlers, `wasm-http-object-store` for
+HTTP range reads, `wasm-parquet-engine` for Parquet metadata and scan primitives, and the DataFusion
+engine wrapper for DataFusion session registration, execution, fallback, metrics, and Arrow IPC
+output. The existing `wasm-delta-snapshot` crate remains useful as a compatibility scaffold and test
+fixture source during the migration.
 
 That means Axon does not need a browser SQL engine to solve broad catalog management, generic file
 listing, generic object-store integration, CSV/JSON datasources, or bring-your-own-source
@@ -156,8 +175,10 @@ correct.
 
 | Candidate | Browser shape | Bundle outlook | Current recommendation |
 | --- | --- | --- | --- |
+| Delta Kernel core plus Axon browser Engine | Delta Kernel owns protocol semantics; Axon owns cached browser storage, JSON, Parquet, and evaluation handlers | Must be measured first; default engine must remain disabled | Primary Delta protocol architecture |
 | DataFusion engine plus Axon table provider | DataFusion owns SQL and execution; Axon owns Delta table registration and browser scan execution | Current POC is 5.5 MiB Brotli before real Delta/Parquet scan integration | Primary production architecture |
 | DataFusion built-in Parquet plus browser `object_store` adapter | DataFusion owns Parquet file source as well as execution | Unknown; likely more fragile in browser WASM first | Later evaluation path |
+| High-level `deltalake` in browser | Native table/log/object-store stack enters the browser dependency graph | Likely pulls runtime, storage, TLS, and cloud surfaces unless heavily feature-gated | Avoid at first; use natively as oracle/reference |
 | Full default DataFusion surface | Use broad upstream crate and defaults without browser trimming | Risky; likely pulls unneeded datasource/codecs/functions | Avoid as a packaging stance |
 | DataFusion planner plus Axon IR | DataFusion plans; Axon replaces execution | Smallest potential bundle | Superseded; keep only as scaffold/test harness |
 | Legacy custom runtime only | Axon owns planner and execution | Already exists for a narrow subset | Fallback and migration bridge, not the destination |
@@ -180,6 +201,7 @@ experiments run:
 | Cold init plus first tiny query | Track separately | Current full DataFusion POC is roughly 160-170 ms combined |
 | First Delta/Parquet metadata query | Measure separately | Remote I/O and metadata decode dominate different budgets than engine init |
 | First real Delta/Parquet query | Measure separately | Includes range reads, decompression, row-group pruning, aggregation, and result transfer |
+| Browser query budgets | Required before default enablement | Enforce scan bytes, Arrow IPC bytes, output rows, and collected batch count with structured fallback errors |
 | Peak browser working set | Bounded and streaming by default | Full global sort and high-cardinality group-by need explicit budgets or fallback |
 | Worker-only execution | Required | DataFusion engine work stays off the main thread |
 | Arrow IPC streaming | Required | Output should stream `RecordBatch` values, not force row JSON materialization |
@@ -202,6 +224,13 @@ The current POC proves:
 - A synthetic Arrow `RecordBatch` can be registered through `datafusion::datasource::MemTable`.
 - `datafusion::prelude::SessionContext` can execute SQL over that table.
 - Results can be returned as Arrow IPC bytes through a `wasm-bindgen` export.
+- Browser DataFusion query budgets now have explicit controls for `max_scan_bytes`,
+  `max_output_ipc_bytes`, `max_batches_in_flight`, and `max_rows_returned`. Budget failures return
+  structured `QueryError` values with `FallbackReason::BrowserRuntimeConstraint`; cancellation
+  returns a structured browser DataFusion cancellation error.
+- `tests/perf/browser_datafusion_engine_smoke.sh` records optional smoke timings for streaming init,
+  first and repeated tiny queries, first Parquet metadata query, first real Delta/Parquet query, and
+  scan metrics. `tests/perf/report_datafusion_wasm_size.sh` remains the Brotli-size source of truth.
 - `wasm-query-runtime` can opt into a compiler-boundary lowering spike through its
   `datafusion-planner-poc` feature. That spike is useful scaffolding and a corpus harness, but it is
   no longer the product destination.
@@ -427,46 +456,68 @@ compress, profile, and run correctness tests.
      reduced default features without breaking the POC.
    - Measure whether the direct dependencies matter once umbrella DataFusion pulls `arrow`.
 
-4. Promote `wasm-datafusion-poc` toward `wasm-datafusion-engine`.
+4. Prove Delta Kernel core as a browser dependency.
+   - Add `crates/wasm-delta-kernel-engine` with `delta_kernel` core and default engine disabled.
+   - Implement the smallest compile-only `AxonBrowserKernelEngine` shell.
+   - Run wasm-target cargo-tree checks that `tokio`, `reqwest`, native TLS, cloud SDKs,
+     `object_store`, and high-level `deltalake` are absent from this crate's Delta protocol graph.
+   - Measure the incremental WASM artifact size before adding handlers.
+
+5. Implement cached Delta Kernel snapshot resolution.
+   - Add async prefetch outside Delta Kernel for `_last_checkpoint`, checkpoint parts, sidecars, and
+     JSON commits when the descriptor or known version makes those files deterministic.
+   - Implement cached `StorageHandler`, simple JSON parsing, checkpoint Parquet reads through
+     `wasm-parquet-engine`, and a minimal Arrow-compatible evaluator for Delta metadata predicates.
+   - Convert Kernel snapshot and scan output into the Axon Delta table descriptor consumed by the
+     DataFusion engine.
+   - Compare active file lists, schema, partition values, stats, and protocol feature handling
+     against existing `wasm-delta-snapshot` fixtures and native `deltalake`.
+
+6. Promote `wasm-datafusion-poc` toward `wasm-datafusion-engine`.
    - Keep `SessionContext`, SQL planning, optimizer, physical planning, and execution in the engine.
-   - Replace the synthetic `MemTable` fixture with registered Axon Delta/Parquet table providers.
+   - Replace the synthetic `MemTable` fixture with registered Kernel-derived Delta/Parquet table
+     providers.
    - Preserve Arrow IPC output as the worker result boundary.
 
-5. Build `AxonDeltaTableProvider`.
-   - Consume Delta snapshot descriptors with schema, table version, partition columns, active files,
-     file sizes, partition values, optional stats, and optional deletion-vector descriptors.
+7. Build `AxonDeltaTableProvider`.
+   - Consume Kernel-derived Delta table descriptors with schema, table version, partition columns,
+     active files, file sizes, partition values, optional stats, and optional deletion-vector descriptors.
    - Implement DataFusion's scan contract so projection, filters, and limit become scan-planning
      inputs rather than post-scan guesses.
    - Classify pushdown as partition pruning, file-stat pruning, row-group pruning, projection
      pruning, early limit, and residual predicates that DataFusion applies above the scan.
+   - Pass DataFusion pushed-down filters into Delta Kernel scans for file skipping where the Kernel
+     API can preserve residual filter correctness.
 
-6. Build `AxonParquetScanExec`.
+8. Build `AxonParquetScanExec`.
    - Return a DataFusion `ExecutionPlan` that streams Arrow `RecordBatch` values from
      `wasm-parquet-engine` and `wasm-http-object-store`.
    - Enforce worker cancellation, memory budgets, range-read validation, row-group pruning, and
-     projection pushdown.
+     projection pushdown. PR 8 added browser query-budget controls and structured cancellation
+     shape for the current DataFusion POC.
    - Start with one browser partition and add partitioning only after memory and scheduling budgets
      are observable.
 
-7. Compare against a later browser `object_store` path.
+9. Compare against a later browser `object_store` path.
    - Keep the first production path on Axon's existing browser-safe Parquet/range stack.
    - Evaluate a DataFusion-native Parquet reader plus browser `object_store` adapter only if it
      reduces Axon-owned scan complexity or improves performance.
 
-8. Test DataFusion feature splits locally.
+10. Test DataFusion feature splits locally.
    - Prototype optional gating for CSV/JSON datasource crates, window/table functions, broad scalar
      function registration, and Arrow default features.
    - Measure each split independently before combining them.
 
-9. Add Delta/Parquet query profiles.
+11. Add Delta/Parquet query profiles.
    - Measure first metadata query separately from first data query.
    - Gate codecs by actual browser table requirements.
    - Re-run size, memory, startup, and query-latency baselines because Parquet changes the byte and
      memory owners.
 
-10. Re-run correctness and performance after every reduction.
+12. Re-run correctness and performance after every reduction.
    - Host DataFusion POC tests.
    - WASM DataFusion smoke tests.
+   - Delta Kernel dependency and handler tests.
    - Native parity tests once Parquet/Delta integration exists.
    - Browser startup/instantiate timing, scan latency, peak memory, cancellation, and query latency
      for the DataFusion engine SKU.
@@ -477,6 +528,8 @@ compress, profile, and run correctness tests.
 | --- | --- |
 | DataFusion engine size remains in the current 5.5 MiB Brotli class | Continue; optimize and cache rather than replace DataFusion execution |
 | DataFusion engine grows materially after Delta/Parquet scan integration | Split features, codecs, and datasource surfaces before reconsidering architecture |
+| Delta Kernel core brings unwanted browser dependencies | Keep it isolated, disable features, or pause the Kernel path before replacing browser snapshot code |
+| Delta Kernel cached handler model cannot resolve required snapshots | Add an explicit cache-miss retry trampoline or constrain V1 to trusted descriptors / known-version open |
 | DataFusion scan pushdown cannot use Axon's Delta/Parquet facts | Improve `AxonDeltaTableProvider` and `AxonParquetScanExec`; do not fall back to an Axon IR by default |
 | DataFusion physical execution cannot meet memory/cancellation budgets | Add browser budget controls, fallback rules, and operator limits |
 | DataFusion-native Parquet/browser object-store path proves simpler and faster | Consider replacing `AxonParquetScanExec` later |
@@ -496,7 +549,11 @@ compress, profile, and run correctness tests.
 
 ### 60-Day Gate
 
-- Register a Delta snapshot descriptor as an `AxonDeltaTableProvider` in DataFusion.
+- Prove `delta-kernel-rs` core compiles for `wasm32-unknown-unknown` without default engine,
+  `tokio`, `reqwest`, native TLS, cloud SDKs, or high-level `deltalake` in the browser Delta crate.
+- Resolve a read-only Delta snapshot through `AxonBrowserKernelEngine` over prefetched cached log and
+  checkpoint bytes.
+- Register a Kernel-derived Delta descriptor as an `AxonDeltaTableProvider` in DataFusion.
 - Execute DataFusion SQL over an `AxonParquetScanExec` backed by `wasm-parquet-engine` and
   `wasm-http-object-store`.
 - Stream Arrow `RecordBatch` output through Arrow IPC from the worker.
@@ -523,14 +580,20 @@ compress, profile, and run correctness tests.
 - Which DataFusion built-in datasources should be excluded from the browser engine package?
 - Can DataFusion expose an in-memory/session profile that does not include CSV/JSON datasources?
 - Can Arrow default features be narrowed through DataFusion without forking?
+- Which Delta Kernel Arrow feature, if any, should be enabled so the Kernel and DataFusion agree on
+  Arrow versions?
+- Should the first browser Delta Kernel open path require trusted descriptors, known table versions,
+  or manifest-backed `_delta_log` listings?
 - What is the acceptable browser compile/instantiate budget for the DataFusion engine SKU?
 
 ## Next Concrete Task
 
-Begin the 60-day DataFusion engine work. Promote the POC toward `wasm-datafusion-engine`, register a
-Delta snapshot descriptor as an `AxonDeltaTableProvider`, implement an `AxonParquetScanExec` that
-streams browser-read Parquet batches into DataFusion physical execution, and return Arrow IPC from
-the Worker.
+Begin the 60-day engine work by proving the Delta Kernel browser dependency first. Add a
+`wasm-delta-kernel-engine` compile spike with the default engine disabled and cargo-tree gates for
+unwanted native/runtime dependencies, then implement cached read-only snapshot resolution. After that,
+promote the POC toward `wasm-datafusion-engine`, register Kernel-derived Delta descriptors as an
+`AxonDeltaTableProvider`, implement an `AxonParquetScanExec` that streams browser-read Parquet
+batches into DataFusion physical execution, and return Arrow IPC from the Worker.
 
 ## Primary References
 
@@ -542,6 +605,10 @@ the Worker.
 - DataFusion optimizer docs: <https://datafusion.apache.org/library-user-guide/query-optimizer.html>
 - DataFusion proto compatibility note: <https://docs.rs/datafusion-proto/52.4.0/datafusion_proto/>
 - DataFusion Substrait scope note: <https://docs.rs/datafusion-substrait/latest/datafusion_substrait/>
+- Delta Kernel Rust API docs: <https://docs.rs/delta_kernel/latest/delta_kernel/>
+- Delta Kernel Rust README: <https://github.com/delta-io/delta-kernel-rs>
+- Delta Kernel scan APIs: <https://docs.rs/delta_kernel/latest/delta_kernel/scan/index.html>
+- delta-rs Rust crate docs: <https://docs.rs/deltalake/latest/deltalake/>
 - Arrow IPC streaming docs: <https://arrow.apache.org/docs/11.0/python/ipc.html>
 - Arrow Acero streaming execution docs: <https://arrow.apache.org/docs/20.0/cpp/streaming_execution.html>
 - DuckDB-Wasm deployment docs: <https://duckdb.org/docs/stable/clients/wasm/deploying_duckdb_wasm>

@@ -252,6 +252,9 @@ jobs:
           AXON_DF_BROTLI_BUDGET_BYTES: ${{ inputs.datafusion_brotli_budget_bytes }}
         run: bash tests/perf/report_datafusion_wasm_size.sh
 
+      - name: Run experimental/lazy DataFusion engine smoke report
+        run: bash tests/perf/browser_datafusion_engine_smoke.sh
+
       - name: Upload experimental/lazy DataFusion size artifacts
         if: ${{ always() }}
         uses: actions/upload-artifact@v4

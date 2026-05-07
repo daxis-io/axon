@@ -30,6 +30,8 @@ pub const OWNER: &str = "Runtime / engine team";
 pub const RESPONSIBILITY: &str =
     "In-memory browser session caching for runtime-owned descriptors and snapshots.";
 
+pub use wasm_datafusion_poc::BrowserQueryBudget;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BrowserSessionQueryResult {
     pub response: QueryResponse,
@@ -65,9 +67,18 @@ struct CachedBootstrapRequest {
 
 impl BrowserQuerySession {
     pub fn new(config: BrowserRuntimeConfig, max_cached_bytes: u64) -> Result<Self, QueryError> {
+        let query_budget = datafusion_query_budget_from_runtime_config(&config);
+        Self::new_with_query_budget(config, max_cached_bytes, query_budget)
+    }
+
+    pub fn new_with_query_budget(
+        config: BrowserRuntimeConfig,
+        max_cached_bytes: u64,
+        query_budget: BrowserQueryBudget,
+    ) -> Result<Self, QueryError> {
         Ok(Self {
             runtime: BrowserRuntimeSession::new(config)?,
-            datafusion: WasmDataFusionEngine::new(),
+            datafusion: WasmDataFusionEngine::with_budget(query_budget),
             tables: BTreeMap::new(),
             max_cached_bytes,
             next_access_millis: 0,
@@ -76,6 +87,10 @@ impl BrowserQuerySession {
 
     pub fn runtime(&self) -> &BrowserRuntimeSession {
         &self.runtime
+    }
+
+    pub fn datafusion_query_budget(&self) -> BrowserQueryBudget {
+        self.datafusion.query_budget()
     }
 
     pub fn max_cached_bytes(&self) -> u64 {
@@ -759,6 +774,20 @@ fn wrong_datafusion_table_error(table_name: &str) -> QueryError {
 
 fn invalid_datafusion_sql(message: impl Into<String>) -> QueryError {
     QueryError::new(QueryErrorCode::InvalidRequest, message, runtime_target())
+}
+
+fn datafusion_query_budget_from_runtime_config(
+    config: &BrowserRuntimeConfig,
+) -> BrowserQueryBudget {
+    config
+        .execution_budget
+        .map(|execution_budget| BrowserQueryBudget {
+            max_scan_bytes: Some(execution_budget.max_bytes),
+            max_output_ipc_bytes: Some(execution_budget.max_bytes),
+            max_batches_in_flight: None,
+            max_rows_returned: Some(execution_budget.max_rows),
+        })
+        .unwrap_or_default()
 }
 
 fn validate_datafusion_execution_budget(

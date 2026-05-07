@@ -109,6 +109,11 @@ Additional outputs:
 - \`${out_dir}/cargo-tree.txt\`
 - \`${out_dir}/twiggy-top.txt\`
 - \`${out_dir}/twiggy-monos.txt\`
+
+Optional companion smoke report:
+
+- \`bash tests/perf/browser_datafusion_engine_smoke.sh\` records streaming init, first tiny query,
+  repeated tiny query, first Parquet metadata query, first real Delta/Parquet query, and scan metrics.
 SUMMARY
 
 cat "${out_dir}/summary.md"

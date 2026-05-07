@@ -3,6 +3,7 @@
 set -euo pipefail
 
 bash -n tests/perf/report_datafusion_wasm_size.sh
+bash -n tests/perf/browser_datafusion_engine_smoke.sh
 rg -q 'AXON_DF_SIZE_PACKAGE' tests/perf/report_datafusion_wasm_size.sh
 rg -q 'twiggy monos' tests/perf/report_datafusion_wasm_size.sh
 rg -F -q 'target/df-size/${package}' tests/perf/report_datafusion_wasm_size.sh
@@ -10,6 +11,14 @@ rg -q 'wasm-opt -Oz generated wasm' tests/perf/report_datafusion_wasm_size.sh
 rg -q 'Brotli -q 11 of optimized wasm' tests/perf/report_datafusion_wasm_size.sh
 rg -q 'AXON_DF_BROTLI_BUDGET_BYTES' tests/perf/report_datafusion_wasm_size.sh
 rg -q 'DataFusion Brotli budget exceeded' tests/perf/report_datafusion_wasm_size.sh
+rg -q 'browser_datafusion_engine_smoke.sh' tests/perf/report_datafusion_wasm_size.sh
+rg -q 'streaming init' tests/perf/browser_datafusion_engine_smoke.sh
+rg -q 'first tiny query' tests/perf/browser_datafusion_engine_smoke.sh
+rg -q 'repeated tiny query' tests/perf/browser_datafusion_engine_smoke.sh
+rg -q 'first Parquet metadata query' tests/perf/browser_datafusion_engine_smoke.sh
+rg -q 'first real Delta/Parquet query' tests/perf/browser_datafusion_engine_smoke.sh
+rg -q 'scan metrics' tests/perf/browser_datafusion_engine_smoke.sh
+rg -q 'AXON_DF_REPEATED_TINY_QUERY_RUNS' tests/perf/browser_datafusion_engine_smoke.sh
 
 dangerous_out_dirs=(
   ""

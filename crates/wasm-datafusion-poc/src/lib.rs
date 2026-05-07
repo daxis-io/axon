@@ -5,15 +5,20 @@
 use std::{
     any::Any,
     collections::{BTreeMap, BTreeSet},
+    error::Error as StdError,
     fmt,
     future::Future,
+    io::{self, Write},
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use arrow_array::{Int32Array, RecordBatch, RecordBatchOptions, StringArray};
 use arrow_ipc::writer::StreamWriter;
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::ScalarValue;
 use datafusion::datasource::MemTable;
@@ -22,8 +27,7 @@ use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Expr, Operator, TableProviderFilterPushDown, TableType};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::{
-    collect,
-    execution_plan::{Boundedness, EmissionType},
+    execution_plan::{execute_stream, Boundedness, EmissionType},
     stream::RecordBatchStreamAdapter,
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream,
@@ -34,7 +38,8 @@ use futures_util::{
     StreamExt, TryStreamExt,
 };
 use query_contract::{
-    BrowserHttpSnapshotDescriptor, ExecutionTarget, PartitionColumnType, QueryError, QueryErrorCode,
+    BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, PartitionColumnType,
+    QueryError, QueryErrorCode,
 };
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -92,6 +97,53 @@ pub struct DataFusionArrowIpcResult {
     pub row_count: u64,
     pub encoded_bytes: u64,
     pub scan_metrics: DataFusionScanMetricsSummary,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BrowserQueryBudget {
+    pub max_scan_bytes: Option<u64>,
+    pub max_output_ipc_bytes: Option<u64>,
+    pub max_batches_in_flight: Option<usize>,
+    pub max_rows_returned: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BrowserQueryCancellation {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl BrowserQueryCancellation {
+    pub fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    fn reset(&self) {
+        self.cancelled.store(false, Ordering::SeqCst);
+    }
+
+    fn check_cancelled(&self) -> Result<(), QueryError> {
+        if self.is_cancelled() {
+            Err(query_cancelled_error())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Default for BrowserQueryCancellation {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -266,6 +318,7 @@ pub struct AxonParquetScanTrace {
     pub inexact_filters: Vec<String>,
     pub files_total: usize,
     pub files_planned: usize,
+    pub planned_scan_bytes: u64,
     pub planned_file_paths: Vec<String>,
     pub files_skipped: u64,
     pub row_groups_touched: u64,
@@ -278,13 +331,31 @@ pub struct AxonParquetScanTrace {
 pub struct AxonDeltaTableProvider {
     descriptor: DeltaTableDescriptor,
     in_memory_partitions: Vec<Vec<RecordBatch>>,
+    query_budget: BrowserQueryBudget,
+    cancellation: BrowserQueryCancellation,
 }
 
 impl AxonDeltaTableProvider {
     pub fn new(descriptor: DeltaTableDescriptor) -> Self {
+        Self::with_query_controls(
+            descriptor,
+            Vec::new(),
+            BrowserQueryBudget::default(),
+            BrowserQueryCancellation::default(),
+        )
+    }
+
+    pub fn with_query_controls(
+        descriptor: DeltaTableDescriptor,
+        in_memory_partitions: Vec<Vec<RecordBatch>>,
+        query_budget: BrowserQueryBudget,
+        cancellation: BrowserQueryCancellation,
+    ) -> Self {
         Self {
             descriptor,
-            in_memory_partitions: Vec::new(),
+            in_memory_partitions,
+            query_budget,
+            cancellation,
         }
     }
 
@@ -292,10 +363,12 @@ impl AxonDeltaTableProvider {
         descriptor: DeltaTableDescriptor,
         partitions: Vec<Vec<RecordBatch>>,
     ) -> Self {
-        Self {
+        Self::with_query_controls(
             descriptor,
-            in_memory_partitions: partitions,
-        }
+            partitions,
+            BrowserQueryBudget::default(),
+            BrowserQueryCancellation::default(),
+        )
     }
 
     fn projected_schema(&self, projection: Option<&Vec<usize>>) -> DataFusionResult<SchemaRef> {
@@ -352,6 +425,8 @@ impl TableProvider for AxonDeltaTableProvider {
                 filters.to_vec(),
                 limit,
                 self.in_memory_partitions.clone(),
+                self.query_budget,
+                self.cancellation.clone(),
             )) as Arc<dyn ExecutionPlan>)
         })
     }
@@ -389,6 +464,8 @@ pub struct AxonParquetScanExec {
     properties: PlanProperties,
     trace: Arc<Mutex<AxonParquetScanTrace>>,
     limit_remaining: Arc<Mutex<Option<usize>>>,
+    query_budget: BrowserQueryBudget,
+    cancellation: BrowserQueryCancellation,
 }
 
 impl AxonParquetScanExec {
@@ -399,6 +476,8 @@ impl AxonParquetScanExec {
         filters: Vec<Expr>,
         limit: Option<usize>,
         partitions: Vec<Vec<RecordBatch>>,
+        query_budget: BrowserQueryBudget,
+        cancellation: BrowserQueryCancellation,
     ) -> Self {
         let plan = AxonScanPlan::new(&descriptor, &projected_schema, &filters, limit, &partitions);
         let partition_count = if partitions.is_empty() {
@@ -420,6 +499,8 @@ impl AxonParquetScanExec {
             properties,
             trace: Arc::new(Mutex::new(plan.trace)),
             limit_remaining: Arc::new(Mutex::new(limit)),
+            query_budget,
+            cancellation,
         }
     }
 
@@ -473,7 +554,11 @@ impl AxonParquetScanExec {
         let projection = self.projection.clone();
         let trace = Arc::clone(&self.trace);
         let limit_remaining = Arc::clone(&self.limit_remaining);
+        let cancellation = self.cancellation.clone();
         let projected_batches = batches.into_iter().filter_map(move |batch| {
+            if let Err(error) = cancellation.check_cancelled() {
+                return Some(Err(datafusion_error_from_query_error(error)));
+            }
             let projected = if let Some(projection) = &projection {
                 batch
                     .project(projection)
@@ -508,6 +593,8 @@ impl AxonParquetScanExec {
         let row_group_predicate = self.row_group_predicate.clone();
         let trace = Arc::clone(&self.trace);
         let limit_remaining = Arc::clone(&self.limit_remaining);
+        let query_budget = self.query_budget;
+        let cancellation = self.cancellation.clone();
         let stream_schema = Arc::clone(&self.projected_schema);
         let projected_schema = Arc::clone(&self.projected_schema);
         let parquet_batches = stream::once(async move {
@@ -519,6 +606,8 @@ impl AxonParquetScanExec {
                 row_group_predicate,
                 trace,
                 limit_remaining,
+                query_budget,
+                cancellation,
             )
             .await
             .map(|scan| {
@@ -576,6 +665,10 @@ impl AxonScanPlan {
             .filter_map(|index| descriptor.active_files.get(*index))
             .map(|file| file.path.clone())
             .collect::<Vec<_>>();
+        let planned_scan_bytes = planned_file_indices
+            .iter()
+            .filter_map(|index| descriptor.active_files.get(*index))
+            .fold(0_u64, |total, file| total.saturating_add(file.size_bytes));
         let files_skipped = files_total.saturating_sub(files_planned) as u64;
         let exact_filters = filters
             .iter()
@@ -601,6 +694,7 @@ impl AxonScanPlan {
             inexact_filters,
             files_total,
             files_planned,
+            planned_scan_bytes,
             planned_file_paths,
             files_skipped,
             row_groups_touched: 0,
@@ -903,6 +997,17 @@ fn add_scan_metrics(
     }
 }
 
+fn validate_scan_budget_for_metrics(
+    metrics: &ScanTargetMetricsSnapshot,
+    query_budget: BrowserQueryBudget,
+) -> Result<(), QueryError> {
+    validate_query_budget_value_option(
+        "max_scan_bytes",
+        metrics.bytes_fetched,
+        query_budget.max_scan_bytes,
+    )
+}
+
 fn take_scan_rows(limit_remaining: &Arc<Mutex<Option<usize>>>, available_rows: usize) -> usize {
     let mut limit_remaining = limit_remaining
         .lock()
@@ -946,6 +1051,8 @@ struct PlannedScanTargetsState {
     row_group_predicate: Option<ParquetRowGroupPruningPredicate>,
     trace: Arc<Mutex<AxonParquetScanTrace>>,
     limit_remaining: Arc<Mutex<Option<usize>>>,
+    query_budget: BrowserQueryBudget,
+    cancellation: BrowserQueryCancellation,
 }
 
 async fn stream_planned_scan_targets(
@@ -956,6 +1063,8 @@ async fn stream_planned_scan_targets(
     row_group_predicate: Option<ParquetRowGroupPruningPredicate>,
     trace: Arc<Mutex<AxonParquetScanTrace>>,
     limit_remaining: Arc<Mutex<Option<usize>>>,
+    query_budget: BrowserQueryBudget,
+    cancellation: BrowserQueryCancellation,
 ) -> Result<PlannedScanTargetBatchStream, QueryError> {
     let state = PlannedScanTargetsState {
         reader,
@@ -969,9 +1078,12 @@ async fn stream_planned_scan_targets(
         row_group_predicate,
         trace,
         limit_remaining,
+        query_budget,
+        cancellation,
     };
     let batches = stream::try_unfold(state, |mut state| async move {
         loop {
+            state.cancellation.check_cancelled()?;
             if scan_limit_exhausted(&state.limit_remaining) {
                 return Ok(None);
             }
@@ -981,10 +1093,13 @@ async fn stream_planned_scan_targets(
                     Some(batch) => {
                         let batch = batch?;
                         if let Some(metrics) = &state.current_metrics {
-                            record_trace_parquet_metrics(
-                                &state.trace,
-                                add_scan_metrics(&state.completed_metrics, &metrics.snapshot()),
-                            );
+                            let metrics_snapshot =
+                                add_scan_metrics(&state.completed_metrics, &metrics.snapshot());
+                            record_trace_parquet_metrics(&state.trace, metrics_snapshot.clone());
+                            validate_scan_budget_for_metrics(
+                                &metrics_snapshot,
+                                state.query_budget,
+                            )?;
                         }
                         let rows_to_emit = take_scan_rows(&state.limit_remaining, batch.num_rows());
                         if rows_to_emit == 0 {
@@ -1002,6 +1117,10 @@ async fn stream_planned_scan_targets(
                                 &state.trace,
                                 state.completed_metrics.clone(),
                             );
+                            validate_scan_budget_for_metrics(
+                                &state.completed_metrics,
+                                state.query_budget,
+                            )?;
                         }
                         state.current_batches = None;
                         state.current_metrics = None;
@@ -1013,6 +1132,7 @@ async fn stream_planned_scan_targets(
                 return Ok(None);
             };
             state.next_target_index += 1;
+            state.cancellation.check_cancelled()?;
 
             let scan = stream_scan_target_batches_with_row_group_pruning(
                 &state.reader,
@@ -1023,10 +1143,11 @@ async fn stream_planned_scan_targets(
                 state.row_group_predicate.as_ref(),
             )
             .await?;
-            record_trace_parquet_metrics(
-                &state.trace,
-                add_scan_metrics(&state.completed_metrics, &scan.metrics.snapshot()),
-            );
+            state.cancellation.check_cancelled()?;
+            let metrics_snapshot =
+                add_scan_metrics(&state.completed_metrics, &scan.metrics.snapshot());
+            record_trace_parquet_metrics(&state.trace, metrics_snapshot.clone());
+            validate_scan_budget_for_metrics(&metrics_snapshot, state.query_budget)?;
             state.current_metrics = Some(scan.metrics);
             state.current_batches = Some(scan.batches);
         }
@@ -1043,13 +1164,14 @@ impl DisplayAs for AxonParquetScanExec {
                 let trace = self.pushdown_trace();
                 write!(
                     f,
-                    "AxonParquetScanExec: table={}, active_files={}, partitions={}, projected_columns={:?}, filters={:?}, limit={:?}, files_skipped={}, row_groups_skipped={}, bytes_fetched={}, rows_emitted={}",
+                    "AxonParquetScanExec: table={}, active_files={}, partitions={}, projected_columns={:?}, filters={:?}, limit={:?}, planned_scan_bytes={}, files_skipped={}, row_groups_skipped={}, bytes_fetched={}, rows_emitted={}",
                     self.descriptor.table_name,
                     self.descriptor.active_files.len(),
                     self.partition_count(),
                     trace.projected_columns,
                     trace.filters,
                     self.limit,
+                    trace.planned_scan_bytes,
                     trace.files_skipped,
                     trace.row_groups_skipped,
                     trace.bytes_fetched,
@@ -1096,6 +1218,17 @@ impl ExecutionPlan for AxonParquetScanExec {
         partition: usize,
         _context: Arc<TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
+        self.cancellation
+            .check_cancelled()
+            .map_err(datafusion_error_from_query_error)?;
+        if let Some(max_scan_bytes) = self.query_budget.max_scan_bytes {
+            validate_query_budget_value(
+                "max_scan_bytes",
+                self.pushdown_trace().planned_scan_bytes,
+                max_scan_bytes,
+            )
+            .map_err(datafusion_error_from_query_error)?;
+        }
         if partition >= self.partition_count() {
             return Err(DataFusionError::Internal(format!(
                 "AxonParquetScanExec invalid partition {partition} (expected less than {})",
@@ -1181,15 +1314,224 @@ fn normalize_column_name(name: &str) -> String {
 }
 
 fn map_parquet_query_error(error: QueryError) -> DataFusionError {
-    DataFusionError::Execution(format!(
-        "experimental browser DataFusion parquet scan failed: {:?}: {}",
-        error.code, error.message
-    ))
+    datafusion_error_from_query_error(error)
+}
+
+#[derive(Debug)]
+struct WrappedQueryError(QueryError);
+
+impl fmt::Display for WrappedQueryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}: {}", self.0.code, self.0.message)
+    }
+}
+
+impl StdError for WrappedQueryError {}
+
+fn datafusion_error_from_query_error(error: QueryError) -> DataFusionError {
+    DataFusionError::External(Box::new(WrappedQueryError(error)))
+}
+
+fn query_error_from_datafusion_error(error: &DataFusionError) -> Option<QueryError> {
+    match error {
+        DataFusionError::External(external) => external
+            .downcast_ref::<WrappedQueryError>()
+            .map(|wrapped| wrapped.0.clone())
+            .or_else(|| query_error_from_std_error(external.as_ref())),
+        DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => {
+            query_error_from_datafusion_error(source)
+        }
+        _ => None,
+    }
+}
+
+fn query_error_from_arrow_error(error: &ArrowError) -> Option<QueryError> {
+    match error {
+        ArrowError::ExternalError(external) => external
+            .downcast_ref::<WrappedQueryError>()
+            .map(|wrapped| wrapped.0.clone())
+            .or_else(|| query_error_from_std_error(external.as_ref())),
+        ArrowError::IoError(_, source) => source
+            .get_ref()
+            .and_then(|source| {
+                source
+                    .downcast_ref::<WrappedQueryError>()
+                    .map(|wrapped| wrapped.0.clone())
+                    .or_else(|| query_error_from_std_error(source))
+            })
+            .or_else(|| query_error_from_std_error(source)),
+        _ => None,
+    }
+}
+
+fn query_error_from_std_error(error: &(dyn StdError + 'static)) -> Option<QueryError> {
+    if let Some(wrapped) = error.downcast_ref::<WrappedQueryError>() {
+        return Some(wrapped.0.clone());
+    }
+    error.source().and_then(query_error_from_std_error)
+}
+
+fn query_cancelled_error() -> QueryError {
+    QueryError::new(
+        QueryErrorCode::ExecutionFailed,
+        "experimental browser DataFusion query cancelled",
+        runtime_target(),
+    )
+}
+
+fn is_query_cancelled_error(error: &QueryError) -> bool {
+    error.code == QueryErrorCode::ExecutionFailed
+        && error.message == "experimental browser DataFusion query cancelled"
+}
+
+fn query_budget_exceeded_error(budget_name: &str, observed: u64, max_allowed: u64) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::FallbackRequired,
+        format!(
+            "experimental browser DataFusion query exceeded {budget_name} budget ({observed} > {max_allowed})"
+        ),
+        runtime_target(),
+    )
+    .with_fallback_reason(FallbackReason::BrowserRuntimeConstraint)
+}
+
+fn validate_query_budget_value(
+    budget_name: &str,
+    observed: u64,
+    max_allowed: u64,
+) -> Result<(), QueryError> {
+    if observed > max_allowed {
+        Err(query_budget_exceeded_error(
+            budget_name,
+            observed,
+            max_allowed,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_query_budget_value_option(
+    budget_name: &str,
+    observed: u64,
+    max_allowed: Option<u64>,
+) -> Result<(), QueryError> {
+    if let Some(max_allowed) = max_allowed {
+        validate_query_budget_value(budget_name, observed, max_allowed)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_query_budget_for_plan(
+    plan: &Arc<dyn ExecutionPlan>,
+    query_budget: BrowserQueryBudget,
+) -> Result<(), QueryError> {
+    if query_budget.max_scan_bytes.is_none() {
+        return Ok(());
+    }
+
+    let planned_scan_bytes = datafusion_planned_scan_bytes_from_plan(plan)?;
+    validate_query_budget_value_option(
+        "max_scan_bytes",
+        planned_scan_bytes,
+        query_budget.max_scan_bytes,
+    )
+}
+
+fn datafusion_planned_scan_bytes_from_plan(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> Result<u64, QueryError> {
+    let mut planned_scan_bytes = 0_u64;
+    collect_datafusion_planned_scan_bytes(plan, &mut planned_scan_bytes)?;
+    Ok(planned_scan_bytes)
+}
+
+fn collect_datafusion_planned_scan_bytes(
+    plan: &Arc<dyn ExecutionPlan>,
+    planned_scan_bytes: &mut u64,
+) -> Result<(), QueryError> {
+    if let Some(scan) = plan.as_any().downcast_ref::<AxonParquetScanExec>() {
+        *planned_scan_bytes = checked_datafusion_metric_add(
+            *planned_scan_bytes,
+            scan.pushdown_trace().planned_scan_bytes,
+            "planned scan bytes",
+        )?;
+    }
+
+    for child in plan.children() {
+        collect_datafusion_planned_scan_bytes(child, planned_scan_bytes)?;
+    }
+
+    Ok(())
+}
+
+async fn collect_record_batches_with_controls(
+    plan: Arc<dyn ExecutionPlan>,
+    task_ctx: Arc<TaskContext>,
+    query_budget: BrowserQueryBudget,
+    cancellation: &BrowserQueryCancellation,
+) -> Result<Vec<RecordBatch>, QueryError> {
+    if matches!(query_budget.max_batches_in_flight, Some(0)) {
+        return Err(query_budget_exceeded_error("max_batches_in_flight", 1, 0));
+    }
+
+    cancellation.check_cancelled()?;
+    let mut stream = execute_stream(plan, task_ctx).map_err(map_datafusion_error)?;
+    let mut batches = Vec::new();
+    let mut rows_returned = 0_u64;
+
+    while let Some(batch) = stream.next().await {
+        cancellation.check_cancelled()?;
+        let batch = batch.map_err(map_datafusion_error)?;
+        let next_batch_count = batches.len().checked_add(1).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::ExecutionFailed,
+                "experimental browser DataFusion output batch counts overflowed usize",
+                runtime_target(),
+            )
+        })?;
+        validate_query_budget_value_option(
+            "max_batches_in_flight",
+            datafusion_metric_from_usize(next_batch_count, "output batch count")?,
+            query_budget
+                .max_batches_in_flight
+                .map(|max| u64::try_from(max).unwrap_or(u64::MAX)),
+        )?;
+
+        let batch_rows = u64::try_from(batch.num_rows()).map_err(|_| {
+            QueryError::new(
+                QueryErrorCode::ExecutionFailed,
+                "experimental browser DataFusion row counts overflowed u64",
+                runtime_target(),
+            )
+        })?;
+        let next_rows_returned = rows_returned.checked_add(batch_rows).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::ExecutionFailed,
+                "experimental browser DataFusion row totals overflowed u64",
+                runtime_target(),
+            )
+        })?;
+        validate_query_budget_value_option(
+            "max_rows_returned",
+            next_rows_returned,
+            query_budget.max_rows_returned,
+        )?;
+
+        rows_returned = next_rows_returned;
+        batches.push(batch);
+        cancellation.check_cancelled()?;
+    }
+
+    Ok(batches)
 }
 
 #[derive(Clone)]
 pub struct WasmDataFusionEngine {
     ctx: SessionContext,
+    query_budget: BrowserQueryBudget,
+    cancellation: BrowserQueryCancellation,
 }
 
 impl fmt::Debug for WasmDataFusionEngine {
@@ -1201,9 +1543,27 @@ impl fmt::Debug for WasmDataFusionEngine {
 
 impl WasmDataFusionEngine {
     pub fn new() -> Self {
+        Self::with_budget(BrowserQueryBudget::default())
+    }
+
+    pub fn with_budget(query_budget: BrowserQueryBudget) -> Self {
         Self {
             ctx: SessionContext::new(),
+            query_budget,
+            cancellation: BrowserQueryCancellation::default(),
         }
+    }
+
+    pub fn query_budget(&self) -> BrowserQueryBudget {
+        self.query_budget
+    }
+
+    pub fn cancellation_token(&self) -> BrowserQueryCancellation {
+        self.cancellation.clone()
+    }
+
+    pub fn cancel_running_queries(&self) {
+        self.cancellation.cancel();
     }
 
     pub async fn open_delta_table(
@@ -1214,7 +1574,12 @@ impl WasmDataFusionEngine {
         self.ctx
             .register_table(
                 table_name,
-                Arc::new(AxonDeltaTableProvider::new(descriptor)),
+                Arc::new(AxonDeltaTableProvider::with_query_controls(
+                    descriptor,
+                    Vec::new(),
+                    self.query_budget,
+                    self.cancellation.clone(),
+                )),
             )
             .map_err(map_datafusion_error)?;
 
@@ -1241,8 +1606,11 @@ impl WasmDataFusionEngine {
         self.ctx
             .register_table(
                 table_name,
-                Arc::new(AxonDeltaTableProvider::with_record_batch_partitions(
-                    descriptor, partitions,
+                Arc::new(AxonDeltaTableProvider::with_query_controls(
+                    descriptor,
+                    partitions,
+                    self.query_budget,
+                    self.cancellation.clone(),
                 )),
             )
             .map_err(map_datafusion_error)?;
@@ -1287,17 +1655,42 @@ impl WasmDataFusionEngine {
         &self,
         sql: &str,
     ) -> Result<(SchemaRef, Vec<RecordBatch>, DataFusionScanMetricsSummary), QueryError> {
+        let result = self.sql_to_record_batches_with_metrics_inner(sql).await;
+        if matches!(result.as_ref(), Err(error) if is_query_cancelled_error(error)) {
+            self.cancellation.reset();
+        }
+        result
+    }
+
+    async fn sql_to_record_batches_with_metrics_inner(
+        &self,
+        sql: &str,
+    ) -> Result<(SchemaRef, Vec<RecordBatch>, DataFusionScanMetricsSummary), QueryError> {
+        self.cancellation.check_cancelled()?;
         let frame = self.ctx.sql(sql).await.map_err(map_datafusion_error)?;
+        self.cancellation.check_cancelled()?;
         let output_schema = frame.schema().inner().clone();
         let task_ctx = self.ctx.task_ctx();
         let plan = frame
             .create_physical_plan()
             .await
             .map_err(map_datafusion_error)?;
-        let batches = collect(Arc::clone(&plan), task_ctx)
-            .await
-            .map_err(map_datafusion_error)?;
+        validate_query_budget_for_plan(&plan, self.query_budget)?;
+        self.cancellation.check_cancelled()?;
+        let batches = collect_record_batches_with_controls(
+            Arc::clone(&plan),
+            task_ctx,
+            self.query_budget,
+            &self.cancellation,
+        )
+        .await?;
+        self.cancellation.check_cancelled()?;
         let scan_metrics = datafusion_scan_metrics_from_plan(&plan)?;
+        validate_query_budget_value_option(
+            "max_scan_bytes",
+            scan_metrics.bytes_fetched,
+            self.query_budget.max_scan_bytes,
+        )?;
 
         Ok((output_schema, batches, scan_metrics))
     }
@@ -1310,9 +1703,25 @@ impl WasmDataFusionEngine {
         &self,
         sql: &str,
     ) -> Result<DataFusionArrowIpcResult, QueryError> {
+        let result = self.sql_to_arrow_ipc_result_inner(sql).await;
+        if matches!(result.as_ref(), Err(error) if is_query_cancelled_error(error)) {
+            self.cancellation.reset();
+        }
+        result
+    }
+
+    async fn sql_to_arrow_ipc_result_inner(
+        &self,
+        sql: &str,
+    ) -> Result<DataFusionArrowIpcResult, QueryError> {
         let (schema, batches, scan_metrics) = self.sql_to_record_batches_with_metrics(sql).await?;
         let row_count = record_batch_row_count(&batches)?;
-        let ipc_bytes = encode_record_batches_to_arrow_ipc(schema, &batches)?;
+        let ipc_bytes = encode_record_batches_to_arrow_ipc_with_controls(
+            schema,
+            &batches,
+            self.query_budget,
+            &self.cancellation,
+        )?;
         let encoded_bytes = u64::try_from(ipc_bytes.len()).map_err(|_| {
             QueryError::new(
                 QueryErrorCode::ExecutionFailed,
@@ -1409,34 +1818,124 @@ fn encode_record_batches_to_arrow_ipc(
     schema: SchemaRef,
     batches: &[RecordBatch],
 ) -> Result<Vec<u8>, QueryError> {
-    let mut encoded = Vec::new();
-    let mut writer = StreamWriter::try_new(&mut encoded, schema.as_ref()).map_err(|error| {
-        QueryError::new(
-            QueryErrorCode::ExecutionFailed,
-            format!("experimental browser DataFusion could not open Arrow IPC writer: {error}"),
-            runtime_target(),
-        )
+    let cancellation = BrowserQueryCancellation::default();
+    encode_record_batches_to_arrow_ipc_with_controls(
+        schema,
+        batches,
+        BrowserQueryBudget::default(),
+        &cancellation,
+    )
+}
+
+fn encode_record_batches_to_arrow_ipc_with_controls(
+    schema: SchemaRef,
+    batches: &[RecordBatch],
+    query_budget: BrowserQueryBudget,
+    cancellation: &BrowserQueryCancellation,
+) -> Result<Vec<u8>, QueryError> {
+    cancellation.check_cancelled()?;
+    let buffer = BudgetedArrowIpcBuffer::new(query_budget);
+    let mut writer = StreamWriter::try_new(buffer, schema.as_ref()).map_err(|error| {
+        map_arrow_ipc_error(error, |error| {
+            format!("experimental browser DataFusion could not open Arrow IPC writer: {error}")
+        })
     })?;
+
     for batch in batches {
+        cancellation.check_cancelled()?;
         writer.write(batch).map_err(|error| {
-            QueryError::new(
-                QueryErrorCode::ExecutionFailed,
-                format!(
-                    "experimental browser DataFusion could not encode Arrow IPC batch: {error}"
-                ),
-                runtime_target(),
-            )
+            map_arrow_ipc_error(error, |error| {
+                format!("experimental browser DataFusion could not encode Arrow IPC batch: {error}")
+            })
         })?;
     }
     writer.finish().map_err(|error| {
-        QueryError::new(
-            QueryErrorCode::ExecutionFailed,
-            format!("experimental browser DataFusion could not finish Arrow IPC stream: {error}"),
-            runtime_target(),
-        )
+        map_arrow_ipc_error(error, |error| {
+            format!("experimental browser DataFusion could not finish Arrow IPC stream: {error}")
+        })
     })?;
 
-    Ok(encoded)
+    let buffer = writer.into_inner().map_err(|error| {
+        map_arrow_ipc_error(error, |error| {
+            format!("experimental browser DataFusion could not close Arrow IPC stream: {error}")
+        })
+    })?;
+    Ok(buffer.into_inner())
+}
+
+#[derive(Debug)]
+struct BudgetedArrowIpcBuffer {
+    bytes: Vec<u8>,
+    query_budget: BrowserQueryBudget,
+}
+
+impl BudgetedArrowIpcBuffer {
+    fn new(query_budget: BrowserQueryBudget) -> Self {
+        Self {
+            bytes: Vec::new(),
+            query_budget,
+        }
+    }
+
+    fn into_inner(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    fn validate_next_len(&self, additional: usize) -> io::Result<()> {
+        let next_len = self.bytes.len().checked_add(additional).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                WrappedQueryError(QueryError::new(
+                    QueryErrorCode::ExecutionFailed,
+                    "experimental browser DataFusion Arrow IPC byte lengths overflowed usize",
+                    runtime_target(),
+                )),
+            )
+        })?;
+        let observed = u64::try_from(next_len).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                WrappedQueryError(QueryError::new(
+                    QueryErrorCode::ExecutionFailed,
+                    "experimental browser DataFusion Arrow IPC byte lengths overflowed u64",
+                    runtime_target(),
+                )),
+            )
+        })?;
+        validate_query_budget_value_option(
+            "max_output_ipc_bytes",
+            observed,
+            self.query_budget.max_output_ipc_bytes,
+        )
+        .map_err(|error| io::Error::new(io::ErrorKind::Other, WrappedQueryError(error)))
+    }
+}
+
+impl Write for BudgetedArrowIpcBuffer {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.validate_next_len(buf.len())?;
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn map_arrow_ipc_error(
+    error: ArrowError,
+    context: impl FnOnce(&ArrowError) -> String,
+) -> QueryError {
+    if let Some(query_error) = query_error_from_arrow_error(&error) {
+        return query_error;
+    }
+
+    QueryError::new(
+        QueryErrorCode::ExecutionFailed,
+        context(&error),
+        runtime_target(),
+    )
 }
 
 fn record_batch_row_count(batches: &[RecordBatch]) -> Result<u64, QueryError> {
@@ -1533,6 +2032,10 @@ fn datafusion_metric_overflow_error(metric_name: &str) -> QueryError {
 }
 
 fn map_datafusion_error(error: datafusion::error::DataFusionError) -> QueryError {
+    if let Some(query_error) = query_error_from_datafusion_error(&error) {
+        return query_error;
+    }
+
     QueryError::new(
         QueryErrorCode::ExecutionFailed,
         format!("experimental browser DataFusion query failed: {error}"),
