@@ -93,6 +93,9 @@ jobs:
       - name: Enforce browser worker artifact size budget
         run: bash tests/perf/report_browser_worker_artifact.sh
 
+      - name: Verify browser worker dependency boundary
+        run: bash tests/conformance/verify_browser_worker_dependency_boundary.sh
+
       - name: Run browser dependency guardrail regression
         run: bash tests/security/verify_browser_dependency_guardrails_test.sh
 

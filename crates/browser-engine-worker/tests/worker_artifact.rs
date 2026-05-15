@@ -1,3 +1,4 @@
+#[cfg(not(feature = "datafusion"))]
 use std::path::PathBuf;
 
 use browser_engine_worker::{
@@ -6,12 +7,14 @@ use browser_engine_worker::{
 };
 use query_contract::{BrowserAccessMode, ExecutionTarget};
 
+#[cfg(not(feature = "datafusion"))]
 fn example_path(file_name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/program/browser-lakehouse-release-handoff-examples")
         .join(file_name)
 }
 
+#[cfg(not(feature = "datafusion"))]
 fn read_example(file_name: &str) -> String {
     std::fs::read_to_string(example_path(file_name))
         .unwrap_or_else(|error| panic!("failed to read example '{}': {error}", file_name))
@@ -63,8 +66,24 @@ fn report_worker_artifact_baseline() {
     assert!(report.memory.query_session_bytes > 0);
 }
 
+#[cfg(not(feature = "datafusion"))]
 #[test]
-fn worker_artifact_reports_datafusion_sql_capability() {
+fn worker_artifact_reports_narrow_default_capability() {
+    let report = artifact_report().expect("combined artifact report should be produced");
+
+    assert_eq!(report.runtime_sku, BrowserRuntimeSku::Narrow);
+    assert_eq!(report.result_transport, BrowserResultTransport::ArrowIpc);
+    assert_eq!(report.capabilities, capabilities());
+    assert!(report.capabilities.session_shell);
+    assert!(!report.capabilities.browser_datafusion);
+    assert_eq!(report.identity.package_name, "browser-engine-worker");
+    assert_eq!(report.identity.package_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(report.identity.wasm_artifact, "browser_engine_worker.wasm");
+}
+
+#[cfg(feature = "datafusion")]
+#[test]
+fn worker_artifact_reports_datafusion_feature_capability() {
     let report = artifact_report().expect("combined artifact report should be produced");
 
     assert_eq!(report.runtime_sku, BrowserRuntimeSku::Sql);
@@ -77,15 +96,18 @@ fn worker_artifact_reports_datafusion_sql_capability() {
     assert_eq!(report.identity.wasm_artifact, "browser_engine_worker.wasm");
 }
 
+#[cfg(not(feature = "datafusion"))]
 #[test]
 fn worker_artifact_example_matches_contract() {
     let report: browser_engine_worker::BrowserWorkerArtifactReport =
         serde_json::from_str(&read_example("browser-worker-artifact-report.narrow.json"))
             .expect("worker artifact example should deserialize");
+    let generated = artifact_report().expect("combined artifact report should be produced");
 
-    assert_eq!(report.runtime_sku, BrowserRuntimeSku::Sql);
+    assert_eq!(report.runtime_sku, BrowserRuntimeSku::Narrow);
     assert_eq!(report.result_transport, BrowserResultTransport::ArrowIpc);
-    assert_eq!(report.capabilities, capabilities());
+    assert!(report.capabilities.session_shell);
+    assert!(!report.capabilities.browser_datafusion);
     assert_eq!(report.identity.package_name, "browser-engine-worker");
     assert_eq!(report.identity.package_version, env!("CARGO_PKG_VERSION"));
     assert_eq!(report.identity.wasm_artifact, "browser_engine_worker.wasm");
@@ -94,4 +116,33 @@ fn worker_artifact_example_matches_contract() {
         report.startup.access_mode,
         BrowserAccessMode::BrowserSafeHttp
     );
+    assert_eq!(
+        report.startup.command_envelope_bytes,
+        generated.startup.command_envelope_bytes
+    );
+    assert_eq!(
+        report.startup.error_envelope_bytes,
+        generated.startup.error_envelope_bytes
+    );
+    assert_eq!(
+        report.startup.request_timeout_ms,
+        generated.startup.request_timeout_ms
+    );
+    assert_eq!(
+        report.startup.execution_timeout_ms,
+        generated.startup.execution_timeout_ms
+    );
+    assert_eq!(
+        report.startup.snapshot_preflight_timeout_ms,
+        generated.startup.snapshot_preflight_timeout_ms
+    );
+    assert_eq!(
+        report.startup.snapshot_preflight_max_concurrency,
+        generated.startup.snapshot_preflight_max_concurrency
+    );
+    assert_eq!(
+        report.startup.datafusion_query_budget,
+        generated.startup.datafusion_query_budget
+    );
+    assert_eq!(report.memory, generated.memory);
 }

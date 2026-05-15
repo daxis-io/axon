@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 #[cfg(target_arch = "wasm32")]
 use browser_engine_worker::{
-    artifact_report, capabilities, worker_target, BrowserResultTransport, BrowserRuntimeSku,
+    artifact_report, capabilities, runtime_sku, worker_target, BrowserResultTransport,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use browser_engine_worker::{BrowserWorker, DEFAULT_SESSION_CACHE_BYTES};
@@ -32,10 +32,13 @@ fn worker_reports_cold_start_and_memory_baseline_in_wasm() {
     );
     assert_eq!(worker_target(), ExecutionTarget::BrowserWasm);
     assert_eq!(report.startup.target, ExecutionTarget::BrowserWasm);
-    assert_eq!(report.runtime_sku, BrowserRuntimeSku::Sql);
+    assert_eq!(report.runtime_sku, runtime_sku());
     assert_eq!(report.result_transport, BrowserResultTransport::ArrowIpc);
     assert_eq!(report.capabilities, capabilities());
-    assert!(report.capabilities.browser_datafusion);
+    assert_eq!(
+        report.capabilities.browser_datafusion,
+        cfg!(feature = "datafusion")
+    );
     assert_eq!(
         report.startup.access_mode,
         BrowserAccessMode::BrowserSafeHttp
@@ -93,14 +96,15 @@ fn worker_opens_delta_table_and_returns_sql_arrow_ipc_stream() {
         "events"
     );
 
+    let sql = if cfg!(feature = "datafusion") {
+        "SELECT COUNT(*) AS rows FROM events"
+    } else {
+        "SELECT COUNT(*) AS rows FROM axon_table"
+    };
     let response = test_runtime().block_on(worker.handle_command(BrowserWorkerCommand::sql(
         "req-sql-ipc",
         "events",
-        QueryRequest::new(
-            descriptor.table_uri,
-            "SELECT COUNT(*) AS rows FROM events",
-            ExecutionTarget::BrowserWasm,
-        ),
+        QueryRequest::new(descriptor.table_uri, sql, ExecutionTarget::BrowserWasm),
     )));
 
     let success = response

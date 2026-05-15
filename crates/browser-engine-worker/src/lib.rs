@@ -201,7 +201,11 @@ pub fn worker_target() -> ExecutionTarget {
 }
 
 pub fn runtime_sku() -> BrowserRuntimeSku {
-    BrowserRuntimeSku::Sql
+    if cfg!(feature = "datafusion") {
+        BrowserRuntimeSku::Sql
+    } else {
+        BrowserRuntimeSku::Narrow
+    }
 }
 
 pub fn result_transport() -> BrowserResultTransport {
@@ -211,7 +215,7 @@ pub fn result_transport() -> BrowserResultTransport {
 pub fn capabilities() -> BrowserWorkerCapabilities {
     BrowserWorkerCapabilities {
         session_shell: true,
-        browser_datafusion: true,
+        browser_datafusion: cfg!(feature = "datafusion"),
     }
 }
 

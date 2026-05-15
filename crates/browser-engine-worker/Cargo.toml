@@ -7,6 +7,10 @@ version.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+datafusion = ["wasm-query-session/datafusion"]
+
 [dependencies]
 browser-sdk = { path = "../browser-sdk" }
 js-sys = "=0.3.91"

@@ -4,10 +4,14 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
+[features]
+default = []
+datafusion = ["dep:wasm-datafusion-poc"]
+
 [dependencies]
 query-contract = { path = "../query-contract" }
 sqlparser = "=0.59.0"
-wasm-datafusion-poc = { path = "../wasm-datafusion-poc" }
+wasm-datafusion-poc = { path = "../wasm-datafusion-poc", optional = true }
 wasm-query-runtime = { path = "../wasm-query-runtime" }
 
 [dev-dependencies]

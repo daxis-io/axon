@@ -22,5 +22,6 @@ Fixture provisioning and IAM setup for those env-gated GCS paths are external to
 Useful local commands:
 
 - `bash tests/conformance/verify_workspace_layout.sh`
+- `bash tests/conformance/verify_browser_worker_dependency_boundary.sh`
 - `bash tests/conformance/verify_patch_inventory_state.sh`
 - `bash tests/conformance/verify_patch_inventory_state_test.sh`
