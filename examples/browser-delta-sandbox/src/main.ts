@@ -309,7 +309,12 @@ function renderCommitActions(objects: LogObjectDetail[]): void {
     ...actions.map((action) => {
       const item = document.createElement('li');
       item.className = `action-row ${action.kind}`;
-      item.append(textBlock('badge', action.version === null ? action.kind : `v${action.version} ${action.kind}`));
+      item.append(
+        textBlock(
+          'badge',
+          action.version === null ? action.kind : `v${action.version} ${action.kind}`,
+        ),
+      );
       if (action.path) {
         item.append(textBlock('path', action.path));
       }
@@ -331,7 +336,10 @@ function renderDataFiles(fixture: FixtureManifest, snapshot: ResolvedSnapshot): 
       item.append(
         textBlock('status', isActive ? 'active' : 'inactive'),
         textBlock('path', file.relative_path),
-        textBlock('meta', `${formatBytes(file.size_bytes)}, ${formatPartitions(file.partition_values)}`),
+        textBlock(
+          'meta',
+          `${formatBytes(file.size_bytes)}, ${formatPartitions(file.partition_values)}`,
+        ),
       );
       return item;
     }),
@@ -462,7 +470,12 @@ function renderInputOutputMap(
 
   const rows: HTMLElement[] = [];
   if (fixture.checkpoint_version !== undefined) {
-    rows.push(mappingRow('checkpoint seed', `version ${fixture.checkpoint_version} checkpoint seeds the replay state`));
+    rows.push(
+      mappingRow(
+        'checkpoint seed',
+        `version ${fixture.checkpoint_version} checkpoint seeds the replay state`,
+      ),
+    );
   }
   for (const step of fixture.generated_steps ?? []) {
     rows.push(mappingRow(`v${step.version} ${step.label}`, step.detail));
@@ -486,7 +499,10 @@ function mappingRow(label: string, detail: string): HTMLElement {
   return item;
 }
 
-function activeOrigin(action: ParsedAction | undefined, checkpointVersion: number | undefined): string {
+function activeOrigin(
+  action: ParsedAction | undefined,
+  checkpointVersion: number | undefined,
+): string {
   if (action?.version !== null && action?.version !== undefined) {
     if (checkpointVersion !== undefined && action.version > checkpointVersion) {
       return `active via replay commit ${action.version}`;
@@ -495,7 +511,10 @@ function activeOrigin(action: ParsedAction | undefined, checkpointVersion: numbe
   return 'active via checkpoint seed';
 }
 
-function inactiveOrigin(action: ParsedAction | undefined, checkpointVersion: number | undefined): string {
+function inactiveOrigin(
+  action: ParsedAction | undefined,
+  checkpointVersion: number | undefined,
+): string {
   if (action?.version !== null && action?.version !== undefined) {
     if (checkpointVersion !== undefined && action.version > checkpointVersion) {
       return `inactive: checkpoint seed removed by replay commit ${action.version}`;

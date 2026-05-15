@@ -1,0 +1,7 @@
+node_modules
+dist
+playwright-report
+test-results
+src/wasm
+public/fixtures/prod-like
+public/fixtures/**/_delta_log/*.json

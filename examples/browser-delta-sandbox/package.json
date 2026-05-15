@@ -8,14 +8,22 @@
     "build:wasm": "cargo build -p browser-delta-sandbox --target wasm32-unknown-unknown --release --locked && wasm-bindgen ../../target/wasm32-unknown-unknown/release/browser_delta_sandbox.wasm --target web --out-dir src/wasm --typescript",
     "dev": "npm run build:fixture && npm run build:wasm && vite --host 127.0.0.1",
     "build": "npm run build:fixture && npm run build:wasm && tsc --noEmit && vite build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
     "test:sdk": "playwright test --config=playwright.sdk.config.ts",
     "test:e2e": "npm run build:fixture && npm run build:wasm && playwright test"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "1.57.0",
     "@types/node": "^22.18.0",
     "@vitejs/plugin-basic-ssl": "2.1.0",
+    "eslint": "^10.3.0",
+    "prettier": "^3.8.3",
     "typescript": "5.9.3",
+    "typescript-eslint": "^8.59.3",
     "vite": "^7.3.2"
   }
 }

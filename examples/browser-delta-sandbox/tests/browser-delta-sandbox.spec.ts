@@ -12,7 +12,9 @@ test('resolves a Delta snapshot from same-origin browser HTTP log objects', asyn
   await expect(page.getByTestId('active-files')).toContainText('category=B');
 });
 
-test('maps a prod-like Delta fixture from log inputs to resolved active output', async ({ page }) => {
+test('maps a prod-like Delta fixture from log inputs to resolved active output', async ({
+  page,
+}) => {
   await page.goto('/');
 
   await page.getByRole('radio', { name: 'Prod-like snapshot' }).check();
