@@ -1,0 +1,7 @@
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './tests',
+  testMatch: /axon-browser-sdk\.spec\.ts/,
+  timeout: 30_000,
+});

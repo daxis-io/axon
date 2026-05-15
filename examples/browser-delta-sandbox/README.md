@@ -21,3 +21,33 @@ npm run test:e2e
 ```
 
 The E2E test starts Vite over HTTPS, opens Chromium through Playwright, asks the WASM facade to resolve both fixture manifests, and asserts that the prod-like fixture resolves snapshot version `3` from checkpoint version `2` plus one replay commit.
+
+## TypeScript worker SDK wrapper
+
+The example package also carries the first TypeScript SDK wrapper for Axon's browser worker envelope in [`src/axon-browser-sdk.ts`](src/axon-browser-sdk.ts). It creates or accepts a browser `Worker`, sends the `open_delta_table`, `sql`, and `dispose` commands, normalizes Arrow IPC result bytes to `Uint8Array`, and raises `AxonWorkerError` with the structured `fallback_reason` when the worker returns an error envelope.
+
+```ts
+import {
+  createAxonBrowserClient,
+  type BrowserHttpSnapshotDescriptor,
+} from './src/axon-browser-sdk';
+
+const snapshot: BrowserHttpSnapshotDescriptor = await fetch('/snapshot-descriptor.json').then(
+  (response) => response.json(),
+);
+
+const client = createAxonBrowserClient({
+  workerUrl: new URL('/workers/browser-engine-worker.js', window.location.href),
+});
+
+await client.openDeltaTable('events', snapshot);
+
+const result = await client.query('events', 'SELECT COUNT(*) AS row_count FROM events');
+const arrowIpcBytes = result.result.bytes;
+const fallbackReason = result.fallbackReason;
+
+await client.dispose('events');
+client.terminate();
+```
+
+The SDK expects `BrowserHttpSnapshotDescriptor.active_files[*].url` to contain browser-safe object URLs supplied by a trusted control-plane seam. It does not mint cloud credentials or put cloud secrets in browser code.

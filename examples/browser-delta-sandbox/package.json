@@ -8,6 +8,7 @@
     "build:wasm": "cargo build -p browser-delta-sandbox --target wasm32-unknown-unknown --release --locked && wasm-bindgen ../../target/wasm32-unknown-unknown/release/browser_delta_sandbox.wasm --target web --out-dir src/wasm --typescript",
     "dev": "npm run build:fixture && npm run build:wasm && vite --host 127.0.0.1",
     "build": "npm run build:fixture && npm run build:wasm && tsc --noEmit && vite build",
+    "test:sdk": "playwright test --config=playwright.sdk.config.ts",
     "test:e2e": "npm run build:fixture && npm run build:wasm && playwright test"
   },
   "devDependencies": {
