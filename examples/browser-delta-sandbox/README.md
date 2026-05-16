@@ -51,3 +51,5 @@ client.terminate();
 ```
 
 The SDK expects `BrowserHttpSnapshotDescriptor.active_files[*].url` to contain browser-safe object URLs supplied by a trusted control-plane seam. It does not mint cloud credentials or put cloud secrets in browser code.
+
+See [Browser Embedding Deployment Guide](../../docs/program/browser-embedding-deployment.md) for worker/WASM asset hosting, CSP, COOP/COEP, CORS/range headers, signed URL constraints, cache behavior, and package export guidance.
