@@ -15,6 +15,19 @@ test('resolves a Delta snapshot from same-origin browser HTTP log objects', asyn
 test('maps a prod-like Delta fixture from log inputs to resolved active output', async ({
   page,
 }) => {
+  const parquetRangeHeaders: string[] = [];
+  page.on('request', (request) => {
+    const url = request.url();
+    if (!url.includes('/fixtures/prod-like/table/') || !url.endsWith('.parquet')) {
+      return;
+    }
+
+    const range = request.headers().range;
+    if (range) {
+      parquetRangeHeaders.push(range);
+    }
+  });
+
   await page.goto('/');
 
   await page.getByRole('radio', { name: 'Prod-like snapshot' }).check();
@@ -60,4 +73,5 @@ test('maps a prod-like Delta fixture from log inputs to resolved active output',
   await expect(page.getByTestId('parquet-preflight')).not.toContainText('category=C');
   await expect(page.getByTestId('input-output-map')).toContainText('checkpoint seed');
   await expect(page.getByTestId('input-output-map')).toContainText('replay commit 3');
+  expect(parquetRangeHeaders).toEqual(expect.arrayContaining([expect.stringMatching(/^bytes=/)]));
 });

@@ -289,6 +289,87 @@ export type AxonQueryOptions = AxonRequestOptions & {
   queryOptions?: QueryExecutionOptions;
 };
 
+export type PlatformFeatures = {
+  crossOriginIsolated: boolean;
+  wasmSIMD: boolean;
+  wasmThreads: boolean;
+  bigInt64Array: boolean;
+};
+
+export type PlatformFeatureKey = keyof PlatformFeatures;
+export type BrowserBundleTier = 'baseline' | 'simd' | 'threaded' | 'simd_threaded';
+export type BrowserBundleStatus = 'available' | 'future';
+
+export type BrowserWorkerBundle = {
+  id: string;
+  tier: BrowserBundleTier;
+  workerUrl: string | URL;
+  wasmUrl?: string | URL;
+  requiredFeatures?: Partial<Record<PlatformFeatureKey, boolean>>;
+  status?: BrowserBundleStatus;
+};
+
+export type BrowserBundleManifest = {
+  bundles: BrowserWorkerBundle[];
+};
+
+export type BrowserBundleSelection = {
+  bundle: BrowserWorkerBundle;
+  features: PlatformFeatures;
+};
+
+export type PlatformFeatureScope = Partial<{
+  crossOriginIsolated: boolean;
+  WebAssembly: typeof WebAssembly;
+  BigInt64Array: BigInt64ArrayConstructor;
+  SharedArrayBuffer: typeof SharedArrayBuffer;
+  Atomics: typeof Atomics;
+}>;
+
+export const AXON_BROWSER_BUNDLE_MANIFEST: BrowserBundleManifest = {
+  bundles: [
+    {
+      id: 'baseline',
+      tier: 'baseline',
+      workerUrl: '/workers/browser-engine-worker.js',
+      wasmUrl: '/workers/browser_engine_worker.wasm',
+    },
+    {
+      id: 'simd',
+      tier: 'simd',
+      status: 'future',
+      workerUrl: '/workers/browser-engine-worker.simd.js',
+      wasmUrl: '/workers/browser_engine_worker.simd.wasm',
+      requiredFeatures: {
+        wasmSIMD: true,
+      },
+    },
+    {
+      id: 'threaded',
+      tier: 'threaded',
+      status: 'future',
+      workerUrl: '/workers/browser-engine-worker.threaded.js',
+      wasmUrl: '/workers/browser_engine_worker.threaded.wasm',
+      requiredFeatures: {
+        crossOriginIsolated: true,
+        wasmThreads: true,
+      },
+    },
+    {
+      id: 'simd-threaded',
+      tier: 'simd_threaded',
+      status: 'future',
+      workerUrl: '/workers/browser-engine-worker.simd-threaded.js',
+      wasmUrl: '/workers/browser_engine_worker.simd-threaded.wasm',
+      requiredFeatures: {
+        crossOriginIsolated: true,
+        wasmSIMD: true,
+        wasmThreads: true,
+      },
+    },
+  ],
+};
+
 export type AxonBrowserClientOptions =
   | {
       workerUrl: string | URL;
@@ -298,6 +379,13 @@ export type AxonBrowserClientOptions =
     }
   | {
       worker: Worker | WorkerFactory;
+      requestId?: RequestIdFactory;
+      onEvent?: BrowserWorkerEventHandler;
+    }
+  | {
+      bundleManifest?: BrowserBundleManifest;
+      platformFeatures?: PlatformFeatures;
+      workerOptions?: WorkerOptions;
       requestId?: RequestIdFactory;
       onEvent?: BrowserWorkerEventHandler;
     };
@@ -356,9 +444,62 @@ export function createAxonBrowserClient(options: AxonBrowserClientOptions): Axon
   const worker =
     'workerUrl' in options
       ? new Worker(options.workerUrl, { type: 'module', ...options.workerOptions })
-      : createWorkerFromOption(options.worker);
+      : 'worker' in options
+        ? createWorkerFromOption(options.worker)
+        : createWorkerFromBundleSelection(options);
 
   return new AxonBrowserWorkerClient(worker, options.requestId, options.onEvent);
+}
+
+export function getPlatformFeatures(scope: PlatformFeatureScope = globalThis): PlatformFeatures {
+  const crossOriginIsolated = scope.crossOriginIsolated === true;
+
+  return {
+    crossOriginIsolated,
+    wasmSIMD: detectWasmSIMD(scope),
+    wasmThreads: detectWasmThreads(scope, crossOriginIsolated),
+    bigInt64Array: typeof scope.BigInt64Array === 'function',
+  };
+}
+
+export function selectBundle(
+  manifest: BrowserBundleManifest,
+  features: PlatformFeatures = getPlatformFeatures(),
+): BrowserBundleSelection {
+  let selected: { bundle: BrowserWorkerBundle; score: number } | undefined;
+
+  for (const bundle of manifest.bundles) {
+    if (bundleStatus(bundle) !== 'available' || !bundleSupportsFeatures(bundle, features)) {
+      continue;
+    }
+
+    const score = bundleScore(bundle);
+    if (!selected || score > selected.score) {
+      selected = { bundle, score };
+    }
+  }
+
+  if (!selected) {
+    throw new AxonSdkError(
+      `no supported Axon browser bundle found for platform features ${JSON.stringify(features)}`,
+    );
+  }
+
+  return {
+    bundle: selected.bundle,
+    features,
+  };
+}
+
+function bundleStatus(bundle: BrowserWorkerBundle): BrowserBundleStatus {
+  const status = bundle.status ?? 'available';
+  if (status === 'available' || status === 'future') {
+    return status;
+  }
+
+  throw new AxonSdkError(
+    `unknown Axon browser bundle status '${String(status)}' for bundle '${bundle.id}'`,
+  );
 }
 
 export function openDeltaTableCommand(
@@ -652,6 +793,19 @@ function createWorkerFromOption(worker: Worker | WorkerFactory): Worker {
   return typeof worker === 'function' ? worker() : worker;
 }
 
+function createWorkerFromBundleSelection(options: {
+  bundleManifest?: BrowserBundleManifest;
+  platformFeatures?: PlatformFeatures;
+  workerOptions?: WorkerOptions;
+}): Worker {
+  const selection = selectBundle(
+    options.bundleManifest ?? AXON_BROWSER_BUNDLE_MANIFEST,
+    options.platformFeatures ?? getPlatformFeatures(),
+  );
+
+  return new Worker(selection.bundle.workerUrl, { type: 'module', ...options.workerOptions });
+}
+
 function defaultRequestIdFactory(): RequestIdFactory {
   let next = 0;
   const prefix = `axon-${Date.now().toString(36)}`;
@@ -694,8 +848,15 @@ function normalizeWorkerMessage(data: unknown): NormalizedWorkerMessage {
     throw new AxonProtocolError('worker message must be an object');
   }
 
-  if (isWorkerEventEnvelope(data)) {
-    return { kind: 'event', event: data };
+  const tags = workerEnvelopeTags(data);
+  if (tags.length > 1) {
+    throw new AxonProtocolError(
+      `worker message contained multiple Axon envelope tags: ${tags.join(', ')}`,
+    );
+  }
+
+  if (tags.length === 1 && isWorkerEventTag(tags[0])) {
+    return { kind: 'event', event: normalizeWorkerEvent(tags[0], data[tags[0]]) };
   }
 
   return { kind: 'response', response: normalizeWorkerResponse(data) };
@@ -728,16 +889,238 @@ function normalizeWorkerResponse(data: unknown): BrowserWorkerResponseEnvelope {
   throw new AxonProtocolError('worker response did not contain a known Axon envelope tag');
 }
 
-function isWorkerEventEnvelope(data: object): data is BrowserWorkerEventEnvelope {
-  return (
-    'progress' in data ||
-    'log' in data ||
-    'range_read_metrics' in data ||
-    'cache_metrics' in data ||
-    'fallback' in data ||
-    'cancellation' in data ||
-    'terminal_error' in data
-  );
+function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWorkerEventEnvelope {
+  if (!isObject(payload)) {
+    throw new AxonProtocolError(`worker event '${tag}' payload must be an object`);
+  }
+
+  switch (tag) {
+    case 'progress':
+      return {
+        progress: {
+          context: normalizeWorkerEventContext(payload.context, 'progress.context'),
+          stage: requiredEnum(payload.stage, 'progress.stage', BROWSER_WORKER_PROGRESS_STAGES),
+        },
+      };
+    case 'log':
+      return {
+        log: {
+          context: normalizeWorkerEventContext(payload.context, 'log.context'),
+          level: requiredEnum(payload.level, 'log.level', BROWSER_WORKER_LOG_LEVELS),
+          message: requiredString(payload.message, 'log.message'),
+        },
+      };
+    case 'range_read_metrics':
+      return {
+        range_read_metrics: {
+          context: normalizeWorkerEventContext(payload.context, 'range_read_metrics.context'),
+          bytes_fetched: requiredNumber(payload.bytes_fetched, 'range_read_metrics.bytes_fetched'),
+          files_touched: requiredNumber(payload.files_touched, 'range_read_metrics.files_touched'),
+          files_skipped: requiredNumber(payload.files_skipped, 'range_read_metrics.files_skipped'),
+          row_groups_touched: requiredNumber(
+            payload.row_groups_touched,
+            'range_read_metrics.row_groups_touched',
+          ),
+          row_groups_skipped: requiredNumber(
+            payload.row_groups_skipped,
+            'range_read_metrics.row_groups_skipped',
+          ),
+          footer_reads: optionalNumber(payload.footer_reads, 'range_read_metrics.footer_reads'),
+          rows_emitted: requiredNumber(payload.rows_emitted, 'range_read_metrics.rows_emitted'),
+          snapshot_bootstrap_duration_ms: optionalNumber(
+            payload.snapshot_bootstrap_duration_ms,
+            'range_read_metrics.snapshot_bootstrap_duration_ms',
+          ),
+          access_mode: optionalEnum(
+            payload.access_mode,
+            'range_read_metrics.access_mode',
+            BROWSER_ACCESS_MODES,
+          ),
+        },
+      };
+    case 'cache_metrics':
+      return {
+        cache_metrics: {
+          context: normalizeWorkerEventContext(payload.context, 'cache_metrics.context'),
+          session_cached_bytes: requiredNumber(
+            payload.session_cached_bytes,
+            'cache_metrics.session_cached_bytes',
+          ),
+          session_table_count: requiredNumber(
+            payload.session_table_count,
+            'cache_metrics.session_table_count',
+          ),
+          max_session_cached_bytes: requiredNumber(
+            payload.max_session_cached_bytes,
+            'cache_metrics.max_session_cached_bytes',
+          ),
+          transport: normalizeOptionalTransportCacheMetrics(payload.transport),
+        },
+      };
+    case 'fallback':
+      return {
+        fallback: {
+          context: normalizeWorkerEventContext(payload.context, 'fallback.context'),
+          reason: normalizeFallbackReason(payload.reason, 'fallback.reason'),
+        },
+      };
+    case 'cancellation':
+      return {
+        cancellation: {
+          context: normalizeWorkerEventContext(payload.context, 'cancellation.context'),
+          error: normalizeQueryError(payload.error, 'cancellation.error'),
+        },
+      };
+    case 'terminal_error':
+      return {
+        terminal_error: {
+          context: normalizeWorkerEventContext(payload.context, 'terminal_error.context'),
+          error: normalizeQueryError(payload.error, 'terminal_error.error'),
+        },
+      };
+  }
+}
+
+function normalizeWorkerEventContext(value: unknown, path: string): BrowserWorkerEventContext {
+  if (!isObject(value)) {
+    throw new AxonProtocolError(`${path} must be an object`);
+  }
+
+  return {
+    phase: requiredEnum(value.phase, `${path}.phase`, BROWSER_WORKER_EVENT_PHASES),
+    request_id: optionalString(value.request_id, `${path}.request_id`),
+    query_id: optionalString(value.query_id, `${path}.query_id`),
+    table_name: optionalString(value.table_name, `${path}.table_name`),
+  };
+}
+
+function normalizeOptionalTransportCacheMetrics(
+  value: unknown,
+): BrowserWorkerTransportCacheMetrics | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isObject(value)) {
+    throw new AxonProtocolError('cache_metrics.transport must be an object');
+  }
+
+  return {
+    bytes_reused: requiredNumber(value.bytes_reused, 'cache_metrics.transport.bytes_reused'),
+    validation_misses: requiredNumber(
+      value.validation_misses,
+      'cache_metrics.transport.validation_misses',
+    ),
+    persistent_cache_errors: requiredNumber(
+      value.persistent_cache_errors,
+      'cache_metrics.transport.persistent_cache_errors',
+    ),
+  };
+}
+
+function normalizeQueryError(value: unknown, path: string): QueryError {
+  if (!isObject(value)) {
+    throw new AxonProtocolError(`${path} must be an object`);
+  }
+
+  return {
+    code: requiredEnum(value.code, `${path}.code`, QUERY_ERROR_CODES),
+    message: requiredString(value.message, `${path}.message`),
+    target: requiredEnum(value.target, `${path}.target`, EXECUTION_TARGETS),
+    fallback_reason:
+      value.fallback_reason === undefined
+        ? undefined
+        : normalizeFallbackReason(value.fallback_reason, `${path}.fallback_reason`),
+  };
+}
+
+function normalizeFallbackReason(value: unknown, path: string): FallbackReason {
+  if (typeof value === 'string' && includesString(FALLBACK_REASON_STRINGS, value)) {
+    return value as FallbackReason;
+  }
+
+  const capabilityGate =
+    isObject(value) && isObject(value.capability_gate) ? value.capability_gate : undefined;
+  const capability = capabilityGate?.capability;
+  const requiredState = capabilityGate?.required_state;
+  if (
+    typeof capability === 'string' &&
+    includesString(CAPABILITY_KEYS, capability) &&
+    typeof requiredState === 'string' &&
+    includesString(CAPABILITY_STATES, requiredState)
+  ) {
+    return {
+      capability_gate: {
+        capability: capability as CapabilityKey,
+        required_state: requiredState as CapabilityState,
+      },
+    };
+  }
+
+  throw new AxonProtocolError(`${path} must be a known fallback reason`);
+}
+
+function workerEnvelopeTags(data: object): WorkerEnvelopeTag[] {
+  return WORKER_ENVELOPE_TAGS.filter((tag) => tag in data);
+}
+
+function isWorkerEventTag(tag: WorkerEnvelopeTag): tag is WorkerEventTag {
+  return (WORKER_EVENT_TAGS as readonly string[]).includes(tag);
+}
+
+function requiredString(value: unknown, path: string): string {
+  if (typeof value !== 'string') {
+    throw new AxonProtocolError(`${path} must be a string`);
+  }
+
+  return value;
+}
+
+function optionalString(value: unknown, path: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return requiredString(value, path);
+}
+
+function requiredNumber(value: unknown, path: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new AxonProtocolError(`${path} must be a finite number`);
+  }
+
+  return value;
+}
+
+function optionalNumber(value: unknown, path: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return requiredNumber(value, path);
+}
+
+function requiredEnum<T extends string>(value: unknown, path: string, allowed: readonly T[]): T {
+  if (typeof value !== 'string' || !allowed.includes(value as T)) {
+    throw new AxonProtocolError(`${path} must be one of ${allowed.join(', ')}`);
+  }
+
+  return value as T;
+}
+
+function includesString(values: readonly string[], value: string): boolean {
+  return values.includes(value);
+}
+
+function optionalEnum<T extends string>(
+  value: unknown,
+  path: string,
+  allowed: readonly T[],
+): T | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return requiredEnum(value, path, allowed);
 }
 
 function normalizeBytes(bytes: number[] | ArrayBuffer | Uint8Array): Uint8Array {
@@ -758,9 +1141,144 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+function bundleSupportsFeatures(bundle: BrowserWorkerBundle, features: PlatformFeatures): boolean {
+  for (const [feature, required] of Object.entries(bundle.requiredFeatures ?? {}) as [
+    PlatformFeatureKey,
+    boolean,
+  ][]) {
+    if (features[feature] !== required) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function bundleScore(bundle: BrowserWorkerBundle): number {
+  const tierScore = BUNDLE_TIER_RANK[bundle.tier] * 100;
+  const specificityScore = Object.keys(bundle.requiredFeatures ?? {}).length;
+  return tierScore + specificityScore;
+}
+
+function detectWasmSIMD(scope: PlatformFeatureScope): boolean {
+  const wasm = scope.WebAssembly;
+  if (!wasm || typeof wasm.validate !== 'function') {
+    return false;
+  }
+
+  return wasm.validate(WASM_SIMD_DETECTION_MODULE);
+}
+
+function detectWasmThreads(scope: PlatformFeatureScope, crossOriginIsolated: boolean): boolean {
+  const wasm = scope.WebAssembly;
+  if (
+    !crossOriginIsolated ||
+    !wasm ||
+    typeof wasm.Memory !== 'function' ||
+    typeof scope.SharedArrayBuffer !== 'function' ||
+    typeof scope.Atomics !== 'object'
+  ) {
+    return false;
+  }
+
+  try {
+    const memory = new wasm.Memory({ initial: 1, maximum: 1, shared: true });
+    return memory.buffer instanceof scope.SharedArrayBuffer;
+  } catch {
+    return false;
+  }
+}
+
 function toError(error: unknown): Error {
   if (error instanceof Error) {
     return error;
   }
   return new AxonSdkError(String(error));
 }
+
+const BUNDLE_TIER_RANK: Record<BrowserBundleTier, number> = {
+  baseline: 0,
+  simd: 1,
+  threaded: 2,
+  simd_threaded: 3,
+};
+
+const WORKER_RESPONSE_TAGS = ['opened', 'success', 'disposed', 'error'] as const;
+const WORKER_EVENT_TAGS = [
+  'progress',
+  'log',
+  'range_read_metrics',
+  'cache_metrics',
+  'fallback',
+  'cancellation',
+  'terminal_error',
+] as const;
+const WORKER_ENVELOPE_TAGS = [...WORKER_RESPONSE_TAGS, ...WORKER_EVENT_TAGS] as const;
+
+type WorkerEnvelopeTag = (typeof WORKER_ENVELOPE_TAGS)[number];
+type WorkerEventTag = (typeof WORKER_EVENT_TAGS)[number];
+
+const EXECUTION_TARGETS = ['browser_wasm', 'native'] as const satisfies readonly ExecutionTarget[];
+const CAPABILITY_KEYS = [
+  'change_data_feed',
+  'column_mapping',
+  'deletion_vectors',
+  'multi_partition_execution',
+  'proxy_access',
+  'range_reads',
+  'signed_url_access',
+  'time_travel',
+  'timestamp_ntz',
+  'unknown_protocol_features',
+] as const satisfies readonly CapabilityKey[];
+const CAPABILITY_STATES = [
+  'supported',
+  'native_only',
+  'unsupported',
+  'experimental',
+] as const satisfies readonly CapabilityState[];
+const FALLBACK_REASON_STRINGS = [
+  'access_denied',
+  'browser_runtime_constraint',
+  'native_required',
+  'network_failure',
+  'range_read_unavailable',
+  'security_policy',
+  'signed_url_expired',
+] as const;
+const QUERY_ERROR_CODES = [
+  'access_denied',
+  'execution_failed',
+  'fallback_required',
+  'invalid_request',
+  'object_store_protocol',
+  'security_policy_violation',
+  'unsupported_feature',
+] as const satisfies readonly QueryErrorCode[];
+const BROWSER_WORKER_EVENT_PHASES = [
+  'instantiate',
+  'open',
+  'query',
+] as const satisfies readonly BrowserWorkerEventPhase[];
+const BROWSER_WORKER_PROGRESS_STAGES = [
+  'started',
+  'planning',
+  'executing',
+  'arrow_ipc_ready',
+  'finished',
+] as const satisfies readonly BrowserWorkerProgressStage[];
+const BROWSER_WORKER_LOG_LEVELS = [
+  'debug',
+  'info',
+  'warn',
+  'error',
+] as const satisfies readonly BrowserWorkerLogLevel[];
+const BROWSER_ACCESS_MODES = [
+  'browser_safe_http',
+  'cloud_object_store',
+] as const satisfies readonly BrowserAccessMode[];
+
+const WASM_SIMD_DETECTION_MODULE = new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b, 0x03,
+  0x02, 0x01, 0x00, 0x0a, 0x0a, 0x01, 0x08, 0x00, 0x41, 0x00, 0xfd, 0x0f, 0xfd, 0x62, 0x0b,
+]);

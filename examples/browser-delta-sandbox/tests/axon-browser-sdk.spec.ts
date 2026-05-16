@@ -1,12 +1,18 @@
 import { expect, test } from '@playwright/test';
 
 import {
+  AxonProtocolError,
   AxonSdkError,
   AxonWorkerError,
   createAxonBrowserClient,
+  getPlatformFeatures,
+  selectBundle,
+  type BrowserBundleManifest,
   type BrowserHttpSnapshotDescriptor,
   type BrowserWorkerEventEnvelope,
   type BrowserWorkerCommand,
+  type PlatformFeatureScope,
+  type PlatformFeatures,
   type QueryResponse,
   type WireBrowserWorkerMessageEnvelope,
 } from '../src/axon-browser-sdk';
@@ -57,6 +63,10 @@ class FakeWorker implements Pick<
     this.emit('message', { data });
   }
 
+  emitRawMessage(data: unknown): void {
+    this.emit('message', { data });
+  }
+
   emitError(message: string): void {
     this.emit('error', { message });
   }
@@ -71,6 +81,214 @@ class FakeWorker implements Pick<
     }
   }
 }
+
+const baselineOnlyFeatures: PlatformFeatures = {
+  crossOriginIsolated: false,
+  wasmSIMD: false,
+  wasmThreads: false,
+  bigInt64Array: false,
+};
+
+const simdOnlyFeatures: PlatformFeatures = {
+  crossOriginIsolated: false,
+  wasmSIMD: true,
+  wasmThreads: false,
+  bigInt64Array: true,
+};
+
+const threadedSimdFeatures: PlatformFeatures = {
+  crossOriginIsolated: true,
+  wasmSIMD: true,
+  wasmThreads: true,
+  bigInt64Array: true,
+};
+
+const manifest: BrowserBundleManifest = {
+  bundles: [
+    {
+      id: 'baseline',
+      tier: 'baseline',
+      workerUrl: '/workers/axon-browser-baseline.js',
+    },
+    {
+      id: 'simd',
+      tier: 'simd',
+      workerUrl: '/workers/axon-browser-simd.js',
+      requiredFeatures: {
+        wasmSIMD: true,
+      },
+    },
+    {
+      id: 'threaded',
+      tier: 'threaded',
+      workerUrl: '/workers/axon-browser-threaded.js',
+      requiredFeatures: {
+        crossOriginIsolated: true,
+        wasmThreads: true,
+      },
+    },
+    {
+      id: 'simd-threaded',
+      tier: 'simd_threaded',
+      workerUrl: '/workers/axon-browser-simd-threaded.js',
+      requiredFeatures: {
+        crossOriginIsolated: true,
+        wasmSIMD: true,
+        wasmThreads: true,
+      },
+    },
+  ],
+};
+
+test('selectBundle keeps the single-threaded baseline when optional features are unavailable', () => {
+  const selected = selectBundle(manifest, baselineOnlyFeatures);
+
+  expect(selected.bundle.id).toBe('baseline');
+  expect(selected.features).toEqual(baselineOnlyFeatures);
+});
+
+test('selectBundle prefers a SIMD bundle without requiring cross-origin isolation', () => {
+  const selected = selectBundle(manifest, simdOnlyFeatures);
+
+  expect(selected.bundle.id).toBe('simd');
+});
+
+test('selectBundle prefers the threaded SIMD tier only when isolation and threads are available', () => {
+  const selected = selectBundle(manifest, threadedSimdFeatures);
+
+  expect(selected.bundle.id).toBe('simd-threaded');
+});
+
+test('selectBundle honors BigInt64Array requirements declared by a bundle', () => {
+  const bigintManifest: BrowserBundleManifest = {
+    bundles: [
+      ...manifest.bundles,
+      {
+        id: 'simd-bigint64',
+        tier: 'simd',
+        workerUrl: '/workers/axon-browser-simd-bigint64.js',
+        requiredFeatures: {
+          wasmSIMD: true,
+          bigInt64Array: true,
+        },
+      },
+    ],
+  };
+
+  expect(
+    selectBundle(bigintManifest, { ...simdOnlyFeatures, bigInt64Array: false }).bundle.id,
+  ).toBe('simd');
+  expect(selectBundle(bigintManifest, simdOnlyFeatures).bundle.id).toBe('simd-bigint64');
+});
+
+test('selectBundle does not choose future bundles before their artifacts are shipped', () => {
+  const futureManifest: BrowserBundleManifest = {
+    bundles: [
+      ...manifest.bundles,
+      {
+        id: 'future-simd-threaded',
+        tier: 'simd_threaded',
+        status: 'future',
+        workerUrl: '/workers/axon-browser-future-simd-threaded.js',
+        requiredFeatures: {
+          crossOriginIsolated: true,
+          wasmSIMD: true,
+          wasmThreads: true,
+        },
+      },
+    ],
+  };
+
+  expect(selectBundle(futureManifest, threadedSimdFeatures).bundle.id).toBe('simd-threaded');
+});
+
+test('selectBundle rejects unknown bundle statuses from dynamic manifests', () => {
+  const invalidManifest: BrowserBundleManifest = {
+    bundles: [
+      {
+        id: 'unknown-status',
+        tier: 'simd',
+        status: 'experimental' as never,
+        workerUrl: '/workers/axon-browser-experimental.js',
+        requiredFeatures: {
+          wasmSIMD: true,
+        },
+      },
+      manifest.bundles[0],
+    ],
+  };
+
+  expect(() => selectBundle(invalidManifest, simdOnlyFeatures)).toThrow(AxonSdkError);
+});
+
+test('createAxonBrowserClient constructs a worker from the selected bundle', () => {
+  const workerGlobal = globalThis as typeof globalThis & { Worker?: typeof Worker };
+  const previousWorker = workerGlobal.Worker;
+  const createdWorkers: { url: string | URL; options?: WorkerOptions }[] = [];
+
+  class ConstructedWorker extends FakeWorker {
+    constructor(url: string | URL, options?: WorkerOptions) {
+      super();
+      createdWorkers.push({ url, options });
+    }
+  }
+
+  workerGlobal.Worker = ConstructedWorker as unknown as typeof Worker;
+
+  try {
+    const client = createAxonBrowserClient({
+      bundleManifest: manifest,
+      platformFeatures: simdOnlyFeatures,
+      workerOptions: {
+        name: 'axon-worker',
+      },
+    });
+
+    client.terminate();
+
+    expect(createdWorkers).toEqual([
+      {
+        url: '/workers/axon-browser-simd.js',
+        options: {
+          type: 'module',
+          name: 'axon-worker',
+        },
+      },
+    ]);
+  } finally {
+    if (previousWorker) {
+      workerGlobal.Worker = previousWorker;
+    } else {
+      Reflect.deleteProperty(workerGlobal, 'Worker');
+    }
+  }
+});
+
+test('getPlatformFeatures tracks browser isolation, SIMD, threads, and BigInt64Array', () => {
+  class FakeSharedArrayBuffer {}
+  class FakeMemory {
+    readonly buffer = new FakeSharedArrayBuffer();
+  }
+
+  const scope = {
+    crossOriginIsolated: true,
+    WebAssembly: {
+      validate: () => true,
+      Memory: FakeMemory,
+    },
+    BigInt64Array: class FakeBigInt64Array {},
+    SharedArrayBuffer: FakeSharedArrayBuffer,
+    Atomics: {},
+  } as unknown as PlatformFeatureScope;
+
+  expect(getPlatformFeatures(scope)).toEqual({
+    crossOriginIsolated: true,
+    wasmSIMD: true,
+    wasmThreads: true,
+    bigInt64Array: true,
+  });
+  expect(getPlatformFeatures({ ...scope, crossOriginIsolated: false }).wasmThreads).toBe(false);
+});
 
 test('rejects a duplicate active request id without orphaning the first request', async () => {
   const worker = new FakeWorker();
@@ -203,6 +421,86 @@ test('routes worker runtime events without settling the active request', async (
   await expect(resultPromise).resolves.toMatchObject({
     request_id: 'req-query-events',
   });
+});
+
+test('rejects malformed worker runtime events without routing them to the event handler', async () => {
+  const worker = new FakeWorker();
+  const events: BrowserWorkerEventEnvelope[] = [];
+  const client = createAxonBrowserClient({
+    worker: worker as unknown as Worker,
+    onEvent: (event) => events.push(event),
+  });
+
+  const resultPromise = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT COUNT(*) AS row_count FROM events',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-query-malformed-event' },
+  );
+
+  worker.emitRawMessage({
+    progress: {
+      context: {
+        phase: 'query',
+        request_id: 'req-query-malformed-event',
+        query_id: 'req-query-malformed-event',
+        table_name: 'events',
+      },
+    },
+  });
+
+  await expect(resultPromise).rejects.toThrow(AxonProtocolError);
+  await expect(resultPromise).rejects.toThrow('progress.stage');
+  expect(events).toEqual([]);
+});
+
+test('rejects worker messages with multiple envelope tags', async () => {
+  const worker = new FakeWorker();
+  const events: BrowserWorkerEventEnvelope[] = [];
+  const client = createAxonBrowserClient({
+    worker: worker as unknown as Worker,
+    onEvent: (event) => events.push(event),
+  });
+
+  const resultPromise = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT COUNT(*) AS row_count FROM events',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-query-mixed-envelope' },
+  );
+
+  worker.emitRawMessage({
+    progress: {
+      context: {
+        phase: 'query',
+        request_id: 'req-query-mixed-envelope',
+        query_id: 'req-query-mixed-envelope',
+        table_name: 'events',
+      },
+      stage: 'started',
+    },
+    success: {
+      request_id: 'req-query-mixed-envelope',
+      response: queryResponse(),
+      result: {
+        format: 'stream',
+        content_type: 'application/vnd.apache.arrow.stream',
+        bytes: [1, 2, 3, 4],
+      },
+    },
+  });
+
+  await expect(resultPromise).rejects.toThrow(AxonProtocolError);
+  await expect(resultPromise).rejects.toThrow('multiple Axon envelope tags');
+  expect(events).toEqual([]);
 });
 
 test('preserves worker error fallback reasons', async () => {

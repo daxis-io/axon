@@ -20,7 +20,17 @@ npm run build
 npm run test:e2e
 ```
 
-The E2E test starts Vite over HTTPS, opens Chromium through Playwright, asks the WASM facade to resolve both fixture manifests, and asserts that the prod-like fixture resolves snapshot version `3` from checkpoint version `2` plus one replay commit.
+The E2E test starts Vite over HTTPS, opens Chromium, Firefox, and WebKit through Playwright, asks the WASM facade to resolve both fixture manifests, and asserts that the prod-like fixture resolves snapshot version `3` from checkpoint version `2` plus one replay commit. It also covers same-origin Parquet range requests and the browser worker envelope path for startup, Arrow IPC result bytes, structured fallback, and cancellation-shaped errors.
+
+To run one browser while iterating:
+
+```bash
+npm run test:e2e -- --project=chromium
+npm run test:e2e -- --project=firefox
+npm run test:e2e -- --project=webkit
+```
+
+This Playwright browser matrix is a local/manual gate for now rather than a CI step because it adds Node, browser download, fixture generation, Vite, and three browser launches to the existing Rust-focused workflow.
 
 ## TypeScript worker SDK wrapper
 
@@ -28,7 +38,10 @@ The example package also carries the first TypeScript SDK wrapper for Axon's bro
 
 ```ts
 import {
+  AXON_BROWSER_BUNDLE_MANIFEST,
   createAxonBrowserClient,
+  getPlatformFeatures,
+  selectBundle,
   type BrowserHttpSnapshotDescriptor,
 } from './src/axon-browser-sdk';
 
@@ -36,8 +49,10 @@ const snapshot: BrowserHttpSnapshotDescriptor = await fetch('/snapshot-descripto
   (response) => response.json(),
 );
 
+const platformFeatures = getPlatformFeatures();
+const bundleSelection = selectBundle(AXON_BROWSER_BUNDLE_MANIFEST, platformFeatures);
 const client = createAxonBrowserClient({
-  workerUrl: new URL('/workers/browser-engine-worker.js', window.location.href),
+  workerUrl: bundleSelection.bundle.workerUrl,
 });
 
 await client.openDeltaTable('events', snapshot);
@@ -49,6 +64,12 @@ const fallbackReason = result.fallbackReason;
 await client.dispose('events');
 client.terminate();
 ```
+
+`AXON_BROWSER_BUNDLE_MANIFEST` ships the current single-threaded baseline bundle and records future
+SIMD / threaded / SIMD-threaded bundle IDs as `status: 'future'`. `selectBundle` ignores future
+entries until a deployment changes them to `available` and hosts the matching worker and WASM
+assets. Threaded bundles require cross-origin isolation, `SharedArrayBuffer`, and shared WASM
+memory; SIMD bundles require WASM SIMD; bundles can also declare a `BigInt64Array` requirement.
 
 The SDK expects `BrowserHttpSnapshotDescriptor.active_files[*].url` to contain browser-safe object URLs supplied by a trusted control-plane seam. It does not mint cloud credentials or put cloud secrets in browser code.
 

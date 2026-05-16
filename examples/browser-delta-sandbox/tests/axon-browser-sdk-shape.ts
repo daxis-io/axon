@@ -1,10 +1,15 @@
 import {
+  AXON_BROWSER_BUNDLE_MANIFEST,
   AxonWorkerError,
   createAxonBrowserClient,
+  getPlatformFeatures,
+  selectBundle,
   type AxonBrowserClient,
+  type BrowserBundleManifest,
   type BrowserHttpFileDescriptor,
   type BrowserHttpSnapshotDescriptor,
   type FallbackReason,
+  type PlatformFeatures,
   type QueryRequest,
 } from '../src/axon-browser-sdk';
 
@@ -62,6 +67,18 @@ function workerFactoryShapeCompiles(worker: Worker): AxonBrowserClient {
   return createAxonBrowserClient({ worker: () => worker });
 }
 
+function bundleSelectionShapeCompiles(): AxonBrowserClient {
+  const features: PlatformFeatures = getPlatformFeatures();
+  const manifest: BrowserBundleManifest = AXON_BROWSER_BUNDLE_MANIFEST;
+  const selected = selectBundle(manifest, features);
+
+  selected.bundle.workerUrl satisfies string | URL;
+  selected.bundle.wasmUrl satisfies string | URL | undefined;
+  selected.features.wasmSIMD satisfies boolean;
+
+  return createAxonBrowserClient({ bundleManifest: manifest, platformFeatures: features });
+}
+
 function errorShapeCompiles(error: unknown): FallbackReason | undefined {
   if (error instanceof AxonWorkerError) {
     return error.fallbackReason;
@@ -79,5 +96,6 @@ const missingBrowserUrl: BrowserHttpFileDescriptor = {
 void sdkShapeCompiles;
 void workerUrlShapeCompiles;
 void workerFactoryShapeCompiles;
+void bundleSelectionShapeCompiles;
 void errorShapeCompiles;
 void missingBrowserUrl;
