@@ -36,7 +36,7 @@ Focus areas:
 - `crates/browser-sdk/src/lib.rs`
 - `crates/browser-engine-worker/src/lib.rs`
 
-The current session layer is in-memory only. OPFS / IndexedDB persistence is still deferred.
+The current session layer is in-memory only. A narrow OPFS extent-cache backend exists below it; IndexedDB and session-level persistence are still deferred.
 
 ## 2. Capability-Gated Native Fallback
 
@@ -153,7 +153,7 @@ Interpretation:
 - validated HTTP extent reuse depends on browser-visible object identity headers such as `ETag`
 - `bytes_fetched`, `bytes_reused`, and `validation_misses` are the transport-local counters to inspect first
 - browser-local access should still use the same extent seam, but it must remain distinct from signed-URL or proxy-backed access
-- Sprint 2 only ships persistent-cache hooks and reporting; an actual OPFS or IndexedDB backend is still deferred
+- the object-store seam has a narrow OPFS extent-cache backend, while IndexedDB and session-level persistence are still deferred
 
 ## 7. Env-Gated Native GCS Smoke Failure
 

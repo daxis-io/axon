@@ -1,7 +1,9 @@
 //! HTTP range-read adapter for browser-safe object access over exact HTTP byte ranges.
 
 use std::fmt::Write;
-use std::sync::Arc;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -10,8 +12,22 @@ use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_RANGE, RANGE};
 use reqwest::{StatusCode, Url};
 use sha2::{Digest, Sha256};
 
+#[cfg(target_arch = "wasm32")]
+use js_sys::{Function, Object, Promise, Reflect, Uint8Array};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::{JsCast, JsValue};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::JsFuture;
+
 pub const OWNER: &str = "Runtime / engine team";
 pub const RESPONSIBILITY: &str = "Browser-safe object reads over HTTP range requests.";
+const DEFAULT_MEMORY_PERSISTENT_CACHE_ENTRIES: usize = 128;
+#[cfg(target_arch = "wasm32")]
+const EXTENT_CACHE_ENTRY_MAGIC: &[u8] = b"AXON_EXTENT_CACHE_V1\0";
+#[cfg(target_arch = "wasm32")]
+const EXTENT_CACHE_INDEX_MAGIC: &[u8] = b"AXON_EXTENT_INDEX_V1\0";
+#[cfg(target_arch = "wasm32")]
+const JS_MAX_SAFE_INTEGER_U64: u64 = 9_007_199_254_740_991;
 
 pub fn supported_target() -> ExecutionTarget {
     ExecutionTarget::BrowserWasm
@@ -379,6 +395,7 @@ pub struct BrowserTransportMetrics {
     pub bytes_fetched: u64,
     pub bytes_reused: u64,
     pub validation_misses: u64,
+    pub persistent_cache_errors: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -398,8 +415,15 @@ pub struct BrowserObjectReadResult {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BrowserLocalObject {
     resource: String,
-    bytes: Bytes,
+    source: BrowserLocalObjectSource,
     identity: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum BrowserLocalObjectSource {
+    Bytes(Bytes),
+    #[cfg(target_arch = "wasm32")]
+    Blob(web_sys::Blob),
 }
 
 impl BrowserLocalObject {
@@ -410,7 +434,7 @@ impl BrowserLocalObject {
 
         Self {
             resource,
-            bytes,
+            source: BrowserLocalObjectSource::Bytes(bytes),
             identity,
         }
     }
@@ -422,21 +446,48 @@ impl BrowserLocalObject {
     ) -> Self {
         Self {
             resource: resource.into(),
-            bytes: bytes.into(),
+            source: BrowserLocalObjectSource::Bytes(bytes.into()),
             identity: identity.into(),
         }
     }
 
-    fn metadata(&self) -> BrowserObjectMetadata {
-        BrowserObjectMetadata {
-            resource: self.resource.clone(),
-            size_bytes: self.bytes.len() as u64,
-            identity: self.identity.clone(),
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_blob_with_identity(
+        resource: impl Into<String>,
+        blob: web_sys::Blob,
+        identity: impl Into<String>,
+    ) -> Self {
+        Self {
+            resource: resource.into(),
+            source: BrowserLocalObjectSource::Blob(blob),
+            identity: identity.into(),
         }
     }
 
-    fn read_extent(&self, extent: ByteExtent) -> Result<Bytes, QueryError> {
-        let object_len = self.bytes.len() as u64;
+    fn metadata(&self) -> Result<BrowserObjectMetadata, QueryError> {
+        Ok(BrowserObjectMetadata {
+            resource: self.resource.clone(),
+            size_bytes: match &self.source {
+                BrowserLocalObjectSource::Bytes(bytes) => bytes.len() as u64,
+                #[cfg(target_arch = "wasm32")]
+                BrowserLocalObjectSource::Blob(blob) => blob_size_to_u64(blob.size())?,
+            },
+            identity: self.identity.clone(),
+        })
+    }
+
+    async fn read_extent(&self, extent: ByteExtent) -> Result<Bytes, QueryError> {
+        match &self.source {
+            BrowserLocalObjectSource::Bytes(bytes) => self.read_bytes_extent(bytes, extent),
+            #[cfg(target_arch = "wasm32")]
+            BrowserLocalObjectSource::Blob(blob) => {
+                read_blob_extent(blob, &self.resource, extent).await
+            }
+        }
+    }
+
+    fn read_bytes_extent(&self, bytes: &Bytes, extent: ByteExtent) -> Result<Bytes, QueryError> {
+        let object_len = bytes.len() as u64;
         let end = extent.end_exclusive()?;
         if end > object_len {
             return Err(protocol_error(format!(
@@ -450,7 +501,7 @@ impl BrowserLocalObject {
         let end = usize::try_from(end)
             .map_err(|_| invalid_request("browser-local extent end overflowed usize"))?;
 
-        Ok(self.bytes.slice(start..end))
+        Ok(bytes.slice(start..end))
     }
 }
 
@@ -470,14 +521,99 @@ impl BrowserObject {
     }
 }
 
-pub trait PersistentExtentCache: Send + Sync {
-    fn load(
+pub type PersistentCacheFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, QueryError>> + 'a>>;
+
+pub trait PersistentExtentCache {
+    fn load<'a>(
+        &'a self,
+        key: &'a ExtentCacheKey,
+        requested_extent: ByteExtent,
+    ) -> PersistentCacheFuture<'a, Option<ExtentCacheEntry>>;
+
+    fn store<'a>(&'a self, entry: &'a ExtentCacheEntry) -> PersistentCacheFuture<'a, ()>;
+}
+
+#[derive(Debug)]
+pub struct MemoryPersistentExtentCache {
+    max_entries: usize,
+    entries: Mutex<Vec<ExtentCacheEntry>>,
+}
+
+impl Default for MemoryPersistentExtentCache {
+    fn default() -> Self {
+        Self::with_max_entries(DEFAULT_MEMORY_PERSISTENT_CACHE_ENTRIES)
+    }
+}
+
+impl MemoryPersistentExtentCache {
+    pub fn with_max_entries(max_entries: usize) -> Self {
+        Self {
+            max_entries: max_entries.max(1),
+            entries: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn load_entry(
         &self,
         key: &ExtentCacheKey,
         requested_extent: ByteExtent,
-    ) -> Result<Option<ExtentCacheEntry>, QueryError>;
+    ) -> Result<Option<ExtentCacheEntry>, QueryError> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| cache_error("persistent memory cache lock was poisoned"))?;
+        let Some(position) = entries
+            .iter()
+            .position(|entry| entry.can_satisfy(key, requested_extent))
+        else {
+            return Ok(None);
+        };
+        let entry = entries.remove(position);
+        let loaded = entry.clone();
+        entries.push(entry);
+        Ok(Some(loaded))
+    }
 
-    fn store(&self, entry: &ExtentCacheEntry) -> Result<(), QueryError>;
+    fn store_entry(&self, entry: &ExtentCacheEntry) -> Result<(), QueryError> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| cache_error("persistent memory cache lock was poisoned"))?;
+        let mut new_entry = entry.clone();
+        let mut retained = Vec::with_capacity(entries.len() + 1);
+
+        for existing in entries.drain(..) {
+            if existing.key == new_entry.key
+                && existing.extent.touches_or_overlaps(new_entry.extent)
+            {
+                new_entry = existing.merge(new_entry)?;
+            } else {
+                retained.push(existing);
+            }
+        }
+
+        retained.push(new_entry);
+        while retained.len() > self.max_entries {
+            retained.remove(0);
+        }
+        *entries = retained;
+
+        Ok(())
+    }
+}
+
+impl PersistentExtentCache for MemoryPersistentExtentCache {
+    fn load<'a>(
+        &'a self,
+        key: &'a ExtentCacheKey,
+        requested_extent: ByteExtent,
+    ) -> PersistentCacheFuture<'a, Option<ExtentCacheEntry>> {
+        Box::pin(async move { self.load_entry(key, requested_extent) })
+    }
+
+    fn store<'a>(&'a self, entry: &'a ExtentCacheEntry) -> PersistentCacheFuture<'a, ()> {
+        Box::pin(async move { self.store_entry(entry) })
+    }
 }
 
 pub struct BrowserObjectRangeReader {
@@ -547,7 +683,7 @@ impl BrowserObjectRangeReader {
     ) -> Result<BrowserObjectReadResult, QueryError> {
         match object {
             BrowserObject::Http { url } => self.read_http_extent(url, extent, known_metadata).await,
-            BrowserObject::Local(local) => self.read_local_extent(local, extent),
+            BrowserObject::Local(local) => self.read_local_extent(local, extent).await,
         }
     }
 
@@ -567,7 +703,7 @@ impl BrowserObjectRangeReader {
             .bytes_fetched
             .saturating_add(probe_bytes_fetched);
 
-        if let Some(bytes) = self.try_reuse_extent(&key, extent)? {
+        if let Some(bytes) = self.try_reuse_extent(&key, extent).await? {
             return Ok(BrowserObjectReadResult {
                 metadata,
                 extent,
@@ -594,8 +730,10 @@ impl BrowserObjectRangeReader {
         self.metrics.bytes_fetched = self.metrics.bytes_fetched.saturating_add(extent.length);
         let entry = ExtentCacheEntry::new(key, extent, bytes.clone())?;
         let merged = self.upsert_memory_entry(entry)?;
-        if let Some(persistent_cache) = &self.persistent_cache {
-            persistent_cache.store(&merged)?;
+        if let Some(persistent_cache) = self.persistent_cache.as_ref().map(Arc::clone) {
+            if persistent_cache.store(&merged).await.is_err() {
+                self.record_persistent_cache_error();
+            }
         }
 
         Ok(BrowserObjectReadResult {
@@ -633,16 +771,16 @@ impl BrowserObjectRangeReader {
         Ok((metadata.clone(), metadata_probe_body_len(&metadata)))
     }
 
-    fn read_local_extent(
+    async fn read_local_extent(
         &mut self,
         object: &BrowserLocalObject,
         extent: ByteExtent,
     ) -> Result<BrowserObjectReadResult, QueryError> {
-        let metadata = object.metadata();
+        let metadata = object.metadata()?;
         let key = cache_key_for(&metadata);
         self.record_identity_validation(&metadata);
 
-        if let Some(bytes) = self.try_reuse_extent(&key, extent)? {
+        if let Some(bytes) = self.try_reuse_extent(&key, extent).await? {
             return Ok(BrowserObjectReadResult {
                 metadata,
                 extent,
@@ -650,12 +788,14 @@ impl BrowserObjectRangeReader {
             });
         }
 
-        let bytes = object.read_extent(extent)?;
+        let bytes = object.read_extent(extent).await?;
         self.metrics.bytes_fetched = self.metrics.bytes_fetched.saturating_add(extent.length);
         let entry = ExtentCacheEntry::new(key, extent, bytes.clone())?;
         let merged = self.upsert_memory_entry(entry)?;
-        if let Some(persistent_cache) = &self.persistent_cache {
-            persistent_cache.store(&merged)?;
+        if let Some(persistent_cache) = self.persistent_cache.as_ref().map(Arc::clone) {
+            if persistent_cache.store(&merged).await.is_err() {
+                self.record_persistent_cache_error();
+            }
         }
 
         Ok(BrowserObjectReadResult {
@@ -665,7 +805,7 @@ impl BrowserObjectRangeReader {
         })
     }
 
-    fn try_reuse_extent(
+    async fn try_reuse_extent(
         &mut self,
         key: &ExtentCacheKey,
         extent: ByteExtent,
@@ -680,12 +820,19 @@ impl BrowserObjectRangeReader {
             return Ok(Some(entry.slice(extent)?));
         }
 
-        if let Some(persistent_cache) = &self.persistent_cache {
-            if let Some(entry) = persistent_cache.load(key, extent)? {
-                let bytes = entry.slice(extent)?;
-                self.metrics.bytes_reused = self.metrics.bytes_reused.saturating_add(extent.length);
-                let _ = self.upsert_memory_entry(entry)?;
-                return Ok(Some(bytes));
+        if let Some(persistent_cache) = self.persistent_cache.as_ref().map(Arc::clone) {
+            match persistent_cache.load(key, extent).await {
+                Ok(Some(entry)) => match entry.slice(extent) {
+                    Ok(bytes) => {
+                        self.metrics.bytes_reused =
+                            self.metrics.bytes_reused.saturating_add(extent.length);
+                        let _ = self.upsert_memory_entry(entry)?;
+                        return Ok(Some(bytes));
+                    }
+                    Err(_) => self.record_persistent_cache_error(),
+                },
+                Ok(None) => {}
+                Err(_) => self.record_persistent_cache_error(),
             }
         }
 
@@ -730,6 +877,11 @@ impl BrowserObjectRangeReader {
         });
         self.metrics.validation_misses = self.metrics.validation_misses.saturating_add(stale_count);
     }
+
+    fn record_persistent_cache_error(&mut self) {
+        self.metrics.persistent_cache_errors =
+            self.metrics.persistent_cache_errors.saturating_add(1);
+    }
 }
 
 fn cache_key_for(metadata: &BrowserObjectMetadata) -> ExtentCacheKey {
@@ -769,6 +921,709 @@ fn derive_local_identity(bytes: &Bytes) -> String {
     }
 
     identity
+}
+
+#[cfg(target_arch = "wasm32")]
+fn extent_cache_file_name(key: &ExtentCacheKey, extent: ByteExtent) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"axon:extent-cache-file:v1");
+    hash_string(&mut hasher, &key.resource);
+    match &key.identity {
+        Some(identity) => {
+            hasher.update([1]);
+            hash_string(&mut hasher, identity);
+        }
+        None => hasher.update([0]),
+    }
+    hasher.update(extent.offset.to_le_bytes());
+    hasher.update(extent.length.to_le_bytes());
+
+    let digest = hasher.finalize();
+    let mut file_name = String::with_capacity(digest.len() * 2 + ".bin".len());
+    for byte in digest {
+        let _ = write!(&mut file_name, "{byte:02x}");
+    }
+    file_name.push_str(".bin");
+    file_name
+}
+
+#[cfg(target_arch = "wasm32")]
+fn extent_cache_index_file_name(key: &ExtentCacheKey) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"axon:extent-cache-index:v1");
+    hash_string(&mut hasher, &key.resource);
+    match &key.identity {
+        Some(identity) => {
+            hasher.update([1]);
+            hash_string(&mut hasher, identity);
+        }
+        None => hasher.update([0]),
+    }
+
+    let digest = hasher.finalize();
+    let mut file_name = String::with_capacity(digest.len() * 2 + ".idx".len());
+    for byte in digest {
+        let _ = write!(&mut file_name, "{byte:02x}");
+    }
+    file_name.push_str(".idx");
+    file_name
+}
+
+#[cfg(target_arch = "wasm32")]
+fn hash_string(hasher: &mut Sha256, value: &str) {
+    hasher.update((value.len() as u64).to_le_bytes());
+    hasher.update(value.as_bytes());
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct ExtentCacheIndex {
+    extents: Vec<ByteExtent>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ExtentCacheIndex {
+    fn containing_extent(&self, requested_extent: ByteExtent) -> Option<ByteExtent> {
+        self.extents
+            .iter()
+            .copied()
+            .filter(|extent| extent.contains(requested_extent))
+            .min_by_key(|extent| (extent.length, extent.offset))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn serialize_extent_cache_index(index: &ExtentCacheIndex) -> Result<Vec<u8>, QueryError> {
+    let count = u32::try_from(index.extents.len())
+        .map_err(|_| invalid_request("cache index length overflowed u32"))?;
+    let mut encoded =
+        Vec::with_capacity(EXTENT_CACHE_INDEX_MAGIC.len() + 4 + index.extents.len() * 16);
+
+    encoded.extend_from_slice(EXTENT_CACHE_INDEX_MAGIC);
+    encoded.extend_from_slice(&count.to_le_bytes());
+    for extent in &index.extents {
+        encoded.extend_from_slice(&extent.offset.to_le_bytes());
+        encoded.extend_from_slice(&extent.length.to_le_bytes());
+    }
+
+    Ok(encoded)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn deserialize_extent_cache_index(encoded: &[u8]) -> Result<ExtentCacheIndex, QueryError> {
+    let mut cursor = 0_usize;
+    read_magic(
+        encoded,
+        &mut cursor,
+        EXTENT_CACHE_INDEX_MAGIC,
+        "cache index",
+    )?;
+    let count = read_u32(encoded, &mut cursor)? as usize;
+    let mut extents = Vec::with_capacity(count);
+    for _ in 0..count {
+        let offset = read_u64(encoded, &mut cursor)?;
+        let length = read_u64(encoded, &mut cursor)?;
+        extents.push(ByteExtent::new(offset, length)?);
+    }
+    if cursor != encoded.len() {
+        return Err(cache_error("cache index contained trailing bytes"));
+    }
+
+    Ok(ExtentCacheIndex { extents })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn serialize_extent_cache_entry(entry: &ExtentCacheEntry) -> Result<Vec<u8>, QueryError> {
+    let resource = entry.key.resource.as_bytes();
+    let resource_len = u32::try_from(resource.len())
+        .map_err(|_| invalid_request("cache resource length overflowed u32"))?;
+    let identity = entry.key.identity.as_deref().map(str::as_bytes);
+    let identity_len = match identity {
+        Some(identity) => u32::try_from(identity.len())
+            .map_err(|_| invalid_request("cache identity length overflowed u32"))?,
+        None => u32::MAX,
+    };
+    let payload_len = u64::try_from(entry.bytes.len())
+        .map_err(|_| invalid_request("cache payload length overflowed u64"))?;
+    let mut encoded = Vec::with_capacity(
+        EXTENT_CACHE_ENTRY_MAGIC.len()
+            + 4
+            + 4
+            + 8
+            + 8
+            + 8
+            + resource.len()
+            + identity.map_or(0, <[u8]>::len)
+            + entry.bytes.len(),
+    );
+
+    encoded.extend_from_slice(EXTENT_CACHE_ENTRY_MAGIC);
+    encoded.extend_from_slice(&resource_len.to_le_bytes());
+    encoded.extend_from_slice(&identity_len.to_le_bytes());
+    encoded.extend_from_slice(&entry.extent.offset.to_le_bytes());
+    encoded.extend_from_slice(&entry.extent.length.to_le_bytes());
+    encoded.extend_from_slice(&payload_len.to_le_bytes());
+    encoded.extend_from_slice(resource);
+    if let Some(identity) = identity {
+        encoded.extend_from_slice(identity);
+    }
+    encoded.extend_from_slice(entry.bytes.as_ref());
+
+    Ok(encoded)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn deserialize_extent_cache_entry(encoded: &[u8]) -> Result<ExtentCacheEntry, QueryError> {
+    let mut cursor = 0_usize;
+    read_magic(
+        encoded,
+        &mut cursor,
+        EXTENT_CACHE_ENTRY_MAGIC,
+        "cache entry",
+    )?;
+    let resource_len = read_u32(encoded, &mut cursor)? as usize;
+    let identity_len = read_u32(encoded, &mut cursor)?;
+    let offset = read_u64(encoded, &mut cursor)?;
+    let length = read_u64(encoded, &mut cursor)?;
+    let payload_len = usize::try_from(read_u64(encoded, &mut cursor)?)
+        .map_err(|_| cache_error("cache payload length overflowed usize"))?;
+    let resource = read_string(encoded, &mut cursor, resource_len, "resource")?;
+    let identity = if identity_len == u32::MAX {
+        None
+    } else {
+        Some(read_string(
+            encoded,
+            &mut cursor,
+            identity_len as usize,
+            "identity",
+        )?)
+    };
+    let payload = read_slice(encoded, &mut cursor, payload_len, "payload")?;
+    if cursor != encoded.len() {
+        return Err(cache_error("cache entry contained trailing bytes"));
+    }
+
+    ExtentCacheEntry::new(
+        ExtentCacheKey::new(resource, identity),
+        ByteExtent::new(offset, length)?,
+        Bytes::copy_from_slice(payload),
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_magic(
+    encoded: &[u8],
+    cursor: &mut usize,
+    expected: &[u8],
+    field: &str,
+) -> Result<(), QueryError> {
+    let magic = read_slice(encoded, cursor, expected.len(), "magic")?;
+    if magic != expected {
+        return Err(cache_error(format!("{field} magic did not match")));
+    }
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_u32(encoded: &[u8], cursor: &mut usize) -> Result<u32, QueryError> {
+    let bytes = read_slice(encoded, cursor, 4, "u32")?;
+    Ok(u32::from_le_bytes(
+        bytes
+            .try_into()
+            .expect("read_slice should return exactly four bytes"),
+    ))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_u64(encoded: &[u8], cursor: &mut usize) -> Result<u64, QueryError> {
+    let bytes = read_slice(encoded, cursor, 8, "u64")?;
+    Ok(u64::from_le_bytes(
+        bytes
+            .try_into()
+            .expect("read_slice should return exactly eight bytes"),
+    ))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_string(
+    encoded: &[u8],
+    cursor: &mut usize,
+    length: usize,
+    field: &str,
+) -> Result<String, QueryError> {
+    let bytes = read_slice(encoded, cursor, length, field)?;
+    String::from_utf8(bytes.to_vec())
+        .map_err(|error| cache_error(format!("cache entry {field} was not valid UTF-8: {error}")))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_slice<'a>(
+    encoded: &'a [u8],
+    cursor: &mut usize,
+    length: usize,
+    field: &str,
+) -> Result<&'a [u8], QueryError> {
+    let end = cursor
+        .checked_add(length)
+        .ok_or_else(|| cache_error(format!("cache entry {field} length overflowed usize")))?;
+    let slice = encoded
+        .get(*cursor..end)
+        .ok_or_else(|| cache_error(format!("cache entry ended while reading {field}")))?;
+    *cursor = end;
+    Ok(slice)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone)]
+pub struct OpfsPersistentExtentCache {
+    directory: JsValue,
+    max_entries: usize,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl OpfsPersistentExtentCache {
+    pub async fn open_default() -> Result<Self, QueryError> {
+        Self::open("axon-extent-cache").await
+    }
+
+    pub async fn open(namespace: impl Into<String>) -> Result<Self, QueryError> {
+        Self::open_with_max_entries(namespace, DEFAULT_MEMORY_PERSISTENT_CACHE_ENTRIES).await
+    }
+
+    pub async fn open_with_max_entries(
+        namespace: impl Into<String>,
+        max_entries: usize,
+    ) -> Result<Self, QueryError> {
+        let root = opfs_root_directory().await?;
+        Self::open_in_directory_with_max_entries(root, namespace, max_entries).await
+    }
+
+    pub async fn open_in_directory(
+        directory: JsValue,
+        namespace: impl Into<String>,
+    ) -> Result<Self, QueryError> {
+        Self::open_in_directory_with_max_entries(
+            directory,
+            namespace,
+            DEFAULT_MEMORY_PERSISTENT_CACHE_ENTRIES,
+        )
+        .await
+    }
+
+    pub async fn open_in_directory_with_max_entries(
+        directory: JsValue,
+        namespace: impl Into<String>,
+        max_entries: usize,
+    ) -> Result<Self, QueryError> {
+        let namespace = validate_opfs_name(namespace.into(), "namespace")?;
+        let directory = opfs_directory_handle(&directory, &namespace, true).await?;
+        Ok(Self::from_directory_handle_with_max_entries(
+            directory,
+            max_entries,
+        ))
+    }
+
+    pub fn from_directory_handle(directory: JsValue) -> Self {
+        Self::from_directory_handle_with_max_entries(
+            directory,
+            DEFAULT_MEMORY_PERSISTENT_CACHE_ENTRIES,
+        )
+    }
+
+    pub fn from_directory_handle_with_max_entries(directory: JsValue, max_entries: usize) -> Self {
+        Self {
+            directory,
+            max_entries: max_entries.max(1),
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl PersistentExtentCache for OpfsPersistentExtentCache {
+    fn load<'a>(
+        &'a self,
+        key: &'a ExtentCacheKey,
+        requested_extent: ByteExtent,
+    ) -> PersistentCacheFuture<'a, Option<ExtentCacheEntry>> {
+        Box::pin(async move {
+            let index = opfs_load_index(&self.directory, key).await?;
+            let Some(stored_extent) = index.containing_extent(requested_extent) else {
+                return Ok(None);
+            };
+            let Some(entry) = opfs_load_entry(&self.directory, key, stored_extent).await? else {
+                return Ok(None);
+            };
+
+            if entry.can_satisfy(key, requested_extent) {
+                Ok(Some(entry))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    fn store<'a>(&'a self, entry: &'a ExtentCacheEntry) -> PersistentCacheFuture<'a, ()> {
+        Box::pin(async move {
+            let mut index = opfs_load_index(&self.directory, &entry.key).await?;
+            let mut new_entry = entry.clone();
+            let mut obsolete_extents = Vec::new();
+            let mut retained_extents = Vec::with_capacity(index.extents.len() + 1);
+            index.extents.sort_by(|left, right| {
+                left.offset
+                    .cmp(&right.offset)
+                    .then(left.length.cmp(&right.length))
+            });
+
+            for extent in index.extents {
+                if extent.touches_or_overlaps(new_entry.extent) {
+                    if let Some(existing_entry) =
+                        opfs_load_entry(&self.directory, &entry.key, extent).await?
+                    {
+                        new_entry = existing_entry.merge(new_entry)?;
+                    }
+                    obsolete_extents.push(extent);
+                } else {
+                    retained_extents.push(extent);
+                }
+            }
+
+            retained_extents.push(new_entry.extent);
+            while retained_extents.len() > self.max_entries {
+                obsolete_extents.push(retained_extents.remove(0));
+            }
+
+            opfs_store_entry(&self.directory, &new_entry).await?;
+            opfs_store_index(
+                &self.directory,
+                &new_entry.key,
+                &ExtentCacheIndex {
+                    extents: retained_extents,
+                },
+            )
+            .await?;
+
+            for extent in obsolete_extents {
+                if extent != new_entry.extent {
+                    let _ = opfs_remove_entry(
+                        &self.directory,
+                        &extent_cache_file_name(&new_entry.key, extent),
+                    )
+                    .await;
+                }
+            }
+
+            Ok(())
+        })
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn opfs_load_index(
+    directory: &JsValue,
+    key: &ExtentCacheKey,
+) -> Result<ExtentCacheIndex, QueryError> {
+    let file_name = extent_cache_index_file_name(key);
+    let Some(encoded) = opfs_read_optional_file(directory, &file_name).await? else {
+        return Ok(ExtentCacheIndex::default());
+    };
+    deserialize_extent_cache_index(&encoded)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn opfs_store_index(
+    directory: &JsValue,
+    key: &ExtentCacheKey,
+    index: &ExtentCacheIndex,
+) -> Result<(), QueryError> {
+    let file_name = extent_cache_index_file_name(key);
+    let encoded = serialize_extent_cache_index(index)?;
+    opfs_write_file(directory, &file_name, &encoded).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn opfs_load_entry(
+    directory: &JsValue,
+    key: &ExtentCacheKey,
+    stored_extent: ByteExtent,
+) -> Result<Option<ExtentCacheEntry>, QueryError> {
+    let file_name = extent_cache_file_name(key, stored_extent);
+    let Some(encoded) = opfs_read_optional_file(directory, &file_name).await? else {
+        return Ok(None);
+    };
+    let entry = deserialize_extent_cache_entry(&encoded)?;
+
+    if entry.can_satisfy(key, stored_extent) {
+        Ok(Some(entry))
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn opfs_store_entry(directory: &JsValue, entry: &ExtentCacheEntry) -> Result<(), QueryError> {
+    let file_name = extent_cache_file_name(&entry.key, entry.extent);
+    let encoded = serialize_extent_cache_entry(entry)?;
+    opfs_write_file(directory, &file_name, &encoded).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn opfs_read_optional_file(
+    directory: &JsValue,
+    file_name: &str,
+) -> Result<Option<Bytes>, QueryError> {
+    let file_handle = match opfs_file_handle(directory, file_name, false).await {
+        Ok(file_handle) => file_handle,
+        Err(error) if js_error_name_is(&error, "NotFoundError") => return Ok(None),
+        Err(error) => return Err(js_cache_error("OPFS cache getFileHandle failed", error)),
+    };
+    let file = opfs_get_file(&file_handle).await?;
+    blob_to_bytes(&file).await.map(Some)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn opfs_write_file(
+    directory: &JsValue,
+    file_name: &str,
+    bytes: &[u8],
+) -> Result<(), QueryError> {
+    let file_handle = opfs_file_handle(directory, file_name, true)
+        .await
+        .map_err(|error| js_cache_error("OPFS cache getFileHandle failed", error))?;
+    let writable = opfs_create_writable(&file_handle).await?;
+    opfs_write_all(&writable, bytes).await?;
+    opfs_close_writable(&writable).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn opfs_root_directory() -> Result<JsValue, QueryError> {
+    let global = js_sys::global();
+    let navigator = Reflect::get(&global, &JsValue::from_str("navigator"))
+        .map_err(|error| js_cache_error("browser navigator lookup failed", error))?;
+    let storage = Reflect::get(&navigator, &JsValue::from_str("storage"))
+        .map_err(|error| js_cache_error("browser storage manager lookup failed", error))?;
+    let get_directory = js_function(&storage, "getDirectory")?;
+    let promise = get_directory
+        .call0(&storage)
+        .map_err(|error| js_cache_error("OPFS getDirectory failed", error))?;
+    await_js_promise(promise)
+        .await
+        .map_err(|error| js_cache_error("OPFS getDirectory failed", error))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn opfs_directory_handle(
+    directory: &JsValue,
+    name: &str,
+    create: bool,
+) -> Result<JsValue, QueryError> {
+    let get_directory_handle = js_function(directory, "getDirectoryHandle")?;
+    let options = create_options(create)?;
+    let promise = get_directory_handle
+        .call2(directory, &JsValue::from_str(name), &options)
+        .map_err(|error| js_cache_error("OPFS getDirectoryHandle failed", error))?;
+    await_js_promise(promise)
+        .await
+        .map_err(|error| js_cache_error("OPFS getDirectoryHandle failed", error))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn opfs_file_handle(
+    directory: &JsValue,
+    name: &str,
+    create: bool,
+) -> Result<JsValue, JsValue> {
+    let get_file_handle = js_function_value(directory, "getFileHandle")?;
+    let options = create_options_value(create)?;
+    let promise = get_file_handle.call2(directory, &JsValue::from_str(name), &options)?;
+    await_js_promise(promise).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn opfs_get_file(file_handle: &JsValue) -> Result<web_sys::Blob, QueryError> {
+    let get_file = js_function(file_handle, "getFile")?;
+    let promise = get_file
+        .call0(file_handle)
+        .map_err(|error| js_cache_error("OPFS getFile failed", error))?;
+    let file = await_js_promise(promise)
+        .await
+        .map_err(|error| js_cache_error("OPFS getFile failed", error))?;
+    file.dyn_into::<web_sys::Blob>()
+        .map_err(|error| js_cache_error("OPFS getFile returned a non-Blob value", error))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn opfs_create_writable(file_handle: &JsValue) -> Result<JsValue, QueryError> {
+    let create_writable = js_function(file_handle, "createWritable")?;
+    let promise = create_writable
+        .call0(file_handle)
+        .map_err(|error| js_cache_error("OPFS createWritable failed", error))?;
+    await_js_promise(promise)
+        .await
+        .map_err(|error| js_cache_error("OPFS createWritable failed", error))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn opfs_write_all(writable: &JsValue, bytes: &[u8]) -> Result<(), QueryError> {
+    let write = js_function(writable, "write")?;
+    let array = Uint8Array::from(bytes);
+    let promise = write
+        .call1(writable, array.as_ref())
+        .map_err(|error| js_cache_error("OPFS write failed", error))?;
+    await_js_promise(promise)
+        .await
+        .map_err(|error| js_cache_error("OPFS write failed", error))?;
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn opfs_close_writable(writable: &JsValue) -> Result<(), QueryError> {
+    let close = js_function(writable, "close")?;
+    let promise = close
+        .call0(writable)
+        .map_err(|error| js_cache_error("OPFS close failed", error))?;
+    await_js_promise(promise)
+        .await
+        .map_err(|error| js_cache_error("OPFS close failed", error))?;
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn opfs_remove_entry(directory: &JsValue, name: &str) -> Result<(), QueryError> {
+    let remove_entry = js_function(directory, "removeEntry")?;
+    let promise = remove_entry
+        .call1(directory, &JsValue::from_str(name))
+        .map_err(|error| js_cache_error("OPFS removeEntry failed", error))?;
+    await_js_promise(promise)
+        .await
+        .map_err(|error| js_cache_error("OPFS removeEntry failed", error))?;
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_blob_extent(
+    blob: &web_sys::Blob,
+    resource: &str,
+    extent: ByteExtent,
+) -> Result<Bytes, QueryError> {
+    let object_len = blob_size_to_u64(blob.size())?;
+    let end = extent.end_exclusive()?;
+    if end > object_len {
+        return Err(protocol_error(format!(
+            "browser-local object '{resource}' only exposes {object_len} bytes, but extent {}..{} was requested",
+            extent.offset, end
+        )));
+    }
+    let start = u64_to_safe_js_number(extent.offset, "browser Blob extent start")?;
+    let end = u64_to_safe_js_number(end, "browser Blob extent end")?;
+    let slice = blob
+        .slice_with_f64_and_f64(start, end)
+        .map_err(|error| js_cache_error("browser Blob slice failed", error))?;
+
+    blob_to_bytes(&slice).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn blob_to_bytes(blob: &web_sys::Blob) -> Result<Bytes, QueryError> {
+    let buffer = JsFuture::from(blob.array_buffer())
+        .await
+        .map_err(|error| js_cache_error("browser Blob arrayBuffer failed", error))?;
+    let array = Uint8Array::new(&buffer);
+    let mut bytes = vec![0_u8; array.length() as usize];
+    array.copy_to(bytes.as_mut_slice());
+    Ok(Bytes::from(bytes))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn blob_size_to_u64(size: f64) -> Result<u64, QueryError> {
+    if !size.is_finite() || size < 0.0 || size > JS_MAX_SAFE_INTEGER_U64 as f64 {
+        return Err(protocol_error("browser Blob reported an invalid size"));
+    }
+    Ok(size as u64)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn u64_to_safe_js_number(value: u64, field: &str) -> Result<f64, QueryError> {
+    if value > JS_MAX_SAFE_INTEGER_U64 {
+        return Err(invalid_request(format!(
+            "{field} exceeds JavaScript's safe integer range"
+        )));
+    }
+    Ok(value as f64)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn validate_opfs_name(name: String, field: &str) -> Result<String, QueryError> {
+    if name.is_empty() {
+        return Err(invalid_request(format!(
+            "OPFS cache {field} cannot be empty"
+        )));
+    }
+    if !name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(invalid_request(format!(
+            "OPFS cache {field} must contain only ASCII letters, digits, '.', '-', or '_'"
+        )));
+    }
+    Ok(name)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_function(target: &JsValue, name: &str) -> Result<Function, QueryError> {
+    js_function_value(target, name)
+        .map_err(|error| js_cache_error(format!("browser method '{name}' lookup failed"), error))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_function_value(target: &JsValue, name: &str) -> Result<Function, JsValue> {
+    Reflect::get(target, &JsValue::from_str(name))?.dyn_into::<Function>()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn create_options(create: bool) -> Result<JsValue, QueryError> {
+    create_options_value(create)
+        .map_err(|error| js_cache_error("OPFS create options could not be built", error))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn create_options_value(create: bool) -> Result<JsValue, JsValue> {
+    let options = Object::new();
+    Reflect::set(
+        &options,
+        &JsValue::from_str("create"),
+        &JsValue::from_bool(create),
+    )?;
+    Ok(options.into())
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn await_js_promise(value: JsValue) -> Result<JsValue, JsValue> {
+    let promise = value.dyn_into::<Promise>()?;
+    JsFuture::from(promise).await
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_error_name_is(error: &JsValue, expected: &str) -> bool {
+    Reflect::get(error, &JsValue::from_str("name"))
+        .ok()
+        .and_then(|value| value.as_string())
+        .as_deref()
+        == Some(expected)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_cache_error(context: impl Into<String>, error: JsValue) -> QueryError {
+    let context = context.into();
+    let message = error
+        .as_string()
+        .or_else(|| {
+            Reflect::get(&error, &JsValue::from_str("message"))
+                .ok()
+                .and_then(|value| value.as_string())
+        })
+        .unwrap_or_else(|| format!("{error:?}"));
+    cache_error(format!("{context}: {message}"))
 }
 
 #[derive(Clone, Debug)]
@@ -1290,6 +2145,10 @@ fn redacted_url(url: &Url) -> String {
 
 fn invalid_request(message: impl Into<String>) -> QueryError {
     QueryError::new(QueryErrorCode::InvalidRequest, message, supported_target())
+}
+
+fn cache_error(message: impl Into<String>) -> QueryError {
+    QueryError::new(QueryErrorCode::ExecutionFailed, message, supported_target())
 }
 
 fn protocol_error(message: impl Into<String>) -> QueryError {

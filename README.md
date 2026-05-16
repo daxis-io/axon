@@ -10,9 +10,9 @@ Most analytics stacks round-trip every query through a query service. The browse
 
 Axon takes a different approach:
 
-* If a query is safe to run in a browser tab, fetch only the Parquet byte ranges it needs over signed URLs and run it there.
-* Otherwise, route the same `QueryRequest` to the native DataFusion runtime.
-* Share one query contract, one Delta snapshot resolver, and one fallback taxonomy across both tiers.
+- If a query is safe to run in a browser tab, fetch only the Parquet byte ranges it needs over signed URLs and run it there.
+- Otherwise, route the same `QueryRequest` to the native DataFusion runtime.
+- Share one query contract, one Delta snapshot resolver, and one fallback taxonomy across both tiers.
 
 ## How it works
 
@@ -58,47 +58,50 @@ The Rust workspace lives in [`crates/`](crates/), grouped by role.
 
 ### Shared contract
 
-* [`query-contract`](crates/query-contract/). Request and response types, capability flags, fallback reasons.
-* [`query-router`](crates/query-router/). Decides browser vs. native and produces structured fallback decisions.
+- [`query-contract`](crates/query-contract/). Request and response types, capability flags, fallback reasons.
+- [`query-router`](crates/query-router/). Decides browser vs. native and produces structured fallback decisions.
 
 ### Native tier
 
-* [`native-query-runtime`](crates/native-query-runtime/). DataFusion plus delta-rs reference runtime. The correctness oracle.
-* [`delta-runtime-support`](crates/delta-runtime-support/). Feature detection and error mapping shared by Delta aware code.
+- [`native-query-runtime`](crates/native-query-runtime/). DataFusion plus delta-rs reference runtime. The correctness oracle.
+- [`delta-runtime-support`](crates/delta-runtime-support/). Feature detection and error mapping shared by Delta aware code.
 
 ### Browser tier (compiles to `wasm32-unknown-unknown`)
 
-* [`wasm-http-object-store`](crates/wasm-http-object-store/). Validated HTTP byte range reads with extent caching. Redacts URL secrets in errors.
-* [`wasm-parquet-engine`](crates/wasm-parquet-engine/). Browser side Parquet planning and async footer plus scan primitives.
-* [`wasm-delta-snapshot`](crates/wasm-delta-snapshot/). Browser safe Delta snapshot reconstruction (log replay plus checkpoints).
-* [`wasm-query-runtime`](crates/wasm-query-runtime/). Constrained browser runtime envelope. Bootstraps snapshots, plans, prunes, and runs the supported SQL subset.
-* [`wasm-query-session`](crates/wasm-query-session/). In memory session shell. Caches materialized and bootstrapped snapshots across queries with a memory budget.
-* [`browser-sdk`](crates/browser-sdk/). Embedding surface. Worker request envelopes, Arrow IPC results, fallback propagation.
-* [`browser-engine-worker`](crates/browser-engine-worker/). Linked worker artifact used to measure WASM size, cold start, and memory footprint.
+- [`wasm-http-object-store`](crates/wasm-http-object-store/). Validated HTTP and browser-local byte range reads with memory and OPFS extent cache adapters. Redacts URL secrets in errors.
+- [`wasm-parquet-engine`](crates/wasm-parquet-engine/). Browser side Parquet planning and async footer plus scan primitives.
+- [`wasm-delta-snapshot`](crates/wasm-delta-snapshot/). Browser safe Delta snapshot reconstruction (log replay plus checkpoints).
+- [`wasm-query-runtime`](crates/wasm-query-runtime/). Constrained browser runtime envelope. Bootstraps snapshots, plans, prunes, and runs the supported SQL subset.
+- [`wasm-query-session`](crates/wasm-query-session/). In memory session shell. Caches materialized and bootstrapped snapshots across queries with a memory budget.
+- [`browser-sdk`](crates/browser-sdk/). Embedding surface. Worker request envelopes, Arrow IPC results, fallback propagation.
+- [`browser-engine-worker`](crates/browser-engine-worker/). Linked worker artifact used to measure WASM size, cold start, and memory footprint.
+- [`examples/browser-delta-sandbox`](examples/browser-delta-sandbox/). Browser embedding example with TypeScript SDK helpers for platform feature detection and worker/WASM bundle selection.
 
 ### Trusted control plane
 
-* [`delta-control-plane`](crates/delta-control-plane/). Snapshot resolution and table policy enforcement. Mints the descriptor seam that a (not yet shipped) signing service will fill in with per file URLs.
+- [`delta-control-plane`](crates/delta-control-plane/). Snapshot resolution and table policy enforcement. Mints the descriptor seam that a (not yet shipped) signing service will fill in with per file URLs.
 
 ### Scaffolds (not yet wired up)
 
-* [`udf-abi`](crates/udf-abi/), [`udf-host-wasi`](crates/udf-host-wasi/). Placeholders for hosted UDF execution.
+- [`udf-abi`](crates/udf-abi/), [`udf-host-wasi`](crates/udf-host-wasi/). Placeholders for hosted UDF execution.
 
 ## Scope and status
 
 ### What works in repo today
 
-* Native SQL over Delta tables, with snapshot pinning, partition pruning, and execution derived metrics.
-* A browser runtime that bootstraps a snapshot, plans a candidate file set, prunes partitions and integer footer stats, and executes a curated SQL subset (filter, project, group, the common aggregates, output aligned `ORDER BY` / `LIMIT`).
-* Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`; the shipped browser V1 remains narrow runtime + streaming scan + in-memory session shell.
-* A query router that returns structured fallback decisions instead of guessing.
-* CI gates for `wasm32` build, host tests, WASM smoke tests, a real `browser-engine-worker.wasm` size budget, and dependency guardrails that prevent cloud SDKs from leaking into browser bundles.
+- Native SQL over Delta tables, with snapshot pinning, partition pruning, and execution derived metrics.
+- A browser runtime that bootstraps a snapshot, plans a candidate file set, prunes partitions and integer footer stats, and executes a curated SQL subset (filter, project, group, the common aggregates, output aligned `ORDER BY` / `LIMIT`).
+- Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`; the shipped browser V1 remains narrow runtime + streaming scan + in-memory session shell.
+- The browser-facing TypeScript SDK has a manifest-based bundle selector. The current baseline is single-threaded; SIMD and threaded bundle tiers are represented for future deployments but are not assumed.
+- `wasm-http-object-store` has a first OPFS persistent extent cache adapter for indexed validated extents, bounded per object identity, plus a fail-open cache contract so persistence errors become cache misses.
+- A query router that returns structured fallback decisions instead of guessing.
+- CI gates for `wasm32` build, host tests, WASM smoke tests, a real `browser-engine-worker.wasm` size budget, and dependency guardrails that prevent cloud SDKs from leaking into browser bundles.
 
 ### What is not in this repo yet
 
-* A `services/query-api` HTTP service. signed URL issuance, proxy-mode request issuance, audit logging, request correlation, and CORS/origin validation are external blockers.
-* OPFS / IndexedDB persistent caches. The hook trait exists lower in the stack, but the session shell is in-memory only and no backend ships.
-* A broad browser DataFusion engine. The browser path is a focused interpreter, not a general SQL engine.
+- A `services/query-api` HTTP service. signed URL issuance, proxy-mode request issuance, audit logging, request correlation, and CORS/origin validation are external blockers.
+- IndexedDB persistent caches and session-level persistent table caches. The OPFS adapter exists lower in the object-store stack, but `wasm-query-session` remains in-memory only.
+- A broad browser DataFusion engine. The browser path is a focused interpreter, not a general SQL engine.
 
 The full launch checklist lives in [`docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md`](docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md). External dependencies are tracked in [`docs/release-gates/browser-wasm-delta-gcs-external-blockers.md`](docs/release-gates/browser-wasm-delta-gcs-external-blockers.md).
 
@@ -125,12 +128,12 @@ For the WASM smoke suites and the worker artifact gates, see [Development](#deve
 
 ## Going deeper
 
-* Architecture and intent: [`docs/program/browser-lakehouse-engine-strategy.md`](docs/program/browser-lakehouse-engine-strategy.md)
-* Release handoff and integration runbook: [`docs/program/browser-lakehouse-release-handoff.md`](docs/program/browser-lakehouse-release-handoff.md), [`docs/program/browser-release-integration-runbook.md`](docs/program/browser-release-integration-runbook.md)
-* Browser dependency review: [`docs/program/browser-dependency-compatibility-review-checklist.md`](docs/program/browser-dependency-compatibility-review-checklist.md)
-* Observability contract: [`docs/program/browser-observability-contract.md`](docs/program/browser-observability-contract.md)
-* ADRs and epic notes: [`docs/adr/`](docs/adr/), [`docs/epics/`](docs/epics/)
-* Security reporting: [`SECURITY.md`](SECURITY.md)
+- Architecture and intent: [`docs/program/browser-lakehouse-engine-strategy.md`](docs/program/browser-lakehouse-engine-strategy.md)
+- Release handoff and integration runbook: [`docs/program/browser-lakehouse-release-handoff.md`](docs/program/browser-lakehouse-release-handoff.md), [`docs/program/browser-release-integration-runbook.md`](docs/program/browser-release-integration-runbook.md)
+- Browser dependency review: [`docs/program/browser-dependency-compatibility-review-checklist.md`](docs/program/browser-dependency-compatibility-review-checklist.md)
+- Observability contract: [`docs/program/browser-observability-contract.md`](docs/program/browser-observability-contract.md)
+- ADRs and epic notes: [`docs/adr/`](docs/adr/), [`docs/epics/`](docs/epics/)
+- Security reporting: [`SECURITY.md`](SECURITY.md)
 
 ## Development
 
@@ -175,9 +178,9 @@ CI runs the same commands behind `google-github-actions/auth` when `AXON_GCP_CRE
 
 ## Repository layout
 
-* [`crates/`](crates/). Rust workspace packages. See [Repo tour](#repo-tour).
-* [`tests/conformance/`](tests/conformance/). Native SQL corpora that double as the oracle for the browser planner and executor.
-* [`tests/perf/`](tests/perf/). Performance budgets, the `browser-engine-worker.wasm` size gate, and benchmark scaffolding.
-* [`tests/security/`](tests/security/). Security reporting guidance, browser dependency and bundle guardrails.
-* [`docs/`](docs/). Program, ADR, epic, plan, and release gate documentation.
-* [`.github/workflows/ci.yml`](.github/workflows/ci.yml). CI configuration.
+- [`crates/`](crates/). Rust workspace packages. See [Repo tour](#repo-tour).
+- [`tests/conformance/`](tests/conformance/). Native SQL corpora that double as the oracle for the browser planner and executor.
+- [`tests/perf/`](tests/perf/). Performance budgets, the `browser-engine-worker.wasm` size gate, and benchmark scaffolding.
+- [`tests/security/`](tests/security/). Security reporting guidance, browser dependency and bundle guardrails.
+- [`docs/`](docs/). Program, ADR, epic, plan, and release gate documentation.
+- [`.github/workflows/ci.yml`](.github/workflows/ci.yml). CI configuration.

@@ -12,7 +12,7 @@ This document is the repo-owned handoff bundle for the browser lakehouse release
 - Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`.
 - Browser execution V1 is narrow runtime + streaming scan + in-memory session shell, not broad browser DataFusion.
 - The shipped session shell is in-memory only.
-- Persistent-cache hooks exist in repo, but OPFS / IndexedDB backends are still deferred.
+- Persistent-cache hooks exist in repo, with a narrow OPFS extent-cache backend below the in-memory session shell; IndexedDB and session-level persistent caches are still deferred.
 - Signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation remain external blockers.
 
 Those external blockers stay outside repo-owned success claims in this handoff bundle.
@@ -75,7 +75,7 @@ All examples below are checked into [`docs/program/browser-lakehouse-release-han
 
 - `session_shell = true` means the worker owns reusable in-memory table/session state.
 - `browser_datafusion = false` means the shipped worker is not claiming broad browser DataFusion as the V1 execution target.
-- OPFS / IndexedDB persistence remains deferred even when `session_shell = true`.
+- The OPFS extent-cache backend sits below the session shell; IndexedDB and session-level persistence remain deferred even when `session_shell = true`.
 
 `result_transport`
 
@@ -120,7 +120,7 @@ These items are still external and must stay external in release docs until code
 
 Repo-deferred but not external-service proof:
 
-- OPFS / IndexedDB persistent-cache backends
+- IndexedDB persistent-cache backends and session-level persistent table caches
 - browser DataFusion as the default SKU
 
 See [`docs/release-gates/browser-wasm-delta-gcs-external-blockers.md`](../release-gates/browser-wasm-delta-gcs-external-blockers.md) for the owner-by-owner blocker register.

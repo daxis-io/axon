@@ -4267,11 +4267,15 @@ name = "wasm-http-object-store"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "js-sys",
  "query-contract",
  "reqwest",
  "sha2",
  "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "web-sys",
 ]
 
 [[package]]

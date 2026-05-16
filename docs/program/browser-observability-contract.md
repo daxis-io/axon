@@ -36,8 +36,26 @@ This document defines the metrics and routing signals the repository already emi
 - `identity.wasm_artifact`: canonical wasm artifact filename used by perf and release gates
 - `startup.access_mode`: browser object access mode used by the runtime defaults
 
+`BrowserBundleSelection`
+
+- `bundle.id`: browser SDK selected worker/WASM bundle ID
+- `bundle.tier`: `baseline`, `simd`, `threaded`, or `simd_threaded`
+- `features.crossOriginIsolated`: whether deployment headers enabled cross-origin isolation
+- `features.wasmSIMD`: whether the browser accepts the SDK's WASM SIMD probe
+- `features.wasmThreads`: whether cross-origin isolation and shared WASM memory are available
+- `features.bigInt64Array`: whether `BigInt64Array` exists in the browser runtime
+- Bundle selection is an SDK-side deployment input, not a query result payload.
+
+`BrowserTransportMetrics`
+
+- `bytes_fetched`: bytes read from the backing object source by the browser object-store seam
+- `bytes_reused`: bytes served from in-memory or persistent extent cache
+- `validation_misses`: stale in-memory extents rejected after object identity changed
+- `persistent_cache_errors`: persistent-cache load or store failures treated as cache misses
+
 ## Current Evidence Sources
 
+- `crates/wasm-http-object-store` computes transport cache metrics for the browser object-store seam.
 - `crates/wasm-query-runtime` computes browser metrics and structured fallback outcomes.
 - `crates/browser-sdk` preserves those fields through the worker envelope.
 - `crates/browser-engine-worker` reports runtime SKU, Arrow IPC result transport, artifact identity, startup, and memory baselines.
@@ -60,6 +78,10 @@ The following inputs are ready for an external dashboard pipeline once the trust
 - fallback reason
 - runtime SKU
 - result transport
+- selected bundle ID and tier
+- platform features used for bundle selection
+- browser object-store cache bytes reused
+- browser object-store persistent cache errors
 - worker artifact identity
 - worker artifact size
 - worker startup baseline
@@ -72,6 +94,7 @@ These are the repo-owned thresholds or trend candidates that external dashboards
 - worker artifact size budget failure
 - unexpected worker SKU or artifact identity drift across release evidence
 - unexpected rise in browser fallback frequency by capability gate
+- unexpected rise in persistent cache errors at the browser object-store seam
 - loss of pruning effectiveness shown by `files_skipped`
 - loss of row-group pruning effectiveness shown by `row_groups_skipped`
 - browser startup or memory baseline drift
@@ -81,4 +104,4 @@ These are the repo-owned thresholds or trend candidates that external dashboards
 
 - No dashboard or alerting system is implemented in this repository.
 - No control-plane or service-level request correlation exists in this repository.
-- Cache-hit ratio remains deferred until an in-repo browser cache layer exists.
+- Query-level cache-hit ratio remains deferred until object-store cache metrics are plumbed through the worker and telemetry pipeline.
