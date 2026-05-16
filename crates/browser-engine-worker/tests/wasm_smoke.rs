@@ -8,7 +8,10 @@ use browser_engine_worker::{
 #[cfg(not(target_arch = "wasm32"))]
 use browser_engine_worker::{BrowserWorker, DEFAULT_SESSION_CACHE_BYTES};
 #[cfg(not(target_arch = "wasm32"))]
-use browser_sdk::{ArrowIpcFormat, BrowserWorkerCommand, BrowserWorkerResponseEnvelope};
+use browser_sdk::{
+    ArrowIpcFormat, BrowserWorkerCommand, BrowserWorkerEventEnvelope, BrowserWorkerEventPhase,
+    BrowserWorkerProgressStage, BrowserWorkerResponseEnvelope,
+};
 #[cfg(target_arch = "wasm32")]
 use query_contract::{BrowserAccessMode, ExecutionTarget};
 #[cfg(not(target_arch = "wasm32"))]
@@ -82,6 +85,45 @@ fn worker_rejects_sql_before_open_delta_table() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn worker_instantiation_event_stream_reports_instantiate_phase() {
+    let mut events = Vec::new();
+    BrowserWorker::new_with_event_sink(
+        BrowserRuntimeConfig::default(),
+        DEFAULT_SESSION_CACHE_BYTES,
+        |event| events.push(event),
+    )
+    .expect("worker should construct");
+
+    assert!(
+        events.iter().all(|event| {
+            let context = event.context();
+            context.phase == BrowserWorkerEventPhase::Instantiate
+                && context.request_id.is_none()
+                && context.query_id.is_none()
+                && context.table_name.is_none()
+        }),
+        "instantiate events should not invent command identity: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            BrowserWorkerEventEnvelope::Progress(progress)
+                if progress.stage == BrowserWorkerProgressStage::Started
+        )),
+        "instantiate event stream should include a started progress event"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            BrowserWorkerEventEnvelope::Progress(progress)
+                if progress.stage == BrowserWorkerProgressStage::Finished
+        )),
+        "instantiate event stream should include a finished progress event"
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn worker_opens_delta_table_and_returns_sql_arrow_ipc_stream() {
     let mut worker =
         BrowserWorker::new(BrowserRuntimeConfig::default(), DEFAULT_SESSION_CACHE_BYTES)
@@ -118,6 +160,68 @@ fn worker_opens_delta_table_and_returns_sql_arrow_ipc_stream() {
     );
     assert!(!success.result.bytes.is_empty());
     assert_eq!(success.response.metrics.rows_emitted, 0);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn worker_event_stream_preserves_request_and_query_identity() {
+    let mut worker =
+        BrowserWorker::new(BrowserRuntimeConfig::default(), DEFAULT_SESSION_CACHE_BYTES)
+            .expect("worker should construct");
+    let descriptor = empty_delta_descriptor();
+
+    test_runtime().block_on(
+        worker.handle_command(BrowserWorkerCommand::open_delta_table(
+            "req-open-delta",
+            "events",
+            descriptor.clone(),
+        )),
+    );
+
+    let sql = if cfg!(feature = "datafusion") {
+        "SELECT COUNT(*) AS rows FROM events"
+    } else {
+        "SELECT COUNT(*) AS rows FROM axon_table"
+    };
+    let mut events = Vec::new();
+    let response = test_runtime().block_on(worker.handle_command_streaming_events(
+        BrowserWorkerCommand::sql(
+            "req-sql-events",
+            "events",
+            QueryRequest::new(descriptor.table_uri, sql, ExecutionTarget::BrowserWasm),
+        ),
+        |event| events.push(event),
+    ));
+
+    assert_eq!(response.request_id(), "req-sql-events");
+    assert!(
+        response.success_envelope().is_some(),
+        "query should still return the final success envelope"
+    );
+    assert!(
+        events.iter().all(|event| {
+            let context = event.context();
+            context.phase == BrowserWorkerEventPhase::Query
+                && context.request_id.as_deref() == Some("req-sql-events")
+                && context.query_id.as_deref() == Some("req-sql-events")
+                && context.table_name.as_deref() == Some("events")
+        }),
+        "all query events must preserve request and query identity: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            BrowserWorkerEventEnvelope::Progress(progress)
+                if progress.stage == BrowserWorkerProgressStage::Started
+        )),
+        "query event stream should include a started progress event"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, BrowserWorkerEventEnvelope::RangeReadMetrics(_))),
+        "query event stream should include live range-read metrics"
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -53,12 +53,34 @@ This document defines the metrics and routing signals the repository already emi
 - `validation_misses`: stale in-memory extents rejected after object identity changed
 - `persistent_cache_errors`: persistent-cache load or store failures treated as cache misses
 
+`BrowserWorkerEventEnvelope`
+
+Live worker events are typed observability messages emitted before the final worker response. They
+do not replace `QueryResponse.metrics`, and large results still move through Arrow IPC in
+`BrowserWorkerResponseEnvelope::Success`.
+
+- `progress`: lifecycle stage for `instantiate`, `open`, or `query`; stages are `started`, `planning`, `executing`, `arrow_ipc_ready`, and `finished`
+- `log`: structured worker log with `debug`, `info`, `warn`, or `error` level
+- `range_read_metrics`: live range-read and bootstrap fields: bytes fetched, files touched/skipped, row groups touched/skipped, footer reads, rows emitted, snapshot bootstrap duration, and access mode when tracked
+- `cache_metrics`: session cache counters plus optional browser object-store transport cache counters
+- `fallback`: structured `FallbackReason` observed before a fallback response or fallback-required error
+- `cancellation`: query cancellation surfaced as a typed event before the terminal response
+- `terminal_error`: final structured `QueryError` emitted before `BrowserWorkerResponseEnvelope::Error`
+
+Every command-scoped event carries a context with `phase`, `request_id`, `table_name`, and, for
+query commands, `query_id`. Until the public query request grows a separate query identifier, the
+worker sets `query_id` to the SQL command `request_id`.
+
+The browser TypeScript SDK routes `BrowserWorkerEventEnvelope` messages to the optional `onEvent`
+handler and keeps them separate from terminal worker response envelopes so live events do not
+resolve or reject active requests.
+
 ## Current Evidence Sources
 
 - `crates/wasm-http-object-store` computes transport cache metrics for the browser object-store seam.
 - `crates/wasm-query-runtime` computes browser metrics and structured fallback outcomes.
 - `crates/browser-sdk` preserves those fields through the worker envelope.
-- `crates/browser-engine-worker` reports runtime SKU, Arrow IPC result transport, artifact identity, startup, and memory baselines.
+- `crates/browser-engine-worker` reports runtime SKU, Arrow IPC result transport, artifact identity, startup, memory baselines, and live worker events for worker instantiate/open/query handling.
 - `tests/perf/report_browser_worker_artifact.sh` enforces the shipped worker artifact size budget.
 - `tests/security/verify_browser_dependency_guardrails.sh` proves the worker dependency tree and artifact remain inside the current trust boundary.
 

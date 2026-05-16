@@ -6,7 +6,8 @@ use std::time::Instant;
 
 use browser_sdk::{
     preferred_target, ArrowIpcFormat, ArrowIpcResultEnvelope, BrowserWorkerCommand,
-    BrowserWorkerResponseEnvelope,
+    BrowserWorkerEventContext, BrowserWorkerEventEnvelope, BrowserWorkerLogLevel,
+    BrowserWorkerProgressStage, BrowserWorkerResponseEnvelope,
 };
 use query_contract::{
     BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget,
@@ -21,6 +22,7 @@ pub const RESPONSIBILITY: &str =
     "Internal browser worker artifact used for session-backed command handling, size, startup, and footprint reporting.";
 pub const BROWSER_ENGINE_WORKER_WASM_ARTIFACT: &str = "browser_engine_worker.wasm";
 pub const DEFAULT_SESSION_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+const DATAFUSION_QUERY_CANCELLED_MESSAGE: &str = "experimental browser DataFusion query cancelled";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -114,9 +116,41 @@ impl BrowserWorker {
         runtime_config: BrowserRuntimeConfig,
         max_cached_bytes: u64,
     ) -> Result<Self, QueryError> {
-        Ok(Self {
-            session: BrowserQuerySession::new(runtime_config, max_cached_bytes)?,
-        })
+        Self::new_with_event_sink(runtime_config, max_cached_bytes, |_| {})
+    }
+
+    pub fn new_with_event_sink<F>(
+        runtime_config: BrowserRuntimeConfig,
+        max_cached_bytes: u64,
+        mut emit_event: F,
+    ) -> Result<Self, QueryError>
+    where
+        F: FnMut(BrowserWorkerEventEnvelope),
+    {
+        let context = BrowserWorkerEventContext::instantiate();
+        emit_event(BrowserWorkerEventEnvelope::progress(
+            context.clone(),
+            BrowserWorkerProgressStage::Started,
+        ));
+        emit_event(BrowserWorkerEventEnvelope::log(
+            context.clone(),
+            BrowserWorkerLogLevel::Info,
+            "browser worker instantiating runtime session",
+        ));
+
+        match BrowserQuerySession::new(runtime_config, max_cached_bytes) {
+            Ok(session) => {
+                emit_event(BrowserWorkerEventEnvelope::progress(
+                    context,
+                    BrowserWorkerProgressStage::Finished,
+                ));
+                Ok(Self { session })
+            }
+            Err(error) => {
+                emit_error_events(&mut emit_event, context, &error);
+                Err(error)
+            }
+        }
     }
 
     pub fn new_with_query_budget(
@@ -124,13 +158,51 @@ impl BrowserWorker {
         max_cached_bytes: u64,
         query_budget: BrowserQueryBudget,
     ) -> Result<Self, QueryError> {
-        Ok(Self {
-            session: BrowserQuerySession::new_with_query_budget(
-                runtime_config,
-                max_cached_bytes,
-                query_budget,
-            )?,
-        })
+        Self::new_with_query_budget_and_event_sink(
+            runtime_config,
+            max_cached_bytes,
+            query_budget,
+            |_| {},
+        )
+    }
+
+    pub fn new_with_query_budget_and_event_sink<F>(
+        runtime_config: BrowserRuntimeConfig,
+        max_cached_bytes: u64,
+        query_budget: BrowserQueryBudget,
+        mut emit_event: F,
+    ) -> Result<Self, QueryError>
+    where
+        F: FnMut(BrowserWorkerEventEnvelope),
+    {
+        let context = BrowserWorkerEventContext::instantiate();
+        emit_event(BrowserWorkerEventEnvelope::progress(
+            context.clone(),
+            BrowserWorkerProgressStage::Started,
+        ));
+        emit_event(BrowserWorkerEventEnvelope::log(
+            context.clone(),
+            BrowserWorkerLogLevel::Info,
+            "browser worker instantiating runtime session with query budget",
+        ));
+
+        match BrowserQuerySession::new_with_query_budget(
+            runtime_config,
+            max_cached_bytes,
+            query_budget,
+        ) {
+            Ok(session) => {
+                emit_event(BrowserWorkerEventEnvelope::progress(
+                    context,
+                    BrowserWorkerProgressStage::Finished,
+                ));
+                Ok(Self { session })
+            }
+            Err(error) => {
+                emit_error_events(&mut emit_event, context, &error);
+                Err(error)
+            }
+        }
     }
 
     pub fn runtime(&self) -> &BrowserRuntimeSession {
@@ -145,34 +217,134 @@ impl BrowserWorker {
         &mut self,
         command: BrowserWorkerCommand,
     ) -> BrowserWorkerResponseEnvelope {
+        self.handle_command_streaming_events(command, |_| {}).await
+    }
+
+    pub async fn handle_command_streaming_events<F>(
+        &mut self,
+        command: BrowserWorkerCommand,
+        mut emit_event: F,
+    ) -> BrowserWorkerResponseEnvelope
+    where
+        F: FnMut(BrowserWorkerEventEnvelope),
+    {
         match command {
             BrowserWorkerCommand::OpenTable(command) => {
+                let context = BrowserWorkerEventContext::open(
+                    command.request_id.clone(),
+                    command.name.clone(),
+                );
+                emit_event(BrowserWorkerEventEnvelope::progress(
+                    context.clone(),
+                    BrowserWorkerProgressStage::Started,
+                ));
+                emit_event(BrowserWorkerEventEnvelope::log(
+                    context.clone(),
+                    BrowserWorkerLogLevel::Info,
+                    "browser worker opening table descriptor",
+                ));
                 match self
                     .session
                     .open_table(command.name.clone(), command.snapshot)
                 {
                     Ok(()) => {
+                        emit_cache_metrics(&mut emit_event, &context, &self.session);
+                        emit_event(BrowserWorkerEventEnvelope::progress(
+                            context,
+                            BrowserWorkerProgressStage::Finished,
+                        ));
                         BrowserWorkerResponseEnvelope::opened(command.request_id, command.name)
                     }
-                    Err(error) => BrowserWorkerResponseEnvelope::error(command.request_id, error),
+                    Err(error) => {
+                        emit_error_events(&mut emit_event, context, &error);
+                        BrowserWorkerResponseEnvelope::error(command.request_id, error)
+                    }
                 }
             }
             BrowserWorkerCommand::OpenDeltaTable(command) => {
+                let context = BrowserWorkerEventContext::open(
+                    command.request_id.clone(),
+                    command.name.clone(),
+                );
+                emit_event(BrowserWorkerEventEnvelope::progress(
+                    context.clone(),
+                    BrowserWorkerProgressStage::Started,
+                ));
+                emit_event(BrowserWorkerEventEnvelope::log(
+                    context.clone(),
+                    BrowserWorkerLogLevel::Info,
+                    "browser worker opening Delta table descriptor",
+                ));
                 match self
                     .session
                     .open_delta_table(command.name.clone(), command.snapshot)
                     .await
                 {
                     Ok(()) => {
+                        emit_open_bootstrap_metrics(
+                            &mut emit_event,
+                            &context,
+                            &self.session,
+                            &command.name,
+                        );
+                        emit_cache_metrics(&mut emit_event, &context, &self.session);
+                        emit_event(BrowserWorkerEventEnvelope::progress(
+                            context,
+                            BrowserWorkerProgressStage::Finished,
+                        ));
                         BrowserWorkerResponseEnvelope::opened(command.request_id, command.name)
                     }
-                    Err(error) => BrowserWorkerResponseEnvelope::error(command.request_id, error),
+                    Err(error) => {
+                        emit_error_events(&mut emit_event, context, &error);
+                        BrowserWorkerResponseEnvelope::error(command.request_id, error)
+                    }
                 }
             }
             BrowserWorkerCommand::Sql(command) => {
+                let context = BrowserWorkerEventContext::query(
+                    command.request_id.clone(),
+                    command.name.clone(),
+                );
+                emit_event(BrowserWorkerEventEnvelope::progress(
+                    context.clone(),
+                    BrowserWorkerProgressStage::Started,
+                ));
+                emit_event(BrowserWorkerEventEnvelope::log(
+                    context.clone(),
+                    BrowserWorkerLogLevel::Info,
+                    "browser worker executing SQL query",
+                ));
+                emit_event(BrowserWorkerEventEnvelope::progress(
+                    context.clone(),
+                    BrowserWorkerProgressStage::Executing,
+                ));
                 match self.session.sql(&command.name, &command.request).await {
-                    Ok(result) => success_response(command.request_id, result),
-                    Err(error) => BrowserWorkerResponseEnvelope::error(command.request_id, error),
+                    Ok(result) => {
+                        emit_event(BrowserWorkerEventEnvelope::range_read_metrics(
+                            context.clone(),
+                            result.response.metrics,
+                        ));
+                        if let Some(reason) = result.response.fallback_reason.clone() {
+                            emit_event(BrowserWorkerEventEnvelope::fallback(
+                                context.clone(),
+                                reason,
+                            ));
+                        }
+                        emit_cache_metrics(&mut emit_event, &context, &self.session);
+                        emit_event(BrowserWorkerEventEnvelope::progress(
+                            context.clone(),
+                            BrowserWorkerProgressStage::ArrowIpcReady,
+                        ));
+                        emit_event(BrowserWorkerEventEnvelope::progress(
+                            context,
+                            BrowserWorkerProgressStage::Finished,
+                        ));
+                        success_response(command.request_id, result)
+                    }
+                    Err(error) => {
+                        emit_error_events(&mut emit_event, context, &error);
+                        BrowserWorkerResponseEnvelope::error(command.request_id, error)
+                    }
                 }
             }
             BrowserWorkerCommand::Dispose(command) => {
@@ -289,6 +461,205 @@ fn success_response(
             result.runtime_result.ipc_bytes.to_vec(),
         ),
     )
+}
+
+fn emit_cache_metrics<F>(
+    emit_event: &mut F,
+    context: &BrowserWorkerEventContext,
+    session: &BrowserQuerySession,
+) where
+    F: FnMut(BrowserWorkerEventEnvelope),
+{
+    let session_table_count = u64::try_from(session.table_count()).unwrap_or(u64::MAX);
+    emit_event(BrowserWorkerEventEnvelope::cache_metrics(
+        context.clone(),
+        session.cached_bytes(),
+        session_table_count,
+        session.max_cached_bytes(),
+        None,
+    ));
+}
+
+fn emit_open_bootstrap_metrics<F>(
+    emit_event: &mut F,
+    context: &BrowserWorkerEventContext,
+    session: &BrowserQuerySession,
+    table_name: &str,
+) where
+    F: FnMut(BrowserWorkerEventEnvelope),
+{
+    let Some(snapshot) = session
+        .table(table_name)
+        .and_then(|table| table.bootstrapped_snapshot())
+    else {
+        return;
+    };
+
+    let active_files = snapshot.active_files();
+    let files_touched = u64::try_from(active_files.len()).unwrap_or(u64::MAX);
+    let row_groups_touched = active_files.iter().fold(0_u64, |total, file| {
+        total.saturating_add(file.metadata().row_group_count)
+    });
+    let rows_emitted = active_files.iter().fold(0_u64, |total, file| {
+        total.saturating_add(file.metadata().row_count)
+    });
+
+    emit_event(BrowserWorkerEventEnvelope::range_read_metrics(
+        context.clone(),
+        QueryMetricsSummary {
+            bytes_fetched: 0,
+            duration_ms: snapshot.snapshot_bootstrap_duration_ms().unwrap_or(0),
+            files_touched,
+            files_skipped: 0,
+            row_groups_touched,
+            row_groups_skipped: 0,
+            footer_reads: snapshot.footer_reads(),
+            rows_emitted,
+            snapshot_bootstrap_duration_ms: snapshot.snapshot_bootstrap_duration_ms(),
+            access_mode: snapshot.access_mode(),
+        },
+    ));
+}
+
+fn emit_error_events<F>(emit_event: &mut F, context: BrowserWorkerEventContext, error: &QueryError)
+where
+    F: FnMut(BrowserWorkerEventEnvelope),
+{
+    if let Some(reason) = error.fallback_reason.clone() {
+        emit_event(BrowserWorkerEventEnvelope::fallback(
+            context.clone(),
+            reason,
+        ));
+    }
+    if is_query_cancellation_error(error) {
+        emit_event(BrowserWorkerEventEnvelope::cancellation(
+            context.clone(),
+            error.clone(),
+        ));
+    }
+    emit_event(BrowserWorkerEventEnvelope::log(
+        context.clone(),
+        BrowserWorkerLogLevel::Error,
+        error.message.clone(),
+    ));
+    emit_event(BrowserWorkerEventEnvelope::terminal_error(
+        context,
+        error.clone(),
+    ));
+}
+
+fn is_query_cancellation_error(error: &QueryError) -> bool {
+    error.code == QueryErrorCode::ExecutionFailed
+        && error.message == DATAFUSION_QUERY_CANCELLED_MESSAGE
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use query_contract::CapabilityReport;
+    use wasm_query_runtime::{
+        BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserObjectSource,
+        BrowserParquetFileMetadata, MaterializedBrowserFile, MaterializedBrowserSnapshot,
+    };
+
+    #[test]
+    fn open_bootstrap_metrics_event_uses_bootstrapped_snapshot_telemetry() {
+        let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
+            .expect("session should construct");
+        session
+            .cache_table(
+                "events",
+                materialized_snapshot(),
+                Some(bootstrapped_snapshot()),
+            )
+            .expect("table should cache");
+        let context = BrowserWorkerEventContext::open("req-open", "events");
+        let mut events = Vec::new();
+
+        emit_open_bootstrap_metrics(
+            &mut |event| events.push(event),
+            &context,
+            &session,
+            "events",
+        );
+
+        let range_metrics = events
+            .iter()
+            .find_map(|event| match event {
+                BrowserWorkerEventEnvelope::RangeReadMetrics(metrics) => Some(metrics),
+                _ => None,
+            })
+            .expect("open bootstrap should emit range-read metrics");
+        assert_eq!(range_metrics.context, context);
+        assert_eq!(range_metrics.files_touched, 1);
+        assert_eq!(range_metrics.row_groups_touched, 2);
+        assert_eq!(range_metrics.footer_reads, Some(1));
+        assert_eq!(range_metrics.rows_emitted, 10);
+        assert_eq!(range_metrics.snapshot_bootstrap_duration_ms, Some(7));
+        assert_eq!(
+            range_metrics.access_mode,
+            Some(BrowserAccessMode::BrowserSafeHttp)
+        );
+    }
+
+    #[test]
+    fn cancellation_event_classification_requires_known_cancellation_error() {
+        let near_miss = QueryError::new(
+            QueryErrorCode::ExecutionFailed,
+            "browser query cancelled out an unrelated retry",
+            worker_target(),
+        );
+        assert!(!is_query_cancellation_error(&near_miss));
+
+        let cancellation = QueryError::new(
+            QueryErrorCode::ExecutionFailed,
+            "experimental browser DataFusion query cancelled",
+            worker_target(),
+        );
+        assert!(is_query_cancellation_error(&cancellation));
+    }
+
+    fn materialized_snapshot() -> MaterializedBrowserSnapshot {
+        let file = MaterializedBrowserFile::new(
+            "part-000.parquet",
+            128,
+            BTreeMap::new(),
+            BrowserObjectSource::from_url("https://example.invalid/part-000.parquet")
+                .expect("fixture URL should be browser-safe"),
+        );
+        MaterializedBrowserSnapshot::new("gs://axon-fixtures/events", 7, vec![file])
+            .expect("materialized snapshot should construct")
+    }
+
+    fn bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
+        let file = BootstrappedBrowserFile::new(
+            "part-000.parquet",
+            128,
+            BTreeMap::new(),
+            BrowserParquetFileMetadata {
+                object_size_bytes: 128,
+                footer_length_bytes: 16,
+                row_group_count: 2,
+                row_count: 10,
+                fields: Vec::new(),
+                field_stats: BTreeMap::new(),
+            },
+        )
+        .expect("bootstrapped file should construct");
+        BootstrappedBrowserSnapshot::new_with_partition_metadata_and_telemetry(
+            "gs://axon-fixtures/events",
+            7,
+            vec![file],
+            BTreeMap::new(),
+            CapabilityReport::default(),
+            Some(1),
+            Some(7),
+            Some(BrowserAccessMode::BrowserSafeHttp),
+        )
+        .expect("bootstrapped snapshot should construct")
+    }
 }
 
 fn sample_command() -> BrowserWorkerCommand {

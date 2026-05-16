@@ -190,6 +190,90 @@ export type WireBrowserWorkerResponseEnvelope =
   | { disposed: BrowserWorkerDisposedEnvelope }
   | { error: BrowserWorkerErrorEnvelope };
 
+export type BrowserWorkerEventPhase = 'instantiate' | 'open' | 'query';
+
+export type BrowserWorkerEventContext = {
+  phase: BrowserWorkerEventPhase;
+  request_id?: string;
+  query_id?: string;
+  table_name?: string;
+};
+
+export type BrowserWorkerProgressStage =
+  | 'started'
+  | 'planning'
+  | 'executing'
+  | 'arrow_ipc_ready'
+  | 'finished';
+
+export type BrowserWorkerLogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+export type BrowserWorkerProgressEvent = {
+  context: BrowserWorkerEventContext;
+  stage: BrowserWorkerProgressStage;
+};
+
+export type BrowserWorkerLogEvent = {
+  context: BrowserWorkerEventContext;
+  level: BrowserWorkerLogLevel;
+  message: string;
+};
+
+export type BrowserWorkerRangeReadMetricsEvent = {
+  context: BrowserWorkerEventContext;
+  bytes_fetched: number;
+  files_touched: number;
+  files_skipped: number;
+  row_groups_touched: number;
+  row_groups_skipped: number;
+  footer_reads?: number;
+  rows_emitted: number;
+  snapshot_bootstrap_duration_ms?: number;
+  access_mode?: BrowserAccessMode;
+};
+
+export type BrowserWorkerTransportCacheMetrics = {
+  bytes_reused: number;
+  validation_misses: number;
+  persistent_cache_errors: number;
+};
+
+export type BrowserWorkerCacheMetricsEvent = {
+  context: BrowserWorkerEventContext;
+  session_cached_bytes: number;
+  session_table_count: number;
+  max_session_cached_bytes: number;
+  transport?: BrowserWorkerTransportCacheMetrics;
+};
+
+export type BrowserWorkerFallbackEvent = {
+  context: BrowserWorkerEventContext;
+  reason: FallbackReason;
+};
+
+export type BrowserWorkerCancellationEvent = {
+  context: BrowserWorkerEventContext;
+  error: QueryError;
+};
+
+export type BrowserWorkerTerminalErrorEvent = {
+  context: BrowserWorkerEventContext;
+  error: QueryError;
+};
+
+export type BrowserWorkerEventEnvelope =
+  | { progress: BrowserWorkerProgressEvent }
+  | { log: BrowserWorkerLogEvent }
+  | { range_read_metrics: BrowserWorkerRangeReadMetricsEvent }
+  | { cache_metrics: BrowserWorkerCacheMetricsEvent }
+  | { fallback: BrowserWorkerFallbackEvent }
+  | { cancellation: BrowserWorkerCancellationEvent }
+  | { terminal_error: BrowserWorkerTerminalErrorEvent };
+
+export type WireBrowserWorkerMessageEnvelope =
+  | WireBrowserWorkerResponseEnvelope
+  | BrowserWorkerEventEnvelope;
+
 export type AxonQueryResult = BrowserWorkerSuccessEnvelope & {
   fallbackReason?: FallbackReason;
 };
@@ -210,14 +294,17 @@ export type AxonBrowserClientOptions =
       workerUrl: string | URL;
       workerOptions?: WorkerOptions;
       requestId?: RequestIdFactory;
+      onEvent?: BrowserWorkerEventHandler;
     }
   | {
       worker: Worker | WorkerFactory;
       requestId?: RequestIdFactory;
+      onEvent?: BrowserWorkerEventHandler;
     };
 
 export type RequestIdFactory = () => string;
 export type WorkerFactory = () => Worker;
+export type BrowserWorkerEventHandler = (event: BrowserWorkerEventEnvelope) => void;
 
 export interface AxonBrowserClient {
   openDeltaTable(
@@ -271,7 +358,7 @@ export function createAxonBrowserClient(options: AxonBrowserClientOptions): Axon
       ? new Worker(options.workerUrl, { type: 'module', ...options.workerOptions })
       : createWorkerFromOption(options.worker);
 
-  return new AxonBrowserWorkerClient(worker, options.requestId);
+  return new AxonBrowserWorkerClient(worker, options.requestId, options.onEvent);
 }
 
 export function openDeltaTableCommand(
@@ -362,19 +449,26 @@ export function normalizeArrowIpcResult(result: WireArrowIpcResult): ArrowIpcRes
 class AxonBrowserWorkerClient implements AxonBrowserClient {
   private readonly worker: Worker;
   private readonly requestId: RequestIdFactory;
+  private readonly onEvent?: BrowserWorkerEventHandler;
   private readonly pending = new Map<string, PendingRequest>();
   private readonly tables = new Map<string, BrowserHttpSnapshotDescriptor>();
   private terminated = false;
 
   private readonly handleWorkerMessage = (event: MessageEvent<unknown>): void => {
-    let response: BrowserWorkerResponseEnvelope;
+    let message: NormalizedWorkerMessage;
     try {
-      response = normalizeWorkerResponse(event.data);
+      message = normalizeWorkerMessage(event.data);
     } catch (error) {
       this.rejectAll(toError(error));
       return;
     }
 
+    if (message.kind === 'event') {
+      this.onEvent?.(message.event);
+      return;
+    }
+
+    const response = message.response;
     const requestId = responseRequestId(response);
     const pending = this.pending.get(requestId);
     if (!pending) {
@@ -409,9 +503,14 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
     this.rejectAll(new AxonSdkError('Axon worker emitted a messageerror event'));
   };
 
-  constructor(worker: Worker, requestId: RequestIdFactory = defaultRequestIdFactory()) {
+  constructor(
+    worker: Worker,
+    requestId: RequestIdFactory = defaultRequestIdFactory(),
+    onEvent?: BrowserWorkerEventHandler,
+  ) {
     this.worker = worker;
     this.requestId = requestId;
+    this.onEvent = onEvent;
     this.worker.addEventListener('message', this.handleWorkerMessage);
     this.worker.addEventListener('error', this.handleWorkerError);
     this.worker.addEventListener('messageerror', this.handleWorkerMessageError);
@@ -525,11 +624,7 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
     });
   }
 
-  private queryRequestFromSql(
-    name: string,
-    sql: string,
-    options: AxonQueryOptions,
-  ): QueryRequest {
+  private queryRequestFromSql(name: string, sql: string, options: AxonQueryOptions): QueryRequest {
     const openedSnapshot = this.tables.get(name);
     const tableUri = options.tableUri ?? openedSnapshot?.table_uri;
     if (!tableUri) {
@@ -590,6 +685,22 @@ function responseRequestId(response: BrowserWorkerResponseEnvelope): string {
   return response.error.request_id;
 }
 
+type NormalizedWorkerMessage =
+  | { kind: 'event'; event: BrowserWorkerEventEnvelope }
+  | { kind: 'response'; response: BrowserWorkerResponseEnvelope };
+
+function normalizeWorkerMessage(data: unknown): NormalizedWorkerMessage {
+  if (!isObject(data)) {
+    throw new AxonProtocolError('worker message must be an object');
+  }
+
+  if (isWorkerEventEnvelope(data)) {
+    return { kind: 'event', event: data };
+  }
+
+  return { kind: 'response', response: normalizeWorkerResponse(data) };
+}
+
 function normalizeWorkerResponse(data: unknown): BrowserWorkerResponseEnvelope {
   if (!isObject(data)) {
     throw new AxonProtocolError('worker response must be an object');
@@ -615,6 +726,18 @@ function normalizeWorkerResponse(data: unknown): BrowserWorkerResponseEnvelope {
   }
 
   throw new AxonProtocolError('worker response did not contain a known Axon envelope tag');
+}
+
+function isWorkerEventEnvelope(data: object): data is BrowserWorkerEventEnvelope {
+  return (
+    'progress' in data ||
+    'log' in data ||
+    'range_read_metrics' in data ||
+    'cache_metrics' in data ||
+    'fallback' in data ||
+    'cancellation' in data ||
+    'terminal_error' in data
+  );
 }
 
 function normalizeBytes(bytes: number[] | ArrayBuffer | Uint8Array): Uint8Array {

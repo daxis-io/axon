@@ -1,8 +1,8 @@
 //! Public browser SDK contracts for worker-hosted query execution.
 
 use query_contract::{
-    BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, QueryError, QueryRequest,
-    QueryResponse,
+    BrowserAccessMode, BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, QueryError,
+    QueryMetricsSummary, QueryRequest, QueryResponse,
 };
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
@@ -133,6 +133,236 @@ impl BrowserWorkerCommand {
             Self::OpenDeltaTable(command) => &command.name,
             Self::Sql(command) => &command.name,
             Self::Dispose(command) => &command.name,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerEventContext {
+    pub phase: BrowserWorkerEventPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table_name: Option<String>,
+}
+
+impl BrowserWorkerEventContext {
+    pub fn instantiate() -> Self {
+        Self {
+            phase: BrowserWorkerEventPhase::Instantiate,
+            request_id: None,
+            query_id: None,
+            table_name: None,
+        }
+    }
+
+    pub fn open(request_id: impl Into<String>, table_name: impl Into<String>) -> Self {
+        Self {
+            phase: BrowserWorkerEventPhase::Open,
+            request_id: Some(request_id.into()),
+            query_id: None,
+            table_name: Some(table_name.into()),
+        }
+    }
+
+    pub fn query(request_id: impl Into<String>, table_name: impl Into<String>) -> Self {
+        let request_id = request_id.into();
+        Self {
+            phase: BrowserWorkerEventPhase::Query,
+            request_id: Some(request_id.clone()),
+            query_id: Some(request_id),
+            table_name: Some(table_name.into()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserWorkerEventPhase {
+    Instantiate,
+    Open,
+    Query,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserWorkerProgressStage {
+    Started,
+    Planning,
+    Executing,
+    ArrowIpcReady,
+    Finished,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserWorkerLogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerProgressEvent {
+    pub context: BrowserWorkerEventContext,
+    pub stage: BrowserWorkerProgressStage,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerLogEvent {
+    pub context: BrowserWorkerEventContext,
+    pub level: BrowserWorkerLogLevel,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerRangeReadMetricsEvent {
+    pub context: BrowserWorkerEventContext,
+    pub bytes_fetched: u64,
+    pub files_touched: u64,
+    pub files_skipped: u64,
+    pub row_groups_touched: u64,
+    pub row_groups_skipped: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_reads: Option<u64>,
+    pub rows_emitted: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_bootstrap_duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_mode: Option<BrowserAccessMode>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerTransportCacheMetrics {
+    pub bytes_reused: u64,
+    pub validation_misses: u64,
+    pub persistent_cache_errors: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerCacheMetricsEvent {
+    pub context: BrowserWorkerEventContext,
+    pub session_cached_bytes: u64,
+    pub session_table_count: u64,
+    pub max_session_cached_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<BrowserWorkerTransportCacheMetrics>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerFallbackEvent {
+    pub context: BrowserWorkerEventContext,
+    pub reason: FallbackReason,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerCancellationEvent {
+    pub context: BrowserWorkerEventContext,
+    pub error: QueryError,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerTerminalErrorEvent {
+    pub context: BrowserWorkerEventContext,
+    pub error: QueryError,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserWorkerEventEnvelope {
+    Progress(BrowserWorkerProgressEvent),
+    Log(BrowserWorkerLogEvent),
+    RangeReadMetrics(BrowserWorkerRangeReadMetricsEvent),
+    CacheMetrics(BrowserWorkerCacheMetricsEvent),
+    Fallback(BrowserWorkerFallbackEvent),
+    Cancellation(BrowserWorkerCancellationEvent),
+    TerminalError(BrowserWorkerTerminalErrorEvent),
+}
+
+impl BrowserWorkerEventEnvelope {
+    pub fn progress(context: BrowserWorkerEventContext, stage: BrowserWorkerProgressStage) -> Self {
+        Self::Progress(BrowserWorkerProgressEvent { context, stage })
+    }
+
+    pub fn log(
+        context: BrowserWorkerEventContext,
+        level: BrowserWorkerLogLevel,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::Log(BrowserWorkerLogEvent {
+            context,
+            level,
+            message: message.into(),
+        })
+    }
+
+    pub fn range_read_metrics(
+        context: BrowserWorkerEventContext,
+        metrics: QueryMetricsSummary,
+    ) -> Self {
+        Self::RangeReadMetrics(BrowserWorkerRangeReadMetricsEvent {
+            context,
+            bytes_fetched: metrics.bytes_fetched,
+            files_touched: metrics.files_touched,
+            files_skipped: metrics.files_skipped,
+            row_groups_touched: metrics.row_groups_touched,
+            row_groups_skipped: metrics.row_groups_skipped,
+            footer_reads: metrics.footer_reads,
+            rows_emitted: metrics.rows_emitted,
+            snapshot_bootstrap_duration_ms: metrics.snapshot_bootstrap_duration_ms,
+            access_mode: metrics.access_mode,
+        })
+    }
+
+    pub fn cache_metrics(
+        context: BrowserWorkerEventContext,
+        session_cached_bytes: u64,
+        session_table_count: u64,
+        max_session_cached_bytes: u64,
+        transport: Option<BrowserWorkerTransportCacheMetrics>,
+    ) -> Self {
+        Self::CacheMetrics(BrowserWorkerCacheMetricsEvent {
+            context,
+            session_cached_bytes,
+            session_table_count,
+            max_session_cached_bytes,
+            transport,
+        })
+    }
+
+    pub fn fallback(context: BrowserWorkerEventContext, reason: FallbackReason) -> Self {
+        Self::Fallback(BrowserWorkerFallbackEvent { context, reason })
+    }
+
+    pub fn cancellation(context: BrowserWorkerEventContext, error: QueryError) -> Self {
+        Self::Cancellation(BrowserWorkerCancellationEvent { context, error })
+    }
+
+    pub fn terminal_error(context: BrowserWorkerEventContext, error: QueryError) -> Self {
+        Self::TerminalError(BrowserWorkerTerminalErrorEvent { context, error })
+    }
+
+    pub fn context(&self) -> &BrowserWorkerEventContext {
+        match self {
+            Self::Progress(event) => &event.context,
+            Self::Log(event) => &event.context,
+            Self::RangeReadMetrics(event) => &event.context,
+            Self::CacheMetrics(event) => &event.context,
+            Self::Fallback(event) => &event.context,
+            Self::Cancellation(event) => &event.context,
+            Self::TerminalError(event) => &event.context,
         }
     }
 }

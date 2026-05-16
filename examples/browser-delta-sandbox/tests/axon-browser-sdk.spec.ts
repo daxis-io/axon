@@ -5,9 +5,10 @@ import {
   AxonWorkerError,
   createAxonBrowserClient,
   type BrowserHttpSnapshotDescriptor,
+  type BrowserWorkerEventEnvelope,
   type BrowserWorkerCommand,
   type QueryResponse,
-  type WireBrowserWorkerResponseEnvelope,
+  type WireBrowserWorkerMessageEnvelope,
 } from '../src/axon-browser-sdk';
 
 const snapshot: BrowserHttpSnapshotDescriptor = {
@@ -26,9 +27,10 @@ const snapshot: BrowserHttpSnapshotDescriptor = {
   ],
 };
 
-class FakeWorker
-  implements Pick<Worker, 'addEventListener' | 'removeEventListener' | 'postMessage' | 'terminate'>
-{
+class FakeWorker implements Pick<
+  Worker,
+  'addEventListener' | 'removeEventListener' | 'postMessage' | 'terminate'
+> {
   readonly commands: BrowserWorkerCommand[] = [];
   terminated = false;
   private readonly listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
@@ -51,7 +53,7 @@ class FakeWorker
     this.terminated = true;
   }
 
-  emitMessage(data: WireBrowserWorkerResponseEnvelope): void {
+  emitMessage(data: WireBrowserWorkerMessageEnvelope): void {
     this.emit('message', { data });
   }
 
@@ -137,6 +139,69 @@ test('normalizes Arrow IPC bytes and exposes success fallback reasons', async ()
       capability: 'multi_partition_execution',
       required_state: 'native_only',
     },
+  });
+});
+
+test('routes worker runtime events without settling the active request', async () => {
+  const worker = new FakeWorker();
+  const events: BrowserWorkerEventEnvelope[] = [];
+  const client = createAxonBrowserClient({
+    worker: worker as unknown as Worker,
+    onEvent: (event) => events.push(event),
+  });
+
+  const resultPromise = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT COUNT(*) AS row_count FROM events',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-query-events' },
+  );
+
+  worker.emitMessage({
+    progress: {
+      context: {
+        phase: 'query',
+        request_id: 'req-query-events',
+        query_id: 'req-query-events',
+        table_name: 'events',
+      },
+      stage: 'started',
+    },
+  });
+
+  await expect(settlement(resultPromise)).resolves.toEqual({ status: 'pending' });
+  expect(events).toEqual([
+    {
+      progress: {
+        context: {
+          phase: 'query',
+          request_id: 'req-query-events',
+          query_id: 'req-query-events',
+          table_name: 'events',
+        },
+        stage: 'started',
+      },
+    },
+  ]);
+
+  worker.emitMessage({
+    success: {
+      request_id: 'req-query-events',
+      response: queryResponse(),
+      result: {
+        format: 'stream',
+        content_type: 'application/vnd.apache.arrow.stream',
+        bytes: [1, 2, 3, 4],
+      },
+    },
+  });
+
+  await expect(resultPromise).resolves.toMatchObject({
+    request_id: 'req-query-events',
   });
 });
 

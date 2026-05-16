@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
 use browser_sdk::{
-    ArrowIpcFormat, ArrowIpcResultEnvelope, BrowserWorkerCommand, BrowserWorkerResponseEnvelope,
-    BrowserWorkerSqlOutput,
+    ArrowIpcFormat, ArrowIpcResultEnvelope, BrowserWorkerCommand, BrowserWorkerEventContext,
+    BrowserWorkerEventEnvelope, BrowserWorkerEventPhase, BrowserWorkerLogLevel,
+    BrowserWorkerProgressStage, BrowserWorkerResponseEnvelope, BrowserWorkerSqlOutput,
+    BrowserWorkerTransportCacheMetrics,
 };
 use query_contract::{
     BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey,
@@ -240,6 +242,170 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
         metrics.access_mode,
         Some(BrowserAccessMode::BrowserSafeHttp)
     );
+}
+
+#[test]
+fn browser_sdk_round_trips_typed_worker_runtime_events() {
+    let context = BrowserWorkerEventContext::query("req-query-42", "events");
+    let progress =
+        BrowserWorkerEventEnvelope::progress(context.clone(), BrowserWorkerProgressStage::Started);
+    let log = BrowserWorkerEventEnvelope::log(
+        context.clone(),
+        BrowserWorkerLogLevel::Info,
+        "query accepted by browser worker",
+    );
+    let range_metrics = BrowserWorkerEventEnvelope::range_read_metrics(
+        context.clone(),
+        QueryMetricsSummary {
+            bytes_fetched: 4096,
+            duration_ms: 11,
+            files_touched: 2,
+            files_skipped: 1,
+            row_groups_touched: 4,
+            row_groups_skipped: 3,
+            footer_reads: Some(2),
+            rows_emitted: 25,
+            snapshot_bootstrap_duration_ms: Some(7),
+            access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
+        },
+    );
+
+    let serialized_progress = serde_json::to_value(&progress).expect("progress event serializes");
+    assert_eq!(
+        serialized_progress["progress"]["context"]["phase"],
+        serde_json::json!("query")
+    );
+    assert_eq!(
+        serialized_progress["progress"]["context"]["request_id"],
+        serde_json::json!("req-query-42")
+    );
+    assert_eq!(
+        serialized_progress["progress"]["context"]["query_id"],
+        serde_json::json!("req-query-42")
+    );
+    assert_eq!(
+        serialized_progress["progress"]["context"]["table_name"],
+        serde_json::json!("events")
+    );
+    assert_eq!(
+        serialized_progress["progress"]["stage"],
+        serde_json::json!("started")
+    );
+
+    let round_tripped_progress: BrowserWorkerEventEnvelope =
+        serde_json::from_value(serialized_progress).expect("progress event deserializes");
+    assert_eq!(round_tripped_progress.context(), &context);
+
+    let round_tripped_log: BrowserWorkerEventEnvelope =
+        serde_json::from_value(serde_json::to_value(&log).expect("log event serializes"))
+            .expect("log event deserializes");
+    assert_eq!(round_tripped_log.context(), &context);
+
+    let round_tripped_range_metrics: BrowserWorkerEventEnvelope = serde_json::from_value(
+        serde_json::to_value(&range_metrics).expect("range metrics event serializes"),
+    )
+    .expect("range metrics event deserializes");
+    match round_tripped_range_metrics {
+        BrowserWorkerEventEnvelope::RangeReadMetrics(event) => {
+            assert_eq!(event.context.phase, BrowserWorkerEventPhase::Query);
+            assert_eq!(event.context.request_id.as_deref(), Some("req-query-42"));
+            assert_eq!(event.context.query_id.as_deref(), Some("req-query-42"));
+            assert_eq!(event.bytes_fetched, 4096);
+            assert_eq!(event.files_touched, 2);
+            assert_eq!(event.files_skipped, 1);
+            assert_eq!(event.row_groups_touched, 4);
+            assert_eq!(event.row_groups_skipped, 3);
+            assert_eq!(event.footer_reads, Some(2));
+            assert_eq!(event.rows_emitted, 25);
+            assert_eq!(event.snapshot_bootstrap_duration_ms, Some(7));
+            assert_eq!(event.access_mode, Some(BrowserAccessMode::BrowserSafeHttp));
+        }
+        other => panic!("expected range_read_metrics event, got {other:?}"),
+    }
+}
+
+#[test]
+fn browser_sdk_round_trips_worker_fallback_cache_cancellation_and_error_events() {
+    let context = BrowserWorkerEventContext::query("req-query-43", "events");
+    let fallback = BrowserWorkerEventEnvelope::fallback(
+        context.clone(),
+        FallbackReason::BrowserRuntimeConstraint,
+    );
+    let cache = BrowserWorkerEventEnvelope::cache_metrics(
+        context.clone(),
+        8192,
+        2,
+        65_536,
+        Some(BrowserWorkerTransportCacheMetrics {
+            bytes_reused: 1024,
+            validation_misses: 1,
+            persistent_cache_errors: 0,
+        }),
+    );
+    let cancellation_error = QueryError::new(
+        QueryErrorCode::ExecutionFailed,
+        "experimental browser DataFusion query cancelled",
+        ExecutionTarget::BrowserWasm,
+    );
+    let cancellation =
+        BrowserWorkerEventEnvelope::cancellation(context.clone(), cancellation_error.clone());
+    let terminal_error = BrowserWorkerEventEnvelope::terminal_error(
+        context.clone(),
+        QueryError::new(
+            QueryErrorCode::FallbackRequired,
+            "browser query exceeded runtime budget",
+            ExecutionTarget::BrowserWasm,
+        )
+        .with_fallback_reason(FallbackReason::BrowserRuntimeConstraint),
+    );
+
+    let round_tripped_fallback: BrowserWorkerEventEnvelope =
+        serde_json::from_value(serde_json::to_value(&fallback).expect("fallback serializes"))
+            .expect("fallback deserializes");
+    assert_eq!(round_tripped_fallback.context(), &context);
+
+    let round_tripped_cache: BrowserWorkerEventEnvelope =
+        serde_json::from_value(serde_json::to_value(&cache).expect("cache serializes"))
+            .expect("cache deserializes");
+    match round_tripped_cache {
+        BrowserWorkerEventEnvelope::CacheMetrics(event) => {
+            assert_eq!(event.context, context);
+            assert_eq!(event.session_cached_bytes, 8192);
+            assert_eq!(event.session_table_count, 2);
+            assert_eq!(event.max_session_cached_bytes, 65_536);
+            let transport = event.transport.expect("transport metrics should survive");
+            assert_eq!(transport.bytes_reused, 1024);
+            assert_eq!(transport.validation_misses, 1);
+            assert_eq!(transport.persistent_cache_errors, 0);
+        }
+        other => panic!("expected cache_metrics event, got {other:?}"),
+    }
+
+    let round_tripped_cancellation: BrowserWorkerEventEnvelope = serde_json::from_value(
+        serde_json::to_value(&cancellation).expect("cancellation serializes"),
+    )
+    .expect("cancellation deserializes");
+    match round_tripped_cancellation {
+        BrowserWorkerEventEnvelope::Cancellation(event) => {
+            assert_eq!(event.context.request_id.as_deref(), Some("req-query-43"));
+            assert_eq!(event.error, cancellation_error);
+        }
+        other => panic!("expected cancellation event, got {other:?}"),
+    }
+
+    let round_tripped_terminal_error: BrowserWorkerEventEnvelope = serde_json::from_value(
+        serde_json::to_value(&terminal_error).expect("terminal error serializes"),
+    )
+    .expect("terminal error deserializes");
+    match round_tripped_terminal_error {
+        BrowserWorkerEventEnvelope::TerminalError(event) => {
+            assert_eq!(
+                event.error.fallback_reason,
+                Some(FallbackReason::BrowserRuntimeConstraint)
+            );
+        }
+        other => panic!("expected terminal_error event, got {other:?}"),
+    }
 }
 
 #[test]
