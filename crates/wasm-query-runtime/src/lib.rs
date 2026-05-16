@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::Future;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
 use futures_timer::Delay;
@@ -42,6 +42,9 @@ use wasm_delta_snapshot::{
 };
 use wasm_http_object_store::{HttpByteRange, HttpRangeReadResult, HttpRangeReader};
 
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::{JsCast, JsValue};
+
 #[cfg(feature = "datafusion-planner-poc")]
 pub mod datafusion_planner_poc;
 
@@ -71,6 +74,71 @@ const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_EXECUTION_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_SNAPSHOT_PREFLIGHT_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_SNAPSHOT_PREFLIGHT_MAX_CONCURRENCY: usize = 4;
+
+#[derive(Clone, Copy, Debug)]
+pub struct BrowserRuntimeInstant {
+    #[cfg(not(target_arch = "wasm32"))]
+    inner: std::time::Instant,
+    #[cfg(target_arch = "wasm32")]
+    inner_ms: f64,
+}
+
+impl BrowserRuntimeInstant {
+    pub fn now() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self {
+                inner: std::time::Instant::now(),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Self {
+                inner_ms: browser_monotonic_now_ms(),
+            }
+        }
+    }
+
+    pub fn elapsed_ms(self) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return u64::try_from(self.inner.elapsed().as_millis()).unwrap_or(u64::MAX);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let elapsed_ms = browser_monotonic_now_ms() - self.inner_ms;
+            if !elapsed_ms.is_finite() || elapsed_ms <= 0.0 {
+                0
+            } else if elapsed_ms >= u64::MAX as f64 {
+                u64::MAX
+            } else {
+                elapsed_ms as u64
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_monotonic_now_ms() -> f64 {
+    let global = js_sys::global();
+    let performance_key = JsValue::from_str("performance");
+    let now_key = JsValue::from_str("now");
+    if let Ok(performance) = js_sys::Reflect::get(&global, &performance_key) {
+        if let Ok(now_value) = js_sys::Reflect::get(&performance, &now_key) {
+            if let Some(now_function) = now_value.dyn_ref::<js_sys::Function>() {
+                if let Ok(value) = now_function.call0(&performance) {
+                    if let Some(now_ms) = value.as_f64() {
+                        if now_ms.is_finite() {
+                            return now_ms;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    js_sys::Date::now()
+}
 
 pub fn runtime_target() -> ExecutionTarget {
     ExecutionTarget::BrowserWasm
@@ -1377,7 +1445,7 @@ impl BrowserRuntimeSession {
         validate_execution_budget(plan, self.config.execution_budget)?;
         let candidate_files =
             candidate_materialized_files(snapshot, plan.scan().candidate_paths())?;
-        let operation_started_at = Instant::now();
+        let operation_started_at = BrowserRuntimeInstant::now();
         let execution =
             self.execute_plan_inner(snapshot, plan, &candidate_files, operation_started_at);
 
@@ -1395,7 +1463,7 @@ impl BrowserRuntimeSession {
         validate_execution_budget(plan, self.config.execution_budget)?;
         let candidate_files =
             candidate_materialized_files(snapshot, plan.scan().candidate_paths())?;
-        let operation_started_at = Instant::now();
+        let operation_started_at = BrowserRuntimeInstant::now();
         let execution =
             self.execute_plan_inner(snapshot, plan, &candidate_files, operation_started_at);
         let artifacts = self
@@ -1700,7 +1768,7 @@ impl BrowserRuntimeSession {
         active_files: &[&MaterializedBrowserFile],
     ) -> Result<BootstrappedBrowserSnapshot, QueryError> {
         validate_required_snapshot_capabilities(snapshot.required_capabilities())?;
-        let bootstrap_started_at = Instant::now();
+        let bootstrap_started_at = BrowserRuntimeInstant::now();
         let fetches = stream::iter(active_files.iter().copied())
             .map(|file| self.bootstrap_file_metadata(file))
             .buffered(self.config.snapshot_preflight_max_concurrency)
@@ -1878,7 +1946,7 @@ impl BrowserRuntimeSession {
         snapshot: &MaterializedBrowserSnapshot,
         plan: &BrowserExecutionPlan,
         candidate_files: &[&MaterializedBrowserFile],
-        operation_started_at: Instant,
+        operation_started_at: BrowserRuntimeInstant,
     ) -> Result<RuntimeExecutionArtifacts, QueryError> {
         let (rows, scan_metrics) = self
             .read_candidate_input_rows(snapshot, candidate_files, plan.scan(), plan.filter())
@@ -2171,7 +2239,7 @@ fn execution_metrics(
     _snapshot: &MaterializedBrowserSnapshot,
     plan: &BrowserExecutionPlan,
     scan_metrics: &[wasm_parquet_engine::ScanTargetMetricsSnapshot],
-    operation_started_at: Instant,
+    operation_started_at: BrowserRuntimeInstant,
 ) -> Result<QueryMetricsSummary, QueryError> {
     let bytes_fetched = scan_metrics.iter().try_fold(0_u64, |acc, metrics| {
         acc.checked_add(metrics.bytes_fetched)
@@ -2252,8 +2320,8 @@ fn parquet_integer_comparison_for_filter(
     }
 }
 
-fn wall_clock_duration_ms(operation_started_at: Instant) -> u64 {
-    u64::try_from(operation_started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
+fn wall_clock_duration_ms(operation_started_at: BrowserRuntimeInstant) -> u64 {
+    operation_started_at.elapsed_ms()
 }
 
 fn select_materialized_files_for_bootstrap<'a>(

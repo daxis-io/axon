@@ -2,6 +2,21 @@ export const PREFERRED_TARGET: ExecutionTarget = 'browser_wasm';
 export const ARROW_IPC_STREAM_CONTENT_TYPE = 'application/vnd.apache.arrow.stream';
 export const ARROW_IPC_FILE_CONTENT_TYPE = 'application/vnd.apache.arrow.file';
 
+export function redactUrlSecrets(message: string): string {
+  return message.replace(/https?:\/\/[^\s'"<>]+/g, (candidate) => {
+    try {
+      const url = new URL(candidate);
+      url.username = '';
+      url.password = '';
+      url.search = '';
+      url.hash = '';
+      return url.toString();
+    } catch {
+      return candidate.split(/[?#]/, 1)[0];
+    }
+  });
+}
+
 export type ExecutionTarget = 'browser_wasm' | 'native';
 
 export type CapabilityKey =
@@ -162,10 +177,21 @@ export type BrowserWorkerSuccessEnvelope = {
   request_id: string;
   response: QueryResponse;
   result: ArrowIpcResult;
+  preview?: BrowserWorkerResultPreview;
 };
 
 export type WireBrowserWorkerSuccessEnvelope = Omit<BrowserWorkerSuccessEnvelope, 'result'> & {
   result: WireArrowIpcResult;
+};
+
+export type BrowserWorkerResultPreviewCell = string | number | boolean | null;
+
+export type BrowserWorkerResultPreview = {
+  columns: string[];
+  rows: BrowserWorkerResultPreviewCell[][];
+  row_count: number;
+  preview_row_limit: number;
+  truncated: boolean;
 };
 
 export type BrowserWorkerDisposedEnvelope = {
@@ -876,6 +902,7 @@ function normalizeWorkerResponse(data: unknown): BrowserWorkerResponseEnvelope {
       success: {
         ...response.success,
         result: normalizeArrowIpcResult(response.success.result),
+        preview: normalizeResultPreview(response.success.preview, 'success.preview'),
       },
     };
   }
@@ -1033,6 +1060,63 @@ function normalizeQueryError(value: unknown, path: string): QueryError {
   };
 }
 
+function normalizeResultPreview(
+  value: unknown,
+  path: string,
+): BrowserWorkerResultPreview | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isObject(value)) {
+    throw new AxonProtocolError(`${path} must be an object`);
+  }
+
+  const columns = requiredArray(value.columns, `${path}.columns`).map((column, index) =>
+    requiredString(column, `${path}.columns[${index}]`),
+  );
+  const rows = requiredArray(value.rows, `${path}.rows`).map((row, rowIndex) => {
+    const cells = requiredArray(row, `${path}.rows[${rowIndex}]`).map((cell, cellIndex) =>
+      normalizeResultPreviewCell(cell, `${path}.rows[${rowIndex}][${cellIndex}]`),
+    );
+    if (cells.length !== columns.length) {
+      throw new AxonProtocolError(`${path}.rows[${rowIndex}] must contain ${columns.length} cells`);
+    }
+    return cells;
+  });
+  const rowCount = requiredNonNegativeInteger(value.row_count, `${path}.row_count`);
+  const previewRowLimit = requiredNonNegativeInteger(
+    value.preview_row_limit,
+    `${path}.preview_row_limit`,
+  );
+  if (rows.length > rowCount) {
+    throw new AxonProtocolError(`${path}.rows must not exceed ${path}.row_count`);
+  }
+  if (rows.length > previewRowLimit) {
+    throw new AxonProtocolError(`${path}.rows must not exceed ${path}.preview_row_limit`);
+  }
+
+  return {
+    columns,
+    rows,
+    row_count: rowCount,
+    preview_row_limit: previewRowLimit,
+    truncated: requiredBoolean(value.truncated, `${path}.truncated`),
+  };
+}
+
+function normalizeResultPreviewCell(value: unknown, path: string): BrowserWorkerResultPreviewCell {
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    (typeof value === 'number' && Number.isFinite(value))
+  ) {
+    return value;
+  }
+
+  throw new AxonProtocolError(`${path} must be a string, finite number, boolean, or null`);
+}
+
 function normalizeFallbackReason(value: unknown, path: string): FallbackReason {
   if (typeof value === 'string' && includesString(FALLBACK_REASON_STRINGS, value)) {
     return value as FallbackReason;
@@ -1086,6 +1170,31 @@ function optionalString(value: unknown, path: string): string | undefined {
 function requiredNumber(value: unknown, path: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new AxonProtocolError(`${path} must be a finite number`);
+  }
+
+  return value;
+}
+
+function requiredNonNegativeInteger(value: unknown, path: string): number {
+  const number = requiredNumber(value, path);
+  if (!Number.isInteger(number) || number < 0) {
+    throw new AxonProtocolError(`${path} must be a non-negative integer`);
+  }
+
+  return number;
+}
+
+function requiredBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new AxonProtocolError(`${path} must be a boolean`);
+  }
+
+  return value;
+}
+
+function requiredArray(value: unknown, path: string): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new AxonProtocolError(`${path} must be an array`);
   }
 
   return value;

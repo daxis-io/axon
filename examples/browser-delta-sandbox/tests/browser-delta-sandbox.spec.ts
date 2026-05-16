@@ -75,3 +75,97 @@ test('maps a prod-like Delta fixture from log inputs to resolved active output',
   await expect(page.getByTestId('input-output-map')).toContainText('replay commit 3');
   expect(parquetRangeHeaders).toEqual(expect.arrayContaining([expect.stringMatching(/^bytes=/)]));
 });
+
+test('runs prod-like SQL through the sandbox worker and renders query telemetry', async ({
+  page,
+}) => {
+  await page.goto('/');
+
+  await page.getByRole('radio', { name: 'Prod-like snapshot' }).check();
+  await page.getByRole('button', { name: 'Resolve Snapshot' }).click();
+  await expect(page.getByTestId('status')).toHaveText(
+    'Snapshot 3 resolved from checkpoint 2 + 1 replay commit',
+  );
+
+  await page.getByRole('button', { name: 'Run SQL' }).click();
+
+  await expect(page.getByTestId('query-status')).toHaveText('Finished');
+  await expect(page.getByTestId('query-executed-on')).toHaveText('browser_wasm');
+  await expect(page.getByTestId('query-fallback-reason')).toHaveText('-');
+  await expect(page.getByTestId('query-row-count')).toHaveText('1');
+  await expect(page.getByTestId('query-arrow-ipc-bytes')).toHaveText(/\d+ bytes/);
+  await expect(page.getByTestId('query-metrics')).toContainText('files_touched');
+  await expect(page.getByTestId('result-grid')).toContainText('row_count');
+  await expect(page.getByTestId('result-grid')).toContainText('4');
+  await expect(page.getByTestId('worker-event-log')).toContainText('open started');
+  await expect(page.getByTestId('worker-event-log')).toContainText('query arrow_ipc_ready');
+  await expect(page.getByTestId('worker-event-log')).toContainText('range_read_metrics');
+  await expect(page.getByTestId('worker-event-log')).toContainText('cache_metrics');
+  const workerEvents = await page.getByTestId('worker-event-log').locator('li').allTextContents();
+  expect(workerEvents.filter((event) => event.startsWith('range_read_metrics'))).toHaveLength(1);
+
+  await page.getByTestId('sql-editor').fill('DELETE FROM axon_table');
+  await page.getByRole('button', { name: 'Run SQL' }).click();
+
+  await expect(page.getByTestId('query-status')).toHaveText('Error');
+  await expect(page.getByTestId('query-error')).toContainText('invalid_request');
+  await expect(page.getByTestId('query-error')).toContainText('browser_wasm');
+  await expect(page.getByTestId('query-error')).not.toContainText('?');
+  await expect(page.getByTestId('query-error')).not.toContainText('#');
+  await expect(page.getByTestId('worker-event-log')).toContainText('terminal_error');
+});
+
+test('records honest UI supersession when cancelling a running sandbox query', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('radio', { name: 'Prod-like snapshot' }).check();
+  await page.getByRole('button', { name: 'Resolve Snapshot' }).click();
+  await expect(page.getByTestId('status')).toHaveText(
+    'Snapshot 3 resolved from checkpoint 2 + 1 replay commit',
+  );
+
+  await page.getByRole('button', { name: 'Run SQL' }).click();
+  await page.getByRole('button', { name: 'Cancel SQL' }).click();
+
+  await expect(page.getByTestId('query-status')).toHaveText('Cancellation requested');
+  await expect(page.getByTestId('query-fallback-reason')).toHaveText('browser_runtime_constraint');
+  await expect(page.getByTestId('worker-event-log')).toContainText('cancellation');
+});
+
+test('does not append stale worker events after cancelling and starting a new query', async ({
+  page,
+}) => {
+  await page.goto('/');
+
+  await page.getByRole('radio', { name: 'Prod-like snapshot' }).check();
+  await page.getByRole('button', { name: 'Resolve Snapshot' }).click();
+  await expect(page.getByTestId('status')).toHaveText(
+    'Snapshot 3 resolved from checkpoint 2 + 1 replay commit',
+  );
+
+  let delayedFirstQueryRead = false;
+  let releaseFirstQueryRead: (() => void) | undefined;
+  const firstQueryReadRelease = new Promise<void>((resolve) => {
+    releaseFirstQueryRead = resolve;
+  });
+
+  await page.route('**/fixtures/prod-like/table/**/*.parquet', async (route) => {
+    if (!delayedFirstQueryRead) {
+      delayedFirstQueryRead = true;
+      await firstQueryReadRelease;
+    }
+    await route.continue();
+  });
+
+  await page.getByRole('button', { name: 'Run SQL' }).click();
+  await expect(page.getByTestId('worker-event-log')).toContainText('instantiate finished');
+  await page.getByRole('button', { name: 'Cancel SQL' }).click();
+  await page.getByRole('button', { name: 'Run SQL' }).click();
+  releaseFirstQueryRead?.();
+
+  await expect(page.getByTestId('query-status')).toHaveText('Finished');
+  const workerEvents = await page.getByTestId('worker-event-log').locator('li').allTextContents();
+  expect(workerEvents.filter((event) => event === 'open finished')).toHaveLength(1);
+  expect(workerEvents.filter((event) => event === 'query arrow_ipc_ready')).toHaveLength(1);
+  expect(workerEvents.filter((event) => event === 'query finished')).toHaveLength(1);
+});

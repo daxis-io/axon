@@ -55,6 +55,80 @@
         </article>
       </section>
 
+      <section class="sql-sandbox-panel">
+        <div class="sql-editor-column">
+          <div class="panel-heading">
+            <h2>SQL Sandbox</h2>
+            <div class="sql-actions">
+              <button id="run-sql" type="button">Run SQL</button>
+              <button id="cancel-sql" type="button" class="secondary" disabled>Cancel SQL</button>
+            </div>
+          </div>
+          <div class="sample-query-list" aria-label="Sample queries">
+            <button type="button" class="sample-query" data-sample-query="count">Count</button>
+            <button type="button" class="sample-query" data-sample-query="category">
+              Category totals
+            </button>
+            <button type="button" class="sample-query" data-sample-query="top-values">
+              Top values
+            </button>
+          </div>
+          <textarea
+            id="sql-editor"
+            data-testid="sql-editor"
+            spellcheck="false"
+            aria-label="SQL editor"
+          ></textarea>
+        </div>
+
+        <div class="query-output-column">
+          <section class="query-status-grid" aria-live="polite">
+            <article>
+              <span>Status</span>
+              <strong data-testid="query-status">No query</strong>
+            </article>
+            <article>
+              <span>Elapsed</span>
+              <strong data-testid="query-elapsed-ms">-</strong>
+            </article>
+            <article>
+              <span>Executed On</span>
+              <strong data-testid="query-executed-on">-</strong>
+            </article>
+            <article>
+              <span>Fallback</span>
+              <strong data-testid="query-fallback-reason">-</strong>
+            </article>
+            <article>
+              <span>Arrow IPC</span>
+              <strong data-testid="query-arrow-ipc-bytes">-</strong>
+            </article>
+            <article>
+              <span>Rows</span>
+              <strong data-testid="query-row-count">-</strong>
+            </article>
+          </section>
+          <div class="query-output-grid">
+            <section>
+              <h2>Result Preview</h2>
+              <div class="result-grid" data-testid="result-grid"></div>
+            </section>
+            <section>
+              <h2>Metrics</h2>
+              <pre data-testid="query-metrics">-</pre>
+            </section>
+            <section>
+              <h2>Worker Events</h2>
+              <ol class="worker-event-list" data-testid="worker-event-log"></ol>
+            </section>
+            <section>
+              <h2>Query Error</h2>
+              <pre data-testid="query-error">-</pre>
+            </section>
+          </div>
+        </div>
+      </section>
+
       <section class="detail-layout">
         <section class="detail-panel">
           <h2>Delta Log Objects</h2>

@@ -20,6 +20,18 @@ npm run build
 npm run test:e2e
 ```
 
+To use the interactive SQL sandbox locally:
+
+```bash
+npm run dev
+```
+
+Open `https://127.0.0.1:5173`, choose the prod-like fixture, resolve the snapshot, and use the SQL panel to run queries against `axon_table`. The sandbox includes sample queries for row counts, category totals, and filtered top values. Results keep Arrow IPC as the canonical transport and render only a bounded preview in the page, alongside elapsed time, execution target, fallback reason, metrics, Arrow IPC byte length, row count, worker events, and structured errors.
+
+The supported SQL shape is the current browser runtime envelope: read-only `SELECT` statements over the resolved `axon_table`, with the projection, filter, grouping, ordering, and limit forms covered by the sample queries and browser runtime tests. Unsupported statements, such as mutations, render structured browser errors rather than falling back silently.
+
+This SQL panel is an example-owned sandbox bridge in `src/sandbox-query-worker.ts` and `src/lib.rs`. It is not the production JavaScript worker bootstrap, not a production query API, and does not mint browser cloud credentials.
+
 The E2E test starts Vite over HTTPS, opens Chromium, Firefox, and WebKit through Playwright, asks the WASM facade to resolve both fixture manifests, and asserts that the prod-like fixture resolves snapshot version `3` from checkpoint version `2` plus one replay commit. It also covers same-origin Parquet range requests and the browser worker envelope path for startup, Arrow IPC result bytes, structured fallback, and cancellation-shaped errors.
 
 To run one browser while iterating:

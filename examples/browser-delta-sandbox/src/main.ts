@@ -2,6 +2,20 @@ import init, {
   preflight_parquet_metadata_for_targets,
   resolve_delta_snapshot_from_manifest,
 } from './wasm/browser_delta_sandbox';
+import {
+  AxonWorkerError,
+  createAxonBrowserClient,
+  redactUrlSecrets,
+  type AxonBrowserClient,
+  type AxonQueryResult,
+  type BrowserHttpSnapshotDescriptor,
+  type BrowserWorkerEventContext,
+  type BrowserWorkerEventEnvelope,
+  type BrowserWorkerResultPreview,
+  type FallbackReason,
+  type PartitionColumnType,
+  type QueryError,
+} from './axon-browser-sdk';
 import './styles.css';
 
 type FixtureManifest = {
@@ -34,7 +48,7 @@ type BrowserDataFileInventory = {
 type ResolvedSnapshot = {
   table_uri: string;
   snapshot_version: number;
-  partition_column_types?: Record<string, string>;
+  partition_column_types?: Partial<Record<string, PartitionColumnType>>;
   active_files: Array<{
     path: string;
     size_bytes: number;
@@ -130,13 +144,35 @@ const FIXTURES: Record<string, FixtureChoice> = {
   },
 };
 
+const QUERY_TABLE_NAME = 'axon_table';
+const SAMPLE_QUERIES = {
+  count: 'SELECT COUNT(*) AS row_count FROM axon_table',
+  category:
+    'SELECT category, COUNT(*) AS rows, SUM(value) AS total_value FROM axon_table GROUP BY category ORDER BY category',
+  'top-values':
+    'SELECT id, category, value FROM axon_table WHERE value >= 90 ORDER BY value DESC LIMIT 20',
+} as const;
+
 const resolveButton = document.querySelector<HTMLButtonElement>('#resolve-snapshot');
+const runSqlButton = requiredNode('#run-sql') as HTMLButtonElement;
+const cancelSqlButton = requiredNode('#cancel-sql') as HTMLButtonElement;
+const sqlEditor = requiredNode('#sql-editor') as HTMLTextAreaElement;
 const statusNode = requiredNode('[data-testid="status"]');
 const fixtureNameNode = requiredNode('[data-testid="fixture-name"]');
 const tableUriNode = requiredNode('[data-testid="table-uri"]');
 const snapshotVersionNode = requiredNode('[data-testid="snapshot-version"]');
 const checkpointVersionNode = requiredNode('[data-testid="checkpoint-version"]');
 const fileCountNode = requiredNode('[data-testid="file-count"]');
+const queryStatusNode = requiredNode('[data-testid="query-status"]');
+const queryElapsedMsNode = requiredNode('[data-testid="query-elapsed-ms"]');
+const queryExecutedOnNode = requiredNode('[data-testid="query-executed-on"]');
+const queryFallbackReasonNode = requiredNode('[data-testid="query-fallback-reason"]');
+const queryArrowIpcBytesNode = requiredNode('[data-testid="query-arrow-ipc-bytes"]');
+const queryRowCountNode = requiredNode('[data-testid="query-row-count"]');
+const queryMetricsNode = requiredNode('[data-testid="query-metrics"]');
+const resultGridNode = requiredNode('[data-testid="result-grid"]');
+const workerEventLogNode = requiredNode('[data-testid="worker-event-log"]');
+const queryErrorNode = requiredNode('[data-testid="query-error"]');
 const logObjectsNode = requiredNode('[data-testid="log-objects"]');
 const commitActionsNode = requiredNode('[data-testid="commit-actions"]');
 const dataFilesNode = requiredNode('[data-testid="data-files"]');
@@ -149,6 +185,13 @@ const errorPanel = requiredNode('.error-panel') as HTMLElement;
 const errorNode = requiredNode('[data-testid="error"]');
 
 let wasmReady: Promise<void> | undefined;
+let queryClient: AxonBrowserClient | undefined;
+let queryDescriptor: BrowserHttpSnapshotDescriptor | undefined;
+let queryTableOpened = false;
+let queryRequestCounter = 0;
+let activeQuery: { token: number; requestId: string } | undefined;
+let activeWorkerEventRequestIds: Set<string> | undefined;
+let queryTokenCounter = 0;
 
 resolveButton?.addEventListener('click', () => {
   const fixture = selectedFixture();
@@ -156,6 +199,26 @@ resolveButton?.addEventListener('click', () => {
     renderError(error);
   });
 });
+
+runSqlButton.addEventListener('click', () => {
+  runSql().catch((error: unknown) => {
+    renderQueryError(error, elapsedLabel(0));
+  });
+});
+
+cancelSqlButton.addEventListener('click', () => {
+  cancelActiveQuery();
+});
+
+document.querySelectorAll<HTMLButtonElement>('[data-sample-query]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const queryName = button.dataset.sampleQuery as keyof typeof SAMPLE_QUERIES;
+    sqlEditor.value = SAMPLE_QUERIES[queryName] ?? SAMPLE_QUERIES.count;
+  });
+});
+
+sqlEditor.value = SAMPLE_QUERIES.count;
+clearQueryOutput();
 
 async function resolveSnapshot(manifestUrl: string, fallbackName?: string): Promise<void> {
   setStatus('Resolving');
@@ -182,6 +245,7 @@ async function resolveSnapshot(manifestUrl: string, fallbackName?: string): Prom
   setStatus('Preflighting Parquet');
   const parquetPreflight = await preflightActiveParquetFiles(activeFiles);
   renderSnapshot(fixture, logObjectDetails, snapshot, activeFiles, parquetPreflight, fallbackName);
+  prepareQuerySandbox(snapshot, activeFiles);
 }
 
 function renderSnapshot(
@@ -242,6 +306,363 @@ function activeDataFiles(fixture: FixtureManifest, snapshot: ResolvedSnapshot): 
       absolute_url: new URL(manifestFile.url_path, window.location.href).toString(),
     };
   });
+}
+
+function prepareQuerySandbox(snapshot: ResolvedSnapshot, activeFiles: ActiveDataFile[]): void {
+  resetQueryClient();
+  clearQueryOutput();
+  queryDescriptor = browserSnapshotDescriptor(snapshot, activeFiles);
+  if (activeFiles.length === 0) {
+    setQueryStatus('Resolve the prod-like fixture to enable SQL');
+    runSqlButton.disabled = true;
+    return;
+  }
+
+  setQueryStatus('Ready');
+  runSqlButton.disabled = false;
+}
+
+function browserSnapshotDescriptor(
+  snapshot: ResolvedSnapshot,
+  activeFiles: ActiveDataFile[],
+): BrowserHttpSnapshotDescriptor {
+  return {
+    table_uri: snapshot.table_uri,
+    snapshot_version: snapshot.snapshot_version,
+    partition_column_types: snapshot.partition_column_types ?? {},
+    browser_compatibility: { capabilities: {} },
+    required_capabilities: { capabilities: {} },
+    active_files: activeFiles.map((file) => ({
+      path: file.path,
+      url: file.absolute_url,
+      size_bytes: file.size_bytes,
+      partition_values: file.partition_values,
+      stats: file.stats,
+    })),
+  };
+}
+
+async function runSql(): Promise<void> {
+  if (!queryDescriptor) {
+    throw new Error('resolve the prod-like fixture before running SQL');
+  }
+
+  const token = ++queryTokenCounter;
+  const requestId = `sandbox-query-${++queryRequestCounter}`;
+  activeQuery = { token, requestId };
+  activeWorkerEventRequestIds = new Set([requestId]);
+  cancelSqlButton.disabled = false;
+  setQueryStatus('Running');
+  queryElapsedMsNode.textContent = '-';
+  queryExecutedOnNode.textContent = '-';
+  queryFallbackReasonNode.textContent = '-';
+  queryArrowIpcBytesNode.textContent = '-';
+  queryRowCountNode.textContent = '-';
+  queryMetricsNode.textContent = '-';
+  queryErrorNode.textContent = '-';
+  resultGridNode.replaceChildren();
+  workerEventLogNode.replaceChildren();
+  const startedAt = performance.now();
+
+  try {
+    const client = ensureQueryClient();
+    await ensureQueryTableOpen(client, token);
+    if (!isActiveQuery(token)) {
+      return;
+    }
+
+    const result = await client.query(QUERY_TABLE_NAME, sqlEditor.value, {
+      requestId,
+      queryOptions: {
+        collect_metrics: true,
+        include_explain: false,
+      },
+    });
+    if (!isActiveQuery(token)) {
+      return;
+    }
+
+    renderQueryResult(result, elapsedLabel(performance.now() - startedAt));
+  } catch (error) {
+    if (!isActiveQuery(token)) {
+      return;
+    }
+    renderQueryError(error, elapsedLabel(performance.now() - startedAt));
+  } finally {
+    if (isActiveQuery(token)) {
+      activeQuery = undefined;
+      activeWorkerEventRequestIds = undefined;
+      cancelSqlButton.disabled = true;
+    }
+  }
+}
+
+function ensureQueryClient(): AxonBrowserClient {
+  queryClient ??= createAxonBrowserClient({
+    worker: () =>
+      new Worker(new URL('./sandbox-query-worker.ts', import.meta.url), {
+        type: 'module',
+        name: 'axon-sandbox-query-worker',
+      }),
+    requestId: () => `sandbox-request-${++queryRequestCounter}`,
+    onEvent: renderWorkerEvent,
+  });
+
+  return queryClient;
+}
+
+async function ensureQueryTableOpen(client: AxonBrowserClient, token: number): Promise<void> {
+  if (queryTableOpened) {
+    return;
+  }
+  if (!queryDescriptor) {
+    throw new Error('no query descriptor has been resolved');
+  }
+
+  const requestId = `sandbox-open-${++queryRequestCounter}`;
+  if (isActiveQuery(token)) {
+    activeWorkerEventRequestIds?.add(requestId);
+  }
+  await client.openDeltaTable(QUERY_TABLE_NAME, queryDescriptor, { requestId });
+  queryTableOpened = true;
+}
+
+function cancelActiveQuery(): void {
+  const active = activeQuery;
+  if (!active) {
+    return;
+  }
+
+  activeQuery = undefined;
+  cancelSqlButton.disabled = true;
+  setQueryStatus('Cancellation requested');
+  queryFallbackReasonNode.textContent = 'browser_runtime_constraint';
+  const cancellationError: QueryError = {
+    code: 'fallback_required',
+    message:
+      'UI cancellation requested; true worker abort is not available, so this request was superseded locally.',
+    target: 'browser_wasm',
+    fallback_reason: 'browser_runtime_constraint',
+  };
+  appendWorkerEvent({
+    cancellation: {
+      context: {
+        phase: 'query',
+        request_id: active.requestId,
+        query_id: active.requestId,
+        table_name: QUERY_TABLE_NAME,
+      },
+      error: cancellationError,
+    },
+  });
+  activeWorkerEventRequestIds = undefined;
+  queryErrorNode.textContent = JSON.stringify(cancellationError, null, 2);
+}
+
+function isActiveQuery(token: number): boolean {
+  return activeQuery?.token === token;
+}
+
+function renderQueryResult(result: AxonQueryResult, elapsed: string): void {
+  setQueryStatus('Finished');
+  queryElapsedMsNode.textContent = elapsed;
+  queryExecutedOnNode.textContent = result.response.executed_on;
+  queryFallbackReasonNode.textContent = fallbackReasonLabel(result.response.fallback_reason);
+  queryArrowIpcBytesNode.textContent = formatBytes(result.result.bytes.byteLength);
+  queryRowCountNode.textContent = result.preview ? String(result.preview.row_count) : '-';
+  queryMetricsNode.textContent = JSON.stringify(result.response.metrics, null, 2);
+  queryErrorNode.textContent = '-';
+  renderResultPreview(result.preview);
+}
+
+function renderQueryError(error: unknown, elapsed: string): void {
+  const queryError = errorToQueryError(error);
+  setQueryStatus('Error');
+  queryElapsedMsNode.textContent = elapsed;
+  queryExecutedOnNode.textContent = queryError.target;
+  queryFallbackReasonNode.textContent = fallbackReasonLabel(queryError.fallback_reason);
+  queryErrorNode.textContent = JSON.stringify(queryError, null, 2);
+}
+
+function errorToQueryError(error: unknown): QueryError {
+  if (error instanceof AxonWorkerError) {
+    return redactQueryError(error.queryError);
+  }
+  if (isQueryError(error)) {
+    return redactQueryError(error);
+  }
+  return {
+    code: 'execution_failed',
+    message: redactUrlSecrets(error instanceof Error ? error.message : String(error)),
+    target: 'browser_wasm',
+  };
+}
+
+function isQueryError(value: unknown): value is QueryError {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as Partial<QueryError>;
+  return (
+    typeof candidate.code === 'string' &&
+    typeof candidate.message === 'string' &&
+    (candidate.target === 'browser_wasm' || candidate.target === 'native')
+  );
+}
+
+function redactQueryError(error: QueryError): QueryError {
+  return {
+    ...error,
+    message: redactUrlSecrets(error.message),
+  };
+}
+
+function renderResultPreview(preview: BrowserWorkerResultPreview | undefined): void {
+  if (!preview) {
+    resultGridNode.textContent = 'No preview returned';
+    return;
+  }
+
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const headerRow = document.createElement('tr');
+  for (const column of preview.columns) {
+    const header = document.createElement('th');
+    header.textContent = column;
+    headerRow.append(header);
+  }
+  thead.append(headerRow);
+
+  const tbody = document.createElement('tbody');
+  for (const row of preview.rows) {
+    const rowNode = document.createElement('tr');
+    for (const value of row) {
+      const cell = document.createElement('td');
+      cell.textContent = value === null ? 'null' : String(value);
+      rowNode.append(cell);
+    }
+    tbody.append(rowNode);
+  }
+  table.append(thead, tbody);
+
+  const meta = document.createElement('p');
+  meta.className = 'detail';
+  meta.textContent = preview.truncated
+    ? `Preview capped at ${preview.preview_row_limit} of ${preview.row_count} rows`
+    : `Preview rows ${preview.row_count}`;
+
+  resultGridNode.replaceChildren(table, meta);
+}
+
+function renderWorkerEvent(event: BrowserWorkerEventEnvelope): void {
+  if (!shouldRenderWorkerEvent(event)) {
+    return;
+  }
+
+  appendWorkerEvent(event);
+}
+
+function appendWorkerEvent(event: BrowserWorkerEventEnvelope): void {
+  const item = document.createElement('li');
+  item.textContent = workerEventLabel(event);
+  workerEventLogNode.append(item);
+}
+
+function shouldRenderWorkerEvent(event: BrowserWorkerEventEnvelope): boolean {
+  const requestId = workerEventContext(event).request_id;
+  if (!requestId) {
+    return activeWorkerEventRequestIds !== undefined;
+  }
+
+  return activeWorkerEventRequestIds?.has(requestId) ?? false;
+}
+
+function workerEventContext(event: BrowserWorkerEventEnvelope): BrowserWorkerEventContext {
+  if ('progress' in event) {
+    return event.progress.context;
+  }
+  if ('range_read_metrics' in event) {
+    return event.range_read_metrics.context;
+  }
+  if ('cache_metrics' in event) {
+    return event.cache_metrics.context;
+  }
+  if ('fallback' in event) {
+    return event.fallback.context;
+  }
+  if ('cancellation' in event) {
+    return event.cancellation.context;
+  }
+  if ('terminal_error' in event) {
+    return event.terminal_error.context;
+  }
+  return event.log.context;
+}
+
+function workerEventLabel(event: BrowserWorkerEventEnvelope): string {
+  if ('progress' in event) {
+    return `${event.progress.context.phase} ${event.progress.stage}`;
+  }
+  if ('range_read_metrics' in event) {
+    return `range_read_metrics files_touched ${event.range_read_metrics.files_touched}, bytes_fetched ${event.range_read_metrics.bytes_fetched}`;
+  }
+  if ('cache_metrics' in event) {
+    return `cache_metrics session_tables ${event.cache_metrics.session_table_count}, cached ${formatBytes(event.cache_metrics.session_cached_bytes)}`;
+  }
+  if ('fallback' in event) {
+    return `fallback ${fallbackReasonLabel(event.fallback.reason)}`;
+  }
+  if ('cancellation' in event) {
+    return `cancellation ${event.cancellation.error.message}`;
+  }
+  if ('terminal_error' in event) {
+    return `terminal_error ${event.terminal_error.error.code}: ${event.terminal_error.error.message}`;
+  }
+  return `${event.log.context.phase} ${event.log.level}: ${event.log.message}`;
+}
+
+function fallbackReasonLabel(reason: FallbackReason | undefined): string {
+  if (reason === undefined) {
+    return '-';
+  }
+  if (typeof reason === 'string') {
+    return reason;
+  }
+  return `${reason.capability_gate.capability}:${reason.capability_gate.required_state}`;
+}
+
+function elapsedLabel(milliseconds: number): string {
+  return `${Math.max(0, Math.round(milliseconds))} ms`;
+}
+
+function setQueryStatus(status: string): void {
+  queryStatusNode.textContent = status;
+}
+
+function clearQueryOutput(): void {
+  setQueryStatus('No query');
+  queryElapsedMsNode.textContent = '-';
+  queryExecutedOnNode.textContent = '-';
+  queryFallbackReasonNode.textContent = '-';
+  queryArrowIpcBytesNode.textContent = '-';
+  queryRowCountNode.textContent = '-';
+  queryMetricsNode.textContent = '-';
+  queryErrorNode.textContent = '-';
+  resultGridNode.replaceChildren();
+  workerEventLogNode.replaceChildren();
+  runSqlButton.disabled = true;
+  cancelSqlButton.disabled = true;
+}
+
+function resetQueryClient(): void {
+  activeQuery = undefined;
+  activeWorkerEventRequestIds = undefined;
+  queryTableOpened = false;
+  queryDescriptor = undefined;
+  if (queryClient) {
+    queryClient.terminate();
+    queryClient = undefined;
+  }
 }
 
 async function preflightActiveParquetFiles(
@@ -682,6 +1103,8 @@ function clearDetails(): void {
   pruningPreflightNode.replaceChildren();
   parquetPreflightNode.replaceChildren();
   inputOutputMapNode.replaceChildren();
+  resetQueryClient();
+  clearQueryOutput();
 }
 
 function selectedFixture(): FixtureChoice {

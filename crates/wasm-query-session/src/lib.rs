@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::mem::size_of;
-use std::time::Instant;
 
 #[cfg(feature = "datafusion")]
 use std::collections::BTreeSet;
@@ -29,8 +28,8 @@ use wasm_datafusion_poc::{
 };
 use wasm_query_runtime::{
     runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserExecutionPlan,
-    BrowserPlannedQuery, BrowserRuntimeConfig, BrowserRuntimeSession, MaterializedBrowserSnapshot,
-    RuntimeArrowIpcResult,
+    BrowserPlannedQuery, BrowserRuntimeConfig, BrowserRuntimeInstant, BrowserRuntimeSession,
+    MaterializedBrowserSnapshot, RuntimeArrowIpcResult,
 };
 #[cfg(feature = "datafusion")]
 use wasm_query_runtime::{
@@ -278,7 +277,7 @@ impl BrowserQuerySession {
             )?;
             execution_plan
         };
-        let started_at = Instant::now();
+        let started_at = BrowserRuntimeInstant::now();
         let runtime_result = self
             .runtime
             .execute_plan_to_arrow_ipc(&materialized, &plan)
@@ -329,7 +328,7 @@ impl BrowserQuerySession {
                     .and_then(BootstrappedBrowserSnapshot::access_mode),
             )
         };
-        let started_at = Instant::now();
+        let started_at = BrowserRuntimeInstant::now();
         let datafusion_result = self
             .datafusion
             .sql_to_arrow_ipc_result(&request.sql)
@@ -660,11 +659,11 @@ fn datafusion_query_metrics(
     footer_reads: Option<u64>,
     snapshot_bootstrap_duration_ms: Option<u64>,
     access_mode: Option<query_contract::BrowserAccessMode>,
-    started_at: Instant,
+    started_at: BrowserRuntimeInstant,
 ) -> QueryMetricsSummary {
     QueryMetricsSummary {
         bytes_fetched: scan_metrics.bytes_fetched,
-        duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+        duration_ms: started_at.elapsed_ms(),
         files_touched: if scan_metrics.scan_count > 0 {
             scan_metrics.files_touched
         } else {
@@ -1095,7 +1094,7 @@ fn cached_bytes_overflow_error() -> QueryError {
 fn execution_metrics(
     plan: &BrowserExecutionPlan,
     runtime_result: &RuntimeArrowIpcResult,
-    started_at: Instant,
+    started_at: BrowserRuntimeInstant,
 ) -> Result<QueryMetricsSummary, QueryError> {
     let bytes_fetched = runtime_result
         .scan_metrics
@@ -1154,7 +1153,7 @@ fn execution_metrics(
 
     Ok(QueryMetricsSummary {
         bytes_fetched,
-        duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+        duration_ms: started_at.elapsed_ms(),
         files_touched: plan.scan().candidate_file_count(),
         files_skipped: plan.pruning().files_pruned,
         row_groups_touched,

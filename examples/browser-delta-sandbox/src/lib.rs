@@ -1,7 +1,20 @@
 use std::collections::BTreeMap;
+use std::io::Cursor;
 
-use query_contract::{QueryError, SnapshotResolutionRequest};
+use arrow_array::cast::{
+    as_boolean_array, as_largestring_array, as_primitive_array, as_string_array,
+};
+use arrow_array::types::{Float32Type, Float64Type, Int32Type, Int64Type};
+use arrow_array::Array;
+use arrow_ipc::reader::StreamReader;
+use arrow_schema::DataType as ArrowDataType;
+use js_sys::{Object, Reflect, Uint8Array};
+use query_contract::{
+    BrowserHttpSnapshotDescriptor, ExecutionTarget, QueryError, QueryErrorCode, QueryRequest,
+    QueryResponse, SnapshotResolutionRequest,
+};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
 use wasm_delta_snapshot::{
     BrowserDeltaLogManifest, BrowserDeltaLogObject, BrowserHttpDeltaLogStorageHandler,
@@ -9,6 +22,11 @@ use wasm_delta_snapshot::{
 };
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{ObjectSource, ScanTarget};
+use wasm_query_runtime::{BrowserObjectAccessMode, BrowserRuntimeConfig};
+use wasm_query_session::BrowserQuerySession;
+
+const DEFAULT_QUERY_SESSION_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+const DEFAULT_QUERY_PREVIEW_LIMIT: usize = 100;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -88,6 +106,42 @@ struct ParquetPreflightFieldStats {
     null_count: Option<u64>,
 }
 
+#[derive(Debug, Serialize)]
+struct SandboxOpenTableOutput {
+    cache_metrics: SandboxCacheMetrics,
+}
+
+#[derive(Debug, Serialize)]
+struct SandboxSqlMetadata {
+    response: QueryResponse,
+    preview: QueryPreviewOutput,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    arrow_ipc_byte_length: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    row_count: u64,
+    cache_metrics: SandboxCacheMetrics,
+}
+
+#[derive(Debug, Serialize)]
+struct QueryPreviewOutput {
+    columns: Vec<String>,
+    rows: Vec<Vec<Value>>,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    row_count: u64,
+    preview_row_limit: usize,
+    truncated: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct SandboxCacheMetrics {
+    #[serde(serialize_with = "serialize_decimal_string")]
+    session_cached_bytes: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    session_table_count: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    max_session_cached_bytes: u64,
+}
+
 fn serialize_decimal_string<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
 where
     T: std::fmt::Display,
@@ -107,6 +161,76 @@ where
     match value {
         Some(value) => serializer.serialize_some(&value.to_string()),
         None => serializer.serialize_none(),
+    }
+}
+
+#[wasm_bindgen]
+pub struct SandboxQuerySession {
+    session: BrowserQuerySession,
+}
+
+#[wasm_bindgen]
+impl SandboxQuerySession {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Result<SandboxQuerySession, JsValue> {
+        let runtime_config = BrowserRuntimeConfig {
+            object_access_mode: BrowserObjectAccessMode::BrowserSafeHttp,
+            allow_cloud_credentials: false,
+            ..BrowserRuntimeConfig::default()
+        };
+        let session = BrowserQuerySession::new(runtime_config, DEFAULT_QUERY_SESSION_CACHE_BYTES)
+            .map_err(query_error_to_js_value)?;
+
+        Ok(Self { session })
+    }
+
+    pub async fn open_delta_table(
+        &mut self,
+        name: String,
+        snapshot_json: String,
+    ) -> Result<String, JsValue> {
+        let snapshot = serde_json::from_str::<BrowserHttpSnapshotDescriptor>(&snapshot_json)
+            .map_err(|error| JsValue::from_str(&format!("invalid snapshot descriptor: {error}")))?;
+        self.session
+            .open_delta_table(name.clone(), snapshot)
+            .await
+            .map_err(query_error_to_js_value)?;
+
+        serde_json::to_string(&SandboxOpenTableOutput {
+            cache_metrics: cache_metrics(&self.session),
+        })
+        .map_err(|error| {
+            JsValue::from_str(&format!(
+                "open table metadata serialization failed: {error}"
+            ))
+        })
+    }
+
+    pub async fn sql(
+        &mut self,
+        name: String,
+        request_json: String,
+        preview_limit: u32,
+    ) -> Result<JsValue, JsValue> {
+        let request = serde_json::from_str::<QueryRequest>(&request_json)
+            .map_err(|error| JsValue::from_str(&format!("invalid query request: {error}")))?;
+        let result = self
+            .session
+            .sql(&name, &request)
+            .await
+            .map_err(query_error_to_js_value)?;
+        let arrow_ipc_bytes = result.runtime_result.ipc_bytes.to_vec();
+        let preview = preview_from_arrow_ipc(&arrow_ipc_bytes, preview_limit)
+            .map_err(query_error_to_js_value)?;
+        let metadata = SandboxSqlMetadata {
+            response: result.response,
+            row_count: result.runtime_result.row_count,
+            arrow_ipc_byte_length: result.runtime_result.encoded_bytes,
+            preview,
+            cache_metrics: cache_metrics(&self.session),
+        };
+
+        sql_bridge_value(&metadata, &arrow_ipc_bytes)
     }
 }
 
@@ -200,6 +324,118 @@ pub async fn preflight_parquet_metadata_for_targets(
     serde_json::to_string(&outputs).map_err(|error| {
         JsValue::from_str(&format!("Parquet preflight serialization failed: {error}"))
     })
+}
+
+fn cache_metrics(session: &BrowserQuerySession) -> SandboxCacheMetrics {
+    SandboxCacheMetrics {
+        session_cached_bytes: session.cached_bytes(),
+        session_table_count: u64::try_from(session.table_count()).unwrap_or(u64::MAX),
+        max_session_cached_bytes: session.max_cached_bytes(),
+    }
+}
+
+fn sql_bridge_value(metadata: &SandboxSqlMetadata, bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let metadata_json = serde_json::to_string(metadata).map_err(|error| {
+        JsValue::from_str(&format!(
+            "SQL result metadata serialization failed: {error}"
+        ))
+    })?;
+    let object = Object::new();
+    Reflect::set(
+        &object,
+        &JsValue::from_str("metadata_json"),
+        &JsValue::from_str(&metadata_json),
+    )?;
+    let arrow_ipc_bytes = Uint8Array::from(bytes);
+    Reflect::set(
+        &object,
+        &JsValue::from_str("arrow_ipc_bytes"),
+        arrow_ipc_bytes.as_ref(),
+    )?;
+
+    Ok(object.into())
+}
+
+fn preview_from_arrow_ipc(
+    bytes: &[u8],
+    requested_limit: u32,
+) -> Result<QueryPreviewOutput, QueryError> {
+    let preview_row_limit = usize::try_from(requested_limit).unwrap_or(DEFAULT_QUERY_PREVIEW_LIMIT);
+    let preview_row_limit = preview_row_limit.min(DEFAULT_QUERY_PREVIEW_LIMIT);
+    let cursor = Cursor::new(bytes);
+    let mut reader = StreamReader::try_new(cursor, None).map_err(preview_error)?;
+    let schema = reader.schema();
+    let columns = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().to_string())
+        .collect::<Vec<_>>();
+    let mut rows = Vec::new();
+    let mut row_count = 0_u64;
+
+    for batch in &mut reader {
+        let batch = batch.map_err(preview_error)?;
+        for row_index in 0..batch.num_rows() {
+            row_count = row_count
+                .checked_add(1)
+                .ok_or_else(|| preview_runtime_error("preview row count overflowed u64"))?;
+            if rows.len() >= preview_row_limit {
+                continue;
+            }
+
+            rows.push(
+                batch
+                    .columns()
+                    .iter()
+                    .map(|array| preview_value(array.as_ref(), row_index))
+                    .collect(),
+            );
+        }
+    }
+
+    Ok(QueryPreviewOutput {
+        columns,
+        rows,
+        row_count,
+        preview_row_limit,
+        truncated: row_count > u64::try_from(preview_row_limit).unwrap_or(u64::MAX),
+    })
+}
+
+fn preview_value(array: &dyn Array, row_index: usize) -> Value {
+    if array.is_null(row_index) {
+        return Value::Null;
+    }
+
+    match array.data_type() {
+        ArrowDataType::Boolean => json!(as_boolean_array(array).value(row_index)),
+        ArrowDataType::Int32 => json!(as_primitive_array::<Int32Type>(array).value(row_index)),
+        ArrowDataType::Int64 => json!(as_primitive_array::<Int64Type>(array)
+            .value(row_index)
+            .to_string()),
+        ArrowDataType::Float32 => json!(as_primitive_array::<Float32Type>(array).value(row_index)),
+        ArrowDataType::Float64 => {
+            let value = as_primitive_array::<Float64Type>(array).value(row_index);
+            serde_json::Number::from_f64(value)
+                .map(Value::Number)
+                .unwrap_or(Value::Null)
+        }
+        ArrowDataType::Utf8 => json!(as_string_array(array).value(row_index)),
+        ArrowDataType::LargeUtf8 => json!(as_largestring_array(array).value(row_index)),
+        other => json!(format!("<unsupported {other}>")),
+    }
+}
+
+fn preview_error(error: impl std::fmt::Display) -> QueryError {
+    preview_runtime_error(format!("Arrow IPC preview decode failed: {error}"))
+}
+
+fn preview_runtime_error(message: impl Into<String>) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::ExecutionFailed,
+        message,
+        ExecutionTarget::BrowserWasm,
+    )
 }
 
 fn parquet_preflight_field(

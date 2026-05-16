@@ -440,8 +440,10 @@ name = "browser-delta-sandbox"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
+ "arrow-ipc",
  "arrow-schema",
  "deltalake",
+ "js-sys",
  "query-contract",
  "serde",
  "serde_json",
@@ -451,6 +453,8 @@ dependencies = [
  "wasm-delta-snapshot",
  "wasm-http-object-store",
  "wasm-parquet-engine",
+ "wasm-query-runtime",
+ "wasm-query-session",
 ]
 
 [[package]]
@@ -4321,6 +4325,7 @@ dependencies = [
  "futures-timer",
  "futures-util",
  "getrandom 0.3.4",
+ "js-sys",
  "parquet",
  "query-contract",
  "reqwest",
@@ -4329,6 +4334,7 @@ dependencies = [
  "sqlparser",
  "tempfile",
  "tokio",
+ "wasm-bindgen",
  "wasm-bindgen-test",
  "wasm-delta-snapshot",
  "wasm-http-object-store",

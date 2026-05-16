@@ -6,6 +6,7 @@ import {
   AxonWorkerError,
   createAxonBrowserClient,
   getPlatformFeatures,
+  redactUrlSecrets,
   selectBundle,
   type BrowserBundleManifest,
   type BrowserHttpSnapshotDescriptor,
@@ -358,6 +359,97 @@ test('normalizes Arrow IPC bytes and exposes success fallback reasons', async ()
       required_state: 'native_only',
     },
   });
+});
+
+test('preserves optional bounded result previews on success envelopes', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const resultPromise = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT COUNT(*) AS row_count FROM events',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-query-preview' },
+  );
+
+  worker.emitMessage({
+    success: {
+      request_id: 'req-query-preview',
+      response: queryResponse(),
+      result: {
+        format: 'stream',
+        content_type: 'application/vnd.apache.arrow.stream',
+        bytes: [1, 2, 3, 4],
+      },
+      preview: {
+        columns: ['row_count'],
+        rows: [[4]],
+        row_count: 1,
+        preview_row_limit: 100,
+        truncated: false,
+      },
+    },
+  });
+
+  await expect(resultPromise).resolves.toMatchObject({
+    preview: {
+      columns: ['row_count'],
+      rows: [[4]],
+      row_count: 1,
+      preview_row_limit: 100,
+      truncated: false,
+    },
+  });
+});
+
+test('rejects malformed result previews on success envelopes', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const resultPromise = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT COUNT(*) AS row_count FROM events',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-query-preview-invalid' },
+  );
+
+  worker.emitMessage({
+    success: {
+      request_id: 'req-query-preview-invalid',
+      response: queryResponse(),
+      result: {
+        format: 'stream',
+        content_type: 'application/vnd.apache.arrow.stream',
+        bytes: [1, 2, 3, 4],
+      },
+      preview: {
+        columns: ['row_count'],
+        rows: [['4']],
+        row_count: Number.NaN,
+        preview_row_limit: 100,
+        truncated: false,
+      },
+    },
+  });
+
+  await expect(resultPromise).rejects.toThrow(AxonProtocolError);
+  await expect(resultPromise).rejects.toThrow('success.preview.row_count');
+});
+
+test('redacts URL credentials, query strings, and fragments from diagnostics', () => {
+  expect(
+    redactUrlSecrets(
+      'failed to fetch https://user:secret@example.invalid/table/file.parquet?X-Amz-Signature=abc#footer',
+    ),
+  ).toBe('failed to fetch https://example.invalid/table/file.parquet');
 });
 
 test('routes worker runtime events without settling the active request', async () => {

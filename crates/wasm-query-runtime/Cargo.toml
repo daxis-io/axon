@@ -42,6 +42,8 @@ tokio = { version = "=1.50.0", features = ["rt-multi-thread"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "=0.3.4", features = ["wasm_js"], optional = true }
+js-sys = "=0.3.91"
+wasm-bindgen = "=0.2.114"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.64"
