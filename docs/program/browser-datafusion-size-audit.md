@@ -211,9 +211,10 @@ and Axon runtime experiments comparable.
 
 ## Current Baseline
 
-DataFusion is now wired through the browser query-session and worker contract as the
-`OpenDeltaTable` / SQL Arrow IPC path. The implementation still lives under
-`crates/wasm-datafusion-poc`, but the crate now has a product-shaped engine facade over
+DataFusion is now wired through the dedicated browser DataFusion session as the
+`OpenDeltaTable` / SQL Arrow IPC path for UI/runtime builds. The implementation still lives under
+`crates/wasm-datafusion-poc`, but `crates/wasm-datafusion-session` keeps that path separate from
+the legacy narrow custom session so either side can be removed independently. The POC crate now has a product-shaped engine facade over
 `SessionContext`, descriptor-backed table registration, custom scan execution, browser Parquet range
 I/O, pushdown traces, query budgets, cancellation shape, and Arrow IPC output. The older
 `wasm-datafusion-planner-poc` remains useful as a planner-only lower-bound measurement, not as the

@@ -120,6 +120,7 @@ export type QueryResponse = {
   capabilities: CapabilityReport;
   fallback_reason?: FallbackReason;
   metrics: QueryMetricsSummary;
+  explain?: string;
 };
 
 export type BrowserWorkerSqlOutput = 'arrow_ipc_stream';

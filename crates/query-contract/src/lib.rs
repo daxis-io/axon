@@ -447,4 +447,45 @@ pub struct QueryResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<FallbackReason>,
     pub metrics: QueryMetricsSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explain: Option<String>,
+}
+
+#[cfg(test)]
+mod explain_field_tests {
+    use super::*;
+
+    #[test]
+    fn query_response_round_trips_explain_field() {
+        let resp = QueryResponse {
+            executed_on: ExecutionTarget::BrowserWasm,
+            capabilities: CapabilityReport::default(),
+            fallback_reason: None,
+            metrics: QueryMetricsSummary::default(),
+            explain: Some("Scan: events\n  Filter: status = 'fulfilled'".into()),
+        };
+        let wire = serde_json::to_string(&resp).expect("serialize");
+        assert!(wire.contains("\"explain\""), "wire form: {wire}");
+        let back: QueryResponse = serde_json::from_str(&wire).expect("deserialize");
+        assert_eq!(
+            back.explain.as_deref(),
+            Some("Scan: events\n  Filter: status = 'fulfilled'")
+        );
+    }
+
+    #[test]
+    fn query_response_omits_explain_when_none() {
+        let resp = QueryResponse {
+            executed_on: ExecutionTarget::BrowserWasm,
+            capabilities: CapabilityReport::default(),
+            fallback_reason: None,
+            metrics: QueryMetricsSummary::default(),
+            explain: None,
+        };
+        let wire = serde_json::to_string(&resp).expect("serialize");
+        assert!(
+            !wire.contains("\"explain\""),
+            "expected explain to be omitted; wire: {wire}"
+        );
+    }
 }

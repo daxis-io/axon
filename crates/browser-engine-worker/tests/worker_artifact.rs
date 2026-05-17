@@ -1,4 +1,3 @@
-#[cfg(not(feature = "datafusion"))]
 use std::path::PathBuf;
 
 use browser_engine_worker::{
@@ -7,14 +6,12 @@ use browser_engine_worker::{
 };
 use query_contract::{BrowserAccessMode, ExecutionTarget};
 
-#[cfg(not(feature = "datafusion"))]
 fn example_path(file_name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../docs/program/browser-lakehouse-release-handoff-examples")
         .join(file_name)
 }
 
-#[cfg(not(feature = "datafusion"))]
 fn read_example(file_name: &str) -> String {
     std::fs::read_to_string(example_path(file_name))
         .unwrap_or_else(|error| panic!("failed to read example '{}': {error}", file_name))
@@ -66,7 +63,6 @@ fn report_worker_artifact_baseline() {
     assert!(report.memory.query_session_bytes > 0);
 }
 
-#[cfg(not(feature = "datafusion"))]
 #[test]
 fn worker_artifact_reports_narrow_default_capability() {
     let report = artifact_report().expect("combined artifact report should be produced");
@@ -81,22 +77,6 @@ fn worker_artifact_reports_narrow_default_capability() {
     assert_eq!(report.identity.wasm_artifact, "browser_engine_worker.wasm");
 }
 
-#[cfg(feature = "datafusion")]
-#[test]
-fn worker_artifact_reports_datafusion_feature_capability() {
-    let report = artifact_report().expect("combined artifact report should be produced");
-
-    assert_eq!(report.runtime_sku, BrowserRuntimeSku::Sql);
-    assert_eq!(report.result_transport, BrowserResultTransport::ArrowIpc);
-    assert_eq!(report.capabilities, capabilities());
-    assert!(report.capabilities.session_shell);
-    assert!(report.capabilities.browser_datafusion);
-    assert_eq!(report.identity.package_name, "browser-engine-worker");
-    assert_eq!(report.identity.package_version, env!("CARGO_PKG_VERSION"));
-    assert_eq!(report.identity.wasm_artifact, "browser_engine_worker.wasm");
-}
-
-#[cfg(not(feature = "datafusion"))]
 #[test]
 fn worker_artifact_example_matches_contract() {
     let report: browser_engine_worker::BrowserWorkerArtifactReport =

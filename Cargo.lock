@@ -450,11 +450,11 @@ dependencies = [
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-datafusion-session",
  "wasm-delta-snapshot",
  "wasm-http-object-store",
  "wasm-parquet-engine",
  "wasm-query-runtime",
- "wasm-query-session",
 ]
 
 [[package]]
@@ -4236,6 +4236,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-datafusion-session"
+version = "0.1.0"
+dependencies = [
+ "query-contract",
+ "sqlparser",
+ "tokio",
+ "wasm-datafusion-poc",
+ "wasm-query-runtime",
+]
+
+[[package]]
 name = "wasm-delta-snapshot"
 version = "0.1.0"
 dependencies = [
@@ -4349,10 +4360,8 @@ dependencies = [
  "deltalake",
  "query-contract",
  "serde_json",
- "sqlparser",
  "tempfile",
  "tokio",
- "wasm-datafusion-poc",
  "wasm-query-runtime",
 ]
 

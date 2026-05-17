@@ -72,7 +72,8 @@ The Rust workspace lives in [`crates/`](crates/), grouped by role.
 - [`wasm-parquet-engine`](crates/wasm-parquet-engine/). Browser side Parquet planning and async footer plus scan primitives.
 - [`wasm-delta-snapshot`](crates/wasm-delta-snapshot/). Browser safe Delta snapshot reconstruction (log replay plus checkpoints).
 - [`wasm-query-runtime`](crates/wasm-query-runtime/). Constrained browser runtime envelope. Bootstraps snapshots, plans, prunes, and runs the supported SQL subset.
-- [`wasm-query-session`](crates/wasm-query-session/). In memory session shell. Caches materialized and bootstrapped snapshots across queries with a memory budget.
+- [`wasm-query-session`](crates/wasm-query-session/). Legacy narrow in-memory session shell. Caches materialized and bootstrapped snapshots across queries with a memory budget while staying isolated for removal.
+- [`wasm-datafusion-session`](crates/wasm-datafusion-session/). Dedicated DataFusion-backed browser session for UI/runtime builds. Owns DataFusion table registration, SQL scope checks, budgets, metrics, and Arrow IPC while keeping the legacy narrow session out of the production UI DataFusion path.
 - [`browser-sdk`](crates/browser-sdk/). Embedding surface. Worker request envelopes, Arrow IPC results, fallback propagation.
 - [`browser-engine-worker`](crates/browser-engine-worker/). Linked worker artifact used to measure WASM size, cold start, and memory footprint.
 - [`examples/browser-delta-sandbox`](examples/browser-delta-sandbox/). Browser embedding example with TypeScript SDK helpers for platform feature detection and worker/WASM bundle selection.
@@ -91,7 +92,7 @@ The Rust workspace lives in [`crates/`](crates/), grouped by role.
 
 - Native SQL over Delta tables, with snapshot pinning, partition pruning, and execution derived metrics.
 - A browser runtime that bootstraps a snapshot, plans a candidate file set, prunes partitions and integer footer stats, and executes a curated SQL subset (filter, project, group, the common aggregates, output aligned `ORDER BY` / `LIMIT`).
-- Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`; the shipped browser V1 remains narrow runtime + streaming scan + in-memory session shell.
+- Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`; the shipped worker remains narrow runtime + streaming scan + in-memory session shell, while the browser sandbox UI production runtime uses the dedicated `wasm-datafusion-session` path.
 - The browser-facing TypeScript SDK has a manifest-based bundle selector. The current baseline is single-threaded; SIMD and threaded bundle tiers are represented for future deployments but are not assumed.
 - `wasm-http-object-store` has a first OPFS persistent extent cache adapter for indexed validated extents, bounded per object identity, plus a fail-open cache contract so persistence errors become cache misses.
 - A query router that returns structured fallback decisions instead of guessing.
@@ -100,8 +101,8 @@ The Rust workspace lives in [`crates/`](crates/), grouped by role.
 ### What is not in this repo yet
 
 - A `services/query-api` HTTP service. signed URL issuance, proxy-mode request issuance, audit logging, request correlation, and CORS/origin validation are external blockers.
-- IndexedDB persistent caches and session-level persistent table caches. The OPFS adapter exists lower in the object-store stack, but `wasm-query-session` remains in-memory only.
-- A broad browser DataFusion engine. The browser path is a focused interpreter, not a general SQL engine.
+- OPFS / IndexedDB session-level persistent caches. The OPFS adapter exists lower in the object-store stack, but `wasm-query-session` remains in-memory only.
+- A shipped worker artifact with broad browser DataFusion. DataFusion is available to the browser sandbox UI through `wasm-datafusion-session`; the default worker intentionally reports `browser_datafusion = false`.
 
 The full launch checklist lives in [`docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md`](docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md). External dependencies are tracked in [`docs/release-gates/browser-wasm-delta-gcs-external-blockers.md`](docs/release-gates/browser-wasm-delta-gcs-external-blockers.md).
 

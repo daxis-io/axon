@@ -16,7 +16,9 @@ use std::{
     },
 };
 
-use arrow_array::{Int32Array, RecordBatch, RecordBatchOptions, StringArray};
+use arrow_array::{
+    Array, Int32Array, LargeStringArray, RecordBatch, RecordBatchOptions, StringArray,
+};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::{Session, TableProvider};
@@ -1785,6 +1787,24 @@ impl WasmDataFusionEngine {
         result
     }
 
+    pub async fn explain_physical_plan_text(&self, sql: &str) -> Result<String, QueryError> {
+        let (_schema, batches) = self
+            .sql_to_record_batches(&format!("EXPLAIN {sql}"))
+            .await?;
+        let mut lines = Vec::new();
+
+        for batch in &batches {
+            collect_explain_string_columns(batch, &mut lines)?;
+        }
+
+        let explain = lines.join("\n");
+        let physical_plan = explain
+            .split_once("physical_plan\n")
+            .map(|(_header, plan)| plan.to_string())
+            .unwrap_or(explain);
+        Ok(format!("DataFusion physical plan\n{physical_plan}"))
+    }
+
     async fn sql_to_arrow_ipc_result_inner(
         &self,
         sql: &str,
@@ -1830,6 +1850,51 @@ impl WasmDataFusionEngine {
             scan_metrics,
         })
     }
+}
+
+fn collect_explain_string_columns(
+    batch: &RecordBatch,
+    lines: &mut Vec<String>,
+) -> Result<(), QueryError> {
+    for column_index in 0..batch.num_columns() {
+        match batch.schema().field(column_index).data_type() {
+            DataType::Utf8 => {
+                let column = batch
+                    .column(column_index)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .ok_or_else(|| explain_column_type_error("Utf8"))?;
+                for row_index in 0..batch.num_rows() {
+                    if !column.is_null(row_index) {
+                        lines.push(column.value(row_index).to_string());
+                    }
+                }
+            }
+            DataType::LargeUtf8 => {
+                let column = batch
+                    .column(column_index)
+                    .as_any()
+                    .downcast_ref::<LargeStringArray>()
+                    .ok_or_else(|| explain_column_type_error("LargeUtf8"))?;
+                for row_index in 0..batch.num_rows() {
+                    if !column.is_null(row_index) {
+                        lines.push(column.value(row_index).to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn explain_column_type_error(data_type: &str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::ExecutionFailed,
+        format!("DataFusion EXPLAIN returned an invalid {data_type} column"),
+        runtime_target(),
+    )
 }
 
 impl Default for WasmDataFusionEngine {

@@ -38,10 +38,7 @@ fn worker_reports_cold_start_and_memory_baseline_in_wasm() {
     assert_eq!(report.runtime_sku, runtime_sku());
     assert_eq!(report.result_transport, BrowserResultTransport::ArrowIpc);
     assert_eq!(report.capabilities, capabilities());
-    assert_eq!(
-        report.capabilities.browser_datafusion,
-        cfg!(feature = "datafusion")
-    );
+    assert!(!report.capabilities.browser_datafusion);
     assert_eq!(
         report.startup.access_mode,
         BrowserAccessMode::BrowserSafeHttp
@@ -138,11 +135,7 @@ fn worker_opens_delta_table_and_returns_sql_arrow_ipc_stream() {
         "events"
     );
 
-    let sql = if cfg!(feature = "datafusion") {
-        "SELECT COUNT(*) AS rows FROM events"
-    } else {
-        "SELECT COUNT(*) AS rows FROM axon_table"
-    };
+    let sql = "SELECT COUNT(*) AS rows FROM axon_table";
     let response = test_runtime().block_on(worker.handle_command(BrowserWorkerCommand::sql(
         "req-sql-ipc",
         "events",
@@ -178,11 +171,7 @@ fn worker_event_stream_preserves_request_and_query_identity() {
         )),
     );
 
-    let sql = if cfg!(feature = "datafusion") {
-        "SELECT COUNT(*) AS rows FROM events"
-    } else {
-        "SELECT COUNT(*) AS rows FROM axon_table"
-    };
+    let sql = "SELECT COUNT(*) AS rows FROM axon_table";
     let mut events = Vec::new();
     let response = test_runtime().block_on(worker.handle_command_streaming_events(
         BrowserWorkerCommand::sql(

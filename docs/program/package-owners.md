@@ -9,9 +9,11 @@ This file records the role-based ownership model for the EPIC-01 scaffold. Repla
 | `crates/native-query-runtime` | Runtime / engine team | Authoritative native DataFusion + Delta execution path |
 | `crates/delta-control-plane` | Storage platform team | Snapshot resolution, signed URL/proxy descriptors, policy hooks |
 | `crates/wasm-query-runtime` | Runtime / engine team | Browser runtime, SQL execution envelope, browser-safe controls |
+| `crates/wasm-query-session` | Runtime / engine team | Legacy narrow browser session cache kept isolated for removal |
 | `crates/wasm-http-object-store` | Runtime / engine team | HTTP range-read adapter for signed URL / proxy access |
 | `crates/wasm-parquet-engine` | Runtime / engine team | Browser Parquet footer bootstrap, metadata decode, scan primitives |
 | `crates/wasm-delta-snapshot` | Runtime / engine team | Browser-safe Delta snapshot reconstruction and replay |
+| `crates/wasm-datafusion-session` | Runtime / engine team | Dedicated browser DataFusion session boundary for UI/runtime builds |
 | `crates/browser-sdk` | Web platform team | Public browser-facing SDK surface |
 | `crates/browser-engine-worker` | Web platform team | Internal worker artifact for bundle, startup, and footprint guardrails |
 | `crates/udf-abi` | Runtime / engine team | Versioned WIT / WASI Preview 2 ABI contracts |

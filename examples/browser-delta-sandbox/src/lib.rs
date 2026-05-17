@@ -16,6 +16,7 @@ use query_contract::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
+use wasm_datafusion_session::BrowserDataFusionSession;
 use wasm_delta_snapshot::{
     BrowserDeltaLogManifest, BrowserDeltaLogObject, BrowserHttpDeltaLogStorageHandler,
     DefaultJsonHandler, DefaultParquetHandler, SnapshotResolver,
@@ -23,7 +24,6 @@ use wasm_delta_snapshot::{
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{ObjectSource, ScanTarget};
 use wasm_query_runtime::{BrowserObjectAccessMode, BrowserRuntimeConfig};
-use wasm_query_session::BrowserQuerySession;
 
 const DEFAULT_QUERY_SESSION_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_QUERY_PREVIEW_LIMIT: usize = 100;
@@ -166,7 +166,7 @@ where
 
 #[wasm_bindgen]
 pub struct SandboxQuerySession {
-    session: BrowserQuerySession,
+    session: BrowserDataFusionSession,
 }
 
 #[wasm_bindgen]
@@ -178,8 +178,9 @@ impl SandboxQuerySession {
             allow_cloud_credentials: false,
             ..BrowserRuntimeConfig::default()
         };
-        let session = BrowserQuerySession::new(runtime_config, DEFAULT_QUERY_SESSION_CACHE_BYTES)
-            .map_err(query_error_to_js_value)?;
+        let session =
+            BrowserDataFusionSession::new(runtime_config, DEFAULT_QUERY_SESSION_CACHE_BYTES)
+                .map_err(query_error_to_js_value)?;
 
         Ok(Self { session })
     }
@@ -337,7 +338,7 @@ pub async fn preflight_parquet_metadata_for_targets(
     })
 }
 
-fn cache_metrics(session: &BrowserQuerySession) -> SandboxCacheMetrics {
+fn cache_metrics(session: &BrowserDataFusionSession) -> SandboxCacheMetrics {
     SandboxCacheMetrics {
         session_cached_bytes: session.cached_bytes(),
         session_table_count: u64::try_from(session.table_count()).unwrap_or(u64::MAX),

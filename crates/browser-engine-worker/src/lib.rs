@@ -22,7 +22,6 @@ pub const RESPONSIBILITY: &str =
     "Internal browser worker artifact used for session-backed command handling, size, startup, and footprint reporting.";
 pub const BROWSER_ENGINE_WORKER_WASM_ARTIFACT: &str = "browser_engine_worker.wasm";
 pub const DEFAULT_SESSION_CACHE_BYTES: u64 = 64 * 1024 * 1024;
-const DATAFUSION_QUERY_CANCELLED_MESSAGE: &str = "experimental browser DataFusion query cancelled";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -413,11 +412,7 @@ pub fn worker_target() -> ExecutionTarget {
 }
 
 pub fn runtime_sku() -> BrowserRuntimeSku {
-    if cfg!(feature = "datafusion") {
-        BrowserRuntimeSku::Sql
-    } else {
-        BrowserRuntimeSku::Narrow
-    }
+    BrowserRuntimeSku::Narrow
 }
 
 pub fn result_transport() -> BrowserResultTransport {
@@ -427,7 +422,7 @@ pub fn result_transport() -> BrowserResultTransport {
 pub fn capabilities() -> BrowserWorkerCapabilities {
     BrowserWorkerCapabilities {
         session_shell: true,
-        browser_datafusion: cfg!(feature = "datafusion"),
+        browser_datafusion: false,
     }
 }
 
@@ -571,12 +566,6 @@ where
             reason,
         ));
     }
-    if is_query_cancellation_error(error) {
-        emit_event(BrowserWorkerEventEnvelope::cancellation(
-            context.clone(),
-            error.clone(),
-        ));
-    }
     emit_event(BrowserWorkerEventEnvelope::log(
         context.clone(),
         BrowserWorkerLogLevel::Error,
@@ -586,11 +575,6 @@ where
         context,
         error.clone(),
     ));
-}
-
-fn is_query_cancellation_error(error: &QueryError) -> bool {
-    error.code == QueryErrorCode::ExecutionFailed
-        && error.message == DATAFUSION_QUERY_CANCELLED_MESSAGE
 }
 
 #[cfg(test)]
@@ -642,23 +626,6 @@ mod tests {
             range_metrics.access_mode,
             Some(BrowserAccessMode::BrowserSafeHttp)
         );
-    }
-
-    #[test]
-    fn cancellation_event_classification_requires_known_cancellation_error() {
-        let near_miss = QueryError::new(
-            QueryErrorCode::ExecutionFailed,
-            "browser query cancelled out an unrelated retry",
-            worker_target(),
-        );
-        assert!(!is_query_cancellation_error(&near_miss));
-
-        let cancellation = QueryError::new(
-            QueryErrorCode::ExecutionFailed,
-            "experimental browser DataFusion query cancelled",
-            worker_target(),
-        );
-        assert!(is_query_cancellation_error(&cancellation));
     }
 
     #[tokio::test]

@@ -29,11 +29,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 wasm-bindgen = "=0.2.114"
 wasm-bindgen-futures = "=0.4.64"
+wasm-datafusion-session = { path = "../../crates/wasm-datafusion-session" }
 wasm-delta-snapshot = { path = "../../crates/wasm-delta-snapshot" }
 wasm-http-object-store = { path = "../../crates/wasm-http-object-store" }
 wasm-parquet-engine = { path = "../../crates/wasm-parquet-engine" }
 wasm-query-runtime = { path = "../../crates/wasm-query-runtime" }
-wasm-query-session = { path = "../../crates/wasm-query-session" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 deltalake = { version = "=0.31.1", features = ["datafusion"], optional = true }

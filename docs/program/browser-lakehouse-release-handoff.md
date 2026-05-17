@@ -12,7 +12,7 @@ This document is the repo-owned handoff bundle for the browser lakehouse release
 - Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`.
 - Browser execution V1 is narrow runtime + streaming scan + in-memory session shell, not broad browser DataFusion.
 - The shipped session shell is in-memory only.
-- Persistent-cache hooks exist in repo, with a narrow OPFS extent-cache backend below the in-memory session shell; IndexedDB and session-level persistent caches are still deferred.
+- Persistent-cache hooks exist in repo, with a narrow OPFS extent-cache backend below the in-memory session shell; OPFS / IndexedDB session-level persistent caches are still deferred.
 - Signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation remain external blockers.
 
 Those external blockers stay outside repo-owned success claims in this handoff bundle.

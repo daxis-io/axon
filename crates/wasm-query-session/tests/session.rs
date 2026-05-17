@@ -233,6 +233,82 @@ fn open_table_caches_https_descriptor_without_bootstrapping() {
     assert_eq!(session.table_count(), 0);
 }
 
+#[test]
+fn session_sql_returns_explain_string_when_requested() {
+    let fixture = TestTableFixture::create_partitioned();
+    let resolved_snapshot = resolve_latest_snapshot(&fixture);
+    let server = LoopbackObjectServer::from_fixture_paths(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+    );
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
+        .expect("default browser runtime config should be supported");
+    session
+        .cache_table("events", materialized, None)
+        .expect("session should cache snapshot");
+
+    let mut request = query_request(
+        &resolved_snapshot.table_uri,
+        resolved_snapshot.snapshot_version,
+        "SELECT id FROM axon_table WHERE category = 'A' LIMIT 2",
+    );
+    request.options.include_explain = true;
+
+    let result = runtime()
+        .block_on(session.sql("events", &request))
+        .expect("query should execute");
+
+    let explain = result
+        .response
+        .explain
+        .as_deref()
+        .expect("explain should be populated");
+    assert!(
+        explain.contains("BrowserExecutionPlan"),
+        "explain text: {explain}"
+    );
+    assert!(explain.contains("table_uri"), "explain text: {explain}");
+}
+
+#[test]
+fn session_sql_omits_explain_by_default() {
+    let fixture = TestTableFixture::create_partitioned();
+    let resolved_snapshot = resolve_latest_snapshot(&fixture);
+    let server = LoopbackObjectServer::from_fixture_paths(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+    );
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
+        .expect("default browser runtime config should be supported");
+    session
+        .cache_table("events", materialized, None)
+        .expect("session should cache snapshot");
+
+    let request = query_request(
+        &resolved_snapshot.table_uri,
+        resolved_snapshot.snapshot_version,
+        "SELECT id FROM axon_table LIMIT 1",
+    );
+
+    let result = runtime()
+        .block_on(session.sql("events", &request))
+        .expect("query should execute");
+
+    assert!(
+        result.response.explain.is_none(),
+        "explain must be None when include_explain is false; got: {:?}",
+        result.response.explain
+    );
+}
+
 fn resolve_latest_snapshot(fixture: &TestTableFixture) -> ResolvedSnapshotDescriptor {
     resolve_snapshot(SnapshotResolutionRequest {
         table_uri: fixture.table_uri.clone(),

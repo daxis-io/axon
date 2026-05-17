@@ -24,23 +24,25 @@ The recommended shape is:
 - promote the DataFusion POC into a first-class `wasm-datafusion-engine` that owns SQL planning,
   optimization, physical planning, execution, and Arrow `RecordBatch` output in a browser Worker
 - keep `crates/wasm-query-runtime` as a legacy fallback, correctness scaffold, and migration bridge
-- add `crates/wasm-query-session` as the thin in-memory browser session shell above the runtime and below the worker contract
+- use `crates/wasm-datafusion-session` as the DataFusion-backed browser session shell above opened descriptors and below the UI runtime contract
+- keep `crates/wasm-query-session` as the legacy narrow in-memory session shell isolated for removal
 
 The target browser SKU is therefore:
 
 - Delta protocol semantics come from `delta-kernel-rs` core with its default engine disabled
 - `crates/wasm-delta-kernel-engine` implements `AxonBrowserKernelEngine` over Axon's browser
   cache, JSON, Parquet, and expression handlers
+- Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`
 - streamed Parquet scan primitives inside `crates/wasm-parquet-engine`
 - DataFusion physical execution in a browser Worker
 - `AxonDeltaTableProvider` and `AxonParquetScanExec` connect Axon's Delta/Parquet stack to DataFusion
 - Arrow IPC output from the DataFusion engine wrapper
-- a worker-owned in-memory session shell in `crates/wasm-query-session`
+- a DataFusion-owned in-memory session shell in `crates/wasm-datafusion-session`
 
-The session shell remains in-memory only. The object-store seam now has a narrow OPFS extent-cache backend, while IndexedDB and session-level persistent caches remain deferred.
+The DataFusion and legacy narrow session shells remain in-memory only. The object-store seam now has a narrow OPFS extent-cache backend, while OPFS / IndexedDB session-level persistent caches remain deferred.
 Signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation stay outside repo-owned V1 success claims.
 
-Broad browser DataFusion is no longer deferred as a product direction. The browser query engine
+The broad browser DataFusion product direction is no longer deferred. The browser query engine
 target is DataFusion-backed Delta/Parquet execution. The 30-day gate result, recorded canonically in
 the browser DataFusion size audit, is to continue toward a DataFusion physical execution engine with
 custom Axon table and scan integration. Bundle size remains a release budget; it is not the
@@ -121,7 +123,7 @@ browser-sdk / embedding host
         worker host
             |
             v
-    crates/wasm-query-session
+    crates/wasm-datafusion-session
             |
             v
     crates/wasm-datafusion-engine
@@ -190,8 +192,9 @@ The key handoff is explicit:
 | `crates/wasm-delta-kernel-engine` | Delta Kernel wrapper, `AxonBrowserKernelEngine`, cached snapshot resolution, Kernel scan descriptor conversion | `delta_kernel` core with default engine disabled, `bytes`, `serde`, `serde_json`, `url`, `thiserror`, `wasm-parquet-engine`, `wasm-http-object-store` | Enable Delta Kernel default engine, perform browser fetch from synchronous Kernel callbacks, depend on native `deltalake` |
 | `crates/wasm-delta-snapshot`      | Existing browser snapshot scaffold and migration compatibility layer                                           | `wasm-http-object-store`, JSON decode, Parquet checkpoint readers, shared contracts                                                                   | Become the long-term protocol authority, own SQL planning, own UI bindings, depend on native `deltalake`                  |
 | `crates/wasm-datafusion-engine`   | DataFusion `SessionContext`, table registration, SQL execution, Arrow IPC streaming                            | DataFusion, Arrow, `wasm-delta-kernel-engine`, `wasm-parquet-engine`, `wasm-http-object-store`                                                        | Own raw Delta protocol parsing or browser HTTP range internals                                                            |
+| `crates/wasm-datafusion-session`  | Dedicated browser DataFusion table/session shell for UI/runtime builds                                         | `query-contract`, `wasm-datafusion-engine`, browser runtime descriptor/materialization helpers                                                        | Depend on the legacy narrow session or own raw Delta/Parquet internals                                                    |
 | `crates/wasm-query-runtime`       | Legacy narrow runtime, fallback, correctness scaffold during migration                                         | `query-contract`, `wasm-delta-kernel-engine`, `wasm-delta-snapshot`, `wasm-parquet-engine`                                                            | Be the destination SQL execution engine once DataFusion scan integration is viable                                        |
-| `crates/wasm-query-session`       | In-memory table/session shell over opened browser tables                                                       | `query-contract`, `wasm-datafusion-engine`, fallback runtime as needed                                                                                | Add persistence or own SQL/Delta/Parquet internals                                                                        |
+| `crates/wasm-query-session`       | Legacy narrow in-memory table/session shell over opened browser tables                                         | `query-contract`, `wasm-query-runtime`                                                                                                                | Depend on DataFusion, add persistence, or own SQL/Delta/Parquet internals                                                 |
 | `crates/delta-control-plane`      | Trusted-side snapshot resolution, policy enforcement, future signed URL / proxy issuance                       | native `deltalake`, `query-contract`                                                                                                                  | Become the browser Delta engine                                                                                           |
 | `crates/browser-sdk`              | Worker command and IPC boundary, browser embedding API                                                         | `query-contract`, Arrow IPC surface                                                                                                                   | Own Delta, Parquet, or runtime/session internals                                                                          |
 
@@ -341,7 +344,8 @@ Deliverables:
 - `wasm-query-runtime` becomes an orchestrator over snapshot + scan crates
 - pruning uses Delta add-file facts before opening Parquet whenever possible
 - browser SDK and worker host use Arrow IPC for result transport
-- `wasm-query-session` provides an in-memory-only table/session shell for repeated queries
+- `wasm-datafusion-session` provides the DataFusion-backed in-memory table/session shell for repeated UI/runtime queries
+- `wasm-query-session` remains a removable legacy narrow shell
 - `wasm-datafusion-engine` can register Delta-derived tables in a DataFusion `SessionContext`
 - DataFusion SQL executes over `AxonParquetScanExec` and returns Arrow IPC from the worker
 

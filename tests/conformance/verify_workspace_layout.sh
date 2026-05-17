@@ -22,6 +22,7 @@ required_dirs=(
   "crates/wasm-http-object-store"
   "crates/wasm-parquet-engine"
   "crates/wasm-delta-snapshot"
+  "crates/wasm-datafusion-session"
   "crates/browser-sdk"
   "crates/udf-abi"
   "crates/udf-host-wasi"

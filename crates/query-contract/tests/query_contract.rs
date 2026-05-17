@@ -157,6 +157,7 @@ fn query_response_serializes_without_absent_fallback_reason() {
             snapshot_bootstrap_duration_ms: None,
             access_mode: None,
         },
+        explain: None,
     };
 
     let json = serde_json::to_value(&response).expect("query response should serialize");
@@ -205,6 +206,7 @@ fn query_response_serializes_browser_telemetry_when_present() {
             snapshot_bootstrap_duration_ms: Some(8),
             access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
         },
+        explain: None,
     };
 
     let json = serde_json::to_value(&response).expect("query response should serialize");
