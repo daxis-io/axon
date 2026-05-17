@@ -1,8 +1,8 @@
 //! Public browser SDK contracts for worker-hosted query execution.
 
 use query_contract::{
-    BrowserAccessMode, BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, QueryError,
-    QueryMetricsSummary, QueryRequest, QueryResponse,
+    BrowserAccessMode, BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason,
+    ParquetInspectionSummary, QueryError, QueryMetricsSummary, QueryRequest, QueryResponse,
 };
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,14 @@ pub struct BrowserWorkerOpenDeltaTableCommand {
     pub request_id: String,
     pub name: String,
     pub snapshot: BrowserHttpSnapshotDescriptor,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerInspectParquetCommand {
+    pub request_id: String,
+    pub name: String,
+    pub path: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -69,6 +77,7 @@ pub struct BrowserWorkerDisposeCommand {
 pub enum BrowserWorkerCommand {
     OpenTable(BrowserWorkerOpenTableCommand),
     OpenDeltaTable(BrowserWorkerOpenDeltaTableCommand),
+    InspectParquet(BrowserWorkerInspectParquetCommand),
     Sql(BrowserWorkerSqlCommand),
     Dispose(BrowserWorkerDisposeCommand),
 }
@@ -111,6 +120,18 @@ impl BrowserWorkerCommand {
         })
     }
 
+    pub fn inspect_parquet(
+        request_id: impl Into<String>,
+        name: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Self {
+        Self::InspectParquet(BrowserWorkerInspectParquetCommand {
+            request_id: request_id.into(),
+            name: name.into(),
+            path: path.into(),
+        })
+    }
+
     pub fn dispose(request_id: impl Into<String>, name: impl Into<String>) -> Self {
         Self::Dispose(BrowserWorkerDisposeCommand {
             request_id: request_id.into(),
@@ -122,6 +143,7 @@ impl BrowserWorkerCommand {
         match self {
             Self::OpenTable(command) => &command.request_id,
             Self::OpenDeltaTable(command) => &command.request_id,
+            Self::InspectParquet(command) => &command.request_id,
             Self::Sql(command) => &command.request_id,
             Self::Dispose(command) => &command.request_id,
         }
@@ -131,6 +153,7 @@ impl BrowserWorkerCommand {
         match self {
             Self::OpenTable(command) => &command.name,
             Self::OpenDeltaTable(command) => &command.name,
+            Self::InspectParquet(command) => &command.name,
             Self::Sql(command) => &command.name,
             Self::Dispose(command) => &command.name,
         }
@@ -177,6 +200,15 @@ impl BrowserWorkerEventContext {
             table_name: Some(table_name.into()),
         }
     }
+
+    pub fn inspect(request_id: impl Into<String>, table_name: impl Into<String>) -> Self {
+        Self {
+            phase: BrowserWorkerEventPhase::Inspect,
+            request_id: Some(request_id.into()),
+            query_id: None,
+            table_name: Some(table_name.into()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -184,6 +216,7 @@ impl BrowserWorkerEventContext {
 pub enum BrowserWorkerEventPhase {
     Instantiate,
     Open,
+    Inspect,
     Query,
 }
 
@@ -448,6 +481,13 @@ pub struct BrowserWorkerSuccessEnvelope {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct BrowserWorkerParquetInspectionEnvelope {
+    pub request_id: String,
+    pub summary: ParquetInspectionSummary,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserWorkerDisposedEnvelope {
     pub request_id: String,
     pub name: String,
@@ -465,6 +505,7 @@ pub struct BrowserWorkerErrorEnvelope {
 pub enum BrowserWorkerResponseEnvelope {
     Opened(BrowserWorkerOpenedEnvelope),
     Success(BrowserWorkerSuccessEnvelope),
+    ParquetInspection(BrowserWorkerParquetInspectionEnvelope),
     Disposed(BrowserWorkerDisposedEnvelope),
     Error(BrowserWorkerErrorEnvelope),
 }
@@ -496,6 +537,16 @@ impl BrowserWorkerResponseEnvelope {
         })
     }
 
+    pub fn parquet_inspection(
+        request_id: impl Into<String>,
+        summary: ParquetInspectionSummary,
+    ) -> Self {
+        Self::ParquetInspection(BrowserWorkerParquetInspectionEnvelope {
+            request_id: request_id.into(),
+            summary,
+        })
+    }
+
     pub fn error(request_id: impl Into<String>, error: QueryError) -> Self {
         Self::Error(BrowserWorkerErrorEnvelope {
             request_id: request_id.into(),
@@ -506,6 +557,13 @@ impl BrowserWorkerResponseEnvelope {
     pub fn opened_envelope(&self) -> Option<&BrowserWorkerOpenedEnvelope> {
         match self {
             Self::Opened(opened) => Some(opened),
+            _ => None,
+        }
+    }
+
+    pub fn parquet_inspection_envelope(&self) -> Option<&BrowserWorkerParquetInspectionEnvelope> {
+        match self {
+            Self::ParquetInspection(inspection) => Some(inspection),
             _ => None,
         }
     }
@@ -528,6 +586,7 @@ impl BrowserWorkerResponseEnvelope {
         match self {
             Self::Opened(opened) => &opened.request_id,
             Self::Success(success) => &success.request_id,
+            Self::ParquetInspection(inspection) => &inspection.request_id,
             Self::Disposed(disposed) => &disposed.request_id,
             Self::Error(error) => &error.request_id,
         }
@@ -535,7 +594,7 @@ impl BrowserWorkerResponseEnvelope {
 
     pub fn fallback_reason(&self) -> Option<&FallbackReason> {
         match self {
-            Self::Opened(_) | Self::Disposed(_) => None,
+            Self::Opened(_) | Self::ParquetInspection(_) | Self::Disposed(_) => None,
             Self::Success(success) => success.response.fallback_reason.as_ref(),
             Self::Error(error) => error.error.fallback_reason.as_ref(),
         }

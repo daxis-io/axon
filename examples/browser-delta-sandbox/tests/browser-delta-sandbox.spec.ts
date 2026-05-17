@@ -1,15 +1,22 @@
 import { expect, test } from '@playwright/test';
 
-test('resolves a Delta snapshot from same-origin browser HTTP log objects', async ({ page }) => {
+test('executes SQL from a fresh editor without a manual snapshot step', async ({ page }) => {
   await page.goto('/');
 
-  await expect(page.getByRole('button', { name: 'Resolve Prod-like Snapshot' })).toHaveCount(0);
-  await expect(page.getByRole('radio', { name: 'Simple snapshot' })).toBeChecked();
-  await page.getByRole('button', { name: 'Resolve Snapshot' }).click();
+  await expect(page.getByRole('heading', { name: 'Axon SQL' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Resolve Snapshot' })).toHaveCount(0);
+  await expect(page.getByLabel('Data source')).toHaveValue('prod-like');
+  await expect(page.getByTestId('query-status')).toHaveText('Ready');
 
-  await expect(page.getByTestId('status')).toHaveText('Snapshot 1 resolved');
-  await expect(page.getByTestId('active-files')).toContainText('data/b.parquet');
-  await expect(page.getByTestId('active-files')).toContainText('category=B');
+  await page.getByRole('button', { name: 'Run' }).click();
+
+  await expect(page.getByTestId('query-status')).toHaveText('Finished');
+  await expect(page.getByTestId('status')).toHaveText(
+    'Snapshot 3 resolved from checkpoint 2 + 1 replay commit',
+  );
+  await expect(page.getByTestId('query-executed-on')).toHaveText('browser_wasm');
+  await expect(page.getByTestId('result-grid')).toContainText('row_count');
+  await expect(page.getByTestId('result-grid')).toContainText('4');
 });
 
 test('maps a prod-like Delta fixture from log inputs to resolved active output', async ({
@@ -30,8 +37,7 @@ test('maps a prod-like Delta fixture from log inputs to resolved active output',
 
   await page.goto('/');
 
-  await page.getByRole('radio', { name: 'Prod-like snapshot' }).check();
-  await page.getByRole('button', { name: 'Resolve Snapshot' }).click();
+  await page.getByRole('button', { name: 'Run' }).click();
 
   await expect(page.getByTestId('status')).toHaveText(
     'Snapshot 3 resolved from checkpoint 2 + 1 replay commit',
@@ -69,6 +75,9 @@ test('maps a prod-like Delta fixture from log inputs to resolved active output',
   await expect(page.getByTestId('parquet-preflight')).toContainText('value: Int32 required');
   await expect(page.getByTestId('parquet-preflight')).toContainText('parquet stats id min 7');
   await expect(page.getByTestId('parquet-preflight')).toContainText('delta stats 2 rows');
+  await expect(page.getByTestId('parquet-preflight')).toContainText('metadata memory');
+  await expect(page.getByTestId('parquet-preflight')).toContainText('indexes column');
+  await expect(page.getByTestId('parquet-preflight')).toContainText('compressed');
   await expect(page.getByTestId('parquet-preflight')).not.toContainText('category=A');
   await expect(page.getByTestId('parquet-preflight')).not.toContainText('category=C');
   await expect(page.getByTestId('input-output-map')).toContainText('checkpoint seed');
@@ -81,13 +90,7 @@ test('runs prod-like SQL through the sandbox worker and renders query telemetry'
 }) => {
   await page.goto('/');
 
-  await page.getByRole('radio', { name: 'Prod-like snapshot' }).check();
-  await page.getByRole('button', { name: 'Resolve Snapshot' }).click();
-  await expect(page.getByTestId('status')).toHaveText(
-    'Snapshot 3 resolved from checkpoint 2 + 1 replay commit',
-  );
-
-  await page.getByRole('button', { name: 'Run SQL' }).click();
+  await page.getByRole('button', { name: 'Run' }).click();
 
   await expect(page.getByTestId('query-status')).toHaveText('Finished');
   await expect(page.getByTestId('query-executed-on')).toHaveText('browser_wasm');
@@ -105,7 +108,7 @@ test('runs prod-like SQL through the sandbox worker and renders query telemetry'
   expect(workerEvents.filter((event) => event.startsWith('range_read_metrics'))).toHaveLength(1);
 
   await page.getByTestId('sql-editor').fill('DELETE FROM axon_table');
-  await page.getByRole('button', { name: 'Run SQL' }).click();
+  await page.getByRole('button', { name: 'Run' }).click();
 
   await expect(page.getByTestId('query-status')).toHaveText('Error');
   await expect(page.getByTestId('query-error')).toContainText('invalid_request');
@@ -118,14 +121,24 @@ test('runs prod-like SQL through the sandbox worker and renders query telemetry'
 test('records honest UI supersession when cancelling a running sandbox query', async ({ page }) => {
   await page.goto('/');
 
-  await page.getByRole('radio', { name: 'Prod-like snapshot' }).check();
-  await page.getByRole('button', { name: 'Resolve Snapshot' }).click();
-  await expect(page.getByTestId('status')).toHaveText(
-    'Snapshot 3 resolved from checkpoint 2 + 1 replay commit',
-  );
+  let releaseFirstQueryRead: (() => void) | undefined;
+  const firstQueryReadRelease = new Promise<void>((resolve) => {
+    releaseFirstQueryRead = resolve;
+  });
 
-  await page.getByRole('button', { name: 'Run SQL' }).click();
-  await page.getByRole('button', { name: 'Cancel SQL' }).click();
+  await page.route('**/fixtures/prod-like/table/**/*.parquet', async (route) => {
+    if (route.request().url().includes('/_delta_log/')) {
+      await route.continue();
+      return;
+    }
+    await firstQueryReadRelease;
+    await route.continue();
+  });
+
+  await page.getByRole('button', { name: 'Run' }).click();
+  await expect(page.getByTestId('worker-event-log')).toContainText('instantiate finished');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  releaseFirstQueryRead?.();
 
   await expect(page.getByTestId('query-status')).toHaveText('Cancellation requested');
   await expect(page.getByTestId('query-fallback-reason')).toHaveText('browser_runtime_constraint');
@@ -137,12 +150,6 @@ test('does not append stale worker events after cancelling and starting a new qu
 }) => {
   await page.goto('/');
 
-  await page.getByRole('radio', { name: 'Prod-like snapshot' }).check();
-  await page.getByRole('button', { name: 'Resolve Snapshot' }).click();
-  await expect(page.getByTestId('status')).toHaveText(
-    'Snapshot 3 resolved from checkpoint 2 + 1 replay commit',
-  );
-
   let delayedFirstQueryRead = false;
   let releaseFirstQueryRead: (() => void) | undefined;
   const firstQueryReadRelease = new Promise<void>((resolve) => {
@@ -150,6 +157,10 @@ test('does not append stale worker events after cancelling and starting a new qu
   });
 
   await page.route('**/fixtures/prod-like/table/**/*.parquet', async (route) => {
+    if (route.request().url().includes('/_delta_log/')) {
+      await route.continue();
+      return;
+    }
     if (!delayedFirstQueryRead) {
       delayedFirstQueryRead = true;
       await firstQueryReadRelease;
@@ -157,10 +168,10 @@ test('does not append stale worker events after cancelling and starting a new qu
     await route.continue();
   });
 
-  await page.getByRole('button', { name: 'Run SQL' }).click();
+  await page.getByRole('button', { name: 'Run' }).click();
   await expect(page.getByTestId('worker-event-log')).toContainText('instantiate finished');
-  await page.getByRole('button', { name: 'Cancel SQL' }).click();
-  await page.getByRole('button', { name: 'Run SQL' }).click();
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByRole('button', { name: 'Run' }).click();
   releaseFirstQueryRead?.();
 
   await expect(page.getByTestId('query-status')).toHaveText('Finished');

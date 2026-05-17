@@ -20,13 +20,13 @@ npm run build
 npm run test:e2e
 ```
 
-To use the interactive SQL sandbox locally:
+To use the interactive SQL workbench locally:
 
 ```bash
 npm run dev
 ```
 
-Open `https://127.0.0.1:5173`, choose the prod-like fixture, resolve the snapshot, and use the SQL panel to run queries against `axon_table`. The sandbox includes sample queries for row counts, category totals, and filtered top values. Results keep Arrow IPC as the canonical transport and render only a bounded preview in the page, alongside elapsed time, execution target, fallback reason, metrics, Arrow IPC byte length, row count, worker events, and structured errors.
+Open `https://127.0.0.1:5173` and run queries against `axon_table`. The workbench resolves the selected Delta fixture and opens the browser query session as part of query execution, so there is no separate snapshot step. The editor uses CodeMirror 6 with SQL highlighting and sample queries for row counts, category totals, and filtered top values. Results keep Arrow IPC as the canonical transport and render only a bounded preview in the page, alongside elapsed time, execution target, fallback reason, metrics, Arrow IPC byte length, row count, worker events, and structured errors.
 
 The supported SQL shape is the current browser runtime envelope: read-only `SELECT` statements over the resolved `axon_table`, with the projection, filter, grouping, ordering, and limit forms covered by the sample queries and browser runtime tests. Unsupported statements, such as mutations, render structured browser errors rather than falling back silently.
 

@@ -23,8 +23,9 @@ use parquet::record::Field as ParquetField;
 use query_contract::{
     validate_browser_object_url, BrowserAccessMode, BrowserHttpSnapshotDescriptor,
     BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget,
-    FallbackReason, PartitionColumnType, QueryError, QueryErrorCode, QueryMetricsSummary,
-    QueryRequest, ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
+    FallbackReason, ParquetInspectionSummary, PartitionColumnType, QueryError, QueryErrorCode,
+    QueryMetricsSummary, QueryRequest, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
+    SnapshotResolutionRequest,
 };
 use reqwest::Url;
 use sqlparser::ast::{
@@ -1751,6 +1752,15 @@ impl BrowserRuntimeSession {
         let footer = self.read_engine_parquet_footer_for_file(file).await?;
         let metadata = wasm_parquet_engine::parse_parquet_metadata(&target, &footer)?;
         Ok(browser_metadata_from_engine(metadata))
+    }
+
+    pub async fn inspect_parquet_file(
+        &self,
+        file: &MaterializedBrowserFile,
+    ) -> Result<ParquetInspectionSummary, QueryError> {
+        let target = engine_scan_target(file);
+        let footer = self.read_engine_parquet_footer_for_file(file).await?;
+        wasm_parquet_engine::inspect_parquet_footer(&target, &footer)
     }
 
     pub async fn bootstrap_snapshot_metadata(

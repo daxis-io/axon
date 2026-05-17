@@ -361,6 +361,44 @@ test('normalizes Arrow IPC bytes and exposes success fallback reasons', async ()
   });
 });
 
+test('inspectParquet sends an inspect command and resolves the inspection summary', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const inspectionPromise = client.inspectParquet('events', 'part-000.parquet', {
+    requestId: 'req-inspect',
+  });
+
+  expect(worker.commands).toEqual([
+    {
+      inspect_parquet: {
+        request_id: 'req-inspect',
+        name: 'events',
+        path: 'part-000.parquet',
+      },
+    },
+  ]);
+
+  worker.emitMessage({
+    parquet_inspection: {
+      request_id: 'req-inspect',
+      summary: parquetInspectionSummary(),
+    },
+  });
+
+  await expect(inspectionPromise).resolves.toMatchObject({
+    path: 'part-000.parquet',
+    row_count: 3,
+    columns: [
+      {
+        name: 'id',
+        encodings: ['PLAIN'],
+        has_offset_index: true,
+      },
+    ],
+  });
+});
+
 test('preserves optional bounded result previews on success envelopes', async () => {
   const worker = new FakeWorker();
   const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
@@ -655,6 +693,64 @@ function queryResponse(overrides: Partial<QueryResponse> = {}): QueryResponse {
       files_skipped: 0,
     },
     ...overrides,
+  };
+}
+
+function parquetInspectionSummary() {
+  return {
+    path: 'part-000.parquet',
+    object_size_bytes: 128,
+    footer_length_bytes: 32,
+    metadata_memory_size_bytes: 512,
+    created_by: 'axon test',
+    file_version: 2,
+    row_group_count: 1,
+    row_count: 3,
+    column_count: 1,
+    compression: {
+      compressed_size_bytes: 64,
+      uncompressed_size_bytes: 128,
+      ratio_basis_points: 5000,
+    },
+    columns: [
+      {
+        name: 'id',
+        physical_type: 'Int64',
+        repetition: 'Required',
+        nullable: false,
+        compressed_size_bytes: 64,
+        uncompressed_size_bytes: 128,
+        null_count: 0,
+        encodings: ['PLAIN'],
+        compressions: ['UNCOMPRESSED'],
+        has_statistics: true,
+        has_column_index: true,
+        has_offset_index: true,
+        has_bloom_filter: false,
+      },
+    ],
+    row_groups: [
+      {
+        index: 0,
+        row_count: 3,
+        compressed_size_bytes: 64,
+        uncompressed_size_bytes: 128,
+        columns: [
+          {
+            column_name: 'id',
+            compression: 'UNCOMPRESSED',
+            encodings: ['PLAIN'],
+            compressed_size_bytes: 64,
+            uncompressed_size_bytes: 128,
+            null_count: 0,
+            has_statistics: true,
+            has_column_index: true,
+            has_offset_index: true,
+            has_bloom_filter: false,
+          },
+        ],
+      },
+    ],
   };
 }
 

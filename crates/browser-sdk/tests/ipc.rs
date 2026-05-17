@@ -8,8 +8,10 @@ use browser_sdk::{
 };
 use query_contract::{
     BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey,
-    CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, QueryError, QueryErrorCode,
-    QueryMetricsSummary, QueryRequest, QueryResponse,
+    CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, ParquetCompressionSummary,
+    ParquetInspectionColumn, ParquetInspectionColumnChunk, ParquetInspectionRowGroup,
+    ParquetInspectionSummary, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest,
+    QueryResponse,
 };
 
 #[test]
@@ -122,6 +124,58 @@ fn browser_sdk_round_trips_open_delta_table_and_arrow_ipc_sql_output() {
 }
 
 #[test]
+fn browser_sdk_round_trips_parquet_inspection_command_and_response() {
+    let command = BrowserWorkerCommand::inspect_parquet(
+        "req-inspect",
+        "events",
+        "event_date=2026-01-01/part-000.parquet",
+    );
+    let serialized_command = serde_json::to_value(&command).expect("inspect command serializes");
+    assert_eq!(
+        serialized_command["inspect_parquet"]["path"],
+        serde_json::json!("event_date=2026-01-01/part-000.parquet")
+    );
+
+    let round_tripped_command: BrowserWorkerCommand =
+        serde_json::from_value(serialized_command).expect("inspect command deserializes");
+    match round_tripped_command {
+        BrowserWorkerCommand::InspectParquet(command) => {
+            assert_eq!(command.request_id, "req-inspect");
+            assert_eq!(command.name, "events");
+            assert_eq!(command.path, "event_date=2026-01-01/part-000.parquet");
+        }
+        _ => panic!("expected inspect_parquet command"),
+    }
+
+    let response = BrowserWorkerResponseEnvelope::parquet_inspection(
+        "req-inspect",
+        sample_parquet_inspection(),
+    );
+    let serialized_response =
+        serde_json::to_value(&response).expect("inspection response serializes");
+    assert_eq!(
+        serialized_response["parquet_inspection"]["summary"]["path"],
+        serde_json::json!("event_date=2026-01-01/part-000.parquet")
+    );
+    assert_eq!(
+        serialized_response["parquet_inspection"]["summary"]["columns"][0]["has_offset_index"],
+        serde_json::json!(true)
+    );
+
+    let round_tripped_response: BrowserWorkerResponseEnvelope =
+        serde_json::from_value(serialized_response).expect("inspection response deserializes");
+    let envelope = round_tripped_response
+        .parquet_inspection_envelope()
+        .expect("inspection envelope should be present");
+    assert_eq!(envelope.request_id, "req-inspect");
+    assert_eq!(
+        envelope.summary.path,
+        "event_date=2026-01-01/part-000.parquet"
+    );
+    assert_eq!(envelope.summary.columns[0].encodings, vec!["PLAIN"]);
+}
+
+#[test]
 fn browser_sdk_exposes_arrow_ipc_result_envelope() {
     let response = BrowserWorkerResponseEnvelope::success(
         "req-1",
@@ -147,6 +201,60 @@ fn browser_sdk_exposes_arrow_ipc_result_envelope() {
         "application/vnd.apache.arrow.stream"
     );
     assert_eq!(success.result.bytes, vec![0xff, 0xff, 0x00, 0x01]);
+}
+
+fn sample_parquet_inspection() -> ParquetInspectionSummary {
+    ParquetInspectionSummary {
+        path: "event_date=2026-01-01/part-000.parquet".to_string(),
+        object_size_bytes: 128,
+        footer_length_bytes: 32,
+        metadata_memory_size_bytes: 512,
+        created_by: Some("axon test".to_string()),
+        file_version: 2,
+        row_group_count: 1,
+        row_count: 3,
+        column_count: 1,
+        compression: ParquetCompressionSummary {
+            compressed_size_bytes: 64,
+            uncompressed_size_bytes: 128,
+            ratio_basis_points: 5000,
+        },
+        columns: vec![ParquetInspectionColumn {
+            name: "id".to_string(),
+            physical_type: "Int64".to_string(),
+            logical_type: None,
+            converted_type: None,
+            repetition: "Required".to_string(),
+            nullable: false,
+            compressed_size_bytes: 64,
+            uncompressed_size_bytes: 128,
+            null_count: Some(0),
+            encodings: vec!["PLAIN".to_string()],
+            compressions: vec!["UNCOMPRESSED".to_string()],
+            has_statistics: true,
+            has_column_index: true,
+            has_offset_index: true,
+            has_bloom_filter: false,
+        }],
+        row_groups: vec![ParquetInspectionRowGroup {
+            index: 0,
+            row_count: 3,
+            compressed_size_bytes: 64,
+            uncompressed_size_bytes: 128,
+            columns: vec![ParquetInspectionColumnChunk {
+                column_name: "id".to_string(),
+                compression: "UNCOMPRESSED".to_string(),
+                encodings: vec!["PLAIN".to_string()],
+                compressed_size_bytes: 64,
+                uncompressed_size_bytes: 128,
+                null_count: Some(0),
+                has_statistics: true,
+                has_column_index: true,
+                has_offset_index: true,
+                has_bloom_filter: false,
+            }],
+        }],
+    }
 }
 
 #[test]

@@ -35,7 +35,9 @@ use parquet::file::{
 };
 use parquet::record::Field as ParquetField;
 use query_contract::{
-    ExecutionTarget, FallbackReason, PartitionColumnType, QueryError, QueryErrorCode,
+    ExecutionTarget, FallbackReason, ParquetCompressionSummary, ParquetInspectionColumn,
+    ParquetInspectionColumnChunk, ParquetInspectionRowGroup, ParquetInspectionSummary,
+    PartitionColumnType, QueryError, QueryErrorCode,
 };
 use wasm_http_object_store::{
     HttpByteRange, HttpRangeReadResult, HttpRangeReader, HttpRangeValidation,
@@ -659,6 +661,15 @@ pub async fn read_parquet_metadata_for_target(
     parse_parquet_metadata(target, &footer)
 }
 
+pub async fn inspect_parquet_target(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    request_timeout: Option<Duration>,
+) -> Result<ParquetInspectionSummary, QueryError> {
+    let footer = read_parquet_footer_for_target(reader, target, request_timeout).await?;
+    inspect_parquet_footer(target, &footer)
+}
+
 pub async fn stream_scan_target_batches(
     reader: &HttpRangeReader,
     target: &ScanTarget,
@@ -1249,6 +1260,275 @@ pub fn parse_parquet_metadata(
         row_count,
         fields,
         field_stats,
+    })
+}
+
+pub fn inspect_parquet_footer(
+    target: &ScanTarget,
+    footer: &ParquetFooter,
+) -> Result<ParquetInspectionSummary, QueryError> {
+    let metadata =
+        ParquetMetaDataReader::decode_metadata(footer.footer_bytes()).map_err(|error| {
+            parquet_protocol_error(format!(
+                "parquet inspection metadata decode for file '{}' failed: {error}",
+                target.path
+            ))
+        })?;
+    parquet_inspection_from_metadata(target, footer, &metadata)
+}
+
+fn parquet_inspection_from_metadata(
+    target: &ScanTarget,
+    footer: &ParquetFooter,
+    metadata: &ParquetMetaData,
+) -> Result<ParquetInspectionSummary, QueryError> {
+    let file_metadata = metadata.file_metadata();
+    let row_count = non_negative_i64_to_u64(file_metadata.num_rows(), || {
+        format!(
+            "parquet inspection for file '{}' reported a negative row count",
+            target.path
+        )
+    })?;
+    let row_group_count = usize_to_u64(metadata.num_row_groups(), "row group count", &target.path)?;
+    let column_count = usize_to_u64(
+        file_metadata.schema_descr().columns().len(),
+        "column count",
+        &target.path,
+    )?;
+    let row_groups = parquet_inspection_row_groups(target, metadata)?;
+    let compressed_size_bytes = row_groups.iter().try_fold(0_u64, |total, row_group| {
+        total
+            .checked_add(row_group.compressed_size_bytes)
+            .ok_or_else(|| {
+                parquet_protocol_error(format!(
+                    "parquet inspection for file '{}' overflowed compressed byte totals",
+                    target.path
+                ))
+            })
+    })?;
+    let uncompressed_size_bytes = row_groups.iter().try_fold(0_u64, |total, row_group| {
+        total
+            .checked_add(row_group.uncompressed_size_bytes)
+            .ok_or_else(|| {
+                parquet_protocol_error(format!(
+                    "parquet inspection for file '{}' overflowed uncompressed byte totals",
+                    target.path
+                ))
+            })
+    })?;
+    let metadata_memory_size_bytes =
+        usize_to_u64(metadata.memory_size(), "metadata memory size", &target.path)?;
+
+    Ok(ParquetInspectionSummary {
+        path: target.path.clone(),
+        object_size_bytes: footer.object_size_bytes(),
+        footer_length_bytes: footer.footer_length_bytes(),
+        metadata_memory_size_bytes,
+        created_by: file_metadata.created_by().map(str::to_string),
+        file_version: file_metadata.version(),
+        row_group_count,
+        row_count,
+        column_count,
+        compression: compression_summary(compressed_size_bytes, uncompressed_size_bytes),
+        columns: parquet_inspection_columns(target, metadata)?,
+        row_groups,
+    })
+}
+
+fn parquet_inspection_row_groups(
+    target: &ScanTarget,
+    metadata: &ParquetMetaData,
+) -> Result<Vec<ParquetInspectionRowGroup>, QueryError> {
+    metadata
+        .row_groups()
+        .iter()
+        .enumerate()
+        .map(|(index, row_group)| {
+            let row_count = non_negative_i64_to_u64(row_group.num_rows(), || {
+                format!(
+                    "parquet inspection for file '{}' row group {} reported a negative row count",
+                    target.path, index
+                )
+            })?;
+            let uncompressed_size_bytes = non_negative_i64_to_u64(row_group.total_byte_size(), || {
+                format!(
+                    "parquet inspection for file '{}' row group {} reported a negative uncompressed byte size",
+                    target.path, index
+                )
+            })?;
+            let compressed_size_bytes = non_negative_i64_to_u64(row_group.compressed_size(), || {
+                format!(
+                    "parquet inspection for file '{}' row group {} reported a negative compressed byte size",
+                    target.path, index
+                )
+            })?;
+            let index = usize_to_u64(index, "row group index", &target.path)?;
+            let columns = row_group
+                .columns()
+                .iter()
+                .map(|column| parquet_inspection_column_chunk(target, column))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(ParquetInspectionRowGroup {
+                index,
+                row_count,
+                compressed_size_bytes,
+                uncompressed_size_bytes,
+                columns,
+            })
+        })
+        .collect()
+}
+
+fn parquet_inspection_columns(
+    target: &ScanTarget,
+    metadata: &ParquetMetaData,
+) -> Result<Vec<ParquetInspectionColumn>, QueryError> {
+    metadata
+        .file_metadata()
+        .schema_descr()
+        .columns()
+        .iter()
+        .enumerate()
+        .map(|(column_index, descriptor)| {
+            let field = parquet_field_from_descriptor(descriptor.as_ref());
+            let mut compressed_size_bytes = 0_u64;
+            let mut uncompressed_size_bytes = 0_u64;
+            let mut null_count = Some(0_u64);
+            let mut encodings = BTreeSet::new();
+            let mut compressions = BTreeSet::new();
+            let mut has_statistics = false;
+            let mut has_column_index = false;
+            let mut has_offset_index = false;
+            let mut has_bloom_filter = false;
+
+            for row_group in metadata.row_groups() {
+                let chunk = row_group.column(column_index);
+                let chunk_summary = parquet_inspection_column_chunk(target, chunk)?;
+                compressed_size_bytes = compressed_size_bytes
+                    .checked_add(chunk_summary.compressed_size_bytes)
+                    .ok_or_else(|| {
+                        parquet_protocol_error(format!(
+                            "parquet inspection for file '{}' column '{}' overflowed compressed byte totals",
+                            target.path, field.name
+                        ))
+                    })?;
+                uncompressed_size_bytes = uncompressed_size_bytes
+                    .checked_add(chunk_summary.uncompressed_size_bytes)
+                    .ok_or_else(|| {
+                        parquet_protocol_error(format!(
+                            "parquet inspection for file '{}' column '{}' overflowed uncompressed byte totals",
+                            target.path, field.name
+                        ))
+                    })?;
+                null_count = match (null_count, chunk_summary.null_count) {
+                    (Some(total), Some(count)) => Some(total.checked_add(count).ok_or_else(|| {
+                        parquet_protocol_error(format!(
+                            "parquet inspection for file '{}' column '{}' overflowed null counts",
+                            target.path, field.name
+                        ))
+                    })?),
+                    _ => None,
+                };
+                encodings.extend(chunk_summary.encodings);
+                compressions.insert(chunk_summary.compression);
+                has_statistics |= chunk_summary.has_statistics;
+                has_column_index |= chunk_summary.has_column_index;
+                has_offset_index |= chunk_summary.has_offset_index;
+                has_bloom_filter |= chunk_summary.has_bloom_filter;
+            }
+
+            Ok(ParquetInspectionColumn {
+                name: field.name,
+                physical_type: format!("{:?}", field.physical_type),
+                logical_type: field.logical_type.map(|value| format!("{value:?}")),
+                converted_type: field.converted_type.map(|value| format!("{value:?}")),
+                repetition: format!("{:?}", field.repetition),
+                nullable: field.nullable,
+                compressed_size_bytes,
+                uncompressed_size_bytes,
+                null_count,
+                encodings: encodings.into_iter().collect(),
+                compressions: compressions.into_iter().collect(),
+                has_statistics,
+                has_column_index,
+                has_offset_index,
+                has_bloom_filter,
+            })
+        })
+        .collect()
+}
+
+fn parquet_inspection_column_chunk(
+    target: &ScanTarget,
+    column: &parquet::file::metadata::ColumnChunkMetaData,
+) -> Result<ParquetInspectionColumnChunk, QueryError> {
+    let column_name = column.column_path().string();
+    let compressed_size_bytes = non_negative_i64_to_u64(column.compressed_size(), || {
+        format!(
+            "parquet inspection for file '{}' column '{}' reported a negative compressed byte size",
+            target.path, column_name
+        )
+    })?;
+    let uncompressed_size_bytes = non_negative_i64_to_u64(column.uncompressed_size(), || {
+        format!(
+            "parquet inspection for file '{}' column '{}' reported a negative uncompressed byte size",
+            target.path, column_name
+        )
+    })?;
+    let has_statistics = column.statistics().is_some();
+    let null_count = column.statistics().and_then(|stats| stats.null_count_opt());
+
+    Ok(ParquetInspectionColumnChunk {
+        column_name,
+        compression: format!("{:?}", column.compression()),
+        encodings: column
+            .encodings()
+            .map(|encoding| format!("{encoding:?}"))
+            .collect(),
+        compressed_size_bytes,
+        uncompressed_size_bytes,
+        null_count,
+        has_statistics,
+        has_column_index: column.column_index_offset().is_some()
+            || column.column_index_length().is_some(),
+        has_offset_index: column.offset_index_offset().is_some()
+            || column.offset_index_length().is_some(),
+        has_bloom_filter: column.bloom_filter_offset().is_some()
+            || column.bloom_filter_length().is_some(),
+    })
+}
+
+fn compression_summary(
+    compressed_size_bytes: u64,
+    uncompressed_size_bytes: u64,
+) -> ParquetCompressionSummary {
+    let ratio_basis_points = if uncompressed_size_bytes == 0 {
+        0
+    } else {
+        ((u128::from(compressed_size_bytes) * 10_000) / u128::from(uncompressed_size_bytes))
+            .min(u128::from(u64::MAX)) as u64
+    };
+
+    ParquetCompressionSummary {
+        compressed_size_bytes,
+        uncompressed_size_bytes,
+        ratio_basis_points,
+    }
+}
+
+fn non_negative_i64_to_u64(
+    value: i64,
+    context: impl FnOnce() -> String,
+) -> Result<u64, QueryError> {
+    u64::try_from(value).map_err(|_| parquet_protocol_error(context()))
+}
+
+fn usize_to_u64(value: usize, label: &str, path: &str) -> Result<u64, QueryError> {
+    u64::try_from(value).map_err(|_| {
+        parquet_protocol_error(format!(
+            "parquet inspection for file '{path}' reported a {label} too large to fit in u64"
+        ))
     })
 }
 

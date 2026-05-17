@@ -7,8 +7,8 @@ use std::mem::size_of;
 use std::collections::BTreeSet;
 
 use query_contract::{
-    BrowserHttpSnapshotDescriptor, ExecutionTarget, QueryError, QueryErrorCode,
-    QueryMetricsSummary, QueryRequest, QueryResponse,
+    BrowserHttpSnapshotDescriptor, ExecutionTarget, ParquetInspectionSummary, QueryError,
+    QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse,
 };
 #[cfg(feature = "datafusion")]
 use query_contract::{FallbackReason, PartitionColumnType};
@@ -292,6 +292,25 @@ impl BrowserQuerySession {
             },
             runtime_result,
         })
+    }
+
+    pub async fn inspect_parquet(
+        &mut self,
+        name: &str,
+        path: &str,
+    ) -> Result<ParquetInspectionSummary, QueryError> {
+        let file = {
+            let table = self.touch_table(name)?;
+            table
+                .materialized
+                .active_files()
+                .iter()
+                .find(|file| file.path() == path)
+                .cloned()
+                .ok_or_else(|| missing_table_file_error(name, path))?
+        };
+
+        self.runtime.inspect_parquet_file(&file).await
     }
 
     #[cfg(feature = "datafusion")]
@@ -1169,6 +1188,16 @@ fn missing_table_error(name: &str) -> QueryError {
     QueryError::new(
         QueryErrorCode::InvalidRequest,
         format!("browser session does not have an open table named '{name}'"),
+        runtime_target(),
+    )
+}
+
+fn missing_table_file_error(name: &str, path: &str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidRequest,
+        format!(
+            "browser session table '{name}' does not have an active parquet file at path '{path}'"
+        ),
         runtime_target(),
     )
 }

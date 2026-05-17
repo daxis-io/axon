@@ -300,6 +300,46 @@ impl BrowserWorker {
                     }
                 }
             }
+            BrowserWorkerCommand::InspectParquet(command) => {
+                let context = BrowserWorkerEventContext::inspect(
+                    command.request_id.clone(),
+                    command.name.clone(),
+                );
+                emit_event(BrowserWorkerEventEnvelope::progress(
+                    context.clone(),
+                    BrowserWorkerProgressStage::Started,
+                ));
+                emit_event(BrowserWorkerEventEnvelope::log(
+                    context.clone(),
+                    BrowserWorkerLogLevel::Info,
+                    "browser worker inspecting Parquet file metadata",
+                ));
+                emit_event(BrowserWorkerEventEnvelope::progress(
+                    context.clone(),
+                    BrowserWorkerProgressStage::Executing,
+                ));
+                match self
+                    .session
+                    .inspect_parquet(&command.name, &command.path)
+                    .await
+                {
+                    Ok(summary) => {
+                        emit_cache_metrics(&mut emit_event, &context, &self.session);
+                        emit_event(BrowserWorkerEventEnvelope::progress(
+                            context,
+                            BrowserWorkerProgressStage::Finished,
+                        ));
+                        BrowserWorkerResponseEnvelope::parquet_inspection(
+                            command.request_id,
+                            summary,
+                        )
+                    }
+                    Err(error) => {
+                        emit_error_events(&mut emit_event, context, &error);
+                        BrowserWorkerResponseEnvelope::error(command.request_id, error)
+                    }
+                }
+            }
             BrowserWorkerCommand::Sql(command) => {
                 let context = BrowserWorkerEventContext::query(
                     command.request_id.clone(),
@@ -619,6 +659,29 @@ mod tests {
             worker_target(),
         );
         assert!(is_query_cancellation_error(&cancellation));
+    }
+
+    #[tokio::test]
+    async fn inspect_parquet_command_preserves_request_id_on_missing_table_error() {
+        let mut worker = BrowserWorker::new(BrowserRuntimeConfig::default(), u64::MAX)
+            .expect("worker should construct");
+
+        let response = worker
+            .handle_command(BrowserWorkerCommand::inspect_parquet(
+                "req-inspect",
+                "missing",
+                "part-000.parquet",
+            ))
+            .await;
+
+        match response {
+            BrowserWorkerResponseEnvelope::Error(error) => {
+                assert_eq!(error.request_id, "req-inspect");
+                assert_eq!(error.error.code, QueryErrorCode::InvalidRequest);
+                assert!(error.error.message.contains("missing"));
+            }
+            _ => panic!("missing inspect target should return an error envelope"),
+        }
     }
 
     fn materialized_snapshot() -> MaterializedBrowserSnapshot {

@@ -2,6 +2,8 @@ import init, {
   preflight_parquet_metadata_for_targets,
   resolve_delta_snapshot_from_manifest,
 } from './wasm/browser_delta_sandbox';
+import { sql } from '@codemirror/lang-sql';
+import { basicSetup, EditorView } from 'codemirror';
 import {
   AxonWorkerError,
   createAxonBrowserClient,
@@ -13,6 +15,7 @@ import {
   type BrowserWorkerEventEnvelope,
   type BrowserWorkerResultPreview,
   type FallbackReason,
+  type ParquetInspectionSummary,
   type PartitionColumnType,
   type QueryError,
 } from './axon-browser-sdk';
@@ -134,6 +137,14 @@ type FixtureChoice = {
   fallbackName?: string;
 };
 
+type QueryContext = {
+  key: string;
+  fixture: FixtureManifest;
+  logObjectDetails: LogObjectDetail[];
+  snapshot: ResolvedSnapshot;
+  activeFiles: ActiveDataFile[];
+};
+
 const FIXTURES: Record<string, FixtureChoice> = {
   simple: {
     manifestUrl: '/fixtures/delta-log-manifest.json',
@@ -144,6 +155,7 @@ const FIXTURES: Record<string, FixtureChoice> = {
   },
 };
 
+const DEFAULT_FIXTURE_KEY = 'prod-like';
 const QUERY_TABLE_NAME = 'axon_table';
 const SAMPLE_QUERIES = {
   count: 'SELECT COUNT(*) AS row_count FROM axon_table',
@@ -153,10 +165,11 @@ const SAMPLE_QUERIES = {
     'SELECT id, category, value FROM axon_table WHERE value >= 90 ORDER BY value DESC LIMIT 20',
 } as const;
 
-const resolveButton = document.querySelector<HTMLButtonElement>('#resolve-snapshot');
+const dataSourceSelect = requiredNode('#fixture-selector') as HTMLSelectElement;
 const runSqlButton = requiredNode('#run-sql') as HTMLButtonElement;
 const cancelSqlButton = requiredNode('#cancel-sql') as HTMLButtonElement;
-const sqlEditor = requiredNode('#sql-editor') as HTMLTextAreaElement;
+const sqlEditorHost = requiredNode('#sql-editor');
+const statusPill = document.querySelector<HTMLElement>('.status-pill');
 const statusNode = requiredNode('[data-testid="status"]');
 const fixtureNameNode = requiredNode('[data-testid="fixture-name"]');
 const tableUriNode = requiredNode('[data-testid="table-uri"]');
@@ -181,23 +194,29 @@ const activeDataFileUrlsNode = requiredNode('[data-testid="active-data-file-urls
 const pruningPreflightNode = requiredNode('[data-testid="pruning-preflight"]');
 const parquetPreflightNode = requiredNode('[data-testid="parquet-preflight"]');
 const inputOutputMapNode = requiredNode('[data-testid="input-output-map"]');
-const errorPanel = requiredNode('.error-panel') as HTMLElement;
+const errorPanel = requiredNode('.error-banner') as HTMLElement;
 const errorNode = requiredNode('[data-testid="error"]');
 
 let wasmReady: Promise<void> | undefined;
+let queryContext: QueryContext | undefined;
 let queryClient: AxonBrowserClient | undefined;
 let queryDescriptor: BrowserHttpSnapshotDescriptor | undefined;
 let queryTableOpened = false;
+let parquetPreflightContextKey: string | undefined;
 let queryRequestCounter = 0;
 let activeQuery: { token: number; requestId: string } | undefined;
 let activeWorkerEventRequestIds: Set<string> | undefined;
 let queryTokenCounter = 0;
 
-resolveButton?.addEventListener('click', () => {
-  const fixture = selectedFixture();
-  resolveSnapshot(fixture.manifestUrl, fixture.fallbackName).catch((error: unknown) => {
-    renderError(error);
-  });
+dataSourceSelect.addEventListener('change', () => {
+  resetQueryClient();
+  queryContext = undefined;
+  parquetPreflightContextKey = undefined;
+  clearDetails();
+  clearQueryOutput();
+  fixtureNameNode.textContent =
+    selectedFixture().fallbackName ?? dataSourceSelect.selectedOptions[0].text;
+  setStatus('Ready');
 });
 
 runSqlButton.addEventListener('click', () => {
@@ -213,20 +232,23 @@ cancelSqlButton.addEventListener('click', () => {
 document.querySelectorAll<HTMLButtonElement>('[data-sample-query]').forEach((button) => {
   button.addEventListener('click', () => {
     const queryName = button.dataset.sampleQuery as keyof typeof SAMPLE_QUERIES;
-    sqlEditor.value = SAMPLE_QUERIES[queryName] ?? SAMPLE_QUERIES.count;
+    setSqlEditorValue(SAMPLE_QUERIES[queryName] ?? SAMPLE_QUERIES.count);
   });
 });
 
-sqlEditor.value = SAMPLE_QUERIES.count;
+initResultsTabs();
+
+const sqlEditor = createSqlEditor(SAMPLE_QUERIES.count);
+attachEditorShortcuts(sqlEditor);
 clearQueryOutput();
 
-async function resolveSnapshot(manifestUrl: string, fallbackName?: string): Promise<void> {
-  setStatus('Resolving');
+async function loadQueryContext(key: string, fixtureChoice: FixtureChoice): Promise<QueryContext> {
+  setStatus('Resolving snapshot');
   errorPanel.hidden = true;
   clearDetails();
   await ensureWasm();
 
-  const fixture = await fetchJson<FixtureManifest>(manifestUrl);
+  const fixture = await fetchJson<FixtureManifest>(fixtureChoice.manifestUrl);
   const logObjectDetails = await loadLogObjectDetails(fixture);
   const wasmManifest = {
     objects: fixture.objects.map((object) => ({
@@ -242,10 +264,16 @@ async function resolveSnapshot(manifestUrl: string, fallbackName?: string): Prom
   );
   const snapshot = JSON.parse(snapshotJson) as ResolvedSnapshot;
   const activeFiles = fixture.data_files === undefined ? [] : activeDataFiles(fixture, snapshot);
-  setStatus('Preflighting Parquet');
-  const parquetPreflight = await preflightActiveParquetFiles(activeFiles);
-  renderSnapshot(fixture, logObjectDetails, snapshot, activeFiles, parquetPreflight, fallbackName);
+  const context = {
+    key,
+    fixture,
+    logObjectDetails,
+    snapshot,
+    activeFiles,
+  };
+  renderSnapshot(fixture, logObjectDetails, snapshot, activeFiles, [], fixtureChoice.fallbackName);
   prepareQuerySandbox(snapshot, activeFiles);
+  return context;
 }
 
 function renderSnapshot(
@@ -262,7 +290,9 @@ function renderSnapshot(
   snapshotVersionNode.textContent = String(snapshot.snapshot_version);
   checkpointVersionNode.textContent =
     fixture.checkpoint_version === undefined ? '-' : String(fixture.checkpoint_version);
-  fileCountNode.textContent = String(snapshot.active_files.length);
+  fileCountNode.textContent = `${snapshot.active_files.length} file${
+    snapshot.active_files.length === 1 ? '' : 's'
+  }`;
   renderLogObjects(logObjectDetails);
   renderCommitActions(logObjectDetails);
   renderDataFiles(fixture, snapshot);
@@ -309,17 +339,8 @@ function activeDataFiles(fixture: FixtureManifest, snapshot: ResolvedSnapshot): 
 }
 
 function prepareQuerySandbox(snapshot: ResolvedSnapshot, activeFiles: ActiveDataFile[]): void {
-  resetQueryClient();
-  clearQueryOutput();
+  resetQuerySession();
   queryDescriptor = browserSnapshotDescriptor(snapshot, activeFiles);
-  if (activeFiles.length === 0) {
-    setQueryStatus('Resolve the prod-like fixture to enable SQL');
-    runSqlButton.disabled = true;
-    return;
-  }
-
-  setQueryStatus('Ready');
-  runSqlButton.disabled = false;
 }
 
 function browserSnapshotDescriptor(
@@ -343,16 +364,13 @@ function browserSnapshotDescriptor(
 }
 
 async function runSql(): Promise<void> {
-  if (!queryDescriptor) {
-    throw new Error('resolve the prod-like fixture before running SQL');
-  }
-
   const token = ++queryTokenCounter;
   const requestId = `sandbox-query-${++queryRequestCounter}`;
   activeQuery = { token, requestId };
   activeWorkerEventRequestIds = new Set([requestId]);
+  runSqlButton.disabled = true;
   cancelSqlButton.disabled = false;
-  setQueryStatus('Running');
+  setQueryStatus('Loading table');
   queryElapsedMsNode.textContent = '-';
   queryExecutedOnNode.textContent = '-';
   queryFallbackReasonNode.textContent = '-';
@@ -365,13 +383,23 @@ async function runSql(): Promise<void> {
   const startedAt = performance.now();
 
   try {
+    const context = await ensureQueryContext();
+    if (!isActiveQuery(token)) {
+      return;
+    }
+    if (context.activeFiles.length === 0) {
+      throw new Error('selected data source does not include browser-readable data files');
+    }
+
     const client = ensureQueryClient();
+    setQueryStatus(queryTableOpened ? 'Running' : 'Opening table');
     await ensureQueryTableOpen(client, token);
     if (!isActiveQuery(token)) {
       return;
     }
 
-    const result = await client.query(QUERY_TABLE_NAME, sqlEditor.value, {
+    setQueryStatus('Running');
+    const result = await client.query(QUERY_TABLE_NAME, sqlEditor.state.doc.toString(), {
       requestId,
       queryOptions: {
         collect_metrics: true,
@@ -383,6 +411,9 @@ async function runSql(): Promise<void> {
     }
 
     renderQueryResult(result, elapsedLabel(performance.now() - startedAt));
+    refreshParquetPreflight(context).catch((error: unknown) => {
+      renderError(error);
+    });
   } catch (error) {
     if (!isActiveQuery(token)) {
       return;
@@ -392,9 +423,39 @@ async function runSql(): Promise<void> {
     if (isActiveQuery(token)) {
       activeQuery = undefined;
       activeWorkerEventRequestIds = undefined;
+      runSqlButton.disabled = false;
       cancelSqlButton.disabled = true;
     }
   }
+}
+
+async function ensureQueryContext(): Promise<QueryContext> {
+  const key = selectedFixtureKey();
+  if (queryContext?.key === key && queryDescriptor) {
+    return queryContext;
+  }
+
+  const fixture = selectedFixture();
+  const context = await loadQueryContext(key, fixture);
+  queryContext = context;
+  return context;
+}
+
+async function refreshParquetPreflight(context: QueryContext): Promise<void> {
+  if (parquetPreflightContextKey === context.key || context.activeFiles.length === 0) {
+    return;
+  }
+
+  const parquetPreflight = await preflightActiveParquetFiles(context.activeFiles);
+  const parquetInspection = queryTableOpened
+    ? await inspectActiveParquetFiles(context.activeFiles)
+    : new Map<string, ParquetInspectionSummary>();
+  if (queryContext?.key !== context.key) {
+    return;
+  }
+
+  parquetPreflightContextKey = context.key;
+  renderParquetPreflight(parquetPreflight, parquetInspection);
 }
 
 function ensureQueryClient(): AxonBrowserClient {
@@ -434,6 +495,7 @@ function cancelActiveQuery(): void {
   }
 
   activeQuery = undefined;
+  runSqlButton.disabled = false;
   cancelSqlButton.disabled = true;
   setQueryStatus('Cancellation requested');
   queryFallbackReasonNode.textContent = 'browser_runtime_constraint';
@@ -456,6 +518,7 @@ function cancelActiveQuery(): void {
     },
   });
   activeWorkerEventRequestIds = undefined;
+  closeQueryClient();
   queryErrorNode.textContent = JSON.stringify(cancellationError, null, 2);
 }
 
@@ -482,6 +545,7 @@ function renderQueryError(error: unknown, elapsed: string): void {
   queryExecutedOnNode.textContent = queryError.target;
   queryFallbackReasonNode.textContent = fallbackReasonLabel(queryError.fallback_reason);
   queryErrorNode.textContent = JSON.stringify(queryError, null, 2);
+  focusResultsTab('error');
 }
 
 function errorToQueryError(error: unknown): QueryError {
@@ -637,10 +701,75 @@ function elapsedLabel(milliseconds: number): string {
 
 function setQueryStatus(status: string): void {
   queryStatusNode.textContent = status;
+  updateStatusPill(status);
+}
+
+function updateStatusPill(status: string): void {
+  if (!statusPill) {
+    return;
+  }
+  statusPill.dataset.state = statusPillState(status);
+}
+
+function statusPillState(status: string): 'ready' | 'running' | 'success' | 'error' {
+  const lower = status.toLowerCase();
+  if (lower === 'error' || lower.includes('cancel')) {
+    return 'error';
+  }
+  if (lower === 'finished') {
+    return 'success';
+  }
+  if (lower === 'ready') {
+    return 'ready';
+  }
+  return 'running';
+}
+
+function initResultsTabs(): void {
+  const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>('.tab[data-tab]'));
+  const panels = Array.from(document.querySelectorAll<HTMLElement>('.tab-panel[data-panel]'));
+  if (tabs.length === 0 || panels.length === 0) {
+    return;
+  }
+  const activate = (name: string): void => {
+    for (const tab of tabs) {
+      const selected = tab.dataset.tab === name;
+      tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+    }
+    for (const panel of panels) {
+      panel.hidden = panel.dataset.panel !== name;
+    }
+  };
+  for (const tab of tabs) {
+    tab.addEventListener('click', () => {
+      const target = tab.dataset.tab;
+      if (target) {
+        activate(target);
+      }
+    });
+  }
+}
+
+function focusResultsTab(name: string): void {
+  const tab = document.querySelector<HTMLButtonElement>(`.tab[data-tab="${name}"]`);
+  if (tab) {
+    tab.click();
+  }
+}
+
+function attachEditorShortcuts(editor: EditorView): void {
+  editor.dom.addEventListener('keydown', (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+      event.preventDefault();
+      if (!runSqlButton.disabled) {
+        runSqlButton.click();
+      }
+    }
+  });
 }
 
 function clearQueryOutput(): void {
-  setQueryStatus('No query');
+  setQueryStatus('Ready');
   queryElapsedMsNode.textContent = '-';
   queryExecutedOnNode.textContent = '-';
   queryFallbackReasonNode.textContent = '-';
@@ -650,15 +779,23 @@ function clearQueryOutput(): void {
   queryErrorNode.textContent = '-';
   resultGridNode.replaceChildren();
   workerEventLogNode.replaceChildren();
-  runSqlButton.disabled = true;
+  runSqlButton.disabled = false;
   cancelSqlButton.disabled = true;
 }
 
 function resetQueryClient(): void {
   activeQuery = undefined;
   activeWorkerEventRequestIds = undefined;
-  queryTableOpened = false;
+  resetQuerySession();
+}
+
+function resetQuerySession(): void {
+  closeQueryClient();
   queryDescriptor = undefined;
+}
+
+function closeQueryClient(): void {
+  queryTableOpened = false;
   if (queryClient) {
     queryClient.terminate();
     queryClient = undefined;
@@ -681,6 +818,25 @@ async function preflightActiveParquetFiles(
   }));
   const preflightJson = await preflight_parquet_metadata_for_targets(JSON.stringify(targets));
   return JSON.parse(preflightJson) as ParquetPreflightFile[];
+}
+
+async function inspectActiveParquetFiles(
+  activeFiles: ActiveDataFile[],
+): Promise<Map<string, ParquetInspectionSummary>> {
+  if (activeFiles.length === 0) {
+    return new Map();
+  }
+
+  const client = ensureQueryClient();
+  const inspections = await Promise.all(
+    activeFiles.map(async (file) => {
+      const summary = await client.inspectParquet(QUERY_TABLE_NAME, file.path, {
+        requestId: `sandbox-inspect-${++queryRequestCounter}`,
+      });
+      return [file.path, summary] as const;
+    }),
+  );
+  return new Map(inspections);
 }
 
 function snapshotStatus(fixture: FixtureManifest, snapshot: ResolvedSnapshot): string {
@@ -789,11 +945,15 @@ function renderActiveDataFileUrls(files: ActiveDataFile[]): void {
   );
 }
 
-function renderParquetPreflight(files: ParquetPreflightFile[]): void {
+function renderParquetPreflight(
+  files: ParquetPreflightFile[],
+  inspections: Map<string, ParquetInspectionSummary> = new Map(),
+): void {
   parquetPreflightNode.replaceChildren(
     ...files.map((file) => {
       const item = document.createElement('li');
       item.className = 'file-row active';
+      const inspection = inspections.get(file.path);
       item.append(
         textBlock('path', file.path),
         textBlock(
@@ -810,9 +970,40 @@ function renderParquetPreflight(files: ParquetPreflightFile[]): void {
       if (file.delta_stats) {
         item.append(textBlock('stats', `delta stats ${formatStats(file.delta_stats)}`));
       }
+      if (inspection) {
+        item.append(
+          textBlock(
+            'detail',
+            `created_by ${inspection.created_by ?? '-'}, version ${inspection.file_version}, metadata memory ${formatBytes(inspection.metadata_memory_size_bytes)}`,
+          ),
+          textBlock(
+            'detail',
+            `compression ${formatBytes(inspection.compression.compressed_size_bytes)} / ${formatBytes(inspection.compression.uncompressed_size_bytes)} (${formatBasisPoints(inspection.compression.ratio_basis_points)})`,
+          ),
+          textBlock('detail', formatParquetInspectionIndexes(inspection)),
+          textBlock('detail', formatParquetInspectionColumnDetails(inspection)),
+        );
+      }
       return item;
     }),
   );
+}
+
+function formatParquetInspectionIndexes(inspection: ParquetInspectionSummary): string {
+  const columnIndexCount = inspection.columns.filter((column) => column.has_column_index).length;
+  const offsetIndexCount = inspection.columns.filter((column) => column.has_offset_index).length;
+  const bloomFilterCount = inspection.columns.filter((column) => column.has_bloom_filter).length;
+  return `indexes column ${columnIndexCount}/${inspection.column_count}, offset ${offsetIndexCount}/${inspection.column_count}, bloom ${bloomFilterCount}/${inspection.column_count}`;
+}
+
+function formatParquetInspectionColumnDetails(inspection: ParquetInspectionSummary): string {
+  return inspection.columns
+    .map((column) => {
+      const encodings = column.encodings.length > 0 ? column.encodings.join('+') : '-';
+      const compressions = column.compressions.length > 0 ? column.compressions.join('+') : '-';
+      return `${column.name} ${compressions} ${encodings} compressed ${formatBytes(column.compressed_size_bytes)}`;
+    })
+    .join('; ');
 }
 
 function renderPruningPreflight(result: PruningPreflightResult): void {
@@ -1022,6 +1213,12 @@ function formatBytes(size: number | DecimalString): string {
   return `${kibTenths / 10n}.${kibTenths % 10n} KB`;
 }
 
+function formatBasisPoints(value: number): string {
+  const basisPoints = BigInt(value);
+  const percentTenths = (basisPoints + 5n) / 10n;
+  return `${percentTenths / 10n}.${percentTenths % 10n}%`;
+}
+
 function formatPartitions(partitions: Record<string, string | null>): string {
   const formatted = Object.entries(partitions)
     .map(([key, value]) => `${key}=${value ?? 'null'}`)
@@ -1089,12 +1286,48 @@ function textBlock(className: string, text: string): HTMLElement {
   return node;
 }
 
+function createSqlEditor(initialDoc: string): EditorView {
+  const editor = new EditorView({
+    doc: initialDoc,
+    extensions: [
+      basicSetup,
+      sql(),
+      EditorView.lineWrapping,
+      EditorView.theme({
+        '&': {
+          height: '100%',
+        },
+        '.cm-scroller': {
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+          fontSize: '0.92rem',
+          lineHeight: '1.55',
+        },
+      }),
+    ],
+    parent: sqlEditorHost,
+  });
+  editor.contentDOM.dataset.testid = 'sql-editor';
+  editor.contentDOM.setAttribute('aria-label', 'SQL editor');
+  return editor;
+}
+
+function setSqlEditorValue(sqlText: string): void {
+  sqlEditor.dispatch({
+    changes: {
+      from: 0,
+      to: sqlEditor.state.doc.length,
+      insert: sqlText,
+    },
+  });
+  sqlEditor.focus();
+}
+
 function clearDetails(): void {
   fixtureNameNode.textContent = '-';
   tableUriNode.textContent = '-';
   snapshotVersionNode.textContent = '-';
   checkpointVersionNode.textContent = '-';
-  fileCountNode.textContent = '0';
+  fileCountNode.textContent = '0 files';
   logObjectsNode.replaceChildren();
   commitActionsNode.replaceChildren();
   dataFilesNode.replaceChildren();
@@ -1103,13 +1336,14 @@ function clearDetails(): void {
   pruningPreflightNode.replaceChildren();
   parquetPreflightNode.replaceChildren();
   inputOutputMapNode.replaceChildren();
-  resetQueryClient();
-  clearQueryOutput();
 }
 
 function selectedFixture(): FixtureChoice {
-  const checked = document.querySelector<HTMLInputElement>('input[name="fixture"]:checked');
-  return FIXTURES[checked?.value ?? 'simple'] ?? FIXTURES.simple;
+  return FIXTURES[selectedFixtureKey()] ?? FIXTURES[DEFAULT_FIXTURE_KEY];
+}
+
+function selectedFixtureKey(): string {
+  return dataSourceSelect.value || DEFAULT_FIXTURE_KEY;
 }
 
 function renderError(error: unknown): void {

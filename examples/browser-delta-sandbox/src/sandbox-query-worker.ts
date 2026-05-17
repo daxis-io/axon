@@ -4,6 +4,7 @@ import {
   type BrowserWorkerCommand,
   type BrowserWorkerEventContext,
   type BrowserWorkerEventEnvelope,
+  type BrowserWorkerInspectParquetCommand,
   type BrowserWorkerLogLevel,
   type BrowserWorkerOpenDeltaTableCommand,
   type BrowserWorkerProgressStage,
@@ -11,6 +12,7 @@ import {
   type BrowserWorkerResponseEnvelope,
   type BrowserWorkerSqlCommand,
   type FallbackReason,
+  type ParquetInspectionSummary,
   type QueryError,
   type QueryMetricsSummary,
   type QueryResponse,
@@ -74,6 +76,10 @@ async function handleCommand(command: BrowserWorkerCommand): Promise<void> {
       await handleOpenDeltaTable(command.open_delta_table, context);
       return;
     }
+    if ('inspect_parquet' in command) {
+      await handleInspectParquet(command.inspect_parquet, context);
+      return;
+    }
     if ('sql' in command) {
       await handleSql(command.sql, context);
       return;
@@ -118,6 +124,27 @@ async function handleOpenDeltaTable(
     opened: {
       request_id: command.request_id,
       name: command.name,
+    },
+  });
+}
+
+async function handleInspectParquet(
+  command: BrowserWorkerInspectParquetCommand,
+  context: BrowserWorkerEventContext,
+): Promise<void> {
+  emitProgress(context, 'started');
+  emitLog(context, 'info', 'sandbox worker inspecting Parquet metadata');
+  emitProgress(context, 'executing');
+  const session = await ensureSession(context);
+  const summary = JSON.parse(
+    await session.inspect_parquet(command.name, command.path),
+  ) as ParquetInspectionSummary;
+
+  emitProgress(context, 'finished');
+  postResponse({
+    parquet_inspection: {
+      request_id: command.request_id,
+      summary,
     },
   });
 }
@@ -297,6 +324,13 @@ function commandContext(command: BrowserWorkerCommand): BrowserWorkerEventContex
       table_name: command.open_delta_table.name,
     };
   }
+  if ('inspect_parquet' in command) {
+    return {
+      phase: 'inspect',
+      request_id: command.inspect_parquet.request_id,
+      table_name: command.inspect_parquet.name,
+    };
+  }
   if ('sql' in command) {
     return {
       phase: 'query',
@@ -322,6 +356,9 @@ function commandContext(command: BrowserWorkerCommand): BrowserWorkerEventContex
 function requestId(command: BrowserWorkerCommand): string {
   if ('open_delta_table' in command) {
     return command.open_delta_table.request_id;
+  }
+  if ('inspect_parquet' in command) {
+    return command.inspect_parquet.request_id;
   }
   if ('sql' in command) {
     return command.sql.request_id;

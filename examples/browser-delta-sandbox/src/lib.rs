@@ -206,6 +206,17 @@ impl SandboxQuerySession {
         })
     }
 
+    pub async fn inspect_parquet(&mut self, name: String, path: String) -> Result<String, JsValue> {
+        let summary = self
+            .session
+            .inspect_parquet(&name, &path)
+            .await
+            .map_err(query_error_to_js_value)?;
+        serde_json::to_string(&summary).map_err(|error| {
+            JsValue::from_str(&format!("Parquet inspection serialization failed: {error}"))
+        })
+    }
+
     pub async fn sql(
         &mut self,
         name: String,

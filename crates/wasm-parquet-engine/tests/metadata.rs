@@ -7,12 +7,15 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
+use parquet::basic::Compression;
 use parquet::data_type::Int64Type;
-use parquet::file::properties::WriterProperties;
+use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
 use wasm_http_object_store::HttpRangeReader;
-use wasm_parquet_engine::{read_parquet_metadata_for_target, ObjectSource, ScanTarget};
+use wasm_parquet_engine::{
+    inspect_parquet_target, read_parquet_metadata_for_target, ObjectSource, ScanTarget,
+};
 
 #[tokio::test]
 async fn known_file_size_avoids_extra_metadata_round_trip() {
@@ -61,6 +64,77 @@ async fn known_file_size_avoids_extra_metadata_round_trip() {
     assert_eq!(metadata.row_count, 3);
 }
 
+#[tokio::test]
+async fn inspect_parquet_target_returns_file_column_and_index_diagnostics() {
+    let object = parquet_bytes_with_two_i64_columns(&[(1_i64, 10_i64), (2, 20), (3, 30)]);
+    let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+    let footer_length = parquet_footer_length(&object);
+    let object_for_server = object.clone();
+    let (url, requests, server) = spawn_multi_request_server(2, move |request, _| {
+        full_or_ranged_response(request, &object_for_server)
+    });
+
+    let inspection = inspect_parquet_target(
+        &HttpRangeReader::new(),
+        &ScanTarget {
+            object_source: ObjectSource::new(url),
+            object_etag: None,
+            path: "part-000.parquet".to_string(),
+            size_bytes: object_size,
+            partition_values: BTreeMap::new(),
+        },
+        None,
+    )
+    .await
+    .expect("parquet inspection should succeed");
+
+    let _requests = finish_requests(server, requests, 2);
+    assert_eq!(inspection.path, "part-000.parquet");
+    assert_eq!(inspection.object_size_bytes, object_size);
+    assert_eq!(inspection.footer_length_bytes, footer_length);
+    assert!(inspection.metadata_memory_size_bytes > 0);
+    assert_eq!(
+        inspection.created_by.as_deref(),
+        Some("axon inspection test")
+    );
+    assert_eq!(inspection.file_version, 2);
+    assert_eq!(inspection.row_group_count, 1);
+    assert_eq!(inspection.row_count, 3);
+    assert_eq!(inspection.column_count, 2);
+    assert!(inspection.compression.compressed_size_bytes > 0);
+    assert!(inspection.compression.uncompressed_size_bytes > 0);
+    assert!(inspection.compression.ratio_basis_points > 0);
+
+    let id = inspection
+        .columns
+        .iter()
+        .find(|column| column.name == "id")
+        .expect("id column should be inspected");
+    assert_eq!(id.physical_type, "Int64");
+    assert_eq!(id.logical_type, None);
+    assert_eq!(id.null_count, Some(0));
+    assert!(id.has_statistics);
+    assert!(id.has_column_index);
+    assert!(id.has_offset_index);
+    assert!(!id.has_bloom_filter);
+    assert!(id.encodings.iter().any(|encoding| encoding == "PLAIN"));
+    assert_eq!(id.compressions, vec!["UNCOMPRESSED"]);
+
+    let row_group = inspection
+        .row_groups
+        .first()
+        .expect("row-group diagnostics should be present");
+    assert_eq!(row_group.index, 0);
+    assert_eq!(row_group.row_count, 3);
+    assert_eq!(row_group.columns.len(), 2);
+    assert_eq!(row_group.columns[0].column_name, "id");
+    assert_eq!(row_group.columns[0].compression, "UNCOMPRESSED");
+    assert!(row_group.columns[0]
+        .encodings
+        .iter()
+        .any(|encoding| encoding == "PLAIN"));
+}
+
 fn parquet_bytes_with_single_i64_column(values: &[i64]) -> Vec<u8> {
     let schema = Arc::new(
         parse_message_type("message schema { REQUIRED INT64 id; }")
@@ -86,6 +160,56 @@ fn parquet_bytes_with_single_i64_column(values: &[i64]) -> Vec<u8> {
             .write_batch(values, None, None)
             .expect("test parquet rows should write");
         column.close().expect("column writer should close");
+    }
+    row_group.close().expect("row-group writer should close");
+    writer.close().expect("file writer should close");
+    bytes
+}
+
+fn parquet_bytes_with_two_i64_columns(values: &[(i64, i64)]) -> Vec<u8> {
+    let schema = Arc::new(
+        parse_message_type("message schema { REQUIRED INT64 id; REQUIRED INT64 value; }")
+            .expect("parquet schema should parse"),
+    );
+    let ids = values.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    let values = values.iter().map(|(_, value)| *value).collect::<Vec<_>>();
+    let mut bytes = Vec::new();
+    let mut writer = SerializedFileWriter::new(
+        &mut bytes,
+        schema,
+        Arc::new(
+            WriterProperties::builder()
+                .set_created_by("axon inspection test".to_string())
+                .set_writer_version(WriterVersion::PARQUET_2_0)
+                .set_compression(Compression::UNCOMPRESSED)
+                .set_statistics_enabled(EnabledStatistics::Page)
+                .build(),
+        ),
+    )
+    .expect("parquet writer should construct");
+
+    let mut row_group = writer
+        .next_row_group()
+        .expect("row-group writer should construct");
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("id column writer should be returned")
+    {
+        column
+            .typed::<Int64Type>()
+            .write_batch(&ids, None, None)
+            .expect("test parquet id rows should write");
+        column.close().expect("id column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("value column writer should be returned")
+    {
+        column
+            .typed::<Int64Type>()
+            .write_batch(&values, None, None)
+            .expect("test parquet value rows should write");
+        column.close().expect("value column writer should close");
     }
     row_group.close().expect("row-group writer should close");
     writer.close().expect("file writer should close");

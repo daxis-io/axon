@@ -244,6 +244,76 @@ pub struct BrowserHttpSnapshotDescriptor {
     pub active_files: Vec<BrowserHttpFileDescriptor>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ParquetCompressionSummary {
+    pub compressed_size_bytes: u64,
+    pub uncompressed_size_bytes: u64,
+    pub ratio_basis_points: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ParquetInspectionColumnChunk {
+    pub column_name: String,
+    pub compression: String,
+    pub encodings: Vec<String>,
+    pub compressed_size_bytes: u64,
+    pub uncompressed_size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub null_count: Option<u64>,
+    pub has_statistics: bool,
+    pub has_column_index: bool,
+    pub has_offset_index: bool,
+    pub has_bloom_filter: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ParquetInspectionRowGroup {
+    pub index: u64,
+    pub row_count: u64,
+    pub compressed_size_bytes: u64,
+    pub uncompressed_size_bytes: u64,
+    pub columns: Vec<ParquetInspectionColumnChunk>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ParquetInspectionColumn {
+    pub name: String,
+    pub physical_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub converted_type: Option<String>,
+    pub repetition: String,
+    pub nullable: bool,
+    pub compressed_size_bytes: u64,
+    pub uncompressed_size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub null_count: Option<u64>,
+    pub encodings: Vec<String>,
+    pub compressions: Vec<String>,
+    pub has_statistics: bool,
+    pub has_column_index: bool,
+    pub has_offset_index: bool,
+    pub has_bloom_filter: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ParquetInspectionSummary {
+    pub path: String,
+    pub object_size_bytes: u64,
+    pub footer_length_bytes: u32,
+    pub metadata_memory_size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    pub file_version: i32,
+    pub row_group_count: u64,
+    pub row_count: u64,
+    pub column_count: u64,
+    pub compression: ParquetCompressionSummary,
+    pub columns: Vec<ParquetInspectionColumn>,
+    pub row_groups: Vec<ParquetInspectionRowGroup>,
+}
+
 fn capability_report_is_empty(report: &CapabilityReport) -> bool {
     report.capabilities.is_empty()
 }

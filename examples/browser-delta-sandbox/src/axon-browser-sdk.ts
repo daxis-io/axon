@@ -136,6 +136,12 @@ export type BrowserWorkerOpenDeltaTableCommand = {
   snapshot: BrowserHttpSnapshotDescriptor;
 };
 
+export type BrowserWorkerInspectParquetCommand = {
+  request_id: string;
+  name: string;
+  path: string;
+};
+
 export type BrowserWorkerSqlCommand = {
   request_id: string;
   name: string;
@@ -151,6 +157,7 @@ export type BrowserWorkerDisposeCommand = {
 export type BrowserWorkerCommand =
   | { open_table: BrowserWorkerOpenTableCommand }
   | { open_delta_table: BrowserWorkerOpenDeltaTableCommand }
+  | { inspect_parquet: BrowserWorkerInspectParquetCommand }
   | { sql: BrowserWorkerSqlCommand }
   | { dispose: BrowserWorkerDisposeCommand };
 
@@ -184,6 +191,71 @@ export type WireBrowserWorkerSuccessEnvelope = Omit<BrowserWorkerSuccessEnvelope
   result: WireArrowIpcResult;
 };
 
+export type ParquetCompressionSummary = {
+  compressed_size_bytes: number;
+  uncompressed_size_bytes: number;
+  ratio_basis_points: number;
+};
+
+export type ParquetInspectionColumnChunk = {
+  column_name: string;
+  compression: string;
+  encodings: string[];
+  compressed_size_bytes: number;
+  uncompressed_size_bytes: number;
+  null_count?: number;
+  has_statistics: boolean;
+  has_column_index: boolean;
+  has_offset_index: boolean;
+  has_bloom_filter: boolean;
+};
+
+export type ParquetInspectionRowGroup = {
+  index: number;
+  row_count: number;
+  compressed_size_bytes: number;
+  uncompressed_size_bytes: number;
+  columns: ParquetInspectionColumnChunk[];
+};
+
+export type ParquetInspectionColumn = {
+  name: string;
+  physical_type: string;
+  logical_type?: string;
+  converted_type?: string;
+  repetition: string;
+  nullable: boolean;
+  compressed_size_bytes: number;
+  uncompressed_size_bytes: number;
+  null_count?: number;
+  encodings: string[];
+  compressions: string[];
+  has_statistics: boolean;
+  has_column_index: boolean;
+  has_offset_index: boolean;
+  has_bloom_filter: boolean;
+};
+
+export type ParquetInspectionSummary = {
+  path: string;
+  object_size_bytes: number;
+  footer_length_bytes: number;
+  metadata_memory_size_bytes: number;
+  created_by?: string;
+  file_version: number;
+  row_group_count: number;
+  row_count: number;
+  column_count: number;
+  compression: ParquetCompressionSummary;
+  columns: ParquetInspectionColumn[];
+  row_groups: ParquetInspectionRowGroup[];
+};
+
+export type BrowserWorkerParquetInspectionEnvelope = {
+  request_id: string;
+  summary: ParquetInspectionSummary;
+};
+
 export type BrowserWorkerResultPreviewCell = string | number | boolean | null;
 
 export type BrowserWorkerResultPreview = {
@@ -207,16 +279,18 @@ export type BrowserWorkerErrorEnvelope = {
 export type BrowserWorkerResponseEnvelope =
   | { opened: BrowserWorkerOpenedEnvelope }
   | { success: BrowserWorkerSuccessEnvelope }
+  | { parquet_inspection: BrowserWorkerParquetInspectionEnvelope }
   | { disposed: BrowserWorkerDisposedEnvelope }
   | { error: BrowserWorkerErrorEnvelope };
 
 export type WireBrowserWorkerResponseEnvelope =
   | { opened: BrowserWorkerOpenedEnvelope }
   | { success: WireBrowserWorkerSuccessEnvelope }
+  | { parquet_inspection: BrowserWorkerParquetInspectionEnvelope }
   | { disposed: BrowserWorkerDisposedEnvelope }
   | { error: BrowserWorkerErrorEnvelope };
 
-export type BrowserWorkerEventPhase = 'instantiate' | 'open' | 'query';
+export type BrowserWorkerEventPhase = 'instantiate' | 'open' | 'inspect' | 'query';
 
 export type BrowserWorkerEventContext = {
   phase: BrowserWorkerEventPhase;
@@ -426,6 +500,11 @@ export interface AxonBrowserClient {
     snapshot: BrowserHttpSnapshotDescriptor,
     options?: AxonRequestOptions,
   ): Promise<BrowserWorkerOpenedEnvelope>;
+  inspectParquet(
+    name: string,
+    path: string,
+    options?: AxonRequestOptions,
+  ): Promise<ParquetInspectionSummary>;
   query(
     name: string,
     request: QueryRequest,
@@ -437,7 +516,7 @@ export interface AxonBrowserClient {
 }
 
 type PendingRequest = {
-  expected: 'opened' | 'success' | 'disposed';
+  expected: 'opened' | 'success' | 'parquet_inspection' | 'disposed';
   resolve: (response: BrowserWorkerResponseEnvelope) => void;
   reject: (error: Error) => void;
 };
@@ -553,6 +632,20 @@ export function queryCommand(
       name,
       query: request,
       output: 'arrow_ipc_stream',
+    },
+  };
+}
+
+export function inspectParquetCommand(
+  requestId: string,
+  name: string,
+  path: string,
+): BrowserWorkerCommand {
+  return {
+    inspect_parquet: {
+      request_id: requestId,
+      name,
+      path,
     },
   };
 }
@@ -705,6 +798,24 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
     return opened;
   }
 
+  async inspectParquet(
+    name: string,
+    path: string,
+    options: AxonRequestOptions = {},
+  ): Promise<ParquetInspectionSummary> {
+    const requestId = options.requestId ?? this.requestId();
+    const response = await this.send(
+      inspectParquetCommand(requestId, name, path),
+      'parquet_inspection',
+    );
+    if (!('parquet_inspection' in response)) {
+      throw new AxonProtocolError(
+        `worker response for request '${requestId}' did not contain a parquet_inspection envelope`,
+      );
+    }
+    return response.parquet_inspection.summary;
+  }
+
   query(
     name: string,
     request: QueryRequest,
@@ -846,6 +957,9 @@ function commandRequestId(command: BrowserWorkerCommand): string {
   if ('open_delta_table' in command) {
     return command.open_delta_table.request_id;
   }
+  if ('inspect_parquet' in command) {
+    return command.inspect_parquet.request_id;
+  }
   if ('sql' in command) {
     return command.sql.request_id;
   }
@@ -858,6 +972,9 @@ function responseRequestId(response: BrowserWorkerResponseEnvelope): string {
   }
   if ('success' in response) {
     return response.success.request_id;
+  }
+  if ('parquet_inspection' in response) {
+    return response.parquet_inspection.request_id;
   }
   if ('disposed' in response) {
     return response.disposed.request_id;
@@ -903,6 +1020,20 @@ function normalizeWorkerResponse(data: unknown): BrowserWorkerResponseEnvelope {
         ...response.success,
         result: normalizeArrowIpcResult(response.success.result),
         preview: normalizeResultPreview(response.success.preview, 'success.preview'),
+      },
+    };
+  }
+  if ('parquet_inspection' in response) {
+    return {
+      parquet_inspection: {
+        request_id: requiredString(
+          response.parquet_inspection.request_id,
+          'parquet_inspection.request_id',
+        ),
+        summary: normalizeParquetInspectionSummary(
+          response.parquet_inspection.summary,
+          'parquet_inspection.summary',
+        ),
       },
     };
   }
@@ -1117,6 +1248,153 @@ function normalizeResultPreviewCell(value: unknown, path: string): BrowserWorker
   throw new AxonProtocolError(`${path} must be a string, finite number, boolean, or null`);
 }
 
+function normalizeParquetInspectionSummary(value: unknown, path: string): ParquetInspectionSummary {
+  if (!isObject(value)) {
+    throw new AxonProtocolError(`${path} must be an object`);
+  }
+
+  return {
+    path: requiredString(value.path, `${path}.path`),
+    object_size_bytes: requiredNonNegativeInteger(
+      value.object_size_bytes,
+      `${path}.object_size_bytes`,
+    ),
+    footer_length_bytes: requiredNonNegativeInteger(
+      value.footer_length_bytes,
+      `${path}.footer_length_bytes`,
+    ),
+    metadata_memory_size_bytes: requiredNonNegativeInteger(
+      value.metadata_memory_size_bytes,
+      `${path}.metadata_memory_size_bytes`,
+    ),
+    created_by: optionalString(value.created_by, `${path}.created_by`),
+    file_version: requiredNonNegativeInteger(value.file_version, `${path}.file_version`),
+    row_group_count: requiredNonNegativeInteger(value.row_group_count, `${path}.row_group_count`),
+    row_count: requiredNonNegativeInteger(value.row_count, `${path}.row_count`),
+    column_count: requiredNonNegativeInteger(value.column_count, `${path}.column_count`),
+    compression: normalizeParquetCompressionSummary(value.compression, `${path}.compression`),
+    columns: requiredArray(value.columns, `${path}.columns`).map((column, index) =>
+      normalizeParquetInspectionColumn(column, `${path}.columns[${index}]`),
+    ),
+    row_groups: requiredArray(value.row_groups, `${path}.row_groups`).map((rowGroup, index) =>
+      normalizeParquetInspectionRowGroup(rowGroup, `${path}.row_groups[${index}]`),
+    ),
+  };
+}
+
+function normalizeParquetCompressionSummary(
+  value: unknown,
+  path: string,
+): ParquetCompressionSummary {
+  if (!isObject(value)) {
+    throw new AxonProtocolError(`${path} must be an object`);
+  }
+
+  return {
+    compressed_size_bytes: requiredNonNegativeInteger(
+      value.compressed_size_bytes,
+      `${path}.compressed_size_bytes`,
+    ),
+    uncompressed_size_bytes: requiredNonNegativeInteger(
+      value.uncompressed_size_bytes,
+      `${path}.uncompressed_size_bytes`,
+    ),
+    ratio_basis_points: requiredNonNegativeInteger(
+      value.ratio_basis_points,
+      `${path}.ratio_basis_points`,
+    ),
+  };
+}
+
+function normalizeParquetInspectionColumn(value: unknown, path: string): ParquetInspectionColumn {
+  if (!isObject(value)) {
+    throw new AxonProtocolError(`${path} must be an object`);
+  }
+
+  return {
+    name: requiredString(value.name, `${path}.name`),
+    physical_type: requiredString(value.physical_type, `${path}.physical_type`),
+    logical_type: optionalString(value.logical_type, `${path}.logical_type`),
+    converted_type: optionalString(value.converted_type, `${path}.converted_type`),
+    repetition: requiredString(value.repetition, `${path}.repetition`),
+    nullable: requiredBoolean(value.nullable, `${path}.nullable`),
+    compressed_size_bytes: requiredNonNegativeInteger(
+      value.compressed_size_bytes,
+      `${path}.compressed_size_bytes`,
+    ),
+    uncompressed_size_bytes: requiredNonNegativeInteger(
+      value.uncompressed_size_bytes,
+      `${path}.uncompressed_size_bytes`,
+    ),
+    null_count: optionalNonNegativeInteger(value.null_count, `${path}.null_count`),
+    encodings: requiredArray(value.encodings, `${path}.encodings`).map((encoding, index) =>
+      requiredString(encoding, `${path}.encodings[${index}]`),
+    ),
+    compressions: requiredArray(value.compressions, `${path}.compressions`).map(
+      (compression, index) => requiredString(compression, `${path}.compressions[${index}]`),
+    ),
+    has_statistics: requiredBoolean(value.has_statistics, `${path}.has_statistics`),
+    has_column_index: requiredBoolean(value.has_column_index, `${path}.has_column_index`),
+    has_offset_index: requiredBoolean(value.has_offset_index, `${path}.has_offset_index`),
+    has_bloom_filter: requiredBoolean(value.has_bloom_filter, `${path}.has_bloom_filter`),
+  };
+}
+
+function normalizeParquetInspectionRowGroup(
+  value: unknown,
+  path: string,
+): ParquetInspectionRowGroup {
+  if (!isObject(value)) {
+    throw new AxonProtocolError(`${path} must be an object`);
+  }
+
+  return {
+    index: requiredNonNegativeInteger(value.index, `${path}.index`),
+    row_count: requiredNonNegativeInteger(value.row_count, `${path}.row_count`),
+    compressed_size_bytes: requiredNonNegativeInteger(
+      value.compressed_size_bytes,
+      `${path}.compressed_size_bytes`,
+    ),
+    uncompressed_size_bytes: requiredNonNegativeInteger(
+      value.uncompressed_size_bytes,
+      `${path}.uncompressed_size_bytes`,
+    ),
+    columns: requiredArray(value.columns, `${path}.columns`).map((column, index) =>
+      normalizeParquetInspectionColumnChunk(column, `${path}.columns[${index}]`),
+    ),
+  };
+}
+
+function normalizeParquetInspectionColumnChunk(
+  value: unknown,
+  path: string,
+): ParquetInspectionColumnChunk {
+  if (!isObject(value)) {
+    throw new AxonProtocolError(`${path} must be an object`);
+  }
+
+  return {
+    column_name: requiredString(value.column_name, `${path}.column_name`),
+    compression: requiredString(value.compression, `${path}.compression`),
+    encodings: requiredArray(value.encodings, `${path}.encodings`).map((encoding, index) =>
+      requiredString(encoding, `${path}.encodings[${index}]`),
+    ),
+    compressed_size_bytes: requiredNonNegativeInteger(
+      value.compressed_size_bytes,
+      `${path}.compressed_size_bytes`,
+    ),
+    uncompressed_size_bytes: requiredNonNegativeInteger(
+      value.uncompressed_size_bytes,
+      `${path}.uncompressed_size_bytes`,
+    ),
+    null_count: optionalNonNegativeInteger(value.null_count, `${path}.null_count`),
+    has_statistics: requiredBoolean(value.has_statistics, `${path}.has_statistics`),
+    has_column_index: requiredBoolean(value.has_column_index, `${path}.has_column_index`),
+    has_offset_index: requiredBoolean(value.has_offset_index, `${path}.has_offset_index`),
+    has_bloom_filter: requiredBoolean(value.has_bloom_filter, `${path}.has_bloom_filter`),
+  };
+}
+
 function normalizeFallbackReason(value: unknown, path: string): FallbackReason {
   if (typeof value === 'string' && includesString(FALLBACK_REASON_STRINGS, value)) {
     return value as FallbackReason;
@@ -1182,6 +1460,14 @@ function requiredNonNegativeInteger(value: unknown, path: string): number {
   }
 
   return number;
+}
+
+function optionalNonNegativeInteger(value: unknown, path: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return requiredNonNegativeInteger(value, path);
 }
 
 function requiredBoolean(value: unknown, path: string): boolean {
@@ -1312,7 +1598,13 @@ const BUNDLE_TIER_RANK: Record<BrowserBundleTier, number> = {
   simd_threaded: 3,
 };
 
-const WORKER_RESPONSE_TAGS = ['opened', 'success', 'disposed', 'error'] as const;
+const WORKER_RESPONSE_TAGS = [
+  'opened',
+  'success',
+  'parquet_inspection',
+  'disposed',
+  'error',
+] as const;
 const WORKER_EVENT_TAGS = [
   'progress',
   'log',
@@ -1367,6 +1659,7 @@ const QUERY_ERROR_CODES = [
 const BROWSER_WORKER_EVENT_PHASES = [
   'instantiate',
   'open',
+  'inspect',
   'query',
 ] as const satisfies readonly BrowserWorkerEventPhase[];
 const BROWSER_WORKER_PROGRESS_STAGES = [
