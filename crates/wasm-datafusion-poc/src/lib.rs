@@ -16,9 +16,7 @@ use std::{
     },
 };
 
-use arrow_array::{
-    Array, Int32Array, LargeStringArray, RecordBatch, RecordBatchOptions, StringArray,
-};
+use arrow_array::{Int32Array, RecordBatch, RecordBatchOptions, StringArray};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::{Session, TableProvider};
@@ -29,6 +27,7 @@ use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Expr, Operator, TableProviderFilterPushDown, TableType};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::{
+    displayable,
     execution_plan::{execute_stream, Boundedness, EmissionType},
     stream::RecordBatchStreamAdapter,
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
@@ -99,6 +98,7 @@ pub struct DataFusionArrowIpcResult {
     pub row_count: u64,
     pub encoded_bytes: u64,
     pub scan_metrics: DataFusionScanMetricsSummary,
+    pub physical_plan: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1780,34 +1780,28 @@ impl WasmDataFusionEngine {
         &self,
         sql: &str,
     ) -> Result<DataFusionArrowIpcResult, QueryError> {
-        let result = self.sql_to_arrow_ipc_result_inner(sql).await;
+        let result = self.sql_to_arrow_ipc_result_inner(sql, false).await;
         if matches!(result.as_ref(), Err(error) if is_query_cancelled_error(error)) {
             self.cancellation.reset();
         }
         result
     }
 
-    pub async fn explain_physical_plan_text(&self, sql: &str) -> Result<String, QueryError> {
-        let (_schema, batches) = self
-            .sql_to_record_batches(&format!("EXPLAIN {sql}"))
-            .await?;
-        let mut lines = Vec::new();
-
-        for batch in &batches {
-            collect_explain_string_columns(batch, &mut lines)?;
+    pub async fn sql_to_arrow_ipc_result_with_physical_plan(
+        &self,
+        sql: &str,
+    ) -> Result<DataFusionArrowIpcResult, QueryError> {
+        let result = self.sql_to_arrow_ipc_result_inner(sql, true).await;
+        if matches!(result.as_ref(), Err(error) if is_query_cancelled_error(error)) {
+            self.cancellation.reset();
         }
-
-        let explain = lines.join("\n");
-        let physical_plan = explain
-            .split_once("physical_plan\n")
-            .map(|(_header, plan)| plan.to_string())
-            .unwrap_or(explain);
-        Ok(format!("DataFusion physical plan\n{physical_plan}"))
+        result
     }
 
     async fn sql_to_arrow_ipc_result_inner(
         &self,
         sql: &str,
+        include_physical_plan: bool,
     ) -> Result<DataFusionArrowIpcResult, QueryError> {
         self.cancellation.check_cancelled()?;
         let frame = self.ctx.sql(sql).await.map_err(map_datafusion_error)?;
@@ -1819,6 +1813,12 @@ impl WasmDataFusionEngine {
             .await
             .map_err(map_datafusion_error)?;
         validate_query_budget_for_plan(&plan, self.query_budget)?;
+        let physical_plan = include_physical_plan.then(|| {
+            format!(
+                "DataFusion physical plan\n{}",
+                displayable(plan.as_ref()).indent(false)
+            )
+        });
         self.cancellation.check_cancelled()?;
         let (ipc_bytes, row_count) = encode_execution_plan_to_arrow_ipc_with_controls(
             Arc::clone(&plan),
@@ -1848,53 +1848,9 @@ impl WasmDataFusionEngine {
             row_count,
             encoded_bytes,
             scan_metrics,
+            physical_plan,
         })
     }
-}
-
-fn collect_explain_string_columns(
-    batch: &RecordBatch,
-    lines: &mut Vec<String>,
-) -> Result<(), QueryError> {
-    for column_index in 0..batch.num_columns() {
-        match batch.schema().field(column_index).data_type() {
-            DataType::Utf8 => {
-                let column = batch
-                    .column(column_index)
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or_else(|| explain_column_type_error("Utf8"))?;
-                for row_index in 0..batch.num_rows() {
-                    if !column.is_null(row_index) {
-                        lines.push(column.value(row_index).to_string());
-                    }
-                }
-            }
-            DataType::LargeUtf8 => {
-                let column = batch
-                    .column(column_index)
-                    .as_any()
-                    .downcast_ref::<LargeStringArray>()
-                    .ok_or_else(|| explain_column_type_error("LargeUtf8"))?;
-                for row_index in 0..batch.num_rows() {
-                    if !column.is_null(row_index) {
-                        lines.push(column.value(row_index).to_string());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Ok(())
-}
-
-fn explain_column_type_error(data_type: &str) -> QueryError {
-    QueryError::new(
-        QueryErrorCode::ExecutionFailed,
-        format!("DataFusion EXPLAIN returned an invalid {data_type} column"),
-        runtime_target(),
-    )
 }
 
 impl Default for WasmDataFusionEngine {
@@ -2244,6 +2200,52 @@ mod tests {
                     rows_emitted: 1,
                     bytes_fetched: 0,
                 }
+            );
+        });
+    }
+
+    #[test]
+    fn arrow_ipc_result_can_report_the_executed_physical_plan() {
+        test_runtime().block_on(async {
+            let batch = synthetic_record_batch().expect("synthetic batch should build");
+            let descriptor = DeltaTableDescriptor {
+                table_name: DEFAULT_TABLE_NAME.to_string(),
+                table_version: 1,
+                schema: batch.schema(),
+                partition_columns: Vec::new(),
+                partition_column_types: BTreeMap::new(),
+                active_files: vec![DeltaActiveFile {
+                    path: "part-000.parquet".to_string(),
+                    url: "https://example.test/part-000.parquet".to_string(),
+                    size_bytes: 1024,
+                    partition_values: BTreeMap::new(),
+                    object_etag: None,
+                    stats_json: None,
+                    deletion_vector: None,
+                }],
+            };
+            let mut engine = WasmDataFusionEngine::new();
+            engine
+                .open_delta_table_with_record_batch_partitions(descriptor, vec![vec![batch]])
+                .await
+                .expect("descriptor table should register");
+
+            let result = engine
+                .sql_to_arrow_ipc_result_with_physical_plan("SELECT id FROM t LIMIT 1")
+                .await
+                .expect("DataFusion SQL should execute");
+
+            let physical_plan = result
+                .physical_plan
+                .as_deref()
+                .expect("executed physical plan should be attached");
+            assert!(
+                physical_plan.contains("DataFusion physical plan"),
+                "physical plan text: {physical_plan}"
+            );
+            assert!(
+                physical_plan.contains("AxonParquetScanExec"),
+                "physical plan text: {physical_plan}"
             );
         });
     }

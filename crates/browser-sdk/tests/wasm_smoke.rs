@@ -71,6 +71,7 @@ fn browser_sdk_round_trips_worker_responses_in_wasm() {
                 snapshot_bootstrap_duration_ms: None,
                 access_mode: None,
             },
+            explain: None,
         },
         ArrowIpcResultEnvelope::new(ArrowIpcFormat::Stream, vec![1, 2, 3, 4]),
     );
@@ -199,6 +200,7 @@ fn browser_sdk_round_trips_browser_telemetry_fields_in_wasm() {
                 snapshot_bootstrap_duration_ms: Some(6),
                 access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
             },
+            explain: None,
         },
         ArrowIpcResultEnvelope::new(ArrowIpcFormat::Stream, vec![9, 8, 7, 6]),
     );

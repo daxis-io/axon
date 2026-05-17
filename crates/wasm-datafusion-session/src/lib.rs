@@ -220,19 +220,16 @@ impl BrowserDataFusionSession {
             )
         };
         let started_at = BrowserRuntimeInstant::now();
-        let datafusion_result = self
-            .datafusion
-            .sql_to_arrow_ipc_result(&request.sql)
-            .await?;
-        let explain = if request.options.include_explain {
-            Some(
-                self.datafusion
-                    .explain_physical_plan_text(&request.sql)
-                    .await?,
-            )
+        let datafusion_result = if request.options.include_explain {
+            self.datafusion
+                .sql_to_arrow_ipc_result_with_physical_plan(&request.sql)
+                .await?
         } else {
-            None
+            self.datafusion
+                .sql_to_arrow_ipc_result(&request.sql)
+                .await?
         };
+        let explain = datafusion_result.physical_plan.clone();
         let scan_metrics = datafusion_result.scan_metrics.clone();
         let runtime_result = runtime_result_from_datafusion(datafusion_result);
 

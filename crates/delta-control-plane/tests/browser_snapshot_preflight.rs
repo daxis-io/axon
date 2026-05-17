@@ -199,6 +199,7 @@ fn supported_resolved_snapshot_executes_and_round_trips_through_browser_worker_e
             capabilities: resolved_snapshot.required_capabilities.clone(),
             fallback_reason: None,
             metrics: result.metrics().clone(),
+            explain: None,
         },
         ArrowIpcResultEnvelope::new(ArrowIpcFormat::Stream, vec![1, 2, 3, 4]),
     );
