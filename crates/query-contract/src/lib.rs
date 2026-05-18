@@ -391,6 +391,18 @@ pub fn validate_delta_location_resolve_response(
         ));
     }
 
+    if response
+        .requested_snapshot_version
+        .is_some_and(|snapshot_version| snapshot_version < 0)
+        || response.resolved_snapshot_version < 0
+        || response.descriptor.snapshot_version < 0
+    {
+        return Err(DeltaLocationResolverError::new(
+            DeltaLocationResolverErrorCode::InvalidSnapshotVersion,
+            "resolved Delta snapshot versions must be non-negative integers",
+        ));
+    }
+
     if response.descriptor.snapshot_version != response.resolved_snapshot_version {
         return Err(DeltaLocationResolverError::new(
             DeltaLocationResolverErrorCode::PolicyBlocked,

@@ -568,6 +568,42 @@ fn delta_location_resolve_response_validation_requires_same_snapshot_refresh() {
 }
 
 #[test]
+fn delta_location_resolve_response_validation_rejects_negative_snapshot_versions() {
+    let mut response = DeltaLocationResolveResponse {
+        descriptor: BrowserHttpSnapshotDescriptor {
+            table_uri: "axon-resolved://session/events/v12".to_string(),
+            snapshot_version: -1,
+            partition_column_types: std::collections::BTreeMap::new(),
+            browser_compatibility: CapabilityReport::default(),
+            required_capabilities: CapabilityReport::default(),
+            active_files: Vec::new(),
+        },
+        provider: DeltaObjectStoreProvider::Gcs,
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        requested_snapshot_version: None,
+        resolved_snapshot_version: -1,
+        requested_access_mode: Some(ResolverRequestedAccessMode::Auto),
+        actual_access_mode: ResolverActualAccessMode::SignedUrl,
+        expires_at_epoch_ms: 4_102_444_800_000,
+        correlation_id: None,
+        warnings: Vec::new(),
+        refresh: None,
+    };
+
+    let error = validate_delta_location_resolve_response(&response, 4_102_444_700_000)
+        .expect_err("negative resolved snapshot versions should be rejected");
+    assert_eq!(
+        error.code,
+        DeltaLocationResolverErrorCode::InvalidSnapshotVersion
+    );
+
+    response.descriptor.snapshot_version = 12;
+    response.resolved_snapshot_version = 12;
+    validate_delta_location_resolve_response(&response, 4_102_444_700_000)
+        .expect("non-negative snapshot versions should validate");
+}
+
+#[test]
 fn delta_location_resolver_errors_redact_bearer_token_values() {
     let error = DeltaLocationResolverError::new(
         DeltaLocationResolverErrorCode::ResolverUnavailable,
