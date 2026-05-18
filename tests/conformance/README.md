@@ -7,6 +7,7 @@ Current contents:
 - `verify_workspace_layout.sh`: verifies the EPIC-01 scaffold exists before feature work begins.
 - `verify_browser_worker_dependency_boundary.sh`: verifies the shipped worker and legacy narrow session cannot route through the browser DataFusion POC/session path, even under workspace feature resolution.
 - `verify_axon_web_datafusion_runtime.sh`: verifies the `axon-web-wasm` production runtime uses `wasm-datafusion-session` and does not depend on the legacy narrow session.
+- `verify_embedding_sketch_contract.sh`: verifies the minimal embedding sketch uses the SDK client contract rather than obsolete raw worker messages.
 - `verify_patch_inventory_state.sh`: verifies the patch inventory is real state, not a template, and that vendoring or `[patch]` sections cannot appear without an inventory entry.
 - `native-runtime-sql-corpus.json`: 12-case unpartitioned latest-snapshot SQL corpus with golden result tables and an explicit `assert_scan_metrics` contract so scan metrics are only asserted where they are stable.
 - `native-runtime-partitioned-sql-corpus.json`: 10-case partitioned latest-snapshot SQL corpus with golden results and an explicit `assert_scan_metrics` contract for pruning-visible metric assertions.
@@ -26,5 +27,6 @@ Useful local commands:
 - `bash tests/conformance/verify_workspace_layout.sh`
 - `bash tests/conformance/verify_browser_worker_dependency_boundary.sh`
 - `bash tests/conformance/verify_axon_web_datafusion_runtime.sh`
+- `bash tests/conformance/verify_embedding_sketch_contract.sh`
 - `bash tests/conformance/verify_patch_inventory_state.sh`
 - `bash tests/conformance/verify_patch_inventory_state_test.sh`

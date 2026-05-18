@@ -59,6 +59,7 @@ export type QueryErrorCode =
   | 'execution_failed'
   | 'fallback_required'
   | 'invalid_request'
+  | 'object_not_found'
   | 'object_store_protocol'
   | 'security_policy_violation'
   | 'unsupported_feature';
@@ -322,6 +323,185 @@ export type DeltaLocationOpenOptions = AxonRequestOptions & {
   resolverUrl?: string | URL;
   resolveDeltaLocation?: DeltaLocationResolver;
 };
+
+export type ResolvedFileDescriptor = {
+  path: string;
+  size_bytes: number;
+  partition_values: Record<string, string | null>;
+  stats?: string;
+};
+
+export type ResolvedSnapshotDescriptor = {
+  table_uri: string;
+  snapshot_version: number;
+  partition_column_types?: Partial<Record<string, PartitionColumnType>>;
+  browser_compatibility?: CapabilityReport;
+  required_capabilities?: CapabilityReport;
+  active_files: ResolvedFileDescriptor[];
+};
+
+export type BrokeredDeltaAccessMode = 'delta_log' | 'presigned_files';
+export type PolicyAuthorityKind = 'unity_catalog' | 'delta_sharing' | 'mock_broker';
+export type DirectExternalEngineReadSupport = 'confirmed' | 'not_confirmed';
+
+export type BrokeredPolicyAuthority = {
+  authority: PolicyAuthorityKind;
+  directExternalEngineRead: DirectExternalEngineReadSupport;
+};
+
+export type ReadAccessPlanReason =
+  | 'row_filter'
+  | 'column_mask'
+  | 'view'
+  | 'unknown_policy_state'
+  | 'no_direct_external_engine_read_support'
+  | 'unsupported_table_type'
+  | 'grant_expired'
+  | 'storage_cors_blocked'
+  | 'broker_unavailable';
+
+export type BrokeredObjectAccess = {
+  list: boolean;
+  head: boolean;
+  get: boolean;
+  rangeGet: boolean;
+  batchSign: boolean;
+  proxyRange: boolean;
+};
+
+export type BrokeredDeltaReadPlan = {
+  tableId: string;
+  fullName: string;
+  tableRoot: string;
+  grantId: string;
+  expiresAtEpochMs: number;
+  deltaAccessMode: BrokeredDeltaAccessMode;
+  policyAuthority: BrokeredPolicyAuthority;
+  objectAccess: BrokeredObjectAccess;
+};
+
+export type DeltaSharingReadAccessPlanPayload = {
+  tableId: string;
+  fullName: string;
+  sharingEndpoint: string;
+  expiresAtEpochMs: number;
+  files: BrowserHttpFileDescriptor[];
+};
+
+export type SqlFallbackRequiredPlan = {
+  tableId: string;
+  fullName: string;
+  reason: ReadAccessPlanReason;
+  message: string;
+  statementEndpoint: string;
+  warehouseRequired: true;
+};
+
+export type BlockedReadPlan = {
+  tableId: string;
+  fullName: string;
+  reason: ReadAccessPlanReason;
+  message: string;
+};
+
+export type BrokeredDeltaReadAccessPlan = { plan_type: 'brokered_delta' } & BrokeredDeltaReadPlan;
+export type DeltaSharingReadAccessPlan = {
+  plan_type: 'delta_sharing';
+} & DeltaSharingReadAccessPlanPayload;
+export type SqlFallbackRequiredReadAccessPlan = {
+  plan_type: 'sql_fallback_required';
+} & SqlFallbackRequiredPlan;
+export type BlockedReadAccessPlan = { plan_type: 'blocked' } & BlockedReadPlan;
+
+export type ReadAccessPlan =
+  | BrokeredDeltaReadAccessPlan
+  | DeltaSharingReadAccessPlan
+  | SqlFallbackRequiredReadAccessPlan
+  | BlockedReadAccessPlan;
+
+export type ObjectGrantBatchSignResponse = {
+  signedUrls: ObjectGrantSignedUrl[];
+};
+
+export type ObjectGrantSignedUrl = {
+  path: string;
+  url: string;
+  expiresAtEpochMs: number;
+};
+
+export type UcSessionRef = {
+  id: string;
+  displayName?: string;
+};
+
+export type UnityCatalogReadAccessRequest = {
+  fullName: string;
+  session?: UcSessionRef;
+};
+
+export type UnityCatalogReadAccessResolver = (
+  request: UnityCatalogReadAccessRequest,
+) => Promise<unknown>;
+
+export type BrokeredDeltaPlanAdapter = {
+  resolveSnapshot(plan: BrokeredDeltaReadAccessPlan): Promise<unknown>;
+  batchSign(plan: BrokeredDeltaReadAccessPlan, paths: string[]): Promise<unknown>;
+};
+
+export type SqlFallbackExecutor = (plan: SqlFallbackRequiredReadAccessPlan) => Promise<unknown>;
+
+export type UnityCatalogOpenOptions = AxonRequestOptions & {
+  fullName: string;
+  session?: UcSessionRef;
+  resolveReadAccessPlan: UnityCatalogReadAccessResolver;
+  brokeredDelta?: BrokeredDeltaPlanAdapter;
+  serverFallbackEnabled?: boolean;
+  executeSqlFallback?: SqlFallbackExecutor;
+};
+
+export type UnityCatalogOpenedResult = BrowserWorkerOpenedEnvelope & {
+  status: 'opened';
+  planType: 'brokered_delta' | 'delta_sharing';
+  tableId: string;
+  fullName: string;
+  expiresAtEpochMs: number;
+};
+
+export type UnityCatalogFallbackRequiredResult = {
+  status: 'sql_fallback_required';
+  planType: 'sql_fallback_required';
+  tableId: string;
+  fullName: string;
+  reason: ReadAccessPlanReason;
+  message: string;
+  statementEndpoint: string;
+  warehouseRequired: true;
+};
+
+export type UnityCatalogSqlFallbackRoutedResult = {
+  status: 'sql_fallback_routed';
+  planType: 'sql_fallback_required';
+  tableId: string;
+  fullName: string;
+  reason: ReadAccessPlanReason;
+  message: string;
+  result: unknown;
+};
+
+export type UnityCatalogBlockedResult = {
+  status: 'blocked';
+  planType: 'blocked';
+  tableId: string;
+  fullName: string;
+  reason: ReadAccessPlanReason;
+  message: string;
+};
+
+export type UnityCatalogOpenResult =
+  | UnityCatalogOpenedResult
+  | UnityCatalogFallbackRequiredResult
+  | UnityCatalogSqlFallbackRoutedResult
+  | UnityCatalogBlockedResult;
 
 export type BrowserAccessMode = 'browser_safe_http' | 'cloud_object_store';
 
@@ -732,6 +912,10 @@ export interface AxonBrowserClient {
     name: string,
     options: DeltaSharingOpenOptions,
   ): Promise<DeltaSharingOpenedEnvelope>;
+  openUnityCatalogTable(
+    name: string,
+    options: UnityCatalogOpenOptions,
+  ): Promise<UnityCatalogOpenResult>;
   inspectParquet(
     name: string,
     path: string,
@@ -946,6 +1130,222 @@ export function createQueryRequest(
   }
 
   return request;
+}
+
+export function parseReadAccessPlan(value: unknown): ReadAccessPlan {
+  rejectForbiddenSecretKeys(value);
+  const plan = requiredRecord(value, 'read access plan');
+  const planType = requiredString(plan.plan_type, 'read access plan.plan_type');
+
+  switch (planType) {
+    case 'brokered_delta':
+      assertOnlyKeys(plan, 'brokered_delta plan', [
+        'plan_type',
+        'tableId',
+        'fullName',
+        'tableRoot',
+        'grantId',
+        'expiresAtEpochMs',
+        'deltaAccessMode',
+        'policyAuthority',
+        'objectAccess',
+      ]);
+      return {
+        plan_type: 'brokered_delta',
+        tableId: requiredString(plan.tableId, 'brokered_delta.tableId'),
+        fullName: requiredString(plan.fullName, 'brokered_delta.fullName'),
+        tableRoot: requiredString(plan.tableRoot, 'brokered_delta.tableRoot'),
+        grantId: requiredString(plan.grantId, 'brokered_delta.grantId'),
+        expiresAtEpochMs: requiredNonNegativeInteger(
+          plan.expiresAtEpochMs,
+          'brokered_delta.expiresAtEpochMs',
+        ),
+        deltaAccessMode: requiredEnum(
+          plan.deltaAccessMode,
+          'brokered_delta.deltaAccessMode',
+          BROKERED_DELTA_ACCESS_MODES,
+        ),
+        policyAuthority: normalizeBrokeredPolicyAuthority(plan.policyAuthority),
+        objectAccess: normalizeBrokeredObjectAccess(plan.objectAccess),
+      };
+    case 'delta_sharing': {
+      assertOnlyKeys(plan, 'delta_sharing plan', [
+        'plan_type',
+        'tableId',
+        'fullName',
+        'sharingEndpoint',
+        'expiresAtEpochMs',
+        'files',
+      ]);
+      const files = requiredArray(plan.files, 'delta_sharing.files').map((file, index) => {
+        const filePath = `delta_sharing.files[${index}]`;
+        assertOnlyKeys(requiredRecord(file, filePath), filePath, [
+          'path',
+          'url',
+          'size_bytes',
+          'partition_values',
+          'stats',
+        ]);
+        const normalized = normalizeBrowserHttpFileDescriptor(file, filePath);
+        validateHttpsUrl(normalized.url, `delta_sharing.files[${index}].url`);
+        return normalized;
+      });
+      const sharingEndpoint = requiredString(plan.sharingEndpoint, 'delta_sharing.sharingEndpoint');
+      validateHttpsUrl(sharingEndpoint, 'delta_sharing.sharingEndpoint');
+      return {
+        plan_type: 'delta_sharing',
+        tableId: requiredString(plan.tableId, 'delta_sharing.tableId'),
+        fullName: requiredString(plan.fullName, 'delta_sharing.fullName'),
+        sharingEndpoint,
+        expiresAtEpochMs: requiredNonNegativeInteger(
+          plan.expiresAtEpochMs,
+          'delta_sharing.expiresAtEpochMs',
+        ),
+        files,
+      };
+    }
+    case 'sql_fallback_required': {
+      assertOnlyKeys(plan, 'sql_fallback_required plan', [
+        'plan_type',
+        'tableId',
+        'fullName',
+        'reason',
+        'message',
+        'statementEndpoint',
+        'warehouseRequired',
+      ]);
+      const statementEndpoint = requiredString(
+        plan.statementEndpoint,
+        'sql_fallback_required.statementEndpoint',
+      );
+      validateHttpsUrl(statementEndpoint, 'sql_fallback_required.statementEndpoint');
+      if (plan.warehouseRequired !== true) {
+        throw new AxonProtocolError('sql_fallback_required.warehouseRequired must be true');
+      }
+      return {
+        plan_type: 'sql_fallback_required',
+        tableId: requiredString(plan.tableId, 'sql_fallback_required.tableId'),
+        fullName: requiredString(plan.fullName, 'sql_fallback_required.fullName'),
+        reason: requiredEnum(plan.reason, 'sql_fallback_required.reason', READ_ACCESS_PLAN_REASONS),
+        message: requiredString(plan.message, 'sql_fallback_required.message'),
+        statementEndpoint,
+        warehouseRequired: true,
+      };
+    }
+    case 'blocked':
+      assertOnlyKeys(plan, 'blocked plan', [
+        'plan_type',
+        'tableId',
+        'fullName',
+        'reason',
+        'message',
+      ]);
+      return {
+        plan_type: 'blocked',
+        tableId: requiredString(plan.tableId, 'blocked.tableId'),
+        fullName: requiredString(plan.fullName, 'blocked.fullName'),
+        reason: requiredEnum(plan.reason, 'blocked.reason', READ_ACCESS_PLAN_REASONS),
+        message: requiredString(plan.message, 'blocked.message'),
+      };
+    default:
+      throw new AxonProtocolError(`unknown read access plan_type '${planType}'`);
+  }
+}
+
+export type DeltaSharingReadAccessSnapshotOptions = {
+  snapshotVersion?: number;
+  tableUri?: string;
+};
+
+export function snapshotFromDeltaSharingReadAccessPlan(
+  plan: DeltaSharingReadAccessPlan,
+  options: DeltaSharingReadAccessSnapshotOptions = {},
+): BrowserHttpSnapshotDescriptor {
+  const signedUrlCapabilities: CapabilityReport = {
+    capabilities: {
+      signed_url_access: 'supported',
+    },
+  };
+
+  return {
+    table_uri: options.tableUri ?? deltaSharingReadAccessTableUri(plan),
+    snapshot_version: options.snapshotVersion ?? 0,
+    partition_column_types: {},
+    browser_compatibility: signedUrlCapabilities,
+    required_capabilities: signedUrlCapabilities,
+    active_files: plan.files,
+  };
+}
+
+export function snapshotFromBrokeredDeltaReadPlan(
+  plan: BrokeredDeltaReadPlan | BrokeredDeltaReadAccessPlan,
+  resolvedSnapshot: ResolvedSnapshotDescriptor,
+  signedUrlsByPath: Record<string, string>,
+): BrowserHttpSnapshotDescriptor {
+  if (plan.policyAuthority.directExternalEngineRead !== 'confirmed') {
+    throw new AxonProtocolError(
+      'brokered Delta direct read requires confirmed external-engine support',
+    );
+  }
+  if (!plan.objectAccess.batchSign) {
+    throw new AxonProtocolError(
+      'brokered Delta descriptor adaptation requires batch signed object URLs',
+    );
+  }
+  if (!plan.objectAccess.rangeGet) {
+    throw new AxonProtocolError(
+      'brokered Delta descriptor adaptation requires range-readable objects',
+    );
+  }
+  if (resolvedSnapshot.table_uri !== plan.tableRoot) {
+    throw new AxonProtocolError(
+      'brokered Delta plan tableRoot did not match resolved snapshot table_uri',
+    );
+  }
+
+  const resolvedPaths = new Set<string>();
+  const duplicatePaths = new Set<string>();
+  for (const file of resolvedSnapshot.active_files) {
+    if (resolvedPaths.has(file.path)) {
+      duplicatePaths.add(file.path);
+    }
+    resolvedPaths.add(file.path);
+  }
+
+  const missingPaths = resolvedSnapshot.active_files
+    .filter((file) => signedUrlsByPath[file.path] === undefined)
+    .map((file) => file.path);
+  const unexpectedPaths = Object.keys(signedUrlsByPath).filter((path) => !resolvedPaths.has(path));
+  if (duplicatePaths.size > 0 || missingPaths.length > 0 || unexpectedPaths.length > 0) {
+    throw new AxonProtocolError(
+      `brokered Delta signed URL coverage did not match resolved snapshot: ${[
+        duplicatePaths.size > 0 ? `duplicate paths [${quotePaths([...duplicatePaths])}]` : '',
+        missingPaths.length > 0 ? `missing URLs for [${quotePaths(missingPaths)}]` : '',
+        unexpectedPaths.length > 0 ? `unexpected URLs for [${quotePaths(unexpectedPaths)}]` : '',
+      ]
+        .filter(Boolean)
+        .join('; ')}`,
+    );
+  }
+
+  return {
+    table_uri: resolvedSnapshot.table_uri,
+    snapshot_version: resolvedSnapshot.snapshot_version,
+    partition_column_types: resolvedSnapshot.partition_column_types ?? {},
+    browser_compatibility: resolvedSnapshot.browser_compatibility ?? { capabilities: {} },
+    required_capabilities: resolvedSnapshot.required_capabilities ?? { capabilities: {} },
+    active_files: resolvedSnapshot.active_files.map((file) => {
+      const url = signedUrlsByPath[file.path];
+      validateHttpsUrl(url, `brokered Delta signed object URL for '${file.path}'`);
+      return {
+        path: file.path,
+        url,
+        size_bytes: file.size_bytes,
+        partition_values: file.partition_values,
+        stats: file.stats,
+      };
+    }),
+  };
 }
 
 export function validateDeltaLocationResolveRequest(request: DeltaLocationResolveRequest): void {
@@ -1264,6 +1664,252 @@ function normalizePartitionValues(input: unknown, path: string): Record<string, 
     normalized[key] = value;
   }
   return normalized;
+}
+
+function normalizeBrokeredPolicyAuthority(input: unknown): BrokeredPolicyAuthority {
+  const authority = requiredRecord(input, 'brokered_delta.policyAuthority');
+  assertOnlyKeys(authority, 'brokered_delta.policyAuthority', [
+    'authority',
+    'directExternalEngineRead',
+  ]);
+  return {
+    authority: requiredEnum(
+      authority.authority,
+      'brokered_delta.policyAuthority.authority',
+      POLICY_AUTHORITY_KINDS,
+    ),
+    directExternalEngineRead: requiredEnum(
+      authority.directExternalEngineRead,
+      'brokered_delta.policyAuthority.directExternalEngineRead',
+      DIRECT_EXTERNAL_ENGINE_READ_SUPPORT,
+    ),
+  };
+}
+
+function normalizeBrokeredObjectAccess(input: unknown): BrokeredObjectAccess {
+  const access = requiredRecord(input, 'brokered_delta.objectAccess');
+  assertOnlyKeys(access, 'brokered_delta.objectAccess', [
+    'list',
+    'head',
+    'get',
+    'rangeGet',
+    'batchSign',
+    'proxyRange',
+  ]);
+  return {
+    list: requiredBoolean(access.list, 'brokered_delta.objectAccess.list'),
+    head: requiredBoolean(access.head, 'brokered_delta.objectAccess.head'),
+    get: requiredBoolean(access.get, 'brokered_delta.objectAccess.get'),
+    rangeGet: requiredBoolean(access.rangeGet, 'brokered_delta.objectAccess.rangeGet'),
+    batchSign: requiredBoolean(access.batchSign, 'brokered_delta.objectAccess.batchSign'),
+    proxyRange: requiredBoolean(access.proxyRange, 'brokered_delta.objectAccess.proxyRange'),
+  };
+}
+
+function normalizeResolvedSnapshotDescriptor(
+  input: unknown,
+  path: string,
+): ResolvedSnapshotDescriptor {
+  const snapshot = requiredRecord(input, path);
+  assertOnlyKeys(snapshot, path, [
+    'table_uri',
+    'snapshot_version',
+    'partition_column_types',
+    'browser_compatibility',
+    'required_capabilities',
+    'active_files',
+  ]);
+  const normalized: ResolvedSnapshotDescriptor = {
+    table_uri: requiredString(snapshot.table_uri, `${path}.table_uri`),
+    snapshot_version: requiredNonNegativeInteger(
+      snapshot.snapshot_version,
+      `${path}.snapshot_version`,
+    ),
+    active_files: requiredArray(snapshot.active_files, `${path}.active_files`).map((file, index) =>
+      normalizeResolvedFileDescriptor(file, `${path}.active_files[${index}]`),
+    ),
+  };
+  const partitionColumnTypes = normalizePartitionColumnTypes(
+    snapshot.partition_column_types,
+    `${path}.partition_column_types`,
+  );
+  if (partitionColumnTypes !== undefined) {
+    normalized.partition_column_types = partitionColumnTypes;
+  }
+  const browserCompatibility = normalizeCapabilityReport(
+    snapshot.browser_compatibility,
+    `${path}.browser_compatibility`,
+  );
+  if (browserCompatibility !== undefined) {
+    normalized.browser_compatibility = browserCompatibility;
+  }
+  const requiredCapabilities = normalizeCapabilityReport(
+    snapshot.required_capabilities,
+    `${path}.required_capabilities`,
+  );
+  if (requiredCapabilities !== undefined) {
+    normalized.required_capabilities = requiredCapabilities;
+  }
+  return normalized;
+}
+
+function normalizeResolvedFileDescriptor(input: unknown, path: string): ResolvedFileDescriptor {
+  const file = requiredRecord(input, path);
+  assertOnlyKeys(file, path, ['path', 'size_bytes', 'partition_values', 'stats']);
+  const normalized: ResolvedFileDescriptor = {
+    path: requiredString(file.path, `${path}.path`),
+    size_bytes: requiredNonNegativeInteger(file.size_bytes, `${path}.size_bytes`),
+    partition_values: normalizePartitionValues(file.partition_values, `${path}.partition_values`),
+  };
+  const stats = optionalString(file.stats, `${path}.stats`);
+  if (stats !== undefined) {
+    normalized.stats = stats;
+  }
+  return normalized;
+}
+
+function normalizeObjectGrantBatchSignResponse(
+  input: unknown,
+  path: string,
+): ObjectGrantBatchSignResponse {
+  const response = requiredRecord(input, path);
+  assertOnlyKeys(response, path, ['signedUrls']);
+  return {
+    signedUrls: requiredArray(response.signedUrls, `${path}.signedUrls`).map((signed, index) => {
+      const itemPath = `${path}.signedUrls[${index}]`;
+      const item = requiredRecord(signed, itemPath);
+      assertOnlyKeys(item, itemPath, ['path', 'url', 'expiresAtEpochMs']);
+      const url = requiredString(item.url, `${itemPath}.url`);
+      validateHttpsUrl(url, `${itemPath}.url`);
+      return {
+        path: requiredString(item.path, `${itemPath}.path`),
+        url,
+        expiresAtEpochMs: requiredNonNegativeInteger(
+          item.expiresAtEpochMs,
+          `${itemPath}.expiresAtEpochMs`,
+        ),
+      };
+    }),
+  };
+}
+
+function validateReadAccessPlanNotExpired(
+  plan: BrokeredDeltaReadAccessPlan | DeltaSharingReadAccessPlan,
+  nowEpochMs: number,
+): void {
+  if (plan.expiresAtEpochMs <= nowEpochMs) {
+    throw new AxonProtocolError(`${plan.plan_type} read access plan has expired`);
+  }
+}
+
+function validateObjectGrantSignedUrlsNotExpired(
+  signedUrls: readonly ObjectGrantSignedUrl[],
+  nowEpochMs: number,
+): void {
+  for (const [index, signed] of signedUrls.entries()) {
+    if (signed.expiresAtEpochMs <= nowEpochMs) {
+      throw new AxonProtocolError(`brokered_delta.batchSign.signedUrls[${index}] has expired`);
+    }
+  }
+}
+
+function unityCatalogReadAccessRequestFromOptions(
+  options: UnityCatalogOpenOptions,
+): UnityCatalogReadAccessRequest {
+  if (!options.fullName.trim()) {
+    throw new AxonProtocolError('Unity Catalog table fullName is required');
+  }
+  if (containsSecretMaterial(options.fullName)) {
+    throw new AxonProtocolError(
+      'Unity Catalog table fullName must not contain credential material',
+    );
+  }
+  const request: UnityCatalogReadAccessRequest = {
+    fullName: options.fullName,
+  };
+  if (options.session !== undefined) {
+    if (!options.session.id.trim()) {
+      throw new AxonProtocolError(
+        'Unity Catalog session id is required when a session is supplied',
+      );
+    }
+    if (containsSecretMaterial(options.session.id)) {
+      throw new AxonProtocolError('Unity Catalog session id must be an opaque session handle');
+    }
+    request.session = { id: options.session.id };
+    if (options.session.displayName !== undefined) {
+      request.session.displayName = options.session.displayName;
+    }
+  }
+  return request;
+}
+
+function deltaSharingReadAccessTableUri(plan: DeltaSharingReadAccessPlan): string {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(plan.sharingEndpoint);
+  } catch (error) {
+    throw new AxonProtocolError(
+      `delta_sharing.sharingEndpoint is invalid: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  return `delta-sharing://${endpoint.host}/${plan.fullName}`;
+}
+
+function validateHttpsUrl(value: string, path: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch (error) {
+    throw new AxonProtocolError(
+      `${path} must be a valid URL: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new AxonProtocolError(`${path} must use HTTPS`);
+  }
+}
+
+function rejectForbiddenSecretKeys(value: unknown, path = 'read access plan'): void {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => rejectForbiddenSecretKeys(item, `${path}[${index}]`));
+    return;
+  }
+  if (!isObject(value)) {
+    return;
+  }
+  for (const [key, nested] of Object.entries(value)) {
+    if (FORBIDDEN_BROWSER_SECRET_KEYS.has(key.toLowerCase())) {
+      throw new AxonProtocolError(`${path} contains forbidden browser secret field '${key}'`);
+    }
+    rejectForbiddenSecretKeys(nested, `${path}.${key}`);
+  }
+}
+
+function assertOnlyKeys(
+  value: Record<string, unknown>,
+  path: string,
+  allowed: readonly string[],
+): void {
+  const allowedSet = new Set(allowed);
+  for (const key of Object.keys(value)) {
+    if (!allowedSet.has(key)) {
+      throw new AxonProtocolError(`${path} contains unknown field '${key}'`);
+    }
+  }
+}
+
+function requiredRecord(value: unknown, path: string): Record<string, unknown> {
+  if (!isObject(value) || Array.isArray(value)) {
+    throw new AxonProtocolError(`${path} must be an object`);
+  }
+  return value;
+}
+
+function quotePaths(paths: string[]): string {
+  return paths.map((path) => `'${path}'`).join(', ');
 }
 
 function optionalStringArray(input: unknown, path: string): string[] | undefined {
@@ -2551,6 +3197,100 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
     };
   }
 
+  async openUnityCatalogTable(
+    name: string,
+    options: UnityCatalogOpenOptions,
+  ): Promise<UnityCatalogOpenResult> {
+    const requestId = options.requestId ?? this.requestId();
+    const request = unityCatalogReadAccessRequestFromOptions(options);
+    const plan = parseReadAccessPlan(await options.resolveReadAccessPlan(request));
+    if (plan.fullName !== options.fullName) {
+      throw new AxonProtocolError(
+        `Unity Catalog read plan '${plan.fullName}' did not match requested table '${options.fullName}'`,
+      );
+    }
+
+    switch (plan.plan_type) {
+      case 'brokered_delta': {
+        validateReadAccessPlanNotExpired(plan, Date.now());
+        if (!options.brokeredDelta) {
+          throw new AxonSdkError('brokered Delta read plans require a brokeredDelta adapter');
+        }
+        const resolvedSnapshot = normalizeResolvedSnapshotDescriptor(
+          await options.brokeredDelta.resolveSnapshot(plan),
+          'brokered_delta.resolvedSnapshot',
+        );
+        const paths = resolvedSnapshot.active_files.map((file) => file.path);
+        const signResponse = normalizeObjectGrantBatchSignResponse(
+          await options.brokeredDelta.batchSign(plan, paths),
+          'brokered_delta.batchSign',
+        );
+        validateObjectGrantSignedUrlsNotExpired(signResponse.signedUrls, Date.now());
+        const signedUrlsByPath = Object.fromEntries(
+          signResponse.signedUrls.map((signed) => [signed.path, signed.url]),
+        );
+        const descriptor = snapshotFromBrokeredDeltaReadPlan(
+          plan,
+          resolvedSnapshot,
+          signedUrlsByPath,
+        );
+        const opened = await this.openDeltaTable(name, descriptor, { requestId });
+        return {
+          ...opened,
+          status: 'opened',
+          planType: 'brokered_delta',
+          tableId: plan.tableId,
+          fullName: plan.fullName,
+          expiresAtEpochMs: plan.expiresAtEpochMs,
+        };
+      }
+      case 'delta_sharing': {
+        validateReadAccessPlanNotExpired(plan, Date.now());
+        const descriptor = snapshotFromDeltaSharingReadAccessPlan(plan);
+        const opened = await this.openDeltaTable(name, descriptor, { requestId });
+        return {
+          ...opened,
+          status: 'opened',
+          planType: 'delta_sharing',
+          tableId: plan.tableId,
+          fullName: plan.fullName,
+          expiresAtEpochMs: plan.expiresAtEpochMs,
+        };
+      }
+      case 'sql_fallback_required':
+        if (options.serverFallbackEnabled === true && options.executeSqlFallback) {
+          return {
+            status: 'sql_fallback_routed',
+            planType: 'sql_fallback_required',
+            tableId: plan.tableId,
+            fullName: plan.fullName,
+            reason: plan.reason,
+            message: plan.message,
+            result: await options.executeSqlFallback(plan),
+          };
+        }
+        return {
+          status: 'sql_fallback_required',
+          planType: 'sql_fallback_required',
+          tableId: plan.tableId,
+          fullName: plan.fullName,
+          reason: plan.reason,
+          message: plan.message,
+          statementEndpoint: plan.statementEndpoint,
+          warehouseRequired: true,
+        };
+      case 'blocked':
+        return {
+          status: 'blocked',
+          planType: 'blocked',
+          tableId: plan.tableId,
+          fullName: plan.fullName,
+          reason: plan.reason,
+          message: plan.message,
+        };
+    }
+  }
+
   async inspectParquet(
     name: string,
     path: string,
@@ -3483,11 +4223,51 @@ const FALLBACK_REASON_STRINGS = [
   'security_policy',
   'signed_url_expired',
 ] as const;
+const BROKERED_DELTA_ACCESS_MODES = [
+  'delta_log',
+  'presigned_files',
+] as const satisfies readonly BrokeredDeltaAccessMode[];
+const POLICY_AUTHORITY_KINDS = [
+  'unity_catalog',
+  'delta_sharing',
+  'mock_broker',
+] as const satisfies readonly PolicyAuthorityKind[];
+const DIRECT_EXTERNAL_ENGINE_READ_SUPPORT = [
+  'confirmed',
+  'not_confirmed',
+] as const satisfies readonly DirectExternalEngineReadSupport[];
+const READ_ACCESS_PLAN_REASONS = [
+  'row_filter',
+  'column_mask',
+  'view',
+  'unknown_policy_state',
+  'no_direct_external_engine_read_support',
+  'unsupported_table_type',
+  'grant_expired',
+  'storage_cors_blocked',
+  'broker_unavailable',
+] as const satisfies readonly ReadAccessPlanReason[];
+const FORBIDDEN_BROWSER_SECRET_KEYS = new Set([
+  'aws_sts',
+  'aws_access_key_id',
+  'aws_secret_access_key',
+  'aws_session_token',
+  'azure_sas',
+  'gcp_oauth_token',
+  'gcp_hmac_secret',
+  'databricks_bearer_token',
+  'databricks_token',
+  'personal_access_token',
+  'refresh_token',
+  'pat',
+  'signing_secret',
+]);
 const QUERY_ERROR_CODES = [
   'access_denied',
   'execution_failed',
   'fallback_required',
   'invalid_request',
+  'object_not_found',
   'object_store_protocol',
   'security_policy_violation',
   'unsupported_feature',

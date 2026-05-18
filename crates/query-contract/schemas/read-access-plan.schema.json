@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.local/schemas/read-access-plan.schema.json",
+  "title": "ReadAccessPlan",
+  "oneOf": [
+    { "$ref": "#/$defs/BrokeredDeltaReadAccessPlan" },
+    { "$ref": "#/$defs/DeltaSharingReadAccessPlan" },
+    { "$ref": "#/$defs/SqlFallbackRequiredReadAccessPlan" },
+    { "$ref": "#/$defs/BlockedReadAccessPlan" }
+  ],
+  "$defs": {
+    "ReadAccessPlanReason": {
+      "type": "string",
+      "enum": [
+        "row_filter",
+        "column_mask",
+        "view",
+        "unknown_policy_state",
+        "no_direct_external_engine_read_support",
+        "unsupported_table_type",
+        "grant_expired",
+        "storage_cors_blocked",
+        "broker_unavailable"
+      ]
+    },
+    "BrokeredObjectAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["list", "head", "get", "rangeGet", "batchSign", "proxyRange"],
+      "properties": {
+        "list": { "type": "boolean" },
+        "head": { "type": "boolean" },
+        "get": { "type": "boolean" },
+        "rangeGet": { "type": "boolean" },
+        "batchSign": { "type": "boolean" },
+        "proxyRange": { "type": "boolean" }
+      }
+    },
+    "BrokeredPolicyAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority", "directExternalEngineRead"],
+      "properties": {
+        "authority": {
+          "type": "string",
+          "enum": ["unity_catalog", "delta_sharing", "mock_broker"]
+        },
+        "directExternalEngineRead": {
+          "type": "string",
+          "enum": ["confirmed", "not_confirmed"]
+        }
+      }
+    },
+    "BrowserHttpFileDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "url", "size_bytes", "partition_values"],
+      "properties": {
+        "path": { "type": "string" },
+        "url": { "type": "string" },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "partition_values": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "null"] }
+        },
+        "stats": { "type": "string" }
+      }
+    },
+    "BrokeredDeltaReadAccessPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan_type",
+        "tableId",
+        "fullName",
+        "tableRoot",
+        "grantId",
+        "expiresAtEpochMs",
+        "deltaAccessMode",
+        "policyAuthority",
+        "objectAccess"
+      ],
+      "properties": {
+        "plan_type": { "const": "brokered_delta" },
+        "tableId": { "type": "string" },
+        "fullName": { "type": "string" },
+        "tableRoot": { "type": "string" },
+        "grantId": { "type": "string" },
+        "expiresAtEpochMs": { "type": "integer", "minimum": 0 },
+        "deltaAccessMode": {
+          "type": "string",
+          "enum": ["delta_log", "presigned_files"]
+        },
+        "policyAuthority": { "$ref": "#/$defs/BrokeredPolicyAuthority" },
+        "objectAccess": { "$ref": "#/$defs/BrokeredObjectAccess" }
+      }
+    },
+    "DeltaSharingReadAccessPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan_type",
+        "tableId",
+        "fullName",
+        "sharingEndpoint",
+        "expiresAtEpochMs",
+        "files"
+      ],
+      "properties": {
+        "plan_type": { "const": "delta_sharing" },
+        "tableId": { "type": "string" },
+        "fullName": { "type": "string" },
+        "sharingEndpoint": { "type": "string" },
+        "expiresAtEpochMs": { "type": "integer", "minimum": 0 },
+        "files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/BrowserHttpFileDescriptor" }
+        }
+      }
+    },
+    "SqlFallbackRequiredReadAccessPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan_type",
+        "tableId",
+        "fullName",
+        "reason",
+        "message",
+        "statementEndpoint",
+        "warehouseRequired"
+      ],
+      "properties": {
+        "plan_type": { "const": "sql_fallback_required" },
+        "tableId": { "type": "string" },
+        "fullName": { "type": "string" },
+        "reason": { "$ref": "#/$defs/ReadAccessPlanReason" },
+        "message": { "type": "string" },
+        "statementEndpoint": { "type": "string", "format": "uri" },
+        "warehouseRequired": { "const": true }
+      }
+    },
+    "BlockedReadAccessPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plan_type", "tableId", "fullName", "reason", "message"],
+      "properties": {
+        "plan_type": { "const": "blocked" },
+        "tableId": { "type": "string" },
+        "fullName": { "type": "string" },
+        "reason": { "$ref": "#/$defs/ReadAccessPlanReason" },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { readFileSync } from 'node:fs';
 
 const APP_ORIGIN = new URL(process.env.PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:5174').origin;
 
@@ -7,7 +8,69 @@ const APP_ORIGIN = new URL(process.env.PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1
 // suite, but is opt-in via grep so existing CI continues to target the sandbox.
 
 test.describe('editor (Phase 1 smoke)', () => {
-  test('loads, populates catalog, runs a query', async ({ page, context }) => {
+  test('fallback environment gate accepts only the server mode', () => {
+    const source = readFileSync(
+      new URL('../src/services/server-fallback.ts', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain("rawMode === 'server'");
+    expect(source).not.toContain("rawMode === 'enabled'");
+    expect(source).not.toContain("rawMode === 'true'");
+  });
+
+  test('routes between the workspace and connect page', async ({ page }) => {
+    const consoleErrors: string[] = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') consoleErrors.push(msg.text());
+    });
+    page.on('pageerror', (err) => consoleErrors.push(err.message));
+
+    await page.goto('/connect');
+    await expect(page.getByRole('heading', { name: 'Connect a Delta source' })).toBeVisible();
+
+    await page.getByRole('button', { name: /Back to workspace/ }).click();
+    await expect(page.locator('.shell .brand-name')).toContainText('axon');
+
+    await page.getByRole('button', { name: 'Connect' }).click();
+    await expect(page).toHaveURL(/\/connect$/);
+    await expect(page.getByRole('button', { name: 'Connect a source' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'local folder' }).click();
+    await expect(page.getByRole('dialog', { name: 'Connect a local Delta folder' })).toBeVisible();
+
+    expect(consoleErrors, `console errors:\n${consoleErrors.join('\n')}`).toEqual([]);
+  });
+
+  test('connect source flows fail closed without browser-owned credentials', async ({ page }) => {
+    await page.goto('/connect');
+
+    await page.getByRole('button', { name: 'Connect a source' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Connect a Delta source' });
+
+    await expect(dialog).not.toContainText(/all four sources support the same sql surface area/i);
+
+    await dialog.locator('.cc-source-card', { hasText: 'Object storage' }).click();
+    await dialog.getByRole('button', { name: /Continue/ }).click();
+
+    const configDialog = page.getByRole('dialog', { name: 'Connect to object storage' });
+    await expect(configDialog).toContainText(/trusted delta snapshot descriptor resolver/i);
+    await expect(
+      configDialog.getByText(
+        /secret key|access key|SAS|bearer token|service-account JSON|encrypted/i,
+      ),
+    ).toHaveCount(0);
+
+    await configDialog.getByRole('button', { name: 'Test connection' }).click();
+    await expect(configDialog.getByText(/connection verified/i)).toHaveCount(0);
+    await expect(configDialog).toContainText(/resolver contract not configured/i);
+    await expect(configDialog.getByRole('button', { name: /Discover tables/ })).toBeDisabled();
+  });
+
+  test('loads selected connected catalog, populates table, runs a query', async ({
+    page,
+    context,
+  }) => {
     const consoleErrors: string[] = [];
     page.on('console', (msg) => {
       if (msg.type() === 'error') consoleErrors.push(msg.text());
@@ -24,8 +87,11 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.getByText(/fallback/i)).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Native' })).toHaveCount(0);
 
-    // Catalog resolves and lists axon_table (data comes from the prod-like fixture).
-    await expect(page.locator('.sb-row.tbl')).toContainText('axon_table', { timeout: 15_000 });
+    // Catalog resolves from the selected connected catalog/table, not the legacy fixture name.
+    await expect(page.locator('.conn-pill')).toContainText('sample-lake', { timeout: 15_000 });
+    await expect(page.locator('.queryref-bar .qref')).toContainText('events');
+    await expect(page.locator('.sb-row.tbl')).toContainText('events');
+    await expect(page.locator('.queryref-bar .qref')).not.toContainText('axon_table');
 
     // Run the seeded count query.
     await page.locator('.btn.primary', { hasText: 'Run' }).click();
@@ -49,6 +115,14 @@ test.describe('editor (Phase 1 smoke)', () => {
         }),
       )
       .toEqual({ localKeys: [], hasMetadataDb: true });
+
+    const connectState = await page.evaluate(
+      () => localStorage.getItem('axon.connect.catalogs.v1') ?? '',
+    );
+    expect(connectState).toContain('sample-lake');
+    expect(connectState).not.toMatch(
+      /secret|access[_-]?key|bearer|token|service[_-]?account|client[_-]?secret|sas/i,
+    );
 
     // Result-grid actions operate on the visible result set.
     await page.locator('button[title="Copy results as CSV"]').click();

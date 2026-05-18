@@ -1463,13 +1463,22 @@
   font-size: 12.5px;
   color: var(--ink-3);
 }
-.cc-page-quicklinks a {
+.cc-page-quicklinks button {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
   color: var(--accent);
   text-decoration: none;
   cursor: pointer;
+  font: inherit;
 }
-.cc-page-quicklinks a:hover {
+.cc-page-quicklinks button:hover {
   text-decoration: underline;
+}
+.cc-page-quicklinks button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 .cc-page-quicklinks span {
   color: var(--ink-4);

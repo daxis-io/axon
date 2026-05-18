@@ -12,14 +12,17 @@ module worker, and the WASM bundle manifest.
 
 ## Wiring
 
-The host application must supply three things:
+The host application must supply four things:
 
-1. **Worker module URL** — host-built JS that speaks `BrowserWorkerCommand` /
+1. **SDK module URL** — bundled JavaScript that exports
+   `createAxonBrowserClient()`. The current private source is
+   [`apps/axon-web/src/axon-browser-sdk.ts`](../../apps/axon-web/src/axon-browser-sdk.ts).
+2. **Worker module URL** — host-built JS that speaks `BrowserWorkerCommand` /
    `BrowserWorkerResponseEnvelope`. The reference implementation lives in
    [`apps/axon-web/src/sandbox-query-worker.ts`](../../apps/axon-web/src/sandbox-query-worker.ts).
-2. **WASM artifact URL** — output of `cargo build -p axon-web-wasm
-   --target wasm32-unknown-unknown --release --locked` plus `wasm-bindgen`.
-3. **Snapshot descriptor** — a `BrowserHttpSnapshotDescriptor` produced by a
+3. **WASM artifact URL** — the worker's matching WASM asset. The reference app
+   builds it with `npm run build:wasm` in `apps/axon-web`.
+4. **Snapshot descriptor** — a `BrowserHttpSnapshotDescriptor` produced by a
    trusted control-plane resolver. See
    [`docs/program/browser-embedding-deployment.md`](../../docs/program/browser-embedding-deployment.md)
    for the contract.

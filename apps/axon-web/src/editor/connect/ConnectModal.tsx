@@ -16,15 +16,11 @@ import {
 } from 'react';
 import { IconChevR, IconClose, IconKey, IconTable } from '../components/icons.tsx';
 import {
-  AUTH_LABELS,
-  DISCOVERED,
+  LOCAL_DISCOVERY,
   OBJECT_STORE_PROVIDERS,
-  SAMPLE_DS_PROFILE,
   SOURCES,
-  type AuthMethod,
   type DiscoveryPayload,
   type ObjectStoreProvider,
-  type ObjectStoreProviderId,
   type SourceId,
 } from './data.ts';
 import { IconCheck, IconFolder, IconLock, IconShareNode, IconWarn } from './icons.tsx';
@@ -45,21 +41,15 @@ const DEFAULT_FORM: ConnectForm = {
   uri: '',
   region: '',
   endpoint: '',
-  auth: 'service_account',
-  creds: {},
   uc_mode: 'databricks',
   uc_host: '',
-  uc_auth: 'pat',
-  uc_token: '',
-  uc_client_id: '',
-  uc_client_secret: '',
+  uc_bff_url: '',
+  uc_session_label: '',
   uc_catalog: '',
   uc_schema_filter: '',
   ds_mode: 'profile',
   ds_profile_name: '',
-  ds_profile_json: '',
   ds_endpoint: '',
-  ds_token: '',
   ds_share: '',
 };
 
@@ -100,14 +90,15 @@ export function ConnectModal({
         ...f,
         uri: 'gs://acme-lake/silver',
         region: 'us-central1',
-        auth: 'service_account',
+        endpoint: '/api/delta/resolve-location',
       }));
     }
     if (step === 2 && source === 'unity_catalog' && !form.uc_host) {
       setForm((f) => ({
         ...f,
         uc_host: 'https://acme-prod.cloud.databricks.com',
-        uc_token: 'dapi••••••••••••••••••••••••••••',
+        uc_bff_url: '/api/uc/read-access-plan',
+        uc_session_label: 'Signed in through Axon BFF',
       }));
     }
   }, [step, source, form.uri, form.uc_host]);
@@ -120,7 +111,9 @@ export function ConnectModal({
     if (step !== 3 || !source || seededRef.done) return;
     if (!alias) setAlias(SOURCE_LABEL_DEFAULT[source]);
     const sel: Record<string, SchemaSelection> = {};
-    DISCOVERED[source].schemas.forEach((s) => {
+    const discovery = discoveryForSource(source);
+    if (!discovery) return;
+    discovery.schemas.forEach((s) => {
       sel[s.name] = s.included ? 'all' : 'none';
     });
     setSelection(sel);
@@ -129,8 +122,12 @@ export function ConnectModal({
 
   const runTest = useCallback(() => {
     setTestState('running');
-    window.setTimeout(() => setTestState('ok'), 900);
-  }, []);
+    if (source === 'local' && form.detected) {
+      setTestState('ok');
+      return;
+    }
+    setTestState('err');
+  }, [form.detected, source]);
 
   const next = () => {
     if (step === 1 && source) {
@@ -143,12 +140,14 @@ export function ConnectModal({
       }
       setStep(3);
     } else if (step === 3 && source) {
+      const discovered = discoveryForSource(source);
+      if (!discovered) return;
       onConnect({
         source,
         form,
         alias,
         selection,
-        discovered: DISCOVERED[source],
+        discovered,
       });
     }
   };
@@ -166,7 +165,7 @@ export function ConnectModal({
           : source === 'object_store'
             ? form.uri.length > 8
             : source === 'unity_catalog'
-              ? form.uc_host.length > 8
+              ? form.uc_host.length > 8 && form.uc_bff_url.length > 0
               : source === 'delta_share'
                 ? form.ds_mode === 'profile'
                   ? !!form.ds_profile_name
@@ -237,6 +236,7 @@ export function ConnectModal({
           {step === 3 && source && (
             <Discover
               sourceId={source}
+              discovered={discoveryForSource(source) ?? LOCAL_DISCOVERY}
               alias={alias}
               setAlias={setAlias}
               selection={selection}
@@ -269,7 +269,7 @@ export function ConnectModal({
                   gap: 6,
                 }}
               >
-                <IconCheck size={11} /> connection verified
+                <IconCheck size={11} /> source check passed
               </span>
             )}
             {step === 3 && (
@@ -318,8 +318,8 @@ function SourcePicker({
   return (
     <>
       <p className="cc-intro">
-        Connect a Delta Lake source to Axon. Axon will read tables in place — nothing is copied.{' '}
-        <span className="k">All four sources support the same SQL surface area.</span>
+        Connect Delta Lake sources through explicit browser-local or trusted-service contracts.{' '}
+        <span className="k">Live cloud providers require a resolver or BFF before discovery.</span>
       </p>
 
       <div className="cc-source-grid">
@@ -366,7 +366,7 @@ function SourcePicker({
           </span>
           <div>
             <b>Object storage</b>
-            <br />A bucket URI plus credentials with read access (or anonymous for public data).
+            <br />A bucket URI plus a trusted Delta snapshot descriptor resolver.
           </div>
         </div>
         <div className="cc-need">
@@ -376,7 +376,7 @@ function SourcePicker({
           <div>
             <b>Unity Catalog</b>
             <br />
-            Workspace URL + a personal access token, or a UC-OSS server endpoint.
+            An authenticated Axon session backed by a UC read-access-plan broker.
           </div>
         </div>
         <div className="cc-need">
@@ -385,8 +385,7 @@ function SourcePicker({
           </span>
           <div>
             <b>Delta Sharing</b>
-            <br />A <code style={{ font: '11px var(--mono)' }}>config.share</code> profile file from
-            your data provider.
+            <br />A provider profile registered with a trusted sharing broker.
           </div>
         </div>
       </div>
@@ -574,7 +573,6 @@ function ConfigObjectStore({
   const provider = OBJECT_STORE_PROVIDERS.find(
     (p) => p.id === form.provider,
   ) as ObjectStoreProvider;
-  const auth = AUTH_LABELS[form.auth];
   const okURI = form.uri.startsWith(provider.scheme);
 
   return (
@@ -587,7 +585,7 @@ function ConfigObjectStore({
               <button
                 key={p.id}
                 className={form.provider === p.id ? 'active' : ''}
-                onClick={() => setForm({ ...form, provider: p.id, auth: p.auths[0] })}
+                onClick={() => setForm({ ...form, provider: p.id })}
               >
                 <span className={'g ' + p.id}>{p.scheme.replace('://', '').toUpperCase()}</span>
                 {p.label}
@@ -643,101 +641,34 @@ function ConfigObjectStore({
             </select>
           </div>
           <div className="cc-field">
-            <label className="cc-label">
-              Endpoint override <span className="opt">· optional</span>
-            </label>
+            <label className="cc-label">Trusted Delta snapshot descriptor resolver</label>
             <input
               className="cc-input mono"
-              placeholder="https://s3.example.com"
+              placeholder="/api/delta/resolve-location"
               value={form.endpoint}
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
                 setForm({ ...form, endpoint: e.target.value })
               }
             />
+            <div className="cc-help">
+              Same-origin BFF route that validates the locator and returns a
+              BrowserHttpSnapshotDescriptor.
+            </div>
           </div>
         </div>
-
-        <div className="cc-field">
-          <label className="cc-label">Authentication</label>
-          <div className="cc-auth-grid">
-            {provider.auths.map((a: AuthMethod) => (
-              <div
-                key={a}
-                className={'cc-auth-card ' + (form.auth === a ? 'selected' : '')}
-                onClick={() => setForm({ ...form, auth: a })}
-              >
-                <span className="radio" />
-                <div>
-                  <div className="n">{AUTH_LABELS[a].label}</div>
-                  <div className="d">{authBlurb(a)}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {auth.fields.length > 0 && (
-          <div className="cc-row-2">
-            {auth.fields.map((f) => {
-              const optional = f.endsWith('?');
-              const key = f.replace('?', '');
-              const isSecret = /(secret|token|key$|json)/i.test(key);
-              const isSingle = auth.fields.length === 1;
-              return (
-                <div
-                  key={key}
-                  className="cc-field"
-                  style={isSingle ? { gridColumn: 'span 2' } : undefined}
-                >
-                  <label className="cc-label">
-                    {humanize(key)}
-                    {optional && <span className="opt">· optional</span>}
-                    {isSecret && (
-                      <span className="opt">
-                        <IconLock size={9} /> · encrypted
-                      </span>
-                    )}
-                  </label>
-                  {key === 'sa_json' ? (
-                    <textarea
-                      className="cc-textarea"
-                      placeholder='{"type":"service_account",…}'
-                      value={form.creds[key] || ''}
-                      onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
-                        setForm({ ...form, creds: { ...form.creds, [key]: e.target.value } })
-                      }
-                    />
-                  ) : (
-                    <input
-                      className="cc-input mono"
-                      type={isSecret ? 'password' : 'text'}
-                      placeholder={placeholderFor(key)}
-                      value={form.creds[key] || ''}
-                      onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                        setForm({
-                          ...form,
-                          creds: { ...form.creds, [key]: e.target.value },
-                        })
-                      }
-                    />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
 
         <TestResult
           state={testState}
-          okText={`Reached ${provider.label} · 8 tables discovered`}
-          okDetail="2 prefixes (silver, bronze) · auth verified · range reads supported · 184 GB scanned"
+          okText={`${provider.label} resolver returned a descriptor`}
+          okDetail="Trusted resolver supplied a snapshot descriptor and browser capability report."
         />
       </div>
 
       <aside className="cc-helper">
         <h5>How Axon reads {provider.label}</h5>
         <p>
-          The browser engine talks to {provider.label} over HTTPS using validated byte-range reads.
+          The browser sends the locator to a trusted resolver. That service owns access policy and
+          returns only descriptor data the browser can use for validated byte-range reads.
           {serverFallbackEnabled
             ? ' Server query fallback can route unsupported table features to your configured query service.'
             : ' If a table requires features this browser build cannot serve, the query stops with a structured browser error.'}
@@ -745,66 +676,17 @@ function ConfigObjectStore({
         <hr />
         <h5>Required permissions</h5>
         <ul>
-          <li>
-            <code>{providerPerm(provider.id, 'list')}</code> on the bucket
-          </li>
-          <li>
-            <code>{providerPerm(provider.id, 'get')}</code> on listed objects
-          </li>
+          <li>Resolver can list table metadata for the requested prefix.</li>
+          <li>Resolver can issue browser-safe file descriptors for allowed objects.</li>
         </ul>
         <hr />
         <h5>Network</h5>
         <p>
-          Egress: <code>{provider.scheme.replace('://', '')}.region.amazonaws.com</code> (or
-          compatible). CORS must allow <code>Range</code> + <code>GET</code> from this origin.
+          Browser egress is limited to descriptor URLs returned by the resolver. The repository does
+          not provide the production resolver service.
         </p>
       </aside>
     </div>
-  );
-}
-
-function authBlurb(a: AuthMethod) {
-  return {
-    access_key: 'AKIA-style key + secret. Stored encrypted.',
-    iam_role: 'Assume a role via STS. Best for shared access.',
-    env: 'Use AWS_PROFILE / credential file on this host.',
-    anonymous: 'No credentials. For public datasets only.',
-    service_account: 'Paste a GCP service-account JSON key.',
-    workload_identity: 'Federated GCP identity via OIDC.',
-    adc: 'Use Application Default Credentials.',
-    sas_token: 'Short-lived shared-access signature.',
-    service_principal: 'Azure AD app registration.',
-    managed_identity: "Use this host's Azure managed identity.",
-  }[a];
-}
-
-function providerPerm(p: ObjectStoreProviderId, op: 'list' | 'get') {
-  return {
-    s3: op === 'list' ? 's3:ListBucket' : 's3:GetObject',
-    gcs: op === 'list' ? 'storage.objects.list' : 'storage.objects.get',
-    abfss: op === 'list' ? 'Storage Blob Data Reader' : 'Storage Blob Data Reader',
-    r2: op === 'list' ? 'Object Read (Bucket)' : 'Object Read',
-  }[p];
-}
-
-function humanize(k: string) {
-  return k.replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
-}
-
-function placeholderFor(k: string) {
-  return (
-    {
-      access_key_id: 'AKIAIOSFODNN7EXAMPLE',
-      secret_access_key: '••••••••••••',
-      role_arn: 'arn:aws:iam::123456789012:role/AxonRead',
-      external_id: 'auto-generated',
-      audience: '//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/…',
-      sa_json: '{"type":"service_account", ...}',
-      sas_token: '?sv=2024-…&sr=c&sp=rl&sig=…',
-      tenant_id: '11111111-2222-3333-4444-555555555555',
-      client_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-      client_secret: '••••••••••••',
-    }[k] || ''
   );
 }
 
@@ -845,110 +727,61 @@ function ConfigUnityCatalog({
           </div>
         </div>
 
-        {form.uc_mode === 'databricks' ? (
-          <>
-            <div className="cc-field">
-              <label className="cc-label">Workspace URL</label>
-              <input
-                className="cc-input mono"
-                placeholder="https://acme-prod.cloud.databricks.com"
-                value={form.uc_host}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setForm({ ...form, uc_host: e.target.value })
-                }
-              />
-              <div className="cc-help">
-                The full workspace hostname. Account consoles aren&apos;t supported — use a
-                workspace URL.
-              </div>
+        <div className="cc-field">
+          <label className="cc-label">
+            {form.uc_mode === 'databricks' ? 'Workspace URL' : 'UC server endpoint'}
+          </label>
+          <input
+            className="cc-input mono"
+            placeholder={
+              form.uc_mode === 'databricks'
+                ? 'https://acme-prod.cloud.databricks.com'
+                : 'https://uc.acme.internal/api/2.1/unity-catalog'
+            }
+            value={form.uc_host}
+            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              setForm({ ...form, uc_host: e.target.value })
+            }
+          />
+          <div className="cc-help">
+            The browser sends this as table-planning context only. UC credentials stay in the
+            authenticated service session.
+          </div>
+        </div>
+
+        <div className="cc-row-2">
+          <div className="cc-field">
+            <label className="cc-label">Read-access broker</label>
+            <input
+              className="cc-input mono"
+              placeholder="/api/uc/read-access-plan"
+              value={form.uc_bff_url}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                setForm({ ...form, uc_bff_url: e.target.value })
+              }
+            />
+            <div className="cc-help">
+              Same-origin BFF route that returns <code>ReadAccessPlan</code> responses.
             </div>
-            <div className="cc-field">
-              <label className="cc-label">
-                Authentication
-                <span className="opt">
-                  <IconLock size={9} /> · encrypted
-                </span>
-              </label>
-              <div className="cc-seg" style={{ marginBottom: 8 }}>
-                <button
-                  className={form.uc_auth === 'pat' ? 'active' : ''}
-                  onClick={() => setForm({ ...form, uc_auth: 'pat' })}
-                >
-                  Personal access token
-                </button>
-                <button
-                  className={form.uc_auth === 'oauth' ? 'active' : ''}
-                  onClick={() => setForm({ ...form, uc_auth: 'oauth' })}
-                >
-                  OAuth (M2M)
-                </button>
-              </div>
-              {form.uc_auth === 'pat' ? (
-                <input
-                  className="cc-input mono"
-                  type="password"
-                  placeholder="dapi••••••••••••••••••••••••••••"
-                  value={form.uc_token}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                    setForm({ ...form, uc_token: e.target.value })
-                  }
-                />
-              ) : (
-                <div className="cc-row-2">
-                  <input
-                    className="cc-input mono"
-                    placeholder="Client ID"
-                    value={form.uc_client_id}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                      setForm({ ...form, uc_client_id: e.target.value })
-                    }
-                  />
-                  <input
-                    className="cc-input mono"
-                    type="password"
-                    placeholder="Client secret"
-                    value={form.uc_client_secret}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                      setForm({ ...form, uc_client_secret: e.target.value })
-                    }
-                  />
-                </div>
-              )}
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="cc-field">
-              <label className="cc-label">Server endpoint</label>
-              <input
-                className="cc-input mono"
-                placeholder="https://uc.acme.internal/api/2.1/unity-catalog"
-                value={form.uc_host}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setForm({ ...form, uc_host: e.target.value })
-                }
-              />
-              <div className="cc-help">
-                Open-source UC servers expose the same REST surface as Databricks. mTLS endpoints
-                are supported.
-              </div>
-            </div>
-            <div className="cc-field">
-              <label className="cc-label">
-                Bearer token <span className="opt">· optional</span>
-              </label>
-              <input
-                className="cc-input mono"
-                type="password"
-                placeholder="•••• if your UC requires auth"
-                value={form.uc_token}
-                onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setForm({ ...form, uc_token: e.target.value })
-                }
-              />
-            </div>
-          </>
-        )}
+          </div>
+          <div className="cc-field">
+            <label className="cc-label">
+              Session
+              <span className="opt">
+                <IconLock size={9} /> · service-owned
+              </span>
+            </label>
+            <input
+              className="cc-input mono"
+              placeholder="Signed in through Axon BFF"
+              value={form.uc_session_label}
+              onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                setForm({ ...form, uc_session_label: e.target.value })
+              }
+            />
+            <div className="cc-help">No browser-owned tokens or cloud keys are accepted here.</div>
+          </div>
+        </div>
 
         <div className="cc-row-2">
           <div className="cc-field">
@@ -983,12 +816,12 @@ function ConfigUnityCatalog({
 
         <TestResult
           state={testState}
-          okText="Reached Unity Catalog · 3 schemas, 12 tables"
+          okText="Read-access broker reachable · 3 schemas, 12 tables"
           okDetail={
             <>
-              Authenticated as <code>analyst@acme.com</code> · Grants resolved for{' '}
-              <code>main.analytics</code>, <code> main.raw</code>. 3 tables in{' '}
-              <code>main.ml_models</code> hidden (no read grant).
+              Session-backed broker returned contract-first plans for <code>main.analytics</code>,{' '}
+              <code>main.raw</code>, and blocked <code>main.ml_models</code> before descriptor
+              handoff.
             </>
           }
         />
@@ -997,8 +830,8 @@ function ConfigUnityCatalog({
       <aside className="cc-helper">
         <h5>Governed reads</h5>
         <p>
-          Axon honours Unity Catalog grants. Tables you can&apos;t <code>SELECT</code> appear greyed
-          out — we never bypass UC&apos;s policy engine to read underlying storage.
+          Axon consumes UC <code>ReadAccessPlan</code> responses. The service evaluates grants,
+          policy, object grants, and SQL fallback before the browser sees a descriptor.
         </p>
         <hr />
         <h5>Permissions used</h5>
@@ -1019,8 +852,8 @@ function ConfigUnityCatalog({
         <hr />
         <h5>Storage credentials</h5>
         <p>
-          UC vends short-lived storage credentials. Axon refreshes them automatically and never
-          persists them to disk.
+          The browser receives brokered descriptors, Delta Sharing files, structured fallback
+          states, or blocked states. It never owns UC tokens or cloud credential material.
         </p>
       </aside>
     </div>
@@ -1044,8 +877,7 @@ function ConfigDeltaShare({
     setOver(false);
     setForm({
       ...form,
-      ds_profile_name: 'acme-partner.share',
-      ds_profile_json: SAMPLE_DS_PROFILE,
+      ds_profile_name: 'acme-partner-profile',
     });
   };
 
@@ -1062,7 +894,7 @@ function ConfigDeltaShare({
               <span className="g" style={{ background: '#0891B2' }}>
                 DS
               </span>
-              Profile file
+              Brokered profile
             </button>
             <button
               className={mode === 'manual' ? 'active' : ''}
@@ -1071,7 +903,7 @@ function ConfigDeltaShare({
               <span className="g" style={{ background: 'var(--ink-2)' }}>
                 URL
               </span>
-              Manual endpoint
+              Provider endpoint
             </button>
           </div>
         </div>
@@ -1094,13 +926,12 @@ function ConfigDeltaShare({
               <div className="glyph">
                 <IconKey size={18} />
               </div>
-              <div className="ti">
-                Drop your{' '}
-                <code style={{ fontFamily: 'var(--mono)', fontSize: 11.5 }}>config.share</code> file
+              <div className="ti">Select a brokered provider profile</div>
+              <div className="sub">
+                The trusted BFF owns provider credentials and returns table descriptors.
               </div>
-              <div className="sub">Or paste its JSON below — the file your data provider sent.</div>
               <button className="browse">
-                <IconFolder size={11} /> Browse…
+                <IconFolder size={11} /> Choose profile
               </button>
             </div>
 
@@ -1112,44 +943,28 @@ function ConfigDeltaShare({
                   </span>
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div className="name">{form.ds_profile_name}</div>
-                    <div className="path">
-                      share endpoint · bearer token · expiration · protocol v1
-                    </div>
+                    <div className="path">profile handle · sharing broker · protocol v1</div>
                   </div>
                   <span style={{ font: '11.5px var(--mono)', color: 'var(--success)' }}>
-                    parsed
+                    selected
                   </span>
                 </div>
               </div>
             )}
 
             <div className="cc-field" style={{ marginTop: 14 }}>
-              <label className="cc-label">
-                Profile JSON <span className="opt">· paste</span>
-                <span className="opt">
-                  <IconLock size={9} /> · token encrypted
-                </span>
-              </label>
-              <textarea
-                className="cc-textarea"
-                style={{ height: 110 }}
-                placeholder='{"shareCredentialsVersion":1, "endpoint":"https://sharing.acme.io/delta-sharing", "bearerToken":"••••"}'
-                value={form.ds_profile_json}
-                onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
-                  setForm({
-                    ...form,
-                    ds_profile_json: e.target.value,
-                    ds_profile_name:
-                      e.target.value && !form.ds_profile_name
-                        ? 'pasted-profile'
-                        : form.ds_profile_name,
-                  })
+              <label className="cc-label">Profile handle</label>
+              <input
+                className="cc-input mono"
+                placeholder="partner-profile-id"
+                value={form.ds_profile_name}
+                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                  setForm({ ...form, ds_profile_name: e.target.value })
                 }
               />
               <div className="cc-help">
-                Profile fields kept: <code>endpoint</code>, <code>bearerToken</code>,{' '}
-                <code>expirationTime</code>, <code>shareCredentialsVersion</code>. Nothing else is
-                read.
+                The browser stores only this handle. Provider profile material remains with the
+                trusted sharing broker.
               </div>
             </div>
           </>
@@ -1166,26 +981,23 @@ function ConfigDeltaShare({
                 }
               />
               <div className="cc-help">
-                The HTTPS base URL of a Delta Sharing server (REST API v1). Often suffixed with{' '}
-                <code>/delta-sharing</code>.
+                Endpoint context for the trusted sharing broker. Browser code does not authenticate
+                directly to the provider.
               </div>
             </div>
             <div className="cc-field">
-              <label className="cc-label">
-                Bearer token
-                <span className="opt">
-                  <IconLock size={9} /> · encrypted
-                </span>
-              </label>
+              <label className="cc-label">Sharing broker endpoint</label>
               <input
                 className="cc-input mono"
-                type="password"
-                placeholder="••••••••••••••••••••"
-                value={form.ds_token}
+                placeholder="/api/delta-sharing/resolve"
+                value={form.ds_profile_name}
                 onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                  setForm({ ...form, ds_token: e.target.value })
+                  setForm({ ...form, ds_profile_name: e.target.value })
                 }
               />
+              <div className="cc-help">
+                Same-origin BFF route that exchanges the provider context for descriptor contracts.
+              </div>
             </div>
           </>
         )}
@@ -1221,12 +1033,9 @@ function ConfigDeltaShare({
 
         <TestResult
           state={testState}
-          okText="Provider reachable · 2 shares, 9 tables visible"
+          okText="Sharing broker returned descriptors"
           okDetail={
-            <>
-              Profile parsed. Bearer token valid for <code>14 days</code>. Storage credentials
-              vended via short-lived URLs — nothing persists to disk.
-            </>
+            <>Trusted broker returned share metadata and descriptor URLs for allowed tables.</>
           }
         />
       </div>
@@ -1234,25 +1043,24 @@ function ConfigDeltaShare({
       <aside className="cc-helper">
         <h5>What is Delta Sharing?</h5>
         <p>
-          An open protocol for sharing live Delta tables across clouds and organisations. The data
-          stays at the provider; Axon reads it through short-lived signed URLs the sharing server
-          hands out per query.
+          An open protocol for sharing Delta tables across clouds and organisations. In this browser
+          build, provider authentication belongs to the trusted sharing broker.
         </p>
         <hr />
         <h5>You&apos;ll get</h5>
         <ul>
-          <li>One catalog per Delta Sharing endpoint</li>
+          <li>One catalog per configured sharing broker endpoint</li>
           <li>
             <code>share/schema</code> mapped to Axon schemas
           </li>
           <li>Read-only access — Axon never writes back</li>
-          <li>Automatic refresh of vended URLs as they expire</li>
+          <li>Descriptor refresh is owned by the trusted broker</li>
         </ul>
         <hr />
         <h5>Security</h5>
         <p>
-          The profile file contains a bearer token. Axon stores it encrypted at rest and only sends
-          it over TLS to the endpoint URL declared in the profile.
+          Repo-owned browser code stores only profile handles and endpoint context. It does not
+          persist provider authentication material.
         </p>
       </aside>
     </div>
@@ -1275,9 +1083,10 @@ function TestResult({
       <div className="cc-test-result run">
         <span className="cc-spin" />
         <div className="body">
-          <div className="t">Testing connection…</div>
+          <div className="t">Checking resolver contract…</div>
           <div className="d">
-            Reading <code>_delta_log/</code>, verifying read access, sampling object metadata.
+            Verifying that a trusted service can return descriptor contracts for the selected
+            source.
           </div>
         </div>
       </div>
@@ -1302,10 +1111,11 @@ function TestResult({
         <IconWarn size={14} />
       </span>
       <div className="body">
-        <div className="t">Couldn&apos;t reach the source</div>
+        <div className="t">Resolver contract not configured</div>
         <div className="d">
-          CORS preflight failed at <code>HEAD /</code>. Allow <code>Range, Authorization</code>{' '}
-          headers from this origin and retry.
+          Repo-owned browser code does not discover live cloud catalogs directly. Configure a
+          trusted resolver or BFF that returns BrowserHttpSnapshotDescriptor or ReadAccessPlan
+          responses.
         </div>
       </div>
     </div>
@@ -1315,18 +1125,20 @@ function TestResult({
 // ─── Step 3: discover & review ──────────────────────────
 function Discover({
   sourceId,
+  discovered,
   alias,
   setAlias,
   selection,
   setSelection,
 }: {
   sourceId: SourceId;
+  discovered: DiscoveryPayload;
   alias: string;
   setAlias: (a: string) => void;
   selection: Record<string, SchemaSelection>;
   setSelection: (s: Record<string, SchemaSelection>) => void;
 }) {
-  const disc = DISCOVERED[sourceId];
+  const disc = discovered;
   const included = useMemo(() => countIncluded(disc, selection), [disc, selection]);
   const total = useMemo(() => disc.schemas.reduce((a, s) => a + s.tables.length, 0), [disc]);
 
@@ -1337,7 +1149,7 @@ function Discover({
           <IconCheck size={12} />
         </span>
         <div className="text" dangerouslySetInnerHTML={{ __html: disc.summary }} />
-        <div className="meta">scanned in 1.42 s</div>
+        <div className="meta">local parse</div>
       </div>
 
       <div className="cc-section-head">Pick what to include</div>
@@ -1520,11 +1332,15 @@ function countIncluded(disc: DiscoveryPayload, sel: Record<string, SchemaSelecti
   return n;
 }
 
+function discoveryForSource(source: SourceId): DiscoveryPayload | null {
+  return source === 'local' ? LOCAL_DISCOVERY : null;
+}
+
 function labelForSource(s: SourceId) {
   return {
     local: 'Local files',
     object_store: 'Object storage (GCS)',
-    unity_catalog: 'Unity Catalog (Databricks)',
+    unity_catalog: 'Unity Catalog (brokered)',
     delta_share: 'Delta Sharing',
   }[s];
 }
@@ -1539,16 +1355,16 @@ function endpointFor(s: SourceId) {
 function authShortFor(s: SourceId) {
   return {
     local: 'file:// · read-only',
-    object_store: 'Service account JSON',
-    unity_catalog: 'PAT · analyst@acme.com',
-    delta_share: 'Bearer token · 14 d valid',
+    object_store: 'trusted resolver',
+    unity_catalog: 'BFF session · object grants',
+    delta_share: 'trusted sharing broker',
   }[s];
 }
 function regionFor(s: SourceId) {
   return {
     local: '—',
     object_store: 'us-central1',
-    unity_catalog: 'auto · us-east-1',
+    unity_catalog: 'brokered · service-owned',
     delta_share: 'provider-vended',
   }[s];
 }
@@ -1567,7 +1383,7 @@ function subtitleForConfig(s: SourceId | null) {
   return {
     local: 'Read a Delta table directly from this machine — nothing leaves disk.',
     object_store: 'Bring up an S3, GCS, ADLS, or R2 bucket as a queryable catalog.',
-    unity_catalog: 'Use UC for governance; Axon honours every grant.',
+    unity_catalog: 'Use a session-backed broker that returns ReadAccessPlan responses.',
     delta_share: 'Read tables shared by another organisation through the open protocol.',
   }[s];
 }

@@ -1,4 +1,4 @@
-import type { AuthMethod, DiscoveryPayload, ObjectStoreProviderId, SourceId } from './data.ts';
+import type { DiscoveryPayload, ObjectStoreProviderId, SourceId } from './data.ts';
 
 export type SchemaSelection = 'all' | 'none' | { only: string[] } | { except: string[] };
 
@@ -18,23 +18,17 @@ export type ConnectForm = {
   uri: string;
   region: string;
   endpoint: string;
-  auth: AuthMethod;
-  creds: Record<string, string>;
   // unity catalog
   uc_mode: 'databricks' | 'oss';
   uc_host: string;
-  uc_auth: 'pat' | 'oauth';
-  uc_token: string;
-  uc_client_id: string;
-  uc_client_secret: string;
+  uc_bff_url: string;
+  uc_session_label: string;
   uc_catalog: string;
   uc_schema_filter: string;
   // delta sharing
   ds_mode: 'profile' | 'manual';
   ds_profile_name: string;
-  ds_profile_json: string;
   ds_endpoint: string;
-  ds_token: string;
   ds_share: string;
 };
 
@@ -48,6 +42,8 @@ export type ConnectedCatalogSchema = {
     size: string;
     protocol: string;
     features?: string[];
+    uri?: string;
+    manifestUrl?: string;
   }[];
 };
 

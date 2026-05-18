@@ -1,4 +1,4 @@
-# Browser Delta Sandbox
+# Axon Web Runtime
 
 This example proves that a real browser can load Axon's WASM Delta snapshot facade and resolve Delta logs over browser HTTP semantics.
 
@@ -26,9 +26,11 @@ To use the interactive SQL workbench locally:
 npm run dev
 ```
 
-Open `https://127.0.0.1:5173` and run queries against `axon_table`. The workbench resolves the selected Delta fixture and opens the browser query session as part of query execution, so there is no separate snapshot step. The editor uses CodeMirror 6 with SQL highlighting and sample queries for row counts, category totals, and filtered top values. Results keep Arrow IPC as the canonical transport and render only a bounded preview in the page, alongside elapsed time, execution target, metrics, Arrow IPC byte length, row count, worker events, and structured errors.
+Open `https://127.0.0.1:5173` and run queries against the selected connected catalog. The default connected sample is `sample-lake.prod_like.events`, backed by the generated prod-like fixture. The workbench resolves that selected table source and opens the browser query session as part of query execution, so there is no separate snapshot step. The editor uses CodeMirror 6 with SQL highlighting and sample queries for row counts, category totals, and filtered top values. Results keep Arrow IPC as the canonical transport and render only a bounded preview in the page, alongside elapsed time, execution target, metrics, Arrow IPC byte length, row count, worker events, and structured errors.
 
-The supported SQL shape is the current browser runtime envelope: read-only `SELECT` statements over the resolved `axon_table`, with the projection, filter, grouping, ordering, and limit forms covered by the sample queries and browser runtime tests. Unsupported statements, such as mutations, render structured browser errors rather than routing silently.
+The editor uses History API routes. Static deployments must rewrite `/connect` and any future editor routes to `index.html`; `/sandbox.html` remains a separate Vite HTML entry.
+
+The supported SQL shape is the current browser runtime envelope: read-only `SELECT` statements over the selected connected table, with the projection, filter, grouping, ordering, and limit forms covered by the sample queries and browser runtime tests. Unsupported statements, such as mutations, render structured browser errors rather than routing silently.
 
 Server query fallback is an opt-in build mode. The default app build has it disabled and does not show server fallback controls or labels. To expose that path in your own environment, build with `VITE_AXON_SERVER_QUERY_FALLBACK=server` and provide a separate authenticated server query module.
 
@@ -50,9 +52,11 @@ This Playwright browser matrix is a local/manual gate for now rather than a CI s
 
 ## TypeScript worker SDK wrapper
 
-The example package also carries the first TypeScript SDK wrapper for Axon's browser worker envelope in [`src/axon-browser-sdk.ts`](src/axon-browser-sdk.ts). It creates or accepts a browser `Worker`, sends the `open_delta_table`, `sql`, and `dispose` commands, normalizes Arrow IPC result bytes to `Uint8Array`, routes typed runtime event envelopes to an optional `onEvent` handler, and raises `AxonWorkerError` with the structured `fallback_reason` when the worker returns an error envelope.
+The app package also carries the first TypeScript SDK wrapper for Axon's browser worker envelope in [`src/axon-browser-sdk.ts`](src/axon-browser-sdk.ts). It creates or accepts a browser `Worker`, sends the `open_delta_table`, `sql`, and `dispose` commands, normalizes Arrow IPC result bytes to `Uint8Array`, routes typed runtime event envelopes to an optional `onEvent` handler, and raises `AxonWorkerError` with the structured `fallback_reason` when the worker returns an error envelope.
 
 `openDeltaLocation()` is a thin SDK wrapper around a trusted Delta snapshot descriptor resolver. It sends a logical object-store URI plus an opaque storage access profile, validates the resolver envelope, enforces descriptor expiry with `descriptor_expired`, asserts `resolved_snapshot_version === descriptor.snapshot_version`, and then forwards the returned `BrowserHttpSnapshotDescriptor` unchanged through the existing `openDeltaTable()` worker path. The resolved open result includes resolver metadata such as `resolved_snapshot_version`, `actual_access_mode`, `expires_at_epoch_ms`, and `correlation_id`, but it does not include descriptor file URLs. Resolver access modes are separate from runtime `BrowserAccessMode`: `auto`, `signed_url`, and `proxy` describe resolver behavior, while the worker still receives browser-safe HTTP descriptors.
+
+`openUnityCatalogTable()` is contract-first for UC. It asks an authenticated app/BFF session for a `ReadAccessPlan`, consumes `brokered_delta` and `delta_sharing` plans by adapting them into the existing `openDeltaTable()` descriptor path, returns structured `sql_fallback_required` or `blocked` states before worker handoff, and never accepts browser-owned UC tokens or client secrets.
 
 ```ts
 import {

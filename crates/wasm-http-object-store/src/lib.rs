@@ -4,10 +4,15 @@ use std::fmt::Write;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use query_contract::{ExecutionTarget, QueryError, QueryErrorCode};
+use query_contract::{
+    validate_browser_object_url, BrokeredObjectAccess, BrowserObjectUrlPolicy, ExecutionTarget,
+    FallbackReason, ObjectGrantBatchSignRequest, ObjectGrantBatchSignResponse,
+    ObjectGrantHeadRequest, ObjectGrantListRequest, ObjectGrantListResponse, ObjectGrantObject,
+    ObjectGrantRangeRequest, ObjectGrantSignedUrl, QueryError, QueryErrorCode,
+};
 use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_RANGE, RANGE};
 use reqwest::{StatusCode, Url};
 use sha2::{Digest, Sha256};
@@ -519,6 +524,272 @@ impl BrowserObject {
     pub fn local(object: BrowserLocalObject) -> Self {
         Self::Local(object)
     }
+}
+
+pub type BrokerFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, QueryError>> + 'a>>;
+
+pub trait ObjectGrantBrokerClient {
+    fn list<'a>(
+        &'a self,
+        grant_id: &'a str,
+        request: ObjectGrantListRequest,
+    ) -> BrokerFuture<'a, ObjectGrantListResponse>;
+
+    fn head<'a>(
+        &'a self,
+        grant_id: &'a str,
+        request: ObjectGrantHeadRequest,
+    ) -> BrokerFuture<'a, ObjectGrantObject>;
+
+    fn batch_sign<'a>(
+        &'a self,
+        grant_id: &'a str,
+        request: ObjectGrantBatchSignRequest,
+    ) -> BrokerFuture<'a, ObjectGrantBatchSignResponse>;
+
+    fn proxy_range<'a>(
+        &'a self,
+        grant_id: &'a str,
+        request: ObjectGrantRangeRequest,
+    ) -> BrokerFuture<'a, Bytes>;
+}
+
+pub struct BrokeredObjectStore<C> {
+    grant_id: String,
+    access: BrokeredObjectAccess,
+    client: C,
+    http: HttpRangeReader,
+    request_timeout: Option<Duration>,
+}
+
+impl<C> BrokeredObjectStore<C>
+where
+    C: ObjectGrantBrokerClient,
+{
+    pub fn new(grant_id: impl Into<String>, access: BrokeredObjectAccess, client: C) -> Self {
+        Self::with_http_reader(grant_id, access, client, HttpRangeReader::new())
+    }
+
+    pub fn with_http_reader(
+        grant_id: impl Into<String>,
+        access: BrokeredObjectAccess,
+        client: C,
+        http: HttpRangeReader,
+    ) -> Self {
+        Self {
+            grant_id: grant_id.into(),
+            access,
+            client,
+            http,
+            request_timeout: None,
+        }
+    }
+
+    pub fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = Some(request_timeout);
+        self
+    }
+
+    pub async fn list(
+        &self,
+        prefix: impl Into<String>,
+    ) -> Result<Vec<ObjectGrantObject>, QueryError> {
+        self.require_capability(
+            self.access.list,
+            "brokered object grant does not advertise list capability",
+            FallbackReason::SecurityPolicy,
+        )?;
+        let response = self
+            .client
+            .list(
+                &self.grant_id,
+                ObjectGrantListRequest {
+                    prefix: prefix.into(),
+                },
+            )
+            .await?;
+        Ok(response.objects)
+    }
+
+    pub async fn head(&self, path: impl Into<String>) -> Result<ObjectGrantObject, QueryError> {
+        self.require_capability(
+            self.access.head,
+            "brokered object grant does not advertise head capability",
+            FallbackReason::SecurityPolicy,
+        )?;
+        self.client
+            .head(&self.grant_id, ObjectGrantHeadRequest { path: path.into() })
+            .await
+    }
+
+    pub async fn get(&self, path: impl Into<String>) -> Result<Bytes, QueryError> {
+        self.require_capability(
+            self.access.get,
+            "brokered object grant does not advertise full-object read capability",
+            FallbackReason::RangeReadUnavailable,
+        )?;
+        let path = path.into();
+        if self.access.batch_sign {
+            return self.read_signed_url(&path, HttpByteRange::Full).await;
+        }
+
+        self.require_capability(
+            self.access.proxy_range,
+            "brokered object grant does not advertise proxy range capability",
+            FallbackReason::RangeReadUnavailable,
+        )?;
+        let metadata = self.head(path.clone()).await?;
+        if metadata.size_bytes == 0 {
+            return Ok(Bytes::new());
+        }
+        let bytes = self.proxy_range(&path, 0, metadata.size_bytes).await?;
+        validate_proxy_range_length(bytes, metadata.size_bytes)
+    }
+
+    pub async fn get_range(
+        &self,
+        path: impl Into<String>,
+        start: u64,
+        end: u64,
+    ) -> Result<Bytes, QueryError> {
+        self.require_capability(
+            self.access.range_get,
+            "brokered object grant does not advertise range read capability",
+            FallbackReason::RangeReadUnavailable,
+        )?;
+        if end <= start {
+            return Err(invalid_request(
+                "brokered range end must be greater than range start",
+            ));
+        }
+
+        let path = path.into();
+        if self.access.batch_sign {
+            let length = end
+                .checked_sub(start)
+                .ok_or_else(|| invalid_request("brokered range underflowed u64"))?;
+            return self
+                .read_signed_url(
+                    &path,
+                    HttpByteRange::Bounded {
+                        offset: start,
+                        length,
+                    },
+                )
+                .await;
+        }
+
+        self.require_capability(
+            self.access.proxy_range,
+            "brokered object grant does not advertise proxy range capability",
+            FallbackReason::RangeReadUnavailable,
+        )?;
+        let bytes = self.proxy_range(&path, start, end).await?;
+        let expected_len = end
+            .checked_sub(start)
+            .ok_or_else(|| invalid_request("brokered range underflowed u64"))?;
+        validate_proxy_range_length(bytes, expected_len)
+    }
+
+    async fn read_signed_url(&self, path: &str, range: HttpByteRange) -> Result<Bytes, QueryError> {
+        let signed_url = self.sign_one(path).await?;
+        validate_signed_url_not_expired(&signed_url)?;
+        let parsed = validate_browser_object_url(
+            &signed_url.url,
+            supported_target(),
+            BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTests,
+            "brokered signed object URL",
+        )?;
+        let result = self
+            .http
+            .read_range_with_timeout(parsed.as_str(), range, self.request_timeout)
+            .await?;
+        Ok(result.bytes)
+    }
+
+    async fn sign_one(&self, path: &str) -> Result<ObjectGrantSignedUrl, QueryError> {
+        let response = self
+            .client
+            .batch_sign(
+                &self.grant_id,
+                ObjectGrantBatchSignRequest {
+                    paths: vec![path.to_string()],
+                },
+            )
+            .await?;
+        response
+            .signed_urls
+            .into_iter()
+            .find(|signed| signed.path == path)
+            .ok_or_else(|| {
+                protocol_error(
+                    "object grant broker did not return a signed URL for the requested path",
+                )
+            })
+    }
+
+    async fn proxy_range(&self, path: &str, start: u64, end: u64) -> Result<Bytes, QueryError> {
+        self.client
+            .proxy_range(
+                &self.grant_id,
+                ObjectGrantRangeRequest {
+                    path: path.to_string(),
+                    start,
+                    end,
+                },
+            )
+            .await
+    }
+
+    fn require_capability(
+        &self,
+        allowed: bool,
+        message: &'static str,
+        reason: FallbackReason,
+    ) -> Result<(), QueryError> {
+        if allowed {
+            return Ok(());
+        }
+
+        Err(QueryError::new(
+            QueryErrorCode::FallbackRequired,
+            message,
+            supported_target(),
+        )
+        .with_fallback_reason(reason))
+    }
+}
+
+fn validate_signed_url_not_expired(signed_url: &ObjectGrantSignedUrl) -> Result<(), QueryError> {
+    if signed_url.expires_at_epoch_ms <= now_epoch_ms()? {
+        return Err(QueryError::new(
+            QueryErrorCode::FallbackRequired,
+            "brokered signed object URL expired before browser read",
+            supported_target(),
+        )
+        .with_fallback_reason(FallbackReason::SignedUrlExpired));
+    }
+
+    Ok(())
+}
+
+fn now_epoch_ms() -> Result<u64, QueryError> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| cache_error("system clock is before Unix epoch"))?
+        .as_millis();
+    u64::try_from(millis).map_err(|_| cache_error("system clock epoch milliseconds overflowed u64"))
+}
+
+fn validate_proxy_range_length(bytes: Bytes, expected_len: u64) -> Result<Bytes, QueryError> {
+    if bytes.len() as u64 != expected_len {
+        return Err(protocol_error(format!(
+            "brokered proxy range returned {} bytes, but {expected_len} were requested",
+            bytes.len()
+        )));
+    }
+
+    Ok(bytes)
 }
 
 pub type PersistentCacheFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, QueryError>> + 'a>>;
@@ -1923,7 +2194,12 @@ fn map_status_error(status: StatusCode, display_url: &str) -> Option<QueryError>
             format!("http request to '{display_url}' was denied with status {status}"),
             supported_target(),
         )),
-        StatusCode::NOT_FOUND | StatusCode::RANGE_NOT_SATISFIABLE => Some(protocol_error(format!(
+        StatusCode::NOT_FOUND => Some(QueryError::new(
+            QueryErrorCode::ObjectNotFound,
+            format!("http request to '{display_url}' failed with status {status}"),
+            supported_target(),
+        )),
+        StatusCode::RANGE_NOT_SATISFIABLE => Some(protocol_error(format!(
             "http request to '{display_url}' failed with status {status}"
         ))),
         status if status.is_client_error() => Some(protocol_error(format!(

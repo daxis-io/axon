@@ -1,0 +1,211 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Axon Browser Object Grant Broker",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/object-grants/{grantId}/list": {
+      "post": {
+        "operationId": "listObjectGrantPaths",
+        "parameters": [{ "$ref": "#/components/parameters/GrantId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ObjectGrantListRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Object paths visible through this grant.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ObjectGrantListResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/object-grants/{grantId}/head": {
+      "post": {
+        "operationId": "headObjectGrantPath",
+        "parameters": [{ "$ref": "#/components/parameters/GrantId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ObjectGrantHeadRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Object metadata visible through this grant.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ObjectGrantObject" }
+              }
+            }
+          },
+          "404": {
+            "description": "The granted object path does not exist or is not visible."
+          }
+        }
+      }
+    },
+    "/object-grants/{grantId}/batch-sign": {
+      "post": {
+        "operationId": "batchSignObjectGrantPaths",
+        "parameters": [{ "$ref": "#/components/parameters/GrantId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ObjectGrantBatchSignRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Short-lived object-scoped bearer URLs.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ObjectGrantBatchSignResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/object-grants/{grantId}/range": {
+      "get": {
+        "operationId": "proxyObjectGrantRange",
+        "parameters": [
+          { "$ref": "#/components/parameters/GrantId" },
+          { "$ref": "#/components/parameters/Path" },
+          { "$ref": "#/components/parameters/Start" },
+          { "$ref": "#/components/parameters/End" }
+        ],
+        "responses": {
+          "206": {
+            "description": "The requested byte range, where start is inclusive and end is exclusive.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "contentEncoding": "binary"
+                }
+              }
+            }
+          },
+          "401": { "description": "The object grant is expired or unauthenticated." },
+          "403": { "description": "The object grant does not authorize this path or range." },
+          "404": { "description": "The granted object path does not exist." },
+          "416": { "description": "The requested byte range is invalid for this object." }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "GrantId": {
+        "name": "grantId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1 }
+      },
+      "Path": {
+        "name": "path",
+        "in": "query",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1 }
+      },
+      "Start": {
+        "name": "start",
+        "in": "query",
+        "required": true,
+        "schema": { "type": "integer", "minimum": 0 }
+      },
+      "End": {
+        "name": "end",
+        "in": "query",
+        "required": true,
+        "schema": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "schemas": {
+      "ObjectGrantListRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["prefix"],
+        "properties": {
+          "prefix": { "type": "string" }
+        }
+      },
+      "ObjectGrantListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["objects"],
+        "properties": {
+          "objects": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ObjectGrantObject" }
+          }
+        }
+      },
+      "ObjectGrantHeadRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 }
+        }
+      },
+      "ObjectGrantObject": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sizeBytes"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "sizeBytes": { "type": "integer", "minimum": 0 },
+          "etag": { "type": "string" }
+        }
+      },
+      "ObjectGrantBatchSignRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["paths"],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      },
+      "ObjectGrantBatchSignResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["signedUrls"],
+        "properties": {
+          "signedUrls": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ObjectGrantSignedUrl" }
+          }
+        }
+      },
+      "ObjectGrantSignedUrl": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "url", "expiresAtEpochMs"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "url": { "type": "string", "format": "uri" },
+          "expiresAtEpochMs": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

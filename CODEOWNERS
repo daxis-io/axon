@@ -10,6 +10,7 @@
 /crates/wasm-delta-snapshot/ @axon/runtime-engine
 /crates/browser-sdk/ @axon/web-platform
 /crates/browser-engine-worker/ @axon/web-platform
+/apps/axon-web/ @axon/web-platform
 /crates/udf-abi/ @axon/runtime-engine
 /crates/udf-host-wasi/ @axon/runtime-engine
 /docs/adr/ @axon/query-platform

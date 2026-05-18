@@ -22,6 +22,7 @@ wasm-parquet-engine = { path = "../wasm-parquet-engine" }
 [dev-dependencies]
 parquet = { version = "=57.3.0", default-features = false }
 serde_json.workspace = true
+wasm-delta-snapshot = { path = "../wasm-delta-snapshot" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { version = "=1.50.0", features = ["macros", "rt-multi-thread"] }

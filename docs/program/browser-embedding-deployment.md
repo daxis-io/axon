@@ -83,6 +83,8 @@ The default baseline remains single-threaded and must work without cross-origin 
 
 The sandbox already uses Vite for local browser testing. For an application-owned embedding, place the worker JS and WASM under `public/workers/` or import package assets once a publishable package exists.
 
+`apps/axon-web` has two Vite HTML entries: `index.html` for the editor SPA and `sandbox.html` for the legacy sandbox page. The editor uses History API routes, so static hosts must rewrite `/connect` and any future editor routes to `index.html` while leaving `/sandbox.html` as its own entry. Without that rewrite, direct navigation to `/connect` works in Vite dev but 404s in a static deployment.
+
 Example manifest override:
 
 ```ts

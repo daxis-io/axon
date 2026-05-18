@@ -1,17 +1,23 @@
+use std::collections::BTreeMap;
+
 use query_contract::{
     delta_protocol_feature, delta_protocol_feature_names, validate_browser_object_url,
     validate_delta_location_resolve_request, validate_delta_location_resolve_response,
+    BrokeredDeltaAccessMode, BrokeredDeltaReadPlan, BrokeredObjectAccess, BrokeredPolicyAuthority,
     BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor,
     BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport, CapabilityState, CredentialProfileRef,
     DeltaLocationRefresh, DeltaLocationResolveRequest, DeltaLocationResolveResponse,
     DeltaLocationResolverError, DeltaLocationResolverErrorCode, DeltaObjectStoreProvider,
     DeltaProtocolFeatureClass, DeltaProtocolFeatureEnablement, DeltaProtocolFeatureKind,
-    ExecutionTarget, FallbackReason, PartitionColumnType, QueryError, QueryErrorCode,
-    QueryExecutionOptions, QueryMetricsSummary, QueryRequest, QueryResponse,
-    ResolvedFileDescriptor, ResolvedSnapshotDescriptor, ResolverActualAccessMode,
-    ResolverRequestedAccessMode, SnapshotResolutionRequest,
+    DirectExternalEngineReadSupport, ExecutionTarget, FallbackReason, ObjectGrantBatchSignRequest,
+    ObjectGrantHeadRequest, ObjectGrantListRequest, PartitionColumnType, PolicyAuthorityKind,
+    QueryError, QueryErrorCode, QueryExecutionOptions, QueryMetricsSummary, QueryRequest,
+    QueryResponse, ReadAccessPlan, ReadAccessPlanReason, ResolvedFileDescriptor,
+    ResolvedSnapshotDescriptor, ResolverActualAccessMode, ResolverRequestedAccessMode,
+    SnapshotResolutionRequest, SqlFallbackRequiredPlan,
 };
-use serde_json::json;
+use schemars::schema_for;
+use serde_json::{json, Value};
 
 #[test]
 fn delta_protocol_feature_catalog_covers_browser_routing_matrix() {
@@ -239,6 +245,587 @@ fn query_response_serializes_browser_telemetry_when_present() {
             }
         })
     );
+}
+
+#[test]
+fn read_access_plan_serializes_brokered_delta_without_cloud_credentials() {
+    let plan = ReadAccessPlan::BrokeredDelta(BrokeredDeltaReadPlan {
+        table_id: "tbl-123".to_string(),
+        full_name: "main.sales.orders".to_string(),
+        table_root: "s3://prod-bucket/tables/orders".to_string(),
+        grant_id: "grant-456".to_string(),
+        expires_at_epoch_ms: 1_800_000_000_000,
+        delta_access_mode: BrokeredDeltaAccessMode::DeltaLog,
+        policy_authority: BrokeredPolicyAuthority {
+            authority: PolicyAuthorityKind::UnityCatalog,
+            direct_external_engine_read: DirectExternalEngineReadSupport::Confirmed,
+        },
+        object_access: BrokeredObjectAccess {
+            list: true,
+            head: true,
+            get: false,
+            range_get: true,
+            batch_sign: true,
+            proxy_range: true,
+        },
+    });
+
+    let json = serde_json::to_value(&plan).expect("read access plan should serialize");
+
+    assert_eq!(
+        json,
+        json!({
+            "plan_type": "brokered_delta",
+            "tableId": "tbl-123",
+            "fullName": "main.sales.orders",
+            "tableRoot": "s3://prod-bucket/tables/orders",
+            "grantId": "grant-456",
+            "expiresAtEpochMs": 1_800_000_000_000_u64,
+            "deltaAccessMode": "delta_log",
+            "policyAuthority": {
+                "authority": "unity_catalog",
+                "directExternalEngineRead": "confirmed"
+            },
+            "objectAccess": {
+                "list": true,
+                "head": true,
+                "get": false,
+                "rangeGet": true,
+                "batchSign": true,
+                "proxyRange": true
+            }
+        })
+    );
+
+    let rendered = serde_json::to_string(&json).expect("json should render");
+    for forbidden in [
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_session_token",
+        "azure_sas",
+        "gcp_oauth_token",
+        "gcp_hmac_secret",
+        "databricks_bearer_token",
+        "refresh_token",
+        "pat",
+    ] {
+        assert!(
+            !rendered.contains(forbidden),
+            "production browser contracts must not expose {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn read_access_plan_deserializes_all_full_mvp_variants() {
+    let delta_sharing: ReadAccessPlan = serde_json::from_value(json!({
+        "plan_type": "delta_sharing",
+        "tableId": "tbl-share",
+        "fullName": "main.analytics.events",
+        "sharingEndpoint": "https://sharing.example.test/delta-sharing",
+        "expiresAtEpochMs": 1_800_000_000_000_u64,
+        "files": [
+            {
+                "path": "part-000.parquet",
+                "url": "https://signed.example.test/part-000.parquet?sig=redacted-at-log-boundary",
+                "size_bytes": 512,
+                "partition_values": {}
+            }
+        ]
+    }))
+    .expect("delta sharing plan should deserialize");
+
+    let sql_fallback: ReadAccessPlan = serde_json::from_value(json!({
+        "plan_type": "sql_fallback_required",
+        "tableId": "tbl-governed",
+        "fullName": "main.secure.payments",
+        "reason": "row_filter",
+        "message": "governed table requires service-side SQL execution",
+        "statementEndpoint": "https://dbc.example.com/api/2.0/sql/statements",
+        "warehouseRequired": true
+    }))
+    .expect("sql fallback plan should deserialize");
+
+    let blocked: ReadAccessPlan = serde_json::from_value(json!({
+        "plan_type": "blocked",
+        "tableId": "tbl-blocked",
+        "fullName": "main.secure.audit",
+        "reason": "unknown_policy_state",
+        "message": "direct browser reads are blocked by policy"
+    }))
+    .expect("blocked plan should deserialize");
+
+    assert!(matches!(delta_sharing, ReadAccessPlan::DeltaSharing(_)));
+    assert!(matches!(
+        sql_fallback,
+        ReadAccessPlan::SqlFallbackRequired(_)
+    ));
+    assert!(matches!(blocked, ReadAccessPlan::Blocked(_)));
+}
+
+#[test]
+fn read_access_plan_rejects_sql_fallback_when_warehouse_is_not_required() {
+    let err = serde_json::from_value::<ReadAccessPlan>(json!({
+        "plan_type": "sql_fallback_required",
+        "tableId": "tbl-governed",
+        "fullName": "main.secure.payments",
+        "reason": "row_filter",
+        "message": "governed table requires service-side SQL execution",
+        "statementEndpoint": "https://dbc.example.com/api/2.0/sql/statements",
+        "warehouseRequired": false
+    }))
+    .expect_err("sql fallback plans must require a server-side warehouse");
+
+    assert!(
+        err.to_string().contains("warehouseRequired must be true"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn read_access_plan_refuses_to_serialize_sql_fallback_without_required_warehouse() {
+    let plan = ReadAccessPlan::SqlFallbackRequired(SqlFallbackRequiredPlan {
+        table_id: "tbl-governed".into(),
+        full_name: "main.secure.payments".into(),
+        reason: ReadAccessPlanReason::RowFilter,
+        message: "governed table requires service-side SQL execution".into(),
+        statement_endpoint: "https://dbc.example.com/api/2.0/sql/statements".into(),
+        warehouse_required: false,
+    });
+
+    let err = serde_json::to_value(plan)
+        .expect_err("sql fallback plans must not serialize warehouseRequired=false");
+
+    assert!(
+        err.to_string().contains("warehouseRequired must be true"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn read_access_plan_denies_unknown_and_raw_credential_fields() {
+    let with_unknown = json!({
+        "plan_type": "brokered_delta",
+        "tableId": "tbl-123",
+        "fullName": "main.sales.orders",
+        "tableRoot": "s3://prod-bucket/tables/orders",
+        "grantId": "grant-456",
+        "expiresAtEpochMs": 1_800_000_000_000_u64,
+        "deltaAccessMode": "delta_log",
+        "policyAuthority": {
+            "authority": "unity_catalog",
+            "directExternalEngineRead": "confirmed"
+        },
+        "objectAccess": {
+            "list": true,
+            "head": true,
+            "get": false,
+            "rangeGet": true,
+            "batchSign": true,
+            "proxyRange": true
+        },
+        "aws_sts": {
+            "access_key_id": "AKIA...",
+            "secret_access_key": "secret",
+            "session_token": "session"
+        }
+    });
+
+    let error = serde_json::from_value::<ReadAccessPlan>(with_unknown)
+        .expect_err("raw cloud credentials must not be accepted by production browser contracts");
+    assert!(
+        error.to_string().contains("unknown field"),
+        "deny_unknown_fields should reject credential-shaped extensions: {error}"
+    );
+}
+
+#[test]
+fn delta_sharing_plan_denies_unknown_file_fields() {
+    let error = serde_json::from_value::<ReadAccessPlan>(json!({
+        "plan_type": "delta_sharing",
+        "tableId": "tbl-share",
+        "fullName": "main.analytics.events",
+        "sharingEndpoint": "https://sharing.example.test/delta-sharing",
+        "expiresAtEpochMs": 1_800_000_000_000_u64,
+        "files": [
+            {
+                "path": "part-000.parquet",
+                "url": "https://signed.example.test/part-000.parquet?sig=redacted-at-log-boundary",
+                "size_bytes": 512,
+                "partition_values": {},
+                "databricks_bearer_token": "dapi..."
+            }
+        ]
+    }))
+    .expect_err("Delta Sharing file descriptors should reject credential-shaped extensions");
+    assert!(
+        error.to_string().contains("unknown field"),
+        "nested file descriptors should be closed: {error}"
+    );
+}
+
+#[test]
+fn object_grant_route_payloads_deny_unknown_fields() {
+    let list_error = serde_json::from_value::<ObjectGrantListRequest>(json!({
+        "prefix": "_delta_log/",
+        "aws_secret_access_key": "secret"
+    }))
+    .expect_err("list requests should reject raw credentials");
+    assert!(list_error.to_string().contains("unknown field"));
+
+    let head_error = serde_json::from_value::<ObjectGrantHeadRequest>(json!({
+        "path": "part-000.parquet",
+        "databricks_bearer_token": "dapi..."
+    }))
+    .expect_err("head requests should reject bearer tokens");
+    assert!(head_error.to_string().contains("unknown field"));
+
+    let sign_error = serde_json::from_value::<ObjectGrantBatchSignRequest>(json!({
+        "paths": ["part-000.parquet"],
+        "refresh_token": "refresh"
+    }))
+    .expect_err("batch sign requests should reject refresh tokens");
+    assert!(sign_error.to_string().contains("unknown field"));
+}
+
+#[test]
+fn read_access_plan_reason_taxonomy_is_explicit_and_closed() {
+    for reason in [
+        "row_filter",
+        "column_mask",
+        "view",
+        "unknown_policy_state",
+        "no_direct_external_engine_read_support",
+        "unsupported_table_type",
+        "grant_expired",
+        "storage_cors_blocked",
+        "broker_unavailable",
+    ] {
+        let fallback: ReadAccessPlan = serde_json::from_value(json!({
+            "plan_type": "sql_fallback_required",
+            "tableId": "tbl-governed",
+            "fullName": "main.secure.payments",
+            "reason": reason,
+            "message": "governed table requires service-side SQL execution",
+            "statementEndpoint": "https://dbc.example.com/api/2.0/sql/statements",
+            "warehouseRequired": true
+        }))
+        .expect("required fallback reason should deserialize");
+        assert!(matches!(fallback, ReadAccessPlan::SqlFallbackRequired(_)));
+    }
+
+    let unknown = serde_json::from_value::<ReadAccessPlan>(json!({
+        "plan_type": "blocked",
+        "tableId": "tbl-blocked",
+        "fullName": "main.secure.audit",
+        "reason": "security_policy",
+        "message": "old generic query fallback reason should not be accepted here"
+    }))
+    .expect_err("read access reasons should stay distinct from generic query fallbacks");
+    assert!(unknown.to_string().contains("unknown variant"));
+
+    assert_eq!(
+        serde_json::to_value(ReadAccessPlanReason::NoDirectExternalEngineReadSupport)
+            .expect("reason should serialize"),
+        json!("no_direct_external_engine_read_support")
+    );
+}
+
+#[test]
+fn read_access_plan_json_schema_covers_browser_facing_variants() {
+    let schema = schema_for!(ReadAccessPlan);
+    let rendered =
+        serde_json::to_string(&schema).expect("read access plan schema should serialize");
+
+    for expected in [
+        "brokered_delta",
+        "delta_sharing",
+        "sql_fallback_required",
+        "blocked",
+        "tableId",
+        "fullName",
+        "tableRoot",
+        "grantId",
+        "statementEndpoint",
+        "warehouseRequired",
+        "deltaAccessMode",
+        "policyAuthority",
+        "objectAccess",
+        "rangeGet",
+        "batchSign",
+        "proxyRange",
+        "BrokeredObjectAccess",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "schema should include {expected}"
+        );
+    }
+
+    let schema_value = serde_json::to_value(&schema).expect("schema should convert to JSON");
+    assert!(
+        schema_has_warehouse_required_const_true(&schema_value),
+        "schema should require warehouseRequired=true"
+    );
+}
+
+fn schema_has_warehouse_required_const_true(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => {
+            object
+                .get("warehouseRequired")
+                .and_then(Value::as_object)
+                .and_then(|warehouse_required| warehouse_required.get("const"))
+                == Some(&Value::Bool(true))
+                || object
+                    .values()
+                    .any(schema_has_warehouse_required_const_true)
+        }
+        Value::Array(values) => values.iter().any(schema_has_warehouse_required_const_true),
+        _ => false,
+    }
+}
+
+#[test]
+fn read_access_plan_schema_fixture_is_checked_in_for_ts_consumers() {
+    let fixture = include_str!("../schemas/read-access-plan.schema.json");
+    let schema: serde_json::Value = serde_json::from_str(fixture)
+        .expect("read access plan schema fixture should be valid JSON");
+    let rendered = serde_json::to_string(&schema).expect("schema should render");
+
+    for expected in [
+        "ReadAccessPlan",
+        "brokered_delta",
+        "delta_sharing",
+        "sql_fallback_required",
+        "blocked",
+        "tableId",
+        "fullName",
+        "statementEndpoint",
+        "warehouseRequired",
+        "objectAccess",
+        "additionalProperties",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "schema fixture should include {expected}"
+        );
+    }
+}
+
+#[test]
+fn read_access_plan_schema_fixture_restricts_partition_values_to_strings_or_null() {
+    let fixture = include_str!("../schemas/read-access-plan.schema.json");
+    let schema: serde_json::Value = serde_json::from_str(fixture)
+        .expect("read access plan schema fixture should be valid JSON");
+
+    assert_eq!(
+        schema["$defs"]["BrowserHttpFileDescriptor"]["properties"]["partition_values"]
+            ["additionalProperties"],
+        json!({
+            "type": ["string", "null"]
+        })
+    );
+}
+
+#[test]
+fn read_access_plan_schema_fixture_declares_each_closed_variant() {
+    let fixture = include_str!("../schemas/read-access-plan.schema.json");
+    let schema: serde_json::Value = serde_json::from_str(fixture)
+        .expect("read access plan schema fixture should be valid JSON");
+    let one_of = schema
+        .get("oneOf")
+        .and_then(serde_json::Value::as_array)
+        .expect("read access plan schema fixture should declare oneOf variants");
+    let refs = one_of
+        .iter()
+        .map(|entry| {
+            entry
+                .get("$ref")
+                .and_then(serde_json::Value::as_str)
+                .expect("oneOf entries should be schema refs")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        refs,
+        vec![
+            "#/$defs/BrokeredDeltaReadAccessPlan",
+            "#/$defs/DeltaSharingReadAccessPlan",
+            "#/$defs/SqlFallbackRequiredReadAccessPlan",
+            "#/$defs/BlockedReadAccessPlan",
+        ]
+    );
+
+    let defs = schema
+        .get("$defs")
+        .and_then(serde_json::Value::as_object)
+        .expect("read access plan schema fixture should declare definitions");
+    for variant in refs {
+        let name = variant
+            .strip_prefix("#/$defs/")
+            .expect("variant ref should point into $defs");
+        assert_eq!(
+            defs.get(name)
+                .and_then(|definition| definition.get("additionalProperties"))
+                .and_then(serde_json::Value::as_bool),
+            Some(false),
+            "{name} should reject unknown fields"
+        );
+    }
+}
+
+#[test]
+fn brokered_delta_plan_adapts_resolved_snapshot_to_browser_http_descriptor() {
+    let plan = brokered_delta_plan();
+    let resolved = ResolvedSnapshotDescriptor {
+        table_uri: "s3://prod-bucket/tables/orders".to_string(),
+        snapshot_version: 7,
+        partition_column_types: Default::default(),
+        browser_compatibility: signed_url_capabilities(),
+        required_capabilities: signed_url_capabilities(),
+        active_files: vec![ResolvedFileDescriptor {
+            path: "part-000.parquet".to_string(),
+            size_bytes: 512,
+            partition_values: Default::default(),
+            stats: Some("{\"numRecords\":2}".to_string()),
+        }],
+    };
+    let signed_urls = BTreeMap::from([(
+        "part-000.parquet".to_string(),
+        "https://signed.example.test/part-000.parquet?sig=redacted".to_string(),
+    )]);
+
+    let descriptor = plan
+        .to_browser_http_snapshot_descriptor(resolved, &signed_urls)
+        .expect("brokered plan should adapt into the existing descriptor path");
+
+    assert_eq!(descriptor.table_uri, "s3://prod-bucket/tables/orders");
+    assert_eq!(descriptor.snapshot_version, 7);
+    assert_eq!(descriptor.active_files[0].path, "part-000.parquet");
+    assert_eq!(
+        descriptor.active_files[0].url,
+        "https://signed.example.test/part-000.parquet?sig=redacted"
+    );
+    assert_eq!(
+        descriptor.active_files[0].stats.as_deref(),
+        Some("{\"numRecords\":2}")
+    );
+}
+
+#[test]
+fn brokered_delta_adapter_rejects_unconfirmed_policy_or_url_coverage_drift() {
+    let mut unconfirmed = brokered_delta_plan();
+    unconfirmed.policy_authority.direct_external_engine_read =
+        DirectExternalEngineReadSupport::NotConfirmed;
+    let error = unconfirmed
+        .to_browser_http_snapshot_descriptor(empty_resolved_snapshot(), &BTreeMap::new())
+        .expect_err("direct reads require confirmed external-engine support");
+    assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+
+    let plan = brokered_delta_plan();
+    let missing_url_error = plan
+        .to_browser_http_snapshot_descriptor(one_file_resolved_snapshot(), &BTreeMap::new())
+        .expect_err("signed URL coverage must match resolved files");
+    assert_eq!(missing_url_error.code, QueryErrorCode::InvalidRequest);
+    assert!(missing_url_error.message.contains("missing URLs"));
+
+    let mut without_batch_sign = brokered_delta_plan();
+    without_batch_sign.object_access.batch_sign = false;
+    let missing_capability = without_batch_sign
+        .to_browser_http_snapshot_descriptor(empty_resolved_snapshot(), &BTreeMap::new())
+        .expect_err("descriptor adapter needs batch signed object URLs");
+    assert_eq!(missing_capability.code, QueryErrorCode::FallbackRequired);
+}
+
+fn brokered_delta_plan() -> BrokeredDeltaReadPlan {
+    BrokeredDeltaReadPlan {
+        table_id: "tbl-123".to_string(),
+        full_name: "main.sales.orders".to_string(),
+        table_root: "s3://prod-bucket/tables/orders".to_string(),
+        grant_id: "grant-456".to_string(),
+        expires_at_epoch_ms: 1_800_000_000_000,
+        delta_access_mode: BrokeredDeltaAccessMode::DeltaLog,
+        policy_authority: BrokeredPolicyAuthority {
+            authority: PolicyAuthorityKind::UnityCatalog,
+            direct_external_engine_read: DirectExternalEngineReadSupport::Confirmed,
+        },
+        object_access: BrokeredObjectAccess {
+            list: true,
+            head: true,
+            get: true,
+            range_get: true,
+            batch_sign: true,
+            proxy_range: true,
+        },
+    }
+}
+
+fn signed_url_capabilities() -> CapabilityReport {
+    CapabilityReport::from_pairs([
+        (CapabilityKey::RangeReads, CapabilityState::Supported),
+        (CapabilityKey::SignedUrlAccess, CapabilityState::Supported),
+    ])
+}
+
+fn empty_resolved_snapshot() -> ResolvedSnapshotDescriptor {
+    ResolvedSnapshotDescriptor {
+        table_uri: "s3://prod-bucket/tables/orders".to_string(),
+        snapshot_version: 7,
+        partition_column_types: BTreeMap::new(),
+        browser_compatibility: signed_url_capabilities(),
+        required_capabilities: signed_url_capabilities(),
+        active_files: Vec::new(),
+    }
+}
+
+fn one_file_resolved_snapshot() -> ResolvedSnapshotDescriptor {
+    let mut snapshot = empty_resolved_snapshot();
+    snapshot.active_files.push(ResolvedFileDescriptor {
+        path: "part-000.parquet".to_string(),
+        size_bytes: 512,
+        partition_values: BTreeMap::new(),
+        stats: None,
+    });
+    snapshot
+}
+
+#[test]
+fn object_grant_openapi_fixture_documents_browser_routes() {
+    let fixture = include_str!("../schemas/object-grants.openapi.json");
+    let openapi: serde_json::Value =
+        serde_json::from_str(fixture).expect("object grant OpenAPI fixture should be valid JSON");
+
+    let paths = openapi
+        .get("paths")
+        .and_then(serde_json::Value::as_object)
+        .expect("OpenAPI fixture should contain paths");
+
+    for route in [
+        "/object-grants/{grantId}/list",
+        "/object-grants/{grantId}/head",
+        "/object-grants/{grantId}/batch-sign",
+        "/object-grants/{grantId}/range",
+    ] {
+        assert!(paths.contains_key(route), "missing OpenAPI route {route}");
+    }
+
+    let rendered = fixture.to_ascii_lowercase();
+    for forbidden in [
+        "aws_secret_access_key",
+        "aws_session_token",
+        "azure_sas",
+        "gcp_oauth",
+        "gcp_hmac",
+        "databricks_bearer",
+        "refresh_token",
+        "personal_access_token",
+    ] {
+        assert!(
+            !rendered.contains(forbidden),
+            "object grant fixture must not document raw credential field {forbidden}"
+        );
+    }
 }
 
 #[test]

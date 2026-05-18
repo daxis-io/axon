@@ -172,7 +172,7 @@ function ManageDrawer({
             {catalog.kind === 'local'
               ? 'Local files'
               : catalog.kind === 'unity_catalog'
-                ? 'Unity Catalog (Databricks)'
+                ? 'Unity Catalog (brokered)'
                 : catalog.kind === 'delta_share'
                   ? 'Delta Sharing'
                   : 'Object storage (' + (catalog.provider || '').toUpperCase() + ')'}
@@ -200,10 +200,10 @@ function ManageDrawer({
             {catalog.kind === 'local'
               ? 'file:// · read-only'
               : catalog.kind === 'unity_catalog'
-                ? 'PAT · encrypted'
+                ? 'BFF session · object grants'
                 : catalog.kind === 'delta_share'
-                  ? 'Bearer token · encrypted'
-                  : 'Service account · encrypted'}
+                  ? 'trusted sharing broker'
+                  : 'trusted resolver'}
           </span>
         </div>
         <div className="field-row">
@@ -216,7 +216,7 @@ function ManageDrawer({
             <IconRefresh size={11} /> Resync
           </button>
           <button className="cc-btn" style={{ flex: 1 }}>
-            <IconCog size={11} /> Edit auth
+            <IconCog size={11} /> Edit session
           </button>
         </div>
         <button

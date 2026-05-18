@@ -98,9 +98,9 @@ export function ConnectPage() {
 
           <h1>Connect a Delta source</h1>
           <p>
-            Bring a local Delta folder, a cloud bucket, a Unity Catalog workspace, or a Delta
-            Sharing endpoint into Axon. Each one slots in as a catalog you can browse and query — no
-            data movement, no copies.
+            Axon ships with a browser-local sample catalog. Production cloud, UC, and Delta Sharing
+            sources require trusted resolver or BFF contracts before the browser can discover and
+            query them.
           </p>
 
           <div className="cc-page-actions">
@@ -116,13 +116,22 @@ export function ConnectPage() {
           </div>
 
           <div className="cc-page-quicklinks">
-            Or jump straight to <a onClick={() => open(2, 'local')}>local folder</a>
+            Or jump straight to{' '}
+            <button type="button" onClick={() => open(2, 'local')}>
+              local folder
+            </button>
             <span>·</span>
-            <a onClick={() => open(2, 'object_store')}>cloud bucket</a>
+            <button type="button" onClick={() => open(2, 'object_store')}>
+              cloud bucket
+            </button>
             <span>·</span>
-            <a onClick={() => open(2, 'unity_catalog')}>Unity Catalog</a>
+            <button type="button" onClick={() => open(2, 'unity_catalog')}>
+              Unity Catalog
+            </button>
             <span>·</span>
-            <a onClick={() => open(2, 'delta_share')}>Delta Sharing</a>
+            <button type="button" onClick={() => open(2, 'delta_share')}>
+              Delta Sharing
+            </button>
           </div>
         </div>
 

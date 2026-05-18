@@ -2,7 +2,7 @@
 
 mod delta_protocol_features;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 
 pub use delta_protocol_features::{
@@ -96,6 +96,7 @@ pub enum QueryErrorCode {
     ExecutionFailed,
     FallbackRequired,
     InvalidRequest,
+    ObjectNotFound,
     ObjectStoreProtocol,
     SecurityPolicyViolation,
     UnsupportedFeature,
@@ -222,6 +223,7 @@ pub struct ResolvedSnapshotDescriptor {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserHttpFileDescriptor {
     pub path: String,
     pub url: String,
@@ -760,6 +762,337 @@ pub struct ParquetInspectionSummary {
     pub compression: ParquetCompressionSummary,
     pub columns: Vec<ParquetInspectionColumn>,
     pub row_groups: Vec<ParquetInspectionRowGroup>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "plan_type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReadAccessPlan {
+    BrokeredDelta(BrokeredDeltaReadPlan),
+    DeltaSharing(DeltaSharingReadPlan),
+    SqlFallbackRequired(SqlFallbackRequiredPlan),
+    Blocked(BlockedReadPlan),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrokeredDeltaReadPlan {
+    pub table_id: String,
+    pub full_name: String,
+    pub table_root: String,
+    pub grant_id: String,
+    pub expires_at_epoch_ms: u64,
+    pub delta_access_mode: BrokeredDeltaAccessMode,
+    pub policy_authority: BrokeredPolicyAuthority,
+    pub object_access: BrokeredObjectAccess,
+}
+
+impl BrokeredDeltaReadPlan {
+    pub fn to_browser_http_snapshot_descriptor(
+        &self,
+        resolved_snapshot: ResolvedSnapshotDescriptor,
+        object_urls_by_path: &BTreeMap<String, String>,
+    ) -> Result<BrowserHttpSnapshotDescriptor, QueryError> {
+        if self.policy_authority.direct_external_engine_read
+            != DirectExternalEngineReadSupport::Confirmed
+        {
+            return Err(QueryError::new(
+                QueryErrorCode::FallbackRequired,
+                "brokered Delta direct read requires confirmed UC external-engine support",
+                ExecutionTarget::BrowserWasm,
+            ));
+        }
+        if !self.object_access.batch_sign {
+            return Err(QueryError::new(
+                QueryErrorCode::FallbackRequired,
+                "brokered Delta descriptor adaptation requires batch signed object URLs",
+                ExecutionTarget::BrowserWasm,
+            ));
+        }
+        if !self.object_access.range_get {
+            return Err(QueryError::new(
+                QueryErrorCode::FallbackRequired,
+                "brokered Delta descriptor adaptation requires range-readable objects",
+                ExecutionTarget::BrowserWasm,
+            ));
+        }
+        if resolved_snapshot.table_uri != self.table_root {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidRequest,
+                "brokered Delta plan tableRoot did not match resolved snapshot table_uri",
+                ExecutionTarget::BrowserWasm,
+            ));
+        }
+
+        let mut resolved_paths = BTreeSet::new();
+        let mut duplicate_paths = BTreeSet::new();
+        for file in &resolved_snapshot.active_files {
+            if !resolved_paths.insert(file.path.clone()) {
+                duplicate_paths.insert(file.path.clone());
+            }
+        }
+        let missing_paths = resolved_snapshot
+            .active_files
+            .iter()
+            .filter(|file| !object_urls_by_path.contains_key(&file.path))
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>();
+        let unexpected_paths = object_urls_by_path
+            .keys()
+            .filter(|path| !resolved_paths.contains(*path))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if !duplicate_paths.is_empty() || !missing_paths.is_empty() || !unexpected_paths.is_empty()
+        {
+            let mut reasons = Vec::new();
+            if !duplicate_paths.is_empty() {
+                reasons.push(format!(
+                    "resolved snapshot contained duplicate paths [{}]",
+                    quote_joined_paths(duplicate_paths.iter())
+                ));
+            }
+            if !missing_paths.is_empty() {
+                reasons.push(format!(
+                    "missing URLs for [{}]",
+                    quote_joined_paths(missing_paths.iter())
+                ));
+            }
+            if !unexpected_paths.is_empty() {
+                reasons.push(format!(
+                    "unexpected URLs for [{}]",
+                    quote_joined_paths(unexpected_paths.iter())
+                ));
+            }
+
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidRequest,
+                format!(
+                    "brokered Delta signed URL coverage did not match the resolved snapshot: {}",
+                    reasons.join("; ")
+                ),
+                ExecutionTarget::BrowserWasm,
+            ));
+        }
+
+        let active_files = resolved_snapshot
+            .active_files
+            .into_iter()
+            .map(|file| {
+                let url = object_urls_by_path
+                    .get(&file.path)
+                    .expect("missing signed URL coverage should be rejected before mapping");
+                validate_browser_object_url(
+                    url,
+                    ExecutionTarget::BrowserWasm,
+                    BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTests,
+                    "brokered Delta signed object URL",
+                )?;
+
+                Ok(BrowserHttpFileDescriptor {
+                    path: file.path,
+                    url: url.clone(),
+                    size_bytes: file.size_bytes,
+                    partition_values: file.partition_values,
+                    stats: file.stats,
+                })
+            })
+            .collect::<Result<Vec<_>, QueryError>>()?;
+
+        Ok(BrowserHttpSnapshotDescriptor {
+            table_uri: resolved_snapshot.table_uri,
+            snapshot_version: resolved_snapshot.snapshot_version,
+            partition_column_types: resolved_snapshot.partition_column_types,
+            browser_compatibility: resolved_snapshot.browser_compatibility,
+            required_capabilities: resolved_snapshot.required_capabilities,
+            active_files,
+        })
+    }
+}
+
+fn quote_joined_paths<'a, I>(paths: I) -> String
+where
+    I: IntoIterator<Item = &'a String>,
+{
+    paths
+        .into_iter()
+        .map(|path| format!("'{path}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrokeredDeltaAccessMode {
+    DeltaLog,
+    PresignedFiles,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrokeredPolicyAuthority {
+    pub authority: PolicyAuthorityKind,
+    pub direct_external_engine_read: DirectExternalEngineReadSupport,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyAuthorityKind {
+    UnityCatalog,
+    DeltaSharing,
+    MockBroker,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectExternalEngineReadSupport {
+    Confirmed,
+    NotConfirmed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrokeredObjectAccess {
+    pub list: bool,
+    pub head: bool,
+    pub get: bool,
+    pub range_get: bool,
+    pub batch_sign: bool,
+    pub proxy_range: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeltaSharingReadPlan {
+    pub table_id: String,
+    pub full_name: String,
+    pub sharing_endpoint: String,
+    pub expires_at_epoch_ms: u64,
+    pub files: Vec<BrowserHttpFileDescriptor>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlFallbackRequiredPlan {
+    pub table_id: String,
+    pub full_name: String,
+    pub reason: ReadAccessPlanReason,
+    pub message: String,
+    pub statement_endpoint: String,
+    #[serde(
+        deserialize_with = "deserialize_required_true",
+        serialize_with = "serialize_required_true"
+    )]
+    #[schemars(schema_with = "required_true_json_schema")]
+    pub warehouse_required: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BlockedReadPlan {
+    pub table_id: String,
+    pub full_name: String,
+    pub reason: ReadAccessPlanReason,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadAccessPlanReason {
+    RowFilter,
+    ColumnMask,
+    View,
+    UnknownPolicyState,
+    NoDirectExternalEngineReadSupport,
+    UnsupportedTableType,
+    GrantExpired,
+    StorageCorsBlocked,
+    BrokerUnavailable,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectGrantListRequest {
+    pub prefix: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectGrantListResponse {
+    pub objects: Vec<ObjectGrantObject>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectGrantHeadRequest {
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectGrantObject {
+    pub path: String,
+    pub size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectGrantBatchSignRequest {
+    pub paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectGrantBatchSignResponse {
+    pub signed_urls: Vec<ObjectGrantSignedUrl>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectGrantSignedUrl {
+    pub path: String,
+    pub url: String,
+    pub expires_at_epoch_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectGrantRangeRequest {
+    pub path: String,
+    pub start: u64,
+    pub end: u64,
+}
+
+fn deserialize_required_true<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = bool::deserialize(deserializer)?;
+    if value {
+        return Ok(true);
+    }
+
+    Err(serde::de::Error::custom("warehouseRequired must be true"))
+}
+
+fn serialize_required_true<S>(value: &bool, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if *value {
+        return serializer.serialize_bool(true);
+    }
+
+    Err(serde::ser::Error::custom("warehouseRequired must be true"))
+}
+
+fn required_true_json_schema(
+    generator: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
+    let mut schema: schemars::schema::SchemaObject = <bool>::json_schema(generator).into();
+    schema.const_value = Some(serde_json::Value::Bool(true));
+    schema.into()
 }
 
 fn capability_report_is_empty(report: &CapabilityReport) -> bool {

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -15,6 +16,7 @@ import {
 import { subscribeEngineStatus } from '../services/engine.ts';
 import { appendHistory, loadHistory } from '../services/history.ts';
 import { runQuery } from '../services/query.ts';
+import { querySourceFromConnectedCatalogs } from '../services/query-source.ts';
 import { loadSaved, saveQuery } from '../services/saved.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
 import { subscribeCommits } from '../services/snapshot.ts';
@@ -80,10 +82,10 @@ type Tab = {
 };
 
 const SAMPLE_QUERIES = {
-  count: 'SELECT COUNT(*) AS row_count FROM axon_table',
+  count: 'SELECT COUNT(*) AS row_count FROM events',
   category:
-    'SELECT category,\n       COUNT(*) AS rows,\n       SUM(value) AS total_value\nFROM axon_table\nGROUP BY category\nORDER BY category',
-  top: 'SELECT id, category, value\nFROM axon_table\nWHERE value >= 90\nORDER BY value DESC\nLIMIT 20',
+    'SELECT category,\n       COUNT(*) AS rows,\n       SUM(value) AS total_value\nFROM events\nGROUP BY category\nORDER BY category',
+  top: 'SELECT id, category, value\nFROM events\nWHERE value >= 90\nORDER BY value DESC\nLIMIT 20',
 } as const;
 
 const TWEAK_DEFAULTS = {
@@ -174,6 +176,10 @@ export function App() {
     loadConnectedCatalogs(),
   );
   const [freshCatalogId, setFreshCatalogId] = useState<string | null>(null);
+  const querySource = useMemo(
+    () => querySourceFromConnectedCatalogs(connectedCatalogs),
+    [connectedCatalogs],
+  );
 
   useEffect(() => {
     saveConnectedCatalogs(connectedCatalogs);
@@ -218,10 +224,10 @@ export function App() {
 
   // ─── Subscribe to catalog + kick off session bootstrap ──
   useEffect(() => {
-    const unsubCatalog = subscribeCatalog(setCatalog);
+    const unsubCatalog = subscribeCatalog(setCatalog, querySource);
     const unsubCommits = subscribeCommits(setCommits);
     const unsubEngine = subscribeEngineStatus(setEngineStatus);
-    loadCatalog().catch((err) => {
+    loadCatalog(querySource).catch((err) => {
       console.error('failed to load catalog:', err);
     });
     return () => {
@@ -229,7 +235,7 @@ export function App() {
       unsubCommits();
       unsubEngine();
     };
-  }, []);
+  }, [querySource]);
 
   useEffect(() => {
     let active = true;
@@ -319,7 +325,7 @@ export function App() {
 
     const req: QueryExecRequest = {
       sql: tab.sql,
-      table_name: tableMeta?.name ?? 'axon_table',
+      table_name: tableMeta?.name ?? querySource.tableName,
       preferred_target: tab.preferred,
       snapshot_version: tab.pin ?? undefined,
     };
@@ -334,6 +340,7 @@ export function App() {
         if (event.kind === 'metrics') setMetrics(event.metrics);
       },
       ctrl.signal,
+      querySource,
     );
 
     if (runTimer.current != null) window.clearInterval(runTimer.current);
@@ -412,7 +419,7 @@ export function App() {
       setHistory((h) => [entry, ...h].slice(0, 100));
       showToast(outcome.message, 'warn');
     }
-  }, [activeTab, runState.status, showToast, tabs, tableMeta?.name]);
+  }, [activeTab, querySource, runState.status, showToast, tabs, tableMeta?.name]);
 
   const cancelRun = useCallback(() => {
     cancelRef.current?.abort();

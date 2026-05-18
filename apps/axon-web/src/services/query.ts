@@ -26,9 +26,7 @@ import type {
   ResultCell,
   ResultColumn,
 } from './types.ts';
-
-const TABLE_NAME = 'axon_table';
-const DEFAULT_FIXTURE_MANIFEST = '/fixtures/prod-like/delta-log-manifest.json';
+import { SAMPLE_QUERY_SOURCE, sameQuerySource, type QueryTableSource } from './query-source.ts';
 
 type FixtureObject = {
   relative_path: string;
@@ -74,12 +72,12 @@ type SessionState = {
   manifest: FixtureManifest;
   snapshot: ResolvedSnapshot;
   tableOpened: boolean;
-  manifestUrl: string;
+  source: QueryTableSource;
 };
 
 let wasmReady: Promise<unknown> | undefined;
 let session: SessionState | undefined;
-let sessionInit: Promise<SessionState> | undefined;
+let sessionInit: { source: QueryTableSource; promise: Promise<SessionState> } | undefined;
 let requestCounter = 0;
 let coldStartMs: number | undefined;
 
@@ -142,9 +140,9 @@ function browserSnapshotDescriptor(
   };
 }
 
-async function buildSession(manifestUrl: string): Promise<SessionState> {
+async function buildSession(source: QueryTableSource): Promise<SessionState> {
   await ensureWasm();
-  const manifest = await fetchJson<FixtureManifest>(manifestUrl);
+  const manifest = await fetchJson<FixtureManifest>(source.manifestUrl);
   const wasmManifest = {
     objects: manifest.objects.map((object) => ({
       relative_path: object.relative_path,
@@ -178,27 +176,32 @@ async function buildSession(manifestUrl: string): Promise<SessionState> {
     manifest,
     snapshot,
     tableOpened: false,
-    manifestUrl,
+    source,
   };
 }
 
 export async function getSession(
-  manifestUrl: string = DEFAULT_FIXTURE_MANIFEST,
+  source: QueryTableSource = SAMPLE_QUERY_SOURCE,
 ): Promise<SessionState> {
-  if (session?.manifestUrl === manifestUrl) return session;
-  if (!sessionInit) {
+  if (session && sameQuerySource(session.source, source)) return session;
+  if (sessionInit && sameQuerySource(sessionInit.source, source)) return sessionInit.promise;
+  {
     const t0 = performance.now();
-    sessionInit = buildSession(manifestUrl).then((s) => {
+    const promise = buildSession(source).then((s) => {
       session = s;
       coldStartMs = Math.round(performance.now() - t0);
       sessionSubscribers.forEach((fn) => fn(s));
       return s;
     });
+    sessionInit = { source, promise };
   }
-  return sessionInit;
+  return sessionInit.promise;
 }
 
-export function getCurrentSession(): SessionState | undefined {
+export function getCurrentSession(
+  source: QueryTableSource = SAMPLE_QUERY_SOURCE,
+): SessionState | undefined {
+  if (!session || !sameQuerySource(session.source, source)) return undefined;
   return session;
 }
 
@@ -249,23 +252,25 @@ function inferTypeFromColumn(rows: BrowserWorkerResultPreview['rows'], idx: numb
 function ensureTable(state: SessionState, signal: AbortSignal): Promise<void> {
   if (state.tableOpened) return Promise.resolve();
   const requestId = `editor-open-${++requestCounter}`;
-  return state.client.openDeltaTable(TABLE_NAME, state.descriptor, { requestId }).then(() => {
-    if (signal.aborted) return;
-    state.tableOpened = true;
-  });
+  return state.client
+    .openDeltaTable(state.source.tableName, state.descriptor, { requestId })
+    .then(() => {
+      if (signal.aborted) return;
+      state.tableOpened = true;
+    });
 }
 
 export async function runQuery(
   req: QueryExecRequest,
   onEvent: (event: QueryEvent) => void,
   signal: AbortSignal = new AbortController().signal,
-  manifestUrl: string = DEFAULT_FIXTURE_MANIFEST,
+  source: QueryTableSource = SAMPLE_QUERY_SOURCE,
 ): Promise<QueryRunOutcome> {
   const startedAt = performance.now();
   const since = () => Math.round(performance.now() - startedAt);
 
   try {
-    const state = await getSession(manifestUrl);
+    const state = await getSession(source);
     if (signal.aborted) throw new DOMException('cancelled', 'AbortError');
 
     await ensureTable(state, signal);
@@ -312,7 +317,7 @@ export async function runQuery(
 
     try {
       const result: AxonQueryResult = await state.client.query(
-        TABLE_NAME,
+        state.source.tableName,
         {
           table_uri: state.snapshot.table_uri,
           snapshot_version: req.snapshot_version ?? state.snapshot.snapshot_version,
@@ -380,7 +385,7 @@ export function deriveCatalogTable(state: SessionState): CatalogTable {
   const totalBytes = snapshot.active_files.reduce((acc, f) => acc + f.size_bytes, 0);
 
   return {
-    name: TABLE_NAME,
+    name: state.source.tableName,
     uri: snapshot.table_uri,
     kind: 'delta',
     snapshot: snapshot.snapshot_version,

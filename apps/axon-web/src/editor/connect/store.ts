@@ -1,20 +1,47 @@
 // Persistence for connected catalogs from the Connect Catalog workflow.
-// Stored in localStorage so the demo state survives reloads.
+// Stored in localStorage so non-sensitive catalog metadata survives reloads.
 
 import type { ObjectStoreProviderId } from './data.ts';
-import { DISCOVERED } from './data.ts';
 import type { ConnectResult, ConnectedCatalog, SchemaSelection } from './types.ts';
+import { SAMPLE_QUERY_SOURCE } from '../../services/query-source.ts';
 
 const STORAGE_KEY = 'axon.connect.catalogs.v1';
+
+export const SAMPLE_CONNECTED_CATALOG: ConnectedCatalog = {
+  id: 'sample-lake-fixture',
+  alias: SAMPLE_QUERY_SOURCE.catalogName,
+  kind: 'object_store',
+  provider: 'gcs',
+  storage: SAMPLE_QUERY_SOURCE.storage,
+  region: SAMPLE_QUERY_SOURCE.region,
+  status: 'connected',
+  connectedAt: 'sample fixture',
+  schemas: [
+    {
+      name: SAMPLE_QUERY_SOURCE.schemaName,
+      tables: [
+        {
+          name: SAMPLE_QUERY_SOURCE.tableName,
+          snapshot: 3,
+          rows: 6,
+          files: 1,
+          size: 'fixture',
+          protocol: 'r2/w5',
+          manifestUrl: SAMPLE_QUERY_SOURCE.manifestUrl,
+        },
+      ],
+    },
+  ],
+};
 
 export function loadConnectedCatalogs(): ConnectedCatalog[] {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
+    if (!raw) return [SAMPLE_CONNECTED_CATALOG];
     const parsed = JSON.parse(raw) as ConnectedCatalog[];
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed : [SAMPLE_CONNECTED_CATALOG];
   } catch {
-    return [];
+    return [SAMPLE_CONNECTED_CATALOG];
   }
 }
 
@@ -28,7 +55,7 @@ export function saveConnectedCatalogs(catalogs: ConnectedCatalog[]): void {
 
 export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog {
   const { source, form, alias, selection } = result;
-  const disc = DISCOVERED[source];
+  const disc = result.discovered;
   const schemas = disc.schemas
     .map((s) => {
       const sel: SchemaSelection = selection[s.name] ?? (s.included ? 'all' : 'none');
@@ -48,6 +75,8 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
           size: t.size,
           protocol: t.protocol,
           features: t.features,
+          uri: t.name,
+          manifestUrl: t.manifestUrl,
         })),
       };
     })
@@ -64,7 +93,7 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
           ? form.ds_mode === 'profile'
             ? form.ds_profile_name
             : form.ds_endpoint
-          : form.uc_host;
+          : form.uc_bff_url || form.uc_host;
 
   return {
     id,
@@ -83,7 +112,7 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
       source === 'object_store'
         ? form.region || 'auto'
         : source === 'unity_catalog'
-          ? 'auto'
+          ? 'brokered'
           : source === 'delta_share'
             ? 'provider-vended'
             : '—',

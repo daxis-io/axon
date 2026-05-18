@@ -33,7 +33,10 @@ use query_contract::{
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
-use wasm_http_object_store::{HttpByteRange, HttpRangeReader, HttpRangeValidation};
+use wasm_http_object_store::{
+    BrokeredObjectStore, HttpByteRange, HttpRangeReader, HttpRangeValidation,
+    ObjectGrantBrokerClient,
+};
 
 pub const OWNER: &str = "Runtime / engine team";
 pub const RESPONSIBILITY: &str = "Browser-safe Delta snapshot reconstruction.";
@@ -199,6 +202,70 @@ impl StorageHandler for BrowserHttpDeltaLogStorageHandler {
             .await?;
         validate_manifest_object_metadata(object, &result.metadata)?;
         Ok(Some(result.bytes))
+    }
+}
+
+pub struct BrokeredDeltaLogStorageHandler<C> {
+    table_root: String,
+    object_store: BrokeredObjectStore<C>,
+}
+
+impl<C> BrokeredDeltaLogStorageHandler<C>
+where
+    C: ObjectGrantBrokerClient,
+{
+    pub fn new(table_root: impl Into<String>, object_store: BrokeredObjectStore<C>) -> Self {
+        Self {
+            table_root: table_root.into(),
+            object_store,
+        }
+    }
+
+    fn validate_table_uri(&self, table_uri: &str) -> Result<(), QueryError> {
+        if table_uri != self.table_root {
+            return Err(invalid_request(
+                "brokered Delta storage table_uri did not match the access plan tableRoot"
+                    .to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait(?Send)]
+impl<C> StorageHandler for BrokeredDeltaLogStorageHandler<C>
+where
+    C: ObjectGrantBrokerClient,
+{
+    async fn list_paths(&self, table_uri: &str, prefix: &str) -> Result<Vec<String>, QueryError> {
+        self.validate_table_uri(table_uri)?;
+        let mut paths = self
+            .object_store
+            .list(prefix)
+            .await?
+            .into_iter()
+            .map(|object| object.path)
+            .collect::<Vec<_>>();
+        paths.sort();
+        Ok(paths)
+    }
+
+    async fn read_bytes(
+        &self,
+        table_uri: &str,
+        relative_path: &str,
+    ) -> Result<Option<Bytes>, QueryError> {
+        self.validate_table_uri(table_uri)?;
+        if let Err(error) = self.object_store.head(relative_path).await {
+            if error.code == QueryErrorCode::ObjectNotFound {
+                return Ok(None);
+            }
+
+            return Err(error);
+        }
+
+        self.object_store.get(relative_path).await.map(Some)
     }
 }
 

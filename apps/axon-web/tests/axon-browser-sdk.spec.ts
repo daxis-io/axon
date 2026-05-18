@@ -8,17 +8,21 @@ import {
   createDeltaSharingClient,
   createAxonBrowserClient,
   getPlatformFeatures,
+  parseReadAccessPlan,
   redactUrlSecrets,
   selectBundle,
+  snapshotFromBrokeredDeltaReadPlan,
   validateDeltaLocationResolveResponse,
   type BrowserBundleManifest,
   type BrowserHttpSnapshotDescriptor,
   type BrowserWorkerEventEnvelope,
   type BrowserWorkerCommand,
+  type BrokeredDeltaReadAccessPlan,
   type DeltaSharingFetch,
   type DeltaSharingReadPlan,
   type DeltaLocationResolveRequest,
   type DeltaLocationResolveResponse,
+  type ResolvedSnapshotDescriptor,
   type PlatformFeatureScope,
   type PlatformFeatures,
   type QueryResponse,
@@ -296,6 +300,283 @@ test('getPlatformFeatures tracks browser isolation, SIMD, threads, and BigInt64A
     bigInt64Array: true,
   });
   expect(getPlatformFeatures({ ...scope, crossOriginIsolated: false }).wasmThreads).toBe(false);
+});
+
+test('parseReadAccessPlan accepts fake-BFF contract variants and rejects raw secrets', () => {
+  const brokered = parseReadAccessPlan(brokeredDeltaPlan());
+  const sharing = parseReadAccessPlan(deltaSharingAccessPlan());
+  const fallback = parseReadAccessPlan({
+    plan_type: 'sql_fallback_required',
+    tableId: 'tbl-governed',
+    fullName: 'main.secure.payments',
+    reason: 'row_filter',
+    message: 'governed table requires service-side SQL execution',
+    statementEndpoint: 'https://dbc.example.com/api/2.0/sql/statements',
+    warehouseRequired: true,
+  });
+  const blocked = parseReadAccessPlan({
+    plan_type: 'blocked',
+    tableId: 'tbl-blocked',
+    fullName: 'main.secure.denied',
+    reason: 'unknown_policy_state',
+    message: 'policy state is not safe for browser execution',
+  });
+
+  expect(brokered.plan_type).toBe('brokered_delta');
+  expect(sharing.plan_type).toBe('delta_sharing');
+  expect(fallback.plan_type).toBe('sql_fallback_required');
+  expect(blocked.plan_type).toBe('blocked');
+
+  expect(() =>
+    parseReadAccessPlan({
+      ...brokeredDeltaPlan(),
+      databricks_bearer_token: 'dapi-secret-token',
+    }),
+  ).toThrow(AxonProtocolError);
+  expect(() =>
+    parseReadAccessPlan({
+      plan_type: 'uc_oss_connection',
+      tableId: 'tbl-oss',
+    }),
+  ).toThrow(AxonProtocolError);
+});
+
+test('snapshotFromBrokeredDeltaReadPlan adapts object-grant plans into browser descriptors', () => {
+  const descriptor = snapshotFromBrokeredDeltaReadPlan(brokeredDeltaPlan(), brokeredSnapshot(), {
+    'part-000.parquet': 'https://storage.example.test/part-000.parquet?X-Amz-Signature=abc',
+  });
+
+  expect(descriptor).toEqual({
+    table_uri: 's3://prod-bucket/tables/orders',
+    snapshot_version: 12,
+    partition_column_types: { region: 'string' },
+    browser_compatibility: { capabilities: {} },
+    required_capabilities: { capabilities: {} },
+    active_files: [
+      {
+        path: 'part-000.parquet',
+        url: 'https://storage.example.test/part-000.parquet?X-Amz-Signature=abc',
+        size_bytes: 128,
+        partition_values: { region: 'west' },
+      },
+    ],
+  });
+});
+
+test('openUnityCatalogTable opens brokered Delta plans through the existing worker descriptor path', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const openedPromise = client.openUnityCatalogTable('orders', {
+    fullName: 'main.sales.orders',
+    session: { id: 'browser-session-123' },
+    resolveReadAccessPlan: async (request) => {
+      expect(request).toEqual({
+        fullName: 'main.sales.orders',
+        session: { id: 'browser-session-123' },
+      });
+      return brokeredDeltaPlan();
+    },
+    brokeredDelta: {
+      resolveSnapshot: async () => brokeredSnapshot(),
+      batchSign: async (_plan, paths) => ({
+        signedUrls: paths.map((path) => ({
+          path,
+          url: `https://storage.example.test/${path}?X-Amz-Signature=abc`,
+          expiresAtEpochMs: 4_102_444_800_000,
+        })),
+      }),
+    },
+    requestId: 'req-uc-brokered',
+  });
+
+  await expect.poll(() => worker.commands.length).toBe(1);
+  expect(worker.commands[0]).toMatchObject({
+    open_delta_table: {
+      request_id: 'req-uc-brokered',
+      name: 'orders',
+      snapshot: {
+        table_uri: 's3://prod-bucket/tables/orders',
+        active_files: [
+          {
+            path: 'part-000.parquet',
+            url: 'https://storage.example.test/part-000.parquet?X-Amz-Signature=abc',
+          },
+        ],
+      },
+    },
+  });
+  expect(JSON.stringify(worker.commands[0])).not.toContain('grant-456');
+  expect(JSON.stringify(worker.commands[0])).not.toContain('browser-session-123');
+
+  worker.emitMessage({ opened: { request_id: 'req-uc-brokered', name: 'orders' } });
+  await expect(openedPromise).resolves.toMatchObject({
+    status: 'opened',
+    planType: 'brokered_delta',
+    request_id: 'req-uc-brokered',
+    name: 'orders',
+  });
+});
+
+test('openUnityCatalogTable opens delta_sharing plans without browser-owned UC credentials', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const openedPromise = client.openUnityCatalogTable('shared_events', {
+    fullName: 'main.analytics.events',
+    resolveReadAccessPlan: async () => deltaSharingAccessPlan(),
+    requestId: 'req-uc-sharing',
+  });
+
+  await expect.poll(() => worker.commands.length).toBe(1);
+  expect(worker.commands[0]).toMatchObject({
+    open_delta_table: {
+      request_id: 'req-uc-sharing',
+      name: 'shared_events',
+      snapshot: {
+        table_uri: 'delta-sharing://sharing.example.test/main.analytics.events',
+        snapshot_version: 0,
+        active_files: [
+          {
+            path: 'part-000.parquet',
+            url: 'https://storage.example.test/share/part-000.parquet?X-Amz-Signature=abc',
+          },
+        ],
+      },
+    },
+  });
+  expect(JSON.stringify(worker.commands[0])).not.toContain('Authorization');
+  expect(JSON.stringify(worker.commands[0])).not.toContain('databricks_bearer_token');
+
+  worker.emitMessage({ opened: { request_id: 'req-uc-sharing', name: 'shared_events' } });
+  await expect(openedPromise).resolves.toMatchObject({
+    status: 'opened',
+    planType: 'delta_sharing',
+  });
+});
+
+test('openUnityCatalogTable rejects expired read-access plans before worker handoff', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  await expect(
+    client.openUnityCatalogTable('orders', {
+      fullName: 'main.sales.orders',
+      resolveReadAccessPlan: async () => ({
+        ...brokeredDeltaPlan(),
+        expiresAtEpochMs: 1,
+      }),
+      brokeredDelta: {
+        resolveSnapshot: async () => brokeredSnapshot(),
+        batchSign: async () => ({
+          signedUrls: [
+            {
+              path: 'part-000.parquet',
+              url: 'https://storage.example.test/part-000.parquet?X-Amz-Signature=abc',
+              expiresAtEpochMs: 4_102_444_800_000,
+            },
+          ],
+        }),
+      },
+    }),
+  ).rejects.toThrow(AxonProtocolError);
+
+  await expect(
+    client.openUnityCatalogTable('shared_events', {
+      fullName: 'main.analytics.events',
+      resolveReadAccessPlan: async () => ({
+        ...deltaSharingAccessPlan(),
+        expiresAtEpochMs: 1,
+      }),
+    }),
+  ).rejects.toThrow(AxonProtocolError);
+
+  expect(worker.commands).toHaveLength(0);
+});
+
+test('openUnityCatalogTable rejects expired brokered signed URLs before worker handoff', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  await expect(
+    client.openUnityCatalogTable('orders', {
+      fullName: 'main.sales.orders',
+      resolveReadAccessPlan: async () => brokeredDeltaPlan(),
+      brokeredDelta: {
+        resolveSnapshot: async () => brokeredSnapshot(),
+        batchSign: async () => ({
+          signedUrls: [
+            {
+              path: 'part-000.parquet',
+              url: 'https://storage.example.test/part-000.parquet?X-Amz-Signature=abc',
+              expiresAtEpochMs: 1,
+            },
+          ],
+        }),
+      },
+    }),
+  ).rejects.toThrow(AxonProtocolError);
+
+  expect(worker.commands).toHaveLength(0);
+});
+
+test('openUnityCatalogTable keeps SQL fallback explicit and blocked plans fail closed', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  await expect(
+    client.openUnityCatalogTable('payments', {
+      fullName: 'main.secure.payments',
+      resolveReadAccessPlan: async () => ({
+        plan_type: 'sql_fallback_required',
+        tableId: 'tbl-governed',
+        fullName: 'main.secure.payments',
+        reason: 'row_filter',
+        message: 'governed table requires service-side SQL execution',
+        statementEndpoint: 'https://dbc.example.com/api/2.0/sql/statements',
+        warehouseRequired: true,
+      }),
+    }),
+  ).resolves.toMatchObject({
+    status: 'sql_fallback_required',
+    reason: 'row_filter',
+  });
+
+  const routed = await client.openUnityCatalogTable('payments', {
+    fullName: 'main.secure.payments',
+    serverFallbackEnabled: true,
+    resolveReadAccessPlan: async () => ({
+      plan_type: 'sql_fallback_required',
+      tableId: 'tbl-governed',
+      fullName: 'main.secure.payments',
+      reason: 'row_filter',
+      message: 'governed table requires service-side SQL execution',
+      statementEndpoint: 'https://dbc.example.com/api/2.0/sql/statements',
+      warehouseRequired: true,
+    }),
+    executeSqlFallback: async (plan) => ({ routedTo: plan.statementEndpoint }),
+  });
+  expect(routed).toMatchObject({
+    status: 'sql_fallback_routed',
+    reason: 'row_filter',
+  });
+
+  await expect(
+    client.openUnityCatalogTable('denied', {
+      fullName: 'main.secure.denied',
+      resolveReadAccessPlan: async () => ({
+        plan_type: 'blocked',
+        tableId: 'tbl-blocked',
+        fullName: 'main.secure.denied',
+        reason: 'unknown_policy_state',
+        message: 'policy state is not safe for browser execution',
+      }),
+    }),
+  ).resolves.toMatchObject({
+    status: 'blocked',
+    reason: 'unknown_policy_state',
+  });
+  expect(worker.commands).toHaveLength(0);
 });
 
 test('rejects a duplicate active request id without orphaning the first request', async () => {
@@ -1541,6 +1822,65 @@ test('terminate rejects pending requests and terminates the worker', async () =>
   await expect(resultPromise).rejects.toThrow('Axon browser client was terminated');
   expect(worker.terminated).toBe(true);
 });
+
+function brokeredDeltaPlan(): BrokeredDeltaReadAccessPlan {
+  return {
+    plan_type: 'brokered_delta',
+    tableId: 'tbl-123',
+    fullName: 'main.sales.orders',
+    tableRoot: 's3://prod-bucket/tables/orders',
+    grantId: 'grant-456',
+    expiresAtEpochMs: 4_102_444_800_000,
+    deltaAccessMode: 'delta_log',
+    policyAuthority: {
+      authority: 'unity_catalog',
+      directExternalEngineRead: 'confirmed',
+    },
+    objectAccess: {
+      list: true,
+      head: true,
+      get: false,
+      rangeGet: true,
+      batchSign: true,
+      proxyRange: true,
+    },
+  };
+}
+
+function brokeredSnapshot(): ResolvedSnapshotDescriptor {
+  return {
+    table_uri: 's3://prod-bucket/tables/orders',
+    snapshot_version: 12,
+    partition_column_types: { region: 'string' },
+    browser_compatibility: { capabilities: {} },
+    required_capabilities: { capabilities: {} },
+    active_files: [
+      {
+        path: 'part-000.parquet',
+        size_bytes: 128,
+        partition_values: { region: 'west' },
+      },
+    ],
+  };
+}
+
+function deltaSharingAccessPlan() {
+  return {
+    plan_type: 'delta_sharing',
+    tableId: 'tbl-share',
+    fullName: 'main.analytics.events',
+    sharingEndpoint: 'https://sharing.example.test/delta-sharing',
+    expiresAtEpochMs: 4_102_444_800_000,
+    files: [
+      {
+        path: 'part-000.parquet',
+        url: 'https://storage.example.test/share/part-000.parquet?X-Amz-Signature=abc',
+        size_bytes: 128,
+        partition_values: { region: 'west' },
+      },
+    ],
+  } as const;
+}
 
 function queryResponse(overrides: Partial<QueryResponse> = {}): QueryResponse {
   return {

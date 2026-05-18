@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use arrow_array::{cast::AsArray, Int32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use datafusion::catalog::TableProvider;
+use datafusion::catalog::{ScanArgs, TableProvider};
 use datafusion::common::{Column, ScalarValue};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, TableProviderFilterPushDown};
 use datafusion::physical_plan::{collect, ExecutionPlan};
@@ -56,6 +56,24 @@ async fn pushed_limit_bounds_rows_emitted_by_scan() {
 }
 
 #[tokio::test]
+async fn residual_filter_prevents_scan_level_limit_pushdown() {
+    let ctx = context_with_single_partition_events();
+    let plan = physical_plan(&ctx, "SELECT id FROM events WHERE value = 25 LIMIT 1").await;
+    let scan = axon_scan(&plan);
+
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx())
+        .await
+        .expect("query should execute");
+    let trace = scan.pushdown_trace();
+
+    assert_eq!(int32_column_values(&batches, 0), vec![2]);
+    assert_eq!(trace.limit, None);
+    assert_eq!(trace.projected_columns, vec!["id", "value"]);
+    assert_eq!(trace.inexact_filters, vec!["value = Int32(25)"]);
+    assert_eq!(trace.rows_emitted, 3);
+}
+
+#[tokio::test]
 async fn exact_partition_filter_prunes_files_in_scan_trace() {
     let ctx = context_with_events();
     let plan = physical_plan(
@@ -93,6 +111,50 @@ async fn null_equality_partition_filter_is_not_exact_pushdown() {
         .expect("pushdown support should be classified");
 
     assert_eq!(pushdown, vec![TableProviderFilterPushDown::Inexact]);
+}
+
+#[tokio::test]
+async fn scan_with_args_delegates_projection_filters_and_limit_to_scan_path() {
+    let ctx = SessionContext::new();
+    let schema = descriptor_schema();
+    let provider = AxonDeltaTableProvider::with_record_batch_partitions(
+        delta_descriptor(Arc::clone(&schema)),
+        controlled_partitions(schema),
+    );
+    let filter = Expr::BinaryExpr(BinaryExpr::new(
+        Box::new(Expr::Column(Column::new_unqualified("event_date"))),
+        Operator::Eq,
+        Box::new(Expr::Literal(
+            ScalarValue::Utf8(Some("2026-01-02".to_string())),
+            None,
+        )),
+    ));
+    let projection = [0_usize];
+    let filters = [filter];
+    let scan_result = provider
+        .scan_with_args(
+            &ctx.state(),
+            ScanArgs::default()
+                .with_projection(Some(&projection))
+                .with_filters(Some(&filters))
+                .with_limit(Some(1)),
+        )
+        .await
+        .expect("scan_with_args should build a scan plan");
+    let plan = Arc::clone(scan_result.plan());
+    let scan = axon_scan(&plan);
+    let trace = scan.pushdown_trace();
+
+    assert_eq!(trace.projected_columns, vec!["id"]);
+    assert_eq!(trace.limit, Some(1));
+    assert_eq!(
+        trace.exact_filters,
+        vec!["event_date = Utf8(\"2026-01-02\")"]
+    );
+    assert_eq!(
+        trace.planned_file_paths,
+        vec!["event_date=2026-01-02/part-001.parquet"]
+    );
 }
 
 #[tokio::test]

@@ -1,13 +1,21 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use query_contract::{QueryErrorCode, SnapshotResolutionRequest};
-use wasm_delta_snapshot::{
-    BrowserDeltaLogManifest, BrowserDeltaLogObject, BrowserHttpDeltaLogStorageHandler,
-    DefaultJsonHandler, DefaultParquetHandler, SnapshotResolver, StorageHandler,
+use bytes::Bytes;
+use query_contract::{
+    BrokeredObjectAccess, ObjectGrantBatchSignRequest, ObjectGrantBatchSignResponse,
+    ObjectGrantHeadRequest, ObjectGrantListRequest, ObjectGrantListResponse, ObjectGrantObject,
+    ObjectGrantRangeRequest, QueryError, QueryErrorCode, SnapshotResolutionRequest,
 };
+use wasm_delta_snapshot::{
+    BrokeredDeltaLogStorageHandler, BrowserDeltaLogManifest, BrowserDeltaLogObject,
+    BrowserHttpDeltaLogStorageHandler, DefaultJsonHandler, DefaultParquetHandler, SnapshotResolver,
+    StorageHandler,
+};
+use wasm_http_object_store::{BrokerFuture, BrokeredObjectStore, ObjectGrantBrokerClient};
 
 #[test]
 fn browser_delta_log_manifest_lists_delta_log_paths_in_sorted_order() {
@@ -115,6 +123,124 @@ async fn browser_http_delta_log_storage_replays_json_commits() {
 }
 
 #[tokio::test]
+async fn brokered_delta_log_storage_replays_json_commits_through_object_grant() {
+    let commit0 = Bytes::from_static(
+        concat!(
+            "{\"protocol\":{\"minReaderVersion\":1,\"minWriterVersion\":2}}\n",
+            "{\"metaData\":{\"id\":\"test\",\"format\":{\"provider\":\"parquet\",\"options\":{}},",
+            "\"schemaString\":\"{\\\"type\\\":\\\"struct\\\",\\\"fields\\\":[{\\\"name\\\":\\\"id\\\",\\\"type\\\":\\\"integer\\\",\\\"nullable\\\":false,\\\"metadata\\\":{}}]}\",",
+            "\"partitionColumns\":[],\"configuration\":{}}}\n",
+            "{\"add\":{\"path\":\"data/a.parquet\",\"size\":10,\"partitionValues\":{}}}\n"
+        )
+        .as_bytes(),
+    );
+    let commit1 = Bytes::from_static(
+        b"{\"remove\":{\"path\":\"data/a.parquet\"}}\n{\"add\":{\"path\":\"data/b.parquet\",\"size\":20,\"partitionValues\":{}}}\n",
+    );
+    let commit0_len = commit0.len() as u64;
+    let commit1_len = commit1.len() as u64;
+    let client = FakeBrokerClient::with_objects(BTreeMap::from([
+        ("_delta_log/00000000000000000000.json".to_string(), commit0),
+        ("_delta_log/00000000000000000001.json".to_string(), commit1),
+    ]));
+    let store = BrokeredObjectStore::new(
+        "grant-1",
+        BrokeredObjectAccess {
+            list: true,
+            head: true,
+            get: true,
+            range_get: true,
+            batch_sign: false,
+            proxy_range: true,
+        },
+        client.clone(),
+    );
+    let resolver = SnapshotResolver::new(
+        BrokeredDeltaLogStorageHandler::new("s3://prod-bucket/tables/orders", store),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+
+    let snapshot = resolver
+        .resolve_snapshot(SnapshotResolutionRequest {
+            table_uri: "s3://prod-bucket/tables/orders".to_string(),
+            snapshot_version: None,
+        })
+        .await
+        .expect("brokered Delta log storage should resolve through SnapshotResolver");
+
+    assert_eq!(snapshot.snapshot_version, 1);
+    assert_eq!(snapshot.active_files[0].path, "data/b.parquet");
+    assert_eq!(
+        client.state().proxy_range_calls,
+        vec![
+            (
+                "grant-1".to_string(),
+                ObjectGrantRangeRequest {
+                    path: "_delta_log/00000000000000000000.json".to_string(),
+                    start: 0,
+                    end: commit0_len,
+                },
+            ),
+            (
+                "grant-1".to_string(),
+                ObjectGrantRangeRequest {
+                    path: "_delta_log/00000000000000000001.json".to_string(),
+                    start: 0,
+                    end: commit1_len,
+                },
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn brokered_delta_log_storage_only_treats_object_not_found_as_missing() {
+    let protocol_error_client = FakeBrokerClient::with_head_error(QueryError::new(
+        QueryErrorCode::ObjectStoreProtocol,
+        "fake broker returned malformed object metadata",
+        wasm_delta_snapshot::runtime_target(),
+    ));
+    let protocol_error_storage = BrokeredDeltaLogStorageHandler::new(
+        "s3://prod-bucket/tables/orders",
+        BrokeredObjectStore::new(
+            "grant-1",
+            all_brokered_capabilities(),
+            protocol_error_client,
+        ),
+    );
+
+    let protocol_error = protocol_error_storage
+        .read_bytes(
+            "s3://prod-bucket/tables/orders",
+            "_delta_log/00000000000000000000.json",
+        )
+        .await
+        .expect_err("broker protocol errors must not be classified as missing objects");
+    assert_eq!(protocol_error.code, QueryErrorCode::ObjectStoreProtocol);
+
+    let not_found_client = FakeBrokerClient::with_head_error(QueryError::new(
+        QueryErrorCode::ObjectNotFound,
+        "fake broker object was not found",
+        wasm_delta_snapshot::runtime_target(),
+    ));
+    let not_found_storage = BrokeredDeltaLogStorageHandler::new(
+        "s3://prod-bucket/tables/orders",
+        BrokeredObjectStore::new("grant-1", all_brokered_capabilities(), not_found_client),
+    );
+
+    let missing = not_found_storage
+        .read_bytes(
+            "s3://prod-bucket/tables/orders",
+            "_delta_log/00000000000000000000.json",
+        )
+        .await
+        .expect("object-not-found responses should remain optional reads");
+
+    assert!(missing.is_none());
+}
+
+#[tokio::test]
 async fn browser_http_storage_rejects_manifest_size_mismatches() {
     let server = StaticHttpServer::new([(
         "/_delta_log/00000000000000000000.json",
@@ -212,6 +338,142 @@ fn browser_delta_log_manifest_redacts_signed_url_query_strings() {
     assert!(!error.message.contains("secret"));
     assert!(!error.message.contains("X-Goog-Signature"));
     assert!(!error.message.contains("frag"));
+}
+
+#[derive(Clone, Debug, Default)]
+struct FakeBrokerClient {
+    state: Arc<Mutex<FakeBrokerState>>,
+}
+
+#[derive(Debug, Default)]
+struct FakeBrokerState {
+    objects: BTreeMap<String, Bytes>,
+    head_error: Option<QueryError>,
+    proxy_range_calls: Vec<(String, ObjectGrantRangeRequest)>,
+}
+
+impl FakeBrokerClient {
+    fn with_objects(objects: BTreeMap<String, Bytes>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(FakeBrokerState {
+                objects,
+                head_error: None,
+                proxy_range_calls: Vec::new(),
+            })),
+        }
+    }
+
+    fn with_head_error(head_error: QueryError) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(FakeBrokerState {
+                objects: BTreeMap::new(),
+                head_error: Some(head_error),
+                proxy_range_calls: Vec::new(),
+            })),
+        }
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, FakeBrokerState> {
+        self.state.lock().expect("fake broker state lock")
+    }
+}
+
+impl ObjectGrantBrokerClient for FakeBrokerClient {
+    fn list<'a>(
+        &'a self,
+        _grant_id: &'a str,
+        request: ObjectGrantListRequest,
+    ) -> BrokerFuture<'a, ObjectGrantListResponse> {
+        Box::pin(async move {
+            let state = self.state();
+            Ok(ObjectGrantListResponse {
+                objects: state
+                    .objects
+                    .iter()
+                    .filter(|(path, _)| path.starts_with(&request.prefix))
+                    .map(|(path, bytes)| ObjectGrantObject {
+                        path: path.clone(),
+                        size_bytes: bytes.len() as u64,
+                        etag: None,
+                    })
+                    .collect(),
+            })
+        })
+    }
+
+    fn head<'a>(
+        &'a self,
+        _grant_id: &'a str,
+        request: ObjectGrantHeadRequest,
+    ) -> BrokerFuture<'a, ObjectGrantObject> {
+        Box::pin(async move {
+            let state = self.state();
+            if let Some(error) = state.head_error.clone() {
+                return Err(error);
+            }
+            state
+                .objects
+                .get(&request.path)
+                .map(|bytes| ObjectGrantObject {
+                    path: request.path,
+                    size_bytes: bytes.len() as u64,
+                    etag: None,
+                })
+                .ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorCode::ObjectNotFound,
+                        "fake broker object was missing",
+                        wasm_delta_snapshot::runtime_target(),
+                    )
+                })
+        })
+    }
+
+    fn batch_sign<'a>(
+        &'a self,
+        _grant_id: &'a str,
+        _request: ObjectGrantBatchSignRequest,
+    ) -> BrokerFuture<'a, ObjectGrantBatchSignResponse> {
+        Box::pin(async move {
+            Err(QueryError::new(
+                QueryErrorCode::FallbackRequired,
+                "fake broker does not sign URLs in this test",
+                wasm_delta_snapshot::runtime_target(),
+            ))
+        })
+    }
+
+    fn proxy_range<'a>(
+        &'a self,
+        grant_id: &'a str,
+        request: ObjectGrantRangeRequest,
+    ) -> BrokerFuture<'a, Bytes> {
+        Box::pin(async move {
+            let mut state = self.state();
+            state
+                .proxy_range_calls
+                .push((grant_id.to_string(), request.clone()));
+            let bytes = state.objects.get(&request.path).cloned().ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::ObjectStoreProtocol,
+                    "fake broker range object was missing",
+                    wasm_delta_snapshot::runtime_target(),
+                )
+            })?;
+            Ok(bytes.slice(request.start as usize..request.end as usize))
+        })
+    }
+}
+
+fn all_brokered_capabilities() -> BrokeredObjectAccess {
+    BrokeredObjectAccess {
+        list: true,
+        head: true,
+        get: true,
+        range_get: true,
+        batch_sign: true,
+        proxy_range: true,
+    }
 }
 
 struct StaticHttpServer {

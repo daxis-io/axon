@@ -220,44 +220,52 @@ fn unauthorized_and_forbidden_map_to_access_denied() {
 }
 
 #[test]
-fn not_found_and_range_not_satisfiable_map_to_object_store_protocol() {
-    let missing_cases = [
-        TestResponse {
-            status_line: "404 Not Found",
-            headers: vec![("Content-Length".to_string(), "0".to_string())],
-            body: Vec::new(),
-        },
-        TestResponse {
-            status_line: "416 Range Not Satisfiable",
-            headers: vec![
-                ("Content-Length".to_string(), "0".to_string()),
-                ("Content-Range".to_string(), "bytes */10".to_string()),
-            ],
-            body: Vec::new(),
-        },
-    ];
+fn not_found_maps_to_object_not_found() {
+    let (url, _, server) = spawn_test_server(|_| TestResponse {
+        status_line: "404 Not Found",
+        headers: vec![("Content-Length".to_string(), "0".to_string())],
+        body: Vec::new(),
+    });
 
-    for response in missing_cases {
-        let (url, _, server) = spawn_test_server(move |_| TestResponse {
-            status_line: response.status_line,
-            headers: response.headers.clone(),
-            body: response.body.clone(),
-        });
+    let reader = HttpRangeReader::new();
+    let error = runtime()
+        .block_on(reader.read_range(
+            &url,
+            HttpByteRange::Bounded {
+                offset: 0,
+                length: 4,
+            },
+        ))
+        .expect_err("missing objects should fail");
 
-        let reader = HttpRangeReader::new();
-        let error = runtime()
-            .block_on(reader.read_range(
-                &url,
-                HttpByteRange::Bounded {
-                    offset: 0,
-                    length: 4,
-                },
-            ))
-            .expect_err("protocol statuses should fail");
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(error.code, QueryErrorCode::ObjectNotFound);
+}
 
-        server.join().expect("test server should shut down cleanly");
-        assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
-    }
+#[test]
+fn range_not_satisfiable_maps_to_object_store_protocol() {
+    let (url, _, server) = spawn_test_server(|_| TestResponse {
+        status_line: "416 Range Not Satisfiable",
+        headers: vec![
+            ("Content-Length".to_string(), "0".to_string()),
+            ("Content-Range".to_string(), "bytes */10".to_string()),
+        ],
+        body: Vec::new(),
+    });
+
+    let reader = HttpRangeReader::new();
+    let error = runtime()
+        .block_on(reader.read_range(
+            &url,
+            HttpByteRange::Bounded {
+                offset: 0,
+                length: 4,
+            },
+        ))
+        .expect_err("unsatisfiable ranges should fail as protocol errors");
+
+    server.join().expect("test server should shut down cleanly");
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
 }
 
 #[test]

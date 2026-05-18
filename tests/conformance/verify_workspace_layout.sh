@@ -13,6 +13,7 @@ required_files=(
 )
 
 required_dirs=(
+  "apps/axon-web"
   "crates/browser-engine-worker"
   "crates/query-contract"
   "crates/query-router"
@@ -47,6 +48,16 @@ done
 
 if rg -n '/Users/' README.md docs --glob '*.md'; then
   echo "markdown files must not contain workstation-local absolute paths" >&2
+  exit 1
+fi
+
+if ! rg -q '^/apps/axon-web/' CODEOWNERS; then
+  echo "CODEOWNERS must assign apps/axon-web ownership" >&2
+  exit 1
+fi
+
+if ! rg -q '`apps/axon-web`' docs/program/package-owners.md; then
+  echo "package owners must include apps/axon-web" >&2
   exit 1
 fi
 
