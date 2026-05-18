@@ -1,11 +1,15 @@
 use query_contract::{
     delta_protocol_feature, delta_protocol_feature_names, validate_browser_object_url,
+    validate_delta_location_resolve_request, validate_delta_location_resolve_response,
     BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor,
-    BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport, CapabilityState,
+    BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport, CapabilityState, CredentialProfileRef,
+    DeltaLocationRefresh, DeltaLocationResolveRequest, DeltaLocationResolveResponse,
+    DeltaLocationResolverError, DeltaLocationResolverErrorCode, DeltaObjectStoreProvider,
     DeltaProtocolFeatureClass, DeltaProtocolFeatureEnablement, DeltaProtocolFeatureKind,
     ExecutionTarget, FallbackReason, PartitionColumnType, QueryError, QueryErrorCode,
     QueryExecutionOptions, QueryMetricsSummary, QueryRequest, QueryResponse,
-    ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
+    ResolvedFileDescriptor, ResolvedSnapshotDescriptor, ResolverActualAccessMode,
+    ResolverRequestedAccessMode, SnapshotResolutionRequest,
 };
 use serde_json::json;
 
@@ -325,6 +329,256 @@ fn snapshot_resolution_request_defaults_snapshot_version_when_omitted() {
 
     assert_eq!(request.table_uri, "gs://axon-fixtures/sample_table");
     assert_eq!(request.snapshot_version, None);
+}
+
+#[test]
+fn delta_location_resolve_request_round_trips_provider_profile_and_auto_mode() {
+    let request = DeltaLocationResolveRequest {
+        provider: DeltaObjectStoreProvider::Gcs,
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        credential_profile: CredentialProfileRef {
+            id: "prod-readonly".to_string(),
+            display_name: Some("Production readonly".to_string()),
+        },
+        requested_access_mode: ResolverRequestedAccessMode::Auto,
+        snapshot_version: Some(12),
+    };
+
+    let json =
+        serde_json::to_value(&request).expect("delta location resolve request should serialize");
+
+    assert_eq!(
+        json,
+        json!({
+            "provider": "gcs",
+            "table_uri": "gs://axon-fixtures/sample_table",
+            "credential_profile": {
+                "id": "prod-readonly",
+                "display_name": "Production readonly"
+            },
+            "requested_access_mode": "auto",
+            "snapshot_version": 12
+        })
+    );
+
+    let decoded: DeltaLocationResolveRequest =
+        serde_json::from_value(json).expect("delta location resolve request should deserialize");
+    assert_eq!(decoded, request);
+    validate_delta_location_resolve_request(&decoded).expect("request should validate");
+}
+
+#[test]
+fn delta_location_resolve_response_round_trips_access_mode_expiry_and_refresh() {
+    let response = DeltaLocationResolveResponse {
+        descriptor: BrowserHttpSnapshotDescriptor {
+            table_uri: "axon-resolved://session/events/v12".to_string(),
+            snapshot_version: 12,
+            partition_column_types: std::collections::BTreeMap::new(),
+            browser_compatibility: CapabilityReport::default(),
+            required_capabilities: CapabilityReport::default(),
+            active_files: vec![BrowserHttpFileDescriptor {
+                path: "part-000.parquet".to_string(),
+                url: "https://signed.example.test/part-000.parquet?X-Goog-Signature=secret"
+                    .to_string(),
+                size_bytes: 128,
+                partition_values: std::collections::BTreeMap::new(),
+                stats: None,
+            }],
+        },
+        provider: DeltaObjectStoreProvider::Gcs,
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        requested_snapshot_version: Some(12),
+        resolved_snapshot_version: 12,
+        requested_access_mode: Some(ResolverRequestedAccessMode::Auto),
+        actual_access_mode: ResolverActualAccessMode::Proxy,
+        expires_at_epoch_ms: 4_102_444_800_000,
+        correlation_id: Some("corr-123".to_string()),
+        warnings: vec!["signed URL mode unavailable; resolver selected proxy".to_string()],
+        refresh: Some(DeltaLocationRefresh {
+            refresh_url: Some("https://resolver.example.test/refresh/corr-123".to_string()),
+            refresh_after_epoch_ms: Some(4_102_444_740_000),
+            same_snapshot_required: true,
+        }),
+    };
+
+    let json =
+        serde_json::to_value(&response).expect("delta location resolve response should serialize");
+
+    assert_eq!(json["provider"], "gcs");
+    assert_eq!(json["requested_access_mode"], "auto");
+    assert_eq!(json["actual_access_mode"], "proxy");
+    assert_eq!(json["resolved_snapshot_version"], 12);
+    assert_eq!(json["expires_at_epoch_ms"], 4_102_444_800_000_u64);
+    assert_eq!(json["refresh"]["same_snapshot_required"], true);
+
+    let decoded: DeltaLocationResolveResponse =
+        serde_json::from_value(json).expect("delta location resolve response should deserialize");
+    assert_eq!(decoded, response);
+    validate_delta_location_resolve_response(&decoded, 4_102_444_700_000)
+        .expect("response should validate before expiry");
+}
+
+#[test]
+fn delta_location_resolve_request_validation_rejects_secret_bearing_inputs() {
+    let valid = DeltaLocationResolveRequest {
+        provider: DeltaObjectStoreProvider::S3,
+        table_uri: "s3://axon-fixtures/sample_table".to_string(),
+        credential_profile: CredentialProfileRef {
+            id: "prod-readonly".to_string(),
+            display_name: None,
+        },
+        requested_access_mode: ResolverRequestedAccessMode::Auto,
+        snapshot_version: None,
+    };
+
+    let cases = [
+        (
+            "s3://user:pass@axon-fixtures/sample_table",
+            "prod-readonly",
+            DeltaLocationResolverErrorCode::InvalidTableUri,
+        ),
+        (
+            "https://bucket.s3.amazonaws.com/table?X-Amz-Signature=secret",
+            "prod-readonly",
+            DeltaLocationResolverErrorCode::InvalidTableUri,
+        ),
+        (
+            "s3://axon-fixtures/sample_table?X-Amz-Signature=secret",
+            "prod-readonly",
+            DeltaLocationResolverErrorCode::InvalidTableUri,
+        ),
+        (
+            "s3://axon-fixtures/sample_table",
+            "AKIAIOSFODNN7EXAMPLE",
+            DeltaLocationResolverErrorCode::PolicyBlocked,
+        ),
+        (
+            "s3://axon-fixtures/sample_table",
+            r#"{"type":"service_account","private_key":"secret"}"#,
+            DeltaLocationResolverErrorCode::PolicyBlocked,
+        ),
+    ];
+
+    for (table_uri, profile_id, expected_code) in cases {
+        let mut request = valid.clone();
+        request.table_uri = table_uri.to_string();
+        request.credential_profile.id = profile_id.to_string();
+
+        let error = validate_delta_location_resolve_request(&request)
+            .expect_err("secret-bearing inputs should be rejected");
+
+        assert_eq!(error.code, expected_code);
+        assert!(!error.message.contains("secret"));
+        assert!(!error.message.contains("AKIAIOSFODNN7EXAMPLE"));
+        assert!(!error.message.contains("private_key"));
+        assert!(!error.message.contains("X-Amz-Signature=secret"));
+    }
+}
+
+#[test]
+fn delta_location_resolve_request_validation_rejects_invalid_snapshot_versions() {
+    let mut request = DeltaLocationResolveRequest {
+        provider: DeltaObjectStoreProvider::Gcs,
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        credential_profile: CredentialProfileRef {
+            id: "prod-readonly".to_string(),
+            display_name: None,
+        },
+        requested_access_mode: ResolverRequestedAccessMode::Auto,
+        snapshot_version: Some(-1),
+    };
+
+    let error = validate_delta_location_resolve_request(&request)
+        .expect_err("negative snapshot versions should be rejected");
+    assert_eq!(
+        error.code,
+        DeltaLocationResolverErrorCode::InvalidSnapshotVersion
+    );
+
+    request.snapshot_version = Some(0);
+    validate_delta_location_resolve_request(&request).expect("version zero should remain valid");
+}
+
+#[test]
+fn delta_location_resolve_request_validation_accepts_logical_object_store_uris() {
+    let cases = [
+        (DeltaObjectStoreProvider::S3, "s3://bucket/table"),
+        (DeltaObjectStoreProvider::Gcs, "gs://bucket/table"),
+        (
+            DeltaObjectStoreProvider::AzureBlob,
+            "az://account/container/table",
+        ),
+        (
+            DeltaObjectStoreProvider::AzureBlob,
+            "abfs://container@account.dfs.core.windows.net/table",
+        ),
+    ];
+
+    for (provider, table_uri) in cases {
+        let request = DeltaLocationResolveRequest {
+            provider,
+            table_uri: table_uri.to_string(),
+            credential_profile: CredentialProfileRef {
+                id: "prod-readonly".to_string(),
+                display_name: None,
+            },
+            requested_access_mode: ResolverRequestedAccessMode::Auto,
+            snapshot_version: None,
+        };
+
+        validate_delta_location_resolve_request(&request)
+            .unwrap_or_else(|error| panic!("{table_uri} should validate: {error:?}"));
+    }
+}
+
+#[test]
+fn delta_location_resolve_response_validation_requires_same_snapshot_refresh() {
+    let mut response = DeltaLocationResolveResponse {
+        descriptor: BrowserHttpSnapshotDescriptor {
+            table_uri: "axon-resolved://session/events/v12".to_string(),
+            snapshot_version: 12,
+            partition_column_types: std::collections::BTreeMap::new(),
+            browser_compatibility: CapabilityReport::default(),
+            required_capabilities: CapabilityReport::default(),
+            active_files: Vec::new(),
+        },
+        provider: DeltaObjectStoreProvider::Gcs,
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        requested_snapshot_version: Some(12),
+        resolved_snapshot_version: 12,
+        requested_access_mode: Some(ResolverRequestedAccessMode::Auto),
+        actual_access_mode: ResolverActualAccessMode::SignedUrl,
+        expires_at_epoch_ms: 4_102_444_800_000,
+        correlation_id: None,
+        warnings: Vec::new(),
+        refresh: Some(DeltaLocationRefresh {
+            refresh_url: None,
+            refresh_after_epoch_ms: Some(4_102_444_740_000),
+            same_snapshot_required: false,
+        }),
+    };
+
+    let error = validate_delta_location_resolve_response(&response, 4_102_444_700_000)
+        .expect_err("refresh must require the same resolved snapshot");
+    assert_eq!(error.code, DeltaLocationResolverErrorCode::PolicyBlocked);
+
+    response.refresh.as_mut().unwrap().same_snapshot_required = true;
+    validate_delta_location_resolve_response(&response, 4_102_444_700_000)
+        .expect("same-snapshot refresh should validate");
+}
+
+#[test]
+fn delta_location_resolver_errors_redact_bearer_token_values() {
+    let error = DeltaLocationResolverError::new(
+        DeltaLocationResolverErrorCode::ResolverUnavailable,
+        "resolver failed with Authorization: Bearer abc123 and Authorization: Basic basic-secret and https://signed.example.test/file.parquet?X-Amz-Signature=secret",
+    );
+
+    assert!(!error.message.contains("abc123"));
+    assert!(!error.message.contains("Bearer abc123"));
+    assert!(!error.message.contains("basic-secret"));
+    assert!(!error.message.contains("X-Amz-Signature=secret"));
+    assert!(error.message.contains("[REDACTED]"));
 }
 
 #[test]

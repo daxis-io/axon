@@ -40,6 +40,8 @@ The repository currently implements only the thin in-repo library-owned contract
 
 This in-repo slice deliberately stops at descriptor shaping plus deterministic in-repo handoff coverage. It does not mint signed URLs, implement proxy reads, or expose an authenticated endpoint.
 
+The browser SDK contract now models S3, GCS, and Azure Blob as typed Delta snapshot descriptor resolver inputs. That provider support is contract, validation, SDK ergonomics, and sandbox mock coverage only. Real IAM, Delta log inspection, signing, proxying, CORS validation, audit logging, and request correlation are still trusted resolver responsibilities outside browser-target packages.
+
 The following EPIC-03 work is still blocked on out-of-repo service delivery:
 
 - `services/query-api`

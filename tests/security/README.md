@@ -11,7 +11,7 @@ Current in-repo security coverage:
 - `crates/wasm-http-object-store/tests` verifies that cached extent reuse requires browser-visible object identity, fails closed when validation headers are unavailable, and keeps browser-local object access separate from signed-URL or proxy flows.
 - `crates/wasm-query-session/tests` verifies that the worker-owned session shell stays in-memory only and releases cached runtime state on eviction or dispose.
 - The current browser V1 remains narrow runtime + streaming scan + in-memory session shell; broad browser DataFusion and OPFS / IndexedDB browser-cache backends are still deferred.
-- `tests/security/verify_browser_dependency_guardrails.sh` denies signing, cloud-credential, and service-account dependency classes from the browser worker dependency tree and inspects the built worker artifact for secret-like markers.
+- `tests/security/verify_browser_dependency_guardrails.sh` denies signing, cloud-credential, and service-account dependency classes from the browser worker dependency tree, checks browser package manifests for AWS/GCP/Azure SDKs, and inspects the built worker artifact for secret-like markers.
 - `tests/security/verify_browser_dependency_guardrails_test.sh` regression-checks the denylist parser against `cargo tree`-shaped dependency lines.
 
 Useful local commands:

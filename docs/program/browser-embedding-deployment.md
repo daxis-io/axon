@@ -33,10 +33,24 @@ That means deployments can use this guide in two ways:
 | Worker module         | host-owned worker JS that speaks `BrowserWorkerCommand` / `BrowserWorkerResponseEnvelope`                                                                                                                                                                        | `workerUrl` manifest field          | `application/javascript; charset=utf-8`                   | immutable when content-hashed; otherwise short cache |
 | Worker WASM           | measured raw artifact at `target/wasm32-unknown-unknown/release/browser_engine_worker.wasm` after `cargo build -p browser-engine-worker --target wasm32-unknown-unknown --release --locked`; packaged browser output is TBD until the JS worker bootstrap exists | `wasmUrl` manifest field            | `application/wasm`                                        | immutable when content-hashed                        |
 | Bundle manifest       | `AXON_BROWSER_BUNDLE_MANIFEST` or host-supplied equivalent                                                                                                                                                                                                       | app bundle or JSON endpoint         | `application/json` for external manifests                 | short cache or revalidate                            |
-| Snapshot descriptor   | trusted control-plane response                                                                                                                                                                                                                                   | app API response                    | `application/json`                                        | no-store or request-scoped                           |
+| Snapshot descriptor   | trusted Delta snapshot descriptor resolver response                                                                                                                                                                                                              | app API response                    | `application/json`                                        | no-store or request-scoped                           |
 | Data objects          | signed HTTPS object URLs or a narrow read proxy                                                                                                                                                                                                                  | descriptor `active_files[*].url`    | object content type is not semantically important to Axon | bounded by URL TTL and object identity               |
 
 `wasmUrl` is deployment metadata in the current TypeScript wrapper. `createAxonBrowserClient()` constructs the module worker from `workerUrl`; the worker module is responsible for loading the matching WASM asset. The current `browser_engine_worker.wasm` file is a real size-gated Rust artifact, not a complete browser package by itself.
+
+## Delta Snapshot Descriptor Resolver
+
+`openDeltaLocation()` is the browser SDK convenience layer for object-store opens. It does not inspect `_delta_log`, mint signed URLs, proxy range reads, perform IAM, validate production CORS, or audit storage access. It sends a typed request to a trusted Delta snapshot descriptor resolver:
+
+- `provider`: `s3`, `gcs`, or `azure_blob`
+- `table_uri`: logical URI such as `s3://bucket/table`, `gs://bucket/table`, `az://account/container/table`, or `abfs://container@account.dfs.core.windows.net/table`
+- `credential_profile`: opaque storage access profile, not a cloud credential
+- `requested_access_mode`: resolver-only `auto`, `signed_url`, or `proxy`
+- `snapshot_version`: optional exact Delta snapshot version
+
+The resolver response is authoritative. It includes the returned `BrowserHttpSnapshotDescriptor`, `resolved_snapshot_version`, resolver-only `actual_access_mode`, `expires_at_epoch_ms`, optional `correlation_id`, and optional warnings. The SDK validates that `resolved_snapshot_version` matches `descriptor.snapshot_version`, rejects expired descriptors with `descriptor_expired`, forwards the descriptor unchanged through the existing `openDeltaTable()` worker command, and returns the non-descriptor resolver metadata to the caller for display and retry decisions. Reopening through the resolver is the M1 expiry behavior; any refresh endpoint must enforce that refresh never advances the resolved snapshot version.
+
+The resolver owns cloud authentication, Delta log listing/checkpoint selection, active-file materialization, signed URL or proxy URL construction, CORS validation, policy, audit, and request correlation. `auto` normally lets the resolver choose signed URLs to reduce service data-plane bandwidth; `proxy` is appropriate for centralized audit/control, private networking, or CORS avoidance at higher service cost.
 
 ## Worker And WASM URLs
 

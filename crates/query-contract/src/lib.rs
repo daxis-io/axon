@@ -244,6 +244,442 @@ pub struct BrowserHttpSnapshotDescriptor {
     pub active_files: Vec<BrowserHttpFileDescriptor>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeltaObjectStoreProvider {
+    S3,
+    Gcs,
+    AzureBlob,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolverRequestedAccessMode {
+    #[default]
+    Auto,
+    SignedUrl,
+    Proxy,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolverActualAccessMode {
+    SignedUrl,
+    Proxy,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct CredentialProfileRef {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+}
+
+/// Request sent from browser-facing SDKs to a trusted Delta snapshot descriptor resolver.
+///
+/// The resolver owns cloud IAM, Delta log inspection, URL signing/proxying, CORS checks,
+/// auditing, and request correlation. Browser packages only send a logical table URI plus an
+/// opaque storage access profile handle and receive a `BrowserHttpSnapshotDescriptor`.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct DeltaLocationResolveRequest {
+    pub provider: DeltaObjectStoreProvider,
+    pub table_uri: String,
+    pub credential_profile: CredentialProfileRef,
+    #[serde(default)]
+    pub requested_access_mode: ResolverRequestedAccessMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_version: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct DeltaLocationRefresh {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_after_epoch_ms: Option<u64>,
+    pub same_snapshot_required: bool,
+}
+
+/// Authoritative resolver envelope for a browser-safe Delta snapshot descriptor.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct DeltaLocationResolveResponse {
+    pub descriptor: BrowserHttpSnapshotDescriptor,
+    pub provider: DeltaObjectStoreProvider,
+    pub table_uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_snapshot_version: Option<i64>,
+    pub resolved_snapshot_version: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_access_mode: Option<ResolverRequestedAccessMode>,
+    pub actual_access_mode: ResolverActualAccessMode,
+    pub expires_at_epoch_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<DeltaLocationRefresh>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeltaLocationResolverErrorCode {
+    InvalidTableUri,
+    InvalidSnapshotVersion,
+    CredentialProfileRequired,
+    CredentialProfileNotFound,
+    ProviderNotSupported,
+    AccessModeNotSupported,
+    SnapshotVersionNotFound,
+    NotADeltaTable,
+    ResolverUnavailable,
+    StorageAuthFailed,
+    StorageCorsFailed,
+    DescriptorExpired,
+    PolicyBlocked,
+    ProxyRequired,
+    SignedUrlUnavailable,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct DeltaLocationResolverError {
+    pub code: DeltaLocationResolverErrorCode,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+}
+
+impl DeltaLocationResolverError {
+    pub fn new(code: DeltaLocationResolverErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: redact_sensitive_text(&message.into()),
+            correlation_id: None,
+        }
+    }
+
+    pub fn with_correlation_id(mut self, correlation_id: impl Into<String>) -> Self {
+        self.correlation_id = Some(correlation_id.into());
+        self
+    }
+}
+
+pub fn validate_delta_location_resolve_request(
+    request: &DeltaLocationResolveRequest,
+) -> Result<(), DeltaLocationResolverError> {
+    if request
+        .snapshot_version
+        .is_some_and(|snapshot_version| snapshot_version < 0)
+    {
+        return Err(DeltaLocationResolverError::new(
+            DeltaLocationResolverErrorCode::InvalidSnapshotVersion,
+            "Delta location snapshot version must be a non-negative integer",
+        ));
+    }
+    validate_credential_profile_ref(&request.credential_profile)?;
+    validate_delta_table_uri(request.provider, &request.table_uri)
+}
+
+pub fn validate_delta_location_resolve_response(
+    response: &DeltaLocationResolveResponse,
+    now_epoch_ms: u64,
+) -> Result<(), DeltaLocationResolverError> {
+    if response.expires_at_epoch_ms <= now_epoch_ms {
+        return Err(DeltaLocationResolverError::new(
+            DeltaLocationResolverErrorCode::DescriptorExpired,
+            "resolved Delta descriptor has expired",
+        ));
+    }
+
+    if response.descriptor.snapshot_version != response.resolved_snapshot_version {
+        return Err(DeltaLocationResolverError::new(
+            DeltaLocationResolverErrorCode::PolicyBlocked,
+            "resolved snapshot metadata did not match the descriptor snapshot version",
+        ));
+    }
+
+    if let Some(refresh) = &response.refresh {
+        if !refresh.same_snapshot_required {
+            return Err(DeltaLocationResolverError::new(
+                DeltaLocationResolverErrorCode::PolicyBlocked,
+                "Delta location refresh must require the same resolved snapshot",
+            ));
+        }
+        if let Some(refresh_url) = &refresh.refresh_url {
+            validate_resolver_url(refresh_url, "refresh URL")?;
+        }
+    }
+
+    for file in &response.descriptor.active_files {
+        validate_browser_object_url(
+            &file.url,
+            ExecutionTarget::BrowserWasm,
+            BrowserObjectUrlPolicy::HttpsOnly,
+            "Delta descriptor active file URL",
+        )
+        .map_err(|error| {
+            DeltaLocationResolverError::new(
+                DeltaLocationResolverErrorCode::PolicyBlocked,
+                error.message,
+            )
+        })?;
+    }
+
+    validate_delta_table_uri(response.provider, &response.table_uri)
+}
+
+fn validate_credential_profile_ref(
+    profile: &CredentialProfileRef,
+) -> Result<(), DeltaLocationResolverError> {
+    if profile.id.trim().is_empty() {
+        return Err(DeltaLocationResolverError::new(
+            DeltaLocationResolverErrorCode::CredentialProfileRequired,
+            "storage access profile id is required",
+        ));
+    }
+
+    if contains_secret_material(&profile.id) {
+        return Err(DeltaLocationResolverError::new(
+            DeltaLocationResolverErrorCode::PolicyBlocked,
+            "storage access profile id must be an opaque policy handle, not cloud credential material",
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_delta_table_uri(
+    provider: DeltaObjectStoreProvider,
+    table_uri: &str,
+) -> Result<(), DeltaLocationResolverError> {
+    if contains_secret_material(table_uri) {
+        return Err(DeltaLocationResolverError::new(
+            DeltaLocationResolverErrorCode::InvalidTableUri,
+            "Delta table URI must not contain credential material or signed URL parameters",
+        ));
+    }
+
+    let parsed = Url::parse(table_uri).map_err(|error| {
+        DeltaLocationResolverError::new(
+            DeltaLocationResolverErrorCode::InvalidTableUri,
+            format!(
+                "invalid Delta table URI '{}': {error}",
+                redacted_input_url(table_uri)
+            ),
+        )
+    })?;
+
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(DeltaLocationResolverError::new(
+            DeltaLocationResolverErrorCode::InvalidTableUri,
+            format!(
+                "Delta table URI '{}' must be a logical object-store URI without query strings or fragments",
+                redacted_url(&parsed)
+            ),
+        ));
+    }
+
+    match provider {
+        DeltaObjectStoreProvider::S3 => validate_s3_table_uri(&parsed),
+        DeltaObjectStoreProvider::Gcs => validate_gcs_table_uri(&parsed),
+        DeltaObjectStoreProvider::AzureBlob => validate_azure_table_uri(&parsed),
+    }
+}
+
+fn validate_s3_table_uri(url: &Url) -> Result<(), DeltaLocationResolverError> {
+    if url.scheme() != "s3"
+        || url.host_str().is_none()
+        || !has_non_root_path(url)
+        || has_userinfo(url)
+    {
+        return Err(DeltaLocationResolverError::new(
+            DeltaLocationResolverErrorCode::InvalidTableUri,
+            "S3 Delta table URI must look like s3://bucket/table without userinfo",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_gcs_table_uri(url: &Url) -> Result<(), DeltaLocationResolverError> {
+    if url.scheme() != "gs"
+        || url.host_str().is_none()
+        || !has_non_root_path(url)
+        || has_userinfo(url)
+    {
+        return Err(DeltaLocationResolverError::new(
+            DeltaLocationResolverErrorCode::InvalidTableUri,
+            "GCS Delta table URI must look like gs://bucket/table without userinfo",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_azure_table_uri(url: &Url) -> Result<(), DeltaLocationResolverError> {
+    match url.scheme() {
+        "az" => {
+            if url.host_str().is_some() && has_container_and_table_path(url) && !has_userinfo(url) {
+                Ok(())
+            } else {
+                Err(DeltaLocationResolverError::new(
+                    DeltaLocationResolverErrorCode::InvalidTableUri,
+                    "Azure Blob Delta table URI must look like az://account/container/table",
+                ))
+            }
+        }
+        "abfs" => {
+            if url.host_str().is_some()
+                && !url.username().is_empty()
+                && url.password().is_none()
+                && has_non_root_path(url)
+            {
+                Ok(())
+            } else {
+                Err(DeltaLocationResolverError::new(
+                    DeltaLocationResolverErrorCode::InvalidTableUri,
+                    "ABFS Delta table URI must look like abfs://container@account.dfs.core.windows.net/table",
+                ))
+            }
+        }
+        _ => Err(DeltaLocationResolverError::new(
+            DeltaLocationResolverErrorCode::InvalidTableUri,
+            "Azure Blob resolver only accepts az:// or abfs:// Delta table URIs",
+        )),
+    }
+}
+
+fn validate_resolver_url(url: &str, label: &str) -> Result<(), DeltaLocationResolverError> {
+    let parsed = Url::parse(url).map_err(|error| {
+        DeltaLocationResolverError::new(
+            DeltaLocationResolverErrorCode::InvalidTableUri,
+            format!("invalid {label} '{}': {error}", redacted_input_url(url)),
+        )
+    })?;
+
+    if parsed.scheme() != "https" {
+        return Err(DeltaLocationResolverError::new(
+            DeltaLocationResolverErrorCode::InvalidTableUri,
+            format!("{label} '{}' must use HTTPS", redacted_url(&parsed)),
+        ));
+    }
+
+    Ok(())
+}
+
+fn has_non_root_path(url: &Url) -> bool {
+    let path = url.path().trim_matches('/');
+    !path.is_empty()
+}
+
+fn has_container_and_table_path(url: &Url) -> bool {
+    let mut parts = url
+        .path_segments()
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty());
+    parts.next().is_some() && parts.next().is_some()
+}
+
+fn has_userinfo(url: &Url) -> bool {
+    !url.username().is_empty() || url.password().is_some()
+}
+
+fn contains_secret_material(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("service_account")
+        || lower.contains("private_key")
+        || lower.contains("client_secret")
+        || lower.contains("refresh_token")
+        || lower.contains("authorization:")
+        || lower.contains("bearer ")
+        || lower.contains("aws_secret_access_key")
+        || lower.contains("azure_client_secret")
+        || lower.contains("google_application_credentials")
+        || lower.contains("x-amz-signature")
+        || lower.contains("x-goog-signature")
+        || lower.contains("x-goog-credential")
+        || lower.contains("awsaccesskeyid")
+        || lower.contains("access_token")
+        || lower.contains("signature=")
+        || lower.contains("sig=")
+        || lower.contains("sv=")
+        || looks_like_aws_access_key(value)
+}
+
+fn looks_like_aws_access_key(value: &str) -> bool {
+    value
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|token| {
+            token.len() == 20
+                && (token.starts_with("AKIA") || token.starts_with("ASIA"))
+                && token
+                    .chars()
+                    .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
+        })
+}
+
+fn redact_sensitive_text(value: &str) -> String {
+    let tokens = value.split_whitespace().collect::<Vec<_>>();
+    let mut redacted = Vec::with_capacity(tokens.len());
+    let mut index = 0;
+
+    while index < tokens.len() {
+        let token = tokens[index];
+        let lower = token.to_ascii_lowercase();
+
+        if lower == "authorization:" {
+            redacted.push("[REDACTED]".to_string());
+            index += 1;
+            if index < tokens.len() {
+                index += 1;
+                if index < tokens.len() {
+                    index += 1;
+                }
+            }
+            continue;
+        }
+
+        if let Some(after_header) = lower.strip_prefix("authorization:") {
+            redacted.push("[REDACTED]".to_string());
+            index += 1;
+            if !after_header.is_empty() && index < tokens.len() {
+                index += 1;
+            }
+            continue;
+        }
+
+        if is_bearer_marker(&lower) {
+            redacted.push("[REDACTED]".to_string());
+            index += 2;
+            continue;
+        }
+
+        if contains_secret_material(token) {
+            redacted.push("[REDACTED]".to_string());
+        } else {
+            redacted.push(token.to_string());
+        }
+        index += 1;
+    }
+
+    redact_url_like_secrets(&redacted.join(" "))
+}
+
+fn is_bearer_marker(token: &str) -> bool {
+    token.trim_matches(|ch: char| !ch.is_ascii_alphanumeric()) == "bearer"
+}
+
+fn redact_url_like_secrets(value: &str) -> String {
+    value
+        .split(' ')
+        .map(|token| {
+            Url::parse(token)
+                .map(|url| redacted_url(&url))
+                .unwrap_or_else(|_| token.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct ParquetCompressionSummary {
     pub compressed_size_bytes: u64,

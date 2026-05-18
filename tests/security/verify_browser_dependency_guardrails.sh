@@ -20,12 +20,28 @@ if grep -E -n "$denylist" "$tree_file" >/dev/null; then
   exit 1
 fi
 
+browser_package_denylist='(@aws-sdk/|aws-sdk|google-auth-library|@google-cloud/storage|azure-identity|@azure/storage-blob|opendal)'
+browser_package_files="${AXON_BROWSER_PACKAGE_FILES:-examples/browser-delta-sandbox/package.json examples/browser-delta-sandbox/package-lock.json}"
+package_file_args=()
+for package_file in $browser_package_files; do
+  if [ -f "$package_file" ]; then
+    package_file_args+=("$package_file")
+  fi
+done
+
+if [ "${#package_file_args[@]}" -gt 0 ] &&
+  grep -E -n "$browser_package_denylist" "${package_file_args[@]}" >/dev/null; then
+  echo "browser dependency guardrails failed: denylisted browser package detected" >&2
+  grep -E -n "$browser_package_denylist" "${package_file_args[@]}" >&2
+  exit 1
+fi
+
 if [ ! -f "$artifact" ]; then
   echo "browser bundle guardrails failed: missing artifact $artifact" >&2
   exit 1
 fi
 
-secret_markers='GOOGLE_APPLICATION_CREDENTIALS|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AZURE_STORAGE_KEY|service_account|private_key|client_email'
+secret_markers='GOOGLE_APPLICATION_CREDENTIALS|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AZURE_STORAGE_KEY|AZURE_CLIENT_SECRET|client_secret|refresh_token|service_account|private_key|client_email'
 
 if grep -aE -n "$secret_markers" "$artifact" >/dev/null; then
   echo "browser bundle guardrails failed: secret-like marker detected in artifact" >&2
