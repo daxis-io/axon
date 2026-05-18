@@ -617,7 +617,7 @@ test('DeltaSharingSession resolves URL-mode parquet responses into browser descr
       table_uri:
         'delta-sharing://sharing.example.test/retail_share/sales/orders?endpoint=%2Fdelta-sharing',
       snapshot_version: 12,
-      partition_column_types: {},
+      partition_column_types: { region: 'string' },
       browser_compatibility: { capabilities: { signed_url_access: 'supported' } },
       required_capabilities: { capabilities: { signed_url_access: 'supported' } },
       active_files: [
@@ -642,6 +642,69 @@ test('DeltaSharingSession resolves URL-mode parquet responses into browser descr
   expect(new Headers(fetcher.calls[0].init?.headers).get('authorization')).toBe(
     'Bearer secret-profile-token',
   );
+});
+
+test('DeltaSharingSession carries partition column types from table metadata into descriptors', async () => {
+  const fetcher = scriptedFetch([
+    ndjsonResponse(
+      [
+        { protocol: { minReaderVersion: 1 } },
+        {
+          metaData: {
+            partitionColumns: ['region', 'year', 'active', 'payload'],
+            schemaString: JSON.stringify({
+              type: 'struct',
+              fields: [
+                { name: 'region', type: 'string', nullable: true, metadata: {} },
+                { name: 'year', type: 'long', nullable: true, metadata: {} },
+                { name: 'active', type: 'boolean', nullable: true, metadata: {} },
+                {
+                  name: 'payload',
+                  type: { type: 'struct', fields: [] },
+                  nullable: true,
+                  metadata: {},
+                },
+              ],
+            }),
+          },
+        },
+        {
+          file: {
+            id: 'part-000.parquet',
+            url: 'https://storage.example.test/retail/orders/part-000.parquet',
+            size: 128,
+            partitionValues: {
+              active: 'true',
+              payload: 'unsupported',
+              region: 'west',
+              year: '2026',
+            },
+          },
+        },
+      ],
+      { 'delta-table-version': '12' },
+    ),
+  ]);
+  const session = await createDeltaSharingClient({ fetch: fetcher.fetch }).connect({
+    source: 'json',
+    value: {
+      endpoint: 'https://sharing.example.test/delta-sharing',
+      bearerToken: 'secret-profile-token',
+    },
+  });
+
+  const plan = await session.resolveTable({
+    share: 'retail_share',
+    schema: 'sales',
+    table: 'orders',
+  });
+
+  expect(plan.descriptor.partition_column_types).toEqual({
+    active: 'boolean',
+    payload: 'unsupported',
+    region: 'string',
+    year: 'int64',
+  });
 });
 
 test('openDeltaShare resolves a shared table and sends only the descriptor to the worker', async () => {
@@ -1214,6 +1277,46 @@ test('openDeltaLocation validates logical URI and credential profile before invo
   ).rejects.toMatchObject({
     name: 'DeltaLocationResolverError',
     code: 'policy_blocked',
+  } satisfies Partial<DeltaLocationResolverError>);
+
+  expect(requests).toEqual([]);
+  expect(worker.commands).toHaveLength(0);
+});
+
+test('openDeltaLocation rejects unsupported provider and access mode before invoking resolver', async () => {
+  const worker = new FakeWorker();
+  const requests: DeltaLocationResolveRequest[] = [];
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  await expect(
+    client.openDeltaLocation('events', {
+      provider: 'r2' as never,
+      tableUri: 'az://axonaccount/tables/prod-like-events',
+      credentialProfile: { id: 'prod-readonly' },
+      resolveDeltaLocation: async (request) => {
+        requests.push(request);
+        return deltaLocationResponse();
+      },
+    }),
+  ).rejects.toMatchObject({
+    name: 'DeltaLocationResolverError',
+    code: 'provider_not_supported',
+  } satisfies Partial<DeltaLocationResolverError>);
+
+  await expect(
+    client.openDeltaLocation('events', {
+      provider: 'gcs',
+      tableUri: 'gs://axon-fixtures/partitioned-table',
+      credentialProfile: { id: 'prod-readonly' },
+      requestedAccessMode: 'direct' as never,
+      resolveDeltaLocation: async (request) => {
+        requests.push(request);
+        return deltaLocationResponse();
+      },
+    }),
+  ).rejects.toMatchObject({
+    name: 'DeltaLocationResolverError',
+    code: 'access_mode_not_supported',
   } satisfies Partial<DeltaLocationResolverError>);
 
   expect(requests).toEqual([]);

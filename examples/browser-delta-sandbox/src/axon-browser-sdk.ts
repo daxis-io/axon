@@ -2027,7 +2027,7 @@ function deltaSharingReadPlanFromActions(input: {
     descriptor: {
       table_uri: deltaSharingDescriptorTableUri(input.endpoint, input.table),
       snapshot_version: input.resolvedVersion,
-      partition_column_types: {},
+      partition_column_types: deltaSharingPartitionColumnTypes(metadata, files),
       browser_compatibility: { capabilities: { signed_url_access: 'supported' } },
       required_capabilities: { capabilities: { signed_url_access: 'supported' } },
       active_files: files.map(deltaSharingBrowserFile),
@@ -2035,6 +2035,80 @@ function deltaSharingReadPlanFromActions(input: {
     expiresAtEpochMs,
     warnings: [],
   };
+}
+
+function deltaSharingPartitionColumnTypes(
+  metadata: Record<string, unknown> | undefined,
+  files: Array<BrowserHttpFileDescriptor & { expiresAtEpochMs?: number }>,
+): Partial<Record<string, PartitionColumnType>> {
+  const partitionColumnTypes: Partial<Record<string, PartitionColumnType>> = {};
+  const schemaTypes = deltaSharingSchemaPartitionColumnTypes(metadata);
+  for (const [column, columnType] of Object.entries(schemaTypes)) {
+    partitionColumnTypes[column] = columnType;
+  }
+  for (const file of files) {
+    for (const column of Object.keys(file.partition_values)) {
+      partitionColumnTypes[column] ??= 'string';
+    }
+  }
+  return partitionColumnTypes;
+}
+
+function deltaSharingSchemaPartitionColumnTypes(
+  metadata: Record<string, unknown> | undefined,
+): Partial<Record<string, PartitionColumnType>> {
+  const partitionColumns = actionStringArray(metadata, 'partitionColumns') ?? [];
+  const schemaString = metadata ? stringField(metadata, 'schemaString') : undefined;
+  if (partitionColumns.length === 0 || !schemaString) {
+    return {};
+  }
+
+  let parsedSchema: unknown;
+  try {
+    parsedSchema = JSON.parse(schemaString);
+  } catch {
+    return {};
+  }
+  if (!isObject(parsedSchema) || !Array.isArray(parsedSchema.fields)) {
+    return {};
+  }
+
+  const fieldsByName = new Map<string, Record<string, unknown>>();
+  for (const field of parsedSchema.fields) {
+    if (isObject(field)) {
+      const name = stringField(field, 'name');
+      if (name) fieldsByName.set(name, field);
+    }
+  }
+
+  const columnTypes: Partial<Record<string, PartitionColumnType>> = {};
+  for (const column of partitionColumns) {
+    const field = fieldsByName.get(column);
+    columnTypes[column] = deltaSharingPartitionTypeFromSchemaField(field);
+  }
+  return columnTypes;
+}
+
+function deltaSharingPartitionTypeFromSchemaField(
+  field: Record<string, unknown> | undefined,
+): PartitionColumnType {
+  if (!field) return 'string';
+  const type = field.type;
+  if (typeof type !== 'string') return 'unsupported';
+  switch (type.toLowerCase()) {
+    case 'string':
+      return 'string';
+    case 'boolean':
+      return 'boolean';
+    case 'byte':
+    case 'short':
+    case 'integer':
+    case 'int':
+    case 'long':
+      return 'int64';
+    default:
+      return 'unsupported';
+  }
 }
 
 function deltaSharingBrowserFile(
