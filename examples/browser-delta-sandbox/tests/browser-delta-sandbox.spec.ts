@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
+import { readFileSync } from 'node:fs';
 
 test('executes SQL from a fresh editor without a manual snapshot step', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/sandbox.html');
 
   await expect(page.getByRole('heading', { name: 'Axon SQL' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Resolve Snapshot' })).toHaveCount(0);
@@ -35,7 +36,7 @@ test('maps a prod-like Delta fixture from log inputs to resolved active output',
     }
   });
 
-  await page.goto('/');
+  await page.goto('/sandbox.html');
 
   await page.getByRole('button', { name: 'Run' }).click();
 
@@ -88,7 +89,7 @@ test('maps a prod-like Delta fixture from log inputs to resolved active output',
 test('runs prod-like SQL through the sandbox worker and renders query telemetry', async ({
   page,
 }) => {
-  await page.goto('/');
+  await page.goto('/sandbox.html');
 
   await page.getByRole('button', { name: 'Run' }).click();
 
@@ -118,8 +119,53 @@ test('runs prod-like SQL through the sandbox worker and renders query telemetry'
   await expect(page.getByTestId('worker-event-log')).toContainText('terminal_error');
 });
 
+test('opens object-store tables through the mock descriptor resolver without credential fields', async ({
+  page,
+}) => {
+  await page.goto('/sandbox.html');
+
+  await page.getByLabel('Data source').selectOption('object-store');
+
+  await expect(page.getByTestId('object-store-controls')).toBeVisible();
+  await expect(page.getByLabel('Object store provider')).toHaveValue('s3');
+  await expect(page.getByLabel('Object store table URI')).toHaveValue(
+    's3://axon-fixtures/prod-like-events',
+  );
+  await expect(page.getByLabel('Object store access mode')).toHaveValue('auto');
+  await expect(page.getByLabel('Storage access profile')).toHaveValue('sandbox-readonly');
+  await expect(
+    page.getByText(/secret key|access key|SAS|bearer token|service-account JSON/i),
+  ).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Run' }).click();
+
+  await expect(page.getByTestId('query-status')).toHaveText('Finished');
+  await expect(page.getByTestId('table-uri')).toHaveText('s3://axon-fixtures/prod-like-events');
+  await expect(page.getByTestId('resolver-provider')).toHaveText('s3');
+  await expect(page.getByTestId('resolver-access-mode')).toHaveText('auto -> signed_url');
+  await expect(page.getByTestId('resolver-correlation')).toContainText('sandbox-s3-3');
+  await expect(page.getByTestId('resolver-descriptor-uri')).toHaveText(
+    'axon-resolved://sandbox/s3/snapshot/3',
+  );
+  await expect(page.getByTestId('resolver-descriptor-uri')).not.toContainText('sandbox-readonly');
+  await expect(page.getByTestId('query-executed-on')).toHaveText('browser_wasm');
+  await expect(page.getByTestId('result-grid')).toContainText('row_count');
+  await expect(page.getByTestId('worker-event-log')).toContainText('open started');
+  await expect(page.getByTestId('active-data-file-urls')).toContainText(
+    '/fixtures/prod-like/table/category=B/',
+  );
+  await expect(page.getByTestId('query-error')).not.toContainText('sandbox-readonly');
+});
+
+test('mock object-store resolver keeps storage profiles out of descriptor table URIs', () => {
+  const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+
+  expect(source).not.toContain('request.credential_profile.id');
+  expect(source).toContain('axon-resolved://');
+});
+
 test('records honest UI supersession when cancelling a running sandbox query', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/sandbox.html');
 
   let releaseFirstQueryRead: (() => void) | undefined;
   const firstQueryReadRelease = new Promise<void>((resolve) => {
@@ -148,7 +194,7 @@ test('records honest UI supersession when cancelling a running sandbox query', a
 test('does not append stale worker events after cancelling and starting a new query', async ({
   page,
 }) => {
-  await page.goto('/');
+  await page.goto('/sandbox.html');
 
   let delayedFirstQueryRead = false;
   let releaseFirstQueryRead: (() => void) | undefined;

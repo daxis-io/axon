@@ -36,6 +36,157 @@ test('starts a real browser Worker and handles Arrow IPC success envelopes', asy
   });
 });
 
+test('opens Delta Sharing URL-mode descriptors through the real sandbox worker', async ({
+  page,
+}) => {
+  await page.goto('/sandbox.html');
+
+  const result = await page.evaluate(async () => {
+    const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+    const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
+      type: 'module',
+    });
+    const postedCommands: string[] = [];
+    const workerEvents: string[] = [];
+    const recordingWorker = {
+      addEventListener: worker.addEventListener.bind(worker),
+      removeEventListener: worker.removeEventListener.bind(worker),
+      terminate: worker.terminate.bind(worker),
+      postMessage(message: unknown): void {
+        postedCommands.push(JSON.stringify(message));
+        worker.postMessage(message);
+      },
+    };
+    const client = sdk.createAxonBrowserClient({
+      worker: recordingWorker,
+      onEvent: (event: unknown) => workerEvents.push(JSON.stringify(event)),
+    });
+
+    const manifest = (await (
+      await fetch('/fixtures/prod-like/delta-log-manifest.json')
+    ).json()) as {
+      data_files: Array<{
+        relative_path: string;
+        url_path: string;
+        size_bytes: number;
+        partition_values: Record<string, string>;
+      }>;
+      expected_latest_version: number;
+    };
+    const maybeActiveFiles = ['B', 'D'].map((category) =>
+      manifest.data_files.findLast((file) => file.partition_values.category === category),
+    );
+    if (maybeActiveFiles.some((file) => file === undefined)) {
+      throw new Error('expected active B and D fixture files in prod-like manifest');
+    }
+    const activeFiles = maybeActiveFiles as Array<NonNullable<(typeof maybeActiveFiles)[number]>>;
+
+    let sharingRequest:
+      | {
+          authorization: string | null;
+          body: string;
+          method: string | undefined;
+          url: string;
+        }
+      | undefined;
+    const sharingFetch = async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      const headers = new Headers(init?.headers);
+      sharingRequest = {
+        authorization: headers.get('authorization'),
+        body: String(init?.body ?? ''),
+        method: init?.method,
+        url: String(input),
+      };
+      const expiresAt = new Date(Date.now() + 600_000).toISOString();
+      const lines = [
+        JSON.stringify({ protocol: { minReaderVersion: 1 } }),
+        JSON.stringify({ metaData: { id: 'shared-orders', partitionColumns: ['category'] } }),
+        ...activeFiles.map((file) =>
+          JSON.stringify({
+            file: {
+              id: file.relative_path,
+              url: new URL(`${file.url_path}?X-Amz-Signature=signed-fixture-url`, location.href)
+                .href,
+              size: file.size_bytes,
+              partitionValues: file.partition_values,
+              expirationTimestamp: expiresAt,
+            },
+          }),
+        ),
+      ];
+      return new Response(lines.join('\n'), {
+        headers: {
+          'content-type': 'application/x-ndjson',
+          'delta-table-version': String(manifest.expected_latest_version),
+        },
+      });
+    };
+
+    const session = await sdk.createDeltaSharingClient({ fetch: sharingFetch }).connect({
+      source: 'json',
+      value: {
+        endpoint: 'https://sharing.example.test/delta-sharing',
+        bearerToken: 'secret-profile-token',
+        expirationTime: '2026-12-31T00:00:00Z',
+      },
+    });
+
+    try {
+      const opened = await client.openDeltaShare('shared_orders', {
+        session,
+        table: { share: 'retail_share', schema: 'sales', table: 'orders' },
+        responseFormat: 'auto',
+        requestId: 'open-delta-sharing-real-worker',
+      });
+      const queryResult = await client.query(
+        'shared_orders',
+        'SELECT COUNT(*) AS row_count FROM shared_orders',
+        { requestId: 'query-delta-sharing-real-worker' },
+      );
+      const openCommand =
+        postedCommands.find((command) => command.includes('open_delta_table')) ?? '';
+      const openedSnapshot = JSON.parse(openCommand).open_delta_table.snapshot;
+
+      return {
+        activeFileCount: openedSnapshot.active_files.length,
+        deltaSharing: opened.deltaSharing,
+        executedOn: queryResult.response.executed_on,
+        openCommand,
+        queryCommand: postedCommands.find((command) => command.includes('"sql"')) ?? '',
+        rowCount: String(queryResult.preview?.rows?.[0]?.[0]),
+        sharingRequest,
+        workerEvents,
+      };
+    } finally {
+      client.terminate();
+    }
+  });
+
+  expect(result.deltaSharing).toMatchObject({
+    kind: 'delta_sharing_snapshot_descriptor',
+    resolvedVersion: 3,
+    responseFormat: 'parquet',
+    table: { share: 'retail_share', schema: 'sales', table: 'orders' },
+  });
+  expect(result.sharingRequest).toMatchObject({
+    authorization: 'Bearer secret-profile-token',
+    method: 'POST',
+    url: 'https://sharing.example.test/delta-sharing/shares/retail_share/schemas/sales/tables/orders/query',
+  });
+  expect(result.activeFileCount).toBe(2);
+  expect(result.executedOn).toBe('browser_wasm');
+  expect(result.rowCount).toBe('4');
+  expect(result.openCommand).toContain('/fixtures/prod-like/table/category=B/');
+  expect(result.openCommand).toContain('/fixtures/prod-like/table/category=D/');
+  expect(result.openCommand).not.toContain('secret-profile-token');
+  expect(result.openCommand).not.toContain('bearerToken');
+  expect(result.queryCommand).not.toContain('secret-profile-token');
+  expect(result.workerEvents.join('\n')).toContain('range_read_metrics');
+});
+
 test('preserves cancellation errors from browser worker envelopes', async ({ page }) => {
   const result = await runWorkerProbe(page, 'cancellation');
 
@@ -65,7 +216,7 @@ test('preserves fallback-required errors from browser worker envelopes', async (
 });
 
 async function runWorkerProbe(page: Page, probe: WorkerProbe): Promise<WorkerProbeResult> {
-  await page.goto('/');
+  await page.goto('/sandbox.html');
 
   return page.evaluate(
     async ({ selectedProbe, workerScript }) => {

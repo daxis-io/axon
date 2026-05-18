@@ -1,6 +1,7 @@
 import {
   AXON_BROWSER_BUNDLE_MANIFEST,
   AxonWorkerError,
+  createDeltaSharingClient,
   createAxonBrowserClient,
   getPlatformFeatures,
   selectBundle,
@@ -8,9 +9,14 @@ import {
   type BrowserBundleManifest,
   type BrowserHttpFileDescriptor,
   type BrowserHttpSnapshotDescriptor,
+  type DeltaSharingReadPlan,
+  type DeltaSharingResponseFormat,
+  type DeltaLocationResolveResponse,
   type FallbackReason,
   type PlatformFeatures,
   type QueryRequest,
+  type ResolverActualAccessMode,
+  type ResolverRequestedAccessMode,
 } from '../src/axon-browser-sdk';
 
 const snapshot: BrowserHttpSnapshotDescriptor = {
@@ -53,6 +59,63 @@ async function sdkShapeCompiles(client: AxonBrowserClient): Promise<Uint8Array> 
   const shorthandResult = await client.query('events', 'SELECT id FROM events LIMIT 10');
   shorthandResult.fallbackReason satisfies FallbackReason | undefined;
 
+  const resolverResponse: DeltaLocationResolveResponse = {
+    descriptor: snapshot,
+    provider: 'gcs',
+    table_uri: 'gs://axon-fixtures/partitioned-table',
+    requested_snapshot_version: 7,
+    resolved_snapshot_version: 7,
+    requested_access_mode: 'auto',
+    actual_access_mode: 'signed_url',
+    expires_at_epoch_ms: Date.now() + 60_000,
+  };
+  resolverResponse.requested_access_mode satisfies ResolverRequestedAccessMode | undefined;
+  resolverResponse.actual_access_mode satisfies ResolverActualAccessMode;
+  const openedLocation = await client.openDeltaLocation('events', {
+    provider: 'gcs',
+    tableUri: 'gs://axon-fixtures/partitioned-table',
+    credentialProfile: { id: 'prod-readonly' },
+    resolveDeltaLocation: async () => resolverResponse,
+  });
+  openedLocation.location.resolved_snapshot_version satisfies number;
+  openedLocation.location.actual_access_mode satisfies ResolverActualAccessMode;
+
+  const deltaSharingSession = await createDeltaSharingClient({
+    fetch: async () =>
+      new Response(
+        [
+          JSON.stringify({ protocol: { minReaderVersion: 1 } }),
+          JSON.stringify({
+            file: {
+              id: 'part-000.parquet',
+              url: 'https://example.invalid/part-000.parquet',
+              size: 128,
+              partitionValues: {},
+            },
+          }),
+        ].join('\n'),
+        { headers: { 'delta-table-version': '7' } },
+      ),
+  }).connect({
+    source: 'json',
+    value: {
+      endpoint: 'https://sharing.example.test/delta-sharing',
+      bearerToken: 'shape-token',
+    },
+  });
+  const responseFormat: DeltaSharingResponseFormat = 'auto';
+  const readPlan = await deltaSharingSession.resolveTable(
+    { share: 'retail', schema: 'sales', table: 'orders' },
+    { responseFormat },
+  );
+  readPlan satisfies DeltaSharingReadPlan;
+  const openedShare = await client.openDeltaShare('shared_orders', {
+    session: deltaSharingSession,
+    table: { share: 'retail', schema: 'sales', table: 'orders' },
+    responseFormat,
+  });
+  openedShare.deltaSharing.resolvedVersion satisfies number;
+
   await client.dispose('events');
   client.terminate();
 
@@ -86,6 +149,15 @@ function errorShapeCompiles(error: unknown): FallbackReason | undefined {
   return undefined;
 }
 
+function deltaSharingPersistenceShapeIsRejected(): Promise<unknown> {
+  return createDeltaSharingClient().connect({
+    source: 'json',
+    value: {},
+    // @ts-expect-error bearer metadata persistence is intentionally not exposed in the MVP SDK input.
+    persistNonSecretMetadata: true,
+  });
+}
+
 // @ts-expect-error active file descriptors must include browser-safe URLs.
 const missingBrowserUrl: BrowserHttpFileDescriptor = {
   path: 'part-000.parquet',
@@ -98,4 +170,5 @@ void workerUrlShapeCompiles;
 void workerFactoryShapeCompiles;
 void bundleSelectionShapeCompiles;
 void errorShapeCompiles;
+void deltaSharingPersistenceShapeIsRejected;
 void missingBrowserUrl;

@@ -8,16 +8,22 @@ import {
   AxonWorkerError,
   createAxonBrowserClient,
   redactUrlSecrets,
+  validateDeltaLocationResolveRequest,
   type AxonBrowserClient,
   type AxonQueryResult,
   type BrowserHttpSnapshotDescriptor,
   type BrowserWorkerEventContext,
   type BrowserWorkerEventEnvelope,
   type BrowserWorkerResultPreview,
+  type DeltaLocationOpenOptions,
+  type DeltaLocationResolveRequest,
+  type DeltaLocationResolveResponse,
+  type DeltaObjectStoreProvider,
   type FallbackReason,
   type ParquetInspectionSummary,
   type PartitionColumnType,
   type QueryError,
+  type ResolverRequestedAccessMode,
 } from './axon-browser-sdk';
 import './styles.css';
 
@@ -137,12 +143,15 @@ type FixtureChoice = {
   fallbackName?: string;
 };
 
+type SourceMode = 'fixture' | 'object_store';
+
 type QueryContext = {
   key: string;
   fixture: FixtureManifest;
   logObjectDetails: LogObjectDetail[];
   snapshot: ResolvedSnapshot;
   activeFiles: ActiveDataFile[];
+  resolverResponse?: DeltaLocationResolveResponse;
 };
 
 const FIXTURES: Record<string, FixtureChoice> = {
@@ -191,16 +200,27 @@ const commitActionsNode = requiredNode('[data-testid="commit-actions"]');
 const dataFilesNode = requiredNode('[data-testid="data-files"]');
 const activeFilesNode = requiredNode('[data-testid="active-files"]');
 const activeDataFileUrlsNode = requiredNode('[data-testid="active-data-file-urls"]');
+const resolverProviderNode = requiredNode('[data-testid="resolver-provider"]');
+const resolverAccessModeNode = requiredNode('[data-testid="resolver-access-mode"]');
+const resolverCorrelationNode = requiredNode('[data-testid="resolver-correlation"]');
+const resolverDescriptorUriNode = requiredNode('[data-testid="resolver-descriptor-uri"]');
 const pruningPreflightNode = requiredNode('[data-testid="pruning-preflight"]');
 const parquetPreflightNode = requiredNode('[data-testid="parquet-preflight"]');
 const inputOutputMapNode = requiredNode('[data-testid="input-output-map"]');
 const errorPanel = requiredNode('.error-banner') as HTMLElement;
 const errorNode = requiredNode('[data-testid="error"]');
+const objectStoreControls = requiredNode('[data-testid="object-store-controls"]') as HTMLElement;
+const objectStoreProviderSelect = requiredNode('#object-store-provider') as HTMLSelectElement;
+const objectStoreTableUriInput = requiredNode('#object-store-table-uri') as HTMLInputElement;
+const objectStoreAccessModeSelect = requiredNode('#object-store-access-mode') as HTMLSelectElement;
+const objectStoreProfileInput = requiredNode('#object-store-profile') as HTMLInputElement;
+const objectStoreSnapshotInput = requiredNode('#object-store-snapshot') as HTMLInputElement;
 
 let wasmReady: Promise<void> | undefined;
 let queryContext: QueryContext | undefined;
 let queryClient: AxonBrowserClient | undefined;
 let queryDescriptor: BrowserHttpSnapshotDescriptor | undefined;
+let queryLocationOpenOptions: DeltaLocationOpenOptions | undefined;
 let queryTableOpened = false;
 let parquetPreflightContextKey: string | undefined;
 let queryRequestCounter = 0;
@@ -214,9 +234,35 @@ dataSourceSelect.addEventListener('change', () => {
   parquetPreflightContextKey = undefined;
   clearDetails();
   clearQueryOutput();
-  fixtureNameNode.textContent =
-    selectedFixture().fallbackName ?? dataSourceSelect.selectedOptions[0].text;
+  syncObjectStoreControls();
+  fixtureNameNode.textContent = selectedSourceLabel();
   setStatus('Ready');
+});
+
+objectStoreProviderSelect.addEventListener('change', () => {
+  syncObjectStoreDefaults();
+  resetQueryClient();
+  queryContext = undefined;
+  parquetPreflightContextKey = undefined;
+  clearDetails();
+  clearQueryOutput();
+  setStatus('Ready');
+});
+
+[
+  objectStoreTableUriInput,
+  objectStoreAccessModeSelect,
+  objectStoreProfileInput,
+  objectStoreSnapshotInput,
+].forEach((control) => {
+  control.addEventListener('change', () => {
+    resetQueryClient();
+    queryContext = undefined;
+    parquetPreflightContextKey = undefined;
+    clearDetails();
+    clearQueryOutput();
+    setStatus('Ready');
+  });
 });
 
 runSqlButton.addEventListener('click', () => {
@@ -237,6 +283,8 @@ document.querySelectorAll<HTMLButtonElement>('[data-sample-query]').forEach((but
 });
 
 initResultsTabs();
+syncObjectStoreDefaults();
+syncObjectStoreControls();
 
 const sqlEditor = createSqlEditor(SAMPLE_QUERIES.count);
 attachEditorShortcuts(sqlEditor);
@@ -274,6 +322,99 @@ async function loadQueryContext(key: string, fixtureChoice: FixtureChoice): Prom
   renderSnapshot(fixture, logObjectDetails, snapshot, activeFiles, [], fixtureChoice.fallbackName);
   prepareQuerySandbox(snapshot, activeFiles);
   return context;
+}
+
+async function loadObjectStoreQueryContext(key: string): Promise<QueryContext> {
+  setStatus('Resolving descriptor');
+  errorPanel.hidden = true;
+  clearDetails();
+  await ensureWasm();
+
+  const request = objectStoreResolveRequest();
+  validateDeltaLocationResolveRequest(request);
+  const response = await mockResolveDeltaSnapshotDescriptor(request);
+  const fixture = await fetchJson<FixtureManifest>(FIXTURES['prod-like'].manifestUrl);
+  const logObjectDetails = await loadLogObjectDetails(fixture);
+  const snapshot = resolvedSnapshotFromDescriptor(response);
+  const activeFiles = activeDataFilesFromDescriptor(response.descriptor);
+  const context = {
+    key,
+    fixture,
+    logObjectDetails,
+    snapshot,
+    activeFiles,
+    resolverResponse: response,
+  };
+  renderSnapshot(fixture, logObjectDetails, snapshot, activeFiles, [], fixture.name);
+  renderResolverResponse(response);
+  prepareQuerySandbox(snapshot, activeFiles, {
+    provider: request.provider,
+    tableUri: request.table_uri,
+    credentialProfile: request.credential_profile,
+    requestedAccessMode: request.requested_access_mode,
+    snapshotVersion: request.snapshot_version,
+    resolveDeltaLocation: async (candidate) => {
+      assertSameResolverRequest(candidate, request);
+      return response;
+    },
+  });
+  return context;
+}
+
+async function mockResolveDeltaSnapshotDescriptor(
+  request: DeltaLocationResolveRequest,
+): Promise<DeltaLocationResolveResponse> {
+  const fixture = await fetchJson<FixtureManifest>(FIXTURES['prod-like'].manifestUrl);
+  const wasmManifest = {
+    objects: fixture.objects.map((object) => ({
+      relative_path: object.relative_path,
+      url: new URL(object.url_path, window.location.href).toString(),
+      size_bytes: object.size_bytes,
+      etag: object.etag,
+    })),
+  };
+  const snapshotJson = await resolve_delta_snapshot_from_manifest(
+    JSON.stringify(wasmManifest),
+    fixture.table_uri,
+  );
+  const snapshot = JSON.parse(snapshotJson) as ResolvedSnapshot;
+  if (
+    request.snapshot_version !== undefined &&
+    request.snapshot_version !== snapshot.snapshot_version
+  ) {
+    throw new Error(`fixture resolver has snapshot ${snapshot.snapshot_version}`);
+  }
+
+  const activeFiles = activeDataFiles(fixture, snapshot);
+  return {
+    descriptor: {
+      table_uri: `axon-resolved://sandbox/${request.provider}/snapshot/${snapshot.snapshot_version}`,
+      snapshot_version: snapshot.snapshot_version,
+      partition_column_types: snapshot.partition_column_types ?? {},
+      browser_compatibility: { capabilities: {} },
+      required_capabilities: { capabilities: {} },
+      active_files: activeFiles.map((file) => ({
+        path: file.path,
+        url: file.absolute_url,
+        size_bytes: file.size_bytes,
+        partition_values: file.partition_values,
+        stats: file.stats,
+      })),
+    },
+    provider: request.provider,
+    table_uri: request.table_uri,
+    requested_snapshot_version: request.snapshot_version,
+    resolved_snapshot_version: snapshot.snapshot_version,
+    requested_access_mode: request.requested_access_mode,
+    actual_access_mode: request.requested_access_mode === 'proxy' ? 'proxy' : 'signed_url',
+    expires_at_epoch_ms: Date.now() + 10 * 60 * 1000,
+    correlation_id: `sandbox-${request.provider}-${snapshot.snapshot_version}`,
+    warnings: ['sandbox mock resolver used fixture-backed browser-safe descriptor URLs'],
+    refresh: {
+      refresh_after_epoch_ms: Date.now() + 8 * 60 * 1000,
+      same_snapshot_required: true,
+    },
+  };
 }
 
 function renderSnapshot(
@@ -338,9 +479,44 @@ function activeDataFiles(fixture: FixtureManifest, snapshot: ResolvedSnapshot): 
   });
 }
 
-function prepareQuerySandbox(snapshot: ResolvedSnapshot, activeFiles: ActiveDataFile[]): void {
+function activeDataFilesFromDescriptor(
+  descriptor: BrowserHttpSnapshotDescriptor,
+): ActiveDataFile[] {
+  return descriptor.active_files.map((file) => {
+    const parsed = new URL(file.url);
+    return {
+      path: file.path,
+      size_bytes: file.size_bytes,
+      partition_values: file.partition_values,
+      stats: file.stats,
+      url_path: parsed.pathname,
+      absolute_url: parsed.toString(),
+    };
+  });
+}
+
+function resolvedSnapshotFromDescriptor(response: DeltaLocationResolveResponse): ResolvedSnapshot {
+  return {
+    table_uri: response.table_uri,
+    snapshot_version: response.resolved_snapshot_version,
+    partition_column_types: response.descriptor.partition_column_types,
+    active_files: response.descriptor.active_files.map((file) => ({
+      path: file.path,
+      size_bytes: file.size_bytes,
+      partition_values: file.partition_values,
+      stats: file.stats,
+    })),
+  };
+}
+
+function prepareQuerySandbox(
+  snapshot: ResolvedSnapshot,
+  activeFiles: ActiveDataFile[],
+  locationOpenOptions?: DeltaLocationOpenOptions,
+): void {
   resetQuerySession();
   queryDescriptor = browserSnapshotDescriptor(snapshot, activeFiles);
+  queryLocationOpenOptions = locationOpenOptions;
 }
 
 function browserSnapshotDescriptor(
@@ -435,8 +611,10 @@ async function ensureQueryContext(): Promise<QueryContext> {
     return queryContext;
   }
 
-  const fixture = selectedFixture();
-  const context = await loadQueryContext(key, fixture);
+  const context =
+    selectedSourceMode() === 'object_store'
+      ? await loadObjectStoreQueryContext(key)
+      : await loadQueryContext(key, selectedFixture());
   queryContext = context;
   return context;
 }
@@ -484,7 +662,14 @@ async function ensureQueryTableOpen(client: AxonBrowserClient, token: number): P
   if (isActiveQuery(token)) {
     activeWorkerEventRequestIds?.add(requestId);
   }
-  await client.openDeltaTable(QUERY_TABLE_NAME, queryDescriptor, { requestId });
+  if (queryLocationOpenOptions) {
+    await client.openDeltaLocation(QUERY_TABLE_NAME, {
+      ...queryLocationOpenOptions,
+      requestId,
+    });
+  } else {
+    await client.openDeltaTable(QUERY_TABLE_NAME, queryDescriptor, { requestId });
+  }
   queryTableOpened = true;
 }
 
@@ -792,6 +977,7 @@ function resetQueryClient(): void {
 function resetQuerySession(): void {
   closeQueryClient();
   queryDescriptor = undefined;
+  queryLocationOpenOptions = undefined;
 }
 
 function closeQueryClient(): void {
@@ -1333,9 +1519,20 @@ function clearDetails(): void {
   dataFilesNode.replaceChildren();
   activeFilesNode.replaceChildren();
   activeDataFileUrlsNode.replaceChildren();
+  resolverProviderNode.textContent = '-';
+  resolverAccessModeNode.textContent = '-';
+  resolverCorrelationNode.textContent = '-';
+  resolverDescriptorUriNode.textContent = '-';
   pruningPreflightNode.replaceChildren();
   parquetPreflightNode.replaceChildren();
   inputOutputMapNode.replaceChildren();
+}
+
+function renderResolverResponse(response: DeltaLocationResolveResponse): void {
+  resolverProviderNode.textContent = response.provider;
+  resolverAccessModeNode.textContent = `${response.requested_access_mode ?? 'auto'} -> ${response.actual_access_mode}`;
+  resolverCorrelationNode.textContent = response.correlation_id ?? '-';
+  resolverDescriptorUriNode.textContent = response.descriptor.table_uri;
 }
 
 function selectedFixture(): FixtureChoice {
@@ -1344,6 +1541,70 @@ function selectedFixture(): FixtureChoice {
 
 function selectedFixtureKey(): string {
   return dataSourceSelect.value || DEFAULT_FIXTURE_KEY;
+}
+
+function selectedSourceMode(): SourceMode {
+  return selectedFixtureKey() === 'object-store' ? 'object_store' : 'fixture';
+}
+
+function selectedSourceLabel(): string {
+  if (selectedSourceMode() === 'object_store') {
+    return 'Object store resolver';
+  }
+  return selectedFixture().fallbackName ?? dataSourceSelect.selectedOptions[0].text;
+}
+
+function syncObjectStoreControls(): void {
+  objectStoreControls.hidden = selectedSourceMode() !== 'object_store';
+}
+
+function syncObjectStoreDefaults(): void {
+  const provider = objectStoreProviderSelect.value as DeltaObjectStoreProvider;
+  const current = objectStoreTableUriInput.value.trim();
+  const knownDefault =
+    current === '' ||
+    current === 's3://axon-fixtures/prod-like-events' ||
+    current === 'gs://axon-fixtures/prod-like-events' ||
+    current === 'az://axonaccount/tables/prod-like-events' ||
+    current === 'abfs://tables@axonaccount.dfs.core.windows.net/prod-like-events';
+
+  if (!knownDefault) {
+    return;
+  }
+
+  objectStoreTableUriInput.value =
+    provider === 's3'
+      ? 's3://axon-fixtures/prod-like-events'
+      : provider === 'gcs'
+        ? 'gs://axon-fixtures/prod-like-events'
+        : 'az://axonaccount/tables/prod-like-events';
+}
+
+function objectStoreResolveRequest(): DeltaLocationResolveRequest {
+  const snapshotText = objectStoreSnapshotInput.value.trim();
+  const request: DeltaLocationResolveRequest = {
+    provider: objectStoreProviderSelect.value as DeltaObjectStoreProvider,
+    table_uri: objectStoreTableUriInput.value.trim(),
+    credential_profile: {
+      id: objectStoreProfileInput.value.trim(),
+    },
+    requested_access_mode: objectStoreAccessModeSelect.value as ResolverRequestedAccessMode,
+  };
+
+  if (snapshotText !== '') {
+    request.snapshot_version = Number(snapshotText);
+  }
+
+  return request;
+}
+
+function assertSameResolverRequest(
+  candidate: DeltaLocationResolveRequest,
+  expected: DeltaLocationResolveRequest,
+): void {
+  if (JSON.stringify(candidate) !== JSON.stringify(expected)) {
+    throw new Error('sandbox resolver request changed between preview and worker open');
+  }
 }
 
 function renderError(error: unknown): void {

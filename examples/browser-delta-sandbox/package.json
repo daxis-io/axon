@@ -19,7 +19,10 @@
     "@eslint/js": "^10.0.1",
     "@playwright/test": "1.57.0",
     "@types/node": "^22.18.0",
+    "@types/react": "^18.3.28",
+    "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-basic-ssl": "2.1.0",
+    "@vitejs/plugin-react": "^5.2.0",
     "eslint": "^10.3.0",
     "prettier": "^3.8.3",
     "typescript": "5.9.3",
@@ -28,6 +31,8 @@
   },
   "dependencies": {
     "@codemirror/lang-sql": "6.10.0",
-    "codemirror": "6.0.2"
+    "codemirror": "6.0.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   }
 }

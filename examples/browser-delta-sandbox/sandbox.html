@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Axon SQL</title>
+  </head>
+  <body>
+    <main class="app">
+      <header class="app-bar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">⌬</span>
+          <h1>Axon SQL</h1>
+        </div>
+        <div class="app-bar-spacer"></div>
+        <a class="design-preview-link" href="/">
+          Open editor
+          <svg class="design-preview-link-arrow" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M5.5 3.5h7v7M5 11l7.5-7.5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </a>
+        <div class="connection-bar">
+          <label for="fixture-selector">Data source</label>
+          <div class="select">
+            <select id="fixture-selector" aria-label="Data source">
+              <option value="prod-like" selected>Prod-like events</option>
+              <option value="simple">JSON log smoke fixture</option>
+              <option value="object-store">Object store resolver</option>
+            </select>
+            <svg class="select-caret" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M4 6l4 4 4-4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </div>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="rail" aria-label="Data explorer">
+          <section class="rail-section">
+            <h2 class="rail-heading">Tables</h2>
+            <button type="button" class="schema-row" data-sample-query="count">
+              <span class="schema-icon" aria-hidden="true">⌗</span>
+              <span class="schema-name">axon_table</span>
+              <span class="schema-meta" data-testid="file-count">0 files</span>
+            </button>
+          </section>
+
+          <section class="rail-section">
+            <h2 class="rail-heading">Source</h2>
+            <dl class="kv">
+              <div>
+                <dt>Fixture</dt>
+                <dd data-testid="fixture-name">Prod-like events</dd>
+              </div>
+              <div>
+                <dt>Table URI</dt>
+                <dd class="mono" data-testid="table-uri">-</dd>
+              </div>
+              <div>
+                <dt>Snapshot</dt>
+                <dd data-testid="snapshot-version">-</dd>
+              </div>
+              <div>
+                <dt>Checkpoint</dt>
+                <dd data-testid="checkpoint-version">-</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section
+            class="rail-section object-store-controls"
+            data-testid="object-store-controls"
+            hidden
+          >
+            <h2 class="rail-heading">Object Store</h2>
+            <div class="field-stack">
+              <label class="field">
+                <span>Provider</span>
+                <select id="object-store-provider" aria-label="Object store provider">
+                  <option value="s3" selected>S3</option>
+                  <option value="gcs">GCS</option>
+                  <option value="azure_blob">Azure Blob</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Table URI</span>
+                <input
+                  id="object-store-table-uri"
+                  aria-label="Object store table URI"
+                  value="s3://axon-fixtures/prod-like-events"
+                  spellcheck="false"
+                />
+              </label>
+              <label class="field">
+                <span>Access mode</span>
+                <select id="object-store-access-mode" aria-label="Object store access mode">
+                  <option value="auto" selected>auto</option>
+                  <option value="signed_url">signed_url</option>
+                  <option value="proxy">proxy</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Storage access profile</span>
+                <input
+                  id="object-store-profile"
+                  aria-label="Storage access profile"
+                  value="sandbox-readonly"
+                  spellcheck="false"
+                />
+              </label>
+              <label class="field">
+                <span>Snapshot version</span>
+                <input
+                  id="object-store-snapshot"
+                  aria-label="Object store snapshot version"
+                  inputmode="numeric"
+                  placeholder="latest"
+                />
+              </label>
+            </div>
+          </section>
+
+          <section class="rail-section">
+            <h2 class="rail-heading">Resolver</h2>
+            <dl class="kv">
+              <div>
+                <dt>Provider</dt>
+                <dd data-testid="resolver-provider">-</dd>
+              </div>
+              <div>
+                <dt>Access mode</dt>
+                <dd data-testid="resolver-access-mode">-</dd>
+              </div>
+              <div>
+                <dt>Correlation</dt>
+                <dd class="mono" data-testid="resolver-correlation">-</dd>
+              </div>
+              <div>
+                <dt>Descriptor URI</dt>
+                <dd class="mono" data-testid="resolver-descriptor-uri">-</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="rail-section">
+            <h2 class="rail-heading">Templates</h2>
+            <div class="snippet-list">
+              <button type="button" class="snippet" data-sample-query="count">
+                <span class="snippet-name">Count rows</span>
+                <span class="snippet-hint">SELECT COUNT(*)</span>
+              </button>
+              <button type="button" class="snippet" data-sample-query="category">
+                <span class="snippet-name">Category totals</span>
+                <span class="snippet-hint">GROUP BY category</span>
+              </button>
+              <button type="button" class="snippet" data-sample-query="top-values">
+                <span class="snippet-name">Top values</span>
+                <span class="snippet-hint">WHERE value &gt;= 90</span>
+              </button>
+            </div>
+          </section>
+        </aside>
+
+        <section class="main-pane" aria-label="Worksheet">
+          <section class="editor-pane">
+            <div class="editor-toolbar">
+              <div class="status-pill" data-state="ready">
+                <span class="status-dot" aria-hidden="true"></span>
+                <span class="status-text" data-testid="status">Ready</span>
+              </div>
+              <div class="toolbar-spacer"></div>
+              <span class="kbd-hint"> <kbd>⌘</kbd><kbd>↵</kbd> to run </span>
+              <button id="cancel-sql" type="button" class="btn btn-ghost" disabled>Cancel</button>
+              <button id="run-sql" type="button" class="btn btn-primary">
+                <svg viewBox="0 0 16 16" class="btn-icon" aria-hidden="true">
+                  <path d="M5 3.5v9l7-4.5z" fill="currentColor" />
+                </svg>
+                Run
+              </button>
+            </div>
+            <div id="sql-editor" class="sql-editor-host"></div>
+          </section>
+
+          <section class="results-pane">
+            <nav class="results-tabs" role="tablist" aria-label="Results">
+              <button type="button" class="tab" data-tab="results" role="tab" aria-selected="true">
+                Results
+              </button>
+              <button type="button" class="tab" data-tab="metrics" role="tab" aria-selected="false">
+                Metrics
+              </button>
+              <button type="button" class="tab" data-tab="events" role="tab" aria-selected="false">
+                Events
+              </button>
+              <button type="button" class="tab" data-tab="error" role="tab" aria-selected="false">
+                Error
+              </button>
+              <button
+                type="button"
+                class="tab"
+                data-tab="inspector"
+                role="tab"
+                aria-selected="false"
+              >
+                Inspector
+              </button>
+            </nav>
+
+            <div class="results-summary" aria-live="polite">
+              <div class="summary-item">
+                <span class="summary-label">Status</span>
+                <strong class="summary-value" data-testid="query-status">Ready</strong>
+              </div>
+              <div class="summary-item">
+                <span class="summary-label">Rows</span>
+                <strong class="summary-value" data-testid="query-row-count">-</strong>
+              </div>
+              <div class="summary-item">
+                <span class="summary-label">Elapsed</span>
+                <strong class="summary-value" data-testid="query-elapsed-ms">-</strong>
+              </div>
+              <div class="summary-item">
+                <span class="summary-label">Engine</span>
+                <strong class="summary-value" data-testid="query-executed-on">-</strong>
+              </div>
+              <div class="summary-item">
+                <span class="summary-label">Arrow IPC</span>
+                <strong class="summary-value" data-testid="query-arrow-ipc-bytes">-</strong>
+              </div>
+              <div class="summary-item">
+                <span class="summary-label">Fallback</span>
+                <strong class="summary-value" data-testid="query-fallback-reason">-</strong>
+              </div>
+            </div>
+
+            <div class="tab-body">
+              <div class="tab-panel" data-panel="results" role="tabpanel">
+                <div class="result-grid" data-testid="result-grid"></div>
+              </div>
+
+              <div class="tab-panel" data-panel="metrics" role="tabpanel" hidden>
+                <pre class="code-block" data-testid="query-metrics">-</pre>
+              </div>
+
+              <div class="tab-panel" data-panel="events" role="tabpanel" hidden>
+                <ol class="event-list" data-testid="worker-event-log"></ol>
+              </div>
+
+              <div class="tab-panel" data-panel="error" role="tabpanel" hidden>
+                <pre class="code-block error" data-testid="query-error">-</pre>
+              </div>
+
+              <div class="tab-panel inspector" data-panel="inspector" role="tabpanel" hidden>
+                <section class="inspector-section">
+                  <h3>Delta log objects</h3>
+                  <ul class="list object-list" data-testid="log-objects"></ul>
+                </section>
+                <section class="inspector-section">
+                  <h3>Commit actions</h3>
+                  <ul class="list action-list" data-testid="commit-actions"></ul>
+                </section>
+                <section class="inspector-section">
+                  <h3>Data files</h3>
+                  <ul class="list file-list" data-testid="data-files"></ul>
+                </section>
+                <section class="inspector-section">
+                  <h3>Resolved active files</h3>
+                  <ul class="list file-list" data-testid="active-files"></ul>
+                </section>
+                <section class="inspector-section">
+                  <h3>Active data file URLs</h3>
+                  <ul class="list file-list" data-testid="active-data-file-urls"></ul>
+                </section>
+                <section class="inspector-section">
+                  <h3>Pruning preflight</h3>
+                  <ul class="list file-list" data-testid="pruning-preflight"></ul>
+                </section>
+                <section class="inspector-section inspector-wide">
+                  <h3>Parquet metadata preflight</h3>
+                  <ul class="list file-list" data-testid="parquet-preflight"></ul>
+                </section>
+                <section class="inspector-section inspector-wide">
+                  <h3>Input output map</h3>
+                  <ul class="list mapping-list" data-testid="input-output-map"></ul>
+                </section>
+              </div>
+            </div>
+          </section>
+        </section>
+      </div>
+
+      <section class="error-banner" hidden>
+        <h2>Error</h2>
+        <pre data-testid="error"></pre>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

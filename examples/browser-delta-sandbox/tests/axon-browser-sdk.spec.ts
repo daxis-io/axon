@@ -4,14 +4,21 @@ import {
   AxonProtocolError,
   AxonSdkError,
   AxonWorkerError,
+  DeltaLocationResolverError,
+  createDeltaSharingClient,
   createAxonBrowserClient,
   getPlatformFeatures,
   redactUrlSecrets,
   selectBundle,
+  validateDeltaLocationResolveResponse,
   type BrowserBundleManifest,
   type BrowserHttpSnapshotDescriptor,
   type BrowserWorkerEventEnvelope,
   type BrowserWorkerCommand,
+  type DeltaSharingFetch,
+  type DeltaSharingReadPlan,
+  type DeltaLocationResolveRequest,
+  type DeltaLocationResolveResponse,
   type PlatformFeatureScope,
   type PlatformFeatures,
   type QueryResponse,
@@ -490,6 +497,756 @@ test('redacts URL credentials, query strings, and fragments from diagnostics', (
   ).toBe('failed to fetch https://example.invalid/table/file.parquet');
 });
 
+test('DeltaSharingClient imports a bearer profile and lists shares without exposing profile secrets', async () => {
+  const fetcher = scriptedFetch([
+    jsonResponse({
+      items: [{ name: 'retail_share' }],
+      nextPageToken: 'shares-page-2',
+    }),
+  ]);
+  const client = createDeltaSharingClient({ fetch: fetcher.fetch });
+
+  const session = await client.connect({
+    source: 'json',
+    value: JSON.stringify({
+      shareCredentialsVersion: 1,
+      endpoint: 'https://sharing.example.test/api/2.1/unity-catalog/delta-sharing/',
+      bearerToken: 'secret-profile-token',
+      expirationTime: '2026-06-01T00:00:00Z',
+    }),
+  });
+
+  expect(session.profile).toEqual({
+    kind: 'delta_sharing',
+    profileSource: 'uploaded_profile',
+    endpoint: 'https://sharing.example.test/api/2.1/unity-catalog/delta-sharing',
+    authMode: 'bearer',
+  });
+  expect(JSON.stringify(session.profile)).not.toContain('secret-profile-token');
+
+  await expect(session.listShares()).resolves.toEqual({
+    items: [{ name: 'retail_share' }],
+    nextPageToken: 'shares-page-2',
+  });
+
+  expect(String(fetcher.calls[0].input)).toBe(
+    'https://sharing.example.test/api/2.1/unity-catalog/delta-sharing/shares',
+  );
+  expect(new Headers(fetcher.calls[0].init?.headers).get('authorization')).toBe(
+    'Bearer secret-profile-token',
+  );
+});
+
+test('DeltaSharingSession discovers schemas, tables, table version, and metadata', async () => {
+  const fetcher = scriptedFetch([
+    jsonResponse({ items: [{ name: 'sales' }] }),
+    jsonResponse({ items: [{ name: 'orders', share: 'retail_share', schema: 'sales' }] }),
+    textResponse('', { 'delta-table-version': '42' }),
+    ndjsonResponse([
+      { protocol: { minReaderVersion: 1 } },
+      {
+        metaData: {
+          id: 'table-id',
+          name: 'orders',
+          schemaString: '{"type":"struct","fields":[]}',
+        },
+      },
+    ]),
+  ]);
+  const session = await createDeltaSharingClient({ fetch: fetcher.fetch }).connect({
+    source: 'json',
+    value: {
+      endpoint: 'https://sharing.example.test/delta-sharing',
+      bearerToken: 'secret-profile-token',
+    },
+  });
+
+  await expect(session.listSchemas('retail_share')).resolves.toEqual({
+    items: [{ name: 'sales' }],
+  });
+  await expect(session.listTables('retail_share', 'sales')).resolves.toEqual({
+    items: [{ name: 'orders', share: 'retail_share', schema: 'sales' }],
+  });
+  await expect(
+    session.getTableVersion({ share: 'retail_share', schema: 'sales', table: 'orders' }),
+  ).resolves.toBe(42);
+  await expect(
+    session.getTableMetadata({ share: 'retail_share', schema: 'sales', table: 'orders' }),
+  ).resolves.toMatchObject({
+    version: undefined,
+    protocol: { minReaderVersion: 1 },
+    metadata: { id: 'table-id', name: 'orders' },
+  });
+
+  expect(fetcher.calls.map((call) => String(call.input))).toEqual([
+    'https://sharing.example.test/delta-sharing/shares/retail_share/schemas',
+    'https://sharing.example.test/delta-sharing/shares/retail_share/schemas/sales/tables',
+    'https://sharing.example.test/delta-sharing/shares/retail_share/schemas/sales/tables/orders/version',
+    'https://sharing.example.test/delta-sharing/shares/retail_share/schemas/sales/tables/orders/metadata',
+  ]);
+});
+
+test('DeltaSharingSession resolves URL-mode parquet responses into browser descriptors', async () => {
+  const fetcher = scriptedFetch([
+    ndjsonResponse(deltaSharingQueryActions(), { 'delta-table-version': '12' }),
+  ]);
+  const session = await createDeltaSharingClient({ fetch: fetcher.fetch }).connect({
+    source: 'json',
+    value: {
+      endpoint: 'https://sharing.example.test/delta-sharing',
+      bearerToken: 'secret-profile-token',
+    },
+  });
+
+  const plan = await session.resolveTable(
+    { share: 'retail_share', schema: 'sales', table: 'orders' },
+    {
+      version: 12,
+      limitHint: 100,
+      responseFormat: 'auto',
+    },
+  );
+
+  expect(plan).toEqual({
+    kind: 'delta_sharing_snapshot_descriptor',
+    table: { share: 'retail_share', schema: 'sales', table: 'orders' },
+    endpoint: 'https://sharing.example.test/delta-sharing',
+    resolvedVersion: 12,
+    responseFormat: 'parquet',
+    descriptor: {
+      table_uri:
+        'delta-sharing://sharing.example.test/retail_share/sales/orders?endpoint=%2Fdelta-sharing',
+      snapshot_version: 12,
+      partition_column_types: {},
+      browser_compatibility: { capabilities: { signed_url_access: 'supported' } },
+      required_capabilities: { capabilities: { signed_url_access: 'supported' } },
+      active_files: [
+        {
+          path: 'part-000.parquet',
+          url: 'https://storage.example.test/retail/orders/part-000.parquet?X-Amz-Signature=abc',
+          size_bytes: 128,
+          partition_values: { region: 'west' },
+          stats: '{"numRecords":1}',
+        },
+      ],
+    },
+    expiresAtEpochMs: Date.parse('2026-05-17T20:00:00Z'),
+    warnings: [],
+  } satisfies DeltaSharingReadPlan);
+
+  expect(String(fetcher.calls[0].input)).toBe(
+    'https://sharing.example.test/delta-sharing/shares/retail_share/schemas/sales/tables/orders/query',
+  );
+  expect(fetcher.calls[0].init?.method).toBe('POST');
+  expect(fetcher.calls[0].init?.body).toBe(JSON.stringify({ version: 12, limitHint: 100 }));
+  expect(new Headers(fetcher.calls[0].init?.headers).get('authorization')).toBe(
+    'Bearer secret-profile-token',
+  );
+});
+
+test('openDeltaShare resolves a shared table and sends only the descriptor to the worker', async () => {
+  const worker = new FakeWorker();
+  const sharingFetch = scriptedFetch([
+    ndjsonResponse(deltaSharingQueryActions(), { 'delta-table-version': '12' }),
+  ]);
+  const session = await createDeltaSharingClient({ fetch: sharingFetch.fetch }).connect({
+    source: 'json',
+    value: JSON.stringify({
+      endpoint: 'https://sharing.example.test/delta-sharing',
+      bearerToken: 'secret-profile-token',
+      shareCredentialsVersion: 1,
+    }),
+  });
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const openedPromise = client.openDeltaShare('orders', {
+    session,
+    table: { share: 'retail_share', schema: 'sales', table: 'orders' },
+    responseFormat: 'auto',
+    requestId: 'req-delta-share-open',
+  });
+
+  await expect.poll(() => worker.commands.length).toBe(1);
+
+  expect(worker.commands[0]).toMatchObject({
+    open_delta_table: {
+      request_id: 'req-delta-share-open',
+      name: 'orders',
+      snapshot: {
+        snapshot_version: 12,
+        active_files: [
+          {
+            path: 'part-000.parquet',
+            url: 'https://storage.example.test/retail/orders/part-000.parquet?X-Amz-Signature=abc',
+          },
+        ],
+      },
+    },
+  });
+  const workerPayload = JSON.stringify(worker.commands[0]);
+  expect(workerPayload).not.toContain('secret-profile-token');
+  expect(workerPayload).not.toContain('shareCredentialsVersion');
+  expect(workerPayload).not.toContain('Authorization');
+
+  worker.emitMessage({ opened: { request_id: 'req-delta-share-open', name: 'orders' } });
+
+  await expect(openedPromise).resolves.toMatchObject({
+    request_id: 'req-delta-share-open',
+    name: 'orders',
+    deltaSharing: {
+      resolvedVersion: 12,
+      responseFormat: 'parquet',
+      table: { share: 'retail_share', schema: 'sales', table: 'orders' },
+    },
+  });
+});
+
+test('DeltaSharingSession rejects directory access without a resolver', async () => {
+  const fetcher = scriptedFetch([
+    ndjsonResponse(
+      [
+        { protocol: { minReaderVersion: 1, accessModes: ['dir'] } },
+        { file: { id: 'part-000.parquet', size: 128, partitionValues: {} } },
+      ],
+      { 'delta-table-version': '12' },
+    ),
+  ]);
+  const session = await createDeltaSharingClient({ fetch: fetcher.fetch }).connect({
+    source: 'json',
+    value: {
+      endpoint: 'https://sharing.example.test/delta-sharing',
+      bearerToken: 'secret-profile-token',
+    },
+  });
+
+  await expect(
+    session.resolveTable({ share: 'retail_share', schema: 'sales', table: 'orders' }),
+  ).rejects.toMatchObject({
+    name: 'DeltaSharingError',
+    code: 'directory_access_requires_resolver',
+  });
+});
+
+test('DeltaSharingClient rejects expired bearer profiles before making network requests', async () => {
+  const fetcher = scriptedFetch([jsonResponse({ items: [] })]);
+
+  await expect(
+    createDeltaSharingClient({ fetch: fetcher.fetch }).connect({
+      source: 'json',
+      value: {
+        endpoint: 'https://sharing.example.test/delta-sharing',
+        bearerToken: 'expired-profile-token',
+        expirationTime: '2026-01-01T00:00:00Z',
+      },
+    }),
+  ).rejects.toMatchObject({
+    name: 'DeltaSharingError',
+    code: 'auth_expired',
+  });
+  expect(fetcher.calls).toHaveLength(0);
+});
+
+test('DeltaSharingSession rejects responseformat=delta before issuing unsupported reads', async () => {
+  const fetcher = scriptedFetch([ndjsonResponse(deltaSharingQueryActions())]);
+  const session = await createDeltaSharingClient({ fetch: fetcher.fetch }).connect({
+    source: 'json',
+    value: {
+      endpoint: 'https://sharing.example.test/delta-sharing',
+      bearerToken: 'secret-profile-token',
+    },
+  });
+
+  await expect(
+    session.resolveTable(
+      { share: 'retail_share', schema: 'sales', table: 'orders' },
+      { responseFormat: 'delta' },
+    ),
+  ).rejects.toMatchObject({
+    name: 'DeltaSharingError',
+    code: 'unsupported_response_format',
+  });
+  expect(fetcher.calls).toHaveLength(0);
+});
+
+test('DeltaSharingSession maps not-found responses to share/schema/table errors by endpoint', async () => {
+  const fetcher = scriptedFetch([
+    textResponse('missing share', {}, 404),
+    textResponse('missing schema', {}, 404),
+    textResponse('missing table', {}, 404),
+  ]);
+  const session = await createDeltaSharingClient({ fetch: fetcher.fetch }).connect({
+    source: 'json',
+    value: {
+      endpoint: 'https://sharing.example.test/delta-sharing',
+      bearerToken: 'secret-profile-token',
+    },
+  });
+
+  await expect(session.listSchemas('missing_share')).rejects.toMatchObject({
+    name: 'DeltaSharingError',
+    code: 'share_not_found',
+  });
+  await expect(session.listTables('retail_share', 'missing_schema')).rejects.toMatchObject({
+    name: 'DeltaSharingError',
+    code: 'schema_not_found',
+  });
+  await expect(
+    session.getTableVersion({ share: 'retail_share', schema: 'sales', table: 'missing_table' }),
+  ).rejects.toMatchObject({
+    name: 'DeltaSharingError',
+    code: 'table_not_found',
+  });
+});
+
+test('DeltaSharing errors redact bearer tokens and signed URL query strings', async () => {
+  const fetcher = scriptedFetch([
+    textResponse(
+      'failed Authorization: Bearer secret-profile-token https://storage.example.test/file.parquet?X-Amz-Signature=abc',
+      {},
+      500,
+    ),
+  ]);
+  const session = await createDeltaSharingClient({ fetch: fetcher.fetch }).connect({
+    source: 'json',
+    value: {
+      endpoint: 'https://sharing.example.test/delta-sharing',
+      bearerToken: 'secret-profile-token',
+    },
+  });
+
+  const result = session.listShares();
+
+  await expect(result).rejects.toMatchObject({
+    name: 'DeltaSharingError',
+    code: 'server_error',
+  });
+  await expect(result).rejects.not.toThrow('secret-profile-token');
+  await expect(result).rejects.not.toThrow('X-Amz-Signature=abc');
+});
+
+test('openDeltaLocation resolves through an injected resolver and opens only a browser descriptor', async () => {
+  const worker = new FakeWorker();
+  const requests: DeltaLocationResolveRequest[] = [];
+  const resolverResponse = deltaLocationResponse({
+    provider: 's3',
+    table_uri: 's3://axon-fixtures/partitioned-table',
+    requested_access_mode: 'auto',
+    actual_access_mode: 'proxy',
+  });
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const openedPromise = client.openDeltaLocation('events', {
+    provider: 's3',
+    tableUri: 's3://axon-fixtures/partitioned-table',
+    credentialProfile: {
+      id: 'prod-readonly',
+      display_name: 'Production readonly',
+    },
+    resolveDeltaLocation: async (request) => {
+      requests.push(request);
+      return resolverResponse;
+    },
+    requestId: 'req-location-open',
+  });
+
+  await expect.poll(() => worker.commands.length).toBe(1);
+
+  expect(requests).toEqual([
+    {
+      provider: 's3',
+      table_uri: 's3://axon-fixtures/partitioned-table',
+      credential_profile: {
+        id: 'prod-readonly',
+        display_name: 'Production readonly',
+      },
+      requested_access_mode: 'auto',
+    },
+  ]);
+  expect(worker.commands[0]).toEqual({
+    open_delta_table: {
+      request_id: 'req-location-open',
+      name: 'events',
+      snapshot: resolverResponse.descriptor,
+    },
+  });
+
+  const workerPayload = JSON.stringify(worker.commands[0]);
+  expect(workerPayload).not.toContain('credential_profile');
+  expect(workerPayload).not.toContain('prod-readonly');
+  expect(workerPayload).not.toContain('s3://axon-fixtures/partitioned-table');
+
+  worker.emitMessage({ opened: { request_id: 'req-location-open', name: 'events' } });
+
+  await expect(openedPromise).resolves.toEqual({
+    request_id: 'req-location-open',
+    name: 'events',
+    location: {
+      provider: 's3',
+      table_uri: 's3://axon-fixtures/partitioned-table',
+      requested_snapshot_version: 7,
+      resolved_snapshot_version: 7,
+      requested_access_mode: 'auto',
+      actual_access_mode: 'proxy',
+      expires_at_epoch_ms: 4_102_444_800_000,
+      warnings: [],
+      refresh: {
+        refresh_after_epoch_ms: 4_102_444_740_000,
+        same_snapshot_required: true,
+      },
+    },
+  });
+});
+
+test('openDeltaLocation returns resolver metadata without descriptor URLs', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const openedPromise = client.openDeltaLocation('events', {
+    provider: 'gcs',
+    tableUri: 'gs://axon-fixtures/partitioned-table',
+    credentialProfile: { id: 'prod-readonly' },
+    resolveDeltaLocation: async () =>
+      deltaLocationResponse({
+        correlation_id: 'corr-location-open',
+      }),
+    requestId: 'req-location-open-metadata',
+  });
+
+  await expect.poll(() => worker.commands.length).toBe(1);
+  worker.emitMessage({ opened: { request_id: 'req-location-open-metadata', name: 'events' } });
+
+  const opened = await openedPromise;
+  expect(opened.location).toEqual({
+    provider: 'gcs',
+    table_uri: 'gs://axon-fixtures/partitioned-table',
+    requested_snapshot_version: 7,
+    resolved_snapshot_version: 7,
+    requested_access_mode: 'auto',
+    actual_access_mode: 'signed_url',
+    expires_at_epoch_ms: 4_102_444_800_000,
+    correlation_id: 'corr-location-open',
+    warnings: [],
+    refresh: {
+      refresh_after_epoch_ms: 4_102_444_740_000,
+      same_snapshot_required: true,
+    },
+  });
+  expect(JSON.stringify(opened.location)).not.toContain('https://example.invalid/part-000.parquet');
+});
+
+test('openDeltaLocation rejects resolver responses that resolve a different snapshot version', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const result = client.openDeltaLocation('events', {
+    provider: 'gcs',
+    tableUri: 'gs://axon-fixtures/partitioned-table',
+    credentialProfile: { id: 'prod-readonly' },
+    snapshotVersion: 7,
+    resolveDeltaLocation: async () =>
+      deltaLocationResponse({
+        descriptor: {
+          ...snapshot,
+          table_uri: 'axon-resolved://events/snapshot/8',
+          snapshot_version: 8,
+          active_files: snapshot.active_files.map((file) => ({ ...file })),
+        },
+        requested_snapshot_version: 7,
+        resolved_snapshot_version: 8,
+      }),
+    requestId: 'req-location-version-mismatch',
+  });
+  void result.catch(() => undefined);
+
+  await settleUnexpectedOpen(worker, 'req-location-version-mismatch', 'events');
+
+  await expect(result).rejects.toMatchObject({
+    name: 'DeltaLocationResolverError',
+    code: 'snapshot_version_not_found',
+  } satisfies Partial<DeltaLocationResolverError>);
+  expect(worker.commands).toHaveLength(0);
+});
+
+test('openDeltaLocation rejects resolver responses that ignore a required access mode', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const result = client.openDeltaLocation('events', {
+    provider: 'gcs',
+    tableUri: 'gs://axon-fixtures/partitioned-table',
+    credentialProfile: { id: 'prod-readonly' },
+    requestedAccessMode: 'proxy',
+    resolveDeltaLocation: async () =>
+      deltaLocationResponse({
+        requested_access_mode: 'proxy',
+        actual_access_mode: 'signed_url',
+      }),
+    requestId: 'req-location-access-mismatch',
+  });
+  void result.catch(() => undefined);
+
+  await settleUnexpectedOpen(worker, 'req-location-access-mismatch', 'events');
+
+  await expect(result).rejects.toMatchObject({
+    name: 'DeltaLocationResolverError',
+    code: 'access_mode_not_supported',
+  } satisfies Partial<DeltaLocationResolverError>);
+  expect(worker.commands).toHaveLength(0);
+});
+
+test('openDeltaLocation can call an HTTP resolver with the typed request body', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    return new Response(JSON.stringify(deltaLocationResponse()), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  try {
+    const openedPromise = client.openDeltaLocation('events', {
+      provider: 'gcs',
+      tableUri: 'gs://axon-fixtures/partitioned-table',
+      credentialProfile: { id: 'prod-readonly' },
+      resolverUrl: 'https://resolver.example.test/delta/location',
+      snapshotVersion: 7,
+      requestId: 'req-http-location-open',
+    });
+
+    await expect.poll(() => worker.commands.length).toBe(1);
+
+    expect(calls).toHaveLength(1);
+    expect(String(calls[0].input)).toBe('https://resolver.example.test/delta/location');
+    expect(calls[0].init?.method).toBe('POST');
+    expect(calls[0].init?.body).toBe(
+      JSON.stringify({
+        provider: 'gcs',
+        table_uri: 'gs://axon-fixtures/partitioned-table',
+        credential_profile: { id: 'prod-readonly' },
+        requested_access_mode: 'auto',
+        snapshot_version: 7,
+      }),
+    );
+
+    worker.emitMessage({ opened: { request_id: 'req-http-location-open', name: 'events' } });
+    await expect(openedPromise).resolves.toMatchObject({ name: 'events' });
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('openDeltaLocation rejects malformed successful HTTP resolver responses', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+
+  fetchGlobal.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        provider: 'gcs',
+        table_uri: 'gs://axon-fixtures/partitioned-table',
+        requested_snapshot_version: 7,
+        resolved_snapshot_version: 7,
+        requested_access_mode: 'auto',
+        actual_access_mode: 'signed_url',
+        expires_at_epoch_ms: 4_102_444_800_000,
+      }),
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      },
+    )) as typeof fetch;
+
+  try {
+    await expect(
+      client.openDeltaLocation('events', {
+        provider: 'gcs',
+        tableUri: 'gs://axon-fixtures/partitioned-table',
+        credentialProfile: { id: 'prod-readonly' },
+        resolverUrl: 'https://resolver.example.test/delta/location',
+        snapshotVersion: 7,
+      }),
+    ).rejects.toMatchObject({
+      name: 'DeltaLocationResolverError',
+      code: 'resolver_unavailable',
+    } satisfies Partial<DeltaLocationResolverError>);
+    expect(worker.commands).toHaveLength(0);
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('openDeltaLocation propagates signed URL resolver failures with redacted diagnostics', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const result = client.openDeltaLocation('events', {
+    provider: 'gcs',
+    tableUri: 'gs://axon-fixtures/partitioned-table',
+    credentialProfile: { id: 'prod-readonly' },
+    requestedAccessMode: 'signed_url',
+    resolveDeltaLocation: async () => {
+      throw new DeltaLocationResolverError(
+        'signed_url_unavailable',
+        'failed to sign https://storage.example.test/object?X-Goog-Signature=secret Authorization: Bearer abc123 Authorization: Basic basic-secret {"private_key":"secret"}',
+      );
+    },
+  });
+
+  await expect(result).rejects.toMatchObject({
+    name: 'DeltaLocationResolverError',
+    code: 'signed_url_unavailable',
+  } satisfies Partial<DeltaLocationResolverError>);
+  await expect(result).rejects.not.toThrow('X-Goog-Signature=secret');
+  await expect(result).rejects.not.toThrow('Bearer abc123');
+  await expect(result).rejects.not.toThrow('basic-secret');
+  await expect(result).rejects.not.toThrow('private_key');
+  expect(worker.commands).toHaveLength(0);
+});
+
+test('openDeltaLocation rejects expired resolver descriptors before worker handoff', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  await expect(
+    client.openDeltaLocation('events', {
+      provider: 'gcs',
+      tableUri: 'gs://axon-fixtures/partitioned-table',
+      credentialProfile: { id: 'prod-readonly' },
+      resolveDeltaLocation: async () =>
+        deltaLocationResponse({
+          expires_at_epoch_ms: 1,
+        }),
+    }),
+  ).rejects.toMatchObject({
+    name: 'DeltaLocationResolverError',
+    code: 'descriptor_expired',
+  } satisfies Partial<DeltaLocationResolverError>);
+  expect(worker.commands).toHaveLength(0);
+});
+
+test('openDeltaLocation rejects malformed resolver envelopes before worker handoff', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const malformed = { ...deltaLocationResponse() } as Partial<DeltaLocationResolveResponse>;
+  delete malformed.expires_at_epoch_ms;
+
+  const openedPromise = client.openDeltaLocation('events', {
+    provider: 'gcs',
+    tableUri: 'gs://axon-fixtures/partitioned-table',
+    credentialProfile: { id: 'prod-readonly' },
+    resolveDeltaLocation: async () => malformed as DeltaLocationResolveResponse,
+  });
+
+  await Promise.resolve();
+  expect(worker.commands).toHaveLength(0);
+  await expect(openedPromise).rejects.toMatchObject({
+    name: 'DeltaLocationResolverError',
+    code: 'resolver_unavailable',
+  } satisfies Partial<DeltaLocationResolverError>);
+  await expect(openedPromise).rejects.toThrow('expires_at_epoch_ms');
+});
+
+test('validateDeltaLocationResolveResponse rejects malformed resolver response fields', () => {
+  const request: DeltaLocationResolveRequest = {
+    provider: 'gcs',
+    table_uri: 'gs://axon-fixtures/partitioned-table',
+    credential_profile: { id: 'prod-readonly' },
+    requested_access_mode: 'auto',
+    snapshot_version: 7,
+  };
+  const malformed = {
+    ...deltaLocationResponse(),
+    actual_access_mode: 'browser_safe_http',
+  };
+
+  expect(() =>
+    validateDeltaLocationResolveResponse(
+      malformed as unknown as DeltaLocationResolveResponse,
+      request,
+      4_102_444_700_000,
+    ),
+  ).toThrow(DeltaLocationResolverError);
+});
+
+test('openDeltaLocation validates logical URI and credential profile before invoking resolver', async () => {
+  const worker = new FakeWorker();
+  const requests: DeltaLocationResolveRequest[] = [];
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  await expect(
+    client.openDeltaLocation('events', {
+      provider: 's3',
+      tableUri: 'https://bucket.s3.amazonaws.com/table?X-Amz-Signature=secret',
+      credentialProfile: { id: 'prod-readonly' },
+      resolveDeltaLocation: async (request) => {
+        requests.push(request);
+        return deltaLocationResponse();
+      },
+    }),
+  ).rejects.toMatchObject({
+    name: 'DeltaLocationResolverError',
+    code: 'invalid_table_uri',
+  } satisfies Partial<DeltaLocationResolverError>);
+
+  await expect(
+    client.openDeltaLocation('events', {
+      provider: 's3',
+      tableUri: 's3://axon-fixtures/partitioned-table',
+      credentialProfile: { id: 'AKIAIOSFODNN7EXAMPLE' },
+      resolveDeltaLocation: async (request) => {
+        requests.push(request);
+        return deltaLocationResponse();
+      },
+    }),
+  ).rejects.toMatchObject({
+    name: 'DeltaLocationResolverError',
+    code: 'policy_blocked',
+  } satisfies Partial<DeltaLocationResolverError>);
+
+  expect(requests).toEqual([]);
+  expect(worker.commands).toHaveLength(0);
+});
+
+test('openDeltaLocation rejects invalid snapshot versions before invoking resolver', async () => {
+  const worker = new FakeWorker();
+  const requests: DeltaLocationResolveRequest[] = [];
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  for (const snapshotVersion of [Number.NaN, 1.5, -1]) {
+    await expect(
+      client.openDeltaLocation('events', {
+        provider: 'gcs',
+        tableUri: 'gs://axon-fixtures/partitioned-table',
+        credentialProfile: { id: 'prod-readonly' },
+        snapshotVersion,
+        resolveDeltaLocation: async (request) => {
+          requests.push(request);
+          return deltaLocationResponse();
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: 'DeltaLocationResolverError',
+      code: 'invalid_snapshot_version',
+    } satisfies Partial<DeltaLocationResolverError>);
+  }
+
+  expect(requests).toEqual([]);
+  expect(worker.commands).toHaveLength(0);
+});
+
 test('routes worker runtime events without settling the active request', async () => {
   const worker = new FakeWorker();
   const events: BrowserWorkerEventEnvelope[] = [];
@@ -752,6 +1509,118 @@ function parquetInspectionSummary() {
       },
     ],
   };
+}
+
+type ScriptedFetchCall = {
+  input: RequestInfo | URL;
+  init?: RequestInit;
+};
+
+function scriptedFetch(responses: Response[]): {
+  calls: ScriptedFetchCall[];
+  fetch: DeltaSharingFetch;
+} {
+  const calls: ScriptedFetchCall[] = [];
+
+  return {
+    calls,
+    fetch: async (input, init) => {
+      calls.push({ input, init });
+      const response = responses.shift();
+      if (!response) {
+        throw new Error(`unexpected fetch call: ${String(input)}`);
+      }
+      return response;
+    },
+  };
+}
+
+function jsonResponse(body: unknown, headers: Record<string, string> = {}, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      'content-type': 'application/json',
+      ...headers,
+    },
+  });
+}
+
+function textResponse(text: string, headers: Record<string, string> = {}, status = 200): Response {
+  return new Response(text, { status, headers });
+}
+
+function ndjsonResponse(
+  actions: Array<Record<string, unknown>>,
+  headers: Record<string, string> = {},
+  status = 200,
+): Response {
+  return textResponse(
+    actions.map((action) => JSON.stringify(action)).join('\n'),
+    {
+      'content-type': 'application/x-ndjson',
+      ...headers,
+    },
+    status,
+  );
+}
+
+function deltaSharingQueryActions(): Array<Record<string, unknown>> {
+  return [
+    { protocol: { minReaderVersion: 1 } },
+    {
+      metaData: {
+        id: 'table-id',
+        format: { provider: 'parquet' },
+        schemaString: '{"type":"struct","fields":[]}',
+      },
+    },
+    {
+      file: {
+        id: 'part-000.parquet',
+        url: 'https://storage.example.test/retail/orders/part-000.parquet?X-Amz-Signature=abc',
+        partitionValues: { region: 'west' },
+        size: 128,
+        stats: '{"numRecords":1}',
+        expirationTimestamp: '2026-05-17T20:00:00Z',
+      },
+    },
+  ];
+}
+
+function deltaLocationResponse(
+  overrides: Partial<DeltaLocationResolveResponse> = {},
+): DeltaLocationResolveResponse {
+  return {
+    descriptor: {
+      ...snapshot,
+      table_uri: 'axon-resolved://events/snapshot/7',
+      active_files: snapshot.active_files.map((file) => ({ ...file })),
+    },
+    provider: 'gcs',
+    table_uri: 'gs://axon-fixtures/partitioned-table',
+    requested_snapshot_version: 7,
+    resolved_snapshot_version: 7,
+    requested_access_mode: 'auto',
+    actual_access_mode: 'signed_url',
+    expires_at_epoch_ms: 4_102_444_800_000,
+    warnings: [],
+    refresh: {
+      refresh_after_epoch_ms: 4_102_444_740_000,
+      same_snapshot_required: true,
+    },
+    ...overrides,
+  };
+}
+
+async function settleUnexpectedOpen(
+  worker: FakeWorker,
+  requestId: string,
+  name: string,
+): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (worker.commands.length > 0) {
+    worker.emitMessage({ opened: { request_id: requestId, name } });
+  }
 }
 
 async function settlement(

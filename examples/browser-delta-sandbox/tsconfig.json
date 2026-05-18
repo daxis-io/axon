@@ -9,7 +9,9 @@
     "isolatedModules": true,
     "noEmit": true,
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
-    "types": ["node", "@playwright/test"]
+    "types": ["node", "@playwright/test"],
+    "jsx": "react-jsx",
+    "skipLibCheck": true
   },
   "include": ["src", "tests", "playwright*.config.ts", "vite.config.ts"]
 }

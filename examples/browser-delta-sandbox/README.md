@@ -30,6 +30,8 @@ Open `https://127.0.0.1:5173` and run queries against `axon_table`. The workbenc
 
 The supported SQL shape is the current browser runtime envelope: read-only `SELECT` statements over the resolved `axon_table`, with the projection, filter, grouping, ordering, and limit forms covered by the sample queries and browser runtime tests. Unsupported statements, such as mutations, render structured browser errors rather than falling back silently.
 
+The `/sandbox.html` route also includes an Object Store source mode. It models the browser-safe UX for S3, GCS, and Azure Blob locations by asking for a logical table URI, resolver access-mode preference, optional snapshot version, and a **Storage access profile** handle. It intentionally has no access-key, secret-key, SAS, bearer-token, or service-account JSON fields. The local implementation uses an injected mock Delta snapshot descriptor resolver that returns fixture-backed `BrowserHttpSnapshotDescriptor` payloads; production IAM, signing, proxying, CORS checks, audit logging, and request correlation remain trusted resolver responsibilities outside this browser package.
+
 This SQL panel is an example-owned sandbox bridge in `src/sandbox-query-worker.ts` and `src/lib.rs`. It is not the production JavaScript worker bootstrap, not a production query API, and does not mint browser cloud credentials.
 
 The E2E test starts Vite over HTTPS, opens Chromium, Firefox, and WebKit through Playwright, asks the WASM facade to resolve both fixture manifests, and asserts that the prod-like fixture resolves snapshot version `3` from checkpoint version `2` plus one replay commit. It also covers same-origin Parquet range requests and the browser worker envelope path for startup, Arrow IPC result bytes, structured fallback, and cancellation-shaped errors.
@@ -47,6 +49,8 @@ This Playwright browser matrix is a local/manual gate for now rather than a CI s
 ## TypeScript worker SDK wrapper
 
 The example package also carries the first TypeScript SDK wrapper for Axon's browser worker envelope in [`src/axon-browser-sdk.ts`](src/axon-browser-sdk.ts). It creates or accepts a browser `Worker`, sends the `open_delta_table`, `sql`, and `dispose` commands, normalizes Arrow IPC result bytes to `Uint8Array`, routes typed runtime event envelopes to an optional `onEvent` handler, and raises `AxonWorkerError` with the structured `fallback_reason` when the worker returns an error envelope.
+
+`openDeltaLocation()` is a thin SDK wrapper around a trusted Delta snapshot descriptor resolver. It sends a logical object-store URI plus an opaque storage access profile, validates the resolver envelope, enforces descriptor expiry with `descriptor_expired`, asserts `resolved_snapshot_version === descriptor.snapshot_version`, and then forwards the returned `BrowserHttpSnapshotDescriptor` unchanged through the existing `openDeltaTable()` worker path. The resolved open result includes resolver metadata such as `resolved_snapshot_version`, `actual_access_mode`, `expires_at_epoch_ms`, and `correlation_id`, but it does not include descriptor file URLs. Resolver access modes are separate from runtime `BrowserAccessMode`: `auto`, `signed_url`, and `proxy` describe resolver behavior, while the worker still receives browser-safe HTTP descriptors.
 
 ```ts
 import {
@@ -75,6 +79,22 @@ const fallbackReason = result.fallbackReason;
 
 await client.dispose('events');
 client.terminate();
+```
+
+Resolver-backed open:
+
+```ts
+const client = createAxonBrowserClient({ workerUrl: bundleSelection.bundle.workerUrl });
+
+const opened = await client.openDeltaLocation('events', {
+  provider: 'gcs',
+  tableUri: 'gs://analytics-prod/events',
+  credentialProfile: { id: 'prod-readonly' },
+  requestedAccessMode: 'auto',
+  resolverUrl: '/api/delta/snapshot-descriptor',
+});
+
+console.log(opened.location.resolved_snapshot_version, opened.location.actual_access_mode);
 ```
 
 `AXON_BROWSER_BUNDLE_MANIFEST` ships the current single-threaded baseline bundle and records future

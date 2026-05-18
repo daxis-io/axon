@@ -10,12 +10,13 @@ export default [
       'test-results/**',
       'src/wasm/**',
       'public/fixtures/prod-like/**',
+      'public/designs/**',
     ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['**/*.{js,ts}'],
+    files: ['**/*.{js,ts,tsx}'],
     rules: {
       // TypeScript already checks browser and Node globals from tsconfig libs/types.
       'no-undef': 'off',

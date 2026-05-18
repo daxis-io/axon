@@ -3,18 +3,20 @@ export const ARROW_IPC_STREAM_CONTENT_TYPE = 'application/vnd.apache.arrow.strea
 export const ARROW_IPC_FILE_CONTENT_TYPE = 'application/vnd.apache.arrow.file';
 
 export function redactUrlSecrets(message: string): string {
-  return message.replace(/https?:\/\/[^\s'"<>]+/g, (candidate) => {
-    try {
-      const url = new URL(candidate);
-      url.username = '';
-      url.password = '';
-      url.search = '';
-      url.hash = '';
-      return url.toString();
-    } catch {
-      return candidate.split(/[?#]/, 1)[0];
-    }
-  });
+  return redactCredentialSecrets(
+    message.replace(/https?:\/\/[^\s'"<>]+/g, (candidate) => {
+      try {
+        const url = new URL(candidate);
+        url.username = '';
+        url.password = '';
+        url.search = '';
+        url.hash = '';
+        return url.toString();
+      } catch {
+        return candidate.split(/[?#]/, 1)[0];
+      }
+    }),
+  );
 }
 
 export type ExecutionTarget = 'browser_wasm' | 'native';
@@ -98,6 +100,227 @@ export type BrowserHttpSnapshotDescriptor = {
   browser_compatibility?: CapabilityReport;
   required_capabilities?: CapabilityReport;
   active_files: BrowserHttpFileDescriptor[];
+};
+
+export type DeltaSharingProfileSource = 'uploaded_profile' | 'oidc_profile_url';
+export type DeltaSharingAuthMode = 'bearer' | 'oidc';
+export type DeltaSharingResponseFormat = 'auto' | 'parquet' | 'delta';
+export type DeltaSharingReaderFeature = 'deletionvectors' | 'columnmapping';
+
+export type DeltaSharingConnectionProfile = {
+  kind: 'delta_sharing';
+  profileSource: DeltaSharingProfileSource;
+  endpoint: string;
+  authMode: DeltaSharingAuthMode;
+  displayName?: string;
+};
+
+export type DeltaSharingTableRef = {
+  share: string;
+  schema: string;
+  table: string;
+};
+
+export type DeltaSharingWarning = {
+  code: string;
+  message: string;
+};
+
+export type OpenDeltaShareOptions = {
+  version?: number;
+  limitHint?: number;
+  predicateHints?: unknown[];
+  responseFormat?: DeltaSharingResponseFormat;
+  readerFeatures?: DeltaSharingReaderFeature[];
+};
+
+export type DeltaSharingReadPlan = {
+  kind: 'delta_sharing_snapshot_descriptor';
+  table: DeltaSharingTableRef;
+  endpoint: string;
+  resolvedVersion: number;
+  responseFormat: 'delta' | 'parquet';
+  descriptor: BrowserHttpSnapshotDescriptor;
+  expiresAtEpochMs?: number;
+  warnings?: DeltaSharingWarning[];
+};
+
+export type DeltaSharingReadPlanMetadata = Omit<DeltaSharingReadPlan, 'descriptor'>;
+
+export type DeltaSharingOpenedEnvelope = BrowserWorkerOpenedEnvelope & {
+  deltaSharing: DeltaSharingReadPlanMetadata;
+};
+
+export type DeltaSharingProfileInput = {
+  source: 'file' | 'json' | 'oidc_url';
+  value: File | string | unknown;
+};
+
+export type PageOptions = {
+  pageToken?: string;
+  maxResults?: number;
+};
+
+export type DeltaSharingPage<T> = {
+  items: T[];
+  nextPageToken?: string;
+};
+
+export type DeltaShareInfo = {
+  name: string;
+  id?: string;
+};
+
+export type DeltaShareSchemaInfo = {
+  name: string;
+  share?: string;
+};
+
+export type DeltaShareTableInfo = {
+  name: string;
+  share?: string;
+  schema?: string;
+};
+
+export type DeltaSharingTableMetadata = {
+  table: DeltaSharingTableRef;
+  version?: number;
+  protocol?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  rawActions: Array<Record<string, unknown>>;
+};
+
+export type DeltaSharingMetadataOptions = {
+  version?: number;
+};
+
+export type DeltaSharingFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+export interface DeltaSharingClient {
+  connect(profile: DeltaSharingProfileInput): Promise<DeltaSharingSession>;
+}
+
+export interface DeltaSharingSession {
+  readonly profile: DeltaSharingConnectionProfile;
+  listShares(opts?: PageOptions): Promise<DeltaSharingPage<DeltaShareInfo>>;
+  listSchemas(share: string, opts?: PageOptions): Promise<DeltaSharingPage<DeltaShareSchemaInfo>>;
+  listTables(
+    share: string,
+    schema: string,
+    opts?: PageOptions,
+  ): Promise<DeltaSharingPage<DeltaShareTableInfo>>;
+  listAllTables(share: string, opts?: PageOptions): Promise<DeltaSharingPage<DeltaShareTableInfo>>;
+  getTableVersion(table: DeltaSharingTableRef): Promise<number>;
+  getTableMetadata(
+    table: DeltaSharingTableRef,
+    opts?: DeltaSharingMetadataOptions,
+  ): Promise<DeltaSharingTableMetadata>;
+  resolveTable(
+    table: DeltaSharingTableRef,
+    opts?: OpenDeltaShareOptions,
+  ): Promise<DeltaSharingReadPlan>;
+}
+
+export type DeltaSharingClientOptions = {
+  fetch?: DeltaSharingFetch;
+};
+
+export type DeltaSharingOpenOptions = AxonRequestOptions &
+  OpenDeltaShareOptions & {
+    session: DeltaSharingSession;
+    table: DeltaSharingTableRef;
+  };
+
+export type DeltaSharingErrorCode =
+  | 'invalid_profile'
+  | 'profile_contains_sensitive_data_not_persisted'
+  | 'auth_required'
+  | 'auth_expired'
+  | 'share_not_found'
+  | 'schema_not_found'
+  | 'table_not_found'
+  | 'table_version_not_found'
+  | 'unsupported_access_mode'
+  | 'directory_access_requires_resolver'
+  | 'unsupported_response_format'
+  | 'unsupported_reader_feature'
+  | 'storage_cors_failed'
+  | 'signed_url_expired'
+  | 'server_error'
+  | 'network_error';
+
+export type DeltaObjectStoreProvider = 's3' | 'gcs' | 'azure_blob';
+export type ResolverRequestedAccessMode = 'auto' | 'signed_url' | 'proxy';
+export type ResolverActualAccessMode = 'signed_url' | 'proxy';
+
+export type CredentialProfileRef = {
+  id: string;
+  display_name?: string;
+};
+
+export type DeltaLocationResolveRequest = {
+  provider: DeltaObjectStoreProvider;
+  table_uri: string;
+  credential_profile: CredentialProfileRef;
+  requested_access_mode: ResolverRequestedAccessMode;
+  snapshot_version?: number;
+};
+
+export type DeltaLocationRefresh = {
+  refresh_url?: string;
+  refresh_after_epoch_ms?: number;
+  same_snapshot_required: true;
+};
+
+export type DeltaLocationResolveResponse = {
+  descriptor: BrowserHttpSnapshotDescriptor;
+  provider: DeltaObjectStoreProvider;
+  table_uri: string;
+  requested_snapshot_version?: number;
+  resolved_snapshot_version: number;
+  requested_access_mode?: ResolverRequestedAccessMode;
+  actual_access_mode: ResolverActualAccessMode;
+  expires_at_epoch_ms: number;
+  correlation_id?: string;
+  warnings?: string[];
+  refresh?: DeltaLocationRefresh;
+};
+
+export type DeltaLocationOpenMetadata = Omit<DeltaLocationResolveResponse, 'descriptor'>;
+
+export type DeltaLocationOpenedEnvelope = BrowserWorkerOpenedEnvelope & {
+  location: DeltaLocationOpenMetadata;
+};
+
+export type DeltaLocationResolverErrorCode =
+  | 'invalid_table_uri'
+  | 'invalid_snapshot_version'
+  | 'credential_profile_required'
+  | 'credential_profile_not_found'
+  | 'provider_not_supported'
+  | 'access_mode_not_supported'
+  | 'snapshot_version_not_found'
+  | 'not_a_delta_table'
+  | 'resolver_unavailable'
+  | 'storage_auth_failed'
+  | 'storage_cors_failed'
+  | 'descriptor_expired'
+  | 'policy_blocked'
+  | 'proxy_required'
+  | 'signed_url_unavailable';
+
+export type DeltaLocationResolver = (
+  request: DeltaLocationResolveRequest,
+) => Promise<DeltaLocationResolveResponse>;
+
+export type DeltaLocationOpenOptions = AxonRequestOptions & {
+  provider: DeltaObjectStoreProvider;
+  tableUri: string;
+  credentialProfile: CredentialProfileRef;
+  requestedAccessMode?: ResolverRequestedAccessMode;
+  snapshotVersion?: number;
+  resolverUrl?: string | URL;
+  resolveDeltaLocation?: DeltaLocationResolver;
 };
 
 export type BrowserAccessMode = 'browser_safe_http' | 'cloud_object_store';
@@ -501,6 +724,14 @@ export interface AxonBrowserClient {
     snapshot: BrowserHttpSnapshotDescriptor,
     options?: AxonRequestOptions,
   ): Promise<BrowserWorkerOpenedEnvelope>;
+  openDeltaLocation(
+    name: string,
+    options: DeltaLocationOpenOptions,
+  ): Promise<DeltaLocationOpenedEnvelope>;
+  openDeltaShare(
+    name: string,
+    options: DeltaSharingOpenOptions,
+  ): Promise<DeltaSharingOpenedEnvelope>;
   inspectParquet(
     name: string,
     path: string,
@@ -546,6 +777,34 @@ export class AxonProtocolError extends Error {
   readonly name = 'AxonProtocolError';
 }
 
+export class DeltaLocationResolverError extends Error {
+  readonly name = 'DeltaLocationResolverError';
+  readonly code: DeltaLocationResolverErrorCode;
+  readonly correlationId?: string;
+
+  constructor(
+    code: DeltaLocationResolverErrorCode,
+    message: string,
+    options: { correlationId?: string } = {},
+  ) {
+    super(redactUrlSecrets(message));
+    this.code = code;
+    this.correlationId = options.correlationId;
+  }
+}
+
+export class DeltaSharingError extends Error {
+  readonly name = 'DeltaSharingError';
+  readonly code: DeltaSharingErrorCode;
+  readonly status?: number;
+
+  constructor(code: DeltaSharingErrorCode, message: string, options: { status?: number } = {}) {
+    super(redactUrlSecrets(message));
+    this.code = code;
+    this.status = options.status;
+  }
+}
+
 export function createAxonBrowserClient(options: AxonBrowserClientOptions): AxonBrowserClient {
   const worker =
     'workerUrl' in options
@@ -555,6 +814,12 @@ export function createAxonBrowserClient(options: AxonBrowserClientOptions): Axon
         : createWorkerFromBundleSelection(options);
 
   return new AxonBrowserWorkerClient(worker, options.requestId, options.onEvent);
+}
+
+export function createDeltaSharingClient(
+  options: DeltaSharingClientOptions = {},
+): DeltaSharingClient {
+  return new DeltaSharingRestClient(options.fetch ?? globalDeltaSharingFetch);
 }
 
 export function getPlatformFeatures(scope: PlatformFeatureScope = globalThis): PlatformFeatures {
@@ -683,6 +948,1372 @@ export function createQueryRequest(
   return request;
 }
 
+export function validateDeltaLocationResolveRequest(request: DeltaLocationResolveRequest): void {
+  validateStorageAccessProfile(request.credential_profile);
+  validateLogicalDeltaTableUri(request.provider, request.table_uri);
+  if (
+    request.snapshot_version !== undefined &&
+    (!Number.isInteger(request.snapshot_version) || request.snapshot_version < 0)
+  ) {
+    throw new DeltaLocationResolverError(
+      'invalid_snapshot_version',
+      'Delta location snapshot version must be a non-negative integer',
+    );
+  }
+}
+
+export function validateDeltaLocationResolveResponse(
+  input: DeltaLocationResolveResponse,
+  request: DeltaLocationResolveRequest,
+  nowEpochMs: number = Date.now(),
+): void {
+  const response = normalizeDeltaLocationResolveResponseEnvelope(input);
+
+  if (response.provider !== request.provider) {
+    throw new DeltaLocationResolverError(
+      'policy_blocked',
+      `resolver response provider '${response.provider}' did not match request provider '${request.provider}'`,
+    );
+  }
+  if (response.table_uri !== request.table_uri) {
+    throw new DeltaLocationResolverError(
+      'policy_blocked',
+      'resolver response table URI did not match the requested Delta location',
+    );
+  }
+  if (
+    request.snapshot_version !== undefined &&
+    response.requested_snapshot_version !== request.snapshot_version
+  ) {
+    throw new DeltaLocationResolverError(
+      'snapshot_version_not_found',
+      'resolver response did not confirm the requested Delta snapshot version',
+      { correlationId: response.correlation_id },
+    );
+  }
+  if (
+    request.snapshot_version !== undefined &&
+    response.resolved_snapshot_version !== request.snapshot_version
+  ) {
+    throw new DeltaLocationResolverError(
+      'snapshot_version_not_found',
+      'resolver response resolved a different Delta snapshot version',
+      { correlationId: response.correlation_id },
+    );
+  }
+  if (
+    response.requested_access_mode !== undefined &&
+    response.requested_access_mode !== request.requested_access_mode
+  ) {
+    throw new DeltaLocationResolverError(
+      'access_mode_not_supported',
+      'resolver response requested access mode did not match the SDK request',
+      { correlationId: response.correlation_id },
+    );
+  }
+  if (
+    request.requested_access_mode !== 'auto' &&
+    response.actual_access_mode !== request.requested_access_mode
+  ) {
+    throw new DeltaLocationResolverError(
+      'access_mode_not_supported',
+      'resolver response actual access mode did not satisfy the SDK request',
+      { correlationId: response.correlation_id },
+    );
+  }
+  if (response.descriptor.snapshot_version !== response.resolved_snapshot_version) {
+    throw new DeltaLocationResolverError(
+      'policy_blocked',
+      'resolver response snapshot version did not match the descriptor snapshot version',
+      { correlationId: response.correlation_id },
+    );
+  }
+  if (response.expires_at_epoch_ms <= nowEpochMs) {
+    throw new DeltaLocationResolverError(
+      'descriptor_expired',
+      'resolved Delta descriptor has expired',
+      { correlationId: response.correlation_id },
+    );
+  }
+  if (response.refresh && response.refresh.same_snapshot_required !== true) {
+    throw new DeltaLocationResolverError(
+      'policy_blocked',
+      'Delta location refresh must require the same resolved snapshot',
+      { correlationId: response.correlation_id },
+    );
+  }
+  for (const file of response.descriptor.active_files) {
+    validateBrowserSafeDescriptorUrl(file.url, response.correlation_id);
+  }
+}
+
+function normalizeDeltaLocationResolveResponseEnvelope(
+  input: unknown,
+): DeltaLocationResolveResponse {
+  try {
+    const response = requiredObject(input, 'response');
+    const descriptor = normalizeBrowserHttpSnapshotDescriptor(response.descriptor, 'descriptor');
+    const normalized: DeltaLocationResolveResponse = {
+      descriptor,
+      provider: requiredEnum(response.provider, 'provider', DELTA_OBJECT_STORE_PROVIDERS),
+      table_uri: requiredString(response.table_uri, 'table_uri'),
+      resolved_snapshot_version: requiredNonNegativeInteger(
+        response.resolved_snapshot_version,
+        'resolved_snapshot_version',
+      ),
+      actual_access_mode: requiredEnum(
+        response.actual_access_mode,
+        'actual_access_mode',
+        RESOLVER_ACTUAL_ACCESS_MODES,
+      ),
+      expires_at_epoch_ms: requiredNonNegativeInteger(
+        response.expires_at_epoch_ms,
+        'expires_at_epoch_ms',
+      ),
+    };
+
+    const requestedSnapshotVersion = optionalNonNegativeInteger(
+      response.requested_snapshot_version,
+      'requested_snapshot_version',
+    );
+    if (requestedSnapshotVersion !== undefined) {
+      normalized.requested_snapshot_version = requestedSnapshotVersion;
+    }
+
+    const requestedAccessMode = optionalEnum(
+      response.requested_access_mode,
+      'requested_access_mode',
+      RESOLVER_REQUESTED_ACCESS_MODES,
+    );
+    if (requestedAccessMode !== undefined) {
+      normalized.requested_access_mode = requestedAccessMode;
+    }
+
+    const correlationId = optionalString(response.correlation_id, 'correlation_id');
+    if (correlationId !== undefined) {
+      normalized.correlation_id = correlationId;
+    }
+
+    const warnings = optionalStringArray(response.warnings, 'warnings');
+    if (warnings !== undefined) {
+      normalized.warnings = warnings;
+    }
+
+    const refresh = normalizeDeltaLocationRefresh(response.refresh, 'refresh');
+    if (refresh !== undefined) {
+      normalized.refresh = refresh;
+    }
+
+    return normalized;
+  } catch (error) {
+    if (error instanceof DeltaLocationResolverError) {
+      throw error;
+    }
+    throw new DeltaLocationResolverError(
+      'resolver_unavailable',
+      `Delta location resolver response is malformed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+function normalizeBrowserHttpSnapshotDescriptor(
+  input: unknown,
+  path: string,
+): BrowserHttpSnapshotDescriptor {
+  const descriptor = requiredObject(input, path);
+  const normalized: BrowserHttpSnapshotDescriptor = {
+    table_uri: requiredString(descriptor.table_uri, `${path}.table_uri`),
+    snapshot_version: requiredNonNegativeInteger(
+      descriptor.snapshot_version,
+      `${path}.snapshot_version`,
+    ),
+    active_files: requiredArray(descriptor.active_files, `${path}.active_files`).map(
+      (file, index) => normalizeBrowserHttpFileDescriptor(file, `${path}.active_files[${index}]`),
+    ),
+  };
+
+  const partitionColumnTypes = normalizePartitionColumnTypes(
+    descriptor.partition_column_types,
+    `${path}.partition_column_types`,
+  );
+  if (partitionColumnTypes !== undefined) {
+    normalized.partition_column_types = partitionColumnTypes;
+  }
+
+  const browserCompatibility = normalizeCapabilityReport(
+    descriptor.browser_compatibility,
+    `${path}.browser_compatibility`,
+  );
+  if (browserCompatibility !== undefined) {
+    normalized.browser_compatibility = browserCompatibility;
+  }
+
+  const requiredCapabilities = normalizeCapabilityReport(
+    descriptor.required_capabilities,
+    `${path}.required_capabilities`,
+  );
+  if (requiredCapabilities !== undefined) {
+    normalized.required_capabilities = requiredCapabilities;
+  }
+
+  return normalized;
+}
+
+function normalizeBrowserHttpFileDescriptor(
+  input: unknown,
+  path: string,
+): BrowserHttpFileDescriptor {
+  const file = requiredObject(input, path);
+  const normalized: BrowserHttpFileDescriptor = {
+    path: requiredString(file.path, `${path}.path`),
+    url: requiredString(file.url, `${path}.url`),
+    size_bytes: requiredNonNegativeInteger(file.size_bytes, `${path}.size_bytes`),
+    partition_values: normalizePartitionValues(file.partition_values, `${path}.partition_values`),
+  };
+  const stats = optionalString(file.stats, `${path}.stats`);
+  if (stats !== undefined) {
+    normalized.stats = stats;
+  }
+  return normalized;
+}
+
+function normalizeDeltaLocationRefresh(
+  input: unknown,
+  path: string,
+): DeltaLocationRefresh | undefined {
+  if (input === undefined) {
+    return undefined;
+  }
+  const refresh = requiredObject(input, path);
+  const normalized: DeltaLocationRefresh = {
+    same_snapshot_required: requiredBoolean(
+      refresh.same_snapshot_required,
+      `${path}.same_snapshot_required`,
+    ) as true,
+  };
+  const refreshUrl = optionalString(refresh.refresh_url, `${path}.refresh_url`);
+  if (refreshUrl !== undefined) {
+    normalized.refresh_url = refreshUrl;
+  }
+  const refreshAfter = optionalNonNegativeInteger(
+    refresh.refresh_after_epoch_ms,
+    `${path}.refresh_after_epoch_ms`,
+  );
+  if (refreshAfter !== undefined) {
+    normalized.refresh_after_epoch_ms = refreshAfter;
+  }
+  return normalized;
+}
+
+function normalizePartitionColumnTypes(
+  input: unknown,
+  path: string,
+): Partial<Record<string, PartitionColumnType>> | undefined {
+  if (input === undefined) {
+    return undefined;
+  }
+  const record = requiredObject(input, path);
+  const normalized: Partial<Record<string, PartitionColumnType>> = {};
+  for (const [key, value] of Object.entries(record)) {
+    normalized[key] = requiredEnum(value, `${path}.${key}`, PARTITION_COLUMN_TYPES);
+  }
+  return normalized;
+}
+
+function normalizeCapabilityReport(input: unknown, path: string): CapabilityReport | undefined {
+  if (input === undefined) {
+    return undefined;
+  }
+  const report = requiredObject(input, path);
+  const capabilities = requiredObject(report.capabilities, `${path}.capabilities`);
+  const normalized: Partial<Record<CapabilityKey, CapabilityState>> = {};
+  for (const [key, value] of Object.entries(capabilities)) {
+    if (!includesString(CAPABILITY_KEYS, key)) {
+      throw new AxonProtocolError(`${path}.capabilities.${key} must be a known capability key`);
+    }
+    normalized[key as CapabilityKey] = requiredEnum(
+      value,
+      `${path}.capabilities.${key}`,
+      CAPABILITY_STATES,
+    );
+  }
+  return { capabilities: normalized };
+}
+
+function normalizePartitionValues(input: unknown, path: string): Record<string, string | null> {
+  const record = requiredObject(input, path);
+  const normalized: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (value !== null && typeof value !== 'string') {
+      throw new AxonProtocolError(`${path}.${key} must be a string or null`);
+    }
+    normalized[key] = value;
+  }
+  return normalized;
+}
+
+function optionalStringArray(input: unknown, path: string): string[] | undefined {
+  if (input === undefined) {
+    return undefined;
+  }
+  return requiredArray(input, path).map((value, index) =>
+    requiredString(value, `${path}[${index}]`),
+  );
+}
+
+function deltaLocationResolveRequestFromOptions(
+  options: DeltaLocationOpenOptions,
+): DeltaLocationResolveRequest {
+  const request: DeltaLocationResolveRequest = {
+    provider: options.provider,
+    table_uri: options.tableUri,
+    credential_profile: {
+      id: options.credentialProfile.id,
+    },
+    requested_access_mode: options.requestedAccessMode ?? 'auto',
+  };
+
+  if (options.credentialProfile.display_name !== undefined) {
+    request.credential_profile.display_name = options.credentialProfile.display_name;
+  }
+  if (options.snapshotVersion !== undefined) {
+    request.snapshot_version = options.snapshotVersion;
+  }
+
+  return request;
+}
+
+function deltaLocationOpenMetadata(
+  response: DeltaLocationResolveResponse,
+): DeltaLocationOpenMetadata {
+  const location: DeltaLocationOpenMetadata = {
+    provider: response.provider,
+    table_uri: response.table_uri,
+    resolved_snapshot_version: response.resolved_snapshot_version,
+    actual_access_mode: response.actual_access_mode,
+    expires_at_epoch_ms: response.expires_at_epoch_ms,
+  };
+
+  if (response.requested_snapshot_version !== undefined) {
+    location.requested_snapshot_version = response.requested_snapshot_version;
+  }
+  if (response.requested_access_mode !== undefined) {
+    location.requested_access_mode = response.requested_access_mode;
+  }
+  if (response.correlation_id !== undefined) {
+    location.correlation_id = response.correlation_id;
+  }
+  if (response.warnings !== undefined) {
+    location.warnings = response.warnings;
+  }
+  if (response.refresh !== undefined) {
+    location.refresh = response.refresh;
+  }
+
+  return location;
+}
+
+async function resolveDeltaLocationFromOptions(
+  options: DeltaLocationOpenOptions,
+  request: DeltaLocationResolveRequest,
+): Promise<DeltaLocationResolveResponse> {
+  if (options.resolveDeltaLocation && options.resolverUrl) {
+    throw new DeltaLocationResolverError(
+      'resolver_unavailable',
+      'openDeltaLocation accepts either resolverUrl or resolveDeltaLocation, not both',
+    );
+  }
+
+  if (options.resolveDeltaLocation) {
+    try {
+      return normalizeDeltaLocationResolveResponseEnvelope(
+        await options.resolveDeltaLocation(request),
+      );
+    } catch (error) {
+      throw normalizeDeltaLocationResolverError(error);
+    }
+  }
+
+  if (options.resolverUrl) {
+    return resolveDeltaLocationViaHttp(options.resolverUrl, request);
+  }
+
+  throw new DeltaLocationResolverError(
+    'resolver_unavailable',
+    'openDeltaLocation requires resolverUrl or resolveDeltaLocation',
+  );
+}
+
+async function resolveDeltaLocationViaHttp(
+  resolverUrl: string | URL,
+  request: DeltaLocationResolveRequest,
+): Promise<DeltaLocationResolveResponse> {
+  if (typeof fetch !== 'function') {
+    throw new DeltaLocationResolverError(
+      'resolver_unavailable',
+      'global fetch is not available for Delta location resolution',
+    );
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(resolverUrl, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(request),
+      credentials: 'same-origin',
+    });
+  } catch (error) {
+    throw normalizeDeltaLocationResolverError(error);
+  }
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (error) {
+    throw new DeltaLocationResolverError(
+      'resolver_unavailable',
+      `Delta location resolver returned non-JSON response (${response.status}): ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  if (!response.ok) {
+    throw deltaLocationResolverErrorFromResponse(body, response.status);
+  }
+
+  return normalizeDeltaLocationResolveResponseEnvelope(body);
+}
+
+function deltaLocationResolverErrorFromResponse(
+  body: unknown,
+  status: number,
+): DeltaLocationResolverError {
+  if (isObject(body) && typeof body.code === 'string') {
+    return new DeltaLocationResolverError(
+      deltaLocationResolverErrorCode(body.code),
+      typeof body.message === 'string'
+        ? body.message
+        : `Delta location resolver returned ${status}`,
+      {
+        correlationId: typeof body.correlation_id === 'string' ? body.correlation_id : undefined,
+      },
+    );
+  }
+
+  return new DeltaLocationResolverError(
+    'resolver_unavailable',
+    `Delta location resolver returned ${status}`,
+  );
+}
+
+function normalizeDeltaLocationResolverError(error: unknown): DeltaLocationResolverError {
+  if (error instanceof DeltaLocationResolverError) {
+    return new DeltaLocationResolverError(error.code, error.message, {
+      correlationId: error.correlationId,
+    });
+  }
+
+  return new DeltaLocationResolverError(
+    'resolver_unavailable',
+    error instanceof Error ? error.message : String(error),
+  );
+}
+
+function validateStorageAccessProfile(profile: CredentialProfileRef): void {
+  if (!profile.id.trim()) {
+    throw new DeltaLocationResolverError(
+      'credential_profile_required',
+      'storage access profile id is required',
+    );
+  }
+  if (containsSecretMaterial(profile.id)) {
+    throw new DeltaLocationResolverError(
+      'policy_blocked',
+      'storage access profile id must be an opaque policy handle, not cloud credential material',
+    );
+  }
+}
+
+function validateLogicalDeltaTableUri(provider: DeltaObjectStoreProvider, tableUri: string): void {
+  if (containsSecretMaterial(tableUri)) {
+    throw new DeltaLocationResolverError(
+      'invalid_table_uri',
+      'Delta table URI must not contain credential material or signed URL parameters',
+    );
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(tableUri);
+  } catch (error) {
+    throw new DeltaLocationResolverError(
+      'invalid_table_uri',
+      `invalid Delta table URI: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  if (parsed.search || parsed.hash) {
+    throw new DeltaLocationResolverError(
+      'invalid_table_uri',
+      `Delta table URI '${redactedUrl(parsed)}' must not include query strings or fragments`,
+    );
+  }
+
+  if (provider === 's3') {
+    if (
+      parsed.protocol !== 's3:' ||
+      !parsed.hostname ||
+      !hasNonRootPath(parsed) ||
+      hasUserinfo(parsed)
+    ) {
+      throw new DeltaLocationResolverError(
+        'invalid_table_uri',
+        'S3 Delta table URI must look like s3://bucket/table without userinfo',
+      );
+    }
+    return;
+  }
+
+  if (provider === 'gcs') {
+    if (
+      parsed.protocol !== 'gs:' ||
+      !parsed.hostname ||
+      !hasNonRootPath(parsed) ||
+      hasUserinfo(parsed)
+    ) {
+      throw new DeltaLocationResolverError(
+        'invalid_table_uri',
+        'GCS Delta table URI must look like gs://bucket/table without userinfo',
+      );
+    }
+    return;
+  }
+
+  if (parsed.protocol === 'az:') {
+    if (parsed.hostname && hasContainerAndTablePath(parsed) && !hasUserinfo(parsed)) {
+      return;
+    }
+    throw new DeltaLocationResolverError(
+      'invalid_table_uri',
+      'Azure Blob Delta table URI must look like az://account/container/table',
+    );
+  }
+
+  if (parsed.protocol === 'abfs:') {
+    if (parsed.hostname && parsed.username && !parsed.password && hasNonRootPath(parsed)) {
+      return;
+    }
+    throw new DeltaLocationResolverError(
+      'invalid_table_uri',
+      'ABFS Delta table URI must look like abfs://container@account.dfs.core.windows.net/table',
+    );
+  }
+
+  throw new DeltaLocationResolverError(
+    'invalid_table_uri',
+    'Azure Blob resolver only accepts az:// or abfs:// Delta table URIs',
+  );
+}
+
+function validateBrowserSafeDescriptorUrl(url: string, correlationId: string | undefined): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch (error) {
+    throw new DeltaLocationResolverError(
+      'policy_blocked',
+      `invalid browser-safe descriptor URL: ${error instanceof Error ? error.message : String(error)}`,
+      { correlationId },
+    );
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw new DeltaLocationResolverError(
+      'policy_blocked',
+      `browser-safe descriptor URL '${redactedUrl(parsed)}' must use HTTPS`,
+      { correlationId },
+    );
+  }
+}
+
+function hasUserinfo(url: URL): boolean {
+  return Boolean(url.username || url.password);
+}
+
+function hasNonRootPath(url: URL): boolean {
+  return url.pathname.replace(/^\/+|\/+$/g, '').length > 0;
+}
+
+function hasContainerAndTablePath(url: URL): boolean {
+  const parts = url.pathname.split('/').filter(Boolean);
+  return parts.length >= 2;
+}
+
+function deltaLocationResolverErrorCode(code: string): DeltaLocationResolverErrorCode {
+  switch (code) {
+    case 'invalid_table_uri':
+    case 'invalid_snapshot_version':
+    case 'credential_profile_required':
+    case 'credential_profile_not_found':
+    case 'provider_not_supported':
+    case 'access_mode_not_supported':
+    case 'snapshot_version_not_found':
+    case 'not_a_delta_table':
+    case 'resolver_unavailable':
+    case 'storage_auth_failed':
+    case 'storage_cors_failed':
+    case 'descriptor_expired':
+    case 'policy_blocked':
+    case 'proxy_required':
+    case 'signed_url_unavailable':
+      return code;
+    default:
+      return 'resolver_unavailable';
+  }
+}
+
+class DeltaSharingRestClient implements DeltaSharingClient {
+  private readonly fetcher: DeltaSharingFetch;
+
+  constructor(fetcher: DeltaSharingFetch) {
+    this.fetcher = fetcher;
+  }
+
+  async connect(profile: DeltaSharingProfileInput): Promise<DeltaSharingSession> {
+    const parsed = await parseDeltaSharingBearerProfile(profile);
+    return new DeltaSharingBearerSession(parsed, this.fetcher);
+  }
+}
+
+type ParsedDeltaSharingBearerProfile = {
+  endpoint: string;
+  bearerToken: string;
+  displayName?: string;
+  expiresAtEpochMs?: number;
+};
+
+class DeltaSharingBearerSession implements DeltaSharingSession {
+  readonly profile: DeltaSharingConnectionProfile;
+  readonly #token: string;
+  readonly #fetcher: DeltaSharingFetch;
+
+  constructor(parsed: ParsedDeltaSharingBearerProfile, fetcher: DeltaSharingFetch) {
+    this.profile = {
+      kind: 'delta_sharing',
+      profileSource: 'uploaded_profile',
+      endpoint: parsed.endpoint,
+      authMode: 'bearer',
+      ...(parsed.displayName ? { displayName: parsed.displayName } : {}),
+    };
+    this.#token = parsed.bearerToken;
+    this.#fetcher = fetcher;
+  }
+
+  listShares(opts: PageOptions = {}): Promise<DeltaSharingPage<DeltaShareInfo>> {
+    return this.getPage<DeltaShareInfo>(['shares'], opts);
+  }
+
+  listSchemas(
+    share: string,
+    opts: PageOptions = {},
+  ): Promise<DeltaSharingPage<DeltaShareSchemaInfo>> {
+    return this.getPage<DeltaShareSchemaInfo>(['shares', share, 'schemas'], opts);
+  }
+
+  listTables(
+    share: string,
+    schema: string,
+    opts: PageOptions = {},
+  ): Promise<DeltaSharingPage<DeltaShareTableInfo>> {
+    return this.getPage<DeltaShareTableInfo>(['shares', share, 'schemas', schema, 'tables'], opts);
+  }
+
+  listAllTables(
+    share: string,
+    opts: PageOptions = {},
+  ): Promise<DeltaSharingPage<DeltaShareTableInfo>> {
+    return this.getPage<DeltaShareTableInfo>(['shares', share, 'all-tables'], opts);
+  }
+
+  async getTableVersion(table: DeltaSharingTableRef): Promise<number> {
+    const response = await this.requestResponse(deltaSharingTablePath(table, 'version'), {
+      method: 'GET',
+      accept: 'application/json',
+    });
+    const headerVersion = parseDeltaSharingVersionHeader(response.headers);
+    if (headerVersion !== undefined) {
+      return headerVersion;
+    }
+
+    const text = await safeResponseText(response);
+    const bodyVersion = parseDeltaSharingVersionBody(text);
+    if (bodyVersion === undefined) {
+      throw new DeltaSharingError(
+        'table_version_not_found',
+        `Delta Sharing version response did not contain a table version for ${deltaSharingTableLabel(table)}`,
+      );
+    }
+    return bodyVersion;
+  }
+
+  async getTableMetadata(
+    table: DeltaSharingTableRef,
+    opts: DeltaSharingMetadataOptions = {},
+  ): Promise<DeltaSharingTableMetadata> {
+    const response = await this.requestResponse(deltaSharingTablePath(table, 'metadata'), {
+      method: 'GET',
+      accept: 'application/x-ndjson',
+      query: opts.version === undefined ? undefined : { version: String(opts.version) },
+    });
+    const actions = parseDeltaSharingNdjson(await safeResponseText(response));
+    const version = parseDeltaSharingVersionHeader(response.headers);
+    return {
+      table,
+      version,
+      protocol: firstActionPayload(actions, 'protocol'),
+      metadata: firstActionPayload(actions, 'metaData') ?? firstActionPayload(actions, 'metadata'),
+      rawActions: actions,
+    };
+  }
+
+  async resolveTable(
+    table: DeltaSharingTableRef,
+    opts: OpenDeltaShareOptions = {},
+  ): Promise<DeltaSharingReadPlan> {
+    if (opts.responseFormat === 'delta') {
+      throw new DeltaSharingError(
+        'unsupported_response_format',
+        'Delta Sharing responseformat=delta is not supported by this browser SDK build yet',
+      );
+    }
+
+    const body: Record<string, unknown> = {};
+    if (opts.version !== undefined) body.version = opts.version;
+    if (opts.limitHint !== undefined) body.limitHint = opts.limitHint;
+    if (opts.predicateHints !== undefined) body.predicateHints = opts.predicateHints;
+
+    const response = await this.requestResponse(deltaSharingTablePath(table, 'query'), {
+      method: 'POST',
+      accept: 'application/x-ndjson',
+      body,
+      capabilities: deltaSharingCapabilitiesHeader(opts),
+    });
+    const actions = parseDeltaSharingNdjson(await safeResponseText(response));
+    const resolvedVersion = parseDeltaSharingVersionHeader(response.headers) ?? opts.version;
+    if (resolvedVersion === undefined) {
+      throw new DeltaSharingError(
+        'table_version_not_found',
+        `Delta Sharing query response did not include a resolved table version for ${deltaSharingTableLabel(table)}`,
+      );
+    }
+
+    return deltaSharingReadPlanFromActions({
+      endpoint: this.profile.endpoint,
+      table,
+      requestedResponseFormat: opts.responseFormat ?? 'auto',
+      resolvedVersion,
+      actions,
+    });
+  }
+
+  private async getPage<T>(
+    path: readonly string[],
+    opts: PageOptions,
+  ): Promise<DeltaSharingPage<T>> {
+    const body = await this.requestJson(path, {
+      method: 'GET',
+      accept: 'application/json',
+      query: pageOptionsQuery(opts),
+    });
+    return normalizeDeltaSharingPage<T>(body);
+  }
+
+  private async requestJson(
+    path: readonly string[],
+    options: DeltaSharingRequestOptions,
+  ): Promise<unknown> {
+    const response = await this.requestResponse(path, options);
+    try {
+      return await response.json();
+    } catch (error) {
+      throw new DeltaSharingError(
+        'server_error',
+        `Delta Sharing response from ${deltaSharingUrl(this.profile.endpoint, path)} was not JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private async requestResponse(
+    path: readonly string[],
+    options: DeltaSharingRequestOptions,
+  ): Promise<Response> {
+    const url = deltaSharingUrl(this.profile.endpoint, path, options.query);
+    const headers = new Headers({
+      accept: options.accept,
+      authorization: `Bearer ${this.#token}`,
+    });
+    if (options.body !== undefined) {
+      headers.set('content-type', 'application/json');
+    }
+    if (options.capabilities) {
+      headers.set('delta-sharing-capabilities', options.capabilities);
+    }
+
+    let response: Response;
+    try {
+      response = await this.#fetcher(url, {
+        method: options.method,
+        headers,
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      });
+    } catch (error) {
+      throw new DeltaSharingError(
+        'network_error',
+        `Delta Sharing request to ${url} failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    if (!response.ok) {
+      const text = await safeResponseText(response);
+      throw new DeltaSharingError(
+        deltaSharingHttpErrorCode(response.status, path),
+        `Delta Sharing request to ${url} failed (${response.status}): ${text}`,
+        { status: response.status },
+      );
+    }
+
+    return response;
+  }
+}
+
+type DeltaSharingRequestOptions = {
+  method: 'GET' | 'POST';
+  accept: string;
+  query?: Record<string, string>;
+  body?: Record<string, unknown>;
+  capabilities?: string;
+};
+
+async function parseDeltaSharingBearerProfile(
+  input: DeltaSharingProfileInput,
+): Promise<ParsedDeltaSharingBearerProfile> {
+  if (input.source === 'oidc_url') {
+    throw new DeltaSharingError(
+      'auth_required',
+      'Delta Sharing OIDC federation is not available in this browser SDK build yet',
+    );
+  }
+
+  const value = await deltaSharingProfileInputValue(input);
+  if (!isObject(value)) {
+    throw new DeltaSharingError('invalid_profile', 'Delta Sharing profile must be a JSON object');
+  }
+
+  const endpoint = stringField(value, 'endpoint');
+  const bearerToken =
+    stringField(value, 'bearerToken') ??
+    stringField(value, 'bearer_token') ??
+    stringField(value, 'token');
+  if (!endpoint) {
+    throw new DeltaSharingError('invalid_profile', 'Delta Sharing profile endpoint is required');
+  }
+  if (!bearerToken) {
+    throw new DeltaSharingError(
+      'auth_required',
+      'Delta Sharing bearer-token profile requires bearerToken',
+    );
+  }
+
+  const expiresAtEpochMs = deltaSharingProfileExpirationEpochMs(value);
+  if (expiresAtEpochMs !== undefined && expiresAtEpochMs <= Date.now()) {
+    throw new DeltaSharingError('auth_expired', 'Delta Sharing bearer-token profile has expired');
+  }
+
+  return {
+    endpoint: normalizeDeltaSharingEndpoint(endpoint),
+    bearerToken,
+    displayName: stringField(value, 'name') ?? stringField(value, 'displayName'),
+    expiresAtEpochMs,
+  };
+}
+
+async function deltaSharingProfileInputValue(input: DeltaSharingProfileInput): Promise<unknown> {
+  if (input.source === 'file') {
+    if (!isFileLike(input.value)) {
+      throw new DeltaSharingError('invalid_profile', 'Delta Sharing profile file is not readable');
+    }
+    return parseProfileJson(await input.value.text());
+  }
+  if (input.source === 'json') {
+    if (typeof input.value === 'string') {
+      return parseProfileJson(input.value);
+    }
+    return input.value;
+  }
+  return input.value;
+}
+
+function parseProfileJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new DeltaSharingError(
+      'invalid_profile',
+      `Delta Sharing profile JSON is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function deltaSharingProfileExpirationEpochMs(
+  profile: Record<string, unknown>,
+): number | undefined {
+  const value =
+    profile.expirationTime ?? profile.expiration_time ?? profile.expiresAt ?? profile.expires_at;
+  if (value === undefined) return undefined;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  throw new DeltaSharingError(
+    'invalid_profile',
+    'Delta Sharing bearer-token profile expiration timestamp is invalid',
+  );
+}
+
+function normalizeDeltaSharingEndpoint(endpoint: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch (error) {
+    throw new DeltaSharingError(
+      'invalid_profile',
+      `Delta Sharing endpoint is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw new DeltaSharingError(
+      'invalid_profile',
+      `Delta Sharing endpoint '${redactedUrl(parsed)}' must use HTTPS`,
+    );
+  }
+  parsed.username = '';
+  parsed.password = '';
+  parsed.search = '';
+  parsed.hash = '';
+  parsed.pathname = parsed.pathname.replace(/\/+$/g, '');
+  return parsed.toString().replace(/\/+$/g, '');
+}
+
+function deltaSharingUrl(
+  endpoint: string,
+  path: readonly string[],
+  query: Record<string, string> | undefined = undefined,
+): string {
+  const base = endpoint.endsWith('/') ? endpoint : `${endpoint}/`;
+  const url = new URL(path.map((segment) => encodeURIComponent(segment)).join('/'), base);
+  for (const [key, value] of Object.entries(query ?? {})) {
+    url.searchParams.set(key, value);
+  }
+  return url.toString();
+}
+
+function deltaSharingTablePath(table: DeltaSharingTableRef, leaf: string): string[] {
+  return ['shares', table.share, 'schemas', table.schema, 'tables', table.table, leaf];
+}
+
+function deltaSharingTableLabel(table: DeltaSharingTableRef): string {
+  return `${table.share}.${table.schema}.${table.table}`;
+}
+
+function pageOptionsQuery(opts: PageOptions): Record<string, string> | undefined {
+  const query: Record<string, string> = {};
+  if (opts.pageToken !== undefined) query.pageToken = opts.pageToken;
+  if (opts.maxResults !== undefined) query.maxResults = String(opts.maxResults);
+  return Object.keys(query).length === 0 ? undefined : query;
+}
+
+function normalizeDeltaSharingPage<T>(body: unknown): DeltaSharingPage<T> {
+  if (Array.isArray(body)) {
+    return { items: body as T[] };
+  }
+  if (!isObject(body)) {
+    throw new DeltaSharingError('server_error', 'Delta Sharing list response must be an object');
+  }
+  if (!Array.isArray(body.items)) {
+    throw new DeltaSharingError(
+      'server_error',
+      'Delta Sharing list response items must be an array',
+    );
+  }
+  return {
+    items: body.items as T[],
+    nextPageToken: optionalString(body.nextPageToken, 'nextPageToken'),
+  };
+}
+
+function parseDeltaSharingNdjson(text: string): Array<Record<string, unknown>> {
+  const actions: Array<Record<string, unknown>> = [];
+  for (const [index, raw] of text.split(/\r?\n/).entries()) {
+    const line = raw.trim();
+    if (!line) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (!isObject(parsed)) {
+        throw new Error('action must be an object');
+      }
+      actions.push(parsed);
+    } catch (error) {
+      throw new DeltaSharingError(
+        'server_error',
+        `Delta Sharing NDJSON action ${index + 1} is invalid: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  return actions;
+}
+
+function deltaSharingReadPlanFromActions(input: {
+  endpoint: string;
+  table: DeltaSharingTableRef;
+  requestedResponseFormat: DeltaSharingResponseFormat;
+  resolvedVersion: number;
+  actions: Array<Record<string, unknown>>;
+}): DeltaSharingReadPlan {
+  const protocol = firstActionPayload(input.actions, 'protocol');
+  const metadata =
+    firstActionPayload(input.actions, 'metaData') ?? firstActionPayload(input.actions, 'metadata');
+  const accessModes =
+    actionStringArray(protocol, 'accessModes') ?? actionStringArray(metadata, 'accessModes');
+  const actualResponseFormat = actualDeltaSharingResponseFormat(input.requestedResponseFormat);
+
+  validateDeltaSharingReaderFeatures(protocol, metadata, actualResponseFormat);
+
+  const files = input.actions.flatMap((action) => deltaSharingFileDescriptor(action));
+  if (files.length === 0) {
+    if (accessModes?.includes('dir')) {
+      throw new DeltaSharingError(
+        'directory_access_requires_resolver',
+        'Delta Sharing directory access requires a trusted resolver before browser execution',
+      );
+    }
+    throw new DeltaSharingError(
+      'unsupported_access_mode',
+      'Delta Sharing query response did not include URL-mode file actions',
+    );
+  }
+
+  const expiresAtEpochMs = minimumDefined(files.map((file) => file.expiresAtEpochMs));
+  return {
+    kind: 'delta_sharing_snapshot_descriptor',
+    table: input.table,
+    endpoint: input.endpoint,
+    resolvedVersion: input.resolvedVersion,
+    responseFormat: actualResponseFormat,
+    descriptor: {
+      table_uri: deltaSharingDescriptorTableUri(input.endpoint, input.table),
+      snapshot_version: input.resolvedVersion,
+      partition_column_types: {},
+      browser_compatibility: { capabilities: { signed_url_access: 'supported' } },
+      required_capabilities: { capabilities: { signed_url_access: 'supported' } },
+      active_files: files.map(deltaSharingBrowserFile),
+    },
+    expiresAtEpochMs,
+    warnings: [],
+  };
+}
+
+function deltaSharingBrowserFile(
+  file: BrowserHttpFileDescriptor & { expiresAtEpochMs?: number },
+): BrowserHttpFileDescriptor {
+  return {
+    path: file.path,
+    url: file.url,
+    size_bytes: file.size_bytes,
+    partition_values: file.partition_values,
+    ...(file.stats === undefined ? {} : { stats: file.stats }),
+  };
+}
+
+function deltaSharingReadPlanMetadata(plan: DeltaSharingReadPlan): DeltaSharingReadPlanMetadata {
+  return {
+    kind: plan.kind,
+    table: plan.table,
+    endpoint: plan.endpoint,
+    resolvedVersion: plan.resolvedVersion,
+    responseFormat: plan.responseFormat,
+    ...(plan.expiresAtEpochMs === undefined ? {} : { expiresAtEpochMs: plan.expiresAtEpochMs }),
+    ...(plan.warnings === undefined ? {} : { warnings: plan.warnings }),
+  };
+}
+
+function actualDeltaSharingResponseFormat(
+  requested: DeltaSharingResponseFormat,
+): 'delta' | 'parquet' {
+  if (requested === 'delta') {
+    throw new DeltaSharingError(
+      'unsupported_response_format',
+      'Delta Sharing responseformat=delta is not supported by this browser SDK build yet',
+    );
+  }
+  return 'parquet';
+}
+
+function validateDeltaSharingReaderFeatures(
+  protocol: Record<string, unknown> | undefined,
+  metadata: Record<string, unknown> | undefined,
+  responseFormat: 'delta' | 'parquet',
+): void {
+  const features = [
+    ...(actionStringArray(protocol, 'readerFeatures') ?? []),
+    ...(actionStringArray(metadata, 'readerFeatures') ?? []),
+  ].map((feature) => feature.toLowerCase());
+  const unsupported = features.filter(
+    (feature) => feature === 'deletionvectors' || feature === 'columnmapping',
+  );
+  if (unsupported.length > 0 && responseFormat !== 'delta') {
+    throw new DeltaSharingError(
+      'unsupported_reader_feature',
+      `Delta Sharing table requires reader features not supported in parquet response format: ${unsupported.join(', ')}`,
+    );
+  }
+}
+
+function deltaSharingFileDescriptor(
+  action: Record<string, unknown>,
+): Array<BrowserHttpFileDescriptor & { expiresAtEpochMs?: number }> {
+  const payload = isObject(action.file)
+    ? action.file
+    : isObject(action.add)
+      ? action.add
+      : undefined;
+  if (!payload) {
+    return [];
+  }
+
+  const url = stringField(payload, 'url');
+  if (!url) {
+    return [];
+  }
+  validateDeltaSharingDescriptorUrl(url);
+  const size = numberField(payload, 'size') ?? numberField(payload, 'size_bytes');
+  if (size === undefined) {
+    throw new DeltaSharingError(
+      'server_error',
+      `Delta Sharing file action for ${redactUrlSecrets(url)} did not include size`,
+    );
+  }
+
+  return [
+    {
+      path: stringField(payload, 'id') ?? stringField(payload, 'path') ?? pathFromUrl(url),
+      url,
+      size_bytes: size,
+      partition_values: partitionValues(payload.partitionValues ?? payload.partition_values),
+      stats: stringField(payload, 'stats'),
+      expiresAtEpochMs: expirationEpochMs(payload.expirationTimestamp ?? payload.expiration_time),
+    },
+  ];
+}
+
+function validateDeltaSharingDescriptorUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch (error) {
+    throw new DeltaSharingError(
+      'server_error',
+      `Delta Sharing file URL is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new DeltaSharingError(
+      'unsupported_access_mode',
+      `Delta Sharing URL-mode file '${redactedUrl(parsed)}' must use HTTPS`,
+    );
+  }
+}
+
+function partitionValues(value: unknown): Record<string, string | null> {
+  if (value === undefined) return {};
+  if (!isObject(value)) {
+    throw new DeltaSharingError(
+      'server_error',
+      'Delta Sharing file partitionValues must be an object',
+    );
+  }
+  const out: Record<string, string | null> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (raw === null) {
+      out[key] = null;
+    } else if (typeof raw === 'string') {
+      out[key] = raw;
+    } else {
+      out[key] = String(raw);
+    }
+  }
+  return out;
+}
+
+function expirationEpochMs(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  throw new DeltaSharingError('server_error', 'Delta Sharing file expiration timestamp is invalid');
+}
+
+function pathFromUrl(url: string): string {
+  const parsed = new URL(url);
+  const path = parsed.pathname.split('/').filter(Boolean).pop();
+  return path ?? redactedUrl(parsed);
+}
+
+function deltaSharingDescriptorTableUri(endpoint: string, table: DeltaSharingTableRef): string {
+  const parsed = new URL(endpoint);
+  const uri = new URL(
+    `delta-sharing://${parsed.host}/${encodeURIComponent(table.share)}/${encodeURIComponent(
+      table.schema,
+    )}/${encodeURIComponent(table.table)}`,
+  );
+  const endpointPath = parsed.pathname.replace(/\/+$/g, '');
+  if (endpointPath) {
+    uri.searchParams.set('endpoint', endpointPath);
+  }
+  return uri.toString();
+}
+
+function deltaSharingCapabilitiesHeader(opts: OpenDeltaShareOptions): string | undefined {
+  const parts: string[] = [];
+  if (opts.responseFormat === 'parquet') {
+    parts.push('responseformat=parquet');
+  } else if (opts.responseFormat === 'delta') {
+    parts.push('responseformat=delta');
+  }
+  if (opts.readerFeatures && opts.readerFeatures.length > 0) {
+    parts.push(`readerfeatures=${opts.readerFeatures.join(',')}`);
+  }
+  return parts.length === 0 ? undefined : parts.join(';');
+}
+
+function firstActionPayload(
+  actions: Array<Record<string, unknown>>,
+  key: string,
+): Record<string, unknown> | undefined {
+  for (const action of actions) {
+    if (isObject(action[key])) {
+      return action[key];
+    }
+  }
+  return undefined;
+}
+
+function actionStringArray(
+  action: Record<string, unknown> | undefined,
+  key: string,
+): string[] | undefined {
+  if (!action || !Array.isArray(action[key])) return undefined;
+  const out: string[] = [];
+  for (const value of action[key]) {
+    if (typeof value === 'string') out.push(value);
+  }
+  return out;
+}
+
+function parseDeltaSharingVersionHeader(headers: Headers): number | undefined {
+  const value =
+    headers.get('delta-table-version') ??
+    headers.get('Delta-Table-Version') ??
+    headers.get('Delta-Sharing-Table-Version');
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseDeltaSharingVersionBody(text: string): number | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  const asNumber = Number.parseInt(trimmed, 10);
+  if (String(asNumber) === trimmed) return asNumber;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (isObject(parsed)) {
+      return numberField(parsed, 'version') ?? numberField(parsed, 'tableVersion');
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+async function safeResponseText(response: Response): Promise<string> {
+  try {
+    return await response.text();
+  } catch (error) {
+    return `unreadable response body: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+function deltaSharingHttpErrorCode(status: number, path: readonly string[]): DeltaSharingErrorCode {
+  if (status === 401 || status === 403) return 'auth_required';
+  if (status === 404) return deltaSharingNotFoundErrorCode(path);
+  if (status >= 500) return 'server_error';
+  return 'server_error';
+}
+
+function deltaSharingNotFoundErrorCode(path: readonly string[]): DeltaSharingErrorCode {
+  if (path[0] !== 'shares') return 'server_error';
+  if (path.length <= 3) return 'share_not_found';
+  if (path[2] !== 'schemas') return 'share_not_found';
+  if (path.length <= 5) return 'schema_not_found';
+  if (path[4] !== 'tables') return 'schema_not_found';
+  return 'table_not_found';
+}
+
+function globalDeltaSharingFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  if (typeof fetch !== 'function') {
+    return Promise.reject(new DeltaSharingError('network_error', 'global fetch is not available'));
+  }
+  return fetch(input, init);
+}
+
+function isFileLike(value: unknown): value is { text: () => Promise<string> } {
+  return isObject(value) && typeof value.text === 'function';
+}
+
+function stringField(value: Record<string, unknown>, key: string): string | undefined {
+  return typeof value[key] === 'string' ? value[key] : undefined;
+}
+
+function numberField(value: Record<string, unknown>, key: string): number | undefined {
+  return typeof value[key] === 'number' && Number.isFinite(value[key]) ? value[key] : undefined;
+}
+
+function minimumDefined(values: Array<number | undefined>): number | undefined {
+  let min: number | undefined;
+  for (const value of values) {
+    if (value === undefined) continue;
+    min = min === undefined ? value : Math.min(min, value);
+  }
+  return min;
+}
+
 export function expectedArrowIpcContentType(format: ArrowIpcFormat): string {
   switch (format) {
     case 'stream':
@@ -797,6 +2428,41 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
     }
     this.tables.set(name, snapshot);
     return opened;
+  }
+
+  async openDeltaLocation(
+    name: string,
+    options: DeltaLocationOpenOptions,
+  ): Promise<DeltaLocationOpenedEnvelope> {
+    const requestId = options.requestId ?? this.requestId();
+    const request = deltaLocationResolveRequestFromOptions(options);
+    validateDeltaLocationResolveRequest(request);
+    const response = await resolveDeltaLocationFromOptions(options, request);
+    validateDeltaLocationResolveResponse(response, request, Date.now());
+    const opened = await this.openDeltaTable(name, response.descriptor, { requestId });
+    return {
+      ...opened,
+      location: deltaLocationOpenMetadata(response),
+    };
+  }
+
+  async openDeltaShare(
+    name: string,
+    options: DeltaSharingOpenOptions,
+  ): Promise<DeltaSharingOpenedEnvelope> {
+    const requestId = options.requestId ?? this.requestId();
+    const plan = await options.session.resolveTable(options.table, {
+      version: options.version,
+      limitHint: options.limitHint,
+      predicateHints: options.predicateHints,
+      responseFormat: options.responseFormat,
+      readerFeatures: options.readerFeatures,
+    });
+    const opened = await this.openDeltaTable(name, plan.descriptor, { requestId });
+    return {
+      ...opened,
+      deltaSharing: deltaSharingReadPlanMetadata(plan),
+    };
   }
 
   async inspectParquet(
@@ -1438,6 +3104,14 @@ function requiredString(value: unknown, path: string): string {
   return value;
 }
 
+function requiredObject(value: unknown, path: string): Record<string, unknown> {
+  if (!isObject(value)) {
+    throw new AxonProtocolError(`${path} must be an object`);
+  }
+
+  return value;
+}
+
 function optionalString(value: unknown, path: string): string | undefined {
   if (value === undefined) {
     return undefined;
@@ -1517,6 +3191,61 @@ function optionalEnum<T extends string>(
   }
 
   return requiredEnum(value, path, allowed);
+}
+
+function redactCredentialSecrets(message: string): string {
+  return message
+    .replace(
+      /\bAuthorization\s*:\s*(?:[A-Za-z][A-Za-z0-9._-]*\s+)?[^\s'"<>]+/gi,
+      'Authorization: [REDACTED]',
+    )
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(
+      /"?\b(service_account|private_key|client_secret|refresh_token|client_email)"?\s*:\s*"[^"]*"/gi,
+      '[REDACTED]',
+    )
+    .replace(
+      /\b(AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AZURE_CLIENT_SECRET|GOOGLE_APPLICATION_CREDENTIALS)\s*[:=]\s*[^\s'"<>]+/gi,
+      '$1=[REDACTED]',
+    )
+    .replace(/\b(AKIA|ASIA)[A-Z0-9]{16}\b/g, '[REDACTED]')
+    .replace(
+      /\b(X-Amz-Signature|X-Goog-Signature|X-Goog-Credential|AWSAccessKeyId|access_token|signature|sig|sv|se|sp|skoid|sktid|skt|ske|sks|skv)=([^&\s]+)/gi,
+      '$1=[REDACTED]',
+    );
+}
+
+function containsSecretMaterial(value: string): boolean {
+  const lower = value.toLowerCase();
+  return (
+    lower.includes('service_account') ||
+    lower.includes('private_key') ||
+    lower.includes('client_secret') ||
+    lower.includes('refresh_token') ||
+    lower.includes('authorization:') ||
+    lower.includes('bearer ') ||
+    lower.includes('aws_secret_access_key') ||
+    lower.includes('azure_client_secret') ||
+    lower.includes('google_application_credentials') ||
+    lower.includes('x-amz-signature') ||
+    lower.includes('x-goog-signature') ||
+    lower.includes('x-goog-credential') ||
+    lower.includes('awsaccesskeyid') ||
+    lower.includes('access_token') ||
+    lower.includes('signature=') ||
+    lower.includes('sig=') ||
+    lower.includes('sv=') ||
+    /\b(AKIA|ASIA)[A-Z0-9]{16}\b/.test(value)
+  );
+}
+
+function redactedUrl(url: URL): string {
+  const clone = new URL(url.toString());
+  clone.username = '';
+  clone.password = '';
+  clone.search = '';
+  clone.hash = '';
+  return clone.toString();
 }
 
 function normalizeBytes(bytes: number[] | ArrayBuffer | Uint8Array): Uint8Array {
@@ -1621,6 +3350,26 @@ type WorkerEnvelopeTag = (typeof WORKER_ENVELOPE_TAGS)[number];
 type WorkerEventTag = (typeof WORKER_EVENT_TAGS)[number];
 
 const EXECUTION_TARGETS = ['browser_wasm', 'native'] as const satisfies readonly ExecutionTarget[];
+const DELTA_OBJECT_STORE_PROVIDERS = [
+  's3',
+  'gcs',
+  'azure_blob',
+] as const satisfies readonly DeltaObjectStoreProvider[];
+const RESOLVER_REQUESTED_ACCESS_MODES = [
+  'auto',
+  'signed_url',
+  'proxy',
+] as const satisfies readonly ResolverRequestedAccessMode[];
+const RESOLVER_ACTUAL_ACCESS_MODES = [
+  'signed_url',
+  'proxy',
+] as const satisfies readonly ResolverActualAccessMode[];
+const PARTITION_COLUMN_TYPES = [
+  'string',
+  'int64',
+  'boolean',
+  'unsupported',
+] as const satisfies readonly PartitionColumnType[];
 const CAPABILITY_KEYS = [
   'change_data_feed',
   'column_mapping',

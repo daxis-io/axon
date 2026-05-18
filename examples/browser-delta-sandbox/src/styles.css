@@ -119,6 +119,36 @@ h3 {
   flex: 1;
 }
 
+.design-preview-link {
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 550;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  text-decoration: none;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s;
+}
+
+.design-preview-link:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.design-preview-link-arrow {
+  height: 11px;
+  width: 11px;
+}
+
 .connection-bar {
   align-items: center;
   display: flex;
@@ -288,6 +318,45 @@ h3 {
 .kv .mono {
   font-family: var(--mono);
   font-size: 0.78rem;
+}
+
+.field-stack {
+  display: grid;
+  gap: 9px;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+}
+
+.field span {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 550;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.field input,
+.field select {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  min-height: 30px;
+  min-width: 0;
+  outline: none;
+  padding: 5px 8px;
+  width: 100%;
+}
+
+.field input:focus,
+.field select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--ring);
 }
 
 .snippet-list {
