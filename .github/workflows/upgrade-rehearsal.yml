@@ -73,7 +73,7 @@ jobs:
         run: cargo test -p browser-engine-worker
 
       - name: Check wasm targets
-        run: cargo check -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-datafusion-session -p wasm-query-runtime -p browser-sdk -p browser-engine-worker -p browser-delta-sandbox --target wasm32-unknown-unknown
+        run: cargo check -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-datafusion-session -p wasm-query-runtime -p browser-sdk -p browser-engine-worker -p axon-web-wasm --target wasm32-unknown-unknown
 
       - name: Run wasm query runtime smoke
         run: cargo test -p wasm-query-runtime --target wasm32-unknown-unknown --test wasm_smoke
@@ -99,8 +99,8 @@ jobs:
       - name: Verify browser worker dependency boundary
         run: bash tests/conformance/verify_browser_worker_dependency_boundary.sh
 
-      - name: Verify browser delta sandbox DataFusion runtime
-        run: bash tests/conformance/verify_browser_delta_sandbox_datafusion_runtime.sh
+      - name: Verify axon-web WASM DataFusion runtime
+        run: bash tests/conformance/verify_axon_web_datafusion_runtime.sh
 
       - name: Run browser dependency guardrail regression
         run: bash tests/security/verify_browser_dependency_guardrails_test.sh

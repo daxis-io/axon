@@ -76,7 +76,7 @@ The Rust workspace lives in [`crates/`](crates/), grouped by role.
 - [`wasm-datafusion-session`](crates/wasm-datafusion-session/). Dedicated DataFusion-backed browser session for UI/runtime builds. Owns DataFusion table registration, SQL scope checks, budgets, metrics, and Arrow IPC while keeping the legacy narrow session out of the production UI DataFusion path.
 - [`browser-sdk`](crates/browser-sdk/). Embedding surface. Worker request envelopes, Arrow IPC results, fallback propagation.
 - [`browser-engine-worker`](crates/browser-engine-worker/). Linked worker artifact used to measure WASM size, cold start, and memory footprint.
-- [`examples/browser-delta-sandbox`](examples/browser-delta-sandbox/). Browser embedding example with TypeScript SDK helpers for platform feature detection and worker/WASM bundle selection.
+- [`apps/axon-web`](apps/axon-web/). Production browser runtime: SQL editor, catalog connect workflow, and the WASM crate (`axon-web-wasm`) that vends the in-browser DataFusion session.
 
 ### Trusted control plane
 

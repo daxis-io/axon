@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Axon · embedding sketch</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 40px; max-width: 720px; }
+      h1 { font-size: 18px; }
+      pre { background: #f4f3ee; border: 1px solid #e4e1d8; padding: 12px; border-radius: 6px; overflow: auto; }
+      button { padding: 8px 14px; border: 0; border-radius: 6px; background: #1f4fe0; color: white; font: 500 13px system-ui; cursor: pointer; }
+      .status { color: #6c6859; margin-top: 12px; }
+      .err { color: #b23a2b; }
+    </style>
+  </head>
+  <body>
+    <h1>Axon embedding sketch</h1>
+    <p>
+      This page demonstrates the shape of an Axon embedding. Edit the
+      <code>WORKER_URL</code>, <code>WASM_URL</code>, and
+      <code>DESCRIPTOR_URL</code> constants below to point at your own
+      host-built artifacts and snapshot descriptor.
+    </p>
+
+    <button id="run">Run query</button>
+    <div class="status" id="status">Idle.</div>
+    <pre id="output">// SQL output will render here</pre>
+
+    <script type="module">
+      // The host application is responsible for serving these three URLs.
+      // For a runnable example, see apps/axon-web/ in the repo.
+      const WORKER_URL = '/worker.js';
+      const WASM_URL = '/axon_web_wasm_bg.wasm';
+      const DESCRIPTOR_URL = '/descriptor.json';
+
+      const statusEl = document.getElementById('status');
+      const outputEl = document.getElementById('output');
+
+      document.getElementById('run').addEventListener('click', async () => {
+        statusEl.textContent = 'Booting worker…';
+        statusEl.classList.remove('err');
+        try {
+          const worker = new Worker(WORKER_URL, { type: 'module' });
+          const descriptor = await fetch(DESCRIPTOR_URL).then((r) => r.json());
+
+          worker.postMessage({
+            kind: 'open_delta_table',
+            descriptor,
+            wasmUrl: WASM_URL,
+            table_name: 'orders',
+          });
+
+          worker.postMessage({
+            kind: 'query',
+            sql: 'SELECT COUNT(*) AS row_count FROM orders',
+            preferred_target: 'browser_wasm',
+          });
+
+          worker.onmessage = (event) => {
+            const env = event.data;
+            if (env.kind === 'progress') {
+              statusEl.textContent = `Stage: ${env.stage}`;
+            } else if (env.kind === 'result') {
+              outputEl.textContent = JSON.stringify(env.preview, null, 2);
+              statusEl.textContent = 'Done.';
+              worker.terminate();
+            } else if (env.kind === 'error') {
+              statusEl.textContent = `Error: ${env.message}`;
+              statusEl.classList.add('err');
+              worker.terminate();
+            }
+          };
+        } catch (err) {
+          statusEl.textContent = `Boot failed: ${err.message}`;
+          statusEl.classList.add('err');
+        }
+      });
+    </script>
+  </body>
+</html>

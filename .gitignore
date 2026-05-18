@@ -1,9 +1,9 @@
 target/
 .worktrees/
 node_modules/
-examples/browser-delta-sandbox/dist/
-examples/browser-delta-sandbox/node_modules/
-examples/browser-delta-sandbox/public/fixtures/prod-like/
-examples/browser-delta-sandbox/playwright-report/
-examples/browser-delta-sandbox/src/wasm/
-examples/browser-delta-sandbox/test-results/
+apps/axon-web/dist/
+apps/axon-web/node_modules/
+apps/axon-web/public/fixtures/prod-like/
+apps/axon-web/playwright-report/
+apps/axon-web/src/wasm/
+apps/axon-web/test-results/

@@ -21,7 +21,7 @@ if grep -E -n "$denylist" "$tree_file" >/dev/null; then
 fi
 
 browser_package_denylist='(@aws-sdk/|aws-sdk|google-auth-library|@google-cloud/storage|azure-identity|@azure/storage-blob|opendal)'
-browser_package_files="${AXON_BROWSER_PACKAGE_FILES:-examples/browser-delta-sandbox/package.json examples/browser-delta-sandbox/package-lock.json}"
+browser_package_files="${AXON_BROWSER_PACKAGE_FILES:-apps/axon-web/package.json apps/axon-web/package-lock.json}"
 package_file_args=()
 for package_file in $browser_package_files; do
   if [ -f "$package_file" ]; then

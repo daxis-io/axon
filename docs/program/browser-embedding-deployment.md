@@ -7,7 +7,7 @@
   - [Browser Lakehouse Release Handoff](./browser-lakehouse-release-handoff.md)
   - [Browser Observability Contract](./browser-observability-contract.md)
   - [ADR-0002: Browser Access Uses Signed HTTPS Or A Narrow Proxy, Never Cloud Secrets](../adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md)
-  - [Browser Delta Sandbox](../../examples/browser-delta-sandbox/README.md)
+  - [Axon Web Runtime](../../apps/axon-web/README.md)
 
 ## Current Package State
 
@@ -16,9 +16,9 @@ Axon's browser deployment shape is worker-first:
 - browser hosts create a module `Worker` from a `workerUrl`
 - large query results cross the worker boundary as Arrow IPC bytes, not row JSON
 - table data reaches the browser only through browser-safe snapshot descriptors and object URLs minted by a trusted control-plane seam
-- native execution remains the fallback and correctness oracle
+- server query execution remains an opt-in fallback module and correctness oracle, not something the default browser build invokes implicitly
 
-The current repository does not yet contain a publishable npm package. The browser-facing TypeScript wrapper lives in the private example package at [`examples/browser-delta-sandbox/src/axon-browser-sdk.ts`](../../examples/browser-delta-sandbox/src/axon-browser-sdk.ts), and the only `package.json` in the main checkout is the private sandbox package. The Rust worker artifact is tracked as `browser_engine_worker.wasm`, but a production JavaScript worker bootstrap and npm export map are still implementation work.
+The current repository does not yet contain a publishable npm package. The browser-facing TypeScript wrapper lives in the private app package at [`apps/axon-web/src/axon-browser-sdk.ts`](../../apps/axon-web/src/axon-browser-sdk.ts), and the only `package.json` in the main checkout is the private `@axon/web` runtime package. The Rust worker artifact is tracked as `browser_engine_worker.wasm`, but a production JavaScript worker bootstrap and npm export map are still implementation work.
 
 That means deployments can use this guide in two ways:
 
@@ -29,7 +29,7 @@ That means deployments can use this guide in two ways:
 
 | Artifact              | Current repo source                                                                                                                                                                                                                                              | Runtime URL                         | Required content type                                     | Cache policy                                         |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------------------------------------------------------- | ---------------------------------------------------- |
-| TypeScript SDK module | `examples/browser-delta-sandbox/src/axon-browser-sdk.ts`                                                                                                                                                                                                         | app bundle or future package import | `application/javascript; charset=utf-8` after bundling    | bundle with the app release                          |
+| TypeScript SDK module | `apps/axon-web/src/axon-browser-sdk.ts`                                                                                                                                                                                                                          | app bundle or future package import | `application/javascript; charset=utf-8` after bundling    | bundle with the app release                          |
 | Worker module         | host-owned worker JS that speaks `BrowserWorkerCommand` / `BrowserWorkerResponseEnvelope`                                                                                                                                                                        | `workerUrl` manifest field          | `application/javascript; charset=utf-8`                   | immutable when content-hashed; otherwise short cache |
 | Worker WASM           | measured raw artifact at `target/wasm32-unknown-unknown/release/browser_engine_worker.wasm` after `cargo build -p browser-engine-worker --target wasm32-unknown-unknown --release --locked`; packaged browser output is TBD until the JS worker bootstrap exists | `wasmUrl` manifest field            | `application/wasm`                                        | immutable when content-hashed                        |
 | Bundle manifest       | `AXON_BROWSER_BUNDLE_MANIFEST` or host-supplied equivalent                                                                                                                                                                                                       | app bundle or JSON endpoint         | `application/json` for external manifests                 | short cache or revalidate                            |
