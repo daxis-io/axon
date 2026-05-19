@@ -1273,6 +1273,169 @@ test('openDeltaLocation opens trusted browser descriptors without a resolver', a
   });
 });
 
+test('openDeltaLocation materializes manifest and file-action sources into descriptor handoff', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const httpDescriptor: BrowserHttpSnapshotDescriptor = {
+    ...snapshot,
+    table_uri: 'https://data.example.test/events',
+    snapshot_version: 9,
+    active_files: snapshot.active_files.map((file) => ({
+      ...file,
+      url: 'https://data.example.test/events/part-000.parquet',
+    })),
+  };
+  const brokeredDescriptor: BrowserHttpSnapshotDescriptor = {
+    ...snapshot,
+    table_uri: 'https://broker.example.test/materialized/events',
+    snapshot_version: 10,
+    active_files: snapshot.active_files.map((file) => ({
+      ...file,
+      url: 'https://broker.example.test/files/part-000.parquet',
+    })),
+  };
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes('/brokered-manifest.json')) {
+      return new Response(JSON.stringify({ descriptor: brokeredDescriptor }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ descriptor: httpDescriptor }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  try {
+    const httpOpen = client.openDeltaLocation('http_events', {
+      source: {
+        kind: 'http_manifest',
+        manifestUrl: 'https://manifest.example.test/http-manifest.json',
+      },
+      requestId: 'req-http-manifest',
+    });
+    await expect.poll(() => worker.commands.length).toBe(1);
+    expect(worker.commands[0]).toEqual({
+      open_delta_table: {
+        request_id: 'req-http-manifest',
+        name: 'http_events',
+        snapshot: httpDescriptor,
+      },
+    });
+    worker.emitMessage({ opened: { request_id: 'req-http-manifest', name: 'http_events' } });
+    await expect(httpOpen).resolves.toMatchObject({
+      location: {
+        source_kind: 'http_manifest',
+        resolution_mode: 'browser_local',
+        table_uri: httpDescriptor.table_uri,
+        resolved_snapshot_version: httpDescriptor.snapshot_version,
+      },
+    });
+
+    const brokeredOpen = client.openDeltaLocation('brokered_events', {
+      source: {
+        kind: 'brokered_manifest',
+        manifestUrl: 'https://manifest.example.test/brokered-manifest.json',
+        grantId: 'grant-browser-readable',
+      },
+      resolutionMode: 'brokered_access',
+      requestId: 'req-brokered-manifest',
+    });
+    await expect.poll(() => worker.commands.length).toBe(2);
+    expect(worker.commands[1]).toEqual({
+      open_delta_table: {
+        request_id: 'req-brokered-manifest',
+        name: 'brokered_events',
+        snapshot: brokeredDescriptor,
+      },
+    });
+    expect(JSON.stringify(worker.commands[1])).not.toContain('grant-browser-readable');
+    worker.emitMessage({
+      opened: { request_id: 'req-brokered-manifest', name: 'brokered_events' },
+    });
+    await expect(brokeredOpen).resolves.toMatchObject({
+      location: {
+        source_kind: 'brokered_manifest',
+        resolution_mode: 'brokered_access',
+        table_uri: brokeredDescriptor.table_uri,
+        resolved_snapshot_version: brokeredDescriptor.snapshot_version,
+      },
+    });
+
+    const sharingFiles = snapshot.active_files.map((file) => ({
+      ...file,
+      url: 'https://sharing.example.test/files/part-000.parquet?sig=short-lived',
+    }));
+    const sharingOpen = client.openDeltaLocation('shared_events', {
+      source: { kind: 'delta_sharing_url_files', files: sharingFiles },
+      requestId: 'req-delta-sharing-files',
+    });
+    await expect.poll(() => worker.commands.length).toBe(3);
+    expect(worker.commands[2]).toEqual({
+      open_delta_table: {
+        request_id: 'req-delta-sharing-files',
+        name: 'shared_events',
+        snapshot: {
+          table_uri: 'delta-sharing://browser-source',
+          snapshot_version: 0,
+          partition_column_types: {},
+          browser_compatibility: {
+            capabilities: { signed_url_access: 'supported' },
+          },
+          required_capabilities: {
+            capabilities: { signed_url_access: 'supported' },
+          },
+          active_files: sharingFiles,
+        },
+      },
+    });
+    worker.emitMessage({
+      opened: { request_id: 'req-delta-sharing-files', name: 'shared_events' },
+    });
+    await expect(sharingOpen).resolves.toMatchObject({
+      location: {
+        source_kind: 'delta_sharing_url_files',
+        resolution_mode: 'browser_local',
+        table_uri: 'delta-sharing://browser-source',
+        resolved_snapshot_version: 0,
+      },
+    });
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('openDeltaLocation gates CORS HTTP table reconstruction on list head and range capability', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  await expect(
+    client.openDeltaLocation('events', {
+      source: { kind: 'cors_http_table', tableRootUrl: 'https://data.example.test/events' },
+    }),
+  ).rejects.toThrow('requires list, head, and rangeGet capabilities');
+
+  await expect(
+    client.openDeltaLocation('events', {
+      source: {
+        kind: 'cors_http_table',
+        tableRootUrl: 'https://data.example.test/events',
+        capabilities: { list: true, head: true, rangeGet: true },
+      },
+    }),
+  ).rejects.toThrow('browser-local Delta snapshot reconstruction is not implemented');
+
+  expect(worker.commands).toHaveLength(0);
+});
+
 test('openDeltaLocation returns resolver metadata without descriptor URLs', async () => {
   const worker = new FakeWorker();
   const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
