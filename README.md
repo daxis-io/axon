@@ -130,6 +130,7 @@ For the WASM smoke suites and the worker artifact gates, see [Development](#deve
 ## Going deeper
 
 - Architecture and intent: [`docs/program/browser-lakehouse-engine-strategy.md`](docs/program/browser-lakehouse-engine-strategy.md)
+- Browser Delta compatibility matrix: [`docs/program/browser-delta-compatibility-matrix.md`](docs/program/browser-delta-compatibility-matrix.md)
 - Browser embedding and deployment: [`docs/program/browser-embedding-deployment.md`](docs/program/browser-embedding-deployment.md)
 - Release handoff and integration runbook: [`docs/program/browser-lakehouse-release-handoff.md`](docs/program/browser-lakehouse-release-handoff.md), [`docs/program/browser-release-integration-runbook.md`](docs/program/browser-release-integration-runbook.md)
 - Browser dependency review: [`docs/program/browser-dependency-compatibility-review-checklist.md`](docs/program/browser-dependency-compatibility-review-checklist.md)

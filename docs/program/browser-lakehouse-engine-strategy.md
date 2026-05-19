@@ -8,6 +8,7 @@
   - [EPIC-04: Browser DataFusion WASM Runtime And HTTP Object-Store Hardening](../epics/EPIC-04-browser-datafusion-wasm-runtime-and-http-object-store-hardening.md)
   - [Browser Lakehouse Engine Implementation Plan](../plans/2026-03-28-browser-lakehouse-engine-implementation-plan.md)
   - [Browser DataFusion Size Audit](./browser-datafusion-size-audit.md)
+  - [Browser Delta Compatibility Matrix](./browser-delta-compatibility-matrix.md)
   - [Browser Unity Catalog Brokered Runtime Contract](./browser-uc-brokered-runtime-contract.md)
 
 ## Decision Summary
