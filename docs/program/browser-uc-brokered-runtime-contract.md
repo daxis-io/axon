@@ -14,8 +14,9 @@ The production broker is service-owned. It authenticates the user, talks to Unit
 
 Catalog providers produce `ReadAccessPlan` values. They do not open Delta snapshots, register DataFusion tables, or execute user SQL. A provider answers "how may this browser access this governed table?" and then returns one of the contract variants:
 
-- `brokered_delta` for Axon's first browser Delta path through an object grant.
-- `delta_sharing` for a compatible producer that supplies externally governed files through Delta Sharing semantics.
+- `brokered_delta` with object grants when the browser can reconstruct a snapshot through list/head/range access.
+- `brokered_delta` or `delta_sharing` with browser-safe descriptor material, manifests, provider file lists, or URL-mode file actions when the browser should materialize the descriptor directly.
+- explicit server snapshot resolution when an enterprise deployment chooses server-side descriptor production.
 - `sql_fallback_required` when browser execution is not permitted or not supported for this table.
 - `blocked` when policy denies the request.
 
@@ -27,8 +28,10 @@ The first shipped repo path is:
 
 ```text
 BrokeredDeltaReadPlan
-  -> existing Axon descriptor/session path
-  -> DataFusion query
+  -> browser snapshot resolver or descriptor materializer
+  -> BrowserHttpSnapshotDescriptor
+  -> openDeltaTable()
+  -> browser DataFusion query
 ```
 
 The service-owned broker emits a `ReadAccessPlan::BrokeredDelta` / `BrokeredDeltaReadPlan` with:
@@ -41,6 +44,8 @@ The service-owned broker emits a `ReadAccessPlan::BrokeredDelta` / `BrokeredDelt
 
 The browser runtime consumes this plan by using the grant to obtain the existing Axon descriptors/session inputs, then registers the resulting table through the existing browser DataFusion execution path. Snapshot opening and table registration are runtime/session responsibilities after the provider has returned an access plan, not catalog-provider responsibilities.
 
+If the plan contains object-grant reconstruction capability, the browser snapshot resolver reads Delta log state and active data through the grant. If the plan contains descriptor material, the descriptor materializer converts the supplied material directly to `BrowserHttpSnapshotDescriptor`; it must not list `_delta_log` just because the table is Delta. If the plan is `sql_fallback_required` or `blocked`, the browser must not call `openDeltaTable()`.
+
 ## Production Service Responsibilities
 
 The production Unity Catalog BFF/object broker is outside this repo. It owns:
@@ -50,11 +55,16 @@ The production Unity Catalog BFF/object broker is outside this repo. It owns:
 - Credential vending decisions, with raw credentials kept server-side.
 - Signing strategy, proxy strategy, or a mix of both per grant.
 - SQL fallback routing when browser direct reads are unavailable or disallowed.
+- Explicit server snapshot resolver operation for deployments that choose server-side descriptor production.
 - Audit logging, SIEM emission, rate limits, SSRF controls, and workspace allowlists.
 - Server-side encrypted token storage keyed only by an opaque `HttpOnly`, `Secure`, `SameSite` session cookie.
 - Cloud-specific credential exchange and refresh.
 
 Axon contracts should leave room for those service behaviors, but must not implement the production BFF in browser Rust, browser TypeScript, tests, or fixtures.
+
+The production broker does not reconstruct snapshots or execute SQL by default.
+Those are explicit server snapshot resolver and server fallback modes,
+respectively.
 
 ## Governance Rules
 
