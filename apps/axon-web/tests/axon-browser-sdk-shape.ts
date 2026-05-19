@@ -6,9 +6,13 @@ import {
   getPlatformFeatures,
   selectBundle,
   type AxonBrowserClient,
+  type BrowserDeltaSource,
   type BrowserBundleManifest,
   type BrowserHttpFileDescriptor,
   type BrowserHttpSnapshotDescriptor,
+  type BrowserObjectGrantDescriptor,
+  type DeltaLocationResolutionMode,
+  type DeltaSharingFileAction,
   type DeltaSharingReadPlan,
   type DeltaSharingResponseFormat,
   type DeltaLocationResolveResponse,
@@ -72,6 +76,7 @@ async function sdkShapeCompiles(client: AxonBrowserClient): Promise<Uint8Array> 
   resolverResponse.requested_access_mode satisfies ResolverRequestedAccessMode | undefined;
   resolverResponse.actual_access_mode satisfies ResolverActualAccessMode;
   const openedLocation = await client.openDeltaLocation('events', {
+    resolutionMode: 'server_snapshot',
     provider: 'gcs',
     tableUri: 'gs://axon-fixtures/partitioned-table',
     credentialProfile: { id: 'prod-readonly' },
@@ -79,6 +84,57 @@ async function sdkShapeCompiles(client: AxonBrowserClient): Promise<Uint8Array> 
   });
   openedLocation.location.resolved_snapshot_version satisfies number;
   openedLocation.location.actual_access_mode satisfies ResolverActualAccessMode;
+
+  const objectGrant: BrowserObjectGrantDescriptor = {
+    grantId: 'grant-browser-readable',
+    tableRootUrl: 'https://storage.example.test/tables/events',
+    expiresAtEpochMs: Date.now() + 60_000,
+    capabilities: {
+      list: true,
+      head: true,
+      rangeGet: true,
+      batchSign: true,
+      proxyRange: false,
+    },
+  };
+  const sharedFiles: DeltaSharingFileAction[] = [
+    {
+      path: 'part-000.parquet',
+      url: 'https://sharing.example.test/files/part-000.parquet',
+      size_bytes: 128,
+      partition_values: {},
+    },
+  ];
+  const browserSources: BrowserDeltaSource[] = [
+    { kind: 'local_files', files: [] as File[] },
+    { kind: 'http_manifest', manifestUrl: 'https://data.example.test/events/manifest.json' },
+    { kind: 'cors_http_table', tableRootUrl: 'https://data.example.test/events' },
+    {
+      kind: 'brokered_manifest',
+      manifestUrl: 'https://broker.example.test/grants/grant-browser-readable/manifest.json',
+      grantId: 'grant-browser-readable',
+    },
+    { kind: 'brokered_object_grants', grant: objectGrant },
+    { kind: 'delta_sharing_url_files', files: sharedFiles },
+    { kind: 'trusted_descriptor', descriptor: snapshot },
+  ];
+  const browserDefault = await client.openDeltaLocation('events_from_descriptor', {
+    source: browserSources[6],
+  });
+  browserDefault.location.resolution_mode satisfies DeltaLocationResolutionMode;
+  browserDefault.location.source_kind satisfies BrowserDeltaSource['kind'];
+
+  const explicitServerSnapshot = await client.openDeltaLocation('events_server_snapshot', {
+    source: { kind: 'trusted_descriptor', descriptor: snapshot },
+    resolutionMode: 'server_snapshot',
+  });
+  explicitServerSnapshot.location.resolution_mode satisfies DeltaLocationResolutionMode;
+
+  const brokeredAccess = await client.openDeltaLocation('events_brokered', {
+    source: { kind: 'brokered_object_grants', grant: objectGrant },
+    resolutionMode: 'brokered_access',
+  });
+  brokeredAccess.location.resolution_mode satisfies DeltaLocationResolutionMode;
 
   const deltaSharingSession = await createDeltaSharingClient({
     fetch: async () =>

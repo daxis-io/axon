@@ -1180,6 +1180,7 @@ test('openDeltaLocation resolves through an injected resolver and opens only a b
   const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
 
   const openedPromise = client.openDeltaLocation('events', {
+    resolutionMode: 'server_snapshot',
     provider: 's3',
     tableUri: 's3://axon-fixtures/partitioned-table',
     credentialProfile: {
@@ -1241,10 +1242,42 @@ test('openDeltaLocation resolves through an injected resolver and opens only a b
   });
 });
 
+test('openDeltaLocation opens trusted browser descriptors without a resolver', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const openedPromise = client.openDeltaLocation('events', {
+    source: { kind: 'trusted_descriptor', descriptor: snapshot },
+    requestId: 'req-browser-location-open',
+  });
+
+  await expect.poll(() => worker.commands.length).toBe(1);
+  expect(worker.commands[0]).toEqual({
+    open_delta_table: {
+      request_id: 'req-browser-location-open',
+      name: 'events',
+      snapshot,
+    },
+  });
+
+  worker.emitMessage({ opened: { request_id: 'req-browser-location-open', name: 'events' } });
+
+  await expect(openedPromise).resolves.toEqual({
+    request_id: 'req-browser-location-open',
+    name: 'events',
+    location: {
+      source_kind: 'trusted_descriptor',
+      resolution_mode: 'browser_local',
+      table_uri: snapshot.table_uri,
+      resolved_snapshot_version: snapshot.snapshot_version,
+    },
+  });
+});
+
 test('openDeltaLocation returns resolver metadata without descriptor URLs', async () => {
   const worker = new FakeWorker();
   const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
   const openedPromise = client.openDeltaLocation('events', {
+    resolutionMode: 'server_snapshot',
     provider: 'gcs',
     tableUri: 'gs://axon-fixtures/partitioned-table',
     credentialProfile: { id: 'prod-readonly' },
@@ -1281,6 +1314,7 @@ test('openDeltaLocation rejects resolver responses that resolve a different snap
   const worker = new FakeWorker();
   const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
   const result = client.openDeltaLocation('events', {
+    resolutionMode: 'server_snapshot',
     provider: 'gcs',
     tableUri: 'gs://axon-fixtures/partitioned-table',
     credentialProfile: { id: 'prod-readonly' },
@@ -1313,6 +1347,7 @@ test('openDeltaLocation rejects resolver responses that ignore a required access
   const worker = new FakeWorker();
   const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
   const result = client.openDeltaLocation('events', {
+    resolutionMode: 'server_snapshot',
     provider: 'gcs',
     tableUri: 'gs://axon-fixtures/partitioned-table',
     credentialProfile: { id: 'prod-readonly' },
@@ -1352,6 +1387,7 @@ test('openDeltaLocation can call an HTTP resolver with the typed request body', 
 
   try {
     const openedPromise = client.openDeltaLocation('events', {
+      resolutionMode: 'server_snapshot',
       provider: 'gcs',
       tableUri: 'gs://axon-fixtures/partitioned-table',
       credentialProfile: { id: 'prod-readonly' },
@@ -1412,6 +1448,7 @@ test('openDeltaLocation rejects malformed successful HTTP resolver responses', a
   try {
     await expect(
       client.openDeltaLocation('events', {
+        resolutionMode: 'server_snapshot',
         provider: 'gcs',
         tableUri: 'gs://axon-fixtures/partitioned-table',
         credentialProfile: { id: 'prod-readonly' },
@@ -1437,6 +1474,7 @@ test('openDeltaLocation propagates signed URL resolver failures with redacted di
   const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
 
   const result = client.openDeltaLocation('events', {
+    resolutionMode: 'server_snapshot',
     provider: 'gcs',
     tableUri: 'gs://axon-fixtures/partitioned-table',
     credentialProfile: { id: 'prod-readonly' },
@@ -1466,6 +1504,7 @@ test('openDeltaLocation rejects expired resolver descriptors before worker hando
 
   await expect(
     client.openDeltaLocation('events', {
+      resolutionMode: 'server_snapshot',
       provider: 'gcs',
       tableUri: 'gs://axon-fixtures/partitioned-table',
       credentialProfile: { id: 'prod-readonly' },
@@ -1488,6 +1527,7 @@ test('openDeltaLocation rejects malformed resolver envelopes before worker hando
   delete malformed.expires_at_epoch_ms;
 
   const openedPromise = client.openDeltaLocation('events', {
+    resolutionMode: 'server_snapshot',
     provider: 'gcs',
     tableUri: 'gs://axon-fixtures/partitioned-table',
     credentialProfile: { id: 'prod-readonly' },
@@ -1532,6 +1572,7 @@ test('openDeltaLocation validates logical URI and credential profile before invo
 
   await expect(
     client.openDeltaLocation('events', {
+      resolutionMode: 'server_snapshot',
       provider: 's3',
       tableUri: 'https://bucket.s3.amazonaws.com/table?X-Amz-Signature=secret',
       credentialProfile: { id: 'prod-readonly' },
@@ -1547,6 +1588,7 @@ test('openDeltaLocation validates logical URI and credential profile before invo
 
   await expect(
     client.openDeltaLocation('events', {
+      resolutionMode: 'server_snapshot',
       provider: 's3',
       tableUri: 's3://axon-fixtures/partitioned-table',
       credentialProfile: { id: 'AKIAIOSFODNN7EXAMPLE' },
@@ -1571,6 +1613,7 @@ test('openDeltaLocation rejects unsupported provider and access mode before invo
 
   await expect(
     client.openDeltaLocation('events', {
+      resolutionMode: 'server_snapshot',
       provider: 'r2' as never,
       tableUri: 'az://axonaccount/tables/prod-like-events',
       credentialProfile: { id: 'prod-readonly' },
@@ -1586,6 +1629,7 @@ test('openDeltaLocation rejects unsupported provider and access mode before invo
 
   await expect(
     client.openDeltaLocation('events', {
+      resolutionMode: 'server_snapshot',
       provider: 'gcs',
       tableUri: 'gs://axon-fixtures/partitioned-table',
       credentialProfile: { id: 'prod-readonly' },
@@ -1612,6 +1656,7 @@ test('openDeltaLocation rejects invalid snapshot versions before invoking resolv
   for (const snapshotVersion of [Number.NaN, 1.5, -1]) {
     await expect(
       client.openDeltaLocation('events', {
+        resolutionMode: 'server_snapshot',
         provider: 'gcs',
         tableUri: 'gs://axon-fixtures/partitioned-table',
         credentialProfile: { id: 'prod-readonly' },

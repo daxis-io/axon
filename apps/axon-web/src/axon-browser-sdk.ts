@@ -287,12 +287,6 @@ export type DeltaLocationResolveResponse = {
   refresh?: DeltaLocationRefresh;
 };
 
-export type DeltaLocationOpenMetadata = Omit<DeltaLocationResolveResponse, 'descriptor'>;
-
-export type DeltaLocationOpenedEnvelope = BrowserWorkerOpenedEnvelope & {
-  location: DeltaLocationOpenMetadata;
-};
-
 export type DeltaLocationResolverErrorCode =
   | 'invalid_table_uri'
   | 'invalid_snapshot_version'
@@ -314,7 +308,43 @@ export type DeltaLocationResolver = (
   request: DeltaLocationResolveRequest,
 ) => Promise<DeltaLocationResolveResponse>;
 
-export type DeltaLocationOpenOptions = AxonRequestOptions & {
+export type BrowserTableRootAccessCapabilities = {
+  list: boolean;
+  head: boolean;
+  rangeGet: boolean;
+};
+
+export type BrowserObjectGrantCapabilities = BrowserTableRootAccessCapabilities & {
+  batchSign: boolean;
+  proxyRange: boolean;
+};
+
+export type BrowserObjectGrantDescriptor = {
+  grantId: string;
+  tableRootUrl: string;
+  expiresAtEpochMs: number;
+  capabilities: BrowserObjectGrantCapabilities;
+};
+
+export type DeltaSharingFileAction = BrowserHttpFileDescriptor;
+
+export type BrowserDeltaSource =
+  | { kind: 'local_files'; files: File[] }
+  | { kind: 'http_manifest'; manifestUrl: string }
+  | {
+      kind: 'cors_http_table';
+      tableRootUrl: string;
+      capabilities?: BrowserTableRootAccessCapabilities;
+    }
+  | { kind: 'brokered_manifest'; manifestUrl: string; grantId?: string }
+  | { kind: 'brokered_object_grants'; grant: BrowserObjectGrantDescriptor }
+  | { kind: 'delta_sharing_url_files'; files: DeltaSharingFileAction[] }
+  | { kind: 'trusted_descriptor'; descriptor: BrowserHttpSnapshotDescriptor };
+
+export type DeltaLocationResolutionMode = 'browser_local' | 'brokered_access' | 'server_snapshot';
+
+export type DeltaLocationServerSnapshotOpenOptions = AxonRequestOptions & {
+  resolutionMode: 'server_snapshot';
   provider: DeltaObjectStoreProvider;
   tableUri: string;
   credentialProfile: CredentialProfileRef;
@@ -323,6 +353,45 @@ export type DeltaLocationOpenOptions = AxonRequestOptions & {
   resolverUrl?: string | URL;
   resolveDeltaLocation?: DeltaLocationResolver;
 };
+
+export type DeltaLocationBrowserSourceOpenOptions = AxonRequestOptions & {
+  source: BrowserDeltaSource;
+  resolutionMode?: DeltaLocationResolutionMode;
+  snapshotVersion?: number;
+};
+
+export type DeltaLocationOpenOptions =
+  | DeltaLocationServerSnapshotOpenOptions
+  | DeltaLocationBrowserSourceOpenOptions;
+
+export type DeltaLocationServerSnapshotOpenMetadata = Omit<
+  DeltaLocationResolveResponse,
+  'descriptor'
+>;
+
+export type DeltaLocationBrowserOpenMetadata = {
+  source_kind: BrowserDeltaSource['kind'];
+  resolution_mode: DeltaLocationResolutionMode;
+  table_uri: string;
+  resolved_snapshot_version: number;
+  expires_at_epoch_ms?: number;
+};
+
+export type DeltaLocationOpenMetadata =
+  | DeltaLocationServerSnapshotOpenMetadata
+  | DeltaLocationBrowserOpenMetadata;
+
+export type DeltaLocationServerSnapshotOpenedEnvelope = BrowserWorkerOpenedEnvelope & {
+  location: DeltaLocationServerSnapshotOpenMetadata;
+};
+
+export type DeltaLocationBrowserOpenedEnvelope = BrowserWorkerOpenedEnvelope & {
+  location: DeltaLocationBrowserOpenMetadata;
+};
+
+export type DeltaLocationOpenedEnvelope =
+  | DeltaLocationServerSnapshotOpenedEnvelope
+  | DeltaLocationBrowserOpenedEnvelope;
 
 export type ResolvedFileDescriptor = {
   path: string;
@@ -906,8 +975,12 @@ export interface AxonBrowserClient {
   ): Promise<BrowserWorkerOpenedEnvelope>;
   openDeltaLocation(
     name: string,
-    options: DeltaLocationOpenOptions,
-  ): Promise<DeltaLocationOpenedEnvelope>;
+    options: DeltaLocationServerSnapshotOpenOptions,
+  ): Promise<DeltaLocationServerSnapshotOpenedEnvelope>;
+  openDeltaLocation(
+    name: string,
+    options: DeltaLocationBrowserSourceOpenOptions,
+  ): Promise<DeltaLocationBrowserOpenedEnvelope>;
   openDeltaShare(
     name: string,
     options: DeltaSharingOpenOptions,
@@ -1922,7 +1995,7 @@ function optionalStringArray(input: unknown, path: string): string[] | undefined
 }
 
 function deltaLocationResolveRequestFromOptions(
-  options: DeltaLocationOpenOptions,
+  options: DeltaLocationServerSnapshotOpenOptions,
 ): DeltaLocationResolveRequest {
   const request: DeltaLocationResolveRequest = {
     provider: options.provider,
@@ -1945,8 +2018,8 @@ function deltaLocationResolveRequestFromOptions(
 
 function deltaLocationOpenMetadata(
   response: DeltaLocationResolveResponse,
-): DeltaLocationOpenMetadata {
-  const location: DeltaLocationOpenMetadata = {
+): DeltaLocationServerSnapshotOpenMetadata {
+  const location: DeltaLocationServerSnapshotOpenMetadata = {
     provider: response.provider,
     table_uri: response.table_uri,
     resolved_snapshot_version: response.resolved_snapshot_version,
@@ -1974,7 +2047,7 @@ function deltaLocationOpenMetadata(
 }
 
 async function resolveDeltaLocationFromOptions(
-  options: DeltaLocationOpenOptions,
+  options: DeltaLocationServerSnapshotOpenOptions,
   request: DeltaLocationResolveRequest,
 ): Promise<DeltaLocationResolveResponse> {
   if (options.resolveDeltaLocation && options.resolverUrl) {
@@ -2001,6 +2074,40 @@ async function resolveDeltaLocationFromOptions(
   throw new DeltaLocationResolverError(
     'resolver_unavailable',
     'openDeltaLocation requires resolverUrl or resolveDeltaLocation',
+  );
+}
+
+function browserDeltaLocationOpenMetadata(
+  source: BrowserDeltaSource,
+  descriptor: BrowserHttpSnapshotDescriptor,
+  resolutionMode: DeltaLocationResolutionMode,
+): DeltaLocationBrowserOpenMetadata {
+  const metadata: DeltaLocationBrowserOpenMetadata = {
+    source_kind: source.kind,
+    resolution_mode: resolutionMode,
+    table_uri: descriptor.table_uri,
+    resolved_snapshot_version: descriptor.snapshot_version,
+  };
+
+  if (source.kind === 'brokered_object_grants') {
+    metadata.expires_at_epoch_ms = source.grant.expiresAtEpochMs;
+  }
+
+  return metadata;
+}
+
+async function descriptorFromBrowserDeltaSource(
+  source: BrowserDeltaSource,
+  resolutionMode: DeltaLocationResolutionMode,
+): Promise<BrowserHttpSnapshotDescriptor> {
+  rejectForbiddenSecretKeys(source);
+
+  if (source.kind === 'trusted_descriptor') {
+    return source.descriptor;
+  }
+
+  throw new AxonSdkError(
+    `browser Delta source '${source.kind}' is not implemented until descriptor materialization lands for '${resolutionMode}' mode`,
   );
 }
 
@@ -3164,9 +3271,27 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
 
   async openDeltaLocation(
     name: string,
+    options: DeltaLocationServerSnapshotOpenOptions,
+  ): Promise<DeltaLocationServerSnapshotOpenedEnvelope>;
+  async openDeltaLocation(
+    name: string,
+    options: DeltaLocationBrowserSourceOpenOptions,
+  ): Promise<DeltaLocationBrowserOpenedEnvelope>;
+  async openDeltaLocation(
+    name: string,
     options: DeltaLocationOpenOptions,
   ): Promise<DeltaLocationOpenedEnvelope> {
     const requestId = options.requestId ?? this.requestId();
+    if ('source' in options) {
+      const resolutionMode = options.resolutionMode ?? 'browser_local';
+      const descriptor = await descriptorFromBrowserDeltaSource(options.source, resolutionMode);
+      const opened = await this.openDeltaTable(name, descriptor, { requestId });
+      return {
+        ...opened,
+        location: browserDeltaLocationOpenMetadata(options.source, descriptor, resolutionMode),
+      };
+    }
+
     const request = deltaLocationResolveRequestFromOptions(options);
     validateDeltaLocationResolveRequest(request);
     const response = await resolveDeltaLocationFromOptions(options, request);
