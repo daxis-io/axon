@@ -98,9 +98,9 @@ export function ConnectPage() {
 
           <h1>Connect a Delta source</h1>
           <p>
-            Axon ships with a browser-local sample catalog. Production cloud, UC, and Delta Sharing
-            sources require trusted resolver or BFF contracts before the browser can discover and
-            query them.
+            Axon ships with a browser-local sample catalog. Object storage sources should resolve
+            snapshots in the browser; governed UC and Delta Sharing flows can still use brokered
+            contracts when policy requires them.
           </p>
 
           <div className="cc-page-actions">

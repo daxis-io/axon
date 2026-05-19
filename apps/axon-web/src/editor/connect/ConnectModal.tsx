@@ -90,7 +90,7 @@ export function ConnectModal({
         ...f,
         uri: 'gs://acme-lake/silver',
         region: 'us-central1',
-        endpoint: '/api/delta/resolve-location',
+        endpoint: 'browser-local',
       }));
     }
     if (step === 2 && source === 'unity_catalog' && !form.uc_host) {
@@ -318,8 +318,8 @@ function SourcePicker({
   return (
     <>
       <p className="cc-intro">
-        Connect Delta Lake sources through explicit browser-local or trusted-service contracts.{' '}
-        <span className="k">Live cloud providers require a resolver or BFF before discovery.</span>
+        Connect Delta Lake sources through browser-local snapshot reconstruction.{' '}
+        <span className="k">Governed catalogs can still use brokered contracts when needed.</span>
       </p>
 
       <div className="cc-source-grid">
@@ -342,6 +342,20 @@ function SourcePicker({
             <div className={'glyph ' + s.glyphTone}>{s.glyph}</div>
             <div className="title">{s.title}</div>
             <div className="blurb">{s.blurb}</div>
+            <div className="owner-map" aria-label={`${s.title} runtime ownership`}>
+              <div>
+                <span>Access</span>
+                <b>{s.owners.access}</b>
+              </div>
+              <div>
+                <span>Snapshot</span>
+                <b>{s.owners.snapshot}</b>
+              </div>
+              <div>
+                <span>Query</span>
+                <b>{s.owners.query}</b>
+              </div>
+            </div>
             <div className="examples">{s.examples}</div>
           </div>
         ))}
@@ -366,7 +380,7 @@ function SourcePicker({
           </span>
           <div>
             <b>Object storage</b>
-            <br />A bucket URI plus a trusted Delta snapshot descriptor resolver.
+            <br />A bucket URI with browser-readable Delta log and Parquet objects.
           </div>
         </div>
         <div className="cc-need">
@@ -641,34 +655,36 @@ function ConfigObjectStore({
             </select>
           </div>
           <div className="cc-field">
-            <label className="cc-label">Trusted Delta snapshot descriptor resolver</label>
+            <label className="cc-label">Browser-local Delta log access</label>
             <input
               className="cc-input mono"
-              placeholder="/api/delta/resolve-location"
+              placeholder="CORS-enabled HTTPS or browser storage adapter"
               value={form.endpoint}
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
                 setForm({ ...form, endpoint: e.target.value })
               }
             />
             <div className="cc-help">
-              Same-origin BFF route that validates the locator and returns a
-              BrowserHttpSnapshotDescriptor.
+              Axon lists and reads <code>_delta_log/</code> in the browser, then builds the
+              BrowserHttpSnapshotDescriptor locally.
             </div>
           </div>
         </div>
 
         <TestResult
           state={testState}
-          okText={`${provider.label} resolver returned a descriptor`}
-          okDetail="Trusted resolver supplied a snapshot descriptor and browser capability report."
+          okText={`${provider.label} Delta log is browser-readable`}
+          okDetail="The browser can reconstruct the snapshot and range-read active Parquet files."
+          errText="Browser-local storage access not configured"
+          errDetail="Configure CORS-enabled object access or a browser storage adapter before discovery."
         />
       </div>
 
       <aside className="cc-helper">
         <h5>How Axon reads {provider.label}</h5>
         <p>
-          The browser sends the locator to a trusted resolver. That service owns access policy and
-          returns only descriptor data the browser can use for validated byte-range reads.
+          The browser reads the Delta log, reconstructs the active snapshot, and then range-reads
+          active Parquet files directly through the browser runtime.
           {serverFallbackEnabled
             ? ' Server query fallback can route unsupported table features to your configured query service.'
             : ' If a table requires features this browser build cannot serve, the query stops with a structured browser error.'}
@@ -676,14 +692,14 @@ function ConfigObjectStore({
         <hr />
         <h5>Required permissions</h5>
         <ul>
-          <li>Resolver can list table metadata for the requested prefix.</li>
-          <li>Resolver can issue browser-safe file descriptors for allowed objects.</li>
+          <li>Browser can list or receive a manifest for the table&apos;s Delta log.</li>
+          <li>Browser can range-read Delta log and active Parquet objects.</li>
         </ul>
         <hr />
         <h5>Network</h5>
         <p>
-          Browser egress is limited to descriptor URLs returned by the resolver. The repository does
-          not provide the production resolver service.
+          Browser egress is limited to the table objects needed to reconstruct the snapshot and run
+          the query. No query service is required for the default path.
         </p>
       </aside>
     </div>
@@ -831,7 +847,8 @@ function ConfigUnityCatalog({
         <h5>Governed reads</h5>
         <p>
           Axon consumes UC <code>ReadAccessPlan</code> responses. The service evaluates grants,
-          policy, object grants, and SQL fallback before the browser sees a descriptor.
+          policy, object grants, and SQL fallback before the browser reconstructs or materializes a
+          descriptor.
         </p>
         <hr />
         <h5>Permissions used</h5>
@@ -928,7 +945,8 @@ function ConfigDeltaShare({
               </div>
               <div className="ti">Select a brokered provider profile</div>
               <div className="sub">
-                The trusted BFF owns provider credentials and returns table descriptors.
+                The trusted BFF owns provider credentials and returns browser-safe file actions or
+                descriptors.
               </div>
               <button className="browse">
                 <IconFolder size={11} /> Choose profile
@@ -1072,10 +1090,14 @@ function TestResult({
   state,
   okText,
   okDetail,
+  errText = 'Connection path not configured',
+  errDetail = 'Configure the selected source before discovery.',
 }: {
   state: TestState;
   okText: string;
   okDetail: ReactNode;
+  errText?: ReactNode;
+  errDetail?: ReactNode;
 }) {
   if (!state) return null;
   if (state === 'running') {
@@ -1083,11 +1105,8 @@ function TestResult({
       <div className="cc-test-result run">
         <span className="cc-spin" />
         <div className="body">
-          <div className="t">Checking resolver contract…</div>
-          <div className="d">
-            Verifying that a trusted service can return descriptor contracts for the selected
-            source.
-          </div>
+          <div className="t">Checking connection…</div>
+          <div className="d">Verifying that the selected source can be opened for discovery.</div>
         </div>
       </div>
     );
@@ -1111,12 +1130,8 @@ function TestResult({
         <IconWarn size={14} />
       </span>
       <div className="body">
-        <div className="t">Resolver contract not configured</div>
-        <div className="d">
-          Repo-owned browser code does not discover live cloud catalogs directly. Configure a
-          trusted resolver or BFF that returns BrowserHttpSnapshotDescriptor or ReadAccessPlan
-          responses.
-        </div>
+        <div className="t">{errText}</div>
+        <div className="d">{errDetail}</div>
       </div>
     </div>
   );
@@ -1193,12 +1208,16 @@ function Discover({
             <span className="v">{endpointFor(sourceId)}</span>
           </div>
           <div className="row">
-            <span className="l">Auth</span>
-            <span className="v">{authShortFor(sourceId)}</span>
+            <span className="l">Access</span>
+            <span className="v">{runtimeOwnersFor(sourceId).access}</span>
           </div>
           <div className="row">
-            <span className="l">Region</span>
-            <span className="v">{regionFor(sourceId)}</span>
+            <span className="l">Snapshot</span>
+            <span className="v">{runtimeOwnersFor(sourceId).snapshot}</span>
+          </div>
+          <div className="row">
+            <span className="l">Query</span>
+            <span className="v">{runtimeOwnersFor(sourceId).query}</span>
           </div>
         </div>
         <div className="cc-final-card">
@@ -1352,21 +1371,8 @@ function endpointFor(s: SourceId) {
     delta_share: 'https://sharing.acme.io/delta-sharing',
   }[s];
 }
-function authShortFor(s: SourceId) {
-  return {
-    local: 'file:// · read-only',
-    object_store: 'trusted resolver',
-    unity_catalog: 'BFF session · object grants',
-    delta_share: 'trusted sharing broker',
-  }[s];
-}
-function regionFor(s: SourceId) {
-  return {
-    local: '—',
-    object_store: 'us-central1',
-    unity_catalog: 'brokered · service-owned',
-    delta_share: 'provider-vended',
-  }[s];
+function runtimeOwnersFor(source: SourceId) {
+  return SOURCES.find((candidate) => candidate.id === source)?.owners ?? SOURCES[0].owners;
 }
 
 function titleForConfig(s: SourceId | null) {

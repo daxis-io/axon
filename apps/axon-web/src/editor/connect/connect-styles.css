@@ -276,13 +276,38 @@
 }
 .cc-source-card .title {
   font: 600 14px var(--ui);
-  letter-spacing: -0.005em;
+  letter-spacing: 0;
   color: var(--ink);
 }
 .cc-source-card .blurb {
   font-size: 12.5px;
   color: var(--ink-2);
   line-height: 1.5;
+}
+.cc-source-card .owner-map {
+  display: grid;
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper-2);
+}
+.cc-source-card .owner-map div {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.cc-source-card .owner-map span {
+  color: var(--ink-4);
+  font: 500 10.5px var(--ui);
+}
+.cc-source-card .owner-map b {
+  min-width: 0;
+  color: var(--ink);
+  font: 600 11px var(--ui);
+  overflow-wrap: anywhere;
 }
 .cc-source-card .examples {
   font: 11.5px var(--mono);

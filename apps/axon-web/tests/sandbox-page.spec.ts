@@ -120,7 +120,7 @@ test('runs prod-like SQL through the sandbox worker and renders query telemetry'
   await expect(page.getByTestId('worker-event-log')).toContainText('terminal_error');
 });
 
-test('opens object-store tables through the mock descriptor resolver without credential fields', async ({
+test('opens object-store tables through browser-local snapshot reconstruction without services', async ({
   page,
 }) => {
   await page.goto('/sandbox.html');
@@ -132,37 +132,37 @@ test('opens object-store tables through the mock descriptor resolver without cre
   await expect(page.getByLabel('Object store table URI')).toHaveValue(
     's3://axon-fixtures/prod-like-events',
   );
-  await expect(page.getByLabel('Object store access mode')).toHaveValue('auto');
-  await expect(page.getByLabel('Storage access profile')).toHaveValue('sandbox-readonly');
   await expect(
-    page.getByText(/secret key|access key|SAS|bearer token|service-account JSON/i),
+    page.getByText(
+      /secret key|access key|SAS|bearer token|service-account JSON|trusted resolver|BFF|service/i,
+    ),
   ).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Run' }).click();
 
   await expect(page.getByTestId('query-status')).toHaveText('Finished');
   await expect(page.getByTestId('table-uri')).toHaveText('s3://axon-fixtures/prod-like-events');
-  await expect(page.getByTestId('resolver-provider')).toHaveText('s3');
-  await expect(page.getByTestId('resolver-access-mode')).toHaveText('auto -> signed_url');
-  await expect(page.getByTestId('resolver-correlation')).toContainText('sandbox-s3-3');
-  await expect(page.getByTestId('resolver-descriptor-uri')).toHaveText(
-    'axon-resolved://sandbox/s3/snapshot/3',
+  await expect(page.getByTestId('browser-snapshot-provider')).toHaveText('s3');
+  await expect(page.getByTestId('browser-snapshot-mode')).toHaveText('browser_wasm');
+  await expect(page.getByTestId('browser-snapshot-uri')).toHaveText(
+    's3://axon-fixtures/prod-like-events',
   );
-  await expect(page.getByTestId('resolver-descriptor-uri')).not.toContainText('sandbox-readonly');
   await expect(page.getByTestId('query-executed-on')).toHaveText('browser_wasm');
   await expect(page.getByTestId('result-grid')).toContainText('row_count');
   await expect(page.getByTestId('worker-event-log')).toContainText('open started');
   await expect(page.getByTestId('active-data-file-urls')).toContainText(
     '/fixtures/prod-like/table/category=B/',
   );
-  await expect(page.getByTestId('query-error')).not.toContainText('sandbox-readonly');
+  await expect(page.getByText(/resolver|BFF|service/i)).toHaveCount(0);
 });
 
-test('mock object-store resolver keeps storage profiles out of descriptor table URIs', () => {
+test('sandbox object-store source opens browser-built descriptors directly', () => {
   const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 
-  expect(source).not.toContain('request.credential_profile.id');
-  expect(source).toContain('axon-resolved://');
+  expect(source).not.toContain('mockResolveDeltaSnapshotDescriptor');
+  expect(source).not.toContain('openDeltaLocation');
+  expect(source).toContain('resolve_delta_snapshot_from_manifest');
+  expect(source).toContain('openDeltaTable');
 });
 
 test('records honest UI supersession when cancelling a running sandbox query', async ({ page }) => {

@@ -156,6 +156,8 @@ function ManageDrawer({
   onClose: () => void;
   onRemove: () => void;
 }) {
+  const owners = runtimeOwnersFor(catalog);
+
   return (
     <div className="cc-manage-drawer">
       <div className="hdr">
@@ -195,16 +197,16 @@ function ManageDrawer({
           <span className="v">{catalog.schemas.reduce((a, s) => a + s.tables.length, 0)}</span>
         </div>
         <div className="field-row">
-          <span className="l">Authentication</span>
-          <span className="v">
-            {catalog.kind === 'local'
-              ? 'file:// · read-only'
-              : catalog.kind === 'unity_catalog'
-                ? 'BFF session · object grants'
-                : catalog.kind === 'delta_share'
-                  ? 'trusted sharing broker'
-                  : 'trusted resolver'}
-          </span>
+          <span className="l">Access</span>
+          <span className="v">{owners.access}</span>
+        </div>
+        <div className="field-row">
+          <span className="l">Snapshot</span>
+          <span className="v">{owners.snapshot}</span>
+        </div>
+        <div className="field-row">
+          <span className="l">Query</span>
+          <span className="v">{owners.query}</span>
         </div>
         <div className="field-row">
           <span className="l">Connected</span>
@@ -229,4 +231,25 @@ function ManageDrawer({
       </div>
     </div>
   );
+}
+
+function runtimeOwnersFor(catalog: ConnectedCatalog) {
+  if (catalog.kind === 'local') {
+    return { access: 'Browser', snapshot: 'Browser', query: 'Browser' };
+  }
+  if (catalog.kind === 'unity_catalog') {
+    return { access: 'UC brokered', snapshot: 'Browser', query: 'Browser' };
+  }
+  if (catalog.kind === 'delta_share') {
+    return {
+      access: 'Provider brokered',
+      snapshot: 'Browser materialized',
+      query: 'Browser',
+    };
+  }
+  return {
+    access: catalog.region === 'browser-local' ? 'Browser' : 'Brokered',
+    snapshot: 'Browser',
+    query: 'Browser',
+  };
 }

@@ -32,7 +32,7 @@
             <select id="fixture-selector" aria-label="Data source">
               <option value="prod-like" selected>Prod-like events</option>
               <option value="simple">JSON log smoke fixture</option>
-              <option value="object-store">Object store resolver</option>
+              <option value="object-store">Browser object store</option>
             </select>
             <svg class="select-caret" viewBox="0 0 16 16" aria-hidden="true">
               <path
@@ -106,23 +106,6 @@
                 />
               </label>
               <label class="field">
-                <span>Access mode</span>
-                <select id="object-store-access-mode" aria-label="Object store access mode">
-                  <option value="auto" selected>auto</option>
-                  <option value="signed_url">signed_url</option>
-                  <option value="proxy">proxy</option>
-                </select>
-              </label>
-              <label class="field">
-                <span>Storage access profile</span>
-                <input
-                  id="object-store-profile"
-                  aria-label="Storage access profile"
-                  value="sandbox-readonly"
-                  spellcheck="false"
-                />
-              </label>
-              <label class="field">
                 <span>Snapshot version</span>
                 <input
                   id="object-store-snapshot"
@@ -135,23 +118,19 @@
           </section>
 
           <section class="rail-section">
-            <h2 class="rail-heading">Resolver</h2>
+            <h2 class="rail-heading">Browser Snapshot</h2>
             <dl class="kv">
               <div>
                 <dt>Provider</dt>
-                <dd data-testid="resolver-provider">-</dd>
+                <dd data-testid="browser-snapshot-provider">-</dd>
               </div>
               <div>
-                <dt>Access mode</dt>
-                <dd data-testid="resolver-access-mode">-</dd>
+                <dt>Runtime</dt>
+                <dd data-testid="browser-snapshot-mode">-</dd>
               </div>
               <div>
-                <dt>Correlation</dt>
-                <dd class="mono" data-testid="resolver-correlation">-</dd>
-              </div>
-              <div>
-                <dt>Descriptor URI</dt>
-                <dd class="mono" data-testid="resolver-descriptor-uri">-</dd>
+                <dt>Table URI</dt>
+                <dd class="mono" data-testid="browser-snapshot-uri">-</dd>
               </div>
             </dl>
           </section>

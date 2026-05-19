@@ -49,12 +49,26 @@ test.describe('editor (Phase 1 smoke)', () => {
     const dialog = page.getByRole('dialog', { name: 'Connect a Delta source' });
 
     await expect(dialog).not.toContainText(/all four sources support the same sql surface area/i);
+    await expect(dialog.locator('.cc-source-card', { hasText: 'Object storage' })).toContainText(
+      /Access\s*Browser/i,
+    );
+    await expect(dialog.locator('.cc-source-card', { hasText: 'Object storage' })).toContainText(
+      /Snapshot\s*Browser/i,
+    );
+    await expect(dialog.locator('.cc-source-card', { hasText: 'Object storage' })).toContainText(
+      /Query\s*Browser/i,
+    );
+    await expect(dialog.locator('.cc-source-card', { hasText: 'Delta Sharing' })).toContainText(
+      /Snapshot\s*Browser materialized/i,
+    );
 
     await dialog.locator('.cc-source-card', { hasText: 'Object storage' }).click();
     await dialog.getByRole('button', { name: /Continue/ }).click();
 
     const configDialog = page.getByRole('dialog', { name: 'Connect to object storage' });
-    await expect(configDialog).toContainText(/trusted delta snapshot descriptor resolver/i);
+    await expect(configDialog).toContainText(/browser-local delta log access/i);
+    await expect(configDialog).not.toContainText(/trusted delta snapshot descriptor resolver/i);
+    await expect(configDialog).not.toContainText(/BFF/i);
     await expect(
       configDialog.getByText(
         /secret key|access key|SAS|bearer token|service-account JSON|encrypted/i,
@@ -63,7 +77,7 @@ test.describe('editor (Phase 1 smoke)', () => {
 
     await configDialog.getByRole('button', { name: 'Test connection' }).click();
     await expect(configDialog.getByText(/connection verified/i)).toHaveCount(0);
-    await expect(configDialog).toContainText(/resolver contract not configured/i);
+    await expect(configDialog).toContainText(/browser-local storage access not configured/i);
     await expect(configDialog.getByRole('button', { name: /Discover tables/ })).toBeDisabled();
   });
 

@@ -8,22 +8,17 @@ import {
   AxonWorkerError,
   createAxonBrowserClient,
   redactUrlSecrets,
-  validateDeltaLocationResolveRequest,
   type AxonBrowserClient,
   type AxonQueryResult,
   type BrowserHttpSnapshotDescriptor,
   type BrowserWorkerEventContext,
   type BrowserWorkerEventEnvelope,
   type BrowserWorkerResultPreview,
-  type DeltaLocationOpenOptions,
-  type DeltaLocationResolveRequest,
-  type DeltaLocationResolveResponse,
   type DeltaObjectStoreProvider,
   type FallbackReason,
   type ParquetInspectionSummary,
   type PartitionColumnType,
   type QueryError,
-  type ResolverRequestedAccessMode,
 } from './axon-browser-sdk';
 import { SERVER_QUERY_FALLBACK_ENABLED } from './services/server-fallback.ts';
 import './styles.css';
@@ -152,7 +147,12 @@ type QueryContext = {
   logObjectDetails: LogObjectDetail[];
   snapshot: ResolvedSnapshot;
   activeFiles: ActiveDataFile[];
-  resolverResponse?: DeltaLocationResolveResponse;
+};
+
+type BrowserObjectStoreSource = {
+  provider: DeltaObjectStoreProvider;
+  tableUri: string;
+  snapshotVersion?: number;
 };
 
 const FIXTURES: Record<string, FixtureChoice> = {
@@ -204,10 +204,9 @@ const commitActionsNode = requiredNode('[data-testid="commit-actions"]');
 const dataFilesNode = requiredNode('[data-testid="data-files"]');
 const activeFilesNode = requiredNode('[data-testid="active-files"]');
 const activeDataFileUrlsNode = requiredNode('[data-testid="active-data-file-urls"]');
-const resolverProviderNode = requiredNode('[data-testid="resolver-provider"]');
-const resolverAccessModeNode = requiredNode('[data-testid="resolver-access-mode"]');
-const resolverCorrelationNode = requiredNode('[data-testid="resolver-correlation"]');
-const resolverDescriptorUriNode = requiredNode('[data-testid="resolver-descriptor-uri"]');
+const browserSnapshotProviderNode = requiredNode('[data-testid="browser-snapshot-provider"]');
+const browserSnapshotModeNode = requiredNode('[data-testid="browser-snapshot-mode"]');
+const browserSnapshotUriNode = requiredNode('[data-testid="browser-snapshot-uri"]');
 
 if (!SERVER_QUERY_FALLBACK_ENABLED) {
   queryFallbackSummaryNode?.remove();
@@ -220,15 +219,12 @@ const errorNode = requiredNode('[data-testid="error"]');
 const objectStoreControls = requiredNode('[data-testid="object-store-controls"]') as HTMLElement;
 const objectStoreProviderSelect = requiredNode('#object-store-provider') as HTMLSelectElement;
 const objectStoreTableUriInput = requiredNode('#object-store-table-uri') as HTMLInputElement;
-const objectStoreAccessModeSelect = requiredNode('#object-store-access-mode') as HTMLSelectElement;
-const objectStoreProfileInput = requiredNode('#object-store-profile') as HTMLInputElement;
 const objectStoreSnapshotInput = requiredNode('#object-store-snapshot') as HTMLInputElement;
 
 let wasmReady: Promise<void> | undefined;
 let queryContext: QueryContext | undefined;
 let queryClient: AxonBrowserClient | undefined;
 let queryDescriptor: BrowserHttpSnapshotDescriptor | undefined;
-let queryLocationOpenOptions: DeltaLocationOpenOptions | undefined;
 let queryTableOpened = false;
 let parquetPreflightContextKey: string | undefined;
 let queryRequestCounter = 0;
@@ -257,12 +253,7 @@ objectStoreProviderSelect.addEventListener('change', () => {
   setStatus('Ready');
 });
 
-[
-  objectStoreTableUriInput,
-  objectStoreAccessModeSelect,
-  objectStoreProfileInput,
-  objectStoreSnapshotInput,
-].forEach((control) => {
+[objectStoreTableUriInput, objectStoreSnapshotInput].forEach((control) => {
   control.addEventListener('change', () => {
     resetQueryClient();
     queryContext = undefined;
@@ -333,46 +324,14 @@ async function loadQueryContext(key: string, fixtureChoice: FixtureChoice): Prom
 }
 
 async function loadObjectStoreQueryContext(key: string): Promise<QueryContext> {
-  setStatus('Resolving descriptor');
+  setStatus('Resolving snapshot');
   errorPanel.hidden = true;
   clearDetails();
   await ensureWasm();
 
-  const request = objectStoreResolveRequest();
-  validateDeltaLocationResolveRequest(request);
-  const response = await mockResolveDeltaSnapshotDescriptor(request);
+  const source = browserObjectStoreSource();
   const fixture = await fetchJson<FixtureManifest>(FIXTURES['prod-like'].manifestUrl);
   const logObjectDetails = await loadLogObjectDetails(fixture);
-  const snapshot = resolvedSnapshotFromDescriptor(response);
-  const activeFiles = activeDataFilesFromDescriptor(response.descriptor);
-  const context = {
-    key,
-    fixture,
-    logObjectDetails,
-    snapshot,
-    activeFiles,
-    resolverResponse: response,
-  };
-  renderSnapshot(fixture, logObjectDetails, snapshot, activeFiles, [], fixture.name);
-  renderResolverResponse(response);
-  prepareQuerySandbox(snapshot, activeFiles, {
-    provider: request.provider,
-    tableUri: request.table_uri,
-    credentialProfile: request.credential_profile,
-    requestedAccessMode: request.requested_access_mode,
-    snapshotVersion: request.snapshot_version,
-    resolveDeltaLocation: async (candidate) => {
-      assertSameResolverRequest(candidate, request);
-      return response;
-    },
-  });
-  return context;
-}
-
-async function mockResolveDeltaSnapshotDescriptor(
-  request: DeltaLocationResolveRequest,
-): Promise<DeltaLocationResolveResponse> {
-  const fixture = await fetchJson<FixtureManifest>(FIXTURES['prod-like'].manifestUrl);
   const wasmManifest = {
     objects: fixture.objects.map((object) => ({
       relative_path: object.relative_path,
@@ -383,46 +342,27 @@ async function mockResolveDeltaSnapshotDescriptor(
   };
   const snapshotJson = await resolve_delta_snapshot_from_manifest(
     JSON.stringify(wasmManifest),
-    fixture.table_uri,
+    source.tableUri,
   );
   const snapshot = JSON.parse(snapshotJson) as ResolvedSnapshot;
   if (
-    request.snapshot_version !== undefined &&
-    request.snapshot_version !== snapshot.snapshot_version
+    source.snapshotVersion !== undefined &&
+    source.snapshotVersion !== snapshot.snapshot_version
   ) {
-    throw new Error(`fixture resolver has snapshot ${snapshot.snapshot_version}`);
+    throw new Error(`browser-local fixture snapshot is ${snapshot.snapshot_version}`);
   }
-
   const activeFiles = activeDataFiles(fixture, snapshot);
-  return {
-    descriptor: {
-      table_uri: `axon-resolved://sandbox/${request.provider}/snapshot/${snapshot.snapshot_version}`,
-      snapshot_version: snapshot.snapshot_version,
-      partition_column_types: snapshot.partition_column_types ?? {},
-      browser_compatibility: { capabilities: {} },
-      required_capabilities: { capabilities: {} },
-      active_files: activeFiles.map((file) => ({
-        path: file.path,
-        url: file.absolute_url,
-        size_bytes: file.size_bytes,
-        partition_values: file.partition_values,
-        stats: file.stats,
-      })),
-    },
-    provider: request.provider,
-    table_uri: request.table_uri,
-    requested_snapshot_version: request.snapshot_version,
-    resolved_snapshot_version: snapshot.snapshot_version,
-    requested_access_mode: request.requested_access_mode,
-    actual_access_mode: request.requested_access_mode === 'proxy' ? 'proxy' : 'signed_url',
-    expires_at_epoch_ms: Date.now() + 10 * 60 * 1000,
-    correlation_id: `sandbox-${request.provider}-${snapshot.snapshot_version}`,
-    warnings: ['sandbox mock resolver used fixture-backed browser-safe descriptor URLs'],
-    refresh: {
-      refresh_after_epoch_ms: Date.now() + 8 * 60 * 1000,
-      same_snapshot_required: true,
-    },
+  const context = {
+    key,
+    fixture,
+    logObjectDetails,
+    snapshot,
+    activeFiles,
   };
+  renderSnapshot(fixture, logObjectDetails, snapshot, activeFiles, [], fixture.name);
+  renderBrowserSnapshotSource(source);
+  prepareQuerySandbox(snapshot, activeFiles);
+  return context;
 }
 
 function renderSnapshot(
@@ -487,44 +427,9 @@ function activeDataFiles(fixture: FixtureManifest, snapshot: ResolvedSnapshot): 
   });
 }
 
-function activeDataFilesFromDescriptor(
-  descriptor: BrowserHttpSnapshotDescriptor,
-): ActiveDataFile[] {
-  return descriptor.active_files.map((file) => {
-    const parsed = new URL(file.url);
-    return {
-      path: file.path,
-      size_bytes: file.size_bytes,
-      partition_values: file.partition_values,
-      stats: file.stats,
-      url_path: parsed.pathname,
-      absolute_url: parsed.toString(),
-    };
-  });
-}
-
-function resolvedSnapshotFromDescriptor(response: DeltaLocationResolveResponse): ResolvedSnapshot {
-  return {
-    table_uri: response.table_uri,
-    snapshot_version: response.resolved_snapshot_version,
-    partition_column_types: response.descriptor.partition_column_types,
-    active_files: response.descriptor.active_files.map((file) => ({
-      path: file.path,
-      size_bytes: file.size_bytes,
-      partition_values: file.partition_values,
-      stats: file.stats,
-    })),
-  };
-}
-
-function prepareQuerySandbox(
-  snapshot: ResolvedSnapshot,
-  activeFiles: ActiveDataFile[],
-  locationOpenOptions?: DeltaLocationOpenOptions,
-): void {
+function prepareQuerySandbox(snapshot: ResolvedSnapshot, activeFiles: ActiveDataFile[]): void {
   resetQuerySession();
   queryDescriptor = browserSnapshotDescriptor(snapshot, activeFiles);
-  queryLocationOpenOptions = locationOpenOptions;
 }
 
 function browserSnapshotDescriptor(
@@ -670,14 +575,7 @@ async function ensureQueryTableOpen(client: AxonBrowserClient, token: number): P
   if (isActiveQuery(token)) {
     activeWorkerEventRequestIds?.add(requestId);
   }
-  if (queryLocationOpenOptions) {
-    await client.openDeltaLocation(QUERY_TABLE_NAME, {
-      ...queryLocationOpenOptions,
-      requestId,
-    });
-  } else {
-    await client.openDeltaTable(QUERY_TABLE_NAME, queryDescriptor, { requestId });
-  }
+  await client.openDeltaTable(QUERY_TABLE_NAME, queryDescriptor, { requestId });
   queryTableOpened = true;
 }
 
@@ -1018,7 +916,6 @@ function resetQueryClient(): void {
 function resetQuerySession(): void {
   closeQueryClient();
   queryDescriptor = undefined;
-  queryLocationOpenOptions = undefined;
 }
 
 function closeQueryClient(): void {
@@ -1560,20 +1457,18 @@ function clearDetails(): void {
   dataFilesNode.replaceChildren();
   activeFilesNode.replaceChildren();
   activeDataFileUrlsNode.replaceChildren();
-  resolverProviderNode.textContent = '-';
-  resolverAccessModeNode.textContent = '-';
-  resolverCorrelationNode.textContent = '-';
-  resolverDescriptorUriNode.textContent = '-';
+  browserSnapshotProviderNode.textContent = '-';
+  browserSnapshotModeNode.textContent = '-';
+  browserSnapshotUriNode.textContent = '-';
   pruningPreflightNode.replaceChildren();
   parquetPreflightNode.replaceChildren();
   inputOutputMapNode.replaceChildren();
 }
 
-function renderResolverResponse(response: DeltaLocationResolveResponse): void {
-  resolverProviderNode.textContent = response.provider;
-  resolverAccessModeNode.textContent = `${response.requested_access_mode ?? 'auto'} -> ${response.actual_access_mode}`;
-  resolverCorrelationNode.textContent = response.correlation_id ?? '-';
-  resolverDescriptorUriNode.textContent = response.descriptor.table_uri;
+function renderBrowserSnapshotSource(source: BrowserObjectStoreSource): void {
+  browserSnapshotProviderNode.textContent = source.provider;
+  browserSnapshotModeNode.textContent = 'browser_wasm';
+  browserSnapshotUriNode.textContent = source.tableUri;
 }
 
 function selectedFixture(): FixtureChoice {
@@ -1590,7 +1485,7 @@ function selectedSourceMode(): SourceMode {
 
 function selectedSourceLabel(): string {
   if (selectedSourceMode() === 'object_store') {
-    return 'Object store resolver';
+    return 'Browser object store';
   }
   return selectedFixture().fallbackName ?? dataSourceSelect.selectedOptions[0].text;
 }
@@ -1621,30 +1516,39 @@ function syncObjectStoreDefaults(): void {
         : 'az://axonaccount/tables/prod-like-events';
 }
 
-function objectStoreResolveRequest(): DeltaLocationResolveRequest {
+function browserObjectStoreSource(): BrowserObjectStoreSource {
   const snapshotText = objectStoreSnapshotInput.value.trim();
-  const request: DeltaLocationResolveRequest = {
+  const source: BrowserObjectStoreSource = {
     provider: objectStoreProviderSelect.value as DeltaObjectStoreProvider,
-    table_uri: objectStoreTableUriInput.value.trim(),
-    credential_profile: {
-      id: objectStoreProfileInput.value.trim(),
-    },
-    requested_access_mode: objectStoreAccessModeSelect.value as ResolverRequestedAccessMode,
+    tableUri: objectStoreTableUriInput.value.trim(),
   };
 
+  validateBrowserObjectStoreSource(source);
+
   if (snapshotText !== '') {
-    request.snapshot_version = Number(snapshotText);
+    const snapshotVersion = Number(snapshotText);
+    if (!Number.isSafeInteger(snapshotVersion) || snapshotVersion < 0) {
+      throw new Error('snapshot version must be a non-negative integer');
+    }
+    source.snapshotVersion = snapshotVersion;
   }
 
-  return request;
+  return source;
 }
 
-function assertSameResolverRequest(
-  candidate: DeltaLocationResolveRequest,
-  expected: DeltaLocationResolveRequest,
-): void {
-  if (JSON.stringify(candidate) !== JSON.stringify(expected)) {
-    throw new Error('sandbox resolver request changed between preview and worker open');
+function validateBrowserObjectStoreSource(source: BrowserObjectStoreSource): void {
+  if (!source.tableUri) {
+    throw new Error('object store table URI is required');
+  }
+
+  const validScheme =
+    source.provider === 's3'
+      ? source.tableUri.startsWith('s3://')
+      : source.provider === 'gcs'
+        ? source.tableUri.startsWith('gs://')
+        : source.tableUri.startsWith('az://') || source.tableUri.startsWith('abfs://');
+  if (!validScheme) {
+    throw new Error(`table URI does not match ${source.provider} object-store scheme`);
   }
 }
 

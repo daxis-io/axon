@@ -1,6 +1,5 @@
 // Connect-Catalog workflow data.
-// Models the source picker and local-only discovery payload. Live providers
-// require trusted resolver/BFF contracts before discovery can run.
+// Models the source picker and browser-local discovery payload.
 
 export type SourceId = 'local' | 'object_store' | 'unity_catalog' | 'delta_share';
 
@@ -9,6 +8,11 @@ export type SourceCard = {
   title: string;
   blurb: string;
   examples: string;
+  owners: {
+    access: string;
+    snapshot: string;
+    query: string;
+  };
   glyph: string;
   glyphTone: 'neutral' | 'blue' | 'violet' | 'teal';
   tags: string[];
@@ -20,6 +24,11 @@ export const SOURCES: SourceCard[] = [
     title: 'Local files',
     blurb: 'A Delta table directory on this machine.',
     examples: '~/datasets · /Volumes/data · uploaded .zip',
+    owners: {
+      access: 'Browser',
+      snapshot: 'Browser',
+      query: 'Browser',
+    },
     glyph: 'L',
     glyphTone: 'neutral',
     tags: ['dev', 'fastest'],
@@ -27,17 +36,27 @@ export const SOURCES: SourceCard[] = [
   {
     id: 'object_store',
     title: 'Object storage',
-    blurb: 'Use a trusted resolver for AWS, GCP, Azure, or R2 tables.',
-    examples: 'BrowserHttpSnapshotDescriptor · BFF-issued access',
+    blurb: 'Read AWS, GCP, Azure, or R2 Delta logs from the browser.',
+    examples: '_delta_log listing · browser range reads',
+    owners: {
+      access: 'Browser',
+      snapshot: 'Browser',
+      query: 'Browser',
+    },
     glyph: 'OS',
     glyphTone: 'blue',
-    tags: ['resolver'],
+    tags: ['browser-local'],
   },
   {
     id: 'unity_catalog',
     title: 'Unity Catalog',
     blurb: 'Governed reads through an authenticated Axon broker.',
     examples: 'ReadAccessPlan · object grants · SQL fallback',
+    owners: {
+      access: 'UC brokered',
+      snapshot: 'Browser',
+      query: 'Browser',
+    },
     glyph: 'UC',
     glyphTone: 'violet',
     tags: ['governed'],
@@ -46,7 +65,12 @@ export const SOURCES: SourceCard[] = [
     id: 'delta_share',
     title: 'Delta Sharing',
     blurb: 'Open-protocol shares through a trusted profile broker.',
-    examples: 'BFF profile handle · provider-vended URLs',
+    examples: 'file actions · provider-vended URLs',
+    owners: {
+      access: 'Provider brokered',
+      snapshot: 'Browser materialized',
+      query: 'Browser',
+    },
     glyph: 'DS',
     glyphTone: 'teal',
     tags: ['brokered', 'read-only'],
