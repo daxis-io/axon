@@ -311,6 +311,7 @@ export type DeltaLocationResolver = (
 export type BrowserTableRootAccessCapabilities = {
   list: boolean;
   head: boolean;
+  get: boolean;
   rangeGet: boolean;
 };
 
@@ -342,6 +343,21 @@ export type BrowserDeltaSource =
   | { kind: 'trusted_descriptor'; descriptor: BrowserHttpSnapshotDescriptor };
 
 export type DeltaLocationResolutionMode = 'browser_local' | 'brokered_access' | 'server_snapshot';
+export type BrowserDeltaLocationResolutionMode = 'browser_local' | 'brokered_access';
+
+export type BrowserSnapshotReconstructionSource = Extract<
+  BrowserDeltaSource,
+  { kind: 'local_files' } | { kind: 'cors_http_table' } | { kind: 'brokered_object_grants' }
+>;
+
+export type BrowserSnapshotResolverOptions = {
+  snapshotVersion?: number;
+};
+
+export type BrowserSnapshotResolver = (
+  source: BrowserSnapshotReconstructionSource,
+  options: BrowserSnapshotResolverOptions,
+) => Promise<BrowserHttpSnapshotDescriptor>;
 
 export type DeltaLocationServerSnapshotOpenOptions = AxonRequestOptions & {
   resolutionMode: 'server_snapshot';
@@ -356,8 +372,9 @@ export type DeltaLocationServerSnapshotOpenOptions = AxonRequestOptions & {
 
 export type DeltaLocationBrowserSourceOpenOptions = AxonRequestOptions & {
   source: BrowserDeltaSource;
-  resolutionMode?: DeltaLocationResolutionMode;
+  resolutionMode?: BrowserDeltaLocationResolutionMode;
   snapshotVersion?: number;
+  resolveBrowserSnapshot?: BrowserSnapshotResolver;
 };
 
 export type DeltaLocationOpenOptions =
@@ -371,7 +388,7 @@ export type DeltaLocationServerSnapshotOpenMetadata = Omit<
 
 export type DeltaLocationBrowserOpenMetadata = {
   source_kind: BrowserDeltaSource['kind'];
-  resolution_mode: DeltaLocationResolutionMode;
+  resolution_mode: BrowserDeltaLocationResolutionMode;
   table_uri: string;
   resolved_snapshot_version: number;
   expires_at_epoch_ms?: number;
@@ -2080,7 +2097,7 @@ async function resolveDeltaLocationFromOptions(
 function browserDeltaLocationOpenMetadata(
   source: BrowserDeltaSource,
   descriptor: BrowserHttpSnapshotDescriptor,
-  resolutionMode: DeltaLocationResolutionMode,
+  resolutionMode: BrowserDeltaLocationResolutionMode,
 ): DeltaLocationBrowserOpenMetadata {
   const metadata: DeltaLocationBrowserOpenMetadata = {
     source_kind: source.kind,
@@ -2096,7 +2113,9 @@ function browserDeltaLocationOpenMetadata(
   return metadata;
 }
 
-function browserDeltaSourceUsesSnapshotReconstruction(source: BrowserDeltaSource): boolean {
+function browserDeltaSourceUsesSnapshotReconstruction(
+  source: BrowserDeltaSource,
+): source is BrowserSnapshotReconstructionSource {
   return (
     source.kind === 'local_files' ||
     source.kind === 'cors_http_table' ||
@@ -2105,41 +2124,41 @@ function browserDeltaSourceUsesSnapshotReconstruction(source: BrowserDeltaSource
 }
 
 async function resolveDeltaSnapshotBrowserLocal(
-  source: BrowserDeltaSource,
-  options: { snapshotVersion?: number },
+  source: BrowserSnapshotReconstructionSource,
+  options: BrowserSnapshotResolverOptions & {
+    resolveBrowserSnapshot?: BrowserSnapshotResolver;
+  },
 ): Promise<BrowserHttpSnapshotDescriptor> {
   rejectForbiddenSecretKeys(source);
 
   switch (source.kind) {
     case 'local_files':
-      throw new AxonSdkError(
-        'browser-local Delta snapshot reconstruction is not implemented for local_files sources',
-      );
+      break;
     case 'cors_http_table':
       assertBrowserTableRootCapabilities(source.capabilities, 'cors_http_table');
       validateHttpsUrl(source.tableRootUrl, 'cors_http_table.tableRootUrl');
-      throw new AxonSdkError(
-        'browser-local Delta snapshot reconstruction is not implemented for cors_http_table sources',
-      );
+      break;
     case 'brokered_object_grants':
-      assertBrowserTableRootCapabilities(
-        source.grant.capabilities,
-        'brokered_object_grants.grant.capabilities',
-      );
+      assertBrowserObjectGrantCapabilities(source.grant.capabilities);
       validateHttpsUrl(source.grant.tableRootUrl, 'brokered_object_grants.grant.tableRootUrl');
       if (source.grant.expiresAtEpochMs <= Date.now()) {
         throw new AxonProtocolError('brokered_object_grants grant is expired');
       }
-      throw new AxonSdkError(
-        'browser-local Delta snapshot reconstruction is not implemented for brokered_object_grants sources',
-      );
-    default:
-      throw new AxonSdkError(
-        `browser-local Delta snapshot reconstruction does not accept '${source.kind}' sources`,
-      );
+      break;
   }
 
-  void options;
+  if (!options.resolveBrowserSnapshot) {
+    throw new AxonSdkError(
+      `browser Delta source '${source.kind}' requires resolveBrowserSnapshot for browser-local Delta snapshot reconstruction`,
+    );
+  }
+
+  return normalizeBrowserHttpSnapshotDescriptor(
+    await options.resolveBrowserSnapshot(source, {
+      snapshotVersion: options.snapshotVersion,
+    }),
+    `${source.kind}.resolvedSnapshot`,
+  );
 }
 
 async function materializeDescriptorFromBrowserSource(
@@ -2157,9 +2176,7 @@ async function materializeDescriptorFromBrowserSource(
     case 'delta_sharing_url_files':
       return descriptorFromDeltaSharingFileActions(source.files);
     default:
-      throw new AxonSdkError(
-        `descriptor materialization does not accept '${source.kind}' sources`,
-      );
+      throw new AxonSdkError(`descriptor materialization does not accept '${source.kind}' sources`);
   }
 }
 
@@ -2167,9 +2184,18 @@ function assertBrowserTableRootCapabilities(
   capabilities: BrowserTableRootAccessCapabilities | undefined,
   path: string,
 ): void {
-  if (!capabilities?.list || !capabilities.head || !capabilities.rangeGet) {
+  if (!capabilities?.list || !capabilities.head || !capabilities.get || !capabilities.rangeGet) {
     throw new AxonSdkError(
-      `${path} requires list, head, and rangeGet capabilities for browser-local Delta snapshot reconstruction`,
+      `${path} requires list, head, get, and rangeGet capabilities for browser-local Delta snapshot reconstruction`,
+    );
+  }
+}
+
+function assertBrowserObjectGrantCapabilities(capabilities: BrowserObjectGrantCapabilities): void {
+  assertBrowserTableRootCapabilities(capabilities, 'brokered_object_grants.grant.capabilities');
+  if (!capabilities.batchSign && !capabilities.proxyRange) {
+    throw new AxonSdkError(
+      'brokered_object_grants.grant.capabilities requires batchSign or proxyRange for browser-local Delta snapshot reconstruction',
     );
   }
 }
@@ -2195,9 +2221,7 @@ async function fetchBrowserDescriptorManifest(
   }
 
   if (!response.ok) {
-    throw new AxonSdkError(
-      `failed to fetch ${path} descriptor manifest: HTTP ${response.status}`,
-    );
+    throw new AxonSdkError(`failed to fetch ${path} descriptor manifest: HTTP ${response.status}`);
   }
 
   let payload: unknown;
@@ -2235,7 +2259,10 @@ function descriptorFromDeltaSharingFileActions(
     browser_compatibility: signedUrlCapabilities,
     required_capabilities: signedUrlCapabilities,
     active_files: files.map((file, index) =>
-      normalizeBrowserHttpFileDescriptorWithHttpsUrl(file, `delta_sharing_url_files.files[${index}]`),
+      normalizeBrowserHttpFileDescriptorWithHttpsUrl(
+        file,
+        `delta_sharing_url_files.files[${index}]`,
+      ),
     ),
   };
 }
@@ -3436,6 +3463,7 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
       const descriptor = browserDeltaSourceUsesSnapshotReconstruction(options.source)
         ? await resolveDeltaSnapshotBrowserLocal(options.source, {
             snapshotVersion: options.snapshotVersion,
+            resolveBrowserSnapshot: options.resolveBrowserSnapshot,
           })
         : await materializeDescriptorFromBrowserSource(options.source);
       const opened = await this.openDeltaTable(name, descriptor, { requestId });

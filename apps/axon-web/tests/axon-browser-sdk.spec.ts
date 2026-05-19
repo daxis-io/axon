@@ -1413,27 +1413,148 @@ test('openDeltaLocation materializes manifest and file-action sources into descr
   }
 });
 
-test('openDeltaLocation gates CORS HTTP table reconstruction on list head and range capability', async () => {
+test('openDeltaLocation resolves table-root sources through a browser snapshot resolver', async () => {
   const worker = new FakeWorker();
   const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const resolvedDescriptor: BrowserHttpSnapshotDescriptor = {
+    ...snapshot,
+    table_uri: 'https://data.example.test/events',
+    snapshot_version: 12,
+    active_files: snapshot.active_files.map((file) => ({
+      ...file,
+      url: 'https://data.example.test/events/part-000.parquet',
+    })),
+  };
+  const requests: unknown[] = [];
 
   await expect(
     client.openDeltaLocation('events', {
       source: { kind: 'cors_http_table', tableRootUrl: 'https://data.example.test/events' },
     }),
-  ).rejects.toThrow('requires list, head, and rangeGet capabilities');
+  ).rejects.toThrow('requires list, head, get, and rangeGet capabilities');
 
   await expect(
     client.openDeltaLocation('events', {
       source: {
         kind: 'cors_http_table',
         tableRootUrl: 'https://data.example.test/events',
-        capabilities: { list: true, head: true, rangeGet: true },
+        capabilities: { list: true, head: true, rangeGet: true } as never,
       },
     }),
-  ).rejects.toThrow('browser-local Delta snapshot reconstruction is not implemented');
+  ).rejects.toThrow('requires list, head, get, and rangeGet capabilities');
+
+  await expect(
+    client.openDeltaLocation('events', {
+      source: {
+        kind: 'cors_http_table',
+        tableRootUrl: 'https://data.example.test/events',
+        capabilities: { list: true, head: true, get: true, rangeGet: true },
+      },
+    }),
+  ).rejects.toThrow('requires resolveBrowserSnapshot');
 
   expect(worker.commands).toHaveLength(0);
+
+  const openedPromise = client.openDeltaLocation('events', {
+    source: {
+      kind: 'cors_http_table',
+      tableRootUrl: 'https://data.example.test/events',
+      capabilities: { list: true, head: true, get: true, rangeGet: true },
+    },
+    snapshotVersion: 12,
+    resolveBrowserSnapshot: async (source, options) => {
+      requests.push({ source, options });
+      return resolvedDescriptor;
+    },
+    requestId: 'req-browser-reconstruct',
+  });
+
+  await expect.poll(() => worker.commands.length).toBe(1);
+  expect(requests).toEqual([
+    {
+      source: {
+        kind: 'cors_http_table',
+        tableRootUrl: 'https://data.example.test/events',
+        capabilities: { list: true, head: true, get: true, rangeGet: true },
+      },
+      options: { snapshotVersion: 12 },
+    },
+  ]);
+  expect(worker.commands[0]).toEqual({
+    open_delta_table: {
+      request_id: 'req-browser-reconstruct',
+      name: 'events',
+      snapshot: resolvedDescriptor,
+    },
+  });
+
+  worker.emitMessage({ opened: { request_id: 'req-browser-reconstruct', name: 'events' } });
+  await expect(openedPromise).resolves.toMatchObject({
+    location: {
+      source_kind: 'cors_http_table',
+      resolution_mode: 'browser_local',
+      table_uri: resolvedDescriptor.table_uri,
+      resolved_snapshot_version: resolvedDescriptor.snapshot_version,
+    },
+  });
+});
+
+test('openDeltaLocation resolves brokered object grants through a browser snapshot resolver', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const resolvedDescriptor: BrowserHttpSnapshotDescriptor = {
+    ...snapshot,
+    table_uri: 'https://storage.example.test/tables/events',
+    snapshot_version: 13,
+    active_files: snapshot.active_files.map((file) => ({
+      ...file,
+      url: 'https://storage.example.test/tables/events/part-000.parquet',
+    })),
+  };
+  const grant = {
+    grantId: 'grant-browser-readable',
+    tableRootUrl: 'https://storage.example.test/tables/events',
+    expiresAtEpochMs: 4_102_444_800_000,
+    capabilities: {
+      list: true,
+      head: true,
+      get: true,
+      rangeGet: true,
+      batchSign: true,
+      proxyRange: false,
+    },
+  };
+
+  const openedPromise = client.openDeltaLocation('events', {
+    source: { kind: 'brokered_object_grants', grant },
+    resolutionMode: 'brokered_access',
+    resolveBrowserSnapshot: async (source, options) => {
+      expect(source).toEqual({ kind: 'brokered_object_grants', grant });
+      expect(options).toEqual({});
+      return resolvedDescriptor;
+    },
+    requestId: 'req-brokered-object-grant',
+  });
+
+  await expect.poll(() => worker.commands.length).toBe(1);
+  expect(worker.commands[0]).toEqual({
+    open_delta_table: {
+      request_id: 'req-brokered-object-grant',
+      name: 'events',
+      snapshot: resolvedDescriptor,
+    },
+  });
+
+  worker.emitMessage({ opened: { request_id: 'req-brokered-object-grant', name: 'events' } });
+  await expect(openedPromise).resolves.toMatchObject({
+    location: {
+      source_kind: 'brokered_object_grants',
+      resolution_mode: 'brokered_access',
+      table_uri: resolvedDescriptor.table_uri,
+      resolved_snapshot_version: resolvedDescriptor.snapshot_version,
+      expires_at_epoch_ms: 4_102_444_800_000,
+    },
+  });
 });
 
 test('openDeltaLocation returns resolver metadata without descriptor URLs', async () => {

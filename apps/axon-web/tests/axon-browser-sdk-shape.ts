@@ -92,6 +92,7 @@ async function sdkShapeCompiles(client: AxonBrowserClient): Promise<Uint8Array> 
     capabilities: {
       list: true,
       head: true,
+      get: true,
       rangeGet: true,
       batchSign: true,
       proxyRange: false,
@@ -125,14 +126,27 @@ async function sdkShapeCompiles(client: AxonBrowserClient): Promise<Uint8Array> 
   browserDefault.location.source_kind satisfies BrowserDeltaSource['kind'];
 
   const explicitServerSnapshot = await client.openDeltaLocation('events_server_snapshot', {
+    resolutionMode: 'server_snapshot',
+    provider: 'gcs',
+    tableUri: 'gs://axon-fixtures/partitioned-table',
+    credentialProfile: { id: 'prod-readonly' },
+    resolveDeltaLocation: async () => resolverResponse,
+  });
+  explicitServerSnapshot.location.actual_access_mode satisfies ResolverActualAccessMode;
+
+  // @ts-expect-error browser sources cannot use the explicit server snapshot mode.
+  await client.openDeltaLocation('events_invalid_server_source', {
     source: { kind: 'trusted_descriptor', descriptor: snapshot },
     resolutionMode: 'server_snapshot',
   });
-  explicitServerSnapshot.location.resolution_mode satisfies DeltaLocationResolutionMode;
 
   const brokeredAccess = await client.openDeltaLocation('events_brokered', {
     source: { kind: 'brokered_object_grants', grant: objectGrant },
     resolutionMode: 'brokered_access',
+    resolveBrowserSnapshot: async (source) => {
+      source.kind satisfies BrowserDeltaSource['kind'];
+      return snapshot;
+    },
   });
   brokeredAccess.location.resolution_mode satisfies DeltaLocationResolutionMode;
 
