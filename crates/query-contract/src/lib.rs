@@ -1103,6 +1103,8 @@ fn capability_report_is_empty(report: &CapabilityReport) -> bool {
 pub enum BrowserObjectUrlPolicy {
     HttpsOnly,
     HttpsOrLoopbackHttpForHostTests,
+    HttpsOrBrowserLocalBlob,
+    HttpsOrLoopbackHttpForHostTestsOrBrowserLocalBlob,
 }
 
 pub fn validate_browser_object_url(
@@ -1125,6 +1127,7 @@ pub fn validate_browser_object_url(
     match parsed.scheme() {
         "https" => Ok(parsed),
         "http" if allows_loopback_http_for_host_tests(&parsed, policy) => Ok(parsed),
+        "blob" if allows_browser_local_blob(policy) => Ok(parsed),
         "http" => Err(QueryError::new(
             QueryErrorCode::SecurityPolicyViolation,
             format!(
@@ -1151,6 +1154,12 @@ fn browser_object_url_security_message(policy: BrowserObjectUrlPolicy) -> &'stat
         BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTests => {
             "browser object URLs must use HTTPS unless they target loopback hosts for host-side tests"
         }
+        BrowserObjectUrlPolicy::HttpsOrBrowserLocalBlob => {
+            "browser object URLs must use HTTPS or browser-local blob URLs"
+        }
+        BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTestsOrBrowserLocalBlob => {
+            "browser object URLs must use HTTPS, browser-local blob URLs, or loopback HTTP for host-side tests"
+        }
     }
 }
 
@@ -1158,6 +1167,7 @@ fn allows_loopback_http_for_host_tests(url: &Url, policy: BrowserObjectUrlPolicy
     matches!(
         policy,
         BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTests
+            | BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTestsOrBrowserLocalBlob
     ) && cfg!(not(target_arch = "wasm32"))
         && match url.host_str() {
             Some("localhost") => true,
@@ -1167,6 +1177,14 @@ fn allows_loopback_http_for_host_tests(url: &Url, policy: BrowserObjectUrlPolicy
                 .unwrap_or(false),
             None => false,
         }
+}
+
+fn allows_browser_local_blob(policy: BrowserObjectUrlPolicy) -> bool {
+    matches!(
+        policy,
+        BrowserObjectUrlPolicy::HttpsOrBrowserLocalBlob
+            | BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTestsOrBrowserLocalBlob
+    )
 }
 
 fn redacted_input_url(url: &str) -> String {

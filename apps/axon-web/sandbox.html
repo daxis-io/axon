@@ -33,6 +33,7 @@
               <option value="prod-like" selected>Prod-like events</option>
               <option value="simple">JSON log smoke fixture</option>
               <option value="object-store">Browser object store</option>
+              <option value="local-files">Local Delta folder</option>
             </select>
             <svg class="select-caret" viewBox="0 0 16 16" aria-hidden="true">
               <path
@@ -112,6 +113,26 @@
                   aria-label="Object store snapshot version"
                   inputmode="numeric"
                   placeholder="latest"
+                />
+              </label>
+            </div>
+          </section>
+
+          <section
+            class="rail-section local-table-controls"
+            data-testid="local-table-controls"
+            hidden
+          >
+            <h2 class="rail-heading">Local Folder</h2>
+            <div class="field-stack">
+              <label class="field">
+                <span>Delta table directory</span>
+                <input
+                  id="local-table-files"
+                  aria-label="Local Delta table directory"
+                  type="file"
+                  webkitdirectory
+                  multiple
                 />
               </label>
             </div>

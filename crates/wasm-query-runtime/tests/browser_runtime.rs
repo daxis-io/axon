@@ -1329,6 +1329,35 @@ fn materialize_snapshot_preserves_descriptor_metadata_and_file_order() {
 }
 
 #[test]
+fn materialize_snapshot_allows_browser_local_blob_descriptors() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let descriptor = BrowserHttpSnapshotDescriptor {
+        table_uri: "browser-local://delta-table/events".to_string(),
+        snapshot_version: 3,
+        partition_column_types: BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
+        required_capabilities: CapabilityReport::default(),
+        active_files: vec![BrowserHttpFileDescriptor {
+            path: "part-000.parquet".to_string(),
+            url: "blob:https://127.0.0.1:5173/2cf91b7c-8f64-4d42-b85d-4f517db2ef21".to_string(),
+            size_bytes: 128,
+            partition_values: BTreeMap::new(),
+            stats: None,
+        }],
+    };
+
+    let materialized = session
+        .materialize_snapshot(&descriptor)
+        .expect("browser-local blob descriptors should materialize");
+
+    assert_eq!(
+        materialized.active_files()[0].object_source().url(),
+        descriptor.active_files[0].url
+    );
+}
+
+#[test]
 fn materialize_snapshot_allows_empty_active_file_lists() {
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
         .expect("default config should be supported");

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 test('executes SQL from a fresh editor without a manual snapshot step', async ({ page }) => {
   await page.goto('/sandbox.html');
@@ -154,6 +155,54 @@ test('opens object-store tables through browser-local snapshot reconstruction wi
     '/fixtures/prod-like/table/category=B/',
   );
   await expect(page.getByText(/resolver|BFF|service/i)).toHaveCount(0);
+});
+
+test('loads a local Delta table directory and queries it in browser', async ({ page }) => {
+  const tableDir = fileURLToPath(new URL('../public/fixtures/prod-like/table', import.meta.url));
+
+  await page.goto('/sandbox.html');
+
+  await page.getByLabel('Data source').selectOption('local-files');
+  await expect(page.getByTestId('local-table-controls')).toBeVisible();
+  await page.getByLabel('Local Delta table directory').setInputFiles(tableDir);
+  await page.getByRole('button', { name: 'Run' }).click();
+
+  await expect(page.getByTestId('query-status')).toHaveText('Finished', { timeout: 30_000 });
+  await expect(page.getByTestId('fixture-name')).toHaveText('Local Delta table');
+  await expect(page.getByTestId('table-uri')).toContainText('browser-local://');
+  await expect(page.getByTestId('browser-snapshot-provider')).toHaveText('local_files');
+  await expect(page.getByTestId('browser-snapshot-mode')).toHaveText('browser_wasm');
+  await expect(page.getByTestId('active-data-file-urls')).toContainText('blob:');
+  await expect(page.getByTestId('active-data-file-urls')).toContainText('category=B');
+  await expect(page.getByTestId('active-data-file-urls')).toContainText('category=D');
+  await expect(page.getByTestId('query-executed-on')).toHaveText('browser_wasm');
+  await expect(page.getByTestId('result-grid')).toContainText('row_count');
+  await expect(page.getByTestId('result-grid')).toContainText('4');
+  await expect(page.getByText(/resolver|BFF|service/i)).toHaveCount(0);
+});
+
+test('reopens an imported local Delta table after reload without reselecting files', async ({
+  page,
+}) => {
+  const tableDir = fileURLToPath(new URL('../public/fixtures/prod-like/table', import.meta.url));
+
+  await page.goto('/sandbox.html');
+
+  await page.getByLabel('Data source').selectOption('local-files');
+  await page.getByLabel('Local Delta table directory').setInputFiles(tableDir);
+  await page.getByRole('button', { name: 'Run' }).click();
+  await expect(page.getByTestId('query-status')).toHaveText('Finished', { timeout: 30_000 });
+
+  await page.reload();
+  await page.getByLabel('Data source').selectOption('local-files');
+  await page.getByRole('button', { name: 'Run' }).click();
+
+  await expect(page.getByTestId('query-status')).toHaveText('Finished', { timeout: 30_000 });
+  await expect(page.getByTestId('fixture-name')).toHaveText('Local Delta table');
+  await expect(page.getByTestId('table-uri')).toContainText('browser-local://');
+  await expect(page.getByTestId('browser-snapshot-provider')).toHaveText('local_files');
+  await expect(page.getByTestId('result-grid')).toContainText('row_count');
+  await expect(page.getByTestId('result-grid')).toContainText('4');
 });
 
 test('sandbox object-store source opens browser-built descriptors directly', () => {

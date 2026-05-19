@@ -1433,3 +1433,48 @@ fn browser_object_url_validation_allows_loopback_http_only_for_host_test_policy(
 
     assert_eq!(url.as_str(), "http://127.0.0.1:8787/object");
 }
+
+#[test]
+fn browser_object_url_validation_allows_blob_only_for_browser_local_policy() {
+    let url = validate_browser_object_url(
+        "blob:https://127.0.0.1:5173/2cf91b7c-8f64-4d42-b85d-4f517db2ef21",
+        ExecutionTarget::BrowserWasm,
+        BrowserObjectUrlPolicy::HttpsOrBrowserLocalBlob,
+        "browser object URL",
+    )
+    .expect("browser-local policy should allow blob URLs");
+
+    assert_eq!(url.scheme(), "blob");
+
+    let error = validate_browser_object_url(
+        "blob:https://127.0.0.1:5173/2cf91b7c-8f64-4d42-b85d-4f517db2ef21",
+        ExecutionTarget::BrowserWasm,
+        BrowserObjectUrlPolicy::HttpsOnly,
+        "browser object URL",
+    )
+    .expect_err("https-only policy should reject blob URLs");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(error.message.contains("unsupported scheme 'blob'"));
+}
+
+#[test]
+fn browser_object_url_validation_combined_policy_allows_loopback_and_blob() {
+    validate_browser_object_url(
+        "http://127.0.0.1:8787/object",
+        ExecutionTarget::Native,
+        BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTestsOrBrowserLocalBlob,
+        "browser object URL",
+    )
+    .expect("combined host-test policy should allow loopback HTTP on native targets");
+
+    let blob_url = validate_browser_object_url(
+        "blob:https://127.0.0.1:5173/2cf91b7c-8f64-4d42-b85d-4f517db2ef21",
+        ExecutionTarget::BrowserWasm,
+        BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTestsOrBrowserLocalBlob,
+        "browser object URL",
+    )
+    .expect("combined host-test policy should allow browser-local blob URLs");
+
+    assert_eq!(blob_url.scheme(), "blob");
+}

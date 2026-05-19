@@ -101,7 +101,7 @@ impl BrowserDeltaLogManifest {
             validate_browser_object_url(
                 &object.url,
                 runtime_target(),
-                BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTests,
+                BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTestsOrBrowserLocalBlob,
                 "Delta log object URL",
             )?;
             if by_path

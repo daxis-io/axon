@@ -1629,9 +1629,9 @@ impl BrowserRuntimeSession {
     /// Validates and materializes a shared browser HTTP snapshot descriptor without performing any
     /// network I/O.
     ///
-    /// File order and metadata are preserved exactly, but duplicate paths and non-HTTPS browser
-    /// object URLs are rejected to keep the runtime aligned with the browser-facing descriptor
-    /// contract.
+    /// File order and metadata are preserved exactly, but duplicate paths and browser object URLs
+    /// outside the HTTPS or browser-local blob policies are rejected to keep the runtime aligned
+    /// with the browser-facing descriptor contract.
     pub fn materialize_snapshot(
         &self,
         descriptor: &BrowserHttpSnapshotDescriptor,
@@ -4042,8 +4042,8 @@ fn validate_descriptor_source_url(url: &str) -> Result<Url, QueryError> {
     validate_browser_object_url(
         url,
         runtime_target(),
-        BrowserObjectUrlPolicy::HttpsOnly,
-        "browser HTTP object URL",
+        BrowserObjectUrlPolicy::HttpsOrBrowserLocalBlob,
+        "browser object URL",
     )
 }
 

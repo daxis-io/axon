@@ -1794,6 +1794,160 @@ async fn read_blob_extent(
 }
 
 #[cfg(target_arch = "wasm32")]
+async fn read_blob_url_range(
+    url: &Url,
+    range: HttpByteRange,
+    validation: Option<HttpRangeValidation>,
+) -> Result<HttpRangeReadResult, QueryError> {
+    let display_url = redacted_url(url);
+    let _ = range.header_value()?;
+    if validation.is_some() {
+        return Err(protocol_error(format!(
+            "range validation for '{display_url}' requires an ETag, but browser-local blob URLs do not expose one"
+        )));
+    }
+
+    let blob = fetch_blob_url_blob(url, &display_url).await?;
+    let object_size = blob_size_to_u64(blob.size())?;
+    let bytes = match range {
+        HttpByteRange::Full => blob_to_bytes(&blob).await?,
+        HttpByteRange::Bounded { offset, length } => {
+            read_blob_url_extent(&blob, &display_url, object_size, offset, length).await?
+        }
+        HttpByteRange::FromOffset { offset } => {
+            if offset > object_size {
+                return Err(protocol_error(format!(
+                    "browser-local blob URL '{display_url}' only exposes {object_size} bytes, but offset {offset} was requested"
+                )));
+            }
+            read_blob_url_extent(
+                &blob,
+                &display_url,
+                object_size,
+                offset,
+                object_size - offset,
+            )
+            .await?
+        }
+        HttpByteRange::Suffix { length } => {
+            let offset = object_size.saturating_sub(length);
+            read_blob_url_extent(
+                &blob,
+                &display_url,
+                object_size,
+                offset,
+                object_size - offset,
+            )
+            .await?
+        }
+    };
+
+    Ok(HttpRangeReadResult {
+        metadata: HttpObjectMetadata {
+            url: display_url,
+            size_bytes: Some(object_size),
+            etag: None,
+        },
+        bytes,
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_blob_url_extent(
+    blob: &web_sys::Blob,
+    display_url: &str,
+    object_size: u64,
+    offset: u64,
+    length: u64,
+) -> Result<Bytes, QueryError> {
+    let end = offset
+        .checked_add(length)
+        .ok_or_else(|| protocol_error("browser-local blob byte range overflowed u64"))?;
+    if end > object_size {
+        return Err(protocol_error(format!(
+            "browser-local blob URL '{display_url}' only exposes {object_size} bytes, but extent {offset}..{end} was requested"
+        )));
+    }
+    if length == 0 {
+        return Ok(Bytes::new());
+    }
+    read_blob_extent(blob, display_url, ByteExtent::new(offset, length)?).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn probe_blob_url_metadata(
+    url: &Url,
+    requirements: HttpMetadataProbeRequirements,
+) -> Result<HttpObjectMetadata, QueryError> {
+    let display_url = redacted_url(url);
+    let blob = fetch_blob_url_blob(url, &display_url).await?;
+    let metadata = HttpObjectMetadata {
+        url: display_url,
+        size_bytes: Some(blob_size_to_u64(blob.size())?),
+        etag: None,
+    };
+    validate_metadata_probe_requirements(&metadata, requirements)?;
+    Ok(metadata)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn fetch_blob_url_blob(url: &Url, display_url: &str) -> Result<web_sys::Blob, QueryError> {
+    let global = js_sys::global();
+    let fetch = js_function(&global, "fetch")?;
+    let response = fetch
+        .call1(&global, &JsValue::from_str(url.as_str()))
+        .map_err(|error| js_cache_error(format!("browser fetch for '{display_url}' failed"), error))
+        .and_then(|promise| {
+            promise
+                .dyn_into::<Promise>()
+                .map_err(|error| js_cache_error("browser fetch did not return a Promise", error))
+        })?;
+    let response = JsFuture::from(response).await.map_err(|error| {
+        js_cache_error(format!("browser fetch for '{display_url}' failed"), error)
+    })?;
+    let ok = Reflect::get(&response, &JsValue::from_str("ok"))
+        .ok()
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if !ok {
+        let status = Reflect::get(&response, &JsValue::from_str("status"))
+            .ok()
+            .and_then(|value| value.as_f64())
+            .and_then(|value| u16::try_from(value as u64).ok())
+            .and_then(|status| StatusCode::from_u16(status).ok());
+        if let Some(status) = status {
+            if let Some(error) = map_status_error(status, display_url) {
+                return Err(error);
+            }
+        }
+        return Err(cache_error(format!(
+            "browser fetch for '{display_url}' did not return a successful response"
+        )));
+    }
+
+    let blob = js_function(&response, "blob")?
+        .call0(&response)
+        .map_err(|error| {
+            js_cache_error(
+                format!("browser fetch response for '{display_url}' could not produce a Blob"),
+                error,
+            )
+        })?;
+    let blob = await_js_promise(blob).await.map_err(|error| {
+        js_cache_error(
+            format!("browser fetch response Blob for '{display_url}' failed"),
+            error,
+        )
+    })?;
+    blob.dyn_into::<web_sys::Blob>().map_err(|error| {
+        js_cache_error(
+            format!("browser fetch response for '{display_url}' returned a non-Blob value"),
+            error,
+        )
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
 async fn blob_to_bytes(blob: &web_sys::Blob) -> Result<Bytes, QueryError> {
     let buffer = JsFuture::from(blob.array_buffer())
         .await
@@ -1944,6 +2098,10 @@ impl HttpRangeReader {
     ) -> Result<HttpRangeReadResult, QueryError> {
         let url = parse_url(url)?;
         let display_url = redacted_url(&url);
+        #[cfg(target_arch = "wasm32")]
+        if url.scheme() == "blob" {
+            return read_blob_url_range(&url, range, validation).await;
+        }
         let range_header = range.header_value()?;
 
         let mut request = self.client.get(url.clone());
@@ -2055,6 +2213,10 @@ impl HttpRangeReader {
     ) -> Result<HttpObjectMetadata, QueryError> {
         let url = parse_url(url)?;
         let display_url = redacted_url(&url);
+        #[cfg(target_arch = "wasm32")]
+        if url.scheme() == "blob" {
+            return probe_blob_url_metadata(&url, requirements).await;
+        }
         let mut request = self.client.get(url.clone()).header(RANGE, "bytes=0-0");
         if let Some(timeout) = timeout {
             request = request.timeout(timeout);
@@ -2180,6 +2342,8 @@ fn parse_url(url: &str) -> Result<Url, QueryError> {
 
     match parsed.scheme() {
         "http" | "https" => Ok(parsed),
+        #[cfg(target_arch = "wasm32")]
+        "blob" => Ok(parsed),
         scheme => Err(invalid_request(format!(
             "invalid HTTP object URL '{}': unsupported scheme '{scheme}'",
             redacted_url(&parsed)

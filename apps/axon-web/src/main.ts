@@ -118,7 +118,7 @@ type PruningPreflightResult = {
   files: PruningPreflightFile[];
 };
 
-type ObjectKind = 'commit_json' | 'checkpoint_parquet' | 'last_checkpoint';
+type ObjectKind = 'commit_json' | 'checkpoint_parquet' | 'last_checkpoint' | 'delta_log_object';
 
 type LogObjectDetail = FixtureManifest['objects'][number] & {
   kind: ObjectKind;
@@ -139,7 +139,7 @@ type FixtureChoice = {
   fallbackName?: string;
 };
 
-type SourceMode = 'fixture' | 'object_store';
+type SourceMode = 'fixture' | 'object_store' | 'local_files';
 
 type QueryContext = {
   key: string;
@@ -155,6 +155,38 @@ type BrowserObjectStoreSource = {
   snapshotVersion?: number;
 };
 
+type LocalDeltaFileEntry = {
+  file: File;
+  browserPath: string;
+  relativePath: string;
+};
+
+type LocalDeltaTableFiles = {
+  registryId?: string;
+  tableRootName: string;
+  filesByRelativePath: Map<string, LocalDeltaFileEntry>;
+  logEntries: LocalDeltaFileEntry[];
+  dataEntries: LocalDeltaFileEntry[];
+};
+
+type LocalDeltaRegistryBackend = 'opfs' | 'indexeddb_blob';
+
+type LocalDeltaRegistryFileRecord = {
+  relativePath: string;
+  sizeBytes: number;
+  lastModified?: number;
+  mimeType?: string;
+  bytes?: ArrayBuffer;
+};
+
+type LocalDeltaRegistryRecord = {
+  id: string;
+  tableRootName: string;
+  importedAtEpochMs: number;
+  backend: LocalDeltaRegistryBackend;
+  files: LocalDeltaRegistryFileRecord[];
+};
+
 const FIXTURES: Record<string, FixtureChoice> = {
   simple: {
     manifestUrl: '/fixtures/delta-log-manifest.json',
@@ -167,6 +199,10 @@ const FIXTURES: Record<string, FixtureChoice> = {
 
 const DEFAULT_FIXTURE_KEY = 'prod-like';
 const QUERY_TABLE_NAME = 'axon_table';
+const LOCAL_DELTA_DB_NAME = 'axon-local-delta-registry';
+const LOCAL_DELTA_DB_VERSION = 1;
+const LOCAL_DELTA_STORE = 'tables';
+const LOCAL_DELTA_OPFS_ROOT = 'axon-local-delta-tables';
 const SAMPLE_QUERIES = {
   count: 'SELECT COUNT(*) AS row_count FROM axon_table',
   category:
@@ -220,6 +256,8 @@ const objectStoreControls = requiredNode('[data-testid="object-store-controls"]'
 const objectStoreProviderSelect = requiredNode('#object-store-provider') as HTMLSelectElement;
 const objectStoreTableUriInput = requiredNode('#object-store-table-uri') as HTMLInputElement;
 const objectStoreSnapshotInput = requiredNode('#object-store-snapshot') as HTMLInputElement;
+const localTableControls = requiredNode('[data-testid="local-table-controls"]') as HTMLElement;
+const localTableFilesInput = requiredNode('#local-table-files') as HTMLInputElement;
 
 let wasmReady: Promise<void> | undefined;
 let queryContext: QueryContext | undefined;
@@ -231,37 +269,34 @@ let queryRequestCounter = 0;
 let activeQuery: { token: number; requestId: string } | undefined;
 let activeWorkerEventRequestIds: Set<string> | undefined;
 let queryTokenCounter = 0;
+let localObjectUrls = new Set<string>();
+let lastLocalFileSelectionSignature: string | undefined;
 
 dataSourceSelect.addEventListener('change', () => {
-  resetQueryClient();
-  queryContext = undefined;
-  parquetPreflightContextKey = undefined;
-  clearDetails();
-  clearQueryOutput();
-  syncObjectStoreControls();
+  resetResolvedContext();
+  syncSourceControls();
   fixtureNameNode.textContent = selectedSourceLabel();
-  setStatus('Ready');
 });
 
 objectStoreProviderSelect.addEventListener('change', () => {
   syncObjectStoreDefaults();
-  resetQueryClient();
-  queryContext = undefined;
-  parquetPreflightContextKey = undefined;
-  clearDetails();
-  clearQueryOutput();
-  setStatus('Ready');
+  resetResolvedContext();
 });
 
 [objectStoreTableUriInput, objectStoreSnapshotInput].forEach((control) => {
   control.addEventListener('change', () => {
-    resetQueryClient();
-    queryContext = undefined;
-    parquetPreflightContextKey = undefined;
-    clearDetails();
-    clearQueryOutput();
-    setStatus('Ready');
+    resetResolvedContext();
   });
+});
+
+localTableFilesInput.addEventListener('change', () => {
+  const signature = localFileSelectionSignature(localTableFilesInput.files);
+  if (activeQuery || signature === lastLocalFileSelectionSignature) {
+    return;
+  }
+  lastLocalFileSelectionSignature = signature;
+  resetResolvedContext();
+  fixtureNameNode.textContent = selectedSourceLabel();
 });
 
 runSqlButton.addEventListener('click', () => {
@@ -283,7 +318,7 @@ document.querySelectorAll<HTMLButtonElement>('[data-sample-query]').forEach((but
 
 initResultsTabs();
 syncObjectStoreDefaults();
-syncObjectStoreControls();
+syncSourceControls();
 
 const sqlEditor = createSqlEditor(SAMPLE_QUERIES.count);
 attachEditorShortcuts(sqlEditor);
@@ -360,7 +395,62 @@ async function loadObjectStoreQueryContext(key: string): Promise<QueryContext> {
     activeFiles,
   };
   renderSnapshot(fixture, logObjectDetails, snapshot, activeFiles, [], fixture.name);
-  renderBrowserSnapshotSource(source);
+  renderBrowserSnapshotSource(source.provider, source.tableUri);
+  prepareQuerySandbox(snapshot, activeFiles);
+  return context;
+}
+
+async function loadLocalFilesQueryContext(key: string): Promise<QueryContext> {
+  setStatus('Resolving local snapshot');
+  errorPanel.hidden = true;
+  clearDetails();
+  await ensureWasm();
+  releaseLocalObjectUrls();
+
+  const localTable = await localDeltaTableForCurrentSelection();
+  const tableUri = localTableUri(localTable.tableRootName);
+  const checkpointVersion = await localCheckpointVersion(localTable);
+  const fixture: FixtureManifest = {
+    name: 'Local Delta table',
+    table_uri: tableUri,
+    checkpoint_version: checkpointVersion,
+    objects: localTable.logEntries.map((entry) => ({
+      relative_path: entry.relativePath,
+      url_path: trackLocalObjectUrl(URL.createObjectURL(entry.file)),
+      kind: classifyObject(entry.relativePath),
+      size_bytes: entry.file.size,
+    })),
+    data_files: localTable.dataEntries.map((entry) => ({
+      relative_path: entry.relativePath,
+      url_path: `local:${entry.relativePath}`,
+      size_bytes: entry.file.size,
+      partition_values: partitionValuesFromPath(entry.relativePath),
+    })),
+  };
+  const logObjectDetails = await loadLogObjectDetails(fixture);
+  const wasmManifest = {
+    objects: fixture.objects.map((object) => ({
+      relative_path: object.relative_path,
+      url: object.url_path,
+      size_bytes: object.size_bytes,
+      etag: object.etag,
+    })),
+  };
+  const snapshotJson = await resolve_delta_snapshot_from_manifest(
+    JSON.stringify(wasmManifest),
+    tableUri,
+  );
+  const snapshot = JSON.parse(snapshotJson) as ResolvedSnapshot;
+  const activeFiles = localActiveDataFiles(localTable, snapshot);
+  const context = {
+    key,
+    fixture,
+    logObjectDetails,
+    snapshot,
+    activeFiles,
+  };
+  renderSnapshot(fixture, logObjectDetails, snapshot, activeFiles, [], fixture.name);
+  renderBrowserSnapshotSource('local_files', tableUri);
   prepareQuerySandbox(snapshot, activeFiles);
   return context;
 }
@@ -425,6 +515,486 @@ function activeDataFiles(fixture: FixtureManifest, snapshot: ResolvedSnapshot): 
       absolute_url: new URL(manifestFile.url_path, window.location.href).toString(),
     };
   });
+}
+
+function localActiveDataFiles(
+  localTable: LocalDeltaTableFiles,
+  snapshot: ResolvedSnapshot,
+): ActiveDataFile[] {
+  return snapshot.active_files.map((file) => {
+    const entry = localFileForDeltaPath(localTable, file.path);
+    if (!entry) {
+      throw new Error(`active file ${file.path} was missing from the selected local folder`);
+    }
+    if (entry.file.size !== file.size_bytes) {
+      throw new Error(
+        `active file ${file.path} size ${entry.file.size} did not match Delta log size ${file.size_bytes}`,
+      );
+    }
+
+    return {
+      ...file,
+      url_path: `local:${entry.relativePath}`,
+      absolute_url: trackLocalObjectUrl(URL.createObjectURL(entry.file)),
+    };
+  });
+}
+
+async function localDeltaTableForCurrentSelection(): Promise<LocalDeltaTableFiles> {
+  const selectedFiles = Array.from(localTableFilesInput.files ?? []);
+  if (selectedFiles.length > 0) {
+    lastLocalFileSelectionSignature = localFileSelectionSignature(selectedFiles);
+    const table = collectLocalDeltaTableFiles(selectedFiles);
+    try {
+      return await persistLocalDeltaTable(table);
+    } catch (error) {
+      console.warn('local Delta table import could not be persisted:', error);
+      return table;
+    }
+  }
+
+  const persisted = await loadLatestLocalDeltaTable();
+  if (persisted) {
+    return persisted;
+  }
+
+  throw new Error('select a local Delta table directory first');
+}
+
+function collectLocalDeltaTableFiles(files: FileList | File[] | null): LocalDeltaTableFiles {
+  const selectedFiles = Array.from(files ?? []);
+  if (selectedFiles.length === 0) {
+    throw new Error('select a local Delta table directory first');
+  }
+
+  const rawEntries = selectedFiles.map((file) => ({
+    file,
+    browserPath: normalizeBrowserFilePath(fileBrowserPath(file)),
+  }));
+  const rootPrefix = localDeltaRootPrefix(rawEntries.map((entry) => entry.browserPath));
+  const entries: LocalDeltaFileEntry[] = [];
+  for (const entry of rawEntries) {
+    const relativePath = tableRelativePath(entry.browserPath, rootPrefix);
+    if (
+      relativePath === undefined ||
+      relativePath.length === 0 ||
+      isIgnoredLocalFile(relativePath)
+    ) {
+      continue;
+    }
+    entries.push({ ...entry, relativePath });
+  }
+  return buildLocalDeltaTableFiles(localTableRootName(rootPrefix), entries);
+}
+
+function localFileSelectionSignature(files: FileList | File[] | null): string {
+  return Array.from(files ?? [])
+    .map(
+      (file) =>
+        `${normalizeBrowserFilePath(fileBrowserPath(file))}:${file.size}:${file.lastModified}`,
+    )
+    .sort()
+    .join('|');
+}
+
+function buildLocalDeltaTableFiles(
+  tableRootName: string,
+  entries: LocalDeltaFileEntry[],
+  registryId?: string,
+): LocalDeltaTableFiles {
+  const filesByRelativePath = new Map<string, LocalDeltaFileEntry>();
+  for (const entry of entries) {
+    validateLocalRelativePath(entry.relativePath);
+    if (filesByRelativePath.has(entry.relativePath)) {
+      throw new Error(`selected folder contained duplicate path ${entry.relativePath}`);
+    }
+    filesByRelativePath.set(entry.relativePath, entry);
+  }
+
+  const logEntries = entries
+    .filter((entry) => entry.relativePath.startsWith('_delta_log/'))
+    .sort(compareLocalDeltaEntries);
+  if (logEntries.length === 0) {
+    throw new Error('selected folder does not contain a _delta_log directory');
+  }
+
+  return {
+    registryId,
+    tableRootName,
+    filesByRelativePath,
+    logEntries,
+    dataEntries: entries
+      .filter((entry) => isParquetDataFile(entry.relativePath))
+      .sort(compareLocalDeltaEntries),
+  };
+}
+
+async function persistLocalDeltaTable(table: LocalDeltaTableFiles): Promise<LocalDeltaTableFiles> {
+  const id = table.registryId ?? localDeltaRegistryId(table.tableRootName);
+  const recordFiles = await Promise.all(
+    [...table.filesByRelativePath.values()].map(async (entry) => ({
+      relativePath: entry.relativePath,
+      sizeBytes: entry.file.size,
+      lastModified: entry.file.lastModified,
+      mimeType: entry.file.type,
+      bytes: await entry.file.arrayBuffer(),
+    })),
+  );
+  const baseRecord = {
+    id,
+    tableRootName: table.tableRootName,
+    importedAtEpochMs: Date.now(),
+    files: recordFiles,
+  };
+
+  if (await tryWriteLocalDeltaTableToOpfs(id, table)) {
+    await putLocalDeltaRegistryRecord({ ...baseRecord, backend: 'opfs' });
+    return { ...table, registryId: id };
+  }
+
+  await putLocalDeltaRegistryRecord({
+    ...baseRecord,
+    backend: 'indexeddb_blob',
+  });
+  return { ...table, registryId: id };
+}
+
+async function tryWriteLocalDeltaTableToOpfs(
+  id: string,
+  table: LocalDeltaTableFiles,
+): Promise<boolean> {
+  const root = await opfsLocalDeltaRoot();
+  if (!root) {
+    return false;
+  }
+
+  try {
+    const tableDirectory = await root.getDirectoryHandle(id, { create: true });
+    await Promise.all(
+      [...table.filesByRelativePath.values()].map((entry) =>
+        writeOpfsFile(tableDirectory, entry.relativePath, entry.file),
+      ),
+    );
+    return true;
+  } catch (error) {
+    console.warn('OPFS local Delta table import failed; using IndexedDB blob registry:', error);
+    try {
+      await root.removeEntry(id, { recursive: true });
+    } catch {
+      // Best-effort cleanup only; stale partial imports are ignored by the registry.
+    }
+    return false;
+  }
+}
+
+async function loadLatestLocalDeltaTable(): Promise<LocalDeltaTableFiles | undefined> {
+  const records = await getLocalDeltaRegistryRecords();
+  const latest = records.sort((a, b) => b.importedAtEpochMs - a.importedAtEpochMs)[0];
+  if (!latest) {
+    return undefined;
+  }
+
+  if (latest.backend === 'opfs') {
+    const table = await loadOpfsLocalDeltaTable(latest);
+    if (table) {
+      return table;
+    }
+  }
+
+  return loadIndexedDbBlobLocalDeltaTable(latest);
+}
+
+async function loadOpfsLocalDeltaTable(
+  record: LocalDeltaRegistryRecord,
+): Promise<LocalDeltaTableFiles | undefined> {
+  const root = await opfsLocalDeltaRoot();
+  if (!root) {
+    return undefined;
+  }
+
+  try {
+    const tableDirectory = await root.getDirectoryHandle(record.id);
+    const entries = await Promise.all(
+      record.files.map(async (fileRecord) => {
+        const fileHandle = await getOpfsFileHandle(tableDirectory, fileRecord.relativePath);
+        const file = await fileHandle.getFile();
+        if (file.size !== fileRecord.sizeBytes) {
+          throw new Error(
+            `persisted local file ${fileRecord.relativePath} size ${file.size} did not match registry size ${fileRecord.sizeBytes}`,
+          );
+        }
+        return localDeltaFileEntry(record.tableRootName, fileRecord.relativePath, file);
+      }),
+    );
+    return buildLocalDeltaTableFiles(record.tableRootName, entries, record.id);
+  } catch (error) {
+    console.warn('persisted OPFS local Delta table could not be reopened:', error);
+    return undefined;
+  }
+}
+
+function loadIndexedDbBlobLocalDeltaTable(record: LocalDeltaRegistryRecord): LocalDeltaTableFiles {
+  const entries = record.files.map((fileRecord) => {
+    if (!fileRecord.bytes) {
+      throw new Error(`persisted local file ${fileRecord.relativePath} was missing stored bytes`);
+    }
+    const file = new File([fileRecord.bytes], fileRecord.relativePath.split('/').at(-1) ?? 'file', {
+      lastModified: fileRecord.lastModified,
+      type: fileRecord.mimeType,
+    });
+    if (file.size !== fileRecord.sizeBytes) {
+      throw new Error(
+        `persisted local file ${fileRecord.relativePath} size ${file.size} did not match registry size ${fileRecord.sizeBytes}`,
+      );
+    }
+    return localDeltaFileEntry(record.tableRootName, fileRecord.relativePath, file);
+  });
+  return buildLocalDeltaTableFiles(record.tableRootName, entries, record.id);
+}
+
+async function localCheckpointVersion(
+  localTable: LocalDeltaTableFiles,
+): Promise<number | undefined> {
+  const hint = localTable.filesByRelativePath.get('_delta_log/_last_checkpoint');
+  if (!hint) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(await hint.file.text()) as { version?: unknown };
+    return typeof parsed.version === 'number' ? parsed.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function localDeltaFileEntry(
+  tableRootName: string,
+  relativePath: string,
+  file: File,
+): LocalDeltaFileEntry {
+  return {
+    file,
+    browserPath: `${tableRootName}/${relativePath}`,
+    relativePath,
+  };
+}
+
+function localDeltaRegistryId(tableRootName: string): string {
+  const safeName = tableRootName.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  return `${safeName || 'delta-table'}-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+}
+
+function validateLocalRelativePath(path: string): void {
+  if (
+    path.length === 0 ||
+    path.startsWith('/') ||
+    path.startsWith('\\') ||
+    path.includes('\0') ||
+    path.split('/').some((segment) => segment.length === 0 || segment === '.' || segment === '..')
+  ) {
+    throw new Error(`local Delta table path ${path} must stay inside the selected table root`);
+  }
+}
+
+async function openLocalDeltaRegistryDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(LOCAL_DELTA_DB_NAME, LOCAL_DELTA_DB_VERSION);
+    request.onerror = () => reject(request.error ?? new Error('local Delta registry open failed'));
+    request.onsuccess = () => resolve(request.result);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(LOCAL_DELTA_STORE)) {
+        db.createObjectStore(LOCAL_DELTA_STORE, { keyPath: 'id' });
+      }
+    };
+  });
+}
+
+async function putLocalDeltaRegistryRecord(record: LocalDeltaRegistryRecord): Promise<void> {
+  const db = await openLocalDeltaRegistryDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_DELTA_STORE, 'readwrite');
+    tx.objectStore(LOCAL_DELTA_STORE).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('local Delta registry write failed'));
+    tx.onabort = () => reject(tx.error ?? new Error('local Delta registry write aborted'));
+  });
+}
+
+async function getLocalDeltaRegistryRecords(): Promise<LocalDeltaRegistryRecord[]> {
+  const db = await openLocalDeltaRegistryDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_DELTA_STORE, 'readonly');
+    const request = tx.objectStore(LOCAL_DELTA_STORE).getAll();
+    request.onerror = () => reject(request.error ?? new Error('local Delta registry read failed'));
+    request.onsuccess = () => resolve(request.result as LocalDeltaRegistryRecord[]);
+  });
+}
+
+async function opfsLocalDeltaRoot(): Promise<FileSystemDirectoryHandle | undefined> {
+  try {
+    const storage = navigator.storage;
+    if (!storage || typeof storage.getDirectory !== 'function') {
+      return undefined;
+    }
+    const root = await storage.getDirectory();
+    return root.getDirectoryHandle(LOCAL_DELTA_OPFS_ROOT, { create: true });
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeOpfsFile(
+  root: FileSystemDirectoryHandle,
+  relativePath: string,
+  file: File,
+): Promise<void> {
+  const fileHandle = await getOrCreateOpfsFileHandle(root, relativePath);
+  const writable = await fileHandle.createWritable();
+  try {
+    await writable.write(file);
+  } finally {
+    await writable.close();
+  }
+}
+
+async function getOrCreateOpfsFileHandle(
+  root: FileSystemDirectoryHandle,
+  relativePath: string,
+): Promise<FileSystemFileHandle> {
+  const segments = validateOpfsPathSegments(relativePath);
+  const filename = segments.at(-1);
+  if (!filename) {
+    throw new Error(`local Delta table path ${relativePath} did not include a filename`);
+  }
+
+  let directory = root;
+  for (const segment of segments.slice(0, -1)) {
+    directory = await directory.getDirectoryHandle(segment, { create: true });
+  }
+  return directory.getFileHandle(filename, { create: true });
+}
+
+async function getOpfsFileHandle(
+  root: FileSystemDirectoryHandle,
+  relativePath: string,
+): Promise<FileSystemFileHandle> {
+  const segments = validateOpfsPathSegments(relativePath);
+  const filename = segments.at(-1);
+  if (!filename) {
+    throw new Error(`local Delta table path ${relativePath} did not include a filename`);
+  }
+
+  let directory = root;
+  for (const segment of segments.slice(0, -1)) {
+    directory = await directory.getDirectoryHandle(segment);
+  }
+  return directory.getFileHandle(filename);
+}
+
+function validateOpfsPathSegments(relativePath: string): string[] {
+  validateLocalRelativePath(relativePath);
+  return relativePath.split('/').map((segment) => decodeDeltaPath(segment));
+}
+
+function fileBrowserPath(file: File): string {
+  return (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+}
+
+function normalizeBrowserFilePath(path: string): string {
+  return path.replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+/g, '/');
+}
+
+function localDeltaRootPrefix(paths: string[]): string {
+  const prefixes = new Set<string>();
+  for (const path of paths) {
+    const segments = path.split('/');
+    const deltaLogIndex = segments.indexOf('_delta_log');
+    if (deltaLogIndex >= 0) {
+      prefixes.add(segments.slice(0, deltaLogIndex).join('/'));
+    }
+  }
+
+  if (prefixes.size === 0) {
+    throw new Error('select the Delta table directory containing _delta_log');
+  }
+  if (prefixes.size > 1) {
+    throw new Error('selected files contain multiple Delta table roots');
+  }
+  return [...prefixes][0];
+}
+
+function tableRelativePath(browserPath: string, rootPrefix: string): string | undefined {
+  if (!rootPrefix) {
+    return browserPath;
+  }
+  if (browserPath === rootPrefix) {
+    return '';
+  }
+  const prefix = `${rootPrefix}/`;
+  if (!browserPath.startsWith(prefix)) {
+    return undefined;
+  }
+  return browserPath.slice(prefix.length);
+}
+
+function localTableRootName(rootPrefix: string): string {
+  return rootPrefix.split('/').filter(Boolean).at(-1) ?? 'delta-table';
+}
+
+function localTableUri(rootName: string): string {
+  return `browser-local://delta-table/${encodeURIComponent(rootName)}`;
+}
+
+function localFileForDeltaPath(
+  localTable: LocalDeltaTableFiles,
+  deltaPath: string,
+): LocalDeltaFileEntry | undefined {
+  return (
+    localTable.filesByRelativePath.get(deltaPath) ??
+    localTable.filesByRelativePath.get(decodeDeltaPath(deltaPath))
+  );
+}
+
+function decodeDeltaPath(path: string): string {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+}
+
+function isIgnoredLocalFile(path: string): boolean {
+  const filename = path.split('/').at(-1) ?? path;
+  return filename === '.DS_Store' || filename.endsWith('.crc');
+}
+
+function isParquetDataFile(path: string): boolean {
+  return !path.startsWith('_delta_log/') && path.endsWith('.parquet');
+}
+
+function compareLocalDeltaEntries(left: LocalDeltaFileEntry, right: LocalDeltaFileEntry): number {
+  return left.relativePath.localeCompare(right.relativePath);
+}
+
+function partitionValuesFromPath(path: string): Record<string, string> {
+  const partitions: Record<string, string> = {};
+  const segments = path.split('/').slice(0, -1);
+  for (const segment of segments) {
+    const [key, value] = segment.split('=', 2);
+    if (key && value !== undefined) {
+      partitions[decodeDeltaPath(key)] = decodeDeltaPath(value);
+    }
+  }
+  return partitions;
+}
+
+function trackLocalObjectUrl(url: string): string {
+  localObjectUrls.add(url);
+  return url;
 }
 
 function prepareQuerySandbox(snapshot: ResolvedSnapshot, activeFiles: ActiveDataFile[]): void {
@@ -524,10 +1094,13 @@ async function ensureQueryContext(): Promise<QueryContext> {
     return queryContext;
   }
 
+  const mode = selectedSourceMode();
   const context =
-    selectedSourceMode() === 'object_store'
+    mode === 'object_store'
       ? await loadObjectStoreQueryContext(key)
-      : await loadQueryContext(key, selectedFixture());
+      : mode === 'local_files'
+        ? await loadLocalFilesQueryContext(key)
+        : await loadQueryContext(key, selectedFixture());
   queryContext = context;
   return context;
 }
@@ -538,6 +1111,13 @@ async function refreshParquetPreflight(context: QueryContext): Promise<void> {
   }
 
   const parquetPreflight = await preflightActiveParquetFiles(context.activeFiles);
+  if (queryContext?.key !== context.key) {
+    return;
+  }
+
+  parquetPreflightContextKey = context.key;
+  renderParquetPreflight(parquetPreflight);
+
   const parquetInspection = queryTableOpened
     ? await inspectActiveParquetFiles(context.activeFiles)
     : new Map<string, ParquetInspectionSummary>();
@@ -545,7 +1125,6 @@ async function refreshParquetPreflight(context: QueryContext): Promise<void> {
     return;
   }
 
-  parquetPreflightContextKey = context.key;
   renderParquetPreflight(parquetPreflight, parquetInspection);
 }
 
@@ -913,6 +1492,16 @@ function resetQueryClient(): void {
   resetQuerySession();
 }
 
+function resetResolvedContext(): void {
+  resetQueryClient();
+  releaseLocalObjectUrls();
+  queryContext = undefined;
+  parquetPreflightContextKey = undefined;
+  clearDetails();
+  clearQueryOutput();
+  setStatus('Ready');
+}
+
 function resetQuerySession(): void {
   closeQueryClient();
   queryDescriptor = undefined;
@@ -924,6 +1513,13 @@ function closeQueryClient(): void {
     queryClient.terminate();
     queryClient = undefined;
   }
+}
+
+function releaseLocalObjectUrls(): void {
+  for (const url of localObjectUrls) {
+    URL.revokeObjectURL(url);
+  }
+  localObjectUrls = new Set();
 }
 
 async function preflightActiveParquetFiles(
@@ -1321,7 +1917,10 @@ function classifyObject(path: string): ObjectKind {
   if (path.endsWith('.checkpoint.parquet')) {
     return 'checkpoint_parquet';
   }
-  return 'commit_json';
+  if (path.endsWith('.json')) {
+    return 'commit_json';
+  }
+  return 'delta_log_object';
 }
 
 function kindLabel(kind: ObjectKind): string {
@@ -1465,10 +2064,10 @@ function clearDetails(): void {
   inputOutputMapNode.replaceChildren();
 }
 
-function renderBrowserSnapshotSource(source: BrowserObjectStoreSource): void {
-  browserSnapshotProviderNode.textContent = source.provider;
+function renderBrowserSnapshotSource(provider: string, tableUri: string): void {
+  browserSnapshotProviderNode.textContent = provider;
   browserSnapshotModeNode.textContent = 'browser_wasm';
-  browserSnapshotUriNode.textContent = source.tableUri;
+  browserSnapshotUriNode.textContent = tableUri;
 }
 
 function selectedFixture(): FixtureChoice {
@@ -1480,18 +2079,38 @@ function selectedFixtureKey(): string {
 }
 
 function selectedSourceMode(): SourceMode {
-  return selectedFixtureKey() === 'object-store' ? 'object_store' : 'fixture';
+  const key = selectedFixtureKey();
+  if (key === 'object-store') {
+    return 'object_store';
+  }
+  if (key === 'local-files') {
+    return 'local_files';
+  }
+  return 'fixture';
 }
 
 function selectedSourceLabel(): string {
-  if (selectedSourceMode() === 'object_store') {
+  const mode = selectedSourceMode();
+  if (mode === 'object_store') {
     return 'Browser object store';
+  }
+  if (mode === 'local_files') {
+    return 'Local Delta table';
   }
   return selectedFixture().fallbackName ?? dataSourceSelect.selectedOptions[0].text;
 }
 
+function syncSourceControls(): void {
+  syncObjectStoreControls();
+  syncLocalTableControls();
+}
+
 function syncObjectStoreControls(): void {
   objectStoreControls.hidden = selectedSourceMode() !== 'object_store';
+}
+
+function syncLocalTableControls(): void {
+  localTableControls.hidden = selectedSourceMode() !== 'local_files';
 }
 
 function syncObjectStoreDefaults(): void {
