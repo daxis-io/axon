@@ -16,7 +16,8 @@ import {
 import { subscribeEngineStatus } from '../services/engine.ts';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
 import { appendHistory, loadHistory } from '../services/history.ts';
-import { runQuery } from '../services/query.ts';
+import { unregisterLocalDeltaRuntime } from '../services/local-delta.ts';
+import { discardQuerySession, runQuery } from '../services/query.ts';
 import {
   firstQueryableTableRef,
   querySourceFromConnectedCatalogs,
@@ -69,7 +70,6 @@ import {
 } from './connect/store.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { formatBytes, formatRows, hexToSoft, prettifySql } from './lib/format.ts';
-import { navigate } from './router.ts';
 import {
   TweakColor,
   TweakRadio,
@@ -209,7 +209,7 @@ export function App() {
 
   const handleConnected = useCallback((result: ConnectResult) => {
     const catalog = buildCatalogFromResult(result);
-    setConnectedCatalogs((cs) => [...cs, catalog]);
+    setConnectedCatalogs((cs) => [catalog, ...cs]);
     const firstTable = firstQueryableTableRef([catalog]);
     if (firstTable) setSelectedTableRef(firstTable);
     setFreshCatalogId(catalog.id);
@@ -225,18 +225,34 @@ export function App() {
     window.setTimeout(() => setToast(null), 2400);
   }, []);
 
-  const removeConnectedCatalog = useCallback((id: string) => {
-    setConnectedCatalogs((cs) => {
-      const next = cs.filter((c) => c.id !== id);
-      const nextAvailable = catalogsAvailableForFeatures(next, CONNECTOR_FEATURES);
-      setSelectedTableRef((current) =>
-        current?.catalogId === id
-          ? firstQueryableTableRef(nextAvailable)
-          : resolveActiveTableRef(nextAvailable, current),
-      );
-      return next;
-    });
-  }, []);
+  const removeConnectedCatalog = useCallback(
+    (id: string) => {
+      setConnectedCatalogs((cs) => {
+        const removed = cs.find((catalog) => catalog.id === id);
+        const removedLocalRegistryIds =
+          removed?.kind === 'local'
+            ? removed.schemas.flatMap((schema) =>
+                schema.tables.flatMap((table) => table.localRegistryId ?? []),
+              )
+            : [];
+        const next = cs.filter((c) => c.id !== id);
+        const nextAvailable = catalogsAvailableForFeatures(next, CONNECTOR_FEATURES);
+        setSelectedTableRef((current) =>
+          current?.catalogId === id
+            ? firstQueryableTableRef(nextAvailable)
+            : resolveActiveTableRef(nextAvailable, current),
+        );
+        if (removedLocalRegistryIds.length > 0) {
+          if (selectedTableRef?.catalogId === id) discardQuerySession();
+          void Promise.all(
+            removedLocalRegistryIds.map((registryId) => unregisterLocalDeltaRuntime(registryId)),
+          ).catch((error) => console.warn('failed to unregister local Delta catalog:', error));
+        }
+        return next;
+      });
+    },
+    [selectedTableRef],
+  );
 
   // ─── Apply theme + tokens ──────────────────────────────
   useEffect(() => {
@@ -252,7 +268,7 @@ export function App() {
   // ─── Subscribe to catalog + kick off session bootstrap ──
   useEffect(() => {
     const unsubCatalog = subscribeCatalog(setCatalog, querySource);
-    const unsubCommits = subscribeCommits(setCommits);
+    const unsubCommits = subscribeCommits(setCommits, querySource);
     const unsubEngine = subscribeEngineStatus(setEngineStatus);
     loadCatalog(querySource).catch((err) => {
       console.error('failed to load catalog:', err);
@@ -599,7 +615,7 @@ export function App() {
 
         <button
           className="btn ghost"
-          onClick={() => navigate('/connect')}
+          onClick={() => openConnectModal(1)}
           title="Connect a Delta source (local file, object storage, Unity Catalog, or Delta Sharing)"
         >
           <IconPlus size={11} /> Connect

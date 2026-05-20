@@ -36,10 +36,10 @@ test('starts a real browser Worker and handles Arrow IPC success envelopes', asy
   });
 });
 
-test('opens Delta Sharing URL-mode descriptors through the real sandbox worker', async ({
+test('opens Delta Sharing URL-mode descriptors through the real browser query worker', async ({
   page,
 }) => {
-  await page.goto('/sandbox.html');
+  await page.goto('/');
 
   const result = await page.evaluate(async () => {
     const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
@@ -216,7 +216,7 @@ test('preserves fallback-required errors from browser worker envelopes', async (
 });
 
 async function runWorkerProbe(page: Page, probe: WorkerProbe): Promise<WorkerProbeResult> {
-  await page.goto('/sandbox.html');
+  await page.goto('/');
 
   return page.evaluate(
     async ({ selectedProbe, workerScript }) => {

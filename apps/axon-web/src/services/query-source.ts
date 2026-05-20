@@ -1,4 +1,5 @@
-export type QueryTableSource = {
+export type ManifestQueryTableSource = {
+  kind: 'manifest';
   catalogName: string;
   schemaName: string;
   tableName: string;
@@ -7,16 +8,30 @@ export type QueryTableSource = {
   region: string;
 };
 
+export type LocalDeltaQueryTableSource = {
+  kind: 'local_delta';
+  catalogName: string;
+  schemaName: string;
+  tableName: string;
+  localRegistryId: string;
+  storage: string;
+  region: string;
+};
+
+export type QueryTableSource = ManifestQueryTableSource | LocalDeltaQueryTableSource;
+
 export type QueryCatalogCandidate = {
   id: string;
   alias: string;
   storage: string;
   region?: string;
+  kind?: string;
   schemas: Array<{
     name: string;
     tables: Array<{
       name: string;
       manifestUrl?: string;
+      localRegistryId?: string;
     }>;
   }>;
 };
@@ -27,7 +42,8 @@ export type ActiveConnectedTableRef = {
   tableName: string;
 };
 
-export const SAMPLE_QUERY_SOURCE: QueryTableSource = {
+export const SAMPLE_QUERY_SOURCE: ManifestQueryTableSource = {
+  kind: 'manifest',
   catalogName: 'sample-lake',
   schemaName: 'prod_like',
   tableName: 'events',
@@ -45,16 +61,9 @@ export function querySourceFromConnectedCatalogs(
 
   for (const catalog of catalogs) {
     for (const schema of catalog.schemas) {
-      const table = schema.tables.find((candidate) => candidate.manifestUrl);
-      if (!table?.manifestUrl) continue;
-      return {
-        catalogName: catalog.alias,
-        schemaName: schema.name,
-        tableName: table.name,
-        manifestUrl: table.manifestUrl,
-        storage: catalog.storage,
-        region: catalog.region || SAMPLE_QUERY_SOURCE.region,
-      };
+      const table = schema.tables.find((candidate) => isQueryableTable(candidate));
+      if (!table) continue;
+      return querySourceForTable(catalog, schema.name, table);
     }
   }
   return SAMPLE_QUERY_SOURCE;
@@ -65,8 +74,8 @@ export function firstQueryableTableRef(
 ): ActiveConnectedTableRef | undefined {
   for (const catalog of catalogs) {
     for (const schema of catalog.schemas) {
-      const table = schema.tables.find((candidate) => candidate.manifestUrl);
-      if (!table?.manifestUrl) continue;
+      const table = schema.tables.find((candidate) => isQueryableTable(candidate));
+      if (!table) continue;
       return {
         catalogId: catalog.id,
         schemaName: schema.name,
@@ -88,12 +97,24 @@ export function resolveActiveTableRef(
 }
 
 export function sameQuerySource(a: QueryTableSource, b: QueryTableSource): boolean {
-  return (
-    a.catalogName === b.catalogName &&
-    a.schemaName === b.schemaName &&
-    a.tableName === b.tableName &&
-    a.manifestUrl === b.manifestUrl
-  );
+  if (a.kind !== b.kind) return false;
+  if (a.kind === 'manifest' && b.kind === 'manifest') {
+    return (
+      a.catalogName === b.catalogName &&
+      a.schemaName === b.schemaName &&
+      a.tableName === b.tableName &&
+      a.manifestUrl === b.manifestUrl
+    );
+  }
+  if (a.kind === 'local_delta' && b.kind === 'local_delta') {
+    return (
+      a.catalogName === b.catalogName &&
+      a.schemaName === b.schemaName &&
+      a.tableName === b.tableName &&
+      a.localRegistryId === b.localRegistryId
+    );
+  }
+  return false;
 }
 
 function querySourceForTableRef(
@@ -103,13 +124,44 @@ function querySourceForTableRef(
   const catalog = catalogs.find((candidate) => candidate.id === activeTable.catalogId);
   const schema = catalog?.schemas.find((candidate) => candidate.name === activeTable.schemaName);
   const table = schema?.tables.find((candidate) => candidate.name === activeTable.tableName);
-  if (!catalog || !schema || !table?.manifestUrl) return undefined;
-  return {
-    catalogName: catalog.alias,
-    schemaName: schema.name,
-    tableName: table.name,
-    manifestUrl: table.manifestUrl,
-    storage: catalog.storage,
-    region: catalog.region || SAMPLE_QUERY_SOURCE.region,
-  };
+  if (!catalog || !schema || !table || !isQueryableTable(table)) return undefined;
+  return querySourceForTable(catalog, schema.name, table);
+}
+
+function querySourceForTable(
+  catalog: QueryCatalogCandidate,
+  schemaName: string,
+  table: QueryCatalogCandidate['schemas'][number]['tables'][number],
+): QueryTableSource {
+  if (table.localRegistryId) {
+    return {
+      kind: 'local_delta',
+      catalogName: catalog.alias,
+      schemaName,
+      tableName: table.name,
+      localRegistryId: table.localRegistryId,
+      storage: catalog.storage,
+      region: catalog.region || 'browser-local',
+    };
+  }
+
+  if (table.manifestUrl) {
+    return {
+      kind: 'manifest',
+      catalogName: catalog.alias,
+      schemaName,
+      tableName: table.name,
+      manifestUrl: table.manifestUrl,
+      storage: catalog.storage,
+      region: catalog.region || SAMPLE_QUERY_SOURCE.region,
+    };
+  }
+
+  return SAMPLE_QUERY_SOURCE;
+}
+
+function isQueryableTable(
+  table: QueryCatalogCandidate['schemas'][number]['tables'][number],
+): boolean {
+  return !!table.manifestUrl || !!table.localRegistryId;
 }

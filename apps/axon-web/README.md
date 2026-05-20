@@ -28,17 +28,17 @@ npm run dev
 
 Open `https://127.0.0.1:5173` and run queries against the selected connected catalog. The default connected sample is `sample-lake.prod_like.events`, backed by the generated prod-like fixture. The workbench resolves that selected table source and opens the browser query session as part of query execution, so there is no separate snapshot step. The editor uses CodeMirror 6 with SQL highlighting and sample queries for row counts, category totals, and filtered top values. Results keep Arrow IPC as the canonical transport and render only a bounded preview in the page, alongside elapsed time, execution target, metrics, Arrow IPC byte length, row count, worker events, and structured errors.
 
-The editor uses History API routes. Static deployments must rewrite `/connect` and any future editor routes to `index.html`; `/sandbox.html` remains a separate Vite HTML entry.
+The editor uses History API routes. Static deployments must rewrite `/connect` and any future editor routes to `index.html`. The root editor is the only product UI in the production build.
 
 The supported SQL shape is the current browser runtime envelope: read-only `SELECT` statements over the selected connected table, with the projection, filter, grouping, ordering, and limit forms covered by the sample queries and browser runtime tests. Unsupported statements, such as mutations, render structured browser errors rather than routing silently.
 
 Server query fallback is an opt-in build mode. The default app build has it disabled and does not show server fallback controls or labels. To expose that path in your own environment, build with `VITE_AXON_SERVER_QUERY_FALLBACK=server` and provide a separate authenticated server query module.
 
-The `/sandbox.html` route also includes an Object Store source mode. It models the browser-safe UX for S3, GCS, and Azure Blob locations by asking for a logical table URI, resolver access-mode preference, optional snapshot version, and a **Storage access profile** handle. It intentionally has no access-key, secret-key, SAS, bearer-token, or service-account JSON fields. The local implementation uses an injected mock Delta snapshot descriptor resolver that returns fixture-backed `BrowserHttpSnapshotDescriptor` payloads; production IAM, signing, proxying, CORS checks, audit logging, and request correlation remain trusted resolver responsibilities outside this browser package.
+The Connect flow supports selected local Delta folders through browser-owned snapshot reconstruction and browser WASM query execution. It persists only local registry metadata in catalog state; local file bytes stay in browser storage where supported. ZIP import, object-registry import, and broad "any local table" guarantees are outside the current UI claim.
 
-This SQL panel is an example-owned sandbox bridge in `src/sandbox-query-worker.ts` and `src/lib.rs`. It is not the production JavaScript worker bootstrap, not a production query API, and does not mint browser cloud credentials.
+The browser query path still uses `src/sandbox-query-worker.ts` and `src/lib.rs` as the worker bridge. The duplicate piece was the old sandbox page, not the worker contract.
 
-The E2E test starts Vite over HTTPS, opens Chromium, Firefox, and WebKit through Playwright, asks the WASM facade to resolve both fixture manifests, and asserts that the prod-like fixture resolves snapshot version `3` from checkpoint version `2` plus one replay commit. It also covers same-origin Parquet range requests and the browser worker envelope path for startup, Arrow IPC result bytes, structured browser errors, and cancellation-shaped errors.
+The E2E test starts Vite over HTTPS, opens Chromium, Firefox, and WebKit through Playwright, and covers the browser worker envelope path for startup, Arrow IPC result bytes, structured browser errors, Delta Sharing descriptor handoff, and cancellation-shaped errors. The editor smoke suite covers root UI catalog selection, query execution, and local-folder registry reload.
 
 To run one browser while iterating:
 

@@ -4,6 +4,7 @@
 // flat action rows in the sandbox; here we aggregate per-commit).
 
 import { getSession, subscribeSession } from './query.ts';
+import { SAMPLE_QUERY_SOURCE, sameQuerySource, type QueryTableSource } from './query-source.ts';
 import type { CommitEntry, CommitOp } from './types.ts';
 
 type ParsedAction =
@@ -22,8 +23,13 @@ type ParsedAction =
 
 const KNOWN_OPS: ReadonlyArray<CommitOp> = ['MERGE', 'WRITE', 'DELETE', 'OPTIMIZE', 'CREATE TABLE'];
 
-export async function loadCommits(): Promise<CommitEntry[]> {
-  const state = await getSession();
+export async function loadCommits(
+  source: QueryTableSource = SAMPLE_QUERY_SOURCE,
+): Promise<CommitEntry[]> {
+  if (source.kind !== 'manifest') return [];
+
+  const state = await getSession(source);
+  if (!state.manifest) return [];
   const baseHref = window.location.href;
   const commits: CommitEntry[] = [];
 
@@ -53,9 +59,18 @@ export async function loadCommits(): Promise<CommitEntry[]> {
   return commits;
 }
 
-export function subscribeCommits(listener: (commits: CommitEntry[]) => void): () => void {
-  return subscribeSession(() => {
-    loadCommits()
+export function subscribeCommits(
+  listener: (commits: CommitEntry[]) => void,
+  source: QueryTableSource = SAMPLE_QUERY_SOURCE,
+): () => void {
+  if (source.kind !== 'manifest') {
+    listener([]);
+    return () => {};
+  }
+
+  return subscribeSession((state) => {
+    if (!sameQuerySource(state.source, source)) return;
+    loadCommits(source)
       .then(listener)
       .catch((err) => {
         console.error('failed to load commits:', err);

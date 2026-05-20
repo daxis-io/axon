@@ -25,7 +25,7 @@ export const SOURCES: SourceCard[] = [
   {
     id: 'local',
     title: 'Local files',
-    blurb: 'A Delta table directory on this machine once editor file handles are wired.',
+    blurb: 'A selected Delta table directory on this machine.',
     examples: '_delta_log path · File System Access handle',
     owners: {
       access: 'Browser',
@@ -34,7 +34,7 @@ export const SOURCES: SourceCard[] = [
     },
     glyph: 'L',
     glyphTone: 'neutral',
-    tags: ['browser-runtime', 'editor-blocked'],
+    tags: ['browser-runtime', 'folder'],
   },
   {
     id: 'object_store',

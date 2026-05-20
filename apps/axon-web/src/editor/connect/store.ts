@@ -58,7 +58,7 @@ export function catalogsAvailableForFeatures(
 
 export function saveConnectedCatalogs(catalogs: ConnectedCatalog[]): void {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(catalogs));
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(durableConnectedCatalogs(catalogs)));
   } catch {
     // ignore quota / disabled storage
   }
@@ -88,6 +88,8 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
           features: t.features,
           uri: t.name,
           manifestUrl: t.manifestUrl,
+          localRegistryId: source === 'local' ? form.localDelta?.registryId : undefined,
+          localPersistence: source === 'local' ? form.localDelta?.persistence : undefined,
         })),
       };
     })
@@ -97,7 +99,7 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
 
   const storage =
     source === 'local'
-      ? form.path
+      ? (form.localDelta?.storageLabel ?? form.path)
       : source === 'object_store'
         ? form.uri
         : source === 'delta_share'
@@ -131,6 +133,21 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
     connectedAt: 'just now',
     schemas,
   };
+}
+
+function durableConnectedCatalogs(catalogs: ConnectedCatalog[]): ConnectedCatalog[] {
+  return catalogs
+    .map((catalog) => {
+      if (catalog.kind !== 'local') return catalog;
+      const schemas = catalog.schemas
+        .map((schema) => ({
+          ...schema,
+          tables: schema.tables.filter((table) => table.localPersistence !== 'session'),
+        }))
+        .filter((schema) => schema.tables.length > 0);
+      return schemas.length > 0 ? { ...catalog, schemas } : null;
+    })
+    .filter((catalog): catalog is ConnectedCatalog => catalog !== null);
 }
 
 function defaultAlias(s: ConnectResult['source']) {

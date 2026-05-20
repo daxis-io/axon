@@ -16,6 +16,7 @@ import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { IconBolt, IconChevR, IconPlus } from './components/icons.tsx';
 import { navigate } from './router.ts';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
+import { unregisterLocalDeltaRuntime } from '../services/local-delta.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
 
 export function ConnectPage() {
@@ -42,10 +43,25 @@ export function ConnectPage() {
 
   const onConnect = useCallback((result: ConnectResult) => {
     const cat = buildCatalogFromResult(result);
-    setCatalogs((cs) => [...cs, cat]);
+    setCatalogs((cs) => [cat, ...cs]);
     setFreshId(cat.id);
     setModalOpen(false);
     window.setTimeout(() => setFreshId(null), 4500);
+  }, []);
+
+  const removeCatalog = useCallback((id: string) => {
+    setCatalogs((cs) => {
+      const removed = cs.find((catalog) => catalog.id === id);
+      if (removed?.kind === 'local') {
+        const registryIds = removed.schemas.flatMap((schema) =>
+          schema.tables.flatMap((table) => table.localRegistryId ?? []),
+        );
+        void Promise.all(
+          registryIds.map((registryId) => unregisterLocalDeltaRuntime(registryId)),
+        ).catch((error) => console.warn('failed to unregister local Delta catalog:', error));
+      }
+      return cs.filter((c) => c.id !== id);
+    });
   }, []);
 
   const tableCount = availableCatalogs.reduce(
@@ -201,7 +217,7 @@ export function ConnectPage() {
             setPanelOpen(false);
             open(1);
           }}
-          onRemove={(id) => setCatalogs((cs) => cs.filter((c) => c.id !== id))}
+          onRemove={removeCatalog}
           onClose={() => setPanelOpen(false)}
         />
       )}

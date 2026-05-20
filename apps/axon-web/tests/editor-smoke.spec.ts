@@ -1,8 +1,10 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { connectorFeaturesFromEnv } from '../src/services/connector-features.ts';
 
 const APP_ORIGIN = new URL(process.env.PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:5174').origin;
+const LOCAL_DELTA_ACTIVE_ID_KEY = 'axon-local-delta-active-id';
 
 // Phase 1 smoke test: editor mounts, catalog populates, and a query returns rows.
 // Lives under tests/ so it benefits from the same baseURL config as the sandbox
@@ -32,6 +34,20 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(source).not.toContain("rawMode === 'true'");
   });
 
+  test('production build declares only the root editor entrypoint', () => {
+    const source = readFileSync(new URL('../vite.config.ts', import.meta.url), 'utf8');
+    const deployDoc = readFileSync(
+      new URL('../../../docs/program/browser-embedding-deployment.md', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain("editor: resolve(__dirname, 'index.html')");
+    expect(source).not.toContain("sandbox: resolve(__dirname, 'sandbox.html')");
+    expect(source).toContain("=== '/sandbox.html'");
+    expect(deployDoc).not.toContain('two Vite HTML entries');
+    expect(deployDoc).not.toContain('leaving `/sandbox.html` as its own entry');
+  });
+
   test('routes between the workspace and connect page', async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on('console', (msg) => {
@@ -46,9 +62,11 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.locator('.shell .brand-name')).toContainText('axon');
 
     await page.getByRole('button', { name: 'Connect' }).click();
-    await expect(page).toHaveURL(/\/connect$/);
-    await expect(page.getByRole('button', { name: 'Connect a source' })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: 'Connect a Delta source' })).toBeVisible();
+    await page.getByRole('button', { name: 'Close (Esc)' }).click();
 
+    await page.goto('/connect');
+    await expect(page.getByRole('button', { name: 'Connect a source' })).toBeVisible();
     await page.getByRole('button', { name: 'local folder' }).click();
     await expect(page.getByRole('dialog', { name: 'Connect a local Delta folder' })).toBeVisible();
 
@@ -91,11 +109,10 @@ test.describe('editor (Phase 1 smoke)', () => {
     await dialog.getByRole('button', { name: /Continue/ }).click();
 
     const localConfigDialog = page.getByRole('dialog', { name: 'Connect a local Delta folder' });
-    await expect(localConfigDialog).toContainText(/file-handle discovery is not wired/i);
-    await localConfigDialog.getByPlaceholder('/path/to/your/delta_table').fill('/tmp/orders');
-    await localConfigDialog.getByRole('button', { name: 'Test connection' }).click();
+    await expect(localConfigDialog).toContainText(/Local Delta table directory/i);
+    await expect(localConfigDialog).not.toContainText(/sandbox|not wired/i);
     await expect(localConfigDialog.getByText(/Delta log parsed/i)).toHaveCount(0);
-    await expect(localConfigDialog).toContainText(/local file discovery is not wired/i);
+    await expect(localConfigDialog.getByRole('button', { name: 'Test connection' })).toBeDisabled();
     await expect(localConfigDialog.getByRole('button', { name: /Discover tables/ })).toBeDisabled();
     await localConfigDialog.getByRole('button', { name: 'Back' }).click();
 
@@ -270,6 +287,153 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.locator('.res-meta')).toContainText(/rows/i, { timeout: 30_000 });
   });
 
+  test('connects a local Delta folder from the root editor and queries it in browser WASM', async ({
+    page,
+  }) => {
+    const tableDir = fileURLToPath(new URL('../public/fixtures/prod-like/table', import.meta.url));
+
+    const localRegistryId = await connectLocalDeltaFolder(page, tableDir, 'local-prod-like');
+
+    await page
+      .locator('.code-input')
+      .fill('SELECT COUNT(*) AS row_count FROM axon_prod_like_fixture');
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+    await expect(page.locator('.res-meta')).toContainText(/browser · wasm/i, {
+      timeout: 30_000,
+    });
+    await expect(page.locator('table.grid tbody tr')).toHaveCount(1);
+    await expect(page.locator('table.grid')).toContainText('row_count');
+    await expect(page.locator('table.grid')).toContainText('4');
+
+    const connectState = await page.evaluate(
+      () => localStorage.getItem('axon.connect.catalogs.v1') ?? '',
+    );
+    expect(connectState).toContain('local-prod-like');
+    expect(connectState).toContain('localRegistryId');
+    expect(connectState).not.toMatch(/bytes|ArrayBuffer|secret|bearer|token|client[_-]?secret/i);
+
+    const registryRecord = await localDeltaRegistryRecord(page, localRegistryId);
+    expect(registryRecord?.paths).toContain('_delta_log/00000000000000000003.json');
+    expect(registryRecord?.paths.some((path) => path.includes('category=A'))).toBe(false);
+    expect(registryRecord?.paths.some((path) => path.includes('category=C'))).toBe(false);
+    expect(registryRecord?.paths.some((path) => path.includes('category=B'))).toBe(true);
+    expect(registryRecord?.paths.some((path) => path.includes('category=D'))).toBe(true);
+  });
+
+  test('local Delta folder still queries for the current session when durable registry storage is unavailable', async ({
+    page,
+  }) => {
+    const tableDir = fileURLToPath(new URL('../public/fixtures/prod-like/table', import.meta.url));
+    await blockDurableLocalDeltaRegistry(page);
+
+    await connectLocalDeltaFolder(page, tableDir, 'session-local', { expectPersisted: false });
+
+    await page
+      .locator('.code-input')
+      .fill('SELECT COUNT(*) AS row_count FROM axon_prod_like_fixture');
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+    await expect(page.locator('.res-meta')).toContainText(/browser · wasm/i, {
+      timeout: 30_000,
+    });
+    await expect(page.locator('table.grid')).toContainText('row_count');
+    await expect(page.locator('table.grid')).toContainText('4');
+
+    const persisted = await page.evaluate(
+      () => localStorage.getItem('axon.connect.catalogs.v1') ?? '',
+    );
+    expect(persisted).not.toContain('session-local');
+  });
+
+  test('unsupported local Delta features do not leave an active local registry id', async ({
+    page,
+  }) => {
+    const tableDir = fileURLToPath(
+      new URL('./fixtures/unsupported-feature-table', import.meta.url),
+    );
+
+    await page.goto('/');
+    await page.getByRole('button', { name: /^Connect$/ }).click();
+    const sourceDialog = page.getByRole('dialog', { name: 'Connect a Delta source' });
+    await sourceDialog.locator('.cc-source-card', { hasText: 'Local files' }).click();
+    await sourceDialog.getByRole('button', { name: /Continue/ }).click();
+
+    const localDialog = page.getByRole('dialog', { name: 'Connect a local Delta folder' });
+    await localDialog.getByLabel('Local Delta table directory').setInputFiles(tableDir);
+    await expect(localDialog).toContainText(/unsupported features: deletionVectors/i);
+
+    const activeId = await page.evaluate(
+      (key) => localStorage.getItem(key),
+      LOCAL_DELTA_ACTIVE_ID_KEY,
+    );
+    expect(activeId).toBeNull();
+  });
+
+  test('disconnecting a local Delta catalog removes its local registry entry', async ({ page }) => {
+    const tableDir = fileURLToPath(new URL('../public/fixtures/prod-like/table', import.meta.url));
+    const localRegistryId = await connectLocalDeltaFolder(page, tableDir, 'local-prod-like');
+
+    await expect
+      .poll(() => localDeltaRegistryRecord(page, localRegistryId))
+      .toMatchObject({ id: localRegistryId });
+
+    await page.locator('.conn-pill').click();
+    const panel = page.getByRole('dialog', { name: 'Connected catalogs' });
+    await panel.locator('[title="Manage connection"]').first().click();
+    await panel.getByRole('button', { name: /Disconnect catalog/ }).click();
+
+    await expect(page.locator('.conn-pill')).toContainText('sample-lake');
+    await expect
+      .poll(async () => ({
+        activeId: await page.evaluate(
+          (key) => localStorage.getItem(key),
+          LOCAL_DELTA_ACTIVE_ID_KEY,
+        ),
+        record: await localDeltaRegistryRecord(page, localRegistryId),
+      }))
+      .toEqual({ activeId: null, record: null });
+  });
+
+  test('reload reopens the active local Delta table from the persisted local registry', async ({
+    page,
+  }) => {
+    const tableDir = fileURLToPath(new URL('../public/fixtures/prod-like/table', import.meta.url));
+
+    await page.goto('/');
+    await page.getByRole('button', { name: /^Connect$/ }).click();
+    const sourceDialog = page.getByRole('dialog', { name: 'Connect a Delta source' });
+    await sourceDialog.locator('.cc-source-card', { hasText: 'Local files' }).click();
+    await sourceDialog.getByRole('button', { name: /Continue/ }).click();
+    const localDialog = page.getByRole('dialog', { name: 'Connect a local Delta folder' });
+    await localDialog.getByLabel('Local Delta table directory').setInputFiles(tableDir);
+    await localDialog.getByRole('button', { name: 'Test connection' }).click();
+    await localDialog.getByRole('button', { name: /Discover tables/ }).click();
+    const reviewDialog = page.getByRole('dialog', { name: 'Review & name catalog' });
+    await reviewDialog.getByLabel('Catalog alias').fill('local-prod-like');
+    await reviewDialog.getByRole('button', { name: /Connect catalog/ }).click();
+    await expect(page.locator('.conn-pill')).toContainText('local-prod-like', {
+      timeout: 15_000,
+    });
+
+    await page.reload();
+    await expect(page.locator('.conn-pill')).toContainText('local-prod-like', {
+      timeout: 15_000,
+    });
+    await expect(page.locator('.queryref-bar .qref')).toContainText('axon_prod_like_fixture');
+
+    await page
+      .locator('.code-input')
+      .fill('SELECT COUNT(*) AS row_count FROM axon_prod_like_fixture');
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+    await expect(page.locator('.res-meta')).toContainText(/browser · wasm/i, {
+      timeout: 30_000,
+    });
+    await expect(page.locator('table.grid')).toContainText('row_count');
+    await expect(page.locator('table.grid')).toContainText('4');
+  });
+
   test('loads selected connected catalog, populates table, runs a query', async ({
     page,
     context,
@@ -363,3 +527,101 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(consoleErrors, `console errors:\n${consoleErrors.join('\n')}`).toEqual([]);
   });
 });
+
+async function connectLocalDeltaFolder(
+  page: Page,
+  tableDir: string,
+  alias: string,
+  options: { expectPersisted?: boolean } = {},
+): Promise<string> {
+  await page.goto('/');
+  await page.getByRole('button', { name: /^Connect$/ }).click();
+
+  const sourceDialog = page.getByRole('dialog', { name: 'Connect a Delta source' });
+  await sourceDialog.locator('.cc-source-card', { hasText: 'Local files' }).click();
+  await sourceDialog.getByRole('button', { name: /Continue/ }).click();
+
+  const localDialog = page.getByRole('dialog', { name: 'Connect a local Delta folder' });
+  await localDialog.getByLabel('Local Delta table directory').setInputFiles(tableDir);
+  await expect(localDialog).toContainText(/Delta log parsed/i);
+  await localDialog.getByRole('button', { name: 'Test connection' }).click();
+  await expect(localDialog).toContainText(/source check passed/i);
+  await localDialog.getByRole('button', { name: /Discover tables/ }).click();
+  const reviewDialog = page.getByRole('dialog', { name: 'Review & name catalog' });
+  await expect(reviewDialog).toContainText(/Detected 1 local Delta table/i);
+  await reviewDialog.getByLabel('Catalog alias').fill(alias);
+  await reviewDialog.getByRole('button', { name: /Connect catalog/ }).click();
+
+  await expect(page.locator('.conn-pill')).toContainText(alias, { timeout: 15_000 });
+  await expect(page.locator('.queryref-bar .qref')).toContainText('axon_prod_like_fixture');
+
+  const localRegistryId = await page.evaluate((catalogAlias) => {
+    const catalogs = JSON.parse(localStorage.getItem('axon.connect.catalogs.v1') ?? '[]') as Array<{
+      alias: string;
+      schemas: Array<{ tables: Array<{ localRegistryId?: string }> }>;
+    }>;
+    return catalogs
+      .find((catalog) => catalog.alias === catalogAlias)
+      ?.schemas.flatMap((schema) => schema.tables)
+      .find((table) => table.localRegistryId)?.localRegistryId;
+  }, alias);
+  if (options.expectPersisted !== false) expect(localRegistryId).toBeTruthy();
+  return localRegistryId ?? '';
+}
+
+async function blockDurableLocalDeltaRegistry(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    if (navigator.storage) {
+      Object.defineProperty(navigator.storage, 'getDirectory', {
+        configurable: true,
+        value: undefined,
+      });
+    }
+    Object.defineProperty(window.indexedDB, 'open', {
+      configurable: true,
+      value: () => {
+        throw new DOMException('blocked by test', 'InvalidStateError');
+      },
+    });
+  });
+}
+
+async function localDeltaRegistryRecord(
+  page: Page,
+  registryId: string,
+): Promise<{ id: string; backend: string; paths: string[] } | null> {
+  return page.evaluate(async (id) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('axon-local-delta-registry', 1);
+      request.onerror = () => reject(request.error ?? new Error('open failed'));
+      request.onsuccess = () => resolve(request.result);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains('tables')) {
+          db.createObjectStore('tables', { keyPath: 'id' });
+        }
+      };
+    });
+    return new Promise<{ id: string; backend: string; paths: string[] } | null>(
+      (resolve, reject) => {
+        const tx = db.transaction('tables', 'readonly');
+        const request = tx.objectStore('tables').get(id);
+        request.onerror = () => reject(request.error ?? new Error('read failed'));
+        request.onsuccess = () => {
+          const record = request.result as
+            | { id: string; backend: string; files: Array<{ relativePath: string }> }
+            | undefined;
+          resolve(
+            record
+              ? {
+                  id: record.id,
+                  backend: record.backend,
+                  paths: record.files.map((file) => file.relativePath).sort(),
+                }
+              : null,
+          );
+        };
+      },
+    );
+  }, registryId);
+}

@@ -1,10 +1,10 @@
 import { resolve } from 'node:path';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 
 export default defineConfig({
-  plugins: [basicSsl(), react()],
+  plugins: [blockLegacySandboxRoute(), basicSsl(), react()],
   server: {
     host: '127.0.0.1',
     port: 5173,
@@ -14,8 +14,32 @@ export default defineConfig({
     rollupOptions: {
       input: {
         editor: resolve(__dirname, 'index.html'),
-        sandbox: resolve(__dirname, 'sandbox.html'),
       },
     },
   },
 });
+
+function blockLegacySandboxRoute(): Plugin {
+  return {
+    name: 'axon-block-legacy-sandbox-route',
+    configureServer(server) {
+      server.middlewares.use(blockSandboxHtml);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(blockSandboxHtml);
+    },
+  };
+}
+
+function blockSandboxHtml(
+  req: { url?: string },
+  res: { statusCode: number; end: (body?: string) => void },
+  next: () => void,
+): void {
+  if ((req.url ?? '').split('?')[0] === '/sandbox.html') {
+    res.statusCode = 404;
+    res.end('Not found');
+    return;
+  }
+  next();
+}

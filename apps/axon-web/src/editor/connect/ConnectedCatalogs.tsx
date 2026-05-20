@@ -125,7 +125,7 @@ export function ConnectedCatalogsPanel({
                               activeTable?.catalogId === cat.id &&
                               activeTable.schemaName === sch.name &&
                               activeTable.tableName === tbl.name;
-                            const queryable = !!tbl.manifestUrl;
+                            const queryable = !!tbl.manifestUrl || !!tbl.localRegistryId;
                             return (
                               <button
                                 key={tbl.name}

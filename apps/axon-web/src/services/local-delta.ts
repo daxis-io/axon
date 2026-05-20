@@ -1,0 +1,1137 @@
+import init, { resolve_delta_snapshot_from_manifest } from '../wasm/axon_web_wasm.js';
+import type { BrowserHttpSnapshotDescriptor, PartitionColumnType } from '../axon-browser-sdk.ts';
+
+export type LocalFileSystemFileHandle = {
+  readonly kind: 'file';
+  readonly name: string;
+  getFile(): Promise<File>;
+};
+
+export type LocalFileSystemDirectoryHandle = {
+  readonly kind: 'directory';
+  readonly name: string;
+  entries(): AsyncIterableIterator<
+    [string, LocalFileSystemDirectoryHandle | LocalFileSystemFileHandle]
+  >;
+};
+
+export type LocalDeltaErrorCode =
+  | 'empty_selection'
+  | 'invalid_path'
+  | 'missing_delta_log'
+  | 'missing_active_file'
+  | 'unsupported_delta_feature'
+  | 'invalid_delta_log'
+  | 'registry_unavailable';
+
+export class LocalDeltaError extends Error {
+  readonly name = 'LocalDeltaError';
+
+  constructor(
+    readonly code: LocalDeltaErrorCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export type LocalDeltaDiscoveredTable = {
+  name: string;
+  snapshot: number;
+  rows: number;
+  files: number;
+  size: string;
+  protocol: string;
+  features?: string[];
+  uri?: string;
+  columns?: { name: string; type: string; part?: boolean }[];
+};
+
+export type LocalDeltaDiscovery = {
+  summary: string;
+  schemas: Array<{
+    name: string;
+    tableCount: number;
+    included: boolean;
+    tables: LocalDeltaDiscoveredTable[];
+  }>;
+};
+
+export type LocalDeltaRuntime = {
+  kind: 'local_delta';
+  registryId: string;
+  persistence: 'durable' | 'session';
+  tableRootName: string;
+  tableName: string;
+  schemaName: string;
+  storageLabel: string;
+  descriptor: BrowserHttpSnapshotDescriptor;
+  discovery: LocalDeltaDiscovery;
+};
+
+export type OpenLocalDeltaOptions = {
+  schemaName?: string;
+  tableName?: string;
+  registryId?: string;
+};
+
+type ObjectKind = 'commit_json' | 'checkpoint_parquet' | 'last_checkpoint' | 'delta_log_object';
+
+type LocalDeltaFileEntry = {
+  file: File;
+  browserPath: string;
+  relativePath: string;
+};
+
+type LocalDeltaTableFiles = {
+  registryId?: string;
+  tableRootName: string;
+  filesByRelativePath: Map<string, LocalDeltaFileEntry>;
+  logEntries: LocalDeltaFileEntry[];
+  dataEntries: LocalDeltaFileEntry[];
+};
+
+type LocalDeltaRegistryBackend = 'opfs' | 'indexeddb_blob';
+
+type LocalDeltaRegistryFileRecord = {
+  relativePath: string;
+  sizeBytes: number;
+  lastModified?: number;
+  mimeType?: string;
+  bytes?: ArrayBuffer;
+};
+
+type LocalDeltaRegistryRecord = {
+  id: string;
+  tableRootName: string;
+  importedAtEpochMs: number;
+  backend: LocalDeltaRegistryBackend;
+  files: LocalDeltaRegistryFileRecord[];
+};
+
+type ResolvedSnapshot = {
+  table_uri: string;
+  snapshot_version: number;
+  partition_column_types?: Partial<Record<string, PartitionColumnType>>;
+  active_files: Array<{
+    path: string;
+    size_bytes: number;
+    partition_values: Record<string, string | null>;
+    stats?: string;
+  }>;
+};
+
+type LocalLogFacts = {
+  tableName?: string;
+  minReaderVersion?: number;
+  minWriterVersion?: number;
+  schemaString?: string;
+  partitionColumns: string[];
+};
+
+const LOCAL_DELTA_DB_NAME = 'axon-local-delta-registry';
+const LOCAL_DELTA_DB_VERSION = 1;
+const LOCAL_DELTA_STORE = 'tables';
+const LOCAL_DELTA_OPFS_ROOT = 'axon-local-delta-tables';
+const LOCAL_DELTA_ACTIVE_ID_KEY = 'axon-local-delta-active-id';
+const LOCAL_DELTA_INDEXED_DB_BLOB_BUDGET_BYTES = 512 * 1024 * 1024;
+const LOCAL_DELTA_PERSISTENCE_CONCURRENCY = 4;
+
+let wasmReady: Promise<unknown> | undefined;
+const sessionLocalDeltaTables = new Map<string, LocalDeltaTableFiles>();
+const localObjectUrlsByRegistryId = new Map<string, Set<string>>();
+
+export async function openLocalDeltaTableFromFileList(
+  files: FileList | File[] | null,
+  options: OpenLocalDeltaOptions = {},
+): Promise<LocalDeltaRuntime> {
+  const table = collectLocalDeltaTableFiles(files);
+  return openLocalDeltaRuntime(table, options);
+}
+
+export async function openLocalDeltaTableFromDirectoryHandle(
+  directory: LocalFileSystemDirectoryHandle,
+  options: OpenLocalDeltaOptions = {},
+): Promise<LocalDeltaRuntime> {
+  const entries = await collectLocalDeltaDirectoryEntries(directory);
+  const table = buildLocalDeltaTableFiles(directory.name || 'delta-table', entries);
+  return openLocalDeltaRuntime(table, options);
+}
+
+export async function loadLocalDeltaRuntime(
+  registryId: string,
+  options: OpenLocalDeltaOptions = {},
+): Promise<LocalDeltaRuntime> {
+  const table = sessionLocalDeltaTables.get(registryId) ?? (await loadLocalDeltaTable(registryId));
+  if (!table) {
+    throw new LocalDeltaError(
+      'registry_unavailable',
+      'Local Delta table registry entry could not be reopened. Select the folder again.',
+    );
+  }
+  sessionLocalDeltaTables.set(registryId, table);
+  return buildLocalDeltaRuntime(table, { ...options, registryId }, 'durable');
+}
+
+export async function loadActiveLocalDeltaRuntime(
+  options: OpenLocalDeltaOptions = {},
+): Promise<LocalDeltaRuntime | undefined> {
+  const activeId = activeLocalDeltaRegistryId();
+  if (!activeId) return undefined;
+  return loadLocalDeltaRuntime(activeId, options);
+}
+
+export function clearActiveLocalDeltaRegistryId(): void {
+  try {
+    localStorage.removeItem(LOCAL_DELTA_ACTIVE_ID_KEY);
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+export function releaseLocalDeltaObjectUrls(registryId?: string): void {
+  if (registryId) {
+    const urls = localObjectUrlsByRegistryId.get(registryId);
+    if (!urls) return;
+    for (const url of urls) URL.revokeObjectURL(url);
+    localObjectUrlsByRegistryId.delete(registryId);
+    return;
+  }
+
+  for (const urls of localObjectUrlsByRegistryId.values()) {
+    for (const url of urls) URL.revokeObjectURL(url);
+  }
+  localObjectUrlsByRegistryId.clear();
+}
+
+export async function unregisterLocalDeltaRuntime(registryId: string): Promise<void> {
+  sessionLocalDeltaTables.delete(registryId);
+  releaseLocalDeltaObjectUrls(registryId);
+
+  if (activeLocalDeltaRegistryId() === registryId) {
+    clearActiveLocalDeltaRegistryId();
+  }
+
+  let record: LocalDeltaRegistryRecord | undefined;
+  try {
+    record = await getLocalDeltaRegistryRecord(registryId);
+  } catch {
+    // Missing or blocked registry access should not keep session state alive.
+  }
+
+  if (record?.backend === 'opfs') {
+    await removeOpfsLocalDeltaTable(registryId);
+  }
+
+  try {
+    await deleteLocalDeltaRegistryRecord(registryId);
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+async function ensureWasm(): Promise<unknown> {
+  wasmReady ??= init();
+  return wasmReady;
+}
+
+async function buildLocalDeltaRuntime(
+  table: LocalDeltaTableFiles,
+  options: OpenLocalDeltaOptions,
+  persistence: LocalDeltaRuntime['persistence'],
+): Promise<LocalDeltaRuntime> {
+  await ensureWasm();
+  const facts = await readLocalLogFacts(table.logEntries);
+  const tableName = sanitizeSqlIdentifier(
+    options.tableName ?? facts.tableName ?? table.tableRootName,
+  );
+  const schemaName = options.schemaName ?? 'default';
+  const registryId =
+    table.registryId ?? options.registryId ?? localDeltaRegistryId(table.tableRootName);
+  const tableUri = localTableUri(table.tableRootName);
+
+  const logObjects = table.logEntries.map((entry) => ({
+    relative_path: entry.relativePath,
+    url: trackLocalObjectUrl(registryId, URL.createObjectURL(entry.file)),
+    size_bytes: entry.file.size,
+    kind: classifyObject(entry.relativePath),
+  }));
+  const wasmManifest = {
+    objects: logObjects.map((object) => ({
+      relative_path: object.relative_path,
+      url: object.url,
+      size_bytes: object.size_bytes,
+    })),
+  };
+  const snapshotJson = await resolve_delta_snapshot_from_manifest(
+    JSON.stringify(wasmManifest),
+    tableUri,
+  );
+  const snapshot = JSON.parse(snapshotJson) as ResolvedSnapshot;
+  const partitionTypes =
+    snapshot.partition_column_types ??
+    partitionTypesFromSchema(facts.schemaString, facts.partitionColumns);
+  const descriptor: BrowserHttpSnapshotDescriptor = {
+    table_uri: snapshot.table_uri,
+    snapshot_version: snapshot.snapshot_version,
+    partition_column_types: partitionTypes,
+    browser_compatibility: { capabilities: {} },
+    required_capabilities: { capabilities: {} },
+    active_files: snapshot.active_files.map((file) => {
+      const entry = localFileForDeltaPath(table, file.path);
+      if (!entry) {
+        throw new LocalDeltaError(
+          'missing_active_file',
+          `Delta log references '${file.path}', but that file was not present in the selected folder.`,
+        );
+      }
+      if (entry.file.size !== file.size_bytes) {
+        throw new LocalDeltaError(
+          'missing_active_file',
+          `Active file '${file.path}' size ${entry.file.size} did not match Delta log size ${file.size_bytes}.`,
+        );
+      }
+      return {
+        path: file.path,
+        url: trackLocalObjectUrl(registryId, URL.createObjectURL(entry.file)),
+        size_bytes: file.size_bytes,
+        partition_values: file.partition_values,
+        stats: file.stats,
+      };
+    }),
+  };
+
+  return {
+    kind: 'local_delta',
+    registryId,
+    persistence,
+    tableRootName: table.tableRootName,
+    tableName,
+    schemaName,
+    storageLabel: `Local folder: ${table.tableRootName}`,
+    descriptor,
+    discovery: discoveryFromRuntimeFacts(schemaName, tableName, descriptor, facts),
+  };
+}
+
+async function openLocalDeltaRuntime(
+  table: LocalDeltaTableFiles,
+  options: OpenLocalDeltaOptions,
+): Promise<LocalDeltaRuntime> {
+  const registryId =
+    options.registryId ?? table.registryId ?? localDeltaRegistryId(table.tableRootName);
+  const sessionTable = { ...table, registryId };
+  let runtime: LocalDeltaRuntime;
+  try {
+    runtime = await buildLocalDeltaRuntime(sessionTable, options, 'session');
+  } catch (error) {
+    releaseLocalDeltaObjectUrls(registryId);
+    throw error;
+  }
+  sessionLocalDeltaTables.set(registryId, sessionTable);
+
+  const durableTable = durableLocalDeltaTableForRuntime(sessionTable, runtime);
+  const persisted = await tryPersistLocalDeltaTable(durableTable);
+  if (persisted) {
+    return { ...runtime, persistence: 'durable' };
+  }
+  return runtime;
+}
+
+function collectLocalDeltaTableFiles(files: FileList | File[] | null): LocalDeltaTableFiles {
+  const selectedFiles = Array.from(files ?? []);
+  if (selectedFiles.length === 0) {
+    throw new LocalDeltaError('empty_selection', 'Select a local Delta table directory first.');
+  }
+
+  const rawEntries = selectedFiles.map((file) => ({
+    file,
+    browserPath: normalizeBrowserFilePath(fileBrowserPath(file)),
+  }));
+  const rootPrefix = localDeltaRootPrefix(rawEntries.map((entry) => entry.browserPath));
+  const entries: LocalDeltaFileEntry[] = [];
+  for (const entry of rawEntries) {
+    const relativePath = tableRelativePath(entry.browserPath, rootPrefix);
+    if (
+      relativePath === undefined ||
+      relativePath.length === 0 ||
+      isIgnoredLocalFile(relativePath)
+    ) {
+      continue;
+    }
+    entries.push({ ...entry, relativePath });
+  }
+  return buildLocalDeltaTableFiles(localTableRootName(rootPrefix), entries);
+}
+
+async function collectLocalDeltaDirectoryEntries(
+  directory: LocalFileSystemDirectoryHandle,
+  prefix = '',
+): Promise<LocalDeltaFileEntry[]> {
+  const entries: LocalDeltaFileEntry[] = [];
+  for await (const [name, handle] of directory.entries()) {
+    const relativePath = prefix ? `${prefix}/${name}` : name;
+    if (isIgnoredLocalFile(relativePath)) continue;
+    if (handle.kind === 'directory') {
+      entries.push(...(await collectLocalDeltaDirectoryEntries(handle, relativePath)));
+    } else {
+      validateLocalRelativePath(relativePath);
+      entries.push({
+        file: await handle.getFile(),
+        browserPath: `${directory.name}/${relativePath}`,
+        relativePath,
+      });
+    }
+  }
+  return entries;
+}
+
+function buildLocalDeltaTableFiles(
+  tableRootName: string,
+  entries: LocalDeltaFileEntry[],
+  registryId?: string,
+): LocalDeltaTableFiles {
+  const filesByRelativePath = new Map<string, LocalDeltaFileEntry>();
+  for (const entry of entries) {
+    validateLocalRelativePath(entry.relativePath);
+    if (filesByRelativePath.has(entry.relativePath)) {
+      throw new LocalDeltaError(
+        'invalid_path',
+        `Selected folder contained duplicate path '${entry.relativePath}'.`,
+      );
+    }
+    filesByRelativePath.set(entry.relativePath, entry);
+  }
+
+  const logEntries = entries
+    .filter((entry) => entry.relativePath.startsWith('_delta_log/'))
+    .sort(compareLocalDeltaEntries);
+  if (logEntries.length === 0) {
+    throw new LocalDeltaError(
+      'missing_delta_log',
+      'Selected folder is not a Delta table because it does not contain _delta_log/.',
+    );
+  }
+
+  return {
+    registryId,
+    tableRootName,
+    filesByRelativePath,
+    logEntries,
+    dataEntries: entries
+      .filter((entry) => isParquetDataFile(entry.relativePath))
+      .sort(compareLocalDeltaEntries),
+  };
+}
+
+async function persistLocalDeltaTable(
+  table: LocalDeltaTableFiles,
+  requestedId?: string,
+): Promise<LocalDeltaTableFiles> {
+  const id = requestedId ?? table.registryId ?? localDeltaRegistryId(table.tableRootName);
+  const baseRecord = {
+    id,
+    tableRootName: table.tableRootName,
+    importedAtEpochMs: Date.now(),
+  };
+
+  if (await tryWriteLocalDeltaTableToOpfs(id, table)) {
+    try {
+      await putLocalDeltaRegistryRecord({
+        ...baseRecord,
+        backend: 'opfs',
+        files: localDeltaMetadataRecords(table),
+      });
+    } catch (error) {
+      await removeOpfsLocalDeltaTable(id);
+      throw error;
+    }
+    return { ...table, registryId: id };
+  }
+
+  await putLocalDeltaRegistryRecord({
+    ...baseRecord,
+    backend: 'indexeddb_blob',
+    files: await localDeltaIndexedDbBlobRecords(table),
+  });
+  return { ...table, registryId: id };
+}
+
+async function tryPersistLocalDeltaTable(table: LocalDeltaTableFiles): Promise<boolean> {
+  try {
+    const persisted = await persistLocalDeltaTable(table);
+    sessionLocalDeltaTables.set(
+      persisted.registryId ?? table.registryId ?? table.tableRootName,
+      persisted,
+    );
+    if (persisted.registryId) {
+      setActiveLocalDeltaRegistryId(persisted.registryId);
+    }
+    return true;
+  } catch (error) {
+    console.warn('local Delta table import could not be persisted:', error);
+    return false;
+  }
+}
+
+function durableLocalDeltaTableForRuntime(
+  table: LocalDeltaTableFiles,
+  runtime: LocalDeltaRuntime,
+): LocalDeltaTableFiles {
+  const entries = new Map<string, LocalDeltaFileEntry>();
+  for (const entry of table.logEntries) entries.set(entry.relativePath, entry);
+  for (const file of runtime.descriptor.active_files) {
+    const entry = localFileForDeltaPath(table, file.path);
+    if (entry) entries.set(entry.relativePath, entry);
+  }
+  return buildLocalDeltaTableFiles(table.tableRootName, [...entries.values()], runtime.registryId);
+}
+
+async function loadLocalDeltaTable(registryId: string): Promise<LocalDeltaTableFiles | undefined> {
+  const records = await getLocalDeltaRegistryRecords();
+  const record = records.find((candidate) => candidate.id === registryId);
+  if (!record) return undefined;
+
+  if (record.backend === 'opfs') {
+    const table = await loadOpfsLocalDeltaTable(record);
+    if (table) return table;
+    if (record.files.every((file) => file.bytes)) {
+      return loadIndexedDbBlobLocalDeltaTable(record);
+    }
+    return undefined;
+  }
+
+  return loadIndexedDbBlobLocalDeltaTable(record);
+}
+
+function localDeltaMetadataRecords(table: LocalDeltaTableFiles): LocalDeltaRegistryFileRecord[] {
+  return [...table.filesByRelativePath.values()].map((entry) => localDeltaMetadataRecord(entry));
+}
+
+function localDeltaMetadataRecord(entry: LocalDeltaFileEntry): LocalDeltaRegistryFileRecord {
+  return {
+    relativePath: entry.relativePath,
+    sizeBytes: entry.file.size,
+    lastModified: entry.file.lastModified,
+    mimeType: entry.file.type,
+  };
+}
+
+async function localDeltaIndexedDbBlobRecords(
+  table: LocalDeltaTableFiles,
+): Promise<LocalDeltaRegistryFileRecord[]> {
+  const totalBytes = localDeltaTableSizeBytes(table);
+  if (totalBytes > LOCAL_DELTA_INDEXED_DB_BLOB_BUDGET_BYTES) {
+    throw new LocalDeltaError(
+      'registry_unavailable',
+      `Local Delta table ${formatBytes(totalBytes)} exceeds the ${formatBytes(
+        LOCAL_DELTA_INDEXED_DB_BLOB_BUDGET_BYTES,
+      )} IndexedDB persistence budget.`,
+    );
+  }
+
+  return mapWithConcurrency([...table.filesByRelativePath.values()], async (entry) => ({
+    ...localDeltaMetadataRecord(entry),
+    bytes: await entry.file.arrayBuffer(),
+  }));
+}
+
+function localDeltaTableSizeBytes(table: LocalDeltaTableFiles): number {
+  return [...table.filesByRelativePath.values()].reduce(
+    (total, entry) => total + entry.file.size,
+    0,
+  );
+}
+
+async function tryWriteLocalDeltaTableToOpfs(
+  id: string,
+  table: LocalDeltaTableFiles,
+): Promise<boolean> {
+  const root = await opfsLocalDeltaRoot();
+  if (!root) return false;
+
+  try {
+    const tableDirectory = await root.getDirectoryHandle(id, { create: true });
+    await mapWithConcurrency([...table.filesByRelativePath.values()], (entry) =>
+      writeOpfsFile(tableDirectory, entry.relativePath, entry.file),
+    );
+    return true;
+  } catch (error) {
+    console.warn('OPFS local Delta table import failed; using IndexedDB blob registry:', error);
+    try {
+      await root.removeEntry(id, { recursive: true });
+    } catch {
+      // Best-effort cleanup only.
+    }
+    return false;
+  }
+}
+
+async function removeOpfsLocalDeltaTable(registryId: string): Promise<void> {
+  const root = await opfsLocalDeltaRoot();
+  if (!root) return;
+  try {
+    await root.removeEntry(registryId, { recursive: true });
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+async function loadOpfsLocalDeltaTable(
+  record: LocalDeltaRegistryRecord,
+): Promise<LocalDeltaTableFiles | undefined> {
+  const root = await opfsLocalDeltaRoot();
+  if (!root) return undefined;
+
+  try {
+    const tableDirectory = await root.getDirectoryHandle(record.id);
+    const entries = await Promise.all(
+      record.files.map(async (fileRecord) => {
+        const fileHandle = await getOpfsFileHandle(tableDirectory, fileRecord.relativePath);
+        const file = await fileHandle.getFile();
+        if (file.size !== fileRecord.sizeBytes) {
+          throw new Error(
+            `Persisted local file '${fileRecord.relativePath}' size ${file.size} did not match registry size ${fileRecord.sizeBytes}.`,
+          );
+        }
+        return localDeltaFileEntry(record.tableRootName, fileRecord.relativePath, file);
+      }),
+    );
+    return buildLocalDeltaTableFiles(record.tableRootName, entries, record.id);
+  } catch (error) {
+    console.warn('Persisted OPFS local Delta table could not be reopened:', error);
+    return undefined;
+  }
+}
+
+function loadIndexedDbBlobLocalDeltaTable(record: LocalDeltaRegistryRecord): LocalDeltaTableFiles {
+  const entries = record.files.map((fileRecord) => {
+    if (!fileRecord.bytes) {
+      throw new LocalDeltaError(
+        'registry_unavailable',
+        `Persisted local file '${fileRecord.relativePath}' was missing stored bytes.`,
+      );
+    }
+    const file = new File([fileRecord.bytes], fileRecord.relativePath.split('/').at(-1) ?? 'file', {
+      lastModified: fileRecord.lastModified,
+      type: fileRecord.mimeType,
+    });
+    if (file.size !== fileRecord.sizeBytes) {
+      throw new LocalDeltaError(
+        'registry_unavailable',
+        `Persisted local file '${fileRecord.relativePath}' size ${file.size} did not match registry size ${fileRecord.sizeBytes}.`,
+      );
+    }
+    return localDeltaFileEntry(record.tableRootName, fileRecord.relativePath, file);
+  });
+  return buildLocalDeltaTableFiles(record.tableRootName, entries, record.id);
+}
+
+async function readLocalLogFacts(logEntries: LocalDeltaFileEntry[]): Promise<LocalLogFacts> {
+  const facts: LocalLogFacts = { partitionColumns: [] };
+  const commitEntries = logEntries.filter((entry) =>
+    /^_delta_log\/\d{20}\.json$/.test(entry.relativePath),
+  );
+
+  for (const entry of commitEntries) {
+    const text = await entry.file.text();
+    for (const [index, line] of text.split(/\r?\n/).entries()) {
+      if (!line.trim()) continue;
+      let action: unknown;
+      try {
+        action = JSON.parse(line) as unknown;
+      } catch (error) {
+        throw new LocalDeltaError(
+          'invalid_delta_log',
+          `Could not parse ${entry.relativePath} line ${index + 1}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      applyLocalLogAction(facts, action);
+    }
+  }
+
+  return facts;
+}
+
+function applyLocalLogAction(facts: LocalLogFacts, action: unknown): void {
+  if (!isRecord(action)) return;
+
+  if (isRecord(action.protocol)) {
+    const features = [
+      ...stringArray(action.protocol.readerFeatures),
+      ...stringArray(action.protocol.writerFeatures),
+    ];
+    if (features.length > 0) {
+      throw new LocalDeltaError(
+        'unsupported_delta_feature',
+        `Selected local Delta table requires unsupported features: ${features.join(', ')}.`,
+      );
+    }
+    facts.minReaderVersion = numberField(action.protocol, 'minReaderVersion');
+    facts.minWriterVersion = numberField(action.protocol, 'minWriterVersion');
+  }
+
+  if (isRecord(action.metaData)) {
+    const configuration = action.metaData.configuration;
+    if (isRecord(configuration)) {
+      const columnMappingMode = stringField(configuration, 'delta.columnMapping.mode');
+      if (columnMappingMode && columnMappingMode !== 'none') {
+        throw new LocalDeltaError(
+          'unsupported_delta_feature',
+          `Selected local Delta table uses unsupported column mapping mode '${columnMappingMode}'.`,
+        );
+      }
+      const deletionVectorsEnabled = configuration['delta.enableDeletionVectors'];
+      if (deletionVectorsEnabled === true || deletionVectorsEnabled === 'true') {
+        throw new LocalDeltaError(
+          'unsupported_delta_feature',
+          'Selected local Delta table uses deletion vectors, which this browser runtime cannot apply.',
+        );
+      }
+    }
+    facts.tableName = stringField(action.metaData, 'name') ?? facts.tableName;
+    facts.schemaString = stringField(action.metaData, 'schemaString') ?? facts.schemaString;
+    if (Array.isArray(action.metaData.partitionColumns)) {
+      facts.partitionColumns = action.metaData.partitionColumns.filter(
+        (value): value is string => typeof value === 'string',
+      );
+    }
+  }
+
+  if (isRecord(action.add) && isRecord(action.add.deletionVector)) {
+    throw new LocalDeltaError(
+      'unsupported_delta_feature',
+      'Selected local Delta table uses deletion vectors, which this browser runtime cannot apply.',
+    );
+  }
+}
+
+function discoveryFromRuntimeFacts(
+  schemaName: string,
+  tableName: string,
+  descriptor: BrowserHttpSnapshotDescriptor,
+  facts: LocalLogFacts,
+): LocalDeltaDiscovery {
+  const rows = descriptor.active_files.reduce((total, file) => {
+    const statsRows = rowsFromStats(file.stats);
+    return statsRows === undefined ? total : total + statsRows;
+  }, 0);
+  const sizeBytes = descriptor.active_files.reduce((total, file) => total + file.size_bytes, 0);
+  const protocol =
+    facts.minReaderVersion !== undefined && facts.minWriterVersion !== undefined
+      ? `r${facts.minReaderVersion}/w${facts.minWriterVersion}`
+      : 'json-log';
+
+  return {
+    summary: 'Detected 1 local Delta table',
+    schemas: [
+      {
+        name: schemaName,
+        tableCount: 1,
+        included: true,
+        tables: [
+          {
+            name: tableName,
+            snapshot: descriptor.snapshot_version,
+            rows,
+            files: descriptor.active_files.length,
+            size: formatBytes(sizeBytes),
+            protocol,
+            uri: descriptor.table_uri,
+            columns: columnsFromSchema(facts.schemaString, facts.partitionColumns),
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function columnsFromSchema(
+  schemaString: string | undefined,
+  partitionColumns: readonly string[],
+): { name: string; type: string; part?: boolean }[] | undefined {
+  if (!schemaString) return undefined;
+  try {
+    const schema = JSON.parse(schemaString) as unknown;
+    if (!isRecord(schema) || !Array.isArray(schema.fields)) return undefined;
+    return schema.fields.filter(isRecord).map((field) => {
+      const name = stringField(field, 'name') ?? 'column';
+      return {
+        name,
+        type: typeof field.type === 'string' ? field.type : 'unknown',
+        part: partitionColumns.includes(name) || undefined,
+      };
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function rowsFromStats(stats: string | undefined): number | undefined {
+  if (!stats) return undefined;
+  try {
+    const parsed = JSON.parse(stats) as unknown;
+    return isRecord(parsed) && typeof parsed.numRecords === 'number'
+      ? parsed.numRecords
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function partitionTypesFromSchema(
+  schemaString: string | undefined,
+  partitionColumns: readonly string[],
+): Partial<Record<string, PartitionColumnType>> {
+  if (!schemaString) {
+    return Object.fromEntries(partitionColumns.map((name) => [name, 'string']));
+  }
+
+  try {
+    const schema = JSON.parse(schemaString) as unknown;
+    if (!isRecord(schema) || !Array.isArray(schema.fields)) return {};
+    const fieldTypes = new Map<string, PartitionColumnType>();
+    for (const field of schema.fields) {
+      if (!isRecord(field)) continue;
+      const name = stringField(field, 'name');
+      if (!name) continue;
+      fieldTypes.set(name, partitionType(field.type));
+    }
+    return Object.fromEntries(
+      partitionColumns.map((name) => [name, fieldTypes.get(name) ?? 'string']),
+    );
+  } catch {
+    return Object.fromEntries(partitionColumns.map((name) => [name, 'string']));
+  }
+}
+
+function partitionType(value: unknown): PartitionColumnType {
+  if (value === 'long' || value === 'integer' || value === 'short' || value === 'byte') {
+    return 'int64';
+  }
+  if (value === 'boolean') return 'boolean';
+  if (value === 'string' || value === undefined) return 'string';
+  return 'unsupported';
+}
+
+function localDeltaFileEntry(
+  tableRootName: string,
+  relativePath: string,
+  file: File,
+): LocalDeltaFileEntry {
+  return {
+    file,
+    browserPath: `${tableRootName}/${relativePath}`,
+    relativePath,
+  };
+}
+
+function localDeltaRegistryId(tableRootName: string): string {
+  const safeName = tableRootName.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  return `${safeName || 'delta-table'}-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+}
+
+function setActiveLocalDeltaRegistryId(id: string): void {
+  try {
+    localStorage.setItem(LOCAL_DELTA_ACTIVE_ID_KEY, id);
+  } catch {
+    // Persistence is opportunistic; the selected table still works for this session.
+  }
+}
+
+function activeLocalDeltaRegistryId(): string | undefined {
+  try {
+    const id = localStorage.getItem(LOCAL_DELTA_ACTIVE_ID_KEY)?.trim();
+    return id ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function validateLocalRelativePath(path: string): void {
+  if (
+    path.length === 0 ||
+    path.startsWith('/') ||
+    path.startsWith('\\') ||
+    path.includes('\0') ||
+    path.split('/').some((segment) => segment.length === 0 || segment === '.' || segment === '..')
+  ) {
+    throw new LocalDeltaError(
+      'invalid_path',
+      `Local Delta table path '${path}' must stay inside the selected table root.`,
+    );
+  }
+}
+
+async function openLocalDeltaRegistryDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(LOCAL_DELTA_DB_NAME, LOCAL_DELTA_DB_VERSION);
+    request.onerror = () => reject(request.error ?? new Error('local Delta registry open failed'));
+    request.onsuccess = () => resolve(request.result);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(LOCAL_DELTA_STORE)) {
+        db.createObjectStore(LOCAL_DELTA_STORE, { keyPath: 'id' });
+      }
+    };
+  });
+}
+
+async function putLocalDeltaRegistryRecord(record: LocalDeltaRegistryRecord): Promise<void> {
+  const db = await openLocalDeltaRegistryDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_DELTA_STORE, 'readwrite');
+    tx.objectStore(LOCAL_DELTA_STORE).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('local Delta registry write failed'));
+    tx.onabort = () => reject(tx.error ?? new Error('local Delta registry write aborted'));
+  });
+}
+
+async function getLocalDeltaRegistryRecords(): Promise<LocalDeltaRegistryRecord[]> {
+  const db = await openLocalDeltaRegistryDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_DELTA_STORE, 'readonly');
+    const request = tx.objectStore(LOCAL_DELTA_STORE).getAll();
+    request.onerror = () => reject(request.error ?? new Error('local Delta registry read failed'));
+    request.onsuccess = () => resolve(request.result as LocalDeltaRegistryRecord[]);
+  });
+}
+
+async function getLocalDeltaRegistryRecord(
+  registryId: string,
+): Promise<LocalDeltaRegistryRecord | undefined> {
+  const db = await openLocalDeltaRegistryDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_DELTA_STORE, 'readonly');
+    const request = tx.objectStore(LOCAL_DELTA_STORE).get(registryId);
+    request.onerror = () => reject(request.error ?? new Error('local Delta registry read failed'));
+    request.onsuccess = () => resolve(request.result as LocalDeltaRegistryRecord | undefined);
+  });
+}
+
+async function deleteLocalDeltaRegistryRecord(registryId: string): Promise<void> {
+  const db = await openLocalDeltaRegistryDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(LOCAL_DELTA_STORE, 'readwrite');
+    tx.objectStore(LOCAL_DELTA_STORE).delete(registryId);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('local Delta registry delete failed'));
+    tx.onabort = () => reject(tx.error ?? new Error('local Delta registry delete aborted'));
+  });
+}
+
+async function opfsLocalDeltaRoot(): Promise<FileSystemDirectoryHandle | undefined> {
+  try {
+    const storage = navigator.storage;
+    if (!storage || typeof storage.getDirectory !== 'function') return undefined;
+    const root = await storage.getDirectory();
+    return root.getDirectoryHandle(LOCAL_DELTA_OPFS_ROOT, { create: true });
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeOpfsFile(
+  root: FileSystemDirectoryHandle,
+  relativePath: string,
+  file: File,
+): Promise<void> {
+  const fileHandle = await getOrCreateOpfsFileHandle(root, relativePath);
+  const writable = await fileHandle.createWritable();
+  try {
+    await writable.write(file);
+  } finally {
+    await writable.close();
+  }
+}
+
+async function getOrCreateOpfsFileHandle(
+  root: FileSystemDirectoryHandle,
+  relativePath: string,
+): Promise<FileSystemFileHandle> {
+  const segments = validateOpfsPathSegments(relativePath);
+  const filename = segments.at(-1);
+  if (!filename) {
+    throw new LocalDeltaError('invalid_path', `Path '${relativePath}' did not include a filename.`);
+  }
+
+  let directory = root;
+  for (const segment of segments.slice(0, -1)) {
+    directory = await directory.getDirectoryHandle(segment, { create: true });
+  }
+  return directory.getFileHandle(filename, { create: true });
+}
+
+async function getOpfsFileHandle(
+  root: FileSystemDirectoryHandle,
+  relativePath: string,
+): Promise<FileSystemFileHandle> {
+  const segments = validateOpfsPathSegments(relativePath);
+  const filename = segments.at(-1);
+  if (!filename) {
+    throw new LocalDeltaError('invalid_path', `Path '${relativePath}' did not include a filename.`);
+  }
+
+  let directory = root;
+  for (const segment of segments.slice(0, -1)) {
+    directory = await directory.getDirectoryHandle(segment);
+  }
+  return directory.getFileHandle(filename);
+}
+
+function validateOpfsPathSegments(relativePath: string): string[] {
+  validateLocalRelativePath(relativePath);
+  return relativePath.split('/').map((segment) => decodeDeltaPath(segment));
+}
+
+function fileBrowserPath(file: File): string {
+  return (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+}
+
+function normalizeBrowserFilePath(path: string): string {
+  return path.replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+/g, '/');
+}
+
+function localDeltaRootPrefix(paths: string[]): string {
+  const prefixes = new Set<string>();
+  for (const path of paths) {
+    const segments = path.split('/');
+    const deltaLogIndex = segments.indexOf('_delta_log');
+    if (deltaLogIndex >= 0) prefixes.add(segments.slice(0, deltaLogIndex).join('/'));
+  }
+
+  if (prefixes.size === 0) {
+    throw new LocalDeltaError(
+      'missing_delta_log',
+      'Select the Delta table directory containing _delta_log/.',
+    );
+  }
+  if (prefixes.size > 1) {
+    throw new LocalDeltaError(
+      'invalid_path',
+      'Selected files contain multiple Delta table roots. Select one table folder.',
+    );
+  }
+  return [...prefixes][0];
+}
+
+function tableRelativePath(browserPath: string, rootPrefix: string): string | undefined {
+  if (!rootPrefix) return browserPath;
+  if (browserPath === rootPrefix) return '';
+  const prefix = `${rootPrefix}/`;
+  if (!browserPath.startsWith(prefix)) return undefined;
+  return browserPath.slice(prefix.length);
+}
+
+function localTableRootName(rootPrefix: string): string {
+  return rootPrefix.split('/').filter(Boolean).at(-1) ?? 'delta-table';
+}
+
+function localTableUri(rootName: string): string {
+  return `browser-local://delta-table/${encodeURIComponent(rootName)}`;
+}
+
+function localFileForDeltaPath(
+  localTable: LocalDeltaTableFiles,
+  deltaPath: string,
+): LocalDeltaFileEntry | undefined {
+  return (
+    localTable.filesByRelativePath.get(deltaPath) ??
+    localTable.filesByRelativePath.get(decodeDeltaPath(deltaPath))
+  );
+}
+
+function decodeDeltaPath(path: string): string {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+}
+
+function isIgnoredLocalFile(path: string): boolean {
+  const filename = path.split('/').at(-1) ?? path;
+  return filename === '.DS_Store' || filename.endsWith('.crc');
+}
+
+function isParquetDataFile(path: string): boolean {
+  return !path.startsWith('_delta_log/') && path.endsWith('.parquet');
+}
+
+function compareLocalDeltaEntries(left: LocalDeltaFileEntry, right: LocalDeltaFileEntry): number {
+  return left.relativePath.localeCompare(right.relativePath);
+}
+
+function classifyObject(path: string): ObjectKind {
+  if (path === '_delta_log/_last_checkpoint') return 'last_checkpoint';
+  if (path.endsWith('.checkpoint.parquet')) return 'checkpoint_parquet';
+  if (path.endsWith('.json')) return 'commit_json';
+  return 'delta_log_object';
+}
+
+function trackLocalObjectUrl(registryId: string, url: string): string {
+  const urls = localObjectUrlsByRegistryId.get(registryId) ?? new Set<string>();
+  urls.add(url);
+  localObjectUrlsByRegistryId.set(registryId, urls);
+  return url;
+}
+
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  mapper: (value: T) => Promise<R>,
+  concurrency = LOCAL_DELTA_PERSISTENCE_CONCURRENCY,
+): Promise<R[]> {
+  const results: R[] = [];
+  let index = 0;
+  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (index < values.length) {
+      const current = index++;
+      results[current] = await mapper(values[current]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function sanitizeSqlIdentifier(name: string): string {
+  const sanitized = name
+    .trim()
+    .replace(/[^A-Za-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return sanitized || 'local_delta_table';
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} bytes`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes / 1024;
+  let unit = units[0];
+  for (const candidate of units.slice(1)) {
+    if (value < 1024) break;
+    value /= 1024;
+    unit = candidate;
+  }
+  return `${value.toFixed(value < 10 ? 1 : 0)} ${unit}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringField(value: Record<string, unknown>, key: string): string | undefined {
+  return typeof value[key] === 'string' ? value[key] : undefined;
+}
+
+function numberField(value: Record<string, unknown>, key: string): number | undefined {
+  return typeof value[key] === 'number' && Number.isFinite(value[key]) ? value[key] : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string');
+}

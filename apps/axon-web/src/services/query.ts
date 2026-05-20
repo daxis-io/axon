@@ -26,6 +26,7 @@ import type {
   ResultCell,
   ResultColumn,
 } from './types.ts';
+import { loadLocalDeltaRuntime, releaseLocalDeltaObjectUrls } from './local-delta.ts';
 import { SAMPLE_QUERY_SOURCE, sameQuerySource, type QueryTableSource } from './query-source.ts';
 
 type FixtureObject = {
@@ -69,7 +70,7 @@ type EventHandler = (envelope: BrowserWorkerEventEnvelope) => void;
 type SessionState = {
   client: AxonBrowserClient;
   descriptor: BrowserHttpSnapshotDescriptor;
-  manifest: FixtureManifest;
+  manifest?: FixtureManifest;
   snapshot: ResolvedSnapshot;
   tableOpened: boolean;
   source: QueryTableSource;
@@ -141,6 +142,25 @@ function browserSnapshotDescriptor(
 }
 
 async function buildSession(source: QueryTableSource): Promise<SessionState> {
+  if (source.kind === 'local_delta') {
+    const runtime = await loadLocalDeltaRuntime(source.localRegistryId, {
+      schemaName: source.schemaName,
+      tableName: source.tableName,
+    });
+    return {
+      client: createQueryClient(),
+      descriptor: runtime.descriptor,
+      snapshot: snapshotFromBrowserDescriptor(runtime.descriptor),
+      tableOpened: false,
+      source: {
+        ...source,
+        tableName: runtime.tableName,
+        schemaName: runtime.schemaName,
+        storage: runtime.storageLabel,
+      },
+    };
+  }
+
   await ensureWasm();
   const manifest = await fetchJson<FixtureManifest>(source.manifestUrl);
   const wasmManifest = {
@@ -158,17 +178,7 @@ async function buildSession(source: QueryTableSource): Promise<SessionState> {
   const snapshot = JSON.parse(snapshotJson) as ResolvedSnapshot;
   const descriptor = browserSnapshotDescriptor(snapshot, manifest);
 
-  const client = createAxonBrowserClient({
-    worker: () =>
-      new Worker(new URL('../sandbox-query-worker.ts', import.meta.url), {
-        type: 'module',
-        name: 'axon-editor-query-worker',
-      }),
-    requestId: () => `editor-request-${++requestCounter}`,
-    onEvent: (envelope) => {
-      for (const handler of eventListeners) handler(envelope);
-    },
-  });
+  const client = createQueryClient();
 
   return {
     client,
@@ -180,11 +190,42 @@ async function buildSession(source: QueryTableSource): Promise<SessionState> {
   };
 }
 
+function createQueryClient(): AxonBrowserClient {
+  return createAxonBrowserClient({
+    worker: () =>
+      new Worker(new URL('../sandbox-query-worker.ts', import.meta.url), {
+        type: 'module',
+        name: 'axon-editor-query-worker',
+      }),
+    requestId: () => `editor-request-${++requestCounter}`,
+    onEvent: (envelope) => {
+      for (const handler of eventListeners) handler(envelope);
+    },
+  });
+}
+
+function snapshotFromBrowserDescriptor(
+  descriptor: BrowserHttpSnapshotDescriptor,
+): ResolvedSnapshot {
+  return {
+    table_uri: descriptor.table_uri,
+    snapshot_version: descriptor.snapshot_version,
+    partition_column_types: descriptor.partition_column_types,
+    active_files: descriptor.active_files.map((file) => ({
+      path: file.path,
+      size_bytes: file.size_bytes,
+      partition_values: file.partition_values,
+      stats: file.stats,
+    })),
+  };
+}
+
 export async function getSession(
   source: QueryTableSource = SAMPLE_QUERY_SOURCE,
 ): Promise<SessionState> {
   if (session && sameQuerySource(session.source, source)) return session;
   if (sessionInit && sameQuerySource(sessionInit.source, source)) return sessionInit.promise;
+  discardQuerySession();
   {
     const t0 = performance.now();
     const promise = buildSession(source).then((s) => {
@@ -203,6 +244,23 @@ export function getCurrentSession(
 ): SessionState | undefined {
   if (!session || !sameQuerySource(session.source, source)) return undefined;
   return session;
+}
+
+export function discardQuerySession(source?: QueryTableSource): void {
+  if (session && (!source || sameQuerySource(session.source, source))) {
+    disposeSession(session);
+    session = undefined;
+  }
+  if (sessionInit && (!source || sameQuerySource(sessionInit.source, source))) {
+    sessionInit = undefined;
+  }
+}
+
+function disposeSession(state: SessionState): void {
+  state.client.terminate();
+  if (state.source.kind === 'local_delta') {
+    releaseLocalDeltaObjectUrls(state.source.localRegistryId);
+  }
 }
 
 export function subscribeSession(listener: (state: SessionState) => void): () => void {

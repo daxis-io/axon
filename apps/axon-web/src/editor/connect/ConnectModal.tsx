@@ -27,6 +27,13 @@ import {
 import { IconCheck, IconFolder, IconLock, IconShareNode, IconWarn } from './icons.tsx';
 import type { ConnectForm, ConnectResult, SchemaSelection, TestState } from './types.ts';
 import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
+import {
+  LocalDeltaError,
+  openLocalDeltaTableFromDirectoryHandle,
+  openLocalDeltaTableFromFileList,
+  type LocalDeltaRuntime,
+  type LocalFileSystemDirectoryHandle,
+} from '../../services/local-delta.ts';
 
 type Props = {
   initialStep?: 1 | 2 | 3;
@@ -40,6 +47,7 @@ type Props = {
 const DEFAULT_FORM: ConnectForm = {
   path: '',
   detected: null,
+  localDelta: null,
   provider: 'gcs',
   uri: '',
   region: '',
@@ -81,6 +89,10 @@ export function ConnectModal({
   const [testState, setTestState] = useState<TestState>(null);
   const [alias, setAlias] = useState('');
   const [selection, setSelection] = useState<Record<string, SchemaSelection>>({});
+  const currentDiscovery = useMemo(() => {
+    if (source === 'local' && form.localDelta) return form.localDelta.discovery;
+    return source ? discoveryForSource(source) : null;
+  }, [form.localDelta, source]);
 
   // ─── ESC closes the modal ─────────────────────────
   useEffect(() => {
@@ -119,19 +131,23 @@ export function ConnectModal({
     if (step !== 3 || !source || seededRef.done) return;
     if (!alias) setAlias(SOURCE_LABEL_DEFAULT[source]);
     const sel: Record<string, SchemaSelection> = {};
-    const discovery = discoveryForSource(source);
+    const discovery = currentDiscovery;
     if (!discovery) return;
     discovery.schemas.forEach((s) => {
       sel[s.name] = s.included ? 'all' : 'none';
     });
     setSelection(sel);
     seededRef.done = true;
-  }, [step, source, alias, seededRef]);
+  }, [step, source, alias, seededRef, currentDiscovery]);
 
   const runTest = useCallback(() => {
     setTestState('running');
+    if (source === 'local' && form.localDelta) {
+      setTestState('ok');
+      return;
+    }
     setTestState('err');
-  }, []);
+  }, [form.localDelta, source]);
 
   const next = () => {
     if (step === 1 && source && availabilityForSource(source, connectorFeatures).enabled) {
@@ -144,7 +160,7 @@ export function ConnectModal({
       }
       setStep(3);
     } else if (step === 3 && source) {
-      const discovered = discoveryForSource(source);
+      const discovered = currentDiscovery;
       if (!discovered) return;
       onConnect({
         source,
@@ -165,7 +181,7 @@ export function ConnectModal({
       ? !!source && availabilityForSource(source, connectorFeatures).enabled
       : step === 2
         ? source === 'local'
-          ? !!form.path
+          ? !!form.localDelta
           : source === 'object_store'
             ? form.uri.length > 8
             : source === 'unity_catalog'
@@ -246,7 +262,7 @@ export function ConnectModal({
           {step === 3 && source && (
             <Discover
               sourceId={source}
-              discovered={discoveryForSource(source) ?? LOCAL_DISCOVERY}
+              discovered={currentDiscovery ?? LOCAL_DISCOVERY}
               alias={alias}
               setAlias={setAlias}
               selection={selection}
@@ -449,10 +465,57 @@ function ConfigLocal({
   testState: TestState;
 }) {
   const [over, setOver] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const detected = form.detected;
 
-  const dropOrPick = () => {
+  const openRuntime = async (open: () => Promise<LocalDeltaRuntime>) => {
     setOver(false);
+    setPicking(true);
+    setError(null);
+    try {
+      const runtime = await open();
+      setForm({
+        ...form,
+        path: runtime.storageLabel,
+        detected: detectedFromRuntime(runtime),
+        localDelta: runtime,
+      });
+    } catch (err) {
+      setForm({ ...form, detected: null, localDelta: null });
+      setError(localDeltaErrorMessage(err));
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const pickDirectory = async () => {
+    const picker = (window as WindowWithDirectoryPicker).showDirectoryPicker;
+    if (!picker) {
+      setError('Use the local folder input to select a Delta table directory.');
+      return;
+    }
+    const handle = await picker({ mode: 'read' });
+    await openRuntime(() => openLocalDeltaTableFromDirectoryHandle(handle));
+  };
+
+  const openSelectedFiles = (files: FileList | null) => {
+    void openRuntime(() => openLocalDeltaTableFromFileList(files));
+  };
+
+  const dropDirectory = async (event: DragEvent) => {
+    event.preventDefault();
+    const item = Array.from(event.dataTransfer.items).find(
+      (candidate): candidate is DataTransferItemWithHandle =>
+        typeof (candidate as DataTransferItemWithHandle).getAsFileSystemHandle === 'function',
+    );
+    const handle = item?.getAsFileSystemHandle ? await item.getAsFileSystemHandle() : null;
+    if (handle?.kind === 'directory') {
+      await openRuntime(() => openLocalDeltaTableFromDirectoryHandle(handle));
+      return;
+    }
+    setOver(false);
+    setError('Drop a Delta table folder, or use the folder input to select one.');
   };
 
   return (
@@ -466,37 +529,36 @@ function ConfigLocal({
           }}
           onDragLeave={() => setOver(false)}
           onDrop={(e: DragEvent) => {
-            e.preventDefault();
-            dropOrPick();
+            void dropDirectory(e);
           }}
-          onClick={dropOrPick}
+          onClick={() => {
+            void pickDirectory();
+          }}
         >
           <div className="glyph">
             <IconFolder size={22} />
           </div>
-          <div className="ti">Drag a Delta table folder here</div>
+          <div className="ti">Open a Delta table folder</div>
           <div className="sub">
-            Browser file-handle discovery is not wired in this editor flow yet.
+            Select the table root containing{' '}
+            <code style={{ fontFamily: 'var(--mono)', fontSize: 11.5 }}>_delta_log/</code>.
           </div>
-          <button className="browse">
-            <IconFolder size={11} /> Browse…
+          <button className="browse" disabled={picking}>
+            {picking ? <span className="cc-spin" /> : <IconFolder size={11} />} Browse…
           </button>
         </div>
 
         <div className="cc-field" style={{ marginTop: 14 }}>
-          <label className="cc-label">Folder path</label>
+          <label className="cc-label">Local Delta table directory</label>
           <div className="cc-input-wrap">
             <input
               className="cc-input mono"
-              placeholder="/path/to/your/delta_table"
-              value={form.path}
-              onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                setForm({
-                  ...form,
-                  path: e.target.value,
-                  detected: null,
-                })
-              }
+              aria-label="Local Delta table directory"
+              type="file"
+              multiple
+              disabled={picking}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => openSelectedFiles(e.target.files)}
+              {...{ webkitdirectory: '', directory: '' }}
             />
             {detected && (
               <div className="right">
@@ -507,13 +569,21 @@ function ConfigLocal({
             )}
           </div>
           <div className="cc-help">
-            The sandbox runtime can ingest browser-selected local files. The Connect Catalog editor
-            will stay blocked until that file-handle path creates a queryable descriptor here.
+            Axon reads the selected folder locally, reconstructs the snapshot in the browser, and
+            persists a browser-local registry handle for reload where browser storage allows it.
           </div>
+          {error && (
+            <div className="cc-help" style={{ color: 'var(--danger)' }}>
+              {error}
+            </div>
+          )}
         </div>
 
         {detected && (
           <div className="cc-detected">
+            <div className="cc-help" style={{ marginBottom: 8 }}>
+              Delta log parsed
+            </div>
             <div className="row">
               <span className="ico">
                 <IconTable size={14} />
@@ -521,7 +591,7 @@ function ConfigLocal({
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div className="name">{detected.name}</div>
                 <div className="path">
-                  {form.path}/_delta_log/00000000000000000{detected.snapshot}.json
+                  {form.path}/_delta_log/{String(detected.snapshot).padStart(20, '0')}.json
                 </div>
               </div>
               <span style={{ font: '11.5px var(--mono)', color: 'var(--accent)' }}>
@@ -551,19 +621,19 @@ function ConfigLocal({
 
         <TestResult
           state={testState}
-          okText="Delta log parsed · 1 table ready"
-          okDetail="Snapshot version 318 · 412 files · last commit 14:08 UTC. Protocol features: columnMapping."
-          errText="Editor local file discovery is not wired"
-          errDetail="Use the sandbox local import path for now, or wire File System Access handles into a BrowserHttpSnapshotDescriptor before discovery."
+          okText="Delta log parsed · local table ready"
+          okDetail="Browser-owned snapshot reconstruction and WASM query execution are available for this selected folder."
+          errText="Select a local Delta folder first"
+          errDetail="Choose the table root that contains _delta_log/ before discovery."
         />
       </div>
 
       <aside className="cc-helper">
         <h5>How local tables work</h5>
         <p>
-          The runtime has browser-local file ingestion, but this Connect Catalog wizard does not yet
-          pass File System Access handles into a queryable descriptor. It does not claim a local
-          catalog is connected until that path is available here.
+          Axon reads the selected table root in the browser, stores local registry metadata in
+          catalog state, and queries active Parquet files through the browser WASM worker. Reload is
+          available when browser storage accepts the registry snapshot.
         </p>
         <hr />
         <h5>Tips</h5>
@@ -572,12 +642,37 @@ function ConfigLocal({
             Point at the table root (where <code>_delta_log/</code> lives), not at an individual{' '}
             <code>.parquet</code> file.
           </li>
-          <li>Do not use this editor flow as proof that zipped local tables are connected yet.</li>
+          <li>Folder selection is supported; ZIP import is not part of this flow.</li>
           <li>Use Object Storage instead for shared / cloud datasets.</li>
         </ul>
       </aside>
     </div>
   );
+}
+
+type WindowWithDirectoryPicker = Window & {
+  showDirectoryPicker?: (options?: { mode?: 'read' }) => Promise<LocalFileSystemDirectoryHandle>;
+};
+
+type DataTransferItemWithHandle = DataTransferItem & {
+  getAsFileSystemHandle?: () => Promise<LocalFileSystemDirectoryHandle | { kind: 'file' } | null>;
+};
+
+function detectedFromRuntime(runtime: LocalDeltaRuntime) {
+  const table = runtime.discovery.schemas[0]?.tables[0];
+  return {
+    name: runtime.tableName,
+    snapshot: runtime.descriptor.snapshot_version,
+    rowsLabel: table ? table.rows.toLocaleString() : '0',
+    files: runtime.descriptor.active_files.length,
+    size: table?.size ?? '0 bytes',
+    protocol: table?.protocol ?? 'json-log',
+  };
+}
+
+function localDeltaErrorMessage(error: unknown): string {
+  if (error instanceof LocalDeltaError) return error.message;
+  return error instanceof Error ? error.message : String(error);
 }
 
 // ─── Object storage config ──────────────────────────────
@@ -1231,8 +1326,11 @@ function Discover({
         <div className="cc-final-card">
           <h6 className="h">In Axon</h6>
           <div className="cc-field" style={{ marginBottom: 8 }}>
-            <label className="cc-label">Catalog alias</label>
+            <label className="cc-label" htmlFor="cc-catalog-alias">
+              Catalog alias
+            </label>
             <input
+              id="cc-catalog-alias"
               className="cc-input mono"
               value={alias}
               onChange={(e: ChangeEvent<HTMLInputElement>) => setAlias(e.target.value)}
@@ -1360,7 +1458,8 @@ function countIncluded(disc: DiscoveryPayload, sel: Record<string, SchemaSelecti
 }
 
 function discoveryForSource(source: SourceId): DiscoveryPayload | null {
-  return source === 'local' ? LOCAL_DISCOVERY : null;
+  void source;
+  return null;
 }
 
 function labelForSource(s: SourceId) {
@@ -1373,7 +1472,7 @@ function labelForSource(s: SourceId) {
 }
 function endpointFor(s: SourceId) {
   return {
-    local: '~/Datasets/acme/silver/orders',
+    local: 'Selected browser-local folder',
     object_store: 'gs://acme-lake/silver',
     unity_catalog: 'acme-prod.cloud.databricks.com',
     delta_share: 'https://sharing.acme.io/delta-sharing',
