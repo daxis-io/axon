@@ -203,6 +203,8 @@ const LOCAL_DELTA_DB_NAME = 'axon-local-delta-registry';
 const LOCAL_DELTA_DB_VERSION = 1;
 const LOCAL_DELTA_STORE = 'tables';
 const LOCAL_DELTA_OPFS_ROOT = 'axon-local-delta-tables';
+const LOCAL_DELTA_ACTIVE_ID_KEY = 'axon-local-delta-active-id';
+const LOCAL_DELTA_INDEXED_DB_BLOB_BUDGET_BYTES = 512 * 1024 * 1024;
 const SAMPLE_QUERIES = {
   count: 'SELECT COUNT(*) AS row_count FROM axon_table',
   category:
@@ -553,7 +555,7 @@ async function localDeltaTableForCurrentSelection(): Promise<LocalDeltaTableFile
     }
   }
 
-  const persisted = await loadLatestLocalDeltaTable();
+  const persisted = await loadActiveLocalDeltaTable();
   if (persisted) {
     return persisted;
   }
@@ -631,32 +633,69 @@ function buildLocalDeltaTableFiles(
 
 async function persistLocalDeltaTable(table: LocalDeltaTableFiles): Promise<LocalDeltaTableFiles> {
   const id = table.registryId ?? localDeltaRegistryId(table.tableRootName);
-  const recordFiles = await Promise.all(
-    [...table.filesByRelativePath.values()].map(async (entry) => ({
-      relativePath: entry.relativePath,
-      sizeBytes: entry.file.size,
-      lastModified: entry.file.lastModified,
-      mimeType: entry.file.type,
-      bytes: await entry.file.arrayBuffer(),
-    })),
-  );
   const baseRecord = {
     id,
     tableRootName: table.tableRootName,
     importedAtEpochMs: Date.now(),
-    files: recordFiles,
   };
 
   if (await tryWriteLocalDeltaTableToOpfs(id, table)) {
-    await putLocalDeltaRegistryRecord({ ...baseRecord, backend: 'opfs' });
+    await putLocalDeltaRegistryRecord({
+      ...baseRecord,
+      backend: 'opfs',
+      files: localDeltaMetadataRecords(table),
+    });
+    setActiveLocalDeltaRegistryId(id);
     return { ...table, registryId: id };
   }
 
   await putLocalDeltaRegistryRecord({
     ...baseRecord,
     backend: 'indexeddb_blob',
+    files: await localDeltaIndexedDbBlobRecords(table),
   });
+  setActiveLocalDeltaRegistryId(id);
   return { ...table, registryId: id };
+}
+
+function localDeltaMetadataRecords(table: LocalDeltaTableFiles): LocalDeltaRegistryFileRecord[] {
+  return [...table.filesByRelativePath.values()].map((entry) => localDeltaMetadataRecord(entry));
+}
+
+function localDeltaMetadataRecord(entry: LocalDeltaFileEntry): LocalDeltaRegistryFileRecord {
+  return {
+    relativePath: entry.relativePath,
+    sizeBytes: entry.file.size,
+    lastModified: entry.file.lastModified,
+    mimeType: entry.file.type,
+  };
+}
+
+async function localDeltaIndexedDbBlobRecords(
+  table: LocalDeltaTableFiles,
+): Promise<LocalDeltaRegistryFileRecord[]> {
+  const totalBytes = localDeltaTableSizeBytes(table);
+  if (totalBytes > LOCAL_DELTA_INDEXED_DB_BLOB_BUDGET_BYTES) {
+    throw new Error(
+      `local Delta table ${formatBytes(totalBytes)} exceeds the ${formatBytes(
+        LOCAL_DELTA_INDEXED_DB_BLOB_BUDGET_BYTES,
+      )} IndexedDB persistence budget`,
+    );
+  }
+
+  return Promise.all(
+    [...table.filesByRelativePath.values()].map(async (entry) => ({
+      ...localDeltaMetadataRecord(entry),
+      bytes: await entry.file.arrayBuffer(),
+    })),
+  );
+}
+
+function localDeltaTableSizeBytes(table: LocalDeltaTableFiles): number {
+  return [...table.filesByRelativePath.values()].reduce(
+    (total, entry) => total + entry.file.size,
+    0,
+  );
 }
 
 async function tryWriteLocalDeltaTableToOpfs(
@@ -687,21 +726,32 @@ async function tryWriteLocalDeltaTableToOpfs(
   }
 }
 
-async function loadLatestLocalDeltaTable(): Promise<LocalDeltaTableFiles | undefined> {
-  const records = await getLocalDeltaRegistryRecords();
-  const latest = records.sort((a, b) => b.importedAtEpochMs - a.importedAtEpochMs)[0];
-  if (!latest) {
+async function loadActiveLocalDeltaTable(): Promise<LocalDeltaTableFiles | undefined> {
+  const activeId = activeLocalDeltaRegistryId();
+  if (!activeId) {
     return undefined;
   }
 
-  if (latest.backend === 'opfs') {
-    const table = await loadOpfsLocalDeltaTable(latest);
+  const records = await getLocalDeltaRegistryRecords();
+  const active = records.find((record) => record.id === activeId);
+  if (!active) {
+    clearActiveLocalDeltaRegistryId();
+    return undefined;
+  }
+
+  if (active.backend === 'opfs') {
+    const table = await loadOpfsLocalDeltaTable(active);
     if (table) {
       return table;
     }
+    if (active.files.every((file) => file.bytes)) {
+      return loadIndexedDbBlobLocalDeltaTable(active);
+    }
+    clearActiveLocalDeltaRegistryId();
+    return undefined;
   }
 
-  return loadIndexedDbBlobLocalDeltaTable(latest);
+  return loadIndexedDbBlobLocalDeltaTable(active);
 }
 
 async function loadOpfsLocalDeltaTable(
@@ -785,6 +835,31 @@ function localDeltaRegistryId(tableRootName: string): string {
   return `${safeName || 'delta-table'}-${Date.now().toString(36)}-${Math.random()
     .toString(36)
     .slice(2, 8)}`;
+}
+
+function setActiveLocalDeltaRegistryId(id: string): void {
+  try {
+    localStorage.setItem(LOCAL_DELTA_ACTIVE_ID_KEY, id);
+  } catch {
+    // Persistence is opportunistic; the selected table still works for this session.
+  }
+}
+
+function activeLocalDeltaRegistryId(): string | undefined {
+  try {
+    const id = localStorage.getItem(LOCAL_DELTA_ACTIVE_ID_KEY)?.trim();
+    return id ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function clearActiveLocalDeltaRegistryId(): void {
+  try {
+    localStorage.removeItem(LOCAL_DELTA_ACTIVE_ID_KEY);
+  } catch {
+    // Best-effort cleanup only.
+  }
 }
 
 function validateLocalRelativePath(path: string): void {

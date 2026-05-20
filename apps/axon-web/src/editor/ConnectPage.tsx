@@ -2,12 +2,13 @@
 // flow with a production app chrome (brand + back link) and the
 // design's empty-state illustration as the landing tile.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ConnectModal } from './connect/ConnectModal.tsx';
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
 import { availabilityForSource, type SourceId } from './connect/data.ts';
 import {
   buildCatalogFromResult,
+  catalogsAvailableForFeatures,
   loadConnectedCatalogs,
   saveConnectedCatalogs,
 } from './connect/store.ts';
@@ -24,6 +25,10 @@ export function ConnectPage() {
   const [modalStep, setModalStep] = useState<1 | 2 | 3>(1);
   const [modalSource, setModalSource] = useState<SourceId | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
+  const availableCatalogs = useMemo(
+    () => catalogsAvailableForFeatures(catalogs, CONNECTOR_FEATURES),
+    [catalogs],
+  );
 
   useEffect(() => {
     saveConnectedCatalogs(catalogs);
@@ -43,7 +48,7 @@ export function ConnectPage() {
     window.setTimeout(() => setFreshId(null), 4500);
   }, []);
 
-  const tableCount = catalogs.reduce(
+  const tableCount = availableCatalogs.reduce(
     (a, c) => a + c.schemas.reduce((b, s) => b + s.tables.length, 0),
     0,
   );
@@ -64,9 +69,9 @@ export function ConnectPage() {
 
         <div className="cc-page-spacer" />
 
-        {catalogs.length > 0 && (
+        {availableCatalogs.length > 0 && (
           <button className="cc-btn" onClick={() => setPanelOpen(true)}>
-            {catalogs.length} connected
+            {availableCatalogs.length} connected
           </button>
         )}
         <button className="cc-btn" onClick={() => navigate('/')}>
@@ -110,10 +115,10 @@ export function ConnectPage() {
             <button className="cc-btn primary lg" onClick={() => open(1)}>
               <IconPlus size={12} /> Connect a source
             </button>
-            {catalogs.length > 0 && (
+            {availableCatalogs.length > 0 && (
               <span className="cc-page-stat">
-                {catalogs.length} catalog{catalogs.length === 1 ? '' : 's'} · {tableCount} table
-                {tableCount === 1 ? '' : 's'}
+                {availableCatalogs.length} catalog{availableCatalogs.length === 1 ? '' : 's'} ·{' '}
+                {tableCount} table{tableCount === 1 ? '' : 's'}
               </span>
             )}
           </div>
@@ -148,11 +153,11 @@ export function ConnectPage() {
           </div>
         </div>
 
-        {catalogs.length > 0 && (
+        {availableCatalogs.length > 0 && (
           <section className="cc-page-list">
             <h2>Recently connected</h2>
             <div className="cc-page-grid">
-              {catalogs
+              {availableCatalogs
                 .slice()
                 .reverse()
                 .map((c) => (
@@ -190,7 +195,7 @@ export function ConnectPage() {
 
       {panelOpen && (
         <ConnectedCatalogsPanel
-          catalogs={catalogs}
+          catalogs={availableCatalogs}
           freshId={freshId}
           onAdd={() => {
             setPanelOpen(false);

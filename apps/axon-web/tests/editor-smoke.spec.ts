@@ -87,8 +87,21 @@ test.describe('editor (Phase 1 smoke)', () => {
     await unityCatalogCard.click();
     await expect(dialog.getByRole('button', { name: /Continue/ })).toBeDisabled();
 
-    await dialog.locator('.cc-source-card', { hasText: 'Object storage' }).click();
+    await dialog.locator('.cc-source-card', { hasText: 'Local files' }).click();
     await dialog.getByRole('button', { name: /Continue/ }).click();
+
+    const localConfigDialog = page.getByRole('dialog', { name: 'Connect a local Delta folder' });
+    await expect(localConfigDialog).toContainText(/file-handle discovery is not wired/i);
+    await localConfigDialog.getByPlaceholder('/path/to/your/delta_table').fill('/tmp/orders');
+    await localConfigDialog.getByRole('button', { name: 'Test connection' }).click();
+    await expect(localConfigDialog.getByText(/Delta log parsed/i)).toHaveCount(0);
+    await expect(localConfigDialog).toContainText(/local file discovery is not wired/i);
+    await expect(localConfigDialog.getByRole('button', { name: /Discover tables/ })).toBeDisabled();
+    await localConfigDialog.getByRole('button', { name: 'Back' }).click();
+
+    const sourceDialog = page.getByRole('dialog', { name: 'Connect a Delta source' });
+    await sourceDialog.locator('.cc-source-card', { hasText: 'Object storage' }).click();
+    await sourceDialog.getByRole('button', { name: /Continue/ }).click();
 
     const configDialog = page.getByRole('dialog', { name: 'Connect to object storage' });
     await expect(configDialog).toContainText(/browser-local delta log access/i);
@@ -176,6 +189,85 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.getByText('legacy-share')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Unity Catalog' })).toBeDisabled();
     await expect(page.getByRole('button', { name: 'Delta Sharing' })).toBeDisabled();
+
+    const persisted = await page.evaluate(
+      () => localStorage.getItem('axon.connect.catalogs.v1') ?? '',
+    );
+    expect(persisted).toContain('legacy-uc');
+    expect(persisted).toContain('legacy-share');
+  });
+
+  test('activates a selected connected table instead of always using the first catalog', async ({
+    page,
+  }) => {
+    const catalogs = [
+      {
+        id: 'sample-lake-fixture',
+        alias: 'sample-lake',
+        kind: 'object_store',
+        provider: 'gcs',
+        storage: 'gs://axon-sample/prod-like-events',
+        region: 'browser-local',
+        status: 'connected',
+        connectedAt: 'sample fixture',
+        schemas: [
+          {
+            name: 'prod_like',
+            tables: [
+              {
+                name: 'events',
+                snapshot: 3,
+                rows: 6,
+                files: 1,
+                size: 'fixture',
+                protocol: 'r2/w5',
+                manifestUrl: '/fixtures/prod-like/delta-log-manifest.json',
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: 'second-lake-fixture',
+        alias: 'second-lake',
+        kind: 'object_store',
+        provider: 'gcs',
+        storage: 'gs://axon-second/prod-like-events',
+        region: 'browser-local',
+        status: 'connected',
+        connectedAt: 'test fixture',
+        schemas: [
+          {
+            name: 'prod_like',
+            tables: [
+              {
+                name: 'events',
+                snapshot: 3,
+                rows: 6,
+                files: 1,
+                size: 'fixture',
+                protocol: 'r2/w5',
+                manifestUrl: '/fixtures/prod-like/delta-log-manifest.json',
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    await page.addInitScript((value) => {
+      localStorage.setItem('axon.connect.catalogs.v1', JSON.stringify(value));
+    }, catalogs);
+
+    await page.goto('/');
+    await expect(page.locator('.conn-pill')).toContainText('sample-lake', { timeout: 15_000 });
+
+    await page.locator('.conn-pill').click();
+    await page.getByRole('button', { name: /Expand second-lake/ }).click();
+    await page.getByRole('button', { name: /Activate second-lake prod_like events/ }).click();
+
+    await expect(page.locator('.conn-pill')).toContainText('second-lake');
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+    await expect(page.locator('.res-meta')).toContainText(/rows/i, { timeout: 30_000 });
   });
 
   test('loads selected connected catalog, populates table, runs a query', async ({

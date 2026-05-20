@@ -214,6 +214,25 @@ test('sandbox object-store source opens browser-built descriptors directly', () 
   expect(source).toContain('openDeltaTable');
 });
 
+test('local Delta registry persists OPFS records without byte-copying every file', () => {
+  const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+
+  expect(source).toContain('localDeltaMetadataRecords(table)');
+  expect(source).toContain('localDeltaIndexedDbBlobRecords(table)');
+  expect(source).not.toMatch(
+    /const recordFiles = await Promise\.all\([\s\S]*bytes: await entry\.file\.arrayBuffer\(\)[\s\S]*if \(await tryWriteLocalDeltaTableToOpfs/,
+  );
+});
+
+test('local Delta reload uses the active local table registry id', () => {
+  const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+
+  expect(source).toContain('LOCAL_DELTA_ACTIVE_ID_KEY');
+  expect(source).toContain('setActiveLocalDeltaRegistryId(id)');
+  expect(source).toContain('loadActiveLocalDeltaTable()');
+  expect(source).not.toContain('loadLatestLocalDeltaTable');
+});
+
 test('records honest UI supersession when cancelling a running sandbox query', async ({ page }) => {
   await page.goto('/sandbox.html');
 

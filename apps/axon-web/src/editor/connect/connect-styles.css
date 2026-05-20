@@ -1073,12 +1073,16 @@
   border-bottom: 0;
 }
 .cc-cat-head {
+  width: 100%;
+  border: 0;
+  background: transparent;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 12px 18px;
   cursor: pointer;
   position: relative;
+  text-align: left;
 }
 .cc-cat-head:hover {
   background: var(--paper-2);
@@ -1182,12 +1186,26 @@
   color: var(--ink-4);
 }
 .cc-tbl-row {
+  width: 100%;
+  border: 0;
+  background: transparent;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 4px 0 4px 16px;
   font-size: 12px;
   color: var(--ink-2);
+  text-align: left;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.cc-tbl-row:hover:not(:disabled),
+.cc-tbl-row.active {
+  background: var(--accent-soft);
+}
+.cc-tbl-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
 }
 .cc-tbl-row .ico {
   color: var(--accent);
@@ -1203,6 +1221,11 @@
 .cc-tbl-row .rc {
   font: 11px var(--mono);
   color: var(--ink-4);
+}
+.cc-tbl-row .active-label {
+  font: 10px var(--mono);
+  color: var(--accent);
+  text-transform: uppercase;
 }
 
 /* "new" pulse */

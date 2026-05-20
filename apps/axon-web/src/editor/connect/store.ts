@@ -3,10 +3,7 @@
 
 import { availabilityForSource, type ObjectStoreProviderId } from './data.ts';
 import type { ConnectResult, ConnectedCatalog, SchemaSelection } from './types.ts';
-import {
-  CONNECTOR_FEATURES,
-  type ConnectorFeatureFlags,
-} from '../../services/connector-features.ts';
+import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
 import { SAMPLE_QUERY_SOURCE } from '../../services/query-source.ts';
 
 const STORAGE_KEY = 'axon.connect.catalogs.v1';
@@ -38,15 +35,13 @@ export const SAMPLE_CONNECTED_CATALOG: ConnectedCatalog = {
   ],
 };
 
-export function loadConnectedCatalogs(
-  connectorFeatures: ConnectorFeatureFlags = CONNECTOR_FEATURES,
-): ConnectedCatalog[] {
+export function loadConnectedCatalogs(): ConnectedCatalog[] {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return [SAMPLE_CONNECTED_CATALOG];
     const parsed = JSON.parse(raw) as ConnectedCatalog[];
     if (!Array.isArray(parsed)) return [SAMPLE_CONNECTED_CATALOG];
-    return catalogsAvailableForFeatures(parsed, connectorFeatures);
+    return parsed;
   } catch {
     return [SAMPLE_CONNECTED_CATALOG];
   }

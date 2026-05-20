@@ -17,7 +17,12 @@ import { subscribeEngineStatus } from '../services/engine.ts';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
 import { appendHistory, loadHistory } from '../services/history.ts';
 import { runQuery } from '../services/query.ts';
-import { querySourceFromConnectedCatalogs } from '../services/query-source.ts';
+import {
+  firstQueryableTableRef,
+  querySourceFromConnectedCatalogs,
+  resolveActiveTableRef,
+  type ActiveConnectedTableRef,
+} from '../services/query-source.ts';
 import { loadSaved, saveQuery } from '../services/saved.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
 import { subscribeCommits } from '../services/snapshot.ts';
@@ -58,6 +63,7 @@ import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
 import type { SourceId } from './connect/data.ts';
 import {
   buildCatalogFromResult,
+  catalogsAvailableForFeatures,
   loadConnectedCatalogs,
   saveConnectedCatalogs,
 } from './connect/store.ts';
@@ -176,10 +182,19 @@ export function App() {
   const [connectedCatalogs, setConnectedCatalogs] = useState<ConnectedCatalog[]>(() =>
     loadConnectedCatalogs(),
   );
+  const [selectedTableRef, setSelectedTableRef] = useState<ActiveConnectedTableRef | undefined>();
   const [freshCatalogId, setFreshCatalogId] = useState<string | null>(null);
-  const querySource = useMemo(
-    () => querySourceFromConnectedCatalogs(connectedCatalogs),
+  const availableConnectedCatalogs = useMemo(
+    () => catalogsAvailableForFeatures(connectedCatalogs, CONNECTOR_FEATURES),
     [connectedCatalogs],
+  );
+  const activeTableRef = useMemo(
+    () => resolveActiveTableRef(availableConnectedCatalogs, selectedTableRef),
+    [availableConnectedCatalogs, selectedTableRef],
+  );
+  const querySource = useMemo(
+    () => querySourceFromConnectedCatalogs(availableConnectedCatalogs, activeTableRef),
+    [activeTableRef, availableConnectedCatalogs],
   );
 
   useEffect(() => {
@@ -195,6 +210,8 @@ export function App() {
   const handleConnected = useCallback((result: ConnectResult) => {
     const catalog = buildCatalogFromResult(result);
     setConnectedCatalogs((cs) => [...cs, catalog]);
+    const firstTable = firstQueryableTableRef([catalog]);
+    if (firstTable) setSelectedTableRef(firstTable);
     setFreshCatalogId(catalog.id);
     setConnectModalOpen(false);
     window.setTimeout(() => setFreshCatalogId(null), 4500);
@@ -209,7 +226,16 @@ export function App() {
   }, []);
 
   const removeConnectedCatalog = useCallback((id: string) => {
-    setConnectedCatalogs((cs) => cs.filter((c) => c.id !== id));
+    setConnectedCatalogs((cs) => {
+      const next = cs.filter((c) => c.id !== id);
+      const nextAvailable = catalogsAvailableForFeatures(next, CONNECTOR_FEATURES);
+      setSelectedTableRef((current) =>
+        current?.catalogId === id
+          ? firstQueryableTableRef(nextAvailable)
+          : resolveActiveTableRef(nextAvailable, current),
+      );
+      return next;
+    });
   }, []);
 
   // ─── Apply theme + tokens ──────────────────────────────
@@ -552,20 +578,20 @@ export function App() {
         <button
           className="conn-pill"
           title={
-            connectedCatalogs.length
-              ? `${connectedCatalogs.length} connected catalog(s) · click to manage`
+            availableConnectedCatalogs.length
+              ? `${availableConnectedCatalogs.length} connected catalog(s) · click to manage`
               : 'Switch catalog'
           }
-          onClick={() => connectedCatalogs.length > 0 && setConnectedPanelOpen(true)}
+          onClick={() => availableConnectedCatalogs.length > 0 && setConnectedPanelOpen(true)}
         >
           <span className="conn-dot" />
           <span className="conn-name">
             {catalog?.name ?? 'loading'} <span className="sep">/</span>{' '}
             <span className="db">{catalog?.region ?? '—'} · delta</span>
           </span>
-          {connectedCatalogs.length > 0 && (
+          {availableConnectedCatalogs.length > 0 && (
             <span className="cat-count" title="Connected catalogs">
-              +{connectedCatalogs.length}
+              +{availableConnectedCatalogs.length}
             </span>
           )}
           <IconChevDownTiny size={9} className="chev" />
@@ -880,8 +906,10 @@ export function App() {
 
       {connectedPanelOpen && (
         <ConnectedCatalogsPanel
-          catalogs={connectedCatalogs}
+          catalogs={availableConnectedCatalogs}
+          activeTable={activeTableRef}
           freshId={freshCatalogId}
+          onActivate={setSelectedTableRef}
           onAdd={() => {
             setConnectedPanelOpen(false);
             openConnectModal(1);

@@ -1,20 +1,31 @@
 // Floating panel that lists connected catalogs and lets the user manage them.
 // Anchors to the connection pill in the top bar.
 
-import { useState, type MouseEvent } from 'react';
+import { useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { IconChevR, IconClose, IconRefresh, IconTable } from '../components/icons.tsx';
+import type { ActiveConnectedTableRef } from '../../services/query-source.ts';
 import { IconCog, IconDots } from './icons.tsx';
 import type { ConnectedCatalog } from './types.ts';
 
 type Props = {
   catalogs: ConnectedCatalog[];
+  activeTable?: ActiveConnectedTableRef;
   freshId: string | null;
+  onActivate?: (table: ActiveConnectedTableRef) => void;
   onAdd: () => void;
   onRemove: (id: string) => void;
   onClose: () => void;
 };
 
-export function ConnectedCatalogsPanel({ catalogs, freshId, onAdd, onRemove, onClose }: Props) {
+export function ConnectedCatalogsPanel({
+  catalogs,
+  activeTable,
+  freshId,
+  onActivate,
+  onAdd,
+  onRemove,
+  onClose,
+}: Props) {
   const [openCats, setOpenCats] = useState<Record<string, boolean>>(() => {
     const o: Record<string, boolean> = {};
     catalogs.forEach((c, i) => {
@@ -68,8 +79,17 @@ export function ConnectedCatalogsPanel({ catalogs, freshId, onAdd, onRemove, onC
                 return (
                   <div key={cat.id} className={'cc-cat ' + (cat.id === freshId ? 'fresh ' : '')}>
                     <div
+                      role="button"
+                      tabIndex={0}
                       className={'cc-cat-head ' + (open ? 'open' : '')}
                       onClick={() => setOpenCats({ ...openCats, [cat.id]: !open })}
+                      onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                        event.preventDefault();
+                        setOpenCats({ ...openCats, [cat.id]: !open });
+                      }}
+                      aria-expanded={open}
+                      aria-label={`${open ? 'Collapse' : 'Expand'} ${cat.alias}`}
                     >
                       <span className="twist">
                         <IconChevR size={9} />
@@ -100,16 +120,46 @@ export function ConnectedCatalogsPanel({ catalogs, freshId, onAdd, onRemove, onC
                               {sch.tables.length} table{sch.tables.length === 1 ? '' : 's'}
                             </span>
                           </div>
-                          {sch.tables.map((tbl) => (
-                            <div key={tbl.name} className="cc-tbl-row">
-                              <span className="ico">
-                                <IconTable size={11} />
-                              </span>
-                              <span className="name">{tbl.name}</span>
-                              <span className="v">v{tbl.snapshot}</span>
-                              <span className="rc">{tbl.size}</span>
-                            </div>
-                          ))}
+                          {sch.tables.map((tbl) => {
+                            const isActive =
+                              activeTable?.catalogId === cat.id &&
+                              activeTable.schemaName === sch.name &&
+                              activeTable.tableName === tbl.name;
+                            const queryable = !!tbl.manifestUrl;
+                            return (
+                              <button
+                                key={tbl.name}
+                                type="button"
+                                className={'cc-tbl-row ' + (isActive ? 'active ' : '')}
+                                disabled={!queryable}
+                                aria-pressed={isActive}
+                                aria-label={`Activate ${cat.alias} ${sch.name} ${tbl.name}`}
+                                title={
+                                  queryable
+                                    ? `Query ${cat.alias}.${sch.name}.${tbl.name}`
+                                    : 'This table is not queryable in this browser build yet'
+                                }
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  if (!queryable) return;
+                                  onActivate?.({
+                                    catalogId: cat.id,
+                                    schemaName: sch.name,
+                                    tableName: tbl.name,
+                                  });
+                                  onClose();
+                                }}
+                              >
+                                <span className="ico">
+                                  <IconTable size={11} />
+                                </span>
+                                <span className="name">{tbl.name}</span>
+                                <span className="v">v{tbl.snapshot}</span>
+                                <span className="rc">{tbl.size}</span>
+                                {isActive && <span className="active-label">active</span>}
+                              </button>
+                            );
+                          })}
                         </div>
                       ))}
                   </div>
