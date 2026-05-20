@@ -19,17 +19,20 @@ import {
   LOCAL_DISCOVERY,
   OBJECT_STORE_PROVIDERS,
   SOURCES,
+  availabilityForSource,
   type DiscoveryPayload,
   type ObjectStoreProvider,
   type SourceId,
 } from './data.ts';
 import { IconCheck, IconFolder, IconLock, IconShareNode, IconWarn } from './icons.tsx';
 import type { ConnectForm, ConnectResult, SchemaSelection, TestState } from './types.ts';
+import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
 
 type Props = {
   initialStep?: 1 | 2 | 3;
   initialSource?: SourceId | null;
   serverFallbackEnabled: boolean;
+  connectorFeatures: ConnectorFeatureFlags;
   onClose: () => void;
   onConnect: (result: ConnectResult) => void;
 };
@@ -64,11 +67,16 @@ export function ConnectModal({
   initialStep = 1,
   initialSource = null,
   serverFallbackEnabled,
+  connectorFeatures,
   onClose,
   onConnect,
 }: Props) {
-  const [step, setStep] = useState<1 | 2 | 3>(initialStep);
-  const [source, setSource] = useState<SourceId | null>(initialSource);
+  const initialSourceEnabled =
+    initialSource == null || availabilityForSource(initialSource, connectorFeatures).enabled;
+  const [step, setStep] = useState<1 | 2 | 3>(initialSourceEnabled ? initialStep : 1);
+  const [source, setSource] = useState<SourceId | null>(
+    initialSourceEnabled ? initialSource : null,
+  );
   const [form, setForm] = useState<ConnectForm>(DEFAULT_FORM);
   const [testState, setTestState] = useState<TestState>(null);
   const [alias, setAlias] = useState('');
@@ -122,15 +130,11 @@ export function ConnectModal({
 
   const runTest = useCallback(() => {
     setTestState('running');
-    if (source === 'local' && form.detected) {
-      setTestState('ok');
-      return;
-    }
     setTestState('err');
-  }, [form.detected, source]);
+  }, []);
 
   const next = () => {
-    if (step === 1 && source) {
+    if (step === 1 && source && availabilityForSource(source, connectorFeatures).enabled) {
       setStep(2);
       setTestState(null);
     } else if (step === 2) {
@@ -158,7 +162,7 @@ export function ConnectModal({
 
   const canNext =
     step === 1
-      ? !!source
+      ? !!source && availabilityForSource(source, connectorFeatures).enabled
       : step === 2
         ? source === 'local'
           ? !!form.path
@@ -215,7 +219,13 @@ export function ConnectModal({
         </header>
 
         <div className="cc-body">
-          {step === 1 && <SourcePicker value={source} onChange={setSource} />}
+          {step === 1 && (
+            <SourcePicker
+              value={source}
+              connectorFeatures={connectorFeatures}
+              onChange={setSource}
+            />
+          )}
           {step === 2 && source === 'local' && (
             <ConfigLocal form={form} setForm={setForm} testState={testState} />
           )}
@@ -310,9 +320,11 @@ export function ConnectModal({
 // ─── Source picker (step 1) ─────────────────────────────
 function SourcePicker({
   value,
+  connectorFeatures,
   onChange,
 }: {
   value: SourceId | null;
+  connectorFeatures: ConnectorFeatureFlags;
   onChange: (id: SourceId) => void;
 }) {
   return (
@@ -323,42 +335,62 @@ function SourcePicker({
       </p>
 
       <div className="cc-source-grid">
-        {SOURCES.map((s) => (
-          <div
-            key={s.id}
-            className={'cc-source-card ' + (value === s.id ? 'selected' : '')}
-            onClick={() => onChange(s.id)}
-          >
-            <span className="pick-ind">
-              <IconCheck size={10} />
-            </span>
-            <div className="tags">
-              {s.tags.map((t) => (
-                <span key={t} className="tag">
-                  {t}
-                </span>
-              ))}
+        {SOURCES.map((s) => {
+          const availability = availabilityForSource(s, connectorFeatures);
+          const disabled = !availability.enabled;
+          const tags = availability.label ? [...s.tags, availability.label] : s.tags;
+
+          return (
+            <div
+              key={s.id}
+              aria-disabled={disabled ? 'true' : undefined}
+              className={
+                'cc-source-card ' +
+                (value === s.id ? 'selected ' : '') +
+                (disabled ? 'disabled' : '')
+              }
+              onClick={() => {
+                if (!disabled) onChange(s.id);
+              }}
+              title={disabled ? `${s.title}: ${availability.reason}` : undefined}
+            >
+              <span className="pick-ind">
+                <IconCheck size={10} />
+              </span>
+              <div className="tags">
+                {tags.map((t) => (
+                  <span key={t} className="tag">
+                    {t}
+                  </span>
+                ))}
+              </div>
+              <div className={'glyph ' + s.glyphTone}>{s.glyph}</div>
+              <div className="title">{s.title}</div>
+              <div className="blurb">{s.blurb}</div>
+              <div className="owner-map" aria-label={`${s.title} runtime ownership`}>
+                <div>
+                  <span>Access</span>
+                  <b>{s.owners.access}</b>
+                </div>
+                <div>
+                  <span>Snapshot</span>
+                  <b>{s.owners.snapshot}</b>
+                </div>
+                <div>
+                  <span>Query</span>
+                  <b>{s.owners.query}</b>
+                </div>
+              </div>
+              {disabled && (
+                <div className="cc-source-status">
+                  <b>{availability.label}</b>
+                  <span>{availability.reason}</span>
+                </div>
+              )}
+              <div className="examples">{s.examples}</div>
             </div>
-            <div className={'glyph ' + s.glyphTone}>{s.glyph}</div>
-            <div className="title">{s.title}</div>
-            <div className="blurb">{s.blurb}</div>
-            <div className="owner-map" aria-label={`${s.title} runtime ownership`}>
-              <div>
-                <span>Access</span>
-                <b>{s.owners.access}</b>
-              </div>
-              <div>
-                <span>Snapshot</span>
-                <b>{s.owners.snapshot}</b>
-              </div>
-              <div>
-                <span>Query</span>
-                <b>{s.owners.query}</b>
-              </div>
-            </div>
-            <div className="examples">{s.examples}</div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="cc-section-head">What you&apos;ll need</div>
@@ -369,8 +401,7 @@ function SourcePicker({
           </span>
           <div>
             <b>Local files</b>
-            <br />
-            The path to a Delta table directory containing a{' '}
+            <br />A browser file handle for a Delta table directory containing a{' '}
             <code style={{ font: '11px var(--mono)' }}>_delta_log/</code>.
           </div>
         </div>
@@ -422,18 +453,6 @@ function ConfigLocal({
 
   const dropOrPick = () => {
     setOver(false);
-    setForm({
-      ...form,
-      path: '~/Datasets/acme/silver/orders',
-      detected: {
-        name: 'orders',
-        snapshot: 318,
-        rowsLabel: '1.28M',
-        files: 412,
-        size: '38.2 GB',
-        protocol: 'r2/w5',
-      },
-    });
   };
 
   return (
@@ -457,8 +476,7 @@ function ConfigLocal({
           </div>
           <div className="ti">Drag a Delta table folder here</div>
           <div className="sub">
-            or paste a path — Axon reads{' '}
-            <code style={{ fontFamily: 'var(--mono)', fontSize: 11.5 }}>_delta_log/</code> in place
+            Browser file-handle discovery is not wired in this editor flow yet.
           </div>
           <button className="browse">
             <IconFolder size={11} /> Browse…
@@ -476,16 +494,7 @@ function ConfigLocal({
                 setForm({
                   ...form,
                   path: e.target.value,
-                  detected: e.target.value
-                    ? {
-                        name: 'orders',
-                        snapshot: 318,
-                        rowsLabel: '1.28M',
-                        files: 412,
-                        size: '38.2 GB',
-                        protocol: 'r2/w5',
-                      }
-                    : null,
+                  detected: null,
                 })
               }
             />
@@ -498,8 +507,8 @@ function ConfigLocal({
             )}
           </div>
           <div className="cc-help">
-            Both files and zipped tables work. Symlinks are resolved. Read-only — Axon will never
-            write to local sources.
+            The sandbox runtime can ingest browser-selected local files. The Connect Catalog editor
+            will stay blocked until that file-handle path creates a queryable descriptor here.
           </div>
         </div>
 
@@ -544,15 +553,17 @@ function ConfigLocal({
           state={testState}
           okText="Delta log parsed · 1 table ready"
           okDetail="Snapshot version 318 · 412 files · last commit 14:08 UTC. Protocol features: columnMapping."
+          errText="Editor local file discovery is not wired"
+          errDetail="Use the sandbox local import path for now, or wire File System Access handles into a BrowserHttpSnapshotDescriptor before discovery."
         />
       </div>
 
       <aside className="cc-helper">
         <h5>How local tables work</h5>
         <p>
-          Axon mounts the folder as a single-table catalog under whatever alias you choose. The
-          browser engine reads Parquet directly through the File System Access API — files never
-          leave your machine.
+          The runtime has browser-local file ingestion, but this Connect Catalog wizard does not yet
+          pass File System Access handles into a queryable descriptor. It does not claim a local
+          catalog is connected until that path is available here.
         </p>
         <hr />
         <h5>Tips</h5>
@@ -561,10 +572,7 @@ function ConfigLocal({
             Point at the table root (where <code>_delta_log/</code> lives), not at an individual{' '}
             <code>.parquet</code> file.
           </li>
-          <li>
-            For a zipped table, drop the <code>.zip</code> here and we&apos;ll unpack into your OPFS
-            cache.
-          </li>
+          <li>Do not use this editor flow as proof that zipped local tables are connected yet.</li>
           <li>Use Object Storage instead for shared / cloud datasets.</li>
         </ul>
       </aside>

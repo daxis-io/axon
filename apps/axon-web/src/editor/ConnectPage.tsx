@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ConnectModal } from './connect/ConnectModal.tsx';
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
-import type { SourceId } from './connect/data.ts';
+import { availabilityForSource, type SourceId } from './connect/data.ts';
 import {
   buildCatalogFromResult,
   loadConnectedCatalogs,
@@ -14,6 +14,7 @@ import {
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { IconBolt, IconChevR, IconPlus } from './components/icons.tsx';
 import { navigate } from './router.ts';
+import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
 
 export function ConnectPage() {
@@ -46,6 +47,8 @@ export function ConnectPage() {
     (a, c) => a + c.schemas.reduce((b, s) => b + s.tables.length, 0),
     0,
   );
+  const unityCatalogAvailability = availabilityForSource('unity_catalog', CONNECTOR_FEATURES);
+  const deltaSharingAvailability = availabilityForSource('delta_share', CONNECTOR_FEATURES);
 
   return (
     <div className="cc-page">
@@ -125,11 +128,21 @@ export function ConnectPage() {
               cloud bucket
             </button>
             <span>·</span>
-            <button type="button" onClick={() => open(2, 'unity_catalog')}>
+            <button
+              type="button"
+              disabled={!unityCatalogAvailability.enabled}
+              title={unityCatalogAvailability.enabled ? undefined : unityCatalogAvailability.reason}
+              onClick={() => open(2, 'unity_catalog')}
+            >
               Unity Catalog
             </button>
             <span>·</span>
-            <button type="button" onClick={() => open(2, 'delta_share')}>
+            <button
+              type="button"
+              disabled={!deltaSharingAvailability.enabled}
+              title={deltaSharingAvailability.enabled ? undefined : deltaSharingAvailability.reason}
+              onClick={() => open(2, 'delta_share')}
+            >
               Delta Sharing
             </button>
           </div>
@@ -169,6 +182,7 @@ export function ConnectPage() {
           initialStep={modalStep}
           initialSource={modalSource}
           serverFallbackEnabled={SERVER_QUERY_FALLBACK_ENABLED}
+          connectorFeatures={CONNECTOR_FEATURES}
           onClose={() => setModalOpen(false)}
           onConnect={onConnect}
         />

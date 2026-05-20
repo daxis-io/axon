@@ -14,6 +14,7 @@ import {
   overlayCapabilityReport,
 } from '../services/capabilities.ts';
 import { subscribeEngineStatus } from '../services/engine.ts';
+import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
 import { appendHistory, loadHistory } from '../services/history.ts';
 import { runQuery } from '../services/query.ts';
 import { querySourceFromConnectedCatalogs } from '../services/query-source.ts';
@@ -871,6 +872,7 @@ export function App() {
           initialStep={connectInitialStep}
           initialSource={connectInitialSource}
           serverFallbackEnabled={SERVER_QUERY_FALLBACK_ENABLED}
+          connectorFeatures={CONNECTOR_FEATURES}
           onClose={() => setConnectModalOpen(false)}
           onConnect={handleConnected}
         />

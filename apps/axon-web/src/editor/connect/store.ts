@@ -1,8 +1,12 @@
 // Persistence for connected catalogs from the Connect Catalog workflow.
 // Stored in localStorage so non-sensitive catalog metadata survives reloads.
 
-import type { ObjectStoreProviderId } from './data.ts';
+import { availabilityForSource, type ObjectStoreProviderId } from './data.ts';
 import type { ConnectResult, ConnectedCatalog, SchemaSelection } from './types.ts';
+import {
+  CONNECTOR_FEATURES,
+  type ConnectorFeatureFlags,
+} from '../../services/connector-features.ts';
 import { SAMPLE_QUERY_SOURCE } from '../../services/query-source.ts';
 
 const STORAGE_KEY = 'axon.connect.catalogs.v1';
@@ -34,15 +38,27 @@ export const SAMPLE_CONNECTED_CATALOG: ConnectedCatalog = {
   ],
 };
 
-export function loadConnectedCatalogs(): ConnectedCatalog[] {
+export function loadConnectedCatalogs(
+  connectorFeatures: ConnectorFeatureFlags = CONNECTOR_FEATURES,
+): ConnectedCatalog[] {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return [SAMPLE_CONNECTED_CATALOG];
     const parsed = JSON.parse(raw) as ConnectedCatalog[];
-    return Array.isArray(parsed) ? parsed : [SAMPLE_CONNECTED_CATALOG];
+    if (!Array.isArray(parsed)) return [SAMPLE_CONNECTED_CATALOG];
+    return catalogsAvailableForFeatures(parsed, connectorFeatures);
   } catch {
     return [SAMPLE_CONNECTED_CATALOG];
   }
+}
+
+export function catalogsAvailableForFeatures(
+  catalogs: ConnectedCatalog[],
+  connectorFeatures: ConnectorFeatureFlags,
+): ConnectedCatalog[] {
+  return catalogs.filter(
+    (catalog) => availabilityForSource(catalog.kind, connectorFeatures).enabled,
+  );
 }
 
 export function saveConnectedCatalogs(catalogs: ConnectedCatalog[]): void {

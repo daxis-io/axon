@@ -1,6 +1,8 @@
 // Connect-Catalog workflow data.
 // Models the source picker and browser-local discovery payload.
 
+import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
+
 export type SourceId = 'local' | 'object_store' | 'unity_catalog' | 'delta_share';
 
 export type SourceCard = {
@@ -16,14 +18,15 @@ export type SourceCard = {
   glyph: string;
   glyphTone: 'neutral' | 'blue' | 'violet' | 'teal';
   tags: string[];
+  requiresBffAuthService?: boolean;
 };
 
 export const SOURCES: SourceCard[] = [
   {
     id: 'local',
     title: 'Local files',
-    blurb: 'A Delta table directory on this machine.',
-    examples: '~/datasets · /Volumes/data · uploaded .zip',
+    blurb: 'A Delta table directory on this machine once editor file handles are wired.',
+    examples: '_delta_log path · File System Access handle',
     owners: {
       access: 'Browser',
       snapshot: 'Browser',
@@ -31,7 +34,7 @@ export const SOURCES: SourceCard[] = [
     },
     glyph: 'L',
     glyphTone: 'neutral',
-    tags: ['dev', 'fastest'],
+    tags: ['browser-runtime', 'editor-blocked'],
   },
   {
     id: 'object_store',
@@ -60,6 +63,7 @@ export const SOURCES: SourceCard[] = [
     glyph: 'UC',
     glyphTone: 'violet',
     tags: ['governed'],
+    requiresBffAuthService: true,
   },
   {
     id: 'delta_share',
@@ -74,8 +78,33 @@ export const SOURCES: SourceCard[] = [
     glyph: 'DS',
     glyphTone: 'teal',
     tags: ['brokered', 'read-only'],
+    requiresBffAuthService: true,
   },
 ];
+
+export type SourceAvailability = {
+  enabled: boolean;
+  label?: string;
+  reason?: string;
+};
+
+export function availabilityForSource(
+  source: SourceId | SourceCard,
+  connectorFeatures: ConnectorFeatureFlags,
+): SourceAvailability {
+  const card =
+    typeof source === 'string' ? SOURCES.find((candidate) => candidate.id === source) : source;
+
+  if (card?.requiresBffAuthService && !connectorFeatures.bffAuthServiceConnectors) {
+    return {
+      enabled: false,
+      label: 'Coming soon',
+      reason: 'Requires the Axon auth service.',
+    };
+  }
+
+  return { enabled: true };
+}
 
 export type ObjectStoreProviderId = 's3' | 'gcs' | 'abfss' | 'r2';
 

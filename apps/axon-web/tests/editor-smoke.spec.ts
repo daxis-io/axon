@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
+import { connectorFeaturesFromEnv } from '../src/services/connector-features.ts';
 
 const APP_ORIGIN = new URL(process.env.PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:5174').origin;
 
@@ -8,6 +9,18 @@ const APP_ORIGIN = new URL(process.env.PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1
 // suite, but is opt-in via grep so existing CI continues to target the sandbox.
 
 test.describe('editor (Phase 1 smoke)', () => {
+  test('BFF auth-service connector gate is explicitly opt-in', () => {
+    expect(connectorFeaturesFromEnv({}).bffAuthServiceConnectors).toBe(false);
+    expect(
+      connectorFeaturesFromEnv({ VITE_AXON_BFF_AUTH_SERVICE_CONNECTORS: 'enabled' })
+        .bffAuthServiceConnectors,
+    ).toBe(true);
+    expect(
+      connectorFeaturesFromEnv({ VITE_AXON_BFF_AUTH_SERVICE_CONNECTORS: 'true' })
+        .bffAuthServiceConnectors,
+    ).toBe(false);
+  });
+
   test('fallback environment gate accepts only the server mode', () => {
     const source = readFileSync(
       new URL('../src/services/server-fallback.ts', import.meta.url),
@@ -45,6 +58,9 @@ test.describe('editor (Phase 1 smoke)', () => {
   test('connect source flows fail closed without browser-owned credentials', async ({ page }) => {
     await page.goto('/connect');
 
+    await expect(page.getByRole('button', { name: 'Unity Catalog' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Delta Sharing' })).toBeDisabled();
+
     await page.getByRole('button', { name: 'Connect a source' }).click();
     const dialog = page.getByRole('dialog', { name: 'Connect a Delta source' });
 
@@ -61,6 +77,15 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(dialog.locator('.cc-source-card', { hasText: 'Delta Sharing' })).toContainText(
       /Snapshot\s*Browser materialized/i,
     );
+
+    const unityCatalogCard = dialog.locator('.cc-source-card', { hasText: 'Unity Catalog' });
+    const deltaSharingCard = dialog.locator('.cc-source-card', { hasText: 'Delta Sharing' });
+    await expect(unityCatalogCard).toHaveAttribute('aria-disabled', 'true');
+    await expect(deltaSharingCard).toHaveAttribute('aria-disabled', 'true');
+    await expect(unityCatalogCard).toContainText(/coming soon/i);
+    await expect(deltaSharingCard).toContainText(/coming soon/i);
+    await unityCatalogCard.click();
+    await expect(dialog.getByRole('button', { name: /Continue/ })).toBeDisabled();
 
     await dialog.locator('.cc-source-card', { hasText: 'Object storage' }).click();
     await dialog.getByRole('button', { name: /Continue/ }).click();
@@ -79,6 +104,78 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(configDialog.getByText(/connection verified/i)).toHaveCount(0);
     await expect(configDialog).toContainText(/browser-local storage access not configured/i);
     await expect(configDialog.getByRole('button', { name: /Discover tables/ })).toBeDisabled();
+  });
+
+  test('persisted BFF-backed catalogs are not active when the connector gate is off', async ({
+    page,
+  }) => {
+    await page.goto('/connect');
+    await page.evaluate(() => {
+      localStorage.setItem(
+        'axon.connect.catalogs.v1',
+        JSON.stringify([
+          {
+            id: 'legacy-uc',
+            alias: 'legacy-uc',
+            kind: 'unity_catalog',
+            storage: '/api/uc/read-access-plan',
+            host: 'https://acme-prod.cloud.databricks.com',
+            region: 'brokered',
+            status: 'connected',
+            connectedAt: 'old session',
+            schemas: [
+              {
+                name: 'main',
+                tables: [
+                  {
+                    name: 'orders',
+                    snapshot: 42,
+                    rows: 10,
+                    files: 1,
+                    size: '1 MB',
+                    protocol: 'r2/w5',
+                    manifestUrl: '/fixtures/prod-like/delta-log-manifest.json',
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            id: 'legacy-share',
+            alias: 'legacy-share',
+            kind: 'delta_share',
+            storage: 'partner-profile',
+            host: 'https://sharing.acme.io/delta-sharing',
+            region: 'provider-vended',
+            status: 'connected',
+            connectedAt: 'old session',
+            schemas: [
+              {
+                name: 'partner',
+                tables: [
+                  {
+                    name: 'events',
+                    snapshot: 7,
+                    rows: 10,
+                    files: 1,
+                    size: '1 MB',
+                    protocol: 'r2/w5',
+                    manifestUrl: '/fixtures/prod-like/delta-log-manifest.json',
+                  },
+                ],
+              },
+            ],
+          },
+        ]),
+      );
+    });
+
+    await page.reload();
+
+    await expect(page.getByText('legacy-uc')).toHaveCount(0);
+    await expect(page.getByText('legacy-share')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Unity Catalog' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Delta Sharing' })).toBeDisabled();
   });
 
   test('loads selected connected catalog, populates table, runs a query', async ({
