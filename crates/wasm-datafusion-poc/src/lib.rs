@@ -2,6 +2,8 @@
 //!
 //! This crate is intentionally isolated from Axon's default browser runtime and worker artifact.
 
+#[cfg(test)]
+use std::sync::atomic::AtomicU8;
 use std::{
     any::Any,
     collections::{BTreeMap, BTreeSet},
@@ -113,12 +115,16 @@ pub struct BrowserQueryBudget {
 #[derive(Clone, Debug)]
 pub struct BrowserQueryCancellation {
     cancelled: Arc<AtomicBool>,
+    #[cfg(test)]
+    cancel_at_checkpoint: Arc<AtomicU8>,
 }
 
 impl BrowserQueryCancellation {
     pub fn new() -> Self {
         Self {
             cancelled: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            cancel_at_checkpoint: Arc::new(AtomicU8::new(CANCEL_AT_NO_CHECKPOINT)),
         }
     }
 
@@ -132,14 +138,46 @@ impl BrowserQueryCancellation {
 
     fn reset(&self) {
         self.cancelled.store(false, Ordering::SeqCst);
+        #[cfg(test)]
+        self.cancel_at_checkpoint
+            .store(CANCEL_AT_NO_CHECKPOINT, Ordering::SeqCst);
     }
 
     fn check_cancelled(&self) -> Result<(), QueryError> {
+        self.check_cancelled_at("query execution")
+    }
+
+    fn check_cancelled_at(&self, point: &str) -> Result<(), QueryError> {
+        #[cfg(test)]
+        if self.should_cancel_at_checkpoint(point) {
+            self.cancelled.store(true, Ordering::SeqCst);
+        }
+
         if self.is_cancelled() {
-            Err(query_cancelled_error())
+            Err(query_cancelled_error(point))
         } else {
             Ok(())
         }
+    }
+
+    #[cfg(test)]
+    fn cancel_at_next_arrow_ipc_batch_encoding_checkpoint_for_test(&self) {
+        self.cancel_at_checkpoint
+            .store(CANCEL_AT_ARROW_IPC_OUTPUT, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn should_cancel_at_checkpoint(&self, point: &str) -> bool {
+        point == "Arrow IPC batch encoding"
+            && self
+                .cancel_at_checkpoint
+                .compare_exchange(
+                    CANCEL_AT_ARROW_IPC_OUTPUT,
+                    CANCEL_AT_NO_CHECKPOINT,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
     }
 }
 
@@ -148,6 +186,11 @@ impl Default for BrowserQueryCancellation {
         Self::new()
     }
 }
+
+#[cfg(test)]
+const CANCEL_AT_NO_CHECKPOINT: u8 = 0;
+#[cfg(test)]
+const CANCEL_AT_ARROW_IPC_OUTPUT: u8 = 1;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DataFusionScanMetricsSummary {
@@ -1158,10 +1201,11 @@ fn validate_scan_budget_for_metrics(
     metrics: &ScanTargetMetricsSnapshot,
     query_budget: BrowserQueryBudget,
 ) -> Result<(), QueryError> {
-    validate_query_budget_value_option(
+    validate_query_budget_value_option_at(
         "max_scan_bytes",
         metrics.bytes_fetched,
         query_budget.max_scan_bytes,
+        "scan stream",
     )
 }
 
@@ -1240,7 +1284,7 @@ async fn stream_planned_scan_targets(
     };
     let batches = stream::try_unfold(state, |mut state| async move {
         loop {
-            state.cancellation.check_cancelled()?;
+            state.cancellation.check_cancelled_at("scan stream")?;
             if scan_limit_exhausted(&state.limit_remaining) {
                 return Ok(None);
             }
@@ -1289,7 +1333,7 @@ async fn stream_planned_scan_targets(
                 return Ok(None);
             };
             state.next_target_index += 1;
-            state.cancellation.check_cancelled()?;
+            state.cancellation.check_cancelled_at("scan stream")?;
 
             let scan = stream_scan_target_batches_with_row_group_pruning(
                 &state.reader,
@@ -1300,7 +1344,7 @@ async fn stream_planned_scan_targets(
                 state.row_group_predicate.as_ref(),
             )
             .await?;
-            state.cancellation.check_cancelled()?;
+            state.cancellation.check_cancelled_at("scan stream")?;
             let metrics_snapshot =
                 add_scan_metrics(&state.completed_metrics, &scan.metrics.snapshot());
             record_trace_parquet_metrics(&state.trace, metrics_snapshot.clone());
@@ -1376,13 +1420,14 @@ impl ExecutionPlan for AxonParquetScanExec {
         _context: Arc<TaskContext>,
     ) -> DataFusionResult<SendableRecordBatchStream> {
         self.cancellation
-            .check_cancelled()
+            .check_cancelled_at("scan execution")
             .map_err(datafusion_error_from_query_error)?;
         if let Some(max_scan_bytes) = self.query_budget.max_scan_bytes {
-            validate_query_budget_value(
+            validate_query_budget_value_at(
                 "max_scan_bytes",
                 self.pushdown_trace().planned_scan_bytes,
                 max_scan_bytes,
+                "planned scan",
             )
             .map_err(datafusion_error_from_query_error)?;
         }
@@ -1528,53 +1573,63 @@ fn query_error_from_std_error(error: &(dyn StdError + 'static)) -> Option<QueryE
     error.source().and_then(query_error_from_std_error)
 }
 
-fn query_cancelled_error() -> QueryError {
+fn query_cancelled_error(point: &str) -> QueryError {
     QueryError::new(
         QueryErrorCode::ExecutionFailed,
-        "experimental browser DataFusion query cancelled",
+        format!("experimental browser DataFusion query cancelled during {point}"),
         runtime_target(),
     )
 }
 
 fn is_query_cancelled_error(error: &QueryError) -> bool {
     error.code == QueryErrorCode::ExecutionFailed
-        && error.message == "experimental browser DataFusion query cancelled"
+        && error
+            .message
+            .starts_with("experimental browser DataFusion query cancelled")
 }
 
-fn query_budget_exceeded_error(budget_name: &str, observed: u64, max_allowed: u64) -> QueryError {
+fn query_budget_exceeded_error_at(
+    budget_name: &str,
+    observed: u64,
+    max_allowed: u64,
+    point: &str,
+) -> QueryError {
     QueryError::new(
         QueryErrorCode::FallbackRequired,
         format!(
-            "experimental browser DataFusion query exceeded {budget_name} budget ({observed} > {max_allowed})"
+            "experimental browser DataFusion query exceeded {budget_name} budget during {point} ({observed} > {max_allowed})"
         ),
         runtime_target(),
     )
     .with_fallback_reason(FallbackReason::BrowserRuntimeConstraint)
 }
 
-fn validate_query_budget_value(
+fn validate_query_budget_value_at(
     budget_name: &str,
     observed: u64,
     max_allowed: u64,
+    point: &str,
 ) -> Result<(), QueryError> {
     if observed > max_allowed {
-        Err(query_budget_exceeded_error(
+        Err(query_budget_exceeded_error_at(
             budget_name,
             observed,
             max_allowed,
+            point,
         ))
     } else {
         Ok(())
     }
 }
 
-fn validate_query_budget_value_option(
+fn validate_query_budget_value_option_at(
     budget_name: &str,
     observed: u64,
     max_allowed: Option<u64>,
+    point: &str,
 ) -> Result<(), QueryError> {
     if let Some(max_allowed) = max_allowed {
-        validate_query_budget_value(budget_name, observed, max_allowed)
+        validate_query_budget_value_at(budget_name, observed, max_allowed, point)
     } else {
         Ok(())
     }
@@ -1589,10 +1644,11 @@ fn validate_query_budget_for_plan(
     }
 
     let planned_scan_bytes = datafusion_planned_scan_bytes_from_plan(plan)?;
-    validate_query_budget_value_option(
+    validate_query_budget_value_option_at(
         "max_scan_bytes",
         planned_scan_bytes,
         query_budget.max_scan_bytes,
+        "planned scan",
     )
 }
 
@@ -1630,16 +1686,21 @@ async fn collect_record_batches_with_controls(
     cancellation: &BrowserQueryCancellation,
 ) -> Result<Vec<RecordBatch>, QueryError> {
     if matches!(query_budget.max_batches_in_flight, Some(0)) {
-        return Err(query_budget_exceeded_error("max_batches_in_flight", 1, 0));
+        return Err(query_budget_exceeded_error_at(
+            "max_batches_in_flight",
+            1,
+            0,
+            "record batch output",
+        ));
     }
 
-    cancellation.check_cancelled()?;
+    cancellation.check_cancelled_at("record batch output")?;
     let mut stream = execute_stream(plan, task_ctx).map_err(map_datafusion_error)?;
     let mut batches = Vec::new();
     let mut rows_returned = 0_u64;
 
     while let Some(batch) = stream.next().await {
-        cancellation.check_cancelled()?;
+        cancellation.check_cancelled_at("record batch output")?;
         let batch = batch.map_err(map_datafusion_error)?;
         let next_batch_count = batches.len().checked_add(1).ok_or_else(|| {
             QueryError::new(
@@ -1648,12 +1709,13 @@ async fn collect_record_batches_with_controls(
                 runtime_target(),
             )
         })?;
-        validate_query_budget_value_option(
+        validate_query_budget_value_option_at(
             "max_batches_in_flight",
             datafusion_metric_from_usize(next_batch_count, "output batch count")?,
             query_budget
                 .max_batches_in_flight
                 .map(|max| u64::try_from(max).unwrap_or(u64::MAX)),
+            "record batch output",
         )?;
 
         let batch_rows = u64::try_from(batch.num_rows()).map_err(|_| {
@@ -1670,15 +1732,16 @@ async fn collect_record_batches_with_controls(
                 runtime_target(),
             )
         })?;
-        validate_query_budget_value_option(
+        validate_query_budget_value_option_at(
             "max_rows_returned",
             next_rows_returned,
             query_budget.max_rows_returned,
+            "record batch output",
         )?;
 
         rows_returned = next_rows_returned;
         batches.push(batch);
-        cancellation.check_cancelled()?;
+        cancellation.check_cancelled_at("record batch output")?;
     }
 
     Ok(batches)
@@ -1692,10 +1755,15 @@ async fn encode_execution_plan_to_arrow_ipc_with_controls(
     cancellation: &BrowserQueryCancellation,
 ) -> Result<(Vec<u8>, u64), QueryError> {
     if matches!(query_budget.max_batches_in_flight, Some(0)) {
-        return Err(query_budget_exceeded_error("max_batches_in_flight", 1, 0));
+        return Err(query_budget_exceeded_error_at(
+            "max_batches_in_flight",
+            1,
+            0,
+            "Arrow IPC output",
+        ));
     }
 
-    cancellation.check_cancelled()?;
+    cancellation.check_cancelled_at("Arrow IPC output")?;
     let mut stream = execute_stream(plan, task_ctx).map_err(map_datafusion_error)?;
     let buffer = BudgetedArrowIpcBuffer::new(query_budget);
     let mut writer = StreamWriter::try_new(buffer, schema.as_ref()).map_err(|error| {
@@ -1706,14 +1774,15 @@ async fn encode_execution_plan_to_arrow_ipc_with_controls(
     let mut rows_returned = 0_u64;
 
     while let Some(batch) = stream.next().await {
-        cancellation.check_cancelled()?;
+        cancellation.check_cancelled_at("Arrow IPC output")?;
         let batch = batch.map_err(map_datafusion_error)?;
-        validate_query_budget_value_option(
+        validate_query_budget_value_option_at(
             "max_batches_in_flight",
             1,
             query_budget
                 .max_batches_in_flight
                 .map(|max| u64::try_from(max).unwrap_or(u64::MAX)),
+            "Arrow IPC output",
         )?;
 
         let batch_rows = u64::try_from(batch.num_rows()).map_err(|_| {
@@ -1730,10 +1799,11 @@ async fn encode_execution_plan_to_arrow_ipc_with_controls(
                 runtime_target(),
             )
         })?;
-        validate_query_budget_value_option(
+        validate_query_budget_value_option_at(
             "max_rows_returned",
             next_rows_returned,
             query_budget.max_rows_returned,
+            "Arrow IPC output",
         )?;
 
         writer.write(&batch).map_err(|error| {
@@ -1742,14 +1812,16 @@ async fn encode_execution_plan_to_arrow_ipc_with_controls(
             })
         })?;
         rows_returned = next_rows_returned;
-        cancellation.check_cancelled()?;
+        cancellation.check_cancelled_at("Arrow IPC batch encoding")?;
     }
 
+    cancellation.check_cancelled_at("Arrow IPC output")?;
     writer.finish().map_err(|error| {
         map_arrow_ipc_error(error, |error| {
             format!("experimental browser DataFusion could not finish Arrow IPC stream: {error}")
         })
     })?;
+    cancellation.check_cancelled_at("Arrow IPC output")?;
 
     let buffer = writer.into_inner().map_err(|error| {
         map_arrow_ipc_error(error, |error| {
@@ -1898,9 +1970,9 @@ impl WasmDataFusionEngine {
         &self,
         sql: &str,
     ) -> Result<(SchemaRef, Vec<RecordBatch>, DataFusionScanMetricsSummary), QueryError> {
-        self.cancellation.check_cancelled()?;
+        self.cancellation.check_cancelled_at("SQL planning")?;
         let frame = self.ctx.sql(sql).await.map_err(map_datafusion_error)?;
-        self.cancellation.check_cancelled()?;
+        self.cancellation.check_cancelled_at("SQL planning")?;
         let output_schema = frame.schema().inner().clone();
         let task_ctx = self.ctx.task_ctx();
         let plan = frame
@@ -1908,7 +1980,8 @@ impl WasmDataFusionEngine {
             .await
             .map_err(map_datafusion_error)?;
         validate_query_budget_for_plan(&plan, self.query_budget)?;
-        self.cancellation.check_cancelled()?;
+        self.cancellation
+            .check_cancelled_at("record batch output")?;
         let batches = collect_record_batches_with_controls(
             Arc::clone(&plan),
             task_ctx,
@@ -1916,12 +1989,14 @@ impl WasmDataFusionEngine {
             &self.cancellation,
         )
         .await?;
-        self.cancellation.check_cancelled()?;
+        self.cancellation
+            .check_cancelled_at("record batch output")?;
         let scan_metrics = datafusion_scan_metrics_from_plan(&plan)?;
-        validate_query_budget_value_option(
+        validate_query_budget_value_option_at(
             "max_scan_bytes",
             scan_metrics.bytes_fetched,
             self.query_budget.max_scan_bytes,
+            "scan stream",
         )?;
 
         Ok((output_schema, batches, scan_metrics))
@@ -1958,9 +2033,9 @@ impl WasmDataFusionEngine {
         sql: &str,
         include_physical_plan: bool,
     ) -> Result<DataFusionArrowIpcResult, QueryError> {
-        self.cancellation.check_cancelled()?;
+        self.cancellation.check_cancelled_at("SQL planning")?;
         let frame = self.ctx.sql(sql).await.map_err(map_datafusion_error)?;
-        self.cancellation.check_cancelled()?;
+        self.cancellation.check_cancelled_at("SQL planning")?;
         let output_schema = frame.schema().inner().clone();
         let task_ctx = self.ctx.task_ctx();
         let plan = frame
@@ -1974,7 +2049,7 @@ impl WasmDataFusionEngine {
                 displayable(plan.as_ref()).indent(false)
             )
         });
-        self.cancellation.check_cancelled()?;
+        self.cancellation.check_cancelled_at("Arrow IPC output")?;
         let (ipc_bytes, row_count) = encode_execution_plan_to_arrow_ipc_with_controls(
             Arc::clone(&plan),
             task_ctx,
@@ -1983,12 +2058,13 @@ impl WasmDataFusionEngine {
             &self.cancellation,
         )
         .await?;
-        self.cancellation.check_cancelled()?;
+        self.cancellation.check_cancelled_at("Arrow IPC output")?;
         let scan_metrics = datafusion_scan_metrics_from_plan(&plan)?;
-        validate_query_budget_value_option(
+        validate_query_budget_value_option_at(
             "max_scan_bytes",
             scan_metrics.bytes_fetched,
             self.query_budget.max_scan_bytes,
+            "scan stream",
         )?;
         let encoded_bytes = u64::try_from(ipc_bytes.len()).map_err(|_| {
             QueryError::new(
@@ -2102,7 +2178,7 @@ fn encode_record_batches_to_arrow_ipc_with_controls(
     query_budget: BrowserQueryBudget,
     cancellation: &BrowserQueryCancellation,
 ) -> Result<Vec<u8>, QueryError> {
-    cancellation.check_cancelled()?;
+    cancellation.check_cancelled_at("Arrow IPC output")?;
     let buffer = BudgetedArrowIpcBuffer::new(query_budget);
     let mut writer = StreamWriter::try_new(buffer, schema.as_ref()).map_err(|error| {
         map_arrow_ipc_error(error, |error| {
@@ -2111,18 +2187,21 @@ fn encode_record_batches_to_arrow_ipc_with_controls(
     })?;
 
     for batch in batches {
-        cancellation.check_cancelled()?;
+        cancellation.check_cancelled_at("Arrow IPC output")?;
         writer.write(batch).map_err(|error| {
             map_arrow_ipc_error(error, |error| {
                 format!("experimental browser DataFusion could not encode Arrow IPC batch: {error}")
             })
         })?;
+        cancellation.check_cancelled_at("Arrow IPC batch encoding")?;
     }
+    cancellation.check_cancelled_at("Arrow IPC output")?;
     writer.finish().map_err(|error| {
         map_arrow_ipc_error(error, |error| {
             format!("experimental browser DataFusion could not finish Arrow IPC stream: {error}")
         })
     })?;
+    cancellation.check_cancelled_at("Arrow IPC output")?;
 
     let buffer = writer.into_inner().map_err(|error| {
         map_arrow_ipc_error(error, |error| {
@@ -2171,10 +2250,11 @@ impl BudgetedArrowIpcBuffer {
                 )),
             )
         })?;
-        validate_query_budget_value_option(
+        validate_query_budget_value_option_at(
             "max_output_ipc_bytes",
             observed,
             self.query_budget.max_output_ipc_bytes,
+            "Arrow IPC output",
         )
         .map_err(|error| io::Error::new(io::ErrorKind::Other, WrappedQueryError(error)))
     }
@@ -2310,6 +2390,15 @@ fn query_error_to_js_value(error: QueryError) -> JsValue {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread::{self, JoinHandle};
+    use std::time::Duration;
+
+    use parquet::data_type::Int64Type;
+    use parquet::file::properties::WriterProperties;
+    use parquet::file::writer::SerializedFileWriter;
+    use parquet::schema::parser::parse_message_type;
 
     #[test]
     fn delta_table_schema_field_preserves_arrow_data_type() {
@@ -2416,6 +2505,354 @@ mod tests {
                 "physical plan text: {physical_plan}"
             );
         });
+    }
+
+    #[test]
+    fn arrow_ipc_batch_encoding_cancellation_reports_structured_shape() {
+        test_runtime().block_on(async {
+            let mut engine = WasmDataFusionEngine::with_budget(BrowserQueryBudget::default());
+            let cancellation = engine.cancellation_token();
+            let (schema, batches) = cancellable_output_batches();
+
+            engine
+                .register_record_batches("wide_events", schema, batches)
+                .await
+                .expect("wide record batches should register");
+
+            cancellation.cancel_at_next_arrow_ipc_batch_encoding_checkpoint_for_test();
+
+            let error = engine
+                .sql_to_arrow_ipc("SELECT id, payload FROM wide_events")
+                .await
+                .expect_err("cancelled Arrow IPC batch encoding should fail");
+
+            assert_eq!(error.code, QueryErrorCode::ExecutionFailed);
+            assert_eq!(error.fallback_reason, None);
+            assert_eq!(error.target, runtime_target());
+            assert!(error.message.contains("cancelled"));
+            assert!(error.message.contains("Arrow IPC batch encoding"));
+
+            let result = engine
+                .sql_to_arrow_ipc("SELECT id FROM wide_events LIMIT 1")
+                .await
+                .expect("a cancelled Arrow IPC output should not poison later queries");
+            assert!(!result.is_empty());
+        });
+    }
+
+    #[test]
+    fn scan_stream_budget_rejects_actual_bytes_after_fetching_parquet() {
+        test_runtime().block_on(async {
+            let parquet_object = parquet_bytes_with_i64_columns(&[(1, 10), (2, 20), (3, 30)]);
+            let object_size = u64::try_from(parquet_object.len()).expect("object size should fit");
+            let server = RequestCapturingServer::new(parquet_object);
+            let stream = stream_planned_scan_targets(
+                HttpRangeReader::new(),
+                vec![ScanTarget {
+                    object_source: ObjectSource::new(server.url()),
+                    object_etag: None,
+                    path: "part-000.parquet".to_string(),
+                    size_bytes: object_size,
+                    partition_values: BTreeMap::new(),
+                }],
+                vec!["id".to_string(), "value".to_string()],
+                BTreeMap::new(),
+                None,
+                Arc::new(Mutex::new(AxonParquetScanTrace::default())),
+                Arc::new(Mutex::new(None)),
+                BrowserQueryBudget {
+                    max_scan_bytes: Some(1),
+                    ..BrowserQueryBudget::default()
+                },
+                BrowserQueryCancellation::default(),
+            )
+            .await;
+            let error = match stream {
+                Err(error) => error,
+                Ok(mut stream) => match stream.batches.next().await {
+                    Some(Err(error)) => error,
+                    Some(Ok(_batch)) => panic!("stream-time scan budget should fail"),
+                    None => panic!("stream should not finish before budget enforcement"),
+                },
+            };
+
+            assert!(
+                !server.recorded_requests().is_empty(),
+                "stream-time scan budget should fail after object I/O"
+            );
+            assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+            assert_eq!(
+                error.fallback_reason,
+                Some(FallbackReason::BrowserRuntimeConstraint)
+            );
+            assert_eq!(error.target, runtime_target());
+            assert!(error.message.contains("max_scan_bytes"));
+            assert!(error.message.contains("scan stream"));
+        });
+    }
+
+    fn cancellable_output_batches() -> (SchemaRef, Vec<RecordBatch>) {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("payload", DataType::Utf8, false),
+        ]));
+        let payload = "cancel-output-value".repeat(256);
+        let batches = (0_i32..128)
+            .map(|batch_index| {
+                let ids = (0_i32..128)
+                    .map(|row| batch_index * 128 + row)
+                    .collect::<Vec<_>>();
+                let payloads = std::iter::repeat(payload.as_str())
+                    .take(ids.len())
+                    .collect::<Vec<_>>();
+                RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::new(Int32Array::from(ids)),
+                        Arc::new(StringArray::from(payloads)),
+                    ],
+                )
+                .expect("cancellable output batch should construct")
+            })
+            .collect::<Vec<_>>();
+
+        (schema, batches)
+    }
+
+    fn parquet_bytes_with_i64_columns(rows: &[(i64, i64)]) -> Vec<u8> {
+        let schema = Arc::new(
+            parse_message_type("message schema { REQUIRED INT64 id; REQUIRED INT64 value; }")
+                .expect("parquet schema should parse"),
+        );
+        let mut bytes = Vec::new();
+        let mut writer = SerializedFileWriter::new(
+            &mut bytes,
+            schema,
+            Arc::new(WriterProperties::builder().build()),
+        )
+        .expect("parquet writer should construct");
+        let ids = rows.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        let values = rows.iter().map(|(_, value)| *value).collect::<Vec<_>>();
+
+        let mut row_group = writer
+            .next_row_group()
+            .expect("row-group writer should construct");
+        if let Some(mut column) = row_group
+            .next_column()
+            .expect("id column writer should be returned")
+        {
+            column
+                .typed::<Int64Type>()
+                .write_batch(&ids, None, None)
+                .expect("id values should write");
+            column.close().expect("id column writer should close");
+        }
+        if let Some(mut column) = row_group
+            .next_column()
+            .expect("value column writer should be returned")
+        {
+            column
+                .typed::<Int64Type>()
+                .write_batch(&values, None, None)
+                .expect("value values should write");
+            column.close().expect("value column writer should close");
+        }
+        row_group.close().expect("row-group writer should close");
+        writer.close().expect("file writer should close");
+        bytes
+    }
+
+    #[derive(Clone, Debug)]
+    struct CapturedRequest {
+        headers: BTreeMap<String, String>,
+    }
+
+    fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 512];
+        loop {
+            let read = stream
+                .read(&mut chunk)
+                .expect("test server should read request bytes");
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&buffer);
+        let headers = request
+            .lines()
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .filter_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+            })
+            .collect();
+
+        CapturedRequest { headers }
+    }
+
+    struct TestResponse {
+        status_line: &'static str,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    }
+
+    fn write_response(stream: &mut std::net::TcpStream, response: TestResponse) {
+        write!(stream, "HTTP/1.1 {}\r\n", response.status_line).expect("status line should write");
+        write!(stream, "Connection: close\r\n").expect("connection header should write");
+        for (header, value) in response.headers {
+            write!(stream, "{header}: {value}\r\n").expect("header should write");
+        }
+        write!(stream, "\r\n").expect("header terminator should write");
+        stream
+            .write_all(&response.body)
+            .expect("response body should write");
+        stream.flush().expect("response should flush");
+    }
+
+    fn full_or_ranged_response(request: &CapturedRequest, body: &[u8]) -> TestResponse {
+        let Some(range_header) = request.headers.get("range") else {
+            return TestResponse {
+                status_line: "200 OK",
+                headers: vec![("Content-Length".to_string(), body.len().to_string())],
+                body: body.to_vec(),
+            };
+        };
+
+        let (start, end) = resolve_range(range_header, body.len());
+        if start > end || end >= body.len() {
+            return TestResponse {
+                status_line: "416 Range Not Satisfiable",
+                headers: vec![
+                    ("Content-Length".to_string(), "0".to_string()),
+                    (
+                        "Content-Range".to_string(),
+                        format!("bytes */{}", body.len()),
+                    ),
+                ],
+                body: Vec::new(),
+            };
+        }
+
+        let ranged = body[start..=end].to_vec();
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), ranged.len().to_string()),
+                (
+                    "Content-Range".to_string(),
+                    format!("bytes {start}-{end}/{}", body.len()),
+                ),
+            ],
+            body: ranged,
+        }
+    }
+
+    fn resolve_range(range_header: &str, object_len: usize) -> (usize, usize) {
+        let range = range_header
+            .strip_prefix("bytes=")
+            .expect("test server expects byte ranges");
+        if let Some(suffix) = range.strip_prefix('-') {
+            let suffix_len = suffix.parse::<usize>().expect("suffix length should parse");
+            let start = object_len.saturating_sub(suffix_len);
+            return (start, object_len.saturating_sub(1));
+        }
+        let (start, end) = range
+            .split_once('-')
+            .expect("range should include '-' separator");
+        let start = start.parse::<usize>().expect("range start should parse");
+        if end.is_empty() {
+            return (start, object_len.saturating_sub(1));
+        }
+        let end = end.parse::<usize>().expect("range end should parse");
+        (start, end.min(object_len.saturating_sub(1)))
+    }
+
+    struct RequestCapturingServer {
+        address: std::net::SocketAddr,
+        stop: Arc<AtomicBool>,
+        requests: Arc<Mutex<Vec<CapturedRequest>>>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl RequestCapturingServer {
+        fn new(body: Vec<u8>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+            listener
+                .set_nonblocking(true)
+                .expect("listener should allow nonblocking accept");
+            let address = listener.local_addr().expect("listener addr should resolve");
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop_for_thread = Arc::clone(&stop);
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let requests_for_thread = Arc::clone(&requests);
+            let body = Arc::new(body);
+
+            let thread = thread::spawn(move || {
+                while !stop_for_thread.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            if stop_for_thread.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            stream
+                                .set_nonblocking(false)
+                                .expect("accepted streams should allow blocking reads");
+                            let body = Arc::clone(&body);
+                            let requests = Arc::clone(&requests_for_thread);
+                            thread::spawn(move || {
+                                let request = read_request(&mut stream);
+                                requests
+                                    .lock()
+                                    .expect("recorded requests should be writable")
+                                    .push(request.clone());
+                                write_response(
+                                    &mut stream,
+                                    full_or_ranged_response(&request, &body),
+                                );
+                            });
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("test server accept should succeed: {error}"),
+                    }
+                }
+            });
+
+            Self {
+                address,
+                stop,
+                requests,
+                thread: Some(thread),
+            }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}/object", self.address)
+        }
+
+        fn recorded_requests(&self) -> Vec<CapturedRequest> {
+            self.requests
+                .lock()
+                .expect("recorded requests should be readable")
+                .clone()
+        }
+    }
+
+    impl Drop for RequestCapturingServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = std::net::TcpStream::connect(self.address);
+            if let Some(thread) = self.thread.take() {
+                thread.join().expect("test server should shut down cleanly");
+            }
+        }
     }
 
     fn test_runtime() -> tokio::runtime::Runtime {

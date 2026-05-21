@@ -192,7 +192,7 @@ test('preserves cancellation errors from browser worker envelopes', async ({ pag
 
   expect(result.cancellation).toMatchObject({
     name: 'AxonWorkerError',
-    message: 'experimental browser DataFusion query cancelled',
+    message: 'experimental browser DataFusion query cancelled during Arrow IPC batch encoding',
   });
   expect(result.cancellation?.queryError).toMatchObject({
     code: 'execution_failed',
@@ -343,7 +343,8 @@ function workerSource(): string {
                 request_id: payload.request_id,
                 error: {
                   code: 'execution_failed',
-                  message: 'experimental browser DataFusion query cancelled',
+                  message:
+                    'experimental browser DataFusion query cancelled during Arrow IPC batch encoding',
                   target: 'browser_wasm',
                 },
               },

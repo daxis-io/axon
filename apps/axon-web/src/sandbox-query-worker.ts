@@ -288,10 +288,7 @@ function emitErrorEvents(context: BrowserWorkerEventContext, error: QueryError):
   if (error.fallback_reason) {
     emitFallback(context, error.fallback_reason);
   }
-  if (
-    error.code === 'execution_failed' &&
-    error.message === 'experimental browser DataFusion query cancelled'
-  ) {
+  if (isBrowserDataFusionCancellation(error)) {
     postEvent({
       cancellation: {
         context,
@@ -306,6 +303,13 @@ function emitErrorEvents(context: BrowserWorkerEventContext, error: QueryError):
       error,
     },
   });
+}
+
+function isBrowserDataFusionCancellation(error: QueryError): boolean {
+  return (
+    error.code === 'execution_failed' &&
+    error.message.startsWith('experimental browser DataFusion query cancelled')
+  );
 }
 
 function postEvent(event: BrowserWorkerEventEnvelope): void {

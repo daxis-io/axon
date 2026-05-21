@@ -8,13 +8,13 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use arrow_array::{Int32Array, RecordBatch, StringArray};
+use arrow_array::{BinaryArray, Int32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::data_type::Int64Type;
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
-use query_contract::{ExecutionTarget, FallbackReason, QueryErrorCode};
+use query_contract::{ExecutionTarget, FallbackReason, QueryError, QueryErrorCode};
 use wasm_datafusion_poc::{
     BrowserQueryBudget, DeltaActiveFile, DeltaTableDescriptor, WasmDataFusionEngine,
 };
@@ -45,6 +45,53 @@ async fn query_budget_rejects_output_ipc_over_limit() {
     );
     assert_eq!(error.target, ExecutionTarget::BrowserWasm);
     assert!(error.message.contains("max_output_ipc_bytes"));
+}
+
+#[tokio::test]
+async fn query_budget_rejects_output_ipc_over_limit_for_aggregate_result() {
+    let mut engine = WasmDataFusionEngine::with_budget(BrowserQueryBudget {
+        max_output_ipc_bytes: Some(512),
+        ..Default::default()
+    });
+    let batch = controlled_batch();
+    let schema = batch.schema();
+
+    engine
+        .register_record_batches("events", schema, vec![batch])
+        .await
+        .expect("record batches should register");
+
+    let error = engine
+        .sql_to_arrow_ipc(
+            "SELECT category, COUNT(*) AS event_count \
+             FROM events GROUP BY category ORDER BY category",
+        )
+        .await
+        .expect_err("aggregate output over IPC budget should fail");
+
+    assert_browser_runtime_budget_error(&error, "max_output_ipc_bytes", "Arrow IPC output");
+}
+
+#[tokio::test]
+async fn query_budget_rejects_output_ipc_over_limit_for_wide_binary_string_projection() {
+    let mut engine = WasmDataFusionEngine::with_budget(BrowserQueryBudget {
+        max_output_ipc_bytes: Some(2048),
+        ..Default::default()
+    });
+    let batch = wide_binary_string_batch();
+    let schema = batch.schema();
+
+    engine
+        .register_record_batches("wide_events", schema, vec![batch])
+        .await
+        .expect("wide record batch should register");
+
+    let error = engine
+        .sql_to_arrow_ipc("SELECT payload, blob FROM wide_events ORDER BY id")
+        .await
+        .expect_err("wide binary/string output over IPC budget should fail");
+
+    assert_browser_runtime_budget_error(&error, "max_output_ipc_bytes", "Arrow IPC output");
 }
 
 #[tokio::test]
@@ -79,6 +126,56 @@ async fn query_budget_rejects_planned_scan_over_limit() {
         error.message.contains("3072"),
         "expected planned scan byte count in error: {}",
         error.message
+    );
+}
+
+#[tokio::test]
+async fn query_budget_rejects_row_budget_after_filter() {
+    let mut engine = WasmDataFusionEngine::with_budget(BrowserQueryBudget {
+        max_rows_returned: Some(2),
+        ..Default::default()
+    });
+    let batch = controlled_batch();
+    let schema = batch.schema();
+
+    engine
+        .register_record_batches("events", schema, vec![batch])
+        .await
+        .expect("record batches should register");
+
+    let error = engine
+        .sql_to_arrow_ipc("SELECT id FROM events WHERE category = 'B' ORDER BY id")
+        .await
+        .expect_err("filtered rows over row budget should fail");
+
+    assert_browser_runtime_budget_error(&error, "max_rows_returned", "Arrow IPC output");
+}
+
+#[tokio::test]
+async fn query_budget_rejects_planned_scan_before_fetching_file() {
+    let parquet_object = parquet_bytes_with_i64_columns(&[(1, 10), (2, 20), (3, 30)]);
+    let object_size = u64::try_from(parquet_object.len()).expect("object size should fit");
+    assert!(object_size > 1, "test parquet object should be nonempty");
+    let server = RequestCapturingServer::new(parquet_object);
+    let mut engine = WasmDataFusionEngine::with_budget(BrowserQueryBudget {
+        max_scan_bytes: Some(object_size - 1),
+        ..Default::default()
+    });
+
+    engine
+        .open_delta_table(single_file_parquet_descriptor(server.url(), object_size))
+        .await
+        .expect("descriptor-backed table should register");
+
+    let error = engine
+        .sql_to_arrow_ipc("SELECT id FROM events")
+        .await
+        .expect_err("planned scan over budget should fail before object I/O");
+
+    assert_browser_runtime_budget_error(&error, "max_scan_bytes", "planned scan");
+    assert!(
+        server.recorded_requests().is_empty(),
+        "plan-time scan budget should fail before fetching the object"
     );
 }
 
@@ -198,6 +295,25 @@ async fn query_cancellation_reports_structured_shape() {
     assert!(!result.is_empty());
 }
 
+fn assert_browser_runtime_budget_error(error: &QueryError, budget_name: &str, point: &str) {
+    assert_eq!(error.code, QueryErrorCode::FallbackRequired, "{error:?}");
+    assert_eq!(
+        error.fallback_reason,
+        Some(FallbackReason::BrowserRuntimeConstraint)
+    );
+    assert_eq!(error.target, ExecutionTarget::BrowserWasm);
+    assert!(
+        error.message.contains(budget_name),
+        "expected budget name {budget_name} in error: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains(point),
+        "expected budget point {point} in error: {}",
+        error.message
+    );
+}
+
 fn controlled_batch() -> RecordBatch {
     RecordBatch::try_new(
         descriptor_schema(),
@@ -208,6 +324,32 @@ fn controlled_batch() -> RecordBatch {
         ],
     )
     .expect("controlled batch should construct")
+}
+
+fn wide_binary_string_batch() -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("payload", DataType::Utf8, false),
+        Field::new("blob", DataType::Binary, false),
+    ]));
+    let payload = "wide-string-value".repeat(256);
+    let blob = vec![42_u8; 4096];
+    let payloads = std::iter::repeat(payload.as_str())
+        .take(4)
+        .collect::<Vec<_>>();
+    let blobs = std::iter::repeat(blob.as_slice())
+        .take(4)
+        .collect::<Vec<_>>();
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4])),
+            Arc::new(StringArray::from(payloads)),
+            Arc::new(BinaryArray::from_iter_values(blobs)),
+        ],
+    )
+    .expect("wide binary/string batch should construct")
 }
 
 fn controlled_partitions(schema: SchemaRef) -> Vec<Vec<RecordBatch>> {
@@ -260,6 +402,25 @@ fn delta_descriptor(table_name: &str, schema: SchemaRef) -> DeltaTableDescriptor
                 deletion_vector: None,
             },
         ],
+    }
+}
+
+fn single_file_parquet_descriptor(url: String, size_bytes: u64) -> DeltaTableDescriptor {
+    DeltaTableDescriptor {
+        table_name: "events".to_string(),
+        table_version: 9,
+        schema: i64_descriptor_schema(),
+        partition_columns: Vec::new(),
+        partition_column_types: BTreeMap::new(),
+        active_files: vec![DeltaActiveFile {
+            path: "part-000.parquet".to_string(),
+            url,
+            size_bytes,
+            partition_values: BTreeMap::new(),
+            object_etag: None,
+            stats_json: Some(r#"{"numRecords":3}"#.to_string()),
+            deletion_vector: None,
+        }],
     }
 }
 
@@ -328,6 +489,10 @@ fn i64_descriptor_schema() -> SchemaRef {
 }
 
 fn parquet_bytes_with_i64_columns(rows: &[(i64, i64)]) -> Vec<u8> {
+    parquet_bytes_with_i64_column_row_groups(&[rows])
+}
+
+fn parquet_bytes_with_i64_column_row_groups(row_groups: &[&[(i64, i64)]]) -> Vec<u8> {
     let schema = Arc::new(
         parse_message_type("message schema { REQUIRED INT64 id; REQUIRED INT64 value; }")
             .expect("parquet schema should parse"),
@@ -339,33 +504,34 @@ fn parquet_bytes_with_i64_columns(rows: &[(i64, i64)]) -> Vec<u8> {
         Arc::new(WriterProperties::builder().build()),
     )
     .expect("parquet writer should construct");
-    let ids = rows.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-    let values = rows.iter().map(|(_, value)| *value).collect::<Vec<_>>();
-
-    let mut row_group = writer
-        .next_row_group()
-        .expect("row-group writer should construct");
-    if let Some(mut column) = row_group
-        .next_column()
-        .expect("id column writer should be returned")
-    {
-        column
-            .typed::<Int64Type>()
-            .write_batch(&ids, None, None)
-            .expect("id values should write");
-        column.close().expect("id column writer should close");
+    for rows in row_groups {
+        let ids = rows.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        let values = rows.iter().map(|(_, value)| *value).collect::<Vec<_>>();
+        let mut row_group = writer
+            .next_row_group()
+            .expect("row-group writer should construct");
+        if let Some(mut column) = row_group
+            .next_column()
+            .expect("id column writer should be returned")
+        {
+            column
+                .typed::<Int64Type>()
+                .write_batch(&ids, None, None)
+                .expect("id values should write");
+            column.close().expect("id column writer should close");
+        }
+        if let Some(mut column) = row_group
+            .next_column()
+            .expect("value column writer should be returned")
+        {
+            column
+                .typed::<Int64Type>()
+                .write_batch(&values, None, None)
+                .expect("value values should write");
+            column.close().expect("value column writer should close");
+        }
+        row_group.close().expect("row-group writer should close");
     }
-    if let Some(mut column) = row_group
-        .next_column()
-        .expect("value column writer should be returned")
-    {
-        column
-            .typed::<Int64Type>()
-            .write_batch(&values, None, None)
-            .expect("value values should write");
-        column.close().expect("value column writer should close");
-    }
-    row_group.close().expect("row-group writer should close");
     writer.close().expect("file writer should close");
     bytes
 }
@@ -413,6 +579,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
 
 fn write_response(stream: &mut std::net::TcpStream, response: TestResponse) {
     write!(stream, "HTTP/1.1 {}\r\n", response.status_line).expect("status line should write");
+    write!(stream, "Connection: close\r\n").expect("connection header should write");
     for (header, value) in response.headers {
         write!(stream, "{header}: {value}\r\n").expect("header should write");
     }
