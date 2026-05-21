@@ -286,6 +286,57 @@ fn delta_descriptor_scan_streams_enum_byte_array_columns_as_binary() {
 }
 
 #[test]
+fn delta_descriptor_scan_streams_raw_wkb_like_geometry_geography_bytes_as_binary() {
+    let _guard = PARQUET_SCAN_TEST_LOCK
+        .lock()
+        .expect("Parquet scan tests should serialize local HTTP servers");
+    test_runtime().block_on(async {
+        // These are opaque WKB-like payloads. This test only proves raw bytes
+        // survive as Arrow Binary, not geospatial functions or predicates.
+        let geometry_one = vec![1, 1, 0, 0, 0];
+        let geometry_two = vec![1, 2, 0, 0, 0];
+        let geography_one = vec![2, 1, 0, 0, 0];
+        let geography_two = vec![2, 2, 0, 0, 0];
+        let object = parquet_bytes_with_wkb_like_payloads(&[
+            (1, geometry_one.clone(), geography_one.clone()),
+            (2, geometry_two.clone(), geography_two.clone()),
+        ]);
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let server = RequestCapturingServer::new(object);
+        let mut engine = WasmDataFusionEngine::new();
+
+        engine
+            .open_delta_table(delta_descriptor(
+                "events",
+                raw_wkb_like_payload_descriptor_schema(),
+                server.url(),
+                object_size,
+            ))
+            .await
+            .expect("Delta descriptor should register GEOMETRY/GEOGRAPHY payloads as binary");
+
+        let (schema, batches) = engine
+            .sql_to_record_batches(
+                "SELECT id, geometry_payload, geography_payload FROM events ORDER BY id",
+            )
+            .await
+            .expect("DataFusion should execute SQL over raw binary GEOMETRY/GEOGRAPHY payloads");
+
+        assert_eq!(schema.field(1).data_type(), &DataType::Binary);
+        assert_eq!(schema.field(2).data_type(), &DataType::Binary);
+        assert_eq!(int64_column_values(&batches, 0), vec![1, 2]);
+        assert_eq!(
+            binary_column_values(&batches, 1),
+            vec![geometry_one, geometry_two]
+        );
+        assert_eq!(
+            binary_column_values(&batches, 2),
+            vec![geography_one, geography_two]
+        );
+    });
+}
+
+#[test]
 fn browser_readable_required_and_optional_utf8_columns_scan_through_datafusion() {
     let _guard = PARQUET_SCAN_TEST_LOCK
         .lock()
@@ -717,6 +768,15 @@ fn utf8_payload_descriptor_schema() -> SchemaRef {
     ]))
 }
 
+fn raw_wkb_like_payload_descriptor_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("geometry_payload", DataType::Binary, false),
+        Field::new("geography_payload", DataType::Binary, false),
+        Field::new("category", DataType::Utf8, true),
+    ]))
+}
+
 fn utf8_required_optional_descriptor_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -893,6 +953,76 @@ fn parquet_bytes_with_byte_array_payload(
             .write_batch(&payloads, None, None)
             .expect("payload values should write");
         column.close().expect("payload column writer should close");
+    }
+    row_group.close().expect("row-group writer should close");
+    writer.close().expect("file writer should close");
+    bytes
+}
+
+fn parquet_bytes_with_wkb_like_payloads(rows: &[(i64, Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+    let schema = Arc::new(
+        parse_message_type(
+            "message schema { \
+             REQUIRED INT64 id; \
+             REQUIRED BYTE_ARRAY geometry_payload (GEOMETRY); \
+             REQUIRED BYTE_ARRAY geography_payload (GEOGRAPHY); \
+             }",
+        )
+        .expect("parquet schema should parse"),
+    );
+    let mut bytes = Vec::new();
+    let mut writer = SerializedFileWriter::new(
+        &mut bytes,
+        schema,
+        Arc::new(WriterProperties::builder().build()),
+    )
+    .expect("parquet writer should construct");
+    let ids = rows.iter().map(|(id, _, _)| *id).collect::<Vec<_>>();
+    let geometries = rows
+        .iter()
+        .map(|(_, geometry, _)| ByteArray::from(geometry.clone()))
+        .collect::<Vec<_>>();
+    let geographies = rows
+        .iter()
+        .map(|(_, _, geography)| ByteArray::from(geography.clone()))
+        .collect::<Vec<_>>();
+
+    let mut row_group = writer
+        .next_row_group()
+        .expect("row-group writer should construct");
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("id column writer should be returned")
+    {
+        column
+            .typed::<Int64Type>()
+            .write_batch(&ids, None, None)
+            .expect("id values should write");
+        column.close().expect("id column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("geometry_payload column writer should be returned")
+    {
+        column
+            .typed::<ByteArrayType>()
+            .write_batch(&geometries, None, None)
+            .expect("geometry_payload values should write");
+        column
+            .close()
+            .expect("geometry_payload column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("geography_payload column writer should be returned")
+    {
+        column
+            .typed::<ByteArrayType>()
+            .write_batch(&geographies, None, None)
+            .expect("geography_payload values should write");
+        column
+            .close()
+            .expect("geography_payload column writer should close");
     }
     row_group.close().expect("row-group writer should close");
     writer.close().expect("file writer should close");

@@ -969,6 +969,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
 
 fn write_response(stream: &mut std::net::TcpStream, response: TestResponse) {
     write!(stream, "HTTP/1.1 {}\r\n", response.status_line).expect("status line should write");
+    write!(stream, "Connection: close\r\n").expect("connection header should write");
     for (header, value) in response.headers {
         write!(stream, "{header}: {value}\r\n").expect("header should write");
     }

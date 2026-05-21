@@ -493,6 +493,8 @@ fn datafusion_byte_array_type_from_parquet_field(
         }
         Some(BrowserParquetLogicalType::Bson)
         | Some(BrowserParquetLogicalType::Enum)
+        | Some(BrowserParquetLogicalType::Geometry { .. })
+        | Some(BrowserParquetLogicalType::Geography { .. })
         | Some(BrowserParquetLogicalType::Unrecognized { .. }) => {
             return Ok(DeltaTableFieldDataType::Binary);
         }
@@ -1318,6 +1320,19 @@ mod tests {
                 Some(BrowserParquetConvertedType::Enum),
             ),
             byte_array_field(
+                "geometry_logical",
+                Some(BrowserParquetLogicalType::Geometry { crs: None }),
+                None,
+            ),
+            byte_array_field(
+                "geography_logical",
+                Some(BrowserParquetLogicalType::Geography {
+                    crs: None,
+                    algorithm: None,
+                }),
+                None,
+            ),
+            byte_array_field(
                 "unrecognized_logical",
                 Some(BrowserParquetLogicalType::Unrecognized { field_id: 123 }),
                 None,
@@ -1393,21 +1408,6 @@ mod tests {
                 Some(BrowserParquetLogicalType::Timestamp {
                     is_adjusted_to_utc: true,
                     unit: BrowserParquetTimeUnit::Micros,
-                }),
-                None,
-            ),
-            parquet_field(
-                "geometry_payload",
-                BrowserParquetPhysicalType::ByteArray,
-                Some(BrowserParquetLogicalType::Geometry { crs: None }),
-                None,
-            ),
-            parquet_field(
-                "geography_payload",
-                BrowserParquetPhysicalType::ByteArray,
-                Some(BrowserParquetLogicalType::Geography {
-                    crs: None,
-                    algorithm: None,
                 }),
                 None,
             ),
