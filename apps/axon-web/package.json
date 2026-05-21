@@ -13,6 +13,9 @@
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix",
     "test:sdk": "playwright test --config=playwright.sdk.config.ts",
+    "test:browser": "npm run test:e2e",
+    "test:browser:editor-smoke": "playwright test --config=playwright.editor-smoke.config.ts",
+    "test:browser:local-delta": "playwright test --config=playwright.editor-smoke.config.ts --grep \"local Delta\"",
     "test:e2e": "npm run build:fixture && npm run build:wasm && playwright test"
   },
   "devDependencies": {

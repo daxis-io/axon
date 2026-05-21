@@ -20,6 +20,15 @@ npm run build
 npm run test:e2e
 ```
 
+The non-browser checks can run in a normal shell or agent sandbox:
+
+```bash
+npm exec -- tsc --noEmit
+npm run format:check
+npm run lint
+npm run test:sdk
+```
+
 To use the interactive SQL workbench locally:
 
 ```bash
@@ -39,6 +48,20 @@ The Connect flow supports selected local Delta folders through browser-owned sna
 The browser query path still uses `src/sandbox-query-worker.ts` and `src/lib.rs` as the worker bridge. The duplicate piece was the old sandbox page, not the worker contract.
 
 The E2E test starts Vite over HTTPS, opens Chromium, Firefox, and WebKit through Playwright, and covers the browser worker envelope path for startup, Arrow IPC result bytes, structured browser errors, Delta Sharing descriptor handoff, and cancellation-shaped errors. The editor smoke suite covers root UI catalog selection, query execution, and local-folder registry reload.
+
+Browser Playwright gates launch real browsers and should run from a normal developer terminal or CI host with browser-launch permissions:
+
+```bash
+npm run test:browser
+```
+
+When validating the local Delta editor flow against an existing dev server, run `npm run dev` in one terminal and then run the focused browser gate from an unsandboxed terminal:
+
+```bash
+PLAYWRIGHT_BASE_URL=https://127.0.0.1:5173 npm run test:browser:local-delta -- --reporter=line
+```
+
+In the Codex macOS execution sandbox, Chromium can fail before any app code runs with `bootstrap_check_in ... MachPortRendezvousServer ... Permission denied`. Treat that as an environment failure and rerun the same Playwright browser command outside the sandbox or with elevated execution permissions before diagnosing app behavior.
 
 To run one browser while iterating:
 

@@ -267,15 +267,20 @@ export function App() {
 
   // ─── Subscribe to catalog + kick off session bootstrap ──
   useEffect(() => {
+    let active = true;
     const unsubCatalog = subscribeCatalog(setCatalog, querySource);
     const unsubCommits = subscribeCommits(setCommits, querySource);
     const unsubEngine = subscribeEngineStatus(setEngineStatus);
     loadCatalog(querySource)
-      .then((loaded) => setCatalog(loaded))
+      .then((loaded) => {
+        if (active) setCatalog(loaded);
+      })
       .catch((err) => {
+        if (!active) return;
         console.error('failed to load catalog:', err);
       });
     return () => {
+      active = false;
       unsubCatalog();
       unsubCommits();
       unsubEngine();
