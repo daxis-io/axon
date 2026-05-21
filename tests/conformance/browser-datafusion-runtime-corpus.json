@@ -1,0 +1,20 @@
+[
+  {
+    "name": "projection_filter_sort_limit",
+    "sql": "SELECT id, category FROM t WHERE value >= 10 ORDER BY id LIMIT 2",
+    "expected_columns": ["id", "category"],
+    "expected_rows": [[2, "B"], [3, "B"]]
+  },
+  {
+    "name": "aggregate_group_by",
+    "sql": "SELECT category, COUNT(*) AS n FROM t GROUP BY category ORDER BY category",
+    "expected_columns": ["category", "n"],
+    "expected_rows": [["A", 1], ["B", 2], ["C", 1]]
+  },
+  {
+    "name": "case_cast_arithmetic",
+    "sql": "SELECT id, CAST(value * 2 AS BIGINT) AS doubled, CASE WHEN value > 10 THEN 'high' ELSE 'low' END AS bucket FROM t ORDER BY id",
+    "expected_columns": ["id", "doubled", "bucket"],
+    "expected_rows": [[1, 10, "low"], [2, 24, "high"], [3, 50, "high"], [4, 40, "high"]]
+  }
+]
