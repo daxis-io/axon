@@ -8,10 +8,15 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use arrow_array::{cast::AsArray, Array, BinaryArray, RecordBatch, StringArray};
+use arrow_array::{
+    cast::AsArray, Array, BinaryArray, BooleanArray, Float32Array, Float64Array, Int32Array,
+    RecordBatch, StringArray,
+};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bytes::Bytes;
-use parquet::data_type::{ByteArray, ByteArrayType, Int64Type};
+use parquet::data_type::{
+    BoolType, ByteArray, ByteArrayType, DoubleType, FloatType, Int32Type, Int64Type,
+};
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
@@ -281,6 +286,178 @@ fn delta_descriptor_scan_streams_enum_byte_array_columns_as_binary() {
 }
 
 #[test]
+fn browser_readable_required_and_optional_utf8_columns_scan_through_datafusion() {
+    let _guard = PARQUET_SCAN_TEST_LOCK
+        .lock()
+        .expect("Parquet scan tests should serialize local HTTP servers");
+    test_runtime().block_on(async {
+        let object = parquet_bytes_with_required_and_optional_utf8(&[
+            (1, "alpha", Some("stable")),
+            (2, "beta", None),
+            (3, "alpha", Some("stable")),
+        ]);
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let server = RequestCapturingServer::new(object);
+        let mut engine = WasmDataFusionEngine::new();
+
+        engine
+            .open_delta_table(delta_descriptor(
+                "events",
+                utf8_required_optional_descriptor_schema(),
+                server.url(),
+                object_size,
+            ))
+            .await
+            .expect("Delta descriptor should register required and optional UTF8 fields");
+
+        let (schema, batches) = engine
+            .sql_to_record_batches(
+                "SELECT id, required_name, optional_label FROM events ORDER BY id",
+            )
+            .await
+            .expect("DataFusion should execute SQL over required and optional UTF8 columns");
+
+        assert_eq!(schema.field(1).data_type(), &DataType::Utf8);
+        assert!(!schema.field(1).is_nullable());
+        assert_eq!(schema.field(2).data_type(), &DataType::Utf8);
+        assert!(schema.field(2).is_nullable());
+        assert_eq!(int64_column_values(&batches, 0), vec![1, 2, 3]);
+        assert_eq!(
+            utf8_column_values(&batches, 1),
+            vec!["alpha".to_string(), "beta".to_string(), "alpha".to_string()]
+        );
+        assert_eq!(
+            optional_utf8_column_values(&batches, 2),
+            vec![Some("stable".to_string()), None, Some("stable".to_string())]
+        );
+    });
+}
+
+#[test]
+fn browser_readable_primitive_columns_scan_with_optional_nulls_through_datafusion() {
+    let _guard = PARQUET_SCAN_TEST_LOCK
+        .lock()
+        .expect("Parquet scan tests should serialize local HTTP servers");
+    test_runtime().block_on(async {
+        let object = parquet_bytes_with_optional_primitives(&[
+            (1, Some(true), Some(11), Some(101), Some(1.5), Some(10.25)),
+            (2, None, None, None, None, None),
+            (3, Some(false), Some(33), Some(303), Some(3.5), Some(30.75)),
+        ]);
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let server = RequestCapturingServer::new(object);
+        let mut engine = WasmDataFusionEngine::new();
+
+        engine
+            .open_delta_table(delta_descriptor(
+                "events",
+                primitive_optional_descriptor_schema(),
+                server.url(),
+                object_size,
+            ))
+            .await
+            .expect("Delta descriptor should register browser-readable primitive fields");
+
+        let (schema, batches) = engine
+            .sql_to_record_batches(
+                "SELECT id, maybe_bool, maybe_i32, maybe_i64, maybe_f32, maybe_f64 \
+                 FROM events ORDER BY id",
+            )
+            .await
+            .expect("DataFusion should execute SQL over browser-readable primitive columns");
+
+        assert_eq!(schema.field(1).data_type(), &DataType::Boolean);
+        assert_eq!(schema.field(2).data_type(), &DataType::Int32);
+        assert_eq!(schema.field(3).data_type(), &DataType::Int64);
+        assert_eq!(schema.field(4).data_type(), &DataType::Float32);
+        assert_eq!(schema.field(5).data_type(), &DataType::Float64);
+        assert_eq!(int64_column_values(&batches, 0), vec![1, 2, 3]);
+        assert_eq!(
+            optional_bool_column_values(&batches, 1),
+            vec![Some(true), None, Some(false)]
+        );
+        assert_eq!(
+            optional_int32_column_values(&batches, 2),
+            vec![Some(11), None, Some(33)]
+        );
+        assert_eq!(
+            optional_int64_column_values(&batches, 3),
+            vec![Some(101), None, Some(303)]
+        );
+        assert_eq!(
+            optional_float32_column_values(&batches, 4),
+            vec![Some(1.5), None, Some(3.5)]
+        );
+        assert_eq!(
+            optional_float64_column_values(&batches, 5),
+            vec![Some(10.25), None, Some(30.75)]
+        );
+    });
+}
+
+#[test]
+fn browser_readable_binary_json_byte_array_scan_with_optional_nulls() {
+    let _guard = PARQUET_SCAN_TEST_LOCK
+        .lock()
+        .expect("Parquet scan tests should serialize local HTTP servers");
+    test_runtime().block_on(async {
+        let object = parquet_bytes_with_optional_binary_and_json(&[
+            (
+                1,
+                Some(vec![0, 1, 2, 3]),
+                Some(br#"{"source":"axon"}"#.to_vec()),
+            ),
+            (2, None, None),
+            (
+                3,
+                Some(vec![b'a', b'x', b'o', b'n']),
+                Some(br#"{"source":"delta"}"#.to_vec()),
+            ),
+        ]);
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let server = RequestCapturingServer::new(object);
+        let mut engine = WasmDataFusionEngine::new();
+
+        engine
+            .open_delta_table(delta_descriptor(
+                "events",
+                binary_json_optional_descriptor_schema(),
+                server.url(),
+                object_size,
+            ))
+            .await
+            .expect("Delta descriptor should register binary and JSON BYTE_ARRAY fields");
+
+        let (schema, batches) = engine
+            .sql_to_record_batches("SELECT id, payload, json_payload FROM events ORDER BY id")
+            .await
+            .expect("DataFusion should execute SQL over binary and JSON BYTE_ARRAY columns");
+
+        assert_eq!(schema.field(1).data_type(), &DataType::Binary);
+        assert!(schema.field(1).is_nullable());
+        assert_eq!(schema.field(2).data_type(), &DataType::Utf8);
+        assert!(schema.field(2).is_nullable());
+        assert_eq!(int64_column_values(&batches, 0), vec![1, 2, 3]);
+        assert_eq!(
+            optional_binary_column_values(&batches, 1),
+            vec![
+                Some(vec![0, 1, 2, 3]),
+                None,
+                Some(vec![b'a', b'x', b'o', b'n'])
+            ]
+        );
+        assert_eq!(
+            optional_utf8_column_values(&batches, 2),
+            vec![
+                Some(r#"{"source":"axon"}"#.to_string()),
+                None,
+                Some(r#"{"source":"delta"}"#.to_string())
+            ]
+        );
+    });
+}
+
+#[test]
 fn brokered_delta_read_plan_opens_datafusion_table_and_returns_fixture_rows() {
     let _guard = PARQUET_SCAN_TEST_LOCK
         .lock()
@@ -540,6 +717,36 @@ fn utf8_payload_descriptor_schema() -> SchemaRef {
     ]))
 }
 
+fn utf8_required_optional_descriptor_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("required_name", DataType::Utf8, false),
+        Field::new("optional_label", DataType::Utf8, true),
+        Field::new("category", DataType::Utf8, true),
+    ]))
+}
+
+fn primitive_optional_descriptor_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("maybe_bool", DataType::Boolean, true),
+        Field::new("maybe_i32", DataType::Int32, true),
+        Field::new("maybe_i64", DataType::Int64, true),
+        Field::new("maybe_f32", DataType::Float32, true),
+        Field::new("maybe_f64", DataType::Float64, true),
+        Field::new("category", DataType::Utf8, true),
+    ]))
+}
+
+fn binary_json_optional_descriptor_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("payload", DataType::Binary, true),
+        Field::new("json_payload", DataType::Utf8, true),
+        Field::new("category", DataType::Utf8, true),
+    ]))
+}
+
 fn brokered_delta_datafusion_schema() -> DeltaTableSchema {
     DeltaTableSchema::new(vec![
         DeltaTableSchemaField::new("id", DeltaTableFieldDataType::Int64, false),
@@ -692,6 +899,295 @@ fn parquet_bytes_with_byte_array_payload(
     bytes
 }
 
+fn parquet_bytes_with_required_and_optional_utf8(rows: &[(i64, &str, Option<&str>)]) -> Vec<u8> {
+    let schema = Arc::new(
+        parse_message_type(
+            "message schema { \
+             REQUIRED INT64 id; \
+             REQUIRED BYTE_ARRAY required_name (UTF8); \
+             OPTIONAL BYTE_ARRAY optional_label (UTF8); \
+             }",
+        )
+        .expect("parquet schema should parse"),
+    );
+    let mut bytes = Vec::new();
+    let mut writer = SerializedFileWriter::new(
+        &mut bytes,
+        schema,
+        Arc::new(WriterProperties::builder().build()),
+    )
+    .expect("parquet writer should construct");
+    let ids = rows.iter().map(|(id, _, _)| *id).collect::<Vec<_>>();
+    let required_names = rows
+        .iter()
+        .map(|(_, required_name, _)| ByteArray::from(required_name.as_bytes().to_vec()))
+        .collect::<Vec<_>>();
+    let optional_labels = rows
+        .iter()
+        .filter_map(|(_, _, optional_label)| {
+            optional_label.map(|value| ByteArray::from(value.as_bytes().to_vec()))
+        })
+        .collect::<Vec<_>>();
+    let optional_label_def_levels = rows
+        .iter()
+        .map(|(_, _, optional_label)| i16::from(optional_label.is_some()))
+        .collect::<Vec<_>>();
+
+    let mut row_group = writer
+        .next_row_group()
+        .expect("row-group writer should construct");
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("id column writer should be returned")
+    {
+        column
+            .typed::<Int64Type>()
+            .write_batch(&ids, None, None)
+            .expect("id values should write");
+        column.close().expect("id column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("required_name column writer should be returned")
+    {
+        column
+            .typed::<ByteArrayType>()
+            .write_batch(&required_names, None, None)
+            .expect("required_name values should write");
+        column
+            .close()
+            .expect("required_name column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("optional_label column writer should be returned")
+    {
+        column
+            .typed::<ByteArrayType>()
+            .write_batch(&optional_labels, Some(&optional_label_def_levels), None)
+            .expect("optional_label values should write");
+        column
+            .close()
+            .expect("optional_label column writer should close");
+    }
+    row_group.close().expect("row-group writer should close");
+    writer.close().expect("file writer should close");
+    bytes
+}
+
+type OptionalPrimitiveRow = (
+    i64,
+    Option<bool>,
+    Option<i32>,
+    Option<i64>,
+    Option<f32>,
+    Option<f64>,
+);
+
+fn parquet_bytes_with_optional_primitives(rows: &[OptionalPrimitiveRow]) -> Vec<u8> {
+    let schema = Arc::new(
+        parse_message_type(
+            "message schema { \
+             REQUIRED INT64 id; \
+             OPTIONAL BOOLEAN maybe_bool; \
+             OPTIONAL INT32 maybe_i32; \
+             OPTIONAL INT64 maybe_i64; \
+             OPTIONAL FLOAT maybe_f32; \
+             OPTIONAL DOUBLE maybe_f64; \
+             }",
+        )
+        .expect("parquet schema should parse"),
+    );
+    let mut bytes = Vec::new();
+    let mut writer = SerializedFileWriter::new(
+        &mut bytes,
+        schema,
+        Arc::new(WriterProperties::builder().build()),
+    )
+    .expect("parquet writer should construct");
+    let ids = rows.iter().map(|row| row.0).collect::<Vec<_>>();
+    let bools = rows.iter().filter_map(|row| row.1).collect::<Vec<_>>();
+    let bool_def_levels = rows
+        .iter()
+        .map(|row| i16::from(row.1.is_some()))
+        .collect::<Vec<_>>();
+    let i32s = rows.iter().filter_map(|row| row.2).collect::<Vec<_>>();
+    let i32_def_levels = rows
+        .iter()
+        .map(|row| i16::from(row.2.is_some()))
+        .collect::<Vec<_>>();
+    let i64s = rows.iter().filter_map(|row| row.3).collect::<Vec<_>>();
+    let i64_def_levels = rows
+        .iter()
+        .map(|row| i16::from(row.3.is_some()))
+        .collect::<Vec<_>>();
+    let f32s = rows.iter().filter_map(|row| row.4).collect::<Vec<_>>();
+    let f32_def_levels = rows
+        .iter()
+        .map(|row| i16::from(row.4.is_some()))
+        .collect::<Vec<_>>();
+    let f64s = rows.iter().filter_map(|row| row.5).collect::<Vec<_>>();
+    let f64_def_levels = rows
+        .iter()
+        .map(|row| i16::from(row.5.is_some()))
+        .collect::<Vec<_>>();
+
+    let mut row_group = writer
+        .next_row_group()
+        .expect("row-group writer should construct");
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("id column writer should be returned")
+    {
+        column
+            .typed::<Int64Type>()
+            .write_batch(&ids, None, None)
+            .expect("id values should write");
+        column.close().expect("id column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("maybe_bool column writer should be returned")
+    {
+        column
+            .typed::<BoolType>()
+            .write_batch(&bools, Some(&bool_def_levels), None)
+            .expect("maybe_bool values should write");
+        column
+            .close()
+            .expect("maybe_bool column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("maybe_i32 column writer should be returned")
+    {
+        column
+            .typed::<Int32Type>()
+            .write_batch(&i32s, Some(&i32_def_levels), None)
+            .expect("maybe_i32 values should write");
+        column
+            .close()
+            .expect("maybe_i32 column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("maybe_i64 column writer should be returned")
+    {
+        column
+            .typed::<Int64Type>()
+            .write_batch(&i64s, Some(&i64_def_levels), None)
+            .expect("maybe_i64 values should write");
+        column
+            .close()
+            .expect("maybe_i64 column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("maybe_f32 column writer should be returned")
+    {
+        column
+            .typed::<FloatType>()
+            .write_batch(&f32s, Some(&f32_def_levels), None)
+            .expect("maybe_f32 values should write");
+        column
+            .close()
+            .expect("maybe_f32 column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("maybe_f64 column writer should be returned")
+    {
+        column
+            .typed::<DoubleType>()
+            .write_batch(&f64s, Some(&f64_def_levels), None)
+            .expect("maybe_f64 values should write");
+        column
+            .close()
+            .expect("maybe_f64 column writer should close");
+    }
+    row_group.close().expect("row-group writer should close");
+    writer.close().expect("file writer should close");
+    bytes
+}
+
+fn parquet_bytes_with_optional_binary_and_json(
+    rows: &[(i64, Option<Vec<u8>>, Option<Vec<u8>>)],
+) -> Vec<u8> {
+    let schema = Arc::new(
+        parse_message_type(
+            "message schema { \
+             REQUIRED INT64 id; \
+             OPTIONAL BYTE_ARRAY payload; \
+             OPTIONAL BYTE_ARRAY json_payload (JSON); \
+             }",
+        )
+        .expect("parquet schema should parse"),
+    );
+    let mut bytes = Vec::new();
+    let mut writer = SerializedFileWriter::new(
+        &mut bytes,
+        schema,
+        Arc::new(WriterProperties::builder().build()),
+    )
+    .expect("parquet writer should construct");
+    let ids = rows.iter().map(|(id, _, _)| *id).collect::<Vec<_>>();
+    let payloads = rows
+        .iter()
+        .filter_map(|(_, payload, _)| payload.clone().map(ByteArray::from))
+        .collect::<Vec<_>>();
+    let payload_def_levels = rows
+        .iter()
+        .map(|(_, payload, _)| i16::from(payload.is_some()))
+        .collect::<Vec<_>>();
+    let json_payloads = rows
+        .iter()
+        .filter_map(|(_, _, json_payload)| json_payload.clone().map(ByteArray::from))
+        .collect::<Vec<_>>();
+    let json_payload_def_levels = rows
+        .iter()
+        .map(|(_, _, json_payload)| i16::from(json_payload.is_some()))
+        .collect::<Vec<_>>();
+
+    let mut row_group = writer
+        .next_row_group()
+        .expect("row-group writer should construct");
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("id column writer should be returned")
+    {
+        column
+            .typed::<Int64Type>()
+            .write_batch(&ids, None, None)
+            .expect("id values should write");
+        column.close().expect("id column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("payload column writer should be returned")
+    {
+        column
+            .typed::<ByteArrayType>()
+            .write_batch(&payloads, Some(&payload_def_levels), None)
+            .expect("payload values should write");
+        column.close().expect("payload column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("json_payload column writer should be returned")
+    {
+        column
+            .typed::<ByteArrayType>()
+            .write_batch(&json_payloads, Some(&json_payload_def_levels), None)
+            .expect("json_payload values should write");
+        column
+            .close()
+            .expect("json_payload column writer should close");
+    }
+    row_group.close().expect("row-group writer should close");
+    writer.close().expect("file writer should close");
+    bytes
+}
+
 fn int64_column_values(batches: &[RecordBatch], column_index: usize) -> Vec<i64> {
     batches
         .iter()
@@ -732,6 +1228,170 @@ fn binary_column_values(batches: &[RecordBatch], column_index: usize) -> Vec<Vec
                 .expect("column should be an Arrow BinaryArray");
             (0..array.len())
                 .map(|index| array.value(index).to_vec())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn optional_utf8_column_values(
+    batches: &[RecordBatch],
+    column_index: usize,
+) -> Vec<Option<String>> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let array = batch
+                .column(column_index)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("column should be an Arrow StringArray");
+            (0..array.len())
+                .map(|index| {
+                    if array.is_null(index) {
+                        None
+                    } else {
+                        Some(array.value(index).to_string())
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn optional_binary_column_values(
+    batches: &[RecordBatch],
+    column_index: usize,
+) -> Vec<Option<Vec<u8>>> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let array = batch
+                .column(column_index)
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .expect("column should be an Arrow BinaryArray");
+            (0..array.len())
+                .map(|index| {
+                    if array.is_null(index) {
+                        None
+                    } else {
+                        Some(array.value(index).to_vec())
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn optional_bool_column_values(batches: &[RecordBatch], column_index: usize) -> Vec<Option<bool>> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let array = batch
+                .column(column_index)
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .expect("column should be an Arrow BooleanArray");
+            (0..array.len())
+                .map(|index| {
+                    if array.is_null(index) {
+                        None
+                    } else {
+                        Some(array.value(index))
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn optional_int32_column_values(batches: &[RecordBatch], column_index: usize) -> Vec<Option<i32>> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let array = batch
+                .column(column_index)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .expect("column should be an Arrow Int32Array");
+            (0..array.len())
+                .map(|index| {
+                    if array.is_null(index) {
+                        None
+                    } else {
+                        Some(array.value(index))
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn optional_int64_column_values(batches: &[RecordBatch], column_index: usize) -> Vec<Option<i64>> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let array = batch
+                .column(column_index)
+                .as_primitive::<arrow_array::types::Int64Type>();
+            (0..array.len())
+                .map(|index| {
+                    if array.is_null(index) {
+                        None
+                    } else {
+                        Some(array.value(index))
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn optional_float32_column_values(
+    batches: &[RecordBatch],
+    column_index: usize,
+) -> Vec<Option<f32>> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let array = batch
+                .column(column_index)
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .expect("column should be an Arrow Float32Array");
+            (0..array.len())
+                .map(|index| {
+                    if array.is_null(index) {
+                        None
+                    } else {
+                        Some(array.value(index))
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn optional_float64_column_values(
+    batches: &[RecordBatch],
+    column_index: usize,
+) -> Vec<Option<f64>> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let array = batch
+                .column(column_index)
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .expect("column should be an Arrow Float64Array");
+            (0..array.len())
+                .map(|index| {
+                    if array.is_null(index) {
+                        None
+                    } else {
+                        Some(array.value(index))
+                    }
+                })
                 .collect::<Vec<_>>()
         })
         .collect()
