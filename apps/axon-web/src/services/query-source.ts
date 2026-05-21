@@ -16,6 +16,11 @@ export type LocalDeltaQueryTableSource = {
   localRegistryId: string;
   storage: string;
   region: string;
+  snapshot?: number;
+  rows?: number;
+  files?: number;
+  size?: string;
+  protocol?: string;
 };
 
 export type QueryTableSource = ManifestQueryTableSource | LocalDeltaQueryTableSource;
@@ -30,6 +35,11 @@ export type QueryCatalogCandidate = {
     name: string;
     tables: Array<{
       name: string;
+      snapshot?: number;
+      rows?: number;
+      files?: number;
+      size?: string;
+      protocol?: string;
       manifestUrl?: string;
       localRegistryId?: string;
     }>;
@@ -142,6 +152,11 @@ function querySourceForTable(
       localRegistryId: table.localRegistryId,
       storage: catalog.storage,
       region: catalog.region || 'browser-local',
+      snapshot: table.snapshot,
+      rows: table.rows,
+      files: table.files,
+      size: table.size,
+      protocol: table.protocol,
     };
   }
 

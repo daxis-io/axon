@@ -1,5 +1,5 @@
 import type { DiscoveryPayload, ObjectStoreProviderId, SourceId } from './data.ts';
-import type { LocalDeltaRuntime } from '../../services/local-delta.ts';
+import type { LocalDeltaPersistenceMode, LocalDeltaRuntime } from '../../services/local-delta.ts';
 
 export type SchemaSelection = 'all' | 'none' | { only: string[] } | { except: string[] };
 
@@ -13,6 +13,7 @@ export type ConnectForm = {
     files: number;
     size: string;
     protocol: string;
+    persistenceLabel: string;
   };
   localDelta: LocalDeltaRuntime | null;
   // object store
@@ -47,7 +48,7 @@ export type ConnectedCatalogSchema = {
     uri?: string;
     manifestUrl?: string;
     localRegistryId?: string;
-    localPersistence?: 'durable' | 'session';
+    localPersistence?: LocalDeltaPersistenceMode;
   }[];
 };
 

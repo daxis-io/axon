@@ -142,7 +142,7 @@ function durableConnectedCatalogs(catalogs: ConnectedCatalog[]): ConnectedCatalo
       const schemas = catalog.schemas
         .map((schema) => ({
           ...schema,
-          tables: schema.tables.filter((table) => table.localPersistence !== 'session'),
+          tables: schema.tables.filter((table) => table.localPersistence !== 'session_handles'),
         }))
         .filter((schema) => schema.tables.length > 0);
       return schemas.length > 0 ? { ...catalog, schemas } : null;

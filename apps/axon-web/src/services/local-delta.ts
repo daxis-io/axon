@@ -13,6 +13,8 @@ export type LocalFileSystemDirectoryHandle = {
   entries(): AsyncIterableIterator<
     [string, LocalFileSystemDirectoryHandle | LocalFileSystemFileHandle]
   >;
+  queryPermission?(descriptor?: { mode?: 'read' }): Promise<PermissionState>;
+  requestPermission?(descriptor?: { mode?: 'read' }): Promise<PermissionState>;
 };
 
 export type LocalDeltaErrorCode =
@@ -60,7 +62,7 @@ export type LocalDeltaDiscovery = {
 export type LocalDeltaRuntime = {
   kind: 'local_delta';
   registryId: string;
-  persistence: 'durable' | 'session';
+  persistence: LocalDeltaPersistenceMode;
   tableRootName: string;
   tableName: string;
   schemaName: string;
@@ -68,6 +70,12 @@ export type LocalDeltaRuntime = {
   descriptor: BrowserHttpSnapshotDescriptor;
   discovery: LocalDeltaDiscovery;
 };
+
+export type LocalDeltaPersistenceMode =
+  | 'session_handles'
+  | 'persisted_directory_handle'
+  | 'metadata_only_reselect'
+  | 'bounded_browser_cache';
 
 export type OpenLocalDeltaOptions = {
   schemaName?: string;
@@ -85,13 +93,15 @@ type LocalDeltaFileEntry = {
 
 type LocalDeltaTableFiles = {
   registryId?: string;
+  directoryHandle?: LocalFileSystemDirectoryHandle;
+  persistenceMode?: LocalDeltaPersistenceMode;
   tableRootName: string;
   filesByRelativePath: Map<string, LocalDeltaFileEntry>;
   logEntries: LocalDeltaFileEntry[];
   dataEntries: LocalDeltaFileEntry[];
 };
 
-type LocalDeltaRegistryBackend = 'opfs' | 'indexeddb_blob';
+type LocalDeltaRegistryBackend = 'metadata_only' | 'directory_handle' | 'opfs' | 'indexeddb_blob';
 
 type LocalDeltaRegistryFileRecord = {
   relativePath: string;
@@ -107,6 +117,7 @@ type LocalDeltaRegistryRecord = {
   importedAtEpochMs: number;
   backend: LocalDeltaRegistryBackend;
   files: LocalDeltaRegistryFileRecord[];
+  directoryHandle?: LocalFileSystemDirectoryHandle;
 };
 
 type ResolvedSnapshot = {
@@ -136,6 +147,7 @@ const LOCAL_DELTA_OPFS_ROOT = 'axon-local-delta-tables';
 const LOCAL_DELTA_ACTIVE_ID_KEY = 'axon-local-delta-active-id';
 const LOCAL_DELTA_INDEXED_DB_BLOB_BUDGET_BYTES = 512 * 1024 * 1024;
 const LOCAL_DELTA_PERSISTENCE_CONCURRENCY = 4;
+const LOCAL_DELTA_FULL_COPY_PERSISTENCE_ENABLED = false;
 
 let wasmReady: Promise<unknown> | undefined;
 const sessionLocalDeltaTables = new Map<string, LocalDeltaTableFiles>();
@@ -154,7 +166,9 @@ export async function openLocalDeltaTableFromDirectoryHandle(
   options: OpenLocalDeltaOptions = {},
 ): Promise<LocalDeltaRuntime> {
   const entries = await collectLocalDeltaDirectoryEntries(directory);
-  const table = buildLocalDeltaTableFiles(directory.name || 'delta-table', entries);
+  const table = buildLocalDeltaTableFiles(directory.name || 'delta-table', entries, undefined, {
+    directoryHandle: directory,
+  });
   return openLocalDeltaRuntime(table, options);
 }
 
@@ -170,7 +184,11 @@ export async function loadLocalDeltaRuntime(
     );
   }
   sessionLocalDeltaTables.set(registryId, table);
-  return buildLocalDeltaRuntime(table, { ...options, registryId }, 'durable');
+  return buildLocalDeltaRuntime(
+    table,
+    { ...options, registryId },
+    table.persistenceMode ?? 'session_handles',
+  );
 }
 
 export async function loadActiveLocalDeltaRuntime(
@@ -323,7 +341,7 @@ async function openLocalDeltaRuntime(
   const sessionTable = { ...table, registryId };
   let runtime: LocalDeltaRuntime;
   try {
-    runtime = await buildLocalDeltaRuntime(sessionTable, options, 'session');
+    runtime = await buildLocalDeltaRuntime(sessionTable, options, 'session_handles');
   } catch (error) {
     releaseLocalDeltaObjectUrls(registryId);
     throw error;
@@ -333,7 +351,7 @@ async function openLocalDeltaRuntime(
   const durableTable = durableLocalDeltaTableForRuntime(sessionTable, runtime);
   const persisted = await tryPersistLocalDeltaTable(durableTable);
   if (persisted) {
-    return { ...runtime, persistence: 'durable' };
+    return { ...runtime, persistence: persisted.persistenceMode ?? runtime.persistence };
   }
   return runtime;
 }
@@ -390,6 +408,10 @@ function buildLocalDeltaTableFiles(
   tableRootName: string,
   entries: LocalDeltaFileEntry[],
   registryId?: string,
+  options: {
+    directoryHandle?: LocalFileSystemDirectoryHandle;
+    persistenceMode?: LocalDeltaPersistenceMode;
+  } = {},
 ): LocalDeltaTableFiles {
   const filesByRelativePath = new Map<string, LocalDeltaFileEntry>();
   for (const entry of entries) {
@@ -415,6 +437,8 @@ function buildLocalDeltaTableFiles(
 
   return {
     registryId,
+    directoryHandle: options.directoryHandle,
+    persistenceMode: options.persistenceMode,
     tableRootName,
     filesByRelativePath,
     logEntries,
@@ -434,30 +458,62 @@ async function persistLocalDeltaTable(
     tableRootName: table.tableRootName,
     importedAtEpochMs: Date.now(),
   };
+  const files = localDeltaMetadataRecords(table);
 
-  if (await tryWriteLocalDeltaTableToOpfs(id, table)) {
+  if (table.directoryHandle) {
+    try {
+      await putLocalDeltaRegistryRecord({
+        ...baseRecord,
+        backend: 'directory_handle',
+        files,
+        directoryHandle: table.directoryHandle,
+      });
+      return { ...table, registryId: id, persistenceMode: 'persisted_directory_handle' };
+    } catch (error) {
+      console.warn(
+        'local Delta directory handle could not be persisted; using metadata-only registry:',
+        error,
+      );
+    }
+  }
+
+  if (
+    LOCAL_DELTA_FULL_COPY_PERSISTENCE_ENABLED &&
+    (await tryWriteLocalDeltaTableToOpfs(id, table))
+  ) {
     try {
       await putLocalDeltaRegistryRecord({
         ...baseRecord,
         backend: 'opfs',
-        files: localDeltaMetadataRecords(table),
+        files,
       });
     } catch (error) {
       await removeOpfsLocalDeltaTable(id);
       throw error;
     }
-    return { ...table, registryId: id };
+    return { ...table, registryId: id, persistenceMode: 'bounded_browser_cache' };
+  }
+
+  if (LOCAL_DELTA_FULL_COPY_PERSISTENCE_ENABLED) {
+    await putLocalDeltaRegistryRecord({
+      ...baseRecord,
+      backend: 'indexeddb_blob',
+      files: await localDeltaIndexedDbBlobRecords(table),
+    });
+    return { ...table, registryId: id, persistenceMode: 'bounded_browser_cache' };
   }
 
   await putLocalDeltaRegistryRecord({
     ...baseRecord,
-    backend: 'indexeddb_blob',
-    files: await localDeltaIndexedDbBlobRecords(table),
+    backend: 'metadata_only',
+    files,
   });
-  return { ...table, registryId: id };
+  return { ...table, registryId: id, persistenceMode: 'metadata_only_reselect' };
 }
 
-async function tryPersistLocalDeltaTable(table: LocalDeltaTableFiles): Promise<boolean> {
+async function tryPersistLocalDeltaTable(
+  table: LocalDeltaTableFiles,
+): Promise<LocalDeltaTableFiles | undefined> {
   try {
     const persisted = await persistLocalDeltaTable(table);
     sessionLocalDeltaTables.set(
@@ -467,10 +523,10 @@ async function tryPersistLocalDeltaTable(table: LocalDeltaTableFiles): Promise<b
     if (persisted.registryId) {
       setActiveLocalDeltaRegistryId(persisted.registryId);
     }
-    return true;
+    return persisted;
   } catch (error) {
     console.warn('local Delta table import could not be persisted:', error);
-    return false;
+    return undefined;
   }
 }
 
@@ -484,13 +540,26 @@ function durableLocalDeltaTableForRuntime(
     const entry = localFileForDeltaPath(table, file.path);
     if (entry) entries.set(entry.relativePath, entry);
   }
-  return buildLocalDeltaTableFiles(table.tableRootName, [...entries.values()], runtime.registryId);
+  return buildLocalDeltaTableFiles(table.tableRootName, [...entries.values()], runtime.registryId, {
+    directoryHandle: table.directoryHandle,
+  });
 }
 
 async function loadLocalDeltaTable(registryId: string): Promise<LocalDeltaTableFiles | undefined> {
   const records = await getLocalDeltaRegistryRecords();
   const record = records.find((candidate) => candidate.id === registryId);
   if (!record) return undefined;
+
+  if (record.backend === 'metadata_only') {
+    throw new LocalDeltaError(
+      'registry_unavailable',
+      'This local Delta table was saved as metadata only. Select the folder again to restore browser file access before querying.',
+    );
+  }
+
+  if (record.backend === 'directory_handle') {
+    return loadDirectoryHandleLocalDeltaTable(record);
+  }
 
   if (record.backend === 'opfs') {
     const table = await loadOpfsLocalDeltaTable(record);
@@ -577,6 +646,69 @@ async function removeOpfsLocalDeltaTable(registryId: string): Promise<void> {
   }
 }
 
+async function loadDirectoryHandleLocalDeltaTable(
+  record: LocalDeltaRegistryRecord,
+): Promise<LocalDeltaTableFiles | undefined> {
+  const handle = record.directoryHandle;
+  if (!handle) {
+    throw new LocalDeltaError(
+      'registry_unavailable',
+      'Persisted local Delta directory handle was missing. Select the folder again.',
+    );
+  }
+
+  const granted = await ensureDirectoryHandleReadPermission(handle);
+  if (!granted) {
+    throw new LocalDeltaError(
+      'registry_unavailable',
+      'Browser permission for this local Delta folder expired. Select the folder again.',
+    );
+  }
+
+  const entries = await collectLocalDeltaDirectoryEntries(handle);
+  const table = buildLocalDeltaTableFiles(record.tableRootName, entries, record.id, {
+    directoryHandle: handle,
+    persistenceMode: 'persisted_directory_handle',
+  });
+  validateLocalDeltaTableAgainstRecord(table, record);
+  return table;
+}
+
+async function ensureDirectoryHandleReadPermission(
+  handle: LocalFileSystemDirectoryHandle,
+): Promise<boolean> {
+  if (!handle.queryPermission) return true;
+  const current = await handle.queryPermission({ mode: 'read' });
+  if (current === 'granted') return true;
+  if (!handle.requestPermission) return false;
+  try {
+    return (await handle.requestPermission({ mode: 'read' })) === 'granted';
+  } catch {
+    return false;
+  }
+}
+
+function validateLocalDeltaTableAgainstRecord(
+  table: LocalDeltaTableFiles,
+  record: LocalDeltaRegistryRecord,
+): void {
+  for (const fileRecord of record.files) {
+    const entry = table.filesByRelativePath.get(fileRecord.relativePath);
+    if (!entry) {
+      throw new LocalDeltaError(
+        'registry_unavailable',
+        `Persisted local file '${fileRecord.relativePath}' was not present in the selected folder.`,
+      );
+    }
+    if (entry.file.size !== fileRecord.sizeBytes) {
+      throw new LocalDeltaError(
+        'registry_unavailable',
+        `Persisted local file '${fileRecord.relativePath}' size ${entry.file.size} did not match registry size ${fileRecord.sizeBytes}.`,
+      );
+    }
+  }
+}
+
 async function loadOpfsLocalDeltaTable(
   record: LocalDeltaRegistryRecord,
 ): Promise<LocalDeltaTableFiles | undefined> {
@@ -597,7 +729,9 @@ async function loadOpfsLocalDeltaTable(
         return localDeltaFileEntry(record.tableRootName, fileRecord.relativePath, file);
       }),
     );
-    return buildLocalDeltaTableFiles(record.tableRootName, entries, record.id);
+    return buildLocalDeltaTableFiles(record.tableRootName, entries, record.id, {
+      persistenceMode: 'bounded_browser_cache',
+    });
   } catch (error) {
     console.warn('Persisted OPFS local Delta table could not be reopened:', error);
     return undefined;
@@ -624,7 +758,9 @@ function loadIndexedDbBlobLocalDeltaTable(record: LocalDeltaRegistryRecord): Loc
     }
     return localDeltaFileEntry(record.tableRootName, fileRecord.relativePath, file);
   });
-  return buildLocalDeltaTableFiles(record.tableRootName, entries, record.id);
+  return buildLocalDeltaTableFiles(record.tableRootName, entries, record.id, {
+    persistenceMode: 'bounded_browser_cache',
+  });
 }
 
 async function readLocalLogFacts(logEntries: LocalDeltaFileEntry[]): Promise<LocalLogFacts> {

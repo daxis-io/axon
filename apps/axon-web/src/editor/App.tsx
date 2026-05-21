@@ -270,9 +270,11 @@ export function App() {
     const unsubCatalog = subscribeCatalog(setCatalog, querySource);
     const unsubCommits = subscribeCommits(setCommits, querySource);
     const unsubEngine = subscribeEngineStatus(setEngineStatus);
-    loadCatalog(querySource).catch((err) => {
-      console.error('failed to load catalog:', err);
-    });
+    loadCatalog(querySource)
+      .then((loaded) => setCatalog(loaded))
+      .catch((err) => {
+        console.error('failed to load catalog:', err);
+      });
     return () => {
       unsubCatalog();
       unsubCommits();

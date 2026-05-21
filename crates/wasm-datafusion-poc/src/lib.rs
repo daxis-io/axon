@@ -18,6 +18,7 @@ use std::{
 
 use arrow_array::{Int32Array, RecordBatch, RecordBatchOptions, StringArray};
 use arrow_ipc::writer::StreamWriter;
+pub use arrow_schema::DataType as DeltaTableFieldDataType;
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::ScalarValue;
@@ -182,16 +183,12 @@ impl DeltaTableSchema {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeltaTableSchemaField {
     pub name: String,
-    pub data_type: DeltaTableFieldDataType,
+    pub data_type: DataType,
     pub nullable: bool,
 }
 
 impl DeltaTableSchemaField {
-    pub fn new(
-        name: impl Into<String>,
-        data_type: DeltaTableFieldDataType,
-        nullable: bool,
-    ) -> Self {
+    pub fn new(name: impl Into<String>, data_type: DataType, nullable: bool) -> Self {
         Self {
             name: name.into(),
             data_type,
@@ -200,34 +197,7 @@ impl DeltaTableSchemaField {
     }
 
     fn arrow_field(&self) -> Field {
-        Field::new(
-            self.name.clone(),
-            self.data_type.arrow_data_type(),
-            self.nullable,
-        )
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DeltaTableFieldDataType {
-    Boolean,
-    Int32,
-    Int64,
-    Float32,
-    Float64,
-    Utf8,
-}
-
-impl DeltaTableFieldDataType {
-    fn arrow_data_type(self) -> DataType {
-        match self {
-            Self::Boolean => DataType::Boolean,
-            Self::Int32 => DataType::Int32,
-            Self::Int64 => DataType::Int64,
-            Self::Float32 => DataType::Float32,
-            Self::Float64 => DataType::Float64,
-            Self::Utf8 => DataType::Utf8,
-        }
+        Field::new(self.name.clone(), self.data_type.clone(), self.nullable)
     }
 }
 
@@ -2155,6 +2125,19 @@ fn query_error_to_js_value(error: QueryError) -> JsValue {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delta_table_schema_field_preserves_arrow_data_type() {
+        let schema = DeltaTableSchema::new(vec![DeltaTableSchemaField::new(
+            "payload",
+            DeltaTableFieldDataType::Binary,
+            true,
+        )]);
+
+        let arrow_schema = schema.arrow_schema();
+
+        assert_eq!(arrow_schema.field(0).data_type(), &DataType::Binary);
+    }
 
     #[test]
     fn arrow_ipc_result_reports_axon_scan_metrics() {

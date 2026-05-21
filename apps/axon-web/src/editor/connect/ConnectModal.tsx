@@ -570,7 +570,7 @@ function ConfigLocal({
           </div>
           <div className="cc-help">
             Axon reads the selected folder locally, reconstructs the snapshot in the browser, and
-            persists a browser-local registry handle for reload where browser storage allows it.
+            stores reload metadata or a browser directory handle without copying the full table.
           </div>
           {error && (
             <div className="cc-help" style={{ color: 'var(--danger)' }}>
@@ -616,6 +616,9 @@ function ConfigLocal({
                 <div className="val">{detected.protocol}</div>
               </div>
             </div>
+            <div className="cc-help" style={{ marginTop: 8 }}>
+              Reload: {detected.persistenceLabel}
+            </div>
           </div>
         )}
 
@@ -632,8 +635,8 @@ function ConfigLocal({
         <h5>How local tables work</h5>
         <p>
           Axon reads the selected table root in the browser, stores local registry metadata in
-          catalog state, and queries active Parquet files through the browser WASM worker. Reload is
-          available when browser storage accepts the registry snapshot.
+          catalog state, and queries active Parquet files through the browser WASM worker. Large
+          tables use metadata or browser-granted handles for reload instead of whole-table copies.
         </p>
         <hr />
         <h5>Tips</h5>
@@ -667,7 +670,15 @@ function detectedFromRuntime(runtime: LocalDeltaRuntime) {
     files: runtime.descriptor.active_files.length,
     size: table?.size ?? '0 bytes',
     protocol: table?.protocol ?? 'json-log',
+    persistenceLabel: localDeltaPersistenceLabel(runtime.persistence),
   };
+}
+
+function localDeltaPersistenceLabel(persistence: LocalDeltaRuntime['persistence']): string {
+  if (persistence === 'persisted_directory_handle') return 'directory handle stored';
+  if (persistence === 'metadata_only_reselect') return 'metadata saved; reselect may be required';
+  if (persistence === 'bounded_browser_cache') return 'bounded browser cache';
+  return 'current session only';
 }
 
 function localDeltaErrorMessage(error: unknown): string {

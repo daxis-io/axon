@@ -5,3 +5,4 @@ test-results
 src/wasm
 public/fixtures/prod-like
 public/fixtures/**/_delta_log/*.json
+tests/fixtures/**/_delta_log/*.json

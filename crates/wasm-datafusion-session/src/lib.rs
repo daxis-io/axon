@@ -26,8 +26,9 @@ use wasm_datafusion_poc::{
 use wasm_query_runtime::{
     runtime_target, BootstrappedBrowserSnapshot, BrowserExecutionBudget,
     BrowserParquetConvertedType, BrowserParquetField, BrowserParquetLogicalType,
-    BrowserParquetPhysicalType, BrowserRuntimeConfig, BrowserRuntimeInstant, BrowserRuntimeSession,
-    MaterializedBrowserSnapshot, RuntimeArrowIpcResult,
+    BrowserParquetPhysicalType, BrowserParquetRepetition, BrowserRuntimeConfig,
+    BrowserRuntimeInstant, BrowserRuntimeSession, MaterializedBrowserSnapshot,
+    RuntimeArrowIpcResult,
 };
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -416,28 +417,104 @@ fn datafusion_schema_field_from_parquet_field(
 fn datafusion_data_type_from_parquet_field(
     field: &BrowserParquetField,
 ) -> Result<DeltaTableFieldDataType, QueryError> {
-    if matches!(
-        field.logical_type.as_ref(),
-        Some(BrowserParquetLogicalType::String)
-    ) || matches!(
-        field.converted_type.as_ref(),
-        Some(BrowserParquetConvertedType::Utf8)
-    ) {
-        return Ok(DeltaTableFieldDataType::Utf8);
+    if matches!(field.repetition, BrowserParquetRepetition::Repeated)
+        || field.max_repetition_level > 0
+    {
+        return Err(unsupported_datafusion_parquet_field(field));
     }
 
     match &field.physical_type {
-        BrowserParquetPhysicalType::Boolean => Ok(DeltaTableFieldDataType::Boolean),
-        BrowserParquetPhysicalType::Int32 => Ok(DeltaTableFieldDataType::Int32),
-        BrowserParquetPhysicalType::Int64 => Ok(DeltaTableFieldDataType::Int64),
-        BrowserParquetPhysicalType::Float => Ok(DeltaTableFieldDataType::Float32),
-        BrowserParquetPhysicalType::Double => Ok(DeltaTableFieldDataType::Float64),
-        BrowserParquetPhysicalType::Int96
-        | BrowserParquetPhysicalType::ByteArray
-        | BrowserParquetPhysicalType::FixedLenByteArray => {
+        BrowserParquetPhysicalType::Boolean if field_has_no_annotations(field) => {
+            Ok(DeltaTableFieldDataType::Boolean)
+        }
+        BrowserParquetPhysicalType::Int32 => datafusion_int32_type_from_parquet_field(field),
+        BrowserParquetPhysicalType::Int64 => datafusion_int64_type_from_parquet_field(field),
+        BrowserParquetPhysicalType::Float if field_has_no_annotations(field) => {
+            Ok(DeltaTableFieldDataType::Float32)
+        }
+        BrowserParquetPhysicalType::Double if field_has_no_annotations(field) => {
+            Ok(DeltaTableFieldDataType::Float64)
+        }
+        BrowserParquetPhysicalType::ByteArray => {
+            datafusion_byte_array_type_from_parquet_field(field)
+        }
+        BrowserParquetPhysicalType::Int96 | BrowserParquetPhysicalType::FixedLenByteArray => {
             Err(unsupported_datafusion_parquet_field(field))
         }
+        BrowserParquetPhysicalType::Boolean
+        | BrowserParquetPhysicalType::Float
+        | BrowserParquetPhysicalType::Double => Err(unsupported_datafusion_parquet_field(field)),
     }
+}
+
+fn datafusion_int32_type_from_parquet_field(
+    field: &BrowserParquetField,
+) -> Result<DeltaTableFieldDataType, QueryError> {
+    match field.logical_type.as_ref() {
+        Some(BrowserParquetLogicalType::Integer {
+            bit_width: 32,
+            is_signed: true,
+        }) => return Ok(DeltaTableFieldDataType::Int32),
+        Some(_) => return Err(unsupported_datafusion_parquet_field(field)),
+        None => {}
+    }
+
+    match field.converted_type.as_ref() {
+        None | Some(BrowserParquetConvertedType::Int32) => Ok(DeltaTableFieldDataType::Int32),
+        Some(_) => Err(unsupported_datafusion_parquet_field(field)),
+    }
+}
+
+fn datafusion_int64_type_from_parquet_field(
+    field: &BrowserParquetField,
+) -> Result<DeltaTableFieldDataType, QueryError> {
+    match field.logical_type.as_ref() {
+        Some(BrowserParquetLogicalType::Integer {
+            bit_width: 64,
+            is_signed: true,
+        }) => return Ok(DeltaTableFieldDataType::Int64),
+        Some(_) => return Err(unsupported_datafusion_parquet_field(field)),
+        None => {}
+    }
+
+    match field.converted_type.as_ref() {
+        None | Some(BrowserParquetConvertedType::Int64) => Ok(DeltaTableFieldDataType::Int64),
+        Some(_) => Err(unsupported_datafusion_parquet_field(field)),
+    }
+}
+
+fn datafusion_byte_array_type_from_parquet_field(
+    field: &BrowserParquetField,
+) -> Result<DeltaTableFieldDataType, QueryError> {
+    match field.logical_type.as_ref() {
+        Some(BrowserParquetLogicalType::String) | Some(BrowserParquetLogicalType::Json) => {
+            return Ok(DeltaTableFieldDataType::Utf8);
+        }
+        Some(BrowserParquetLogicalType::Bson)
+        | Some(BrowserParquetLogicalType::Enum)
+        | Some(BrowserParquetLogicalType::Geometry { .. })
+        | Some(BrowserParquetLogicalType::Geography { .. })
+        | Some(BrowserParquetLogicalType::Unrecognized { .. }) => {
+            return Ok(DeltaTableFieldDataType::Binary);
+        }
+        Some(_) => return Err(unsupported_datafusion_parquet_field(field)),
+        None => {}
+    }
+
+    match field.converted_type.as_ref() {
+        None => Ok(DeltaTableFieldDataType::Binary),
+        Some(BrowserParquetConvertedType::Utf8) | Some(BrowserParquetConvertedType::Json) => {
+            Ok(DeltaTableFieldDataType::Utf8)
+        }
+        Some(BrowserParquetConvertedType::Bson) | Some(BrowserParquetConvertedType::Enum) => {
+            Ok(DeltaTableFieldDataType::Binary)
+        }
+        Some(_) => Err(unsupported_datafusion_parquet_field(field)),
+    }
+}
+
+fn field_has_no_annotations(field: &BrowserParquetField) -> bool {
+    field.logical_type.is_none() && field.converted_type.is_none()
 }
 
 fn unsupported_datafusion_parquet_field(field: &BrowserParquetField) -> QueryError {
@@ -864,6 +941,7 @@ pub fn memory_baseline_bytes() -> u64 {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use wasm_query_runtime::BrowserParquetTimeUnit;
 
     use query_contract::{BrowserHttpFileDescriptor, CapabilityReport};
     use wasm_query_runtime::{
@@ -1144,6 +1222,178 @@ mod tests {
             .expect_err("DataFusion SQL should reject tables over the byte budget");
 
         assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+    }
+
+    #[test]
+    fn unannotated_byte_array_parquet_field_maps_to_datafusion_binary() {
+        let field = byte_array_field("payload", None, None);
+
+        let data_type = datafusion_data_type_from_parquet_field(&field)
+            .expect("browser DataFusion should use Arrow binary for unannotated BYTE_ARRAY");
+
+        assert_eq!(data_type, DeltaTableFieldDataType::Binary);
+    }
+
+    #[test]
+    fn json_byte_array_parquet_fields_map_to_datafusion_utf8() {
+        let cases = [
+            byte_array_field("json_logical", Some(BrowserParquetLogicalType::Json), None),
+            byte_array_field(
+                "json_converted",
+                None,
+                Some(BrowserParquetConvertedType::Json),
+            ),
+        ];
+
+        for field in cases {
+            let data_type = datafusion_data_type_from_parquet_field(&field)
+                .expect("browser DataFusion should mirror Arrow JSON BYTE_ARRAY mapping");
+
+            assert_eq!(
+                data_type,
+                DeltaTableFieldDataType::Utf8,
+                "field {}",
+                field.name
+            );
+        }
+    }
+
+    #[test]
+    fn arrow_binary_byte_array_annotations_map_to_datafusion_binary() {
+        let cases = [
+            byte_array_field("bson_logical", Some(BrowserParquetLogicalType::Bson), None),
+            byte_array_field(
+                "bson_converted",
+                None,
+                Some(BrowserParquetConvertedType::Bson),
+            ),
+            byte_array_field("enum_logical", Some(BrowserParquetLogicalType::Enum), None),
+            byte_array_field(
+                "enum_converted",
+                None,
+                Some(BrowserParquetConvertedType::Enum),
+            ),
+            byte_array_field(
+                "unrecognized_logical",
+                Some(BrowserParquetLogicalType::Unrecognized { field_id: 123 }),
+                None,
+            ),
+        ];
+
+        for field in cases {
+            let data_type = datafusion_data_type_from_parquet_field(&field)
+                .expect("browser DataFusion should mirror Arrow binary BYTE_ARRAY mapping");
+
+            assert_eq!(
+                data_type,
+                DeltaTableFieldDataType::Binary,
+                "field {}",
+                field.name
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_parquet_shapes_remain_explicitly_unsupported() {
+        let cases = [
+            parquet_field(
+                "list_payload",
+                BrowserParquetPhysicalType::ByteArray,
+                Some(BrowserParquetLogicalType::List),
+                None,
+            ),
+            parquet_field(
+                "map_payload",
+                BrowserParquetPhysicalType::ByteArray,
+                Some(BrowserParquetLogicalType::Map),
+                None,
+            ),
+            parquet_field(
+                "variant_payload",
+                BrowserParquetPhysicalType::ByteArray,
+                Some(BrowserParquetLogicalType::Variant {
+                    specification_version: Some(1),
+                }),
+                None,
+            ),
+            parquet_field(
+                "unknown_payload",
+                BrowserParquetPhysicalType::ByteArray,
+                Some(BrowserParquetLogicalType::Unknown),
+                None,
+            ),
+            parquet_field(
+                "decimal_payload",
+                BrowserParquetPhysicalType::ByteArray,
+                Some(BrowserParquetLogicalType::Decimal {
+                    scale: 2,
+                    precision: 10,
+                }),
+                None,
+            ),
+            parquet_field(
+                "fixed_payload",
+                BrowserParquetPhysicalType::FixedLenByteArray,
+                None,
+                None,
+            ),
+            parquet_field(
+                "legacy_timestamp",
+                BrowserParquetPhysicalType::Int96,
+                None,
+                None,
+            ),
+            parquet_field(
+                "timestamp_micros",
+                BrowserParquetPhysicalType::Int64,
+                Some(BrowserParquetLogicalType::Timestamp {
+                    is_adjusted_to_utc: true,
+                    unit: BrowserParquetTimeUnit::Micros,
+                }),
+                None,
+            ),
+        ];
+
+        for field in cases {
+            let error = datafusion_data_type_from_parquet_field(&field)
+                .expect_err("unsupported browser field shapes should fail explicitly");
+
+            assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+        }
+    }
+
+    fn byte_array_field(
+        name: &str,
+        logical_type: Option<BrowserParquetLogicalType>,
+        converted_type: Option<BrowserParquetConvertedType>,
+    ) -> BrowserParquetField {
+        parquet_field(
+            name,
+            BrowserParquetPhysicalType::ByteArray,
+            logical_type,
+            converted_type,
+        )
+    }
+
+    fn parquet_field(
+        name: &str,
+        physical_type: BrowserParquetPhysicalType,
+        logical_type: Option<BrowserParquetLogicalType>,
+        converted_type: Option<BrowserParquetConvertedType>,
+    ) -> BrowserParquetField {
+        BrowserParquetField {
+            name: name.to_string(),
+            physical_type,
+            logical_type,
+            converted_type,
+            repetition: BrowserParquetRepetition::Optional,
+            nullable: true,
+            max_definition_level: 1,
+            max_repetition_level: 0,
+            type_length: None,
+            precision: None,
+            scale: None,
+        }
     }
 
     fn empty_delta_descriptor() -> BrowserHttpSnapshotDescriptor {

@@ -8,10 +8,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use arrow_array::{cast::AsArray, RecordBatch};
+use arrow_array::{cast::AsArray, Array, BinaryArray, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bytes::Bytes;
-use parquet::data_type::Int64Type;
+use parquet::data_type::{ByteArray, ByteArrayType, Int64Type};
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
@@ -157,6 +157,44 @@ fn delta_descriptor_scan_aligns_normalized_parquet_names_to_projected_schema() {
         );
         assert_eq!(int64_column_values(&batches, 0), vec![2, 3]);
         assert_eq!(int64_column_values(&batches, 1), vec![12, 25]);
+    });
+}
+
+#[test]
+fn delta_descriptor_scan_streams_unannotated_byte_array_columns_as_binary() {
+    let _guard = PARQUET_SCAN_TEST_LOCK
+        .lock()
+        .expect("Parquet scan tests should serialize local HTTP servers");
+    test_runtime().block_on(async {
+        let object = parquet_bytes_with_binary_payload(&[
+            (1, vec![0, 1, 2, 3]),
+            (2, vec![b'a', b'x', b'o', b'n']),
+        ]);
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let server = RequestCapturingServer::new(object);
+        let mut engine = WasmDataFusionEngine::new();
+
+        engine
+            .open_delta_table(delta_descriptor(
+                "events",
+                binary_payload_descriptor_schema(),
+                server.url(),
+                object_size,
+            ))
+            .await
+            .expect("Delta descriptor should register a binary Parquet field");
+
+        let (schema, batches) = engine
+            .sql_to_record_batches("SELECT id, payload FROM events ORDER BY id")
+            .await
+            .expect("DataFusion should execute SQL over unannotated BYTE_ARRAY columns");
+
+        assert_eq!(schema.field(1).data_type(), &DataType::Binary);
+        assert_eq!(int64_column_values(&batches, 0), vec![1, 2]);
+        assert_eq!(
+            binary_column_values(&batches, 1),
+            vec![vec![0, 1, 2, 3], vec![b'a', b'x', b'o', b'n']]
+        );
     });
 }
 
@@ -404,6 +442,14 @@ fn mixed_case_descriptor_schema() -> SchemaRef {
     ]))
 }
 
+fn binary_payload_descriptor_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("payload", DataType::Binary, false),
+        Field::new("category", DataType::Utf8, true),
+    ]))
+}
+
 fn brokered_delta_datafusion_schema() -> DeltaTableSchema {
     DeltaTableSchema::new(vec![
         DeltaTableSchemaField::new("id", DeltaTableFieldDataType::Int64, false),
@@ -491,6 +537,52 @@ fn parquet_bytes_with_i64_columns(rows: &[(i64, i64)]) -> Vec<u8> {
     bytes
 }
 
+fn parquet_bytes_with_binary_payload(rows: &[(i64, Vec<u8>)]) -> Vec<u8> {
+    let schema = Arc::new(
+        parse_message_type("message schema { REQUIRED INT64 id; REQUIRED BYTE_ARRAY payload; }")
+            .expect("parquet schema should parse"),
+    );
+    let mut bytes = Vec::new();
+    let mut writer = SerializedFileWriter::new(
+        &mut bytes,
+        schema,
+        Arc::new(WriterProperties::builder().build()),
+    )
+    .expect("parquet writer should construct");
+    let ids = rows.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    let payloads = rows
+        .iter()
+        .map(|(_, payload)| ByteArray::from(payload.clone()))
+        .collect::<Vec<_>>();
+
+    let mut row_group = writer
+        .next_row_group()
+        .expect("row-group writer should construct");
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("id column writer should be returned")
+    {
+        column
+            .typed::<Int64Type>()
+            .write_batch(&ids, None, None)
+            .expect("id values should write");
+        column.close().expect("id column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("payload column writer should be returned")
+    {
+        column
+            .typed::<ByteArrayType>()
+            .write_batch(&payloads, None, None)
+            .expect("payload values should write");
+        column.close().expect("payload column writer should close");
+    }
+    row_group.close().expect("row-group writer should close");
+    writer.close().expect("file writer should close");
+    bytes
+}
+
 fn int64_column_values(batches: &[RecordBatch], column_index: usize) -> Vec<i64> {
     batches
         .iter()
@@ -500,6 +592,22 @@ fn int64_column_values(batches: &[RecordBatch], column_index: usize) -> Vec<i64>
                 .as_primitive::<arrow_array::types::Int64Type>()
                 .values()
                 .to_vec()
+        })
+        .collect()
+}
+
+fn binary_column_values(batches: &[RecordBatch], column_index: usize) -> Vec<Vec<u8>> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let array = batch
+                .column(column_index)
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .expect("column should be an Arrow BinaryArray");
+            (0..array.len())
+                .map(|index| array.value(index).to_vec())
+                .collect::<Vec<_>>()
         })
         .collect()
 }

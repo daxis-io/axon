@@ -314,11 +314,52 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(connectState).not.toMatch(/bytes|ArrayBuffer|secret|bearer|token|client[_-]?secret/i);
 
     const registryRecord = await localDeltaRegistryRecord(page, localRegistryId);
+    expect(registryRecord?.backend).toBe('metadata_only');
     expect(registryRecord?.paths).toContain('_delta_log/00000000000000000003.json');
     expect(registryRecord?.paths.some((path) => path.includes('category=A'))).toBe(false);
     expect(registryRecord?.paths.some((path) => path.includes('category=C'))).toBe(false);
     expect(registryRecord?.paths.some((path) => path.includes('category=B'))).toBe(true);
     expect(registryRecord?.paths.some((path) => path.includes('category=D'))).toBe(true);
+    expect(
+      registryRecord?.files.some((file) => file.path.endsWith('.parquet') && file.hasBytes),
+    ).toBe(false);
+  });
+
+  test('local Delta metadata registry does not copy active Parquet data files', async ({
+    page,
+  }) => {
+    const tableDir = fileURLToPath(new URL('../public/fixtures/prod-like/table', import.meta.url));
+    await blockOpfsLocalDeltaRegistry(page);
+    await failOnParquetArrayBuffer(page);
+
+    const localRegistryId = await connectLocalDeltaFolder(page, tableDir, 'metadata-local');
+
+    await page
+      .locator('.code-input')
+      .fill('SELECT COUNT(*) AS row_count FROM axon_prod_like_fixture');
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+    await expect(page.locator('.res-meta')).toContainText(/browser · wasm/i, {
+      timeout: 30_000,
+    });
+    await expect(page.locator('table.grid')).toContainText('4');
+
+    const registryRecord = await localDeltaRegistryRecord(page, localRegistryId);
+    expect(registryRecord).toMatchObject({
+      id: localRegistryId,
+      backend: 'metadata_only',
+    });
+    expect(registryRecord?.paths.some((path) => path.endsWith('.parquet'))).toBe(true);
+    expect(
+      registryRecord?.files.some((file) => file.path.endsWith('.parquet') && file.hasBytes),
+    ).toBe(false);
+
+    const arrayBufferReads = await page.evaluate(
+      () =>
+        (window as Window & { __axonParquetArrayBufferReads?: string[] })
+          .__axonParquetArrayBufferReads ?? [],
+    );
+    expect(arrayBufferReads).toEqual([]);
   });
 
   test('local Delta folder still queries for the current session when durable registry storage is unavailable', async ({
@@ -395,7 +436,7 @@ test.describe('editor (Phase 1 smoke)', () => {
       .toEqual({ activeId: null, record: null });
   });
 
-  test('reload reopens the active local Delta table from the persisted local registry', async ({
+  test('reload keeps local Delta metadata but requires reselect before querying', async ({
     page,
   }) => {
     const tableDir = fileURLToPath(new URL('../public/fixtures/prod-like/table', import.meta.url));
@@ -427,11 +468,11 @@ test.describe('editor (Phase 1 smoke)', () => {
       .fill('SELECT COUNT(*) AS row_count FROM axon_prod_like_fixture');
     await page.locator('.btn.primary', { hasText: 'Run' }).click();
 
-    await expect(page.locator('.res-meta')).toContainText(/browser · wasm/i, {
+    await expect(page.locator('.res-meta')).toContainText(/error/i, {
       timeout: 30_000,
     });
-    await expect(page.locator('table.grid')).toContainText('row_count');
-    await expect(page.locator('table.grid')).toContainText('4');
+    await expect(page.locator('.results')).toContainText(/saved as metadata only/i);
+    await expect(page.locator('.results')).toContainText(/Select the folder again/i);
   });
 
   test('loads selected connected catalog, populates table, runs a query', async ({
@@ -586,10 +627,46 @@ async function blockDurableLocalDeltaRegistry(page: Page): Promise<void> {
   });
 }
 
+async function blockOpfsLocalDeltaRegistry(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    if (navigator.storage) {
+      Object.defineProperty(navigator.storage, 'getDirectory', {
+        configurable: true,
+        value: undefined,
+      });
+    }
+  });
+}
+
+async function failOnParquetArrayBuffer(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const originalArrayBuffer = File.prototype.arrayBuffer;
+    Object.defineProperty(window, '__axonParquetArrayBufferReads', {
+      configurable: true,
+      value: [],
+      writable: true,
+    });
+    File.prototype.arrayBuffer = function () {
+      if (this.name.endsWith('.parquet')) {
+        (
+          window as unknown as { __axonParquetArrayBufferReads: string[] }
+        ).__axonParquetArrayBufferReads.push(this.name);
+        throw new Error(`unexpected Parquet data-file copy: ${this.name}`);
+      }
+      return originalArrayBuffer.call(this);
+    };
+  });
+}
+
 async function localDeltaRegistryRecord(
   page: Page,
   registryId: string,
-): Promise<{ id: string; backend: string; paths: string[] } | null> {
+): Promise<{
+  id: string;
+  backend: string;
+  paths: string[];
+  files: Array<{ path: string; hasBytes: boolean }>;
+} | null> {
   return page.evaluate(async (id) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open('axon-local-delta-registry', 1);
@@ -602,26 +679,39 @@ async function localDeltaRegistryRecord(
         }
       };
     });
-    return new Promise<{ id: string; backend: string; paths: string[] } | null>(
-      (resolve, reject) => {
-        const tx = db.transaction('tables', 'readonly');
-        const request = tx.objectStore('tables').get(id);
-        request.onerror = () => reject(request.error ?? new Error('read failed'));
-        request.onsuccess = () => {
-          const record = request.result as
-            | { id: string; backend: string; files: Array<{ relativePath: string }> }
-            | undefined;
-          resolve(
-            record
-              ? {
-                  id: record.id,
-                  backend: record.backend,
-                  paths: record.files.map((file) => file.relativePath).sort(),
-                }
-              : null,
-          );
-        };
-      },
-    );
+    return new Promise<{
+      id: string;
+      backend: string;
+      paths: string[];
+      files: Array<{ path: string; hasBytes: boolean }>;
+    } | null>((resolve, reject) => {
+      const tx = db.transaction('tables', 'readonly');
+      const request = tx.objectStore('tables').get(id);
+      request.onerror = () => reject(request.error ?? new Error('read failed'));
+      request.onsuccess = () => {
+        const record = request.result as
+          | {
+              id: string;
+              backend: string;
+              files: Array<{ relativePath: string; bytes?: ArrayBuffer }>;
+            }
+          | undefined;
+        resolve(
+          record
+            ? {
+                id: record.id,
+                backend: record.backend,
+                paths: record.files.map((file) => file.relativePath).sort(),
+                files: record.files
+                  .map((file) => ({
+                    path: file.relativePath,
+                    hasBytes: !!file.bytes,
+                  }))
+                  .sort((left, right) => left.path.localeCompare(right.path)),
+              }
+            : null,
+        );
+      };
+    });
   }, registryId);
 }
