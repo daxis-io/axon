@@ -69,8 +69,42 @@ async fn residual_filter_prevents_scan_level_limit_pushdown() {
     assert_eq!(int32_column_values(&batches, 0), vec![2]);
     assert_eq!(trace.limit, None);
     assert_eq!(trace.projected_columns, vec!["id", "value"]);
-    assert_eq!(trace.inexact_filters, vec!["value = Int32(25)"]);
+    assert_eq!(trace.inexact_filters, Vec::<String>::new());
     assert_eq!(trace.rows_emitted, 3);
+}
+
+#[tokio::test]
+async fn direct_residual_scan_does_not_push_limit_into_scan() {
+    let ctx = SessionContext::new();
+    let schema = descriptor_schema();
+    let provider = AxonDeltaTableProvider::with_record_batch_partitions(
+        delta_descriptor(Arc::clone(&schema)),
+        controlled_partitions(schema),
+    );
+    let filter = Expr::BinaryExpr(BinaryExpr::new(
+        Box::new(Expr::Column(Column::new_unqualified("value"))),
+        Operator::Gt,
+        Box::new(Expr::Literal(ScalarValue::Int32(Some(10)), None)),
+    ));
+    let projection = [0_usize, 1_usize];
+    let filters = [filter];
+    let scan_result = provider
+        .scan_with_args(
+            &ctx.state(),
+            ScanArgs::default()
+                .with_projection(Some(&projection))
+                .with_filters(Some(&filters))
+                .with_limit(Some(1)),
+        )
+        .await
+        .expect("scan_with_args should build a scan plan");
+    let plan = Arc::clone(scan_result.plan());
+    let scan = axon_scan(&plan);
+    let trace = scan.pushdown_trace();
+
+    assert_eq!(trace.limit, None);
+    assert_eq!(trace.projected_columns, vec!["id", "value"]);
+    assert_eq!(trace.inexact_filters, vec!["value > Int32(10)"]);
 }
 
 #[tokio::test]
@@ -95,6 +129,71 @@ async fn exact_partition_filter_prunes_files_in_scan_trace() {
 }
 
 #[tokio::test]
+async fn exact_partition_prune_keeps_value_filter_as_residual() {
+    let ctx = context_with_events();
+    let plan = physical_plan(
+        &ctx,
+        "SELECT id \
+         FROM events \
+         WHERE event_date = '2026-01-02' AND value > 10 \
+         ORDER BY id",
+    )
+    .await;
+    let scan = axon_scan(&plan);
+
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx())
+        .await
+        .expect("query should execute");
+    let trace = scan.pushdown_trace();
+
+    assert_eq!(int32_column_values(&batches, 0), vec![4]);
+    assert_eq!(trace.projected_columns, vec!["id", "value"]);
+    assert_eq!(trace.files_planned, 1);
+    assert_eq!(trace.files_skipped, 2);
+    assert_eq!(
+        trace.planned_file_paths,
+        vec!["event_date=2026-01-02/part-001.parquet"]
+    );
+    assert_eq!(
+        trace.exact_filters,
+        vec!["event_date = Utf8(\"2026-01-02\")"]
+    );
+    assert_eq!(trace.inexact_filters, Vec::<String>::new());
+    assert_eq!(trace.rows_emitted, 2);
+}
+
+#[tokio::test]
+async fn file_stats_prune_keeps_row_predicate_as_residual() {
+    let ctx = context_with_value_stats_events();
+    let plan = physical_plan(
+        &ctx,
+        "SELECT id \
+         FROM events \
+         WHERE value > 10 AND id != 4 \
+         ORDER BY id",
+    )
+    .await;
+    let scan = axon_scan(&plan);
+
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx())
+        .await
+        .expect("query should execute");
+    let trace = scan.pushdown_trace();
+
+    assert_eq!(int32_column_values(&batches, 0), vec![5]);
+    assert_eq!(trace.projected_columns, vec!["id", "value"]);
+    assert_eq!(trace.files_total, 3);
+    assert_eq!(trace.files_planned, 2);
+    assert_eq!(trace.files_skipped, 1);
+    assert_eq!(
+        trace.planned_file_paths,
+        vec!["stats/part-001.parquet", "stats/part-002.parquet",]
+    );
+    assert_eq!(trace.exact_filters, Vec::<String>::new());
+    assert_eq!(trace.inexact_filters, vec!["value > Int32(10)"]);
+}
+
+#[tokio::test]
 async fn null_equality_partition_filter_is_not_exact_pushdown() {
     let provider = AxonDeltaTableProvider::with_record_batch_partitions(
         nullable_delta_descriptor(),
@@ -110,7 +209,146 @@ async fn null_equality_partition_filter_is_not_exact_pushdown() {
         .supports_filters_pushdown(&[&filter])
         .expect("pushdown support should be classified");
 
-    assert_eq!(pushdown, vec![TableProviderFilterPushDown::Inexact]);
+    assert_eq!(pushdown, vec![TableProviderFilterPushDown::Unsupported]);
+}
+
+#[tokio::test]
+async fn supports_filters_pushdown_distinguishes_exact_inexact_and_unsupported() {
+    let schema = descriptor_schema();
+    let provider = AxonDeltaTableProvider::with_record_batch_partitions(
+        delta_descriptor(Arc::clone(&schema)),
+        controlled_partitions(schema),
+    );
+    let event_date_is_null = Expr::IsNull(Box::new(Expr::Column(Column::new_unqualified(
+        "event_date",
+    ))));
+    let event_date_is_not_null = Expr::IsNotNull(Box::new(Expr::Column(Column::new_unqualified(
+        "event_date",
+    ))));
+    let value_in = datafusion::prelude::col("value").in_list(
+        vec![
+            datafusion::prelude::lit(7_i32),
+            datafusion::prelude::lit(25_i32),
+        ],
+        false,
+    );
+    let partition_and_residual = Expr::BinaryExpr(BinaryExpr::new(
+        Box::new(Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(Expr::Column(Column::new_unqualified("event_date"))),
+            Operator::Eq,
+            Box::new(Expr::Literal(
+                ScalarValue::Utf8(Some("2026-01-02".to_string())),
+                None,
+            )),
+        ))),
+        Operator::And,
+        Box::new(Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(Expr::Column(Column::new_unqualified("value"))),
+            Operator::Gt,
+            Box::new(Expr::Literal(ScalarValue::Int32(Some(10)), None)),
+        ))),
+    ));
+
+    let pushdown = provider
+        .supports_filters_pushdown(&[
+            &event_date_is_null,
+            &event_date_is_not_null,
+            &value_in,
+            &partition_and_residual,
+        ])
+        .expect("pushdown support should classify mixed filters");
+
+    assert_eq!(
+        pushdown,
+        vec![
+            TableProviderFilterPushDown::Exact,
+            TableProviderFilterPushDown::Unsupported,
+            TableProviderFilterPushDown::Unsupported,
+            TableProviderFilterPushDown::Inexact,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn supports_filters_pushdown_marks_stats_and_row_group_pruning_inexact() {
+    let schema = descriptor_schema();
+    let stats_provider = AxonDeltaTableProvider::with_record_batch_partitions(
+        value_stats_delta_descriptor(Arc::clone(&schema)),
+        value_stats_partitions(schema),
+    );
+    let value_filter = Expr::BinaryExpr(BinaryExpr::new(
+        Box::new(Expr::Column(Column::new_unqualified("value"))),
+        Operator::Gt,
+        Box::new(Expr::Literal(ScalarValue::Int32(Some(10)), None)),
+    ));
+
+    let stats_pushdown = stats_provider
+        .supports_filters_pushdown(&[&value_filter])
+        .expect("stats pushdown support should classify");
+    assert_eq!(stats_pushdown, vec![TableProviderFilterPushDown::Inexact]);
+
+    let parquet_provider = AxonDeltaTableProvider::new(parquet_delta_descriptor(
+        "http://127.0.0.1/object.parquet".to_string(),
+        1024,
+    ));
+    let id_filter = Expr::BinaryExpr(BinaryExpr::new(
+        Box::new(Expr::Column(Column::new_unqualified("id"))),
+        Operator::GtEq,
+        Box::new(Expr::Literal(ScalarValue::Int64(Some(10)), None)),
+    ));
+
+    let row_group_pushdown = parquet_provider
+        .supports_filters_pushdown(&[&id_filter])
+        .expect("row-group pushdown support should classify");
+    assert_eq!(
+        row_group_pushdown,
+        vec![TableProviderFilterPushDown::Inexact]
+    );
+}
+
+#[tokio::test]
+async fn null_partition_comparisons_stay_conservative_and_correct() {
+    let ctx = context_with_nullable_events();
+
+    let is_null_plan = physical_plan(&ctx, "SELECT id FROM events WHERE event_date IS NULL").await;
+    let is_null_scan = axon_scan(&is_null_plan);
+    let is_null_batches = collect(Arc::clone(&is_null_plan), ctx.task_ctx())
+        .await
+        .expect("IS NULL query should execute");
+    let is_null_trace = is_null_scan.pushdown_trace();
+
+    assert_eq!(int32_column_values(&is_null_batches, 0), vec![1]);
+    assert_eq!(is_null_trace.files_planned, 1);
+    assert_eq!(is_null_trace.files_skipped, 1);
+    assert_eq!(is_null_trace.exact_filters, vec!["event_date IS NULL"]);
+
+    let is_not_null_plan =
+        physical_plan(&ctx, "SELECT id FROM events WHERE event_date IS NOT NULL").await;
+    let is_not_null_scan = axon_scan(&is_not_null_plan);
+    let is_not_null_batches = collect(Arc::clone(&is_not_null_plan), ctx.task_ctx())
+        .await
+        .expect("IS NOT NULL query should execute");
+    let is_not_null_trace = is_not_null_scan.pushdown_trace();
+
+    assert_eq!(int32_column_values(&is_not_null_batches, 0), vec![2]);
+    assert_eq!(is_not_null_trace.files_planned, 2);
+    assert_eq!(is_not_null_trace.files_skipped, 0);
+    assert_eq!(is_not_null_trace.inexact_filters, Vec::<String>::new());
+
+    let provider = AxonDeltaTableProvider::with_record_batch_partitions(
+        nullable_delta_descriptor(),
+        nullable_partitions(nullable_descriptor_schema()),
+    );
+    let null_equality = Expr::BinaryExpr(BinaryExpr::new(
+        Box::new(Expr::Column(Column::new_unqualified("event_date"))),
+        Operator::Eq,
+        Box::new(Expr::Literal(ScalarValue::Null, None)),
+    ));
+
+    let pushdown = provider
+        .supports_filters_pushdown(&[&null_equality])
+        .expect("pushdown support should classify = NULL");
+    assert_eq!(pushdown, vec![TableProviderFilterPushDown::Unsupported]);
 }
 
 #[tokio::test]
@@ -158,6 +396,49 @@ async fn scan_with_args_delegates_projection_filters_and_limit_to_scan_path() {
 }
 
 #[tokio::test]
+async fn partition_and_nonpartition_in_lists_keep_residuals_correct() {
+    let ctx = context_with_events();
+    let partition_in_plan = physical_plan(
+        &ctx,
+        "SELECT id \
+         FROM events \
+         WHERE event_date IN ('2026-01-01', '2026-01-03') AND value > 20 \
+         ORDER BY id",
+    )
+    .await;
+    let partition_in_scan = axon_scan(&partition_in_plan);
+    let partition_in_batches = collect(Arc::clone(&partition_in_plan), ctx.task_ctx())
+        .await
+        .expect("partition IN query should execute");
+    let partition_in_trace = partition_in_scan.pushdown_trace();
+
+    assert_eq!(int32_column_values(&partition_in_batches, 0), vec![2, 5]);
+    assert_eq!(partition_in_trace.files_planned, 2);
+    assert_eq!(partition_in_trace.files_skipped, 1);
+    assert_eq!(
+        partition_in_trace.exact_filters,
+        vec!["event_date = Utf8(\"2026-01-01\") OR event_date = Utf8(\"2026-01-03\")"]
+    );
+    assert_eq!(partition_in_trace.inexact_filters, Vec::<String>::new());
+
+    let nonpartition_in_plan = physical_plan(
+        &ctx,
+        "SELECT id FROM events WHERE value IN (7, 25) ORDER BY id LIMIT 1",
+    )
+    .await;
+    let nonpartition_in_scan = axon_scan(&nonpartition_in_plan);
+    let nonpartition_in_batches = collect(Arc::clone(&nonpartition_in_plan), ctx.task_ctx())
+        .await
+        .expect("non-partition IN query should execute");
+    let nonpartition_in_trace = nonpartition_in_scan.pushdown_trace();
+
+    assert_eq!(int32_column_values(&nonpartition_in_batches, 0), vec![2]);
+    assert_eq!(nonpartition_in_trace.limit, None);
+    assert_eq!(nonpartition_in_trace.files_planned, 3);
+    assert_eq!(nonpartition_in_trace.inexact_filters, Vec::<String>::new());
+}
+
+#[tokio::test]
 async fn inexact_residual_filter_stays_above_partition_pruned_scan() {
     let ctx = context_with_events();
     let df = ctx
@@ -189,6 +470,45 @@ async fn inexact_residual_filter_stays_above_partition_pruned_scan() {
     assert_eq!(after.rows_emitted, 2);
     assert_eq!(after.bytes_fetched, 0);
     assert_eq!(after.row_groups_skipped, 0);
+}
+
+#[test]
+fn parquet_row_group_prune_keeps_row_predicate_as_residual() {
+    test_runtime().block_on(async {
+        let object = parquet_bytes_with_i64_row_groups(&[&[1_i64, 2, 3], &[10_i64, 11, 12]]);
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let server = RequestCapturingServer::new(object);
+        let ctx = SessionContext::new();
+
+        ctx.register_table(
+            "events",
+            Arc::new(AxonDeltaTableProvider::new(parquet_delta_descriptor(
+                server.url(),
+                object_size,
+            ))),
+        )
+        .expect("table should register");
+
+        let plan = physical_plan(
+            &ctx,
+            "SELECT id FROM events WHERE id >= 10 AND id <> 11 ORDER BY id",
+        )
+        .await;
+        let scan = axon_scan(&plan);
+        let batches = collect(Arc::clone(&plan), ctx.task_ctx())
+            .await
+            .expect("query should execute");
+        let trace = scan.pushdown_trace();
+
+        assert_eq!(int64_column_values(&batches, 0), vec![10, 12]);
+        assert_eq!(trace.projected_columns, vec!["id"]);
+        assert_eq!(trace.files_planned, 1);
+        assert_eq!(trace.files_skipped, 0);
+        assert_eq!(trace.row_groups_touched, 1);
+        assert_eq!(trace.row_groups_skipped, 1);
+        assert_eq!(trace.inexact_filters, vec!["id >= Int64(10)"]);
+        assert_eq!(trace.rows_emitted, 3);
+    });
 }
 
 #[test]
@@ -282,6 +602,33 @@ fn context_with_single_partition_events() -> SessionContext {
     ctx
 }
 
+fn context_with_nullable_events() -> SessionContext {
+    let ctx = SessionContext::new();
+    ctx.register_table(
+        "events",
+        Arc::new(AxonDeltaTableProvider::with_record_batch_partitions(
+            nullable_delta_descriptor(),
+            nullable_partitions(nullable_descriptor_schema()),
+        )),
+    )
+    .expect("table should register");
+    ctx
+}
+
+fn context_with_value_stats_events() -> SessionContext {
+    let ctx = SessionContext::new();
+    let schema = descriptor_schema();
+    ctx.register_table(
+        "events",
+        Arc::new(AxonDeltaTableProvider::with_record_batch_partitions(
+            value_stats_delta_descriptor(Arc::clone(&schema)),
+            value_stats_partitions(schema),
+        )),
+    )
+    .expect("table should register");
+    ctx
+}
+
 fn axon_scan(plan: &Arc<dyn ExecutionPlan>) -> &AxonParquetScanExec {
     if let Some(scan) = plan.as_any().downcast_ref::<AxonParquetScanExec>() {
         return scan;
@@ -318,6 +665,24 @@ fn controlled_partitions(schema: SchemaRef) -> Vec<Vec<RecordBatch>> {
             &["2026-01-02", "2026-01-02"],
         )],
         vec![record_batch(schema, &[5], &[50], &["2026-01-03"])],
+    ]
+}
+
+fn value_stats_partitions(schema: SchemaRef) -> Vec<Vec<RecordBatch>> {
+    vec![
+        vec![record_batch(
+            Arc::clone(&schema),
+            &[1, 2],
+            &[5, 7],
+            &["", ""],
+        )],
+        vec![record_batch(
+            Arc::clone(&schema),
+            &[3, 4],
+            &[10, 15],
+            &["", ""],
+        )],
+        vec![record_batch(schema, &[5], &[50], &[""])],
     ]
 }
 
@@ -381,6 +746,21 @@ fn nullable_delta_descriptor() -> DeltaTableDescriptor {
     }
 }
 
+fn value_stats_delta_descriptor(schema: SchemaRef) -> DeltaTableDescriptor {
+    DeltaTableDescriptor {
+        table_name: "events".to_string(),
+        table_version: 15,
+        schema,
+        partition_columns: Vec::new(),
+        partition_column_types: BTreeMap::new(),
+        active_files: vec![
+            stats_active_file("stats/part-000.parquet", 2, 1, 2, 5, 7),
+            stats_active_file("stats/part-001.parquet", 2, 3, 4, 10, 15),
+            stats_active_file("stats/part-002.parquet", 1, 5, 5, 50, 50),
+        ],
+    }
+}
+
 fn nullable_partitions(schema: SchemaRef) -> Vec<Vec<RecordBatch>> {
     vec![
         vec![nullable_record_batch(
@@ -428,6 +808,27 @@ fn active_file(path: &str, event_date: &str, rows: u64) -> DeltaActiveFile {
         )]),
         object_etag: None,
         stats_json: Some(format!(r#"{{"numRecords":{rows}}}"#)),
+        deletion_vector: None,
+    }
+}
+
+fn stats_active_file(
+    path: &str,
+    rows: u64,
+    min_id: i64,
+    max_id: i64,
+    min_value: i64,
+    max_value: i64,
+) -> DeltaActiveFile {
+    DeltaActiveFile {
+        path: path.to_string(),
+        url: format!("https://example.test/table/{path}"),
+        size_bytes: 1024,
+        partition_values: BTreeMap::new(),
+        object_etag: None,
+        stats_json: Some(format!(
+            r#"{{"numRecords":{rows},"minValues":{{"id":{min_id},"value":{min_value}}},"maxValues":{{"id":{max_id},"value":{max_value}}},"nullCount":{{"id":0,"value":0}}}}"#
+        )),
         deletion_vector: None,
     }
 }

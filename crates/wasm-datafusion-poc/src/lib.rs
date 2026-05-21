@@ -408,16 +408,16 @@ impl TableProvider for AxonDeltaTableProvider {
         filters: &[&Expr],
     ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
         let exact_partition_filters_enabled = self.can_apply_exact_partition_filters();
+        let parquet_row_group_pruning_enabled = self.in_memory_partitions.is_empty();
         Ok(filters
             .iter()
             .map(|filter| {
-                if exact_partition_filters_enabled
-                    && exact_partition_constraints(filter, &self.descriptor).is_some()
-                {
-                    TableProviderFilterPushDown::Exact
-                } else {
-                    TableProviderFilterPushDown::Inexact
-                }
+                classify_filter_pushdown(
+                    filter,
+                    &self.descriptor,
+                    exact_partition_filters_enabled,
+                    parquet_row_group_pruning_enabled,
+                )
             })
             .collect())
     }
@@ -463,14 +463,14 @@ impl AxonParquetScanExec {
             descriptor,
             projected_schema,
             projection,
-            limit,
+            limit: plan.limit,
             planned_file_indices: plan.planned_file_indices,
             planned_partition_indices: plan.planned_partition_indices,
             row_group_predicate: plan.row_group_predicate,
             partitions,
             properties,
             trace: Arc::new(Mutex::new(plan.trace)),
-            limit_remaining: Arc::new(Mutex::new(limit)),
+            limit_remaining: Arc::new(Mutex::new(plan.limit)),
             query_budget,
             cancellation,
         }
@@ -603,6 +603,7 @@ impl AxonParquetScanExec {
 
 #[derive(Clone, Debug)]
 struct AxonScanPlan {
+    limit: Option<usize>,
     planned_file_indices: Vec<usize>,
     planned_partition_indices: Vec<usize>,
     row_group_predicate: Option<ParquetRowGroupPruningPredicate>,
@@ -627,7 +628,13 @@ impl AxonScanPlan {
         } else {
             Vec::new()
         };
-        let planned_file_indices = planned_file_indices(descriptor, &partition_constraints);
+        let conjuncts = filter_conjuncts(filters);
+        let file_stats_constraints = conjuncts
+            .iter()
+            .filter_map(|filter| file_stats_pruning_constraint(filter, descriptor))
+            .collect::<Vec<_>>();
+        let planned_file_indices =
+            planned_file_indices(descriptor, &partition_constraints, &file_stats_constraints);
         let planned_partition_indices =
             planned_partition_indices(descriptor, partitions, &planned_file_indices);
         let files_total = descriptor.active_files.len();
@@ -642,7 +649,7 @@ impl AxonScanPlan {
             .filter_map(|index| descriptor.active_files.get(*index))
             .fold(0_u64, |total, file| total.saturating_add(file.size_bytes));
         let files_skipped = files_total.saturating_sub(files_planned) as u64;
-        let exact_filters = filters
+        let exact_filters = conjuncts
             .iter()
             .filter(|filter| {
                 exact_partition_filters_enabled
@@ -650,7 +657,7 @@ impl AxonScanPlan {
             })
             .map(ToString::to_string)
             .collect::<Vec<_>>();
-        let inexact_filters = filters
+        let inexact_filters = conjuncts
             .iter()
             .filter(|filter| {
                 !(exact_partition_filters_enabled
@@ -658,6 +665,7 @@ impl AxonScanPlan {
             })
             .map(ToString::to_string)
             .collect::<Vec<_>>();
+        let limit = inexact_filters.is_empty().then_some(limit).flatten();
         let trace = AxonParquetScanTrace {
             projected_columns: projected_column_names(projected_schema),
             limit,
@@ -676,6 +684,7 @@ impl AxonScanPlan {
         };
 
         Self {
+            limit,
             planned_file_indices,
             planned_partition_indices,
             row_group_predicate: filters
@@ -703,12 +712,15 @@ fn projected_column_names(schema: &SchemaRef) -> Vec<String> {
 fn planned_file_indices(
     descriptor: &DeltaTableDescriptor,
     constraints: &[PartitionConstraint],
+    stats_constraints: &[FileStatsConstraint],
 ) -> Vec<usize> {
     descriptor
         .active_files
         .iter()
         .enumerate()
-        .filter(|(_index, file)| partition_values_match(file, constraints))
+        .filter(|(_index, file)| {
+            partition_values_match(file, constraints) && file_stats_match(file, stats_constraints)
+        })
         .map(|(index, _file)| index)
         .collect()
 }
@@ -759,6 +771,96 @@ fn extract_partition_constraints(
     }
 }
 
+fn filter_conjuncts(filters: &[Expr]) -> Vec<&Expr> {
+    let mut conjuncts = Vec::new();
+    for filter in filters {
+        collect_filter_conjuncts(filter, &mut conjuncts);
+    }
+    conjuncts
+}
+
+fn collect_filter_conjuncts<'a>(expr: &'a Expr, conjuncts: &mut Vec<&'a Expr>) {
+    match expr {
+        Expr::BinaryExpr(binary) if binary.op == Operator::And => {
+            collect_filter_conjuncts(&binary.left, conjuncts);
+            collect_filter_conjuncts(&binary.right, conjuncts);
+        }
+        other => conjuncts.push(other),
+    }
+}
+
+fn classify_filter_pushdown(
+    expr: &Expr,
+    descriptor: &DeltaTableDescriptor,
+    exact_partition_filters_enabled: bool,
+    parquet_row_group_pruning_enabled: bool,
+) -> TableProviderFilterPushDown {
+    let mut conjuncts = Vec::new();
+    collect_filter_conjuncts(expr, &mut conjuncts);
+
+    let mut any_usable = false;
+    let mut all_exact = true;
+    for conjunct in conjuncts {
+        match classify_filter_conjunct(
+            conjunct,
+            descriptor,
+            exact_partition_filters_enabled,
+            parquet_row_group_pruning_enabled,
+        ) {
+            TableProviderFilterPushDown::Exact => {
+                any_usable = true;
+            }
+            TableProviderFilterPushDown::Inexact => {
+                any_usable = true;
+                all_exact = false;
+            }
+            TableProviderFilterPushDown::Unsupported => {
+                all_exact = false;
+            }
+        }
+    }
+
+    if any_usable && all_exact {
+        TableProviderFilterPushDown::Exact
+    } else if any_usable {
+        TableProviderFilterPushDown::Inexact
+    } else {
+        TableProviderFilterPushDown::Unsupported
+    }
+}
+
+fn classify_filter_conjunct(
+    expr: &Expr,
+    descriptor: &DeltaTableDescriptor,
+    exact_partition_filters_enabled: bool,
+    parquet_row_group_pruning_enabled: bool,
+) -> TableProviderFilterPushDown {
+    if exact_partition_filters_enabled && exact_partition_constraints(expr, descriptor).is_some() {
+        return TableProviderFilterPushDown::Exact;
+    }
+
+    if filter_has_usable_pruning(expr, descriptor, parquet_row_group_pruning_enabled) {
+        TableProviderFilterPushDown::Inexact
+    } else {
+        TableProviderFilterPushDown::Unsupported
+    }
+}
+
+fn filter_has_usable_pruning(
+    expr: &Expr,
+    descriptor: &DeltaTableDescriptor,
+    parquet_row_group_pruning_enabled: bool,
+) -> bool {
+    let Some(predicate) = row_group_pruning_predicate(expr, descriptor) else {
+        return false;
+    };
+    parquet_row_group_pruning_enabled
+        || descriptor
+            .active_files
+            .iter()
+            .any(|file| delta_stats_i64_min_max(file, predicate.column.as_str()).is_some())
+}
+
 fn exact_partition_constraints(
     expr: &Expr,
     descriptor: &DeltaTableDescriptor,
@@ -768,6 +870,11 @@ fn exact_partition_constraints(
             let mut constraints = exact_partition_constraints(&binary.left, descriptor)?;
             constraints.extend(exact_partition_constraints(&binary.right, descriptor)?);
             Some(constraints)
+        }
+        Expr::BinaryExpr(binary) if binary.op == Operator::Or => {
+            let left = exact_partition_constraints(&binary.left, descriptor)?;
+            let right = exact_partition_constraints(&binary.right, descriptor)?;
+            merge_partition_constraint_disjunction(left, right)
         }
         Expr::BinaryExpr(binary) if binary.op == Operator::Eq => {
             partition_equality_constraint(&binary.left, &binary.right, descriptor)
@@ -800,6 +907,32 @@ fn exact_partition_constraints(
         }
         _ => None,
     }
+}
+
+fn merge_partition_constraint_disjunction(
+    left: Vec<PartitionConstraint>,
+    right: Vec<PartitionConstraint>,
+) -> Option<Vec<PartitionConstraint>> {
+    let [left] = left.as_slice() else {
+        return None;
+    };
+    let [right] = right.as_slice() else {
+        return None;
+    };
+    if left.column != right.column {
+        return None;
+    }
+
+    let mut values = left.values.clone();
+    for value in &right.values {
+        if !values.contains(value) {
+            values.push(value.clone());
+        }
+    }
+    Some(vec![PartitionConstraint {
+        column: left.column.clone(),
+        values,
+    }])
 }
 
 fn partition_equality_constraint(
@@ -849,6 +982,58 @@ fn scalar_partition_value(value: &ScalarValue) -> Option<Option<String>> {
         ScalarValue::UInt32(value) => Some(value.map(|value| value.to_string())),
         ScalarValue::UInt64(value) => Some(value.map(|value| value.to_string())),
         _ => None,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FileStatsConstraint {
+    column: String,
+    comparison: ParquetIntegerComparison,
+}
+
+fn file_stats_pruning_constraint(
+    expr: &Expr,
+    descriptor: &DeltaTableDescriptor,
+) -> Option<FileStatsConstraint> {
+    match row_group_pruning_predicate(expr, descriptor) {
+        Some(predicate) => Some(FileStatsConstraint {
+            column: predicate.column,
+            comparison: predicate.comparison,
+        }),
+        None => None,
+    }
+}
+
+fn file_stats_match(active_file: &DeltaActiveFile, constraints: &[FileStatsConstraint]) -> bool {
+    constraints.iter().all(|constraint| {
+        let Some((min_value, max_value)) =
+            delta_stats_i64_min_max(active_file, constraint.column.as_str())
+        else {
+            return true;
+        };
+        integer_range_can_match(min_value, max_value, &constraint.comparison)
+    })
+}
+
+fn delta_stats_i64_min_max(active_file: &DeltaActiveFile, column: &str) -> Option<(i64, i64)> {
+    let stats_json = active_file.stats_json.as_ref()?;
+    let stats: serde_json::Value = serde_json::from_str(stats_json).ok()?;
+    let min_value = stats.get("minValues")?.get(column)?.as_i64()?;
+    let max_value = stats.get("maxValues")?.get(column)?.as_i64()?;
+    Some((min_value, max_value))
+}
+
+fn integer_range_can_match(
+    min_value: i64,
+    max_value: i64,
+    comparison: &ParquetIntegerComparison,
+) -> bool {
+    match comparison {
+        ParquetIntegerComparison::Eq(value) => min_value <= *value && *value <= max_value,
+        ParquetIntegerComparison::Gt(value) => max_value > *value,
+        ParquetIntegerComparison::Gte(value) => max_value >= *value,
+        ParquetIntegerComparison::Lt(value) => min_value < *value,
+        ParquetIntegerComparison::Lte(value) => min_value <= *value,
     }
 }
 
