@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use arrow_array::{cast::AsArray, Array, BinaryArray, RecordBatch};
+use arrow_array::{cast::AsArray, Array, BinaryArray, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bytes::Bytes;
 use parquet::data_type::{ByteArray, ByteArrayType, Int64Type};
@@ -194,6 +194,88 @@ fn delta_descriptor_scan_streams_unannotated_byte_array_columns_as_binary() {
         assert_eq!(
             binary_column_values(&batches, 1),
             vec![vec![0, 1, 2, 3], vec![b'a', b'x', b'o', b'n']]
+        );
+    });
+}
+
+#[test]
+fn delta_descriptor_scan_streams_json_byte_array_columns_as_utf8() {
+    let _guard = PARQUET_SCAN_TEST_LOCK
+        .lock()
+        .expect("Parquet scan tests should serialize local HTTP servers");
+    test_runtime().block_on(async {
+        let object = parquet_bytes_with_annotated_byte_array_payload(
+            "JSON",
+            &[
+                (1, br#"{"source":"axon"}"#.to_vec()),
+                (2, br#"{"source":"delta"}"#.to_vec()),
+            ],
+        );
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let server = RequestCapturingServer::new(object);
+        let mut engine = WasmDataFusionEngine::new();
+
+        engine
+            .open_delta_table(delta_descriptor(
+                "events",
+                utf8_payload_descriptor_schema(),
+                server.url(),
+                object_size,
+            ))
+            .await
+            .expect("Delta descriptor should register a JSON Parquet field as UTF8");
+
+        let (schema, batches) = engine
+            .sql_to_record_batches("SELECT id, payload FROM events ORDER BY id")
+            .await
+            .expect("DataFusion should execute SQL over JSON BYTE_ARRAY columns");
+
+        assert_eq!(schema.field(1).data_type(), &DataType::Utf8);
+        assert_eq!(int64_column_values(&batches, 0), vec![1, 2]);
+        assert_eq!(
+            utf8_column_values(&batches, 1),
+            vec![
+                r#"{"source":"axon"}"#.to_string(),
+                r#"{"source":"delta"}"#.to_string()
+            ]
+        );
+    });
+}
+
+#[test]
+fn delta_descriptor_scan_streams_enum_byte_array_columns_as_binary() {
+    let _guard = PARQUET_SCAN_TEST_LOCK
+        .lock()
+        .expect("Parquet scan tests should serialize local HTTP servers");
+    test_runtime().block_on(async {
+        let object = parquet_bytes_with_annotated_byte_array_payload(
+            "ENUM",
+            &[(1, b"bronze".to_vec()), (2, b"silver".to_vec())],
+        );
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let server = RequestCapturingServer::new(object);
+        let mut engine = WasmDataFusionEngine::new();
+
+        engine
+            .open_delta_table(delta_descriptor(
+                "events",
+                binary_payload_descriptor_schema(),
+                server.url(),
+                object_size,
+            ))
+            .await
+            .expect("Delta descriptor should register an ENUM Parquet field as binary");
+
+        let (schema, batches) = engine
+            .sql_to_record_batches("SELECT id, payload FROM events ORDER BY id")
+            .await
+            .expect("DataFusion should execute SQL over ENUM BYTE_ARRAY columns");
+
+        assert_eq!(schema.field(1).data_type(), &DataType::Binary);
+        assert_eq!(int64_column_values(&batches, 0), vec![1, 2]);
+        assert_eq!(
+            binary_column_values(&batches, 1),
+            vec![b"bronze".to_vec(), b"silver".to_vec()]
         );
     });
 }
@@ -450,6 +532,14 @@ fn binary_payload_descriptor_schema() -> SchemaRef {
     ]))
 }
 
+fn utf8_payload_descriptor_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("payload", DataType::Utf8, false),
+        Field::new("category", DataType::Utf8, true),
+    ]))
+}
+
 fn brokered_delta_datafusion_schema() -> DeltaTableSchema {
     DeltaTableSchema::new(vec![
         DeltaTableSchemaField::new("id", DeltaTableFieldDataType::Int64, false),
@@ -538,9 +628,28 @@ fn parquet_bytes_with_i64_columns(rows: &[(i64, i64)]) -> Vec<u8> {
 }
 
 fn parquet_bytes_with_binary_payload(rows: &[(i64, Vec<u8>)]) -> Vec<u8> {
+    parquet_bytes_with_byte_array_payload("REQUIRED BYTE_ARRAY payload", rows)
+}
+
+fn parquet_bytes_with_annotated_byte_array_payload(
+    annotation: &str,
+    rows: &[(i64, Vec<u8>)],
+) -> Vec<u8> {
+    parquet_bytes_with_byte_array_payload(
+        &format!("REQUIRED BYTE_ARRAY payload ({annotation})"),
+        rows,
+    )
+}
+
+fn parquet_bytes_with_byte_array_payload(
+    payload_column_schema: &str,
+    rows: &[(i64, Vec<u8>)],
+) -> Vec<u8> {
     let schema = Arc::new(
-        parse_message_type("message schema { REQUIRED INT64 id; REQUIRED BYTE_ARRAY payload; }")
-            .expect("parquet schema should parse"),
+        parse_message_type(&format!(
+            "message schema {{ REQUIRED INT64 id; {payload_column_schema}; }}"
+        ))
+        .expect("parquet schema should parse"),
     );
     let mut bytes = Vec::new();
     let mut writer = SerializedFileWriter::new(
@@ -592,6 +701,22 @@ fn int64_column_values(batches: &[RecordBatch], column_index: usize) -> Vec<i64>
                 .as_primitive::<arrow_array::types::Int64Type>()
                 .values()
                 .to_vec()
+        })
+        .collect()
+}
+
+fn utf8_column_values(batches: &[RecordBatch], column_index: usize) -> Vec<String> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let array = batch
+                .column(column_index)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("column should be an Arrow StringArray");
+            (0..array.len())
+                .map(|index| array.value(index).to_string())
+                .collect::<Vec<_>>()
         })
         .collect()
 }

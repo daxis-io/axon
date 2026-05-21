@@ -418,6 +418,7 @@ fn datafusion_data_type_from_parquet_field(
     field: &BrowserParquetField,
 ) -> Result<DeltaTableFieldDataType, QueryError> {
     if matches!(field.repetition, BrowserParquetRepetition::Repeated)
+        || field.max_definition_level > 1
         || field.max_repetition_level > 0
     {
         return Err(unsupported_datafusion_parquet_field(field));
@@ -492,8 +493,6 @@ fn datafusion_byte_array_type_from_parquet_field(
         }
         Some(BrowserParquetLogicalType::Bson)
         | Some(BrowserParquetLogicalType::Enum)
-        | Some(BrowserParquetLogicalType::Geometry { .. })
-        | Some(BrowserParquetLogicalType::Geography { .. })
         | Some(BrowserParquetLogicalType::Unrecognized { .. }) => {
             return Ok(DeltaTableFieldDataType::Binary);
         }
@@ -518,11 +517,28 @@ fn field_has_no_annotations(field: &BrowserParquetField) -> bool {
 }
 
 fn unsupported_datafusion_parquet_field(field: &BrowserParquetField) -> QueryError {
+    let logical_type = field
+        .logical_type
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "<none>".to_string());
+    let converted_type = field
+        .converted_type
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "<none>".to_string());
+
     QueryError::new(
         QueryErrorCode::UnsupportedFeature,
         format!(
-            "browser DataFusion does not yet support Parquet field '{}' with physical type {}",
-            field.name, field.physical_type
+            "browser DataFusion does not yet support Parquet field '{}' with physical type {}, logical type {}, converted type {}, definition level {}, repetition level {}, repetition {}",
+            field.name,
+            field.physical_type,
+            logical_type,
+            converted_type,
+            field.max_definition_level,
+            field.max_repetition_level,
+            field.repetition
         ),
         runtime_target(),
     )
@@ -1225,7 +1241,7 @@ mod tests {
     }
 
     #[test]
-    fn unannotated_byte_array_parquet_field_maps_to_datafusion_binary() {
+    fn schema_adapter_unannotated_byte_array_parquet_field_maps_to_datafusion_binary() {
         let field = byte_array_field("payload", None, None);
 
         let data_type = datafusion_data_type_from_parquet_field(&field)
@@ -1235,7 +1251,35 @@ mod tests {
     }
 
     #[test]
-    fn json_byte_array_parquet_fields_map_to_datafusion_utf8() {
+    fn schema_adapter_string_byte_array_parquet_fields_map_to_datafusion_utf8() {
+        let cases = [
+            byte_array_field(
+                "string_logical",
+                Some(BrowserParquetLogicalType::String),
+                None,
+            ),
+            byte_array_field(
+                "utf8_converted",
+                None,
+                Some(BrowserParquetConvertedType::Utf8),
+            ),
+        ];
+
+        for field in cases {
+            let data_type = datafusion_data_type_from_parquet_field(&field)
+                .expect("browser DataFusion should mirror Arrow string BYTE_ARRAY mapping");
+
+            assert_eq!(
+                data_type,
+                DeltaTableFieldDataType::Utf8,
+                "field {}",
+                field.name
+            );
+        }
+    }
+
+    #[test]
+    fn schema_adapter_json_byte_array_parquet_fields_map_to_datafusion_utf8() {
         let cases = [
             byte_array_field("json_logical", Some(BrowserParquetLogicalType::Json), None),
             byte_array_field(
@@ -1259,7 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn arrow_binary_byte_array_annotations_map_to_datafusion_binary() {
+    fn schema_adapter_arrow_binary_byte_array_annotations_map_to_datafusion_binary() {
         let cases = [
             byte_array_field("bson_logical", Some(BrowserParquetLogicalType::Bson), None),
             byte_array_field(
@@ -1294,7 +1338,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_parquet_shapes_remain_explicitly_unsupported() {
+    fn schema_adapter_unsupported_parquet_shapes_remain_explicitly_unsupported() {
         let cases = [
             parquet_field(
                 "list_payload",
@@ -1352,6 +1396,21 @@ mod tests {
                 }),
                 None,
             ),
+            parquet_field(
+                "geometry_payload",
+                BrowserParquetPhysicalType::ByteArray,
+                Some(BrowserParquetLogicalType::Geometry { crs: None }),
+                None,
+            ),
+            parquet_field(
+                "geography_payload",
+                BrowserParquetPhysicalType::ByteArray,
+                Some(BrowserParquetLogicalType::Geography {
+                    crs: None,
+                    algorithm: None,
+                }),
+                None,
+            ),
         ];
 
         for field in cases {
@@ -1359,7 +1418,92 @@ mod tests {
                 .expect_err("unsupported browser field shapes should fail explicitly");
 
             assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+            assert!(
+                error.message.contains("logical type"),
+                "error should include annotation details: {}",
+                error.message
+            );
+            assert!(
+                error.message.contains("converted type"),
+                "error should include annotation details: {}",
+                error.message
+            );
         }
+    }
+
+    #[test]
+    fn schema_adapter_repeated_nested_parquet_shapes_remain_explicitly_unsupported() {
+        let mut field = parquet_field(
+            "repeated_list_payload",
+            BrowserParquetPhysicalType::ByteArray,
+            Some(BrowserParquetLogicalType::List),
+            None,
+        );
+        field.repetition = BrowserParquetRepetition::Repeated;
+        field.max_repetition_level = 1;
+
+        let error = datafusion_data_type_from_parquet_field(&field)
+            .expect_err("actual repeated browser field shapes should fail explicitly");
+
+        assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+        assert!(
+            error.message.contains("repeated_list_payload"),
+            "error should include the unsupported field name: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("physical type BYTE_ARRAY"),
+            "error should include physical type details: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("logical type LIST"),
+            "error should include logical type details: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("converted type <none>"),
+            "error should include converted type details: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn schema_adapter_non_repeated_nested_leaf_remains_explicitly_unsupported() {
+        let mut field = parquet_field(
+            "nested_payload",
+            BrowserParquetPhysicalType::ByteArray,
+            None,
+            None,
+        );
+        field.repetition = BrowserParquetRepetition::Optional;
+        field.max_definition_level = 2;
+        field.max_repetition_level = 0;
+
+        let error = datafusion_data_type_from_parquet_field(&field)
+            .expect_err("non-repeated nested leaf field shapes should fail explicitly");
+
+        assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+        assert!(
+            error.message.contains("nested_payload"),
+            "error should include the unsupported field name: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("physical type BYTE_ARRAY"),
+            "error should include physical type details: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("definition level 2"),
+            "error should include definition level details: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("repetition level 0"),
+            "error should include repetition level details: {}",
+            error.message
+        );
     }
 
     fn byte_array_field(
