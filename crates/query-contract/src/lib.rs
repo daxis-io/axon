@@ -131,12 +131,23 @@ impl QueryError {
     }
 }
 
+/// Maximum rows a runtime may materialize for one result page, including the sentinel row.
+pub const MAX_QUERY_RESULT_PAGE_LIMIT: u64 = 501;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct QueryResultPage {
+    pub limit: u64,
+    pub offset: u64,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct QueryExecutionOptions {
     #[serde(default)]
     pub include_explain: bool,
     #[serde(default = "default_collect_metrics")]
     pub collect_metrics: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_page: Option<QueryResultPage>,
 }
 
 impl Default for QueryExecutionOptions {
@@ -144,6 +155,7 @@ impl Default for QueryExecutionOptions {
         Self {
             include_explain: false,
             collect_metrics: default_collect_metrics(),
+            result_page: None,
         }
     }
 }

@@ -56,6 +56,8 @@ type ResultsProps = {
   tableSnapshot: number | undefined;
   tableUri: string | undefined;
   protocolVersion: { reader: number; writer: number; features: string[] } | undefined;
+  loadingMoreRows?: boolean;
+  onLoadMoreRows?: () => void;
 };
 
 type ResultsTab = 'results' | 'plan' | 'snapshot' | 'messages' | 'history';
@@ -73,6 +75,8 @@ export function Results({
   tableSnapshot,
   tableUri,
   protocolVersion,
+  loadingMoreRows = false,
+  onLoadMoreRows,
 }: ResultsProps) {
   const [tab, setTab] = useState<ResultsTab>('results');
   const [search, setSearch] = useState('');
@@ -126,6 +130,8 @@ export function Results({
   const paddingBottom = Math.max(0, (sorted.length - endIndex) * rowHeight);
   const pageStart = sorted.length === 0 ? 0 : startIndex + 1;
   const pageEnd = Math.min(sorted.length, endIndex);
+  const hasMoreRows = resultData?.page?.has_more === true;
+  const loadedRows = resultData?.page?.loaded_rows ?? sorted.length;
 
   function clickHeader(c: ResultColumn) {
     setSort((s) => {
@@ -285,13 +291,15 @@ export function Results({
               >
                 {runState.target === 'browser_wasm' ? 'browser · wasm' : 'native'}
               </span>
-              <span style={{ color: 'var(--ink-4)' }}>·</span>
-              <span>{sorted.length.toLocaleString()} rows</span>
-              <span style={{ color: 'var(--ink-4)' }}>·</span>
+              <span className="sep" />
+              <span>
+                {loadedRows.toLocaleString()} rows{hasMoreRows ? '+' : ''}
+              </span>
+              <span className="sep" />
               <span className="mono">{runState.ms} ms</span>
               {metrics && (
                 <>
-                  <span style={{ color: 'var(--ink-4)' }}>·</span>
+                  <span className="sep" />
                   <span className="mono">{formatBytes(metrics.bytes_fetched)} fetched</span>
                 </>
               )}
@@ -299,7 +307,9 @@ export function Results({
           )}
           {runState.status === 'error' && (
             <>
-              <span style={{ color: 'var(--danger)' }}>● error</span>
+              <span className="dot" style={{ background: 'var(--danger)' }} />
+              <span style={{ color: 'var(--danger)' }}>error</span>
+              <span className="sep" />
               <span className="mono">{runState.ms} ms</span>
             </>
           )}
@@ -339,14 +349,20 @@ export function Results({
             <div className="spacer" />
             <span className="pagestat">
               {pageStart} – {pageEnd} of {sorted.length}
+              {hasMoreRows ? '+' : ''}
             </span>
             <button className="miniicon" title="Previous page">
               <IconChevR size={12} style={{ transform: 'rotate(180deg)' }} />
             </button>
-            <button className="miniicon" title="Next page">
-              <IconChevR size={12} />
+            <button
+              className="miniicon"
+              title={hasMoreRows ? 'Load next result batch' : 'Next page'}
+              onClick={hasMoreRows ? onLoadMoreRows : undefined}
+              disabled={loadingMoreRows || !hasMoreRows || !onLoadMoreRows}
+            >
+              {loadingMoreRows ? <IconRefresh size={12} /> : <IconChevR size={12} />}
             </button>
-            <div style={{ width: 1, alignSelf: 'stretch', background: 'var(--line)' }} />
+            <span className="vsep" />
             <button className="miniicon" title="Refresh">
               <IconRefresh size={12} />
             </button>

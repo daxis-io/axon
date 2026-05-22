@@ -42,6 +42,10 @@ export type QueryCatalogCandidate = {
       protocol?: string;
       manifestUrl?: string;
       localRegistryId?: string;
+      source?: {
+        storage: string;
+        region: string;
+      };
     }>;
   }>;
 };
@@ -150,8 +154,8 @@ function querySourceForTable(
       schemaName,
       tableName: table.name,
       localRegistryId: table.localRegistryId,
-      storage: catalog.storage,
-      region: catalog.region || 'browser-local',
+      storage: table.source?.storage ?? catalog.storage,
+      region: table.source?.region ?? catalog.region ?? 'browser-local',
       snapshot: table.snapshot,
       rows: table.rows,
       files: table.files,
@@ -167,8 +171,8 @@ function querySourceForTable(
       schemaName,
       tableName: table.name,
       manifestUrl: table.manifestUrl,
-      storage: catalog.storage,
-      region: catalog.region || SAMPLE_QUERY_SOURCE.region,
+      storage: table.source?.storage ?? catalog.storage,
+      region: table.source?.region ?? catalog.region ?? SAMPLE_QUERY_SOURCE.region,
     };
   }
 

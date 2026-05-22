@@ -12,21 +12,17 @@ import {
   type BrowserHttpFileDescriptor,
   type BrowserHttpSnapshotDescriptor,
   type BrowserWorkerEventEnvelope,
-  type BrowserWorkerResultPreview,
   type ExecutionTarget,
   type PartitionColumnType,
   type QueryError,
 } from '../axon-browser-sdk.ts';
-import type {
-  CatalogTable,
-  QueryEvent,
-  QueryExecRequest,
-  QueryResultData,
-  QueryRunOutcome,
-  ResultCell,
-  ResultColumn,
-} from './types.ts';
+import type { CatalogTable, QueryEvent, QueryExecRequest, QueryRunOutcome } from './types.ts';
 import { loadLocalDeltaRuntime, releaseLocalDeltaObjectUrls } from './local-delta.ts';
+import {
+  defaultQueryPage,
+  queryResultPageRequest,
+  resultPageFromPreview,
+} from './query-pagination.ts';
 import { SAMPLE_QUERY_SOURCE, sameQuerySource, type QueryTableSource } from './query-source.ts';
 
 type FixtureObject = {
@@ -301,33 +297,6 @@ function resolvePreferredTarget(input: QueryExecRequest['preferred_target']): Ex
   return 'browser_wasm';
 }
 
-function previewToResultData(preview: BrowserWorkerResultPreview | undefined): QueryResultData {
-  if (!preview) {
-    return { columns: [], rows: [], row_count: 0, truncated: false };
-  }
-  const columns: ResultColumn[] = preview.columns.map((name, idx) => ({
-    name,
-    type: inferTypeFromColumn(preview.rows, idx),
-  }));
-  return {
-    columns,
-    rows: preview.rows.map((row) => row as ResultCell[]),
-    row_count: preview.row_count,
-    truncated: preview.truncated,
-  };
-}
-
-function inferTypeFromColumn(rows: BrowserWorkerResultPreview['rows'], idx: number): string {
-  for (const row of rows) {
-    const v = row[idx];
-    if (v == null) continue;
-    if (typeof v === 'number') return Number.isInteger(v) ? 'integer' : 'double';
-    if (typeof v === 'boolean') return 'boolean';
-    return 'string';
-  }
-  return 'string';
-}
-
 function ensureTable(state: SessionState, signal: AbortSignal): Promise<void> {
   if (state.tableOpened) return Promise.resolve();
   const requestId = `editor-open-${++requestCounter}`;
@@ -347,6 +316,8 @@ export async function runQuery(
 ): Promise<QueryRunOutcome> {
   const startedAt = performance.now();
   const since = () => Math.round(performance.now() - startedAt);
+
+  const page = req.page ?? defaultQueryPage();
 
   try {
     const state = await getSession(source);
@@ -402,7 +373,11 @@ export async function runQuery(
           snapshot_version: req.snapshot_version ?? state.snapshot.snapshot_version,
           sql: req.sql,
           preferred_target: resolvePreferredTarget(req.preferred_target),
-          options: { collect_metrics: true, include_explain: true },
+          options: {
+            collect_metrics: true,
+            include_explain: true,
+            result_page: queryResultPageRequest(page),
+          },
         },
         { requestId },
       );
@@ -410,7 +385,7 @@ export async function runQuery(
 
       return {
         status: 'done',
-        result: previewToResultData(result.preview),
+        result: resultPageFromPreview(result.preview, page),
         metrics: result.response.metrics,
         executed_on: result.response.executed_on,
         capabilities: result.response.capabilities,

@@ -150,7 +150,13 @@ export function Editor({ value, catalog, running, onChange, onRun, onFormat }: E
         </div>
 
         {autocomp && (
-          <div className="autocomp" style={{ top: 18 + activeLine * 21, left: 60 }}>
+          <div
+            className="autocomp"
+            style={{
+              top: `calc(12px + ${activeLine} * var(--line-h))`,
+              left: 60,
+            }}
+          >
             {autocomp.items.slice(0, 7).map((it, i) => (
               <div
                 key={it.label}

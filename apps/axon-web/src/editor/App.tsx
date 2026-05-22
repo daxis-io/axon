@@ -16,7 +16,14 @@ import {
 import { subscribeEngineStatus } from '../services/engine.ts';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
 import { appendHistory, loadHistory } from '../services/history.ts';
-import { unregisterLocalDeltaRuntime } from '../services/local-delta.ts';
+import { hasLocalDeltaRuntime, unregisterLocalDeltaRuntime } from '../services/local-delta.ts';
+import {
+  appendResultPage,
+  queryResultPageRun,
+  queryResultPageRunRequest,
+  sameQueryResultPageRun,
+  type QueryResultPageRun,
+} from '../services/query-pagination.ts';
 import { discardQuerySession, runQuery } from '../services/query.ts';
 import {
   firstQueryableTableRef,
@@ -46,16 +53,14 @@ import { Results, type RunUiState } from './components/Results.tsx';
 import { SaveDialog } from './components/SaveDialog.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import {
-  IconBranch,
   IconChevDownTiny,
   IconDatabase,
   IconFormat,
   IconHistory,
   IconPlay,
   IconPlus,
+  IconRefresh,
   IconSave,
-  IconShare,
-  IconSparkle,
   IconStop,
   IconTable,
 } from './components/icons.tsx';
@@ -66,7 +71,9 @@ import {
   buildCatalogFromResult,
   catalogsAvailableForFeatures,
   loadConnectedCatalogs,
+  localRegistryIdsForCatalogs,
   saveConnectedCatalogs,
+  upsertConnectedCatalog,
 } from './connect/store.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { formatBytes, formatRows, hexToSoft, prettifySql } from './lib/format.ts';
@@ -125,6 +132,16 @@ function targetTitle(id: Tab['preferred']): string {
   return 'Run on native DataFusion runtime';
 }
 
+function connectedTableForRef(
+  catalogs: ConnectedCatalog[],
+  ref?: ActiveConnectedTableRef,
+): ConnectedCatalog['schemas'][number]['tables'][number] | undefined {
+  if (!ref) return undefined;
+  const catalog = catalogs.find((candidate) => candidate.id === ref.catalogId);
+  const schema = catalog?.schemas.find((candidate) => candidate.name === ref.schemaName);
+  return schema?.tables.find((candidate) => candidate.name === ref.tableName);
+}
+
 export function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
@@ -158,6 +175,8 @@ export function App() {
 
   const [runState, setRunState] = useState<RunUiState>({ status: 'idle' });
   const [resultData, setResultData] = useState<QueryResultData | undefined>();
+  const [resultPageRun, setResultPageRun] = useState<QueryResultPageRun | undefined>();
+  const [loadingMoreRows, setLoadingMoreRows] = useState(false);
   const [metrics, setMetrics] = useState<QueryMetricsSummary | undefined>();
   const [events, setEvents] = useState<QueryEvent[]>([]);
   const [capMatrix, setCapMatrix] = useState<CapabilityMatrixRow[]>(() =>
@@ -196,6 +215,43 @@ export function App() {
     () => querySourceFromConnectedCatalogs(availableConnectedCatalogs, activeTableRef),
     [activeTableRef, availableConnectedCatalogs],
   );
+  const activeConnectedTable = useMemo(
+    () => connectedTableForRef(availableConnectedCatalogs, activeTableRef),
+    [activeTableRef, availableConnectedCatalogs],
+  );
+  const localAccessNeedsReselect =
+    querySource.kind === 'local_delta' &&
+    activeConnectedTable?.localPersistence === 'metadata_only_reselect' &&
+    !hasLocalDeltaRuntime(querySource.localRegistryId);
+
+  const activeResultPageRun = useMemo(() => {
+    const tab = tabs.find((candidate) => candidate.id === activeTab);
+    if (!tab) return undefined;
+    return queryResultPageRun(
+      {
+        sql: tab.sql,
+        table_name: tableMeta?.name ?? querySource.tableName,
+        preferred_target: tab.preferred,
+        snapshot_version: tab.pin ?? undefined,
+      },
+      querySource,
+    );
+  }, [activeTab, querySource, tableMeta?.name, tabs]);
+  const canLoadMoreRows =
+    resultData?.page?.has_more === true &&
+    resultPageRun !== undefined &&
+    activeResultPageRun !== undefined &&
+    sameQueryResultPageRun(resultPageRun, activeResultPageRun);
+  const resultPageRunRef = useRef<QueryResultPageRun | undefined>(undefined);
+  const activeResultPageRunRef = useRef<QueryResultPageRun | undefined>(undefined);
+
+  useEffect(() => {
+    resultPageRunRef.current = resultPageRun;
+  }, [resultPageRun]);
+
+  useEffect(() => {
+    activeResultPageRunRef.current = activeResultPageRun;
+  }, [activeResultPageRun]);
 
   useEffect(() => {
     saveConnectedCatalogs(connectedCatalogs);
@@ -206,35 +262,53 @@ export function App() {
     setConnectInitialSource(src);
     setConnectModalOpen(true);
   }, []);
+  const reselectLocalFolder = useCallback(() => {
+    setConnectedPanelOpen(false);
+    openConnectModal(2, 'local');
+  }, [openConnectModal]);
 
-  const handleConnected = useCallback((result: ConnectResult) => {
-    const catalog = buildCatalogFromResult(result);
-    setConnectedCatalogs((cs) => [catalog, ...cs]);
-    const firstTable = firstQueryableTableRef([catalog]);
-    if (firstTable) setSelectedTableRef(firstTable);
-    setFreshCatalogId(catalog.id);
-    setConnectModalOpen(false);
-    window.setTimeout(() => setFreshCatalogId(null), 4500);
-    setToast({
-      msg: `Connected · ${catalog.alias} · ${catalog.schemas.reduce(
-        (a, s) => a + s.tables.length,
-        0,
-      )} tables`,
-      kind: 'ok',
-    });
-    window.setTimeout(() => setToast(null), 2400);
-  }, []);
+  const handleConnected = useCallback(
+    (result: ConnectResult) => {
+      const catalog = buildCatalogFromResult(result);
+      const upsert = upsertConnectedCatalog(connectedCatalogs, catalog);
+      const mergedCatalogId =
+        upsert.catalogs.find(
+          (candidate) =>
+            candidate.alias.trim().toLowerCase() === catalog.alias.trim().toLowerCase(),
+        )?.id ?? catalog.id;
+      setConnectedCatalogs(upsert.catalogs);
+      const firstTable = firstQueryableTableRef([catalog]);
+      if (firstTable) setSelectedTableRef({ ...firstTable, catalogId: mergedCatalogId });
+      const replacedRegistryIds = localRegistryIdsForCatalogs(upsert.replaced);
+      if (replacedRegistryIds.length > 0) {
+        if (upsert.replaced.some((replaced) => replaced.id === selectedTableRef?.catalogId)) {
+          discardQuerySession();
+        }
+        void Promise.all(
+          replacedRegistryIds.map((registryId) => unregisterLocalDeltaRuntime(registryId)),
+        ).catch((error) =>
+          console.warn('failed to unregister duplicate local Delta catalog:', error),
+        );
+      }
+      setFreshCatalogId(mergedCatalogId);
+      setConnectModalOpen(false);
+      window.setTimeout(() => setFreshCatalogId(null), 4500);
+      setToast({
+        msg: `${upsert.replaced.length > 0 ? 'Updated' : 'Connected'} · ${
+          catalog.alias
+        } · ${catalog.schemas.reduce((a, s) => a + s.tables.length, 0)} tables`,
+        kind: 'ok',
+      });
+      window.setTimeout(() => setToast(null), 2400);
+    },
+    [connectedCatalogs, selectedTableRef?.catalogId],
+  );
 
   const removeConnectedCatalog = useCallback(
     (id: string) => {
       setConnectedCatalogs((cs) => {
         const removed = cs.find((catalog) => catalog.id === id);
-        const removedLocalRegistryIds =
-          removed?.kind === 'local'
-            ? removed.schemas.flatMap((schema) =>
-                schema.tables.flatMap((table) => table.localRegistryId ?? []),
-              )
-            : [];
+        const removedLocalRegistryIds = removed ? localRegistryIdsForCatalogs([removed]) : [];
         const next = cs.filter((c) => c.id !== id);
         const nextAvailable = catalogsAvailableForFeatures(next, CONNECTOR_FEATURES);
         setSelectedTableRef((current) =>
@@ -355,6 +429,18 @@ export function App() {
     if (runState.status === 'running') return;
     const tab = tabs.find((x) => x.id === activeTab);
     if (!tab) return;
+    if (localAccessNeedsReselect) {
+      setResultData(undefined);
+      setResultPageRun(undefined);
+      setMetrics(undefined);
+      setEvents([]);
+      setPlan(undefined);
+      setRunState({ status: 'idle' });
+      setLoadingMoreRows(false);
+      reselectLocalFolder();
+      showToast('Reselect this local Delta folder to restore browser file access.', 'warn');
+      return;
+    }
 
     cancelRef.current?.abort();
     const ctrl = new AbortController();
@@ -362,6 +448,8 @@ export function App() {
 
     const target = tab.preferred === 'native' ? 'native' : 'browser_wasm';
 
+    setLoadingMoreRows(false);
+    setResultPageRun(undefined);
     setEvents([]);
     setPlan(undefined);
     setRunState({ status: 'running', target, elapsed: 0 });
@@ -397,6 +485,7 @@ export function App() {
 
     if (outcome.status === 'done') {
       setResultData(outcome.result);
+      setResultPageRun(queryResultPageRun(req, querySource));
       setMetrics(outcome.metrics);
       if (outcome.explain) {
         setPlan({ tree: outcome.explain });
@@ -469,11 +558,87 @@ export function App() {
       setHistory((h) => [entry, ...h].slice(0, 100));
       showToast(outcome.message, 'warn');
     }
-  }, [activeTab, querySource, runState.status, showToast, tabs, tableMeta?.name]);
+  }, [
+    activeTab,
+    localAccessNeedsReselect,
+    querySource,
+    reselectLocalFolder,
+    runState.status,
+    showToast,
+    tabs,
+    tableMeta?.name,
+  ]);
+
+  const loadMoreRows = useCallback(async () => {
+    if (runState.status === 'running' || loadingMoreRows) return;
+    const currentResult = resultData;
+    const runForPage = resultPageRun;
+    const activeRun = activeResultPageRun;
+    if (!currentResult || !runForPage || !activeRun) return;
+    const page = currentResult.page;
+    if (!page?.has_more || page.next_offset == null) return;
+    if (!sameQueryResultPageRun(runForPage, activeRun)) {
+      showToast('Run the current query before loading more rows.', 'warn');
+      return;
+    }
+
+    const ctrl = new AbortController();
+    cancelRef.current = ctrl;
+    setLoadingMoreRows(true);
+
+    const req = queryResultPageRunRequest(runForPage, {
+      offset: page.next_offset,
+      size: page.size,
+    });
+
+    const outcome = await runQuery(
+      req,
+      (event) => {
+        if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') {
+          return;
+        }
+        setEvents((prev) => [...prev, event]);
+        if (event.kind === 'metrics') setMetrics(event.metrics);
+      },
+      ctrl.signal,
+      runForPage.source,
+    );
+
+    setLoadingMoreRows(false);
+
+    const latestResultRun = resultPageRunRef.current;
+    const latestActiveRun = activeResultPageRunRef.current;
+    if (
+      !latestResultRun ||
+      !latestActiveRun ||
+      !sameQueryResultPageRun(latestResultRun, runForPage) ||
+      !sameQueryResultPageRun(latestActiveRun, runForPage)
+    ) {
+      showToast('Result batch discarded because the query changed.', 'warn');
+      return;
+    }
+
+    if (outcome.status === 'done') {
+      const merged = appendResultPage(currentResult, outcome.result);
+      setResultData(merged);
+      setResultPageRun(runForPage);
+      setMetrics(outcome.metrics);
+      if (outcome.explain) setPlan({ tree: outcome.explain });
+      setRunState((prev) =>
+        prev.status === 'done' ? { ...prev, ms: outcome.elapsed_ms, rows: merged.row_count } : prev,
+      );
+      showToast(`Loaded ${outcome.result.rows.length.toLocaleString()} more rows`);
+      return;
+    }
+
+    showToast(outcome.message, 'warn');
+  }, [activeResultPageRun, loadingMoreRows, resultData, resultPageRun, runState.status, showToast]);
 
   const cancelRun = useCallback(() => {
     cancelRef.current?.abort();
     if (runTimer.current != null) window.clearInterval(runTimer.current);
+    setLoadingMoreRows(false);
+    setResultPageRun(undefined);
     setRunState({ status: 'idle' });
     showToast('Query cancelled', 'warn');
   }, [showToast]);
@@ -628,11 +793,6 @@ export function App() {
           <IconPlus size={11} /> Connect
         </button>
 
-        <button className="btn ghost" title="Branch (Git-style versioning)">
-          <IconBranch size={13} /> main
-          <IconChevDownTiny size={9} style={{ marginLeft: 2, color: 'var(--ink-4)' }} />
-        </button>
-
         <div className="topbar-spacer" />
 
         <button
@@ -661,22 +821,18 @@ export function App() {
           ))}
         </div>
 
-        <button className="btn ghost" onClick={formatSql} title="Format (⌘⇧F)">
-          <IconFormat size={13} /> Format
-        </button>
-        <button className="btn ghost" title="Explain plan (Phase 2)">
-          <IconSparkle size={13} /> Explain
-        </button>
-        <button className="btn ghost icon" title="Save (⌘S)" onClick={() => setSaveOpen(true)}>
-          <IconSave size={13} />
-        </button>
-        <button className="btn ghost icon" title="Share">
-          <IconShare size={13} />
-        </button>
+        <span className="tb-divider" />
 
-        <div
-          style={{ width: 1, alignSelf: 'stretch', background: 'var(--line)', margin: '0 4px' }}
-        />
+        <div className="tb-actions">
+          <button className="btn ghost" onClick={formatSql} title="Format (⌘⇧F)">
+            <IconFormat size={13} /> Format
+          </button>
+          <button className="btn ghost icon" title="Save (⌘S)" onClick={() => setSaveOpen(true)}>
+            <IconSave size={13} />
+          </button>
+        </div>
+
+        <span className="tb-divider" />
 
         <div className="run-group">
           {runState.status === 'running' ? (
@@ -716,12 +872,15 @@ export function App() {
       <div className="main">
         <Sidebar
           catalog={catalog}
+          connectedCatalogs={availableConnectedCatalogs}
+          activeTable={activeTableRef}
           saved={saved}
           history={history}
           serverFallbackEnabled={SERVER_QUERY_FALLBACK_ENABLED}
           width={sidebarW}
           onInsert={insertAtCursor}
           onResize={startResizeSidebar}
+          onPickConnectedTable={setSelectedTableRef}
         />
 
         <div className="workspace">
@@ -734,10 +893,16 @@ export function App() {
                 }
                 onClick={() => setActiveTab(tb.id)}
               >
-                <span className="dot" />
                 <span className="name">{tb.title}</span>
-                <span className="x" onClick={(e) => closeTab(tb.id, e)}>
-                  {tb.dirty ? '●' : '×'}
+                <span
+                  className="x"
+                  onClick={(e) => closeTab(tb.id, e)}
+                  title={tb.dirty ? 'Close (unsaved changes)' : 'Close'}
+                >
+                  <span className="x-dot" aria-hidden="true" />
+                  <span className="x-close" aria-hidden="true">
+                    ×
+                  </span>
                 </span>
               </div>
             ))}
@@ -748,13 +913,21 @@ export function App() {
           </div>
 
           <div className="queryref-bar">
-            <span className="lbl">FROM</span>
+            <span className="lbl">From</span>
             <span className="qref" title={tableMeta?.uri}>
               <IconTable size={11} />
               {tableMeta?.name ?? '—'}
-              <span style={{ color: 'var(--ink-4)' }}>·</span>
               <span className="v">v{tableMeta?.snapshot ?? '—'}</span>
             </span>
+            {localAccessNeedsReselect && (
+              <button
+                className="btn ghost qref-action warn"
+                onClick={reselectLocalFolder}
+                title="Reselect this local Delta folder to restore browser file access"
+              >
+                <IconRefresh size={11} /> Reselect folder
+              </button>
+            )}
             <button
               className={'snap-pill ' + (active.pin != null ? 'pinned' : '')}
               onClick={togglePin}
@@ -769,36 +942,23 @@ export function App() {
                 'latest'
               )}
             </button>
-            <span className="lbl" style={{ marginLeft: 8 }}>
-              ·
-            </span>
-            <span style={{ color: 'var(--ink-3)' }}>
-              {tableMeta?.partition_columns.length ? (
-                <>
-                  partitions:{' '}
-                  <span style={{ fontFamily: 'var(--mono)', color: 'var(--ink-2)' }}>
-                    {tableMeta.partition_columns.map((p) => p.name).join(', ')}
-                  </span>
-                </>
-              ) : (
-                <span style={{ color: 'var(--ink-4)' }}>unpartitioned</span>
-              )}
-            </span>
-            <span
-              style={{
-                marginLeft: 'auto',
-                color: 'var(--ink-4)',
-                fontFamily: 'var(--mono)',
-                fontSize: 11,
-              }}
-            >
-              {tableMeta && (
-                <>
-                  {formatBytes(tableMeta.size_bytes)} · {formatRows(tableMeta.row_count)} rows ·{' '}
-                  {tableMeta.file_count} files
-                </>
-              )}
-            </span>
+            <span className="qref-sep" />
+            {tableMeta?.partition_columns.length ? (
+              <span className="qref-info">
+                partitions:{' '}
+                <span className="qref-info-val">
+                  {tableMeta.partition_columns.map((p) => p.name).join(', ')}
+                </span>
+              </span>
+            ) : (
+              <span className="qref-info muted">unpartitioned</span>
+            )}
+            {tableMeta && (
+              <span className="qref-stats">
+                {formatBytes(tableMeta.size_bytes)} · {formatRows(tableMeta.row_count)} rows ·{' '}
+                {tableMeta.file_count} files
+              </span>
+            )}
           </div>
 
           <div className="split">
@@ -824,6 +984,8 @@ export function App() {
               snapshotPin={active.pin}
               tableSnapshot={tableMeta?.snapshot}
               tableUri={tableMeta?.uri}
+              loadingMoreRows={loadingMoreRows}
+              onLoadMoreRows={canLoadMoreRows ? loadMoreRows : undefined}
               protocolVersion={
                 tableMeta
                   ? {

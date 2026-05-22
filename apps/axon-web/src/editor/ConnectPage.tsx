@@ -10,7 +10,9 @@ import {
   buildCatalogFromResult,
   catalogsAvailableForFeatures,
   loadConnectedCatalogs,
+  localRegistryIdsForCatalogs,
   saveConnectedCatalogs,
+  upsertConnectedCatalog,
 } from './connect/store.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { IconBolt, IconChevR, IconPlus } from './components/icons.tsx';
@@ -41,21 +43,35 @@ export function ConnectPage() {
     setModalOpen(true);
   }, []);
 
-  const onConnect = useCallback((result: ConnectResult) => {
-    const cat = buildCatalogFromResult(result);
-    setCatalogs((cs) => [cat, ...cs]);
-    setFreshId(cat.id);
-    setModalOpen(false);
-    window.setTimeout(() => setFreshId(null), 4500);
-  }, []);
+  const onConnect = useCallback(
+    (result: ConnectResult) => {
+      const cat = buildCatalogFromResult(result);
+      const upsert = upsertConnectedCatalog(catalogs, cat);
+      const mergedCatalogId =
+        upsert.catalogs.find(
+          (candidate) => candidate.alias.trim().toLowerCase() === cat.alias.trim().toLowerCase(),
+        )?.id ?? cat.id;
+      setCatalogs(upsert.catalogs);
+      const replacedRegistryIds = localRegistryIdsForCatalogs(upsert.replaced);
+      if (replacedRegistryIds.length > 0) {
+        void Promise.all(
+          replacedRegistryIds.map((registryId) => unregisterLocalDeltaRuntime(registryId)),
+        ).catch((error) =>
+          console.warn('failed to unregister duplicate local Delta catalog:', error),
+        );
+      }
+      setFreshId(mergedCatalogId);
+      setModalOpen(false);
+      window.setTimeout(() => setFreshId(null), 4500);
+    },
+    [catalogs],
+  );
 
   const removeCatalog = useCallback((id: string) => {
     setCatalogs((cs) => {
       const removed = cs.find((catalog) => catalog.id === id);
-      if (removed?.kind === 'local') {
-        const registryIds = removed.schemas.flatMap((schema) =>
-          schema.tables.flatMap((table) => table.localRegistryId ?? []),
-        );
+      const registryIds = removed ? localRegistryIdsForCatalogs([removed]) : [];
+      if (registryIds.length > 0) {
         void Promise.all(
           registryIds.map((registryId) => unregisterLocalDeltaRuntime(registryId)),
         ).catch((error) => console.warn('failed to unregister local Delta catalog:', error));

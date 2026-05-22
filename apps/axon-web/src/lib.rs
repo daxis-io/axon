@@ -29,7 +29,7 @@ use wasm_parquet_engine::{ObjectSource, ScanTarget};
 use wasm_query_runtime::{BrowserObjectAccessMode, BrowserRuntimeConfig};
 
 const DEFAULT_QUERY_SESSION_CACHE_BYTES: u64 = 64 * 1024 * 1024;
-const DEFAULT_QUERY_PREVIEW_LIMIT: usize = 100;
+const DEFAULT_QUERY_PREVIEW_LIMIT: usize = 501;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

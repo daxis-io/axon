@@ -19,6 +19,7 @@ import {
   type QueryResponse,
   redactUrlSecrets,
 } from './axon-browser-sdk';
+import { QUERY_RESULT_PAGE_SIZE } from './services/query-pagination.ts';
 
 type DecimalString = string;
 
@@ -60,7 +61,7 @@ type SandboxWorkerScope = {
   ): void;
 };
 
-const QUERY_PREVIEW_LIMIT = 100;
+const QUERY_PREVIEW_LIMIT = QUERY_RESULT_PAGE_SIZE + 1;
 const workerScope = self as unknown as SandboxWorkerScope;
 
 let sessionPromise: Promise<SandboxQuerySession> | undefined;

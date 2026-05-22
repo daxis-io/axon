@@ -71,9 +71,15 @@ export type QueryError = {
   fallback_reason?: FallbackReason;
 };
 
+export type QueryResultPageRequest = {
+  limit: number;
+  offset: number;
+};
+
 export type QueryExecutionOptions = {
   include_explain?: boolean;
   collect_metrics?: boolean;
+  result_page?: QueryResultPageRequest;
 };
 
 export type QueryRequest = {

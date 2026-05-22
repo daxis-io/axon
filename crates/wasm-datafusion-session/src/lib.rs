@@ -3,6 +3,7 @@
 //! This crate is intentionally separate from `wasm-query-session`, which keeps the legacy narrow
 //! custom runtime isolated for compatibility and eventual removal.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 use std::ops::ControlFlow;
@@ -11,7 +12,7 @@ use arrow_schema::TimeUnit;
 use query_contract::{
     BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, ParquetInspectionSummary,
     PartitionColumnType, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest,
-    QueryResponse,
+    QueryResponse, QueryResultPage, MAX_QUERY_RESULT_PAGE_LIMIT,
 };
 use sqlparser::ast::{
     ObjectName, Query as SqlQuery, Select, SelectFlavor, SetExpr as SqlSetExpr,
@@ -240,13 +241,14 @@ impl BrowserDataFusionSession {
             )
         };
         let started_at = BrowserRuntimeInstant::now();
+        let sql = datafusion_sql_with_result_page(&request.sql, request.options.result_page)?;
         let datafusion_result = if request.options.include_explain {
             self.datafusion
-                .sql_to_arrow_ipc_result_with_physical_plan(&request.sql)
+                .sql_to_arrow_ipc_result_with_physical_plan(sql.as_ref())
                 .await?
         } else {
             self.datafusion
-                .sql_to_arrow_ipc_result(&request.sql)
+                .sql_to_arrow_ipc_result(sql.as_ref())
                 .await?
         };
         let explain = datafusion_result.physical_plan.clone();
@@ -889,6 +891,71 @@ fn invalid_datafusion_sql(message: impl Into<String>) -> QueryError {
     )
 }
 
+fn datafusion_sql_with_result_page(
+    sql: &str,
+    result_page: Option<QueryResultPage>,
+) -> Result<Cow<'_, str>, QueryError> {
+    let Some(result_page) = result_page else {
+        return Ok(Cow::Borrowed(sql));
+    };
+
+    if result_page.limit == 0 {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidRequest,
+            "browser DataFusion result page limit must be at least 1",
+            runtime_target(),
+        ));
+    }
+    if result_page.limit > MAX_QUERY_RESULT_PAGE_LIMIT {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidRequest,
+            format!(
+                "browser DataFusion result page limit {} exceeds maximum {}",
+                result_page.limit, MAX_QUERY_RESULT_PAGE_LIMIT
+            ),
+            runtime_target(),
+        ));
+    }
+
+    let mut inner_sql = sql.trim();
+    while let Some(stripped) = inner_sql.strip_suffix(';') {
+        inner_sql = stripped.trim_end();
+    }
+
+    if inner_sql.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidRequest,
+            "browser DataFusion result page requires non-empty SQL",
+            runtime_target(),
+        ));
+    }
+
+    if datafusion_sql_has_top_level_limit_clause(inner_sql)? {
+        return Ok(Cow::Owned(format!(
+            "SELECT * FROM ({inner_sql}) AS axon_result_page LIMIT {} OFFSET {}",
+            result_page.limit, result_page.offset
+        )));
+    }
+
+    Ok(Cow::Owned(format!(
+        "{inner_sql} LIMIT {} OFFSET {}",
+        result_page.limit, result_page.offset
+    )))
+}
+
+fn datafusion_sql_has_top_level_limit_clause(sql: &str) -> Result<bool, QueryError> {
+    let mut statements = Parser::parse_sql(&GenericDialect {}, sql)
+        .map_err(|error| invalid_datafusion_sql(format!("invalid SQL: {error}")))?;
+    let Some(statement) = statements.pop() else {
+        return Ok(false);
+    };
+    let SqlStatement::Query(query) = statement else {
+        return Ok(false);
+    };
+
+    Ok(query.limit_clause.is_some() || query.fetch.is_some())
+}
+
 fn datafusion_query_budget_from_runtime_config(
     config: &BrowserRuntimeConfig,
 ) -> BrowserDataFusionQueryBudget {
@@ -1135,6 +1202,60 @@ mod tests {
         assert!(
             explain.contains("events"),
             "explain text should reference the registered table: {explain}"
+        );
+    }
+
+    #[test]
+    fn result_page_wraps_datafusion_sql_with_limit_and_offset() {
+        let page = QueryResultPage {
+            limit: 501,
+            offset: 500,
+        };
+
+        let paged_sql = datafusion_sql_with_result_page("SELECT * FROM events;", Some(page))
+            .expect("valid SELECT should be pageable");
+
+        assert_eq!(
+            paged_sql.as_ref(),
+            "SELECT * FROM events LIMIT 501 OFFSET 500"
+        );
+    }
+
+    #[test]
+    fn result_page_rejects_limits_over_runtime_limit() {
+        let error = datafusion_sql_with_result_page(
+            "SELECT * FROM events",
+            Some(QueryResultPage {
+                limit: MAX_QUERY_RESULT_PAGE_LIMIT + 1,
+                offset: 0,
+            }),
+        )
+        .expect_err("oversized result pages should be rejected");
+
+        assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+        assert!(
+            error.message.contains("result page limit"),
+            "error should describe the oversized result page limit: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn result_page_wraps_datafusion_sql_with_top_level_offset() {
+        let page = QueryResultPage {
+            limit: 501,
+            offset: 500,
+        };
+
+        let paged_sql = datafusion_sql_with_result_page(
+            "SELECT * FROM events ORDER BY id OFFSET 10;",
+            Some(page),
+        )
+        .expect("valid SELECT with OFFSET should be pageable");
+
+        assert_eq!(
+            paged_sql.as_ref(),
+            "SELECT * FROM (SELECT * FROM events ORDER BY id OFFSET 10) AS axon_result_page LIMIT 501 OFFSET 500"
         );
     }
 

@@ -35,9 +35,22 @@ export type ConnectForm = {
   ds_share: string;
 };
 
+export type ConnectedTableSourceBinding = {
+  id: string;
+  kind: SourceId;
+  provider?: ObjectStoreProviderId;
+  storage: string;
+  host?: string;
+  path?: string;
+  region: string;
+  canonicalKey: string;
+  connectedAt: string;
+};
+
 export type ConnectedCatalogSchema = {
   name: string;
   tables: {
+    id?: string;
     name: string;
     snapshot: number;
     rows: number;
@@ -49,6 +62,7 @@ export type ConnectedCatalogSchema = {
     manifestUrl?: string;
     localRegistryId?: string;
     localPersistence?: LocalDeltaPersistenceMode;
+    source?: ConnectedTableSourceBinding;
   }[];
 };
 

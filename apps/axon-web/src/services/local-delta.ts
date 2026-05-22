@@ -193,6 +193,10 @@ export async function loadActiveLocalDeltaRuntime(
   return loadLocalDeltaRuntime(activeId, options);
 }
 
+export function hasLocalDeltaRuntime(registryId?: string): boolean {
+  return registryId ? sessionLocalDeltaTables.has(registryId) : false;
+}
+
 export function clearActiveLocalDeltaRegistryId(): void {
   try {
     localStorage.removeItem(LOCAL_DELTA_ACTIVE_ID_KEY);

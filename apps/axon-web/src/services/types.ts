@@ -75,11 +75,26 @@ export type ResultColumn = {
 
 export type ResultCell = string | number | boolean | null;
 
+export type QueryResultPageInfo = {
+  offset: number;
+  size: number;
+  returned_rows: number;
+  loaded_rows: number;
+  has_more: boolean;
+  next_offset?: number;
+};
+
 export type QueryResultData = {
   columns: ResultColumn[];
   rows: ResultCell[][];
   row_count: number;
   truncated: boolean;
+  page?: QueryResultPageInfo;
+};
+
+export type QueryPageRequest = {
+  offset: number;
+  size: number;
 };
 
 export type QueryRunStatus = 'idle' | 'running' | 'done' | 'error';
@@ -149,6 +164,7 @@ export type QueryExecRequest = {
   table_name: string;
   preferred_target: ExecutionTarget | 'auto';
   snapshot_version?: number;
+  page?: QueryPageRequest;
 };
 
 // ─── History ────────────────────────────────────────────────────────────────

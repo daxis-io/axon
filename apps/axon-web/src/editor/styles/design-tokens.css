@@ -51,6 +51,7 @@
   --pad-lg: 12px;
   --fs-ui: 12.5px;
   --fs-code: 13px;
+  --line-h: 21px; /* shared line box for editor gutter + code (keeps lines aligned) */
 
   color-scheme: light;
 }
@@ -96,6 +97,7 @@
   --fs-ui: 12px;
   --fs-code: 12.5px;
   --row-h: 24px;
+  --line-h: 19px;
 }
 :root[data-density='comfy'] {
   --pad: 10px;
@@ -104,6 +106,7 @@
   --fs-ui: 13.5px;
   --fs-code: 14px;
   --row-h: 32px;
+  --line-h: 23px;
 }
 
 * {
@@ -146,11 +149,25 @@ textarea {
 .topbar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 0 12px;
   border-bottom: 1px solid var(--line);
   background: var(--paper);
   height: var(--topbar-h);
+  min-width: 0;
+}
+.topbar .tb-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--line);
+  align-self: center;
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+.topbar .tb-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
 }
 .brand {
   display: flex;
@@ -228,6 +245,17 @@ textarea {
 .conn-name .db {
   color: var(--ink-3);
   font-weight: 400;
+}
+.conn-pill .cat-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  height: 18px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 999px;
+  font: 600 10.5px var(--mono);
+  letter-spacing: 0.02em;
 }
 .chev {
   color: var(--ink-3);
@@ -546,7 +574,7 @@ textarea {
 
 .workspace {
   display: grid;
-  grid-template-rows: var(--tabbar-h) 1fr;
+  grid-template-rows: var(--tabbar-h) auto 1fr;
   min-width: 0;
   min-height: 0;
 }
@@ -557,46 +585,81 @@ textarea {
   background: var(--paper-2);
   align-items: stretch;
   overflow: hidden;
+  min-height: var(--tabbar-h);
 }
 .qtab {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 8px 0 12px;
+  padding: 0 6px 0 14px;
   border-right: 1px solid var(--line);
-  min-width: 140px;
-  max-width: 200px;
+  min-width: 156px;
+  max-width: 220px;
   font-size: 12px;
   color: var(--ink-3);
   cursor: default;
   position: relative;
 }
 .qtab .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
   display: none;
-}
-.qtab.dirty .dot {
-  display: block;
 }
 .qtab .name {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
+/* Close / dirty slot: shows dot when dirty, × on hover, hidden when clean */
 .qtab .x {
-  width: 16px;
-  height: 16px;
+  position: relative;
+  width: 18px;
+  height: 18px;
   display: grid;
   place-items: center;
-  border-radius: 3px;
-  color: var(--ink-4);
+  border-radius: 4px;
+  color: var(--ink-3);
+  cursor: default;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+.qtab .x .x-dot,
+.qtab .x .x-close {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  transition: opacity 100ms ease;
+}
+.qtab .x .x-dot {
   opacity: 0;
 }
+.qtab .x .x-dot::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.qtab .x .x-close {
+  font: 14px/1 var(--ui);
+  opacity: 0;
+}
+/* Dirty + idle: show dot, hide × */
+.qtab.dirty .x {
+  opacity: 1;
+}
+.qtab.dirty .x .x-dot {
+  opacity: 1;
+}
+/* Hover (clean or dirty): show ×, hide dot */
 .qtab:hover .x {
+  opacity: 1;
+}
+.qtab:hover .x .x-dot {
+  opacity: 0;
+}
+.qtab:hover .x .x-close {
   opacity: 1;
 }
 .qtab .x:hover {
@@ -651,6 +714,7 @@ textarea {
   display: grid;
   grid-template-rows: 1fr 4px var(--results-h, 320px);
   min-height: 0;
+  min-width: 0;
   position: relative;
 }
 .split-resizer {
@@ -679,21 +743,25 @@ textarea {
   min-height: 0;
   overflow: hidden;
   display: grid;
-  grid-template-columns: 44px 1fr;
+  grid-template-columns: 48px 1fr;
 }
 .gutter {
   background: var(--paper);
   border-right: 1px solid var(--line);
   color: var(--ink-4);
-  font: 12px/1.65 var(--mono);
-  padding: 12px 8px 12px 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: var(--line-h);
+  padding: 12px 10px 12px 0;
   text-align: right;
   user-select: none;
   overflow: hidden;
+  font-variant-numeric: tabular-nums;
 }
 .gutter .ln {
   display: block;
-  min-height: calc(1.65em);
+  height: var(--line-h);
+  line-height: var(--line-h);
   font-variant-numeric: tabular-nums;
 }
 .gutter .ln.active {
@@ -724,7 +792,9 @@ textarea {
 
 .code,
 .code-input {
-  font: var(--fs-code)/1.65 var(--mono);
+  font-family: var(--mono);
+  font-size: var(--fs-code);
+  line-height: var(--line-h);
   padding: 12px 16px 80px;
   margin: 0;
   white-space: pre;
@@ -848,6 +918,8 @@ textarea {
   flex-direction: column;
   background: var(--paper);
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 .res-tabs {
   display: flex;
@@ -891,10 +963,11 @@ textarea {
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 8px;
+  gap: 8px;
+  padding: 0 10px;
   color: var(--ink-3);
   font-size: 11.5px;
+  white-space: nowrap;
 }
 .res-meta .dot {
   width: 6px;
@@ -904,26 +977,53 @@ textarea {
 }
 .res-meta .mono {
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.res-meta .sep {
+  width: 1px;
+  height: 12px;
+  background: var(--line);
+  display: inline-block;
+}
+.res-meta b {
+  color: var(--ink-2);
+  font-weight: 600;
 }
 
 .res-toolbar {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 8px;
+  padding: 0 10px;
+  height: 38px;
   border-bottom: 1px solid var(--line);
   background: var(--paper-2);
+}
+.res-toolbar .btn.ghost {
+  height: 26px;
+  padding: 0 9px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.res-toolbar .vsep {
+  width: 1px;
+  height: 16px;
+  background: var(--line);
+  display: inline-block;
+  margin: 0 2px;
+  flex-shrink: 0;
 }
 .res-toolbar .search {
   position: relative;
 }
 .res-toolbar .search input {
-  padding: 4px 8px 4px 24px;
+  padding: 0 8px 0 26px;
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   background: var(--paper);
   font-size: 11.5px;
-  width: 200px;
+  width: 220px;
+  height: 26px;
   outline: none;
 }
 .res-toolbar .search input:focus {
@@ -1576,6 +1676,7 @@ table.grid tr:hover td.gutter-cell {
   flex: 1;
   overflow: auto;
   background: var(--paper);
+  min-width: 0;
 }
 .plan-body::-webkit-scrollbar {
   width: 10px;
@@ -1601,8 +1702,8 @@ table.grid tr:hover td.gutter-cell {
 }
 .plan-section .grid-3 {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
 }
 .kpi {
   display: flex;
@@ -1754,9 +1855,16 @@ table.grid tr:hover td.gutter-cell {
 
 .plan-tree {
   font: 12px/1.7 var(--mono);
-  white-space: pre;
-  padding: 14px 16px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 12px 14px;
+  margin: 0;
   color: var(--ink-2);
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .plan-tree .op {
   color: var(--accent);
@@ -1950,34 +2058,85 @@ table.grid tr:hover td.gutter-cell {
 .queryref-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
+  gap: 8px;
+  padding: 0 14px;
   border-bottom: 1px solid var(--line);
   background: var(--paper-2);
   font-size: 11.5px;
   color: var(--ink-3);
-  height: 30px;
+  height: 32px;
+  min-width: 0;
 }
 .queryref-bar .lbl {
   color: var(--ink-4);
-  margin-right: 3px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font: 600 10px var(--ui);
 }
 .queryref-bar .qref {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 1px 8px;
+  padding: 2px 10px;
   background: var(--paper);
   border: 1px solid var(--line);
   border-radius: 999px;
   font: 500 11.5px var(--mono);
   color: var(--ink);
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .queryref-bar .qref .v {
   color: var(--accent);
 }
 .queryref-bar .qref:hover {
   background: var(--paper-2);
+}
+.queryref-bar .qref-action {
+  height: 24px;
+  padding: 0 8px;
+  border-color: var(--line);
+  font-size: 11.5px;
+}
+.queryref-bar .qref-action.warn {
+  color: var(--warning);
+  background: var(--warning-soft);
+  border-color: color-mix(in oklab, var(--warning) 28%, var(--line));
+}
+.queryref-bar .qref-action.warn:hover {
+  background: color-mix(in oklab, var(--warning) 16%, var(--paper));
+}
+.queryref-bar .qref-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--line);
+  display: inline-block;
+  flex-shrink: 0;
+}
+.queryref-bar .qref-info {
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.queryref-bar .qref-info .qref-info-val {
+  font-family: var(--mono);
+  color: var(--ink-2);
+}
+.queryref-bar .qref-info.muted {
+  color: var(--ink-4);
+}
+.queryref-bar .qref-stats {
+  margin-left: auto;
+  color: var(--ink-4);
+  font: 11px var(--mono);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  padding-left: 12px;
 }
 
 /* engine status indicator (top bar) */

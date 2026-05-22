@@ -11,7 +11,7 @@ use deltalake::{DeltaTable, TableProperty};
 use native_query_runtime::{bootstrap_table, execute_query, DEFAULT_TABLE_NAME};
 use query_contract::{
     CapabilityKey, CapabilityState, ExecutionTarget, QueryErrorCode, QueryExecutionOptions,
-    QueryRequest,
+    QueryRequest, QueryResultPage, MAX_QUERY_RESULT_PAGE_LIMIT,
 };
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
@@ -959,6 +959,7 @@ fn execute_query_optionally_returns_explain_output() {
     .with_options(QueryExecutionOptions {
         include_explain: true,
         collect_metrics: true,
+        result_page: None,
     });
 
     let result = execute_query(request).expect("query should execute");
@@ -968,6 +969,87 @@ fn execute_query_optionally_returns_explain_output() {
         .join("\n");
 
     assert!(explain.contains("TableScan") || explain.contains("DataSourceExec"));
+}
+
+#[test]
+fn execute_query_applies_result_page_limit_and_offset() {
+    let fixture = TestTableFixture::create();
+    let request = QueryRequest::new(
+        &fixture.table_uri,
+        format!("SELECT id FROM {DEFAULT_TABLE_NAME} ORDER BY id"),
+        ExecutionTarget::Native,
+    )
+    .with_options(QueryExecutionOptions {
+        include_explain: false,
+        collect_metrics: true,
+        result_page: Some(QueryResultPage {
+            limit: 2,
+            offset: 2,
+        }),
+    });
+
+    let result = execute_query(request).expect("query page should execute");
+
+    assert_eq!(
+        pretty_format_batches(&result.batches)
+            .expect("batches should format")
+            .to_string(),
+        "+----+\n| id |\n+----+\n| 3  |\n| 4  |\n+----+"
+    );
+}
+
+#[test]
+fn execute_query_rejects_result_pages_over_runtime_limit() {
+    let fixture = TestTableFixture::create();
+    let request = QueryRequest::new(
+        &fixture.table_uri,
+        format!("SELECT id FROM {DEFAULT_TABLE_NAME} ORDER BY id"),
+        ExecutionTarget::Native,
+    )
+    .with_options(QueryExecutionOptions {
+        include_explain: false,
+        collect_metrics: true,
+        result_page: Some(QueryResultPage {
+            limit: MAX_QUERY_RESULT_PAGE_LIMIT + 1,
+            offset: 0,
+        }),
+    });
+
+    let error = execute_query(request).expect_err("oversized result pages should be rejected");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(
+        error.message.contains("result page limit"),
+        "error should describe the oversized result page limit: {}",
+        error.message
+    );
+}
+
+#[test]
+fn execute_query_wraps_top_level_offset_before_applying_result_page() {
+    let fixture = TestTableFixture::create();
+    let request = QueryRequest::new(
+        &fixture.table_uri,
+        format!("SELECT id FROM {DEFAULT_TABLE_NAME} ORDER BY id OFFSET 1"),
+        ExecutionTarget::Native,
+    )
+    .with_options(QueryExecutionOptions {
+        include_explain: false,
+        collect_metrics: true,
+        result_page: Some(QueryResultPage {
+            limit: 2,
+            offset: 2,
+        }),
+    });
+
+    let result = execute_query(request).expect("offset query page should execute");
+
+    assert_eq!(
+        pretty_format_batches(&result.batches)
+            .expect("batches should format")
+            .to_string(),
+        "+----+\n| id |\n+----+\n| 4  |\n| 5  |\n+----+"
+    );
 }
 
 #[test]

@@ -24,7 +24,8 @@ import {
   type ObjectStoreProvider,
   type SourceId,
 } from './data.ts';
-import { IconCheck, IconFolder, IconLock, IconShareNode, IconWarn } from './icons.tsx';
+import { IconCheck, IconFolder, IconLock, IconWarn } from './icons.tsx';
+import { DEFAULT_AXON_CATALOG_ALIAS } from './store.ts';
 import type { ConnectForm, ConnectResult, SchemaSelection, TestState } from './types.ts';
 import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
 import {
@@ -64,13 +65,6 @@ const DEFAULT_FORM: ConnectForm = {
   ds_share: '',
 };
 
-const SOURCE_LABEL_DEFAULT: Record<SourceId, string> = {
-  local: 'local-orders',
-  object_store: 'acme-lake',
-  unity_catalog: 'acme-uc',
-  delta_share: 'acme-partner',
-};
-
 export function ConnectModal({
   initialStep = 1,
   initialSource = null,
@@ -88,6 +82,7 @@ export function ConnectModal({
   const [form, setForm] = useState<ConnectForm>(DEFAULT_FORM);
   const [testState, setTestState] = useState<TestState>(null);
   const [alias, setAlias] = useState('');
+  const [useRecommendedCatalog, setUseRecommendedCatalog] = useState(true);
   const [selection, setSelection] = useState<Record<string, SchemaSelection>>({});
   const currentDiscovery = useMemo(() => {
     if (source === 'local' && form.localDelta) return form.localDelta.discovery;
@@ -129,7 +124,7 @@ export function ConnectModal({
   const seededRef = useState({ done: false })[0];
   useEffect(() => {
     if (step !== 3 || !source || seededRef.done) return;
-    if (!alias) setAlias(SOURCE_LABEL_DEFAULT[source]);
+    if (!alias || useRecommendedCatalog) setAlias(DEFAULT_AXON_CATALOG_ALIAS);
     const sel: Record<string, SchemaSelection> = {};
     const discovery = currentDiscovery;
     if (!discovery) return;
@@ -138,7 +133,7 @@ export function ConnectModal({
     });
     setSelection(sel);
     seededRef.done = true;
-  }, [step, source, alias, seededRef, currentDiscovery]);
+  }, [step, source, alias, useRecommendedCatalog, seededRef, currentDiscovery]);
 
   const runTest = useCallback(() => {
     setTestState('running');
@@ -265,6 +260,8 @@ export function ConnectModal({
               discovered={currentDiscovery ?? LOCAL_DISCOVERY}
               alias={alias}
               setAlias={setAlias}
+              useRecommendedCatalog={useRecommendedCatalog}
+              setUseRecommendedCatalog={setUseRecommendedCatalog}
               selection={selection}
               setSelection={setSelection}
             />
@@ -346,109 +343,66 @@ function SourcePicker({
   return (
     <>
       <p className="cc-intro">
-        Connect Delta Lake sources through browser-local snapshot reconstruction.{' '}
-        <span className="k">Governed catalogs can still use brokered contracts when needed.</span>
+        Connect Delta Lake sources through browser-local snapshot reconstruction. Governed catalogs
+        can still use brokered contracts when needed.
       </p>
 
-      <div className="cc-source-grid">
+      <div className="cc-source-list" role="radiogroup" aria-label="Choose a Delta source">
         {SOURCES.map((s) => {
           const availability = availabilityForSource(s, connectorFeatures);
           const disabled = !availability.enabled;
-          const tags = availability.label ? [...s.tags, availability.label] : s.tags;
+          const selected = value === s.id;
 
           return (
-            <div
+            <button
               key={s.id}
+              type="button"
+              role="radio"
+              aria-checked={selected}
               aria-disabled={disabled ? 'true' : undefined}
+              disabled={disabled}
               className={
-                'cc-source-card ' +
-                (value === s.id ? 'selected ' : '') +
-                (disabled ? 'disabled' : '')
+                'cc-source-row ' + (selected ? 'selected ' : '') + (disabled ? 'disabled' : '')
               }
               onClick={() => {
                 if (!disabled) onChange(s.id);
               }}
               title={disabled ? `${s.title}: ${availability.reason}` : undefined}
             >
-              <span className="pick-ind">
-                <IconCheck size={10} />
+              <span className={'glyph ' + s.glyphTone} aria-hidden="true">
+                {s.glyph}
               </span>
-              <div className="tags">
-                {tags.map((t) => (
-                  <span key={t} className="tag">
-                    {t}
+              <span className="cc-row-body">
+                <span className="cc-row-head">
+                  <span className="title">{s.title}</span>
+                  {disabled ? (
+                    <span className="cc-pill warn">Coming soon</span>
+                  ) : (
+                    <span className="cc-pill ok">Available</span>
+                  )}
+                </span>
+                <span className="blurb">{s.blurb}</span>
+                <span className="cc-attrs" aria-label={`${s.title} runtime ownership`}>
+                  <span className="cc-attr">
+                    <span className="l">Access</span>
+                    <span className="v">{s.owners.access}</span>
                   </span>
-                ))}
-              </div>
-              <div className={'glyph ' + s.glyphTone}>{s.glyph}</div>
-              <div className="title">{s.title}</div>
-              <div className="blurb">{s.blurb}</div>
-              <div className="owner-map" aria-label={`${s.title} runtime ownership`}>
-                <div>
-                  <span>Access</span>
-                  <b>{s.owners.access}</b>
-                </div>
-                <div>
-                  <span>Snapshot</span>
-                  <b>{s.owners.snapshot}</b>
-                </div>
-                <div>
-                  <span>Query</span>
-                  <b>{s.owners.query}</b>
-                </div>
-              </div>
-              {disabled && (
-                <div className="cc-source-status">
-                  <b>{availability.label}</b>
-                  <span>{availability.reason}</span>
-                </div>
-              )}
-              <div className="examples">{s.examples}</div>
-            </div>
+                  <span className="cc-attr">
+                    <span className="l">Snapshot</span>
+                    <span className="v">{s.owners.snapshot}</span>
+                  </span>
+                  <span className="cc-attr">
+                    <span className="l">Query</span>
+                    <span className="v">{s.owners.query}</span>
+                  </span>
+                </span>
+              </span>
+              <span className="cc-row-chev" aria-hidden="true">
+                <IconChevR size={11} />
+              </span>
+            </button>
           );
         })}
-      </div>
-
-      <div className="cc-section-head">What you&apos;ll need</div>
-      <div className="cc-need-list">
-        <div className="cc-need">
-          <span className="ico">
-            <IconFolder size={14} />
-          </span>
-          <div>
-            <b>Local files</b>
-            <br />A browser file handle for a Delta table directory containing a{' '}
-            <code style={{ font: '11px var(--mono)' }}>_delta_log/</code>.
-          </div>
-        </div>
-        <div className="cc-need">
-          <span className="ico">
-            <IconLock size={14} />
-          </span>
-          <div>
-            <b>Object storage</b>
-            <br />A bucket URI with browser-readable Delta log and Parquet objects.
-          </div>
-        </div>
-        <div className="cc-need">
-          <span className="ico">
-            <IconKey size={14} />
-          </span>
-          <div>
-            <b>Unity Catalog</b>
-            <br />
-            An authenticated Axon session backed by a UC read-access-plan broker.
-          </div>
-        </div>
-        <div className="cc-need">
-          <span className="ico">
-            <IconShareNode size={14} />
-          </span>
-          <div>
-            <b>Delta Sharing</b>
-            <br />A provider profile registered with a trusted sharing broker.
-          </div>
-        </div>
       </div>
     </>
   );
@@ -467,7 +421,18 @@ function ConfigLocal({
   const [over, setOver] = useState(false);
   const [picking, setPicking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [supportsDirectoryPicker, setSupportsDirectoryPicker] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      typeof (window as WindowWithDirectoryPicker).showDirectoryPicker === 'function',
+  );
   const detected = form.detected;
+
+  useEffect(() => {
+    setSupportsDirectoryPicker(
+      typeof (window as WindowWithDirectoryPicker).showDirectoryPicker === 'function',
+    );
+  }, []);
 
   const openRuntime = async (open: () => Promise<LocalDeltaRuntime>) => {
     setOver(false);
@@ -492,7 +457,9 @@ function ConfigLocal({
   const pickDirectory = async () => {
     const picker = (window as WindowWithDirectoryPicker).showDirectoryPicker;
     if (!picker) {
-      setError('Use the local folder input to select a Delta table directory.');
+      setError(
+        'Persistent folder access is unavailable in this browser. Use one-session import below.',
+      );
       return;
     }
     setOver(false);
@@ -527,7 +494,11 @@ function ConfigLocal({
       return;
     }
     setOver(false);
-    setError('Drop a Delta table folder, or use the folder input to select one.');
+    setError(
+      supportsDirectoryPicker
+        ? 'Drop a Delta table folder with browser folder access, or choose a persistent folder.'
+        : 'Drop is unavailable here. Use one-session import below.',
+    );
   };
 
   return (
@@ -550,46 +521,55 @@ function ConfigLocal({
           <div className="glyph">
             <IconFolder size={22} />
           </div>
-          <div className="ti">Open a Delta table folder</div>
+          <div className="ti">Persistent folder access</div>
           <div className="sub">
-            Select the table root containing{' '}
-            <code style={{ fontFamily: 'var(--mono)', fontSize: 11.5 }}>_delta_log/</code>.
+            Refresh-ready browser directory handle for the table root containing{' '}
+            <code style={{ fontFamily: 'var(--mono)', fontSize: 11.5 }}>_delta_log/</code>. No table
+            data is copied.
           </div>
-          <button className="browse" disabled={picking}>
-            {picking ? <span className="cc-spin" /> : <IconFolder size={11} />} Browse…
+          <button className="browse" disabled={picking || !supportsDirectoryPicker}>
+            {picking ? <span className="cc-spin" /> : <IconFolder size={11} />}{' '}
+            {supportsDirectoryPicker ? 'Choose folder' : 'Unavailable'}
           </button>
         </div>
 
-        <div className="cc-field" style={{ marginTop: 14 }}>
-          <label className="cc-label">Local Delta table directory</label>
-          <div className="cc-input-wrap">
-            <input
-              className="cc-input mono"
-              aria-label="Local Delta table directory"
-              type="file"
-              multiple
-              disabled={picking}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => openSelectedFiles(e.target.files)}
-              {...{ webkitdirectory: '', directory: '' }}
-            />
-            {detected && (
-              <div className="right">
-                <span className="check" title="Detected Delta protocol">
-                  <IconCheck size={11} />
-                </span>
-              </div>
-            )}
-          </div>
-          <div className="cc-help">
-            Axon reads the selected folder locally, reconstructs the snapshot in the browser, and
-            stores reload metadata or a browser directory handle without copying the full table.
-          </div>
-          {error && (
-            <div className="cc-help" style={{ color: 'var(--danger)' }}>
-              {error}
+        {!supportsDirectoryPicker && (
+          <div className="cc-field" style={{ marginTop: 14 }}>
+            <label className="cc-label">One-session folder import</label>
+            <div className="cc-input-wrap">
+              <input
+                className="cc-input mono"
+                aria-label="One-session local Delta folder import"
+                type="file"
+                multiple
+                disabled={picking}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => openSelectedFiles(e.target.files)}
+                {...{ webkitdirectory: '', directory: '' }}
+              />
+              {detected && (
+                <div className="right">
+                  <span className="check" title="Detected Delta protocol">
+                    <IconCheck size={11} />
+                  </span>
+                </div>
+              )}
             </div>
-          )}
+            <div className="cc-help">
+              Fallback for browsers without persistent folder access. Queries work in this tab, but
+              after refresh you must select the folder again before querying.
+            </div>
+          </div>
+        )}
+        <div className="cc-help">
+          Axon reads the selected folder locally, reconstructs the snapshot in the browser, and
+          stores either a browser directory handle or reload metadata without copying the full
+          table.
         </div>
+        {error && (
+          <div className="cc-help" style={{ color: 'var(--danger)' }}>
+            {error}
+          </div>
+        )}
 
         {detected && (
           <div className="cc-detected">
@@ -647,8 +627,9 @@ function ConfigLocal({
         <h5>How local tables work</h5>
         <p>
           Axon reads the selected table root in the browser, stores local registry metadata in
-          catalog state, and queries active Parquet files through the browser WASM worker. Large
-          tables use metadata or browser-granted handles for reload instead of whole-table copies.
+          catalog state, and queries active Parquet files through the browser WASM worker.
+          Persistent folder access survives refresh when the browser retains permission; one-session
+          import keeps only metadata and needs a reselect after refresh.
         </p>
         <hr />
         <h5>Tips</h5>
@@ -657,7 +638,9 @@ function ConfigLocal({
             Point at the table root (where <code>_delta_log/</code> lives), not at an individual{' '}
             <code>.parquet</code> file.
           </li>
-          <li>Folder selection is supported; ZIP import is not part of this flow.</li>
+          <li>
+            Use persistent folder access when it is available; one-session import is a fallback.
+          </li>
           <li>Use Object Storage instead for shared / cloud datasets.</li>
         </ul>
       </aside>
@@ -687,9 +670,9 @@ function detectedFromRuntime(runtime: LocalDeltaRuntime) {
 }
 
 function localDeltaPersistenceLabel(persistence: LocalDeltaRuntime['persistence']): string {
-  if (persistence === 'persisted_directory_handle') return 'directory handle stored';
-  if (persistence === 'metadata_only_reselect') return 'metadata saved; reselect may be required';
-  return 'current session only';
+  if (persistence === 'persisted_directory_handle') return 'refresh-ready directory handle stored';
+  if (persistence === 'metadata_only_reselect') return 'one-session import; reselect after refresh';
+  return 'current tab only; reconnect after reload';
 }
 
 function localDeltaErrorMessage(error: unknown): string {
@@ -1277,6 +1260,8 @@ function Discover({
   discovered,
   alias,
   setAlias,
+  useRecommendedCatalog,
+  setUseRecommendedCatalog,
   selection,
   setSelection,
 }: {
@@ -1284,6 +1269,8 @@ function Discover({
   discovered: DiscoveryPayload;
   alias: string;
   setAlias: (a: string) => void;
+  useRecommendedCatalog: boolean;
+  setUseRecommendedCatalog: (enabled: boolean) => void;
   selection: Record<string, SchemaSelection>;
   setSelection: (s: Record<string, SchemaSelection>) => void;
 }) {
@@ -1360,14 +1347,29 @@ function Discover({
             <label className="cc-label" htmlFor="cc-catalog-alias">
               Catalog alias
             </label>
+            <label className="cc-check" style={{ marginBottom: 8 }}>
+              <input
+                type="checkbox"
+                checked={useRecommendedCatalog}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                  setUseRecommendedCatalog(e.target.checked);
+                  if (e.target.checked) setAlias(DEFAULT_AXON_CATALOG_ALIAS);
+                }}
+              />
+              Use recommended organization
+            </label>
             <input
               id="cc-catalog-alias"
               className="cc-input mono"
               value={alias}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => setAlias(e.target.value)}
+              disabled={useRecommendedCatalog}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                setUseRecommendedCatalog(false);
+                setAlias(e.target.value);
+              }}
             />
             <div className="cc-help">
-              SQL prefix: <code>{alias || 'your-catalog'}.schema.table</code>
+              SQL prefix: <code>{alias || DEFAULT_AXON_CATALOG_ALIAS}.schema.table</code>
             </div>
           </div>
           <div className="row">

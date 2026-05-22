@@ -1,5 +1,6 @@
 //! Native reference runtime for trusted Delta + DataFusion execution.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,7 +28,7 @@ use deltalake::table::{config::TablePropertiesExt, state::DeltaTableState};
 use deltalake::{open_table, open_table_with_version};
 use query_contract::{
     CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget, QueryError, QueryErrorCode,
-    QueryMetricsSummary, QueryRequest,
+    QueryMetricsSummary, QueryRequest, QueryResultPage, MAX_QUERY_RESULT_PAGE_LIMIT,
 };
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -92,11 +93,12 @@ async fn execute_query_async(request: QueryRequest) -> Result<NativeQueryResult,
 
     validate_snapshot_version(request.snapshot_version, runtime_target())?;
     validate_query_sql(&request.sql)?;
+    let execution_sql = native_sql_with_result_page(&request.sql, request.options.result_page)?;
 
     let prepared = PreparedTable::load(&request.table_uri, request.snapshot_version).await?;
     let query = prepared
         .session
-        .sql_with_options(&request.sql, read_only_sql_options())
+        .sql_with_options(execution_sql.as_ref(), read_only_sql_options())
         .await
         .map_err(map_datafusion_error)?;
 
@@ -112,7 +114,7 @@ async fn execute_query_async(request: QueryRequest) -> Result<NativeQueryResult,
         .map_err(map_datafusion_error)?;
 
     let explain_lines = if request.options.include_explain {
-        Some(collect_explain_lines(&prepared.session, &request.sql).await?)
+        Some(collect_explain_lines(&prepared.session, execution_sql.as_ref()).await?)
     } else {
         None
     };
@@ -168,6 +170,66 @@ fn read_only_sql_options() -> SQLOptions {
         .with_allow_ddl(false)
         .with_allow_dml(false)
         .with_allow_statements(false)
+}
+
+fn native_sql_with_result_page(
+    sql: &str,
+    result_page: Option<QueryResultPage>,
+) -> Result<Cow<'_, str>, QueryError> {
+    let Some(result_page) = result_page else {
+        return Ok(Cow::Borrowed(sql));
+    };
+
+    if result_page.limit == 0 {
+        return Err(invalid_query_request(
+            "native query result page limit must be at least 1",
+        ));
+    }
+    if result_page.limit > MAX_QUERY_RESULT_PAGE_LIMIT {
+        return Err(invalid_query_request(format!(
+            "native query result page limit {} exceeds maximum {}",
+            result_page.limit, MAX_QUERY_RESULT_PAGE_LIMIT
+        )));
+    }
+
+    let mut inner_sql = sql.trim();
+    while let Some(stripped) = inner_sql.strip_suffix(';') {
+        inner_sql = stripped.trim_end();
+    }
+
+    if inner_sql.is_empty() {
+        return Err(invalid_query_request(
+            "native query result page requires non-empty SQL",
+        ));
+    }
+
+    if native_sql_has_top_level_limit_clause(inner_sql)? {
+        return Ok(Cow::Owned(format!(
+            "SELECT * FROM ({inner_sql}) AS axon_result_page LIMIT {} OFFSET {}",
+            result_page.limit, result_page.offset
+        )));
+    }
+
+    Ok(Cow::Owned(format!(
+        "{inner_sql} LIMIT {} OFFSET {}",
+        result_page.limit, result_page.offset
+    )))
+}
+
+fn native_sql_has_top_level_limit_clause(sql: &str) -> Result<bool, QueryError> {
+    let mut statements = DFParser::parse_sql(sql).map_err(map_datafusion_error)?;
+    let Some(statement) = statements.pop_front() else {
+        return Ok(false);
+    };
+
+    let ParsedStatement::Statement(statement) = statement else {
+        return Ok(false);
+    };
+    let SqlStatement::Query(query) = *statement else {
+        return Ok(false);
+    };
+
+    Ok(query.limit_clause.is_some() || query.fetch.is_some())
 }
 
 fn validate_query_sql(sql: &str) -> Result<(), QueryError> {

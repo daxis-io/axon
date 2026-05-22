@@ -42,29 +42,24 @@ export function ConnectedCatalogsPanel({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div
-        className="cc-modal"
-        role="dialog"
-        aria-label="Connected catalogs"
-        style={{ height: 'min(560px, 88vh)', width: 'min(720px, 92vw)' }}
-      >
+      <div className="cc-modal cc-modal--compact" role="dialog" aria-label="Connected catalogs">
         <header className="cc-head">
-          <div>
+          <div className="cc-head-title">
             <h3>Connected catalogs</h3>
             <div className="sub">
               {catalogs.length} catalog{catalogs.length === 1 ? '' : 's'} reachable from this
               workspace.
             </div>
           </div>
-          <button className="cc-btn" onClick={onAdd}>
-            + Connect new source
+          <button className="cc-btn cc-head-action" onClick={onAdd}>
+            <span aria-hidden="true">+</span> Connect new source
           </button>
           <button className="cc-x" onClick={onClose} title="Close (Esc)">
             <IconClose size={13} />
           </button>
         </header>
 
-        <div className="cc-body" style={{ position: 'relative', padding: 0 }}>
+        <div className="cc-body cc-body--list">
           {catalogs.length === 0 ? (
             <div className="cc-no-catalogs">
               <div>No catalogs yet.</div>

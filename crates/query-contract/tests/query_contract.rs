@@ -12,7 +12,7 @@ use query_contract::{
     DirectExternalEngineReadSupport, ExecutionTarget, FallbackReason, ObjectGrantBatchSignRequest,
     ObjectGrantHeadRequest, ObjectGrantListRequest, PartitionColumnType, PolicyAuthorityKind,
     QueryError, QueryErrorCode, QueryExecutionOptions, QueryMetricsSummary, QueryRequest,
-    QueryResponse, ReadAccessPlan, ReadAccessPlanReason, ResolvedFileDescriptor,
+    QueryResponse, QueryResultPage, ReadAccessPlan, ReadAccessPlanReason, ResolvedFileDescriptor,
     ResolvedSnapshotDescriptor, ResolverActualAccessMode, ResolverRequestedAccessMode,
     SnapshotResolutionRequest, SqlFallbackRequiredPlan,
 };
@@ -838,6 +838,7 @@ fn query_request_serializes_single_table_locator_and_execution_options() {
     .with_options(QueryExecutionOptions {
         include_explain: true,
         collect_metrics: false,
+        result_page: None,
     });
     request.snapshot_version = Some(3);
 
@@ -854,6 +855,33 @@ fn query_request_serializes_single_table_locator_and_execution_options() {
                 "include_explain": true,
                 "collect_metrics": false
             }
+        })
+    );
+}
+
+#[test]
+fn query_request_serializes_result_page_execution_options() {
+    let request = QueryRequest::new(
+        "gs://axon-fixtures/sample_table",
+        "SELECT * FROM axon_table",
+        ExecutionTarget::BrowserWasm,
+    )
+    .with_options(QueryExecutionOptions {
+        include_explain: true,
+        collect_metrics: true,
+        result_page: Some(QueryResultPage {
+            limit: 501,
+            offset: 500,
+        }),
+    });
+
+    let json = serde_json::to_value(&request).expect("query request should serialize");
+
+    assert_eq!(
+        json["options"]["result_page"],
+        json!({
+            "limit": 501,
+            "offset": 500
         })
     );
 }
