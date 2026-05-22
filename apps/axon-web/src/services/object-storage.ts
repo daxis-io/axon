@@ -138,7 +138,9 @@ export async function buildPublicDeltaLogManifest(
       credentials: 'omit',
     });
     if (!response.ok) {
-      throw accessFailed(`public object storage Delta log listing failed (HTTP ${response.status})`);
+      throw accessFailed(
+        `public object storage Delta log listing failed (HTTP ${response.status})`,
+      );
     }
 
     const page = parseGcsListResponse(await response.text());

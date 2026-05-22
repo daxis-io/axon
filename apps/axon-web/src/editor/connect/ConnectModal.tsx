@@ -863,8 +863,8 @@ function ConfigObjectStore({
             )}
           </div>
           <div className="cc-help">
-            Point at a public GCS Delta table root. Axon lists and reads{' '}
-            <code>_delta_log/</code> in the browser without private credentials.
+            Point at a public GCS Delta table root. Axon lists and reads <code>_delta_log/</code> in
+            the browser without private credentials.
           </div>
         </div>
 
@@ -918,9 +918,7 @@ function ConfigObjectStore({
                 <div className="name">{form.objectStorage.tableName}</div>
                 <div className="path">{form.objectStorage.tableUri}</div>
               </div>
-              <span style={{ font: '11.5px var(--mono)', color: 'var(--accent)' }}>
-                public
-              </span>
+              <span style={{ font: '11.5px var(--mono)', color: 'var(--accent)' }}>public</span>
             </div>
           </div>
         )}

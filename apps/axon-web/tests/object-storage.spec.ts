@@ -23,10 +23,7 @@ test.describe('public object storage', () => {
         'https://storage.googleapis.com/axon-public-delta-fixture-20260522-6cf5c6/axon-smoke-delta/',
     });
     expect(
-      publicObjectUrl(
-        root,
-        'part-00000-afc4ecda-691b-43d8-85cf-da31785877d2-c000.snappy.parquet',
-      ),
+      publicObjectUrl(root, 'part-00000-afc4ecda-691b-43d8-85cf-da31785877d2-c000.snappy.parquet'),
     ).toBe(
       'https://storage.googleapis.com/axon-public-delta-fixture-20260522-6cf5c6/axon-smoke-delta/part-00000-afc4ecda-691b-43d8-85cf-da31785877d2-c000.snappy.parquet',
     );
