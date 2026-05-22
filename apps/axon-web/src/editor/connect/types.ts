@@ -3,6 +3,12 @@ import type { LocalDeltaPersistenceMode, LocalDeltaRuntime } from '../../service
 
 export type SchemaSelection = 'all' | 'none' | { only: string[] } | { except: string[] };
 
+export type ObjectStorageRuntime = {
+  tableUri: string;
+  tableName: string;
+  discovery: DiscoveryPayload;
+};
+
 export type ConnectForm = {
   // local
   path: string;
@@ -21,6 +27,7 @@ export type ConnectForm = {
   uri: string;
   region: string;
   endpoint: string;
+  objectStorage: ObjectStorageRuntime | null;
   // unity catalog
   uc_mode: 'databricks' | 'oss';
   uc_host: string;

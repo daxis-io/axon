@@ -14,6 +14,7 @@ import {
   type MouseEvent,
   type ReactNode,
 } from 'react';
+import init, { resolve_delta_snapshot_from_manifest } from '../../wasm/axon_web_wasm.js';
 import { IconChevR, IconClose, IconKey, IconTable } from '../components/icons.tsx';
 import {
   LOCAL_DISCOVERY,
@@ -26,6 +27,7 @@ import {
 } from './data.ts';
 import { IconCheck, IconFolder, IconLock, IconShareNode, IconWarn } from './icons.tsx';
 import type { ConnectForm, ConnectResult, SchemaSelection, TestState } from './types.ts';
+import type { BrowserHttpSnapshotDescriptor } from '../../axon-browser-sdk.ts';
 import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
 import {
   LocalDeltaError,
@@ -34,6 +36,7 @@ import {
   type LocalDeltaRuntime,
   type LocalFileSystemDirectoryHandle,
 } from '../../services/local-delta.ts';
+import { resolvePublicObjectStorageDescriptor } from '../../services/object-storage.ts';
 
 type Props = {
   initialStep?: 1 | 2 | 3;
@@ -52,6 +55,7 @@ const DEFAULT_FORM: ConnectForm = {
   uri: '',
   region: '',
   endpoint: '',
+  objectStorage: null,
   uc_mode: 'databricks',
   uc_host: '',
   uc_bff_url: '',
@@ -71,6 +75,13 @@ const SOURCE_LABEL_DEFAULT: Record<SourceId, string> = {
   delta_share: 'acme-partner',
 };
 
+let connectWasmReady: Promise<unknown> | undefined;
+
+function ensureConnectWasm(): Promise<unknown> {
+  connectWasmReady ??= init();
+  return connectWasmReady;
+}
+
 export function ConnectModal({
   initialStep = 1,
   initialSource = null,
@@ -87,12 +98,14 @@ export function ConnectModal({
   );
   const [form, setForm] = useState<ConnectForm>(DEFAULT_FORM);
   const [testState, setTestState] = useState<TestState>(null);
+  const [objectStorageError, setObjectStorageError] = useState<string | null>(null);
   const [alias, setAlias] = useState('');
   const [selection, setSelection] = useState<Record<string, SchemaSelection>>({});
   const currentDiscovery = useMemo(() => {
     if (source === 'local' && form.localDelta) return form.localDelta.discovery;
+    if (source === 'object_store' && form.objectStorage) return form.objectStorage.discovery;
     return source ? discoveryForSource(source) : null;
-  }, [form.localDelta, source]);
+  }, [form.localDelta, form.objectStorage, source]);
 
   // ─── ESC closes the modal ─────────────────────────
   useEffect(() => {
@@ -140,14 +153,38 @@ export function ConnectModal({
     seededRef.done = true;
   }, [step, source, alias, seededRef, currentDiscovery]);
 
-  const runTest = useCallback(() => {
+  const runTest = useCallback(async () => {
     setTestState('running');
+    setObjectStorageError(null);
     if (source === 'local' && form.localDelta) {
       setTestState('ok');
       return;
     }
+    if (source === 'object_store') {
+      try {
+        if (form.provider !== 'gcs') {
+          throw new Error('Public object storage currently supports GCS table roots.');
+        }
+        await ensureConnectWasm();
+        const descriptor = await resolvePublicObjectStorageDescriptor({
+          provider: 'gcs',
+          tableUri: form.uri,
+          resolveDeltaSnapshotFromManifest: resolve_delta_snapshot_from_manifest,
+        });
+        setForm({
+          ...form,
+          objectStorage: objectStorageRuntimeFromDescriptor(descriptor),
+        });
+        setTestState('ok');
+      } catch (err) {
+        setForm({ ...form, objectStorage: null });
+        setObjectStorageError(publicObjectStorageErrorMessage(err));
+        setTestState('err');
+      }
+      return;
+    }
     setTestState('err');
-  }, [form.localDelta, source]);
+  }, [form, source]);
 
   const next = () => {
     if (step === 1 && source && availabilityForSource(source, connectorFeatures).enabled) {
@@ -155,7 +192,7 @@ export function ConnectModal({
       setTestState(null);
     } else if (step === 2) {
       if (testState !== 'ok') {
-        runTest();
+        void runTest();
         return;
       }
       setStep(3);
@@ -251,6 +288,7 @@ export function ConnectModal({
               setForm={setForm}
               serverFallbackEnabled={serverFallbackEnabled}
               testState={testState}
+              error={objectStorageError}
             />
           )}
           {step === 2 && source === 'unity_catalog' && (
@@ -278,7 +316,9 @@ export function ConnectModal({
           {step === 2 && (
             <button
               className="cc-btn lg"
-              onClick={runTest}
+              onClick={() => {
+                void runTest();
+              }}
               disabled={!canNext || testState === 'running'}
             >
               {testState === 'running' ? <span className="cc-spin" /> : <IconCheck size={12} />}
@@ -706,17 +746,73 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
+function objectStorageRuntimeFromDescriptor(descriptor: BrowserHttpSnapshotDescriptor) {
+  const tableName = descriptor.table_uri.split('/').filter(Boolean).at(-1) ?? 'table';
+  const rows = descriptor.active_files.reduce((sum, file) => sum + rowsFromStats(file.stats), 0);
+  const sizeBytes = descriptor.active_files.reduce((sum, file) => sum + file.size_bytes, 0);
+  return {
+    tableUri: descriptor.table_uri,
+    tableName,
+    discovery: {
+      summary: 'Detected 1 public Delta table',
+      schemas: [
+        {
+          name: 'default',
+          tableCount: 1,
+          included: true,
+          tables: [
+            {
+              name: tableName,
+              snapshot: descriptor.snapshot_version,
+              rows,
+              files: descriptor.active_files.length,
+              size: formatBytes(sizeBytes),
+              protocol: 'r1/w2',
+              uri: descriptor.table_uri,
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+function rowsFromStats(stats: string | undefined): number {
+  if (!stats) return 0;
+  try {
+    const parsed = JSON.parse(stats) as { numRecords?: unknown };
+    return typeof parsed.numRecords === 'number' && Number.isFinite(parsed.numRecords)
+      ? parsed.numRecords
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+function publicObjectStorageErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // ─── Object storage config ──────────────────────────────
 function ConfigObjectStore({
   form,
   setForm,
   serverFallbackEnabled,
   testState,
+  error,
 }: {
   form: ConnectForm;
   setForm: (f: ConnectForm) => void;
   serverFallbackEnabled: boolean;
   testState: TestState;
+  error: string | null;
 }) {
   const provider = OBJECT_STORE_PROVIDERS.find(
     (p) => p.id === form.provider,
@@ -733,7 +829,7 @@ function ConfigObjectStore({
               <button
                 key={p.id}
                 className={form.provider === p.id ? 'active' : ''}
-                onClick={() => setForm({ ...form, provider: p.id })}
+                onClick={() => setForm({ ...form, provider: p.id, objectStorage: null })}
               >
                 <span className={'g ' + p.id}>{p.scheme.replace('://', '').toUpperCase()}</span>
                 {p.label}
@@ -751,7 +847,11 @@ function ConfigObjectStore({
               placeholder={provider.placeholder.replace(provider.scheme, '')}
               value={form.uri.replace(provider.scheme, '')}
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                setForm({ ...form, uri: provider.scheme + e.target.value })
+                setForm({
+                  ...form,
+                  uri: provider.scheme + e.target.value,
+                  objectStorage: null,
+                })
               }
             />
             {okURI && form.uri.length > provider.scheme.length + 4 && (
@@ -763,8 +863,8 @@ function ConfigObjectStore({
             )}
           </div>
           <div className="cc-help">
-            Point at the bucket, a folder containing many Delta tables, or a single table root. Axon
-            auto-detects table boundaries by walking for <code>_delta_log/</code>.
+            Point at a public GCS Delta table root. Axon lists and reads{' '}
+            <code>_delta_log/</code> in the browser without private credentials.
           </div>
         </div>
 
@@ -805,12 +905,32 @@ function ConfigObjectStore({
           </div>
         </div>
 
+        {form.objectStorage && (
+          <div className="cc-detected">
+            <div className="cc-help" style={{ marginBottom: 8 }}>
+              Public Delta table detected
+            </div>
+            <div className="row">
+              <span className="ico">
+                <IconTable size={14} />
+              </span>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div className="name">{form.objectStorage.tableName}</div>
+                <div className="path">{form.objectStorage.tableUri}</div>
+              </div>
+              <span style={{ font: '11.5px var(--mono)', color: 'var(--accent)' }}>
+                public
+              </span>
+            </div>
+          </div>
+        )}
+
         <TestResult
           state={testState}
           okText={`${provider.label} Delta log is browser-readable`}
           okDetail="The browser can reconstruct the snapshot and range-read active Parquet files."
-          errText="Browser-local storage access not configured"
-          errDetail="Configure CORS-enabled object access or a browser storage adapter before discovery."
+          errText={error ?? 'Browser-local storage access not configured'}
+          errDetail="Use a public GCS Delta table root with anonymous listing, log reads, Parquet range reads, and CORS for this browser origin."
         />
       </div>
 
@@ -826,8 +946,8 @@ function ConfigObjectStore({
         <hr />
         <h5>Required permissions</h5>
         <ul>
-          <li>Browser can list or receive a manifest for the table&apos;s Delta log.</li>
-          <li>Browser can range-read Delta log and active Parquet objects.</li>
+          <li>Browser can anonymously list the table&apos;s Delta log prefix.</li>
+          <li>Browser can read Delta log objects and range-read active Parquet objects.</li>
         </ul>
         <hr />
         <h5>Network</h5>

@@ -79,7 +79,7 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(consoleErrors, `console errors:\n${consoleErrors.join('\n')}`).toEqual([]);
   });
 
-  test('connect source flows fail closed without browser-owned credentials', async ({ page }) => {
+  test('connect source flows stay browser-owned without private credentials', async ({ page }) => {
     await page.goto('/connect');
 
     await expect(page.getByRole('button', { name: 'Unity Catalog' })).toBeDisabled();
@@ -136,10 +136,80 @@ test.describe('editor (Phase 1 smoke)', () => {
       ),
     ).toHaveCount(0);
 
+    await page.route('https://storage.googleapis.com/acme-lake?*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/xml',
+        headers: { 'access-control-allow-origin': APP_ORIGIN },
+        body: `<?xml version="1.0" encoding="UTF-8"?>
+          <ListBucketResult>
+            <IsTruncated>false</IsTruncated>
+            <Contents>
+              <Key>silver/_delta_log/00000000000000000000.json</Key>
+            </Contents>
+          </ListBucketResult>`,
+      });
+    });
+    await page.route(
+      'https://storage.googleapis.com/acme-lake/silver/_delta_log/00000000000000000000.json',
+      async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': APP_ORIGIN },
+          body: [
+            JSON.stringify({ protocol: { minReaderVersion: 1, minWriterVersion: 2 } }),
+            JSON.stringify({
+              metaData: {
+                id: 'public-object-storage-test',
+                format: { provider: 'parquet', options: {} },
+                schemaString: JSON.stringify({
+                  type: 'struct',
+                  fields: [
+                    { name: 'id', type: 'long', nullable: true, metadata: {} },
+                    { name: 'category', type: 'string', nullable: true, metadata: {} },
+                  ],
+                }),
+                partitionColumns: [],
+                configuration: {},
+              },
+            }),
+            JSON.stringify({
+              add: {
+                path: 'part-000.parquet',
+                partitionValues: {},
+                size: 128,
+                modificationTime: 1779479201568,
+                dataChange: true,
+                stats: JSON.stringify({
+                  numRecords: 4,
+                  minValues: { id: 1, category: 'alpha' },
+                  maxValues: { id: 4, category: 'gamma' },
+                  nullCount: { id: 0, category: 0 },
+                }),
+              },
+            }),
+          ].join('\n'),
+        });
+      },
+    );
+
     await configDialog.getByRole('button', { name: 'Test connection' }).click();
-    await expect(configDialog.getByText(/connection verified/i)).toHaveCount(0);
-    await expect(configDialog).toContainText(/browser-local storage access not configured/i);
-    await expect(configDialog.getByRole('button', { name: /Discover tables/ })).toBeDisabled();
+    await expect(configDialog).toContainText(/source check passed/i);
+    await expect(configDialog).toContainText(/Delta log is browser-readable/i);
+    await configDialog.getByRole('button', { name: /Discover tables/ }).click();
+
+    const reviewDialog = page.getByRole('dialog', { name: 'Review & name catalog' });
+    await expect(reviewDialog).toContainText(/Detected 1 public Delta table/i);
+    await expect(reviewDialog).toContainText(/silver/i);
+    await reviewDialog.getByRole('button', { name: /Connect catalog/ }).click();
+
+    const persisted = await page.evaluate(
+      () => localStorage.getItem('axon.connect.catalogs.v1') ?? '',
+    );
+    expect(persisted).toContain('gs://acme-lake/silver');
+    expect(persisted).not.toContain('storage.googleapis.com');
+    expect(persisted).not.toContain('X-Goog');
   });
 
   test('persisted BFF-backed catalogs are not active when the connector gate is off', async ({
