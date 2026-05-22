@@ -23,7 +23,26 @@ export type LocalDeltaQueryTableSource = {
   protocol?: string;
 };
 
-export type QueryTableSource = ManifestQueryTableSource | LocalDeltaQueryTableSource;
+export type ObjectStoreTableRootQueryTableSource = {
+  kind: 'object_store_table_root';
+  provider: 'gcs';
+  catalogName: string;
+  schemaName: string;
+  tableName: string;
+  tableUri: string;
+  storage: string;
+  region: string;
+  snapshot?: number;
+  rows?: number;
+  files?: number;
+  size?: string;
+  protocol?: string;
+};
+
+export type QueryTableSource =
+  | ManifestQueryTableSource
+  | LocalDeltaQueryTableSource
+  | ObjectStoreTableRootQueryTableSource;
 
 export type QueryCatalogCandidate = {
   id: string;
@@ -31,6 +50,7 @@ export type QueryCatalogCandidate = {
   storage: string;
   region?: string;
   kind?: string;
+  provider?: string;
   schemas: Array<{
     name: string;
     tables: Array<{
@@ -42,6 +62,7 @@ export type QueryCatalogCandidate = {
       protocol?: string;
       manifestUrl?: string;
       localRegistryId?: string;
+      uri?: string;
     }>;
   }>;
 };
@@ -71,7 +92,7 @@ export function querySourceFromConnectedCatalogs(
 
   for (const catalog of catalogs) {
     for (const schema of catalog.schemas) {
-      const table = schema.tables.find((candidate) => isQueryableTable(candidate));
+      const table = schema.tables.find((candidate) => isQueryableTable(catalog, candidate));
       if (!table) continue;
       return querySourceForTable(catalog, schema.name, table);
     }
@@ -84,7 +105,7 @@ export function firstQueryableTableRef(
 ): ActiveConnectedTableRef | undefined {
   for (const catalog of catalogs) {
     for (const schema of catalog.schemas) {
-      const table = schema.tables.find((candidate) => isQueryableTable(candidate));
+      const table = schema.tables.find((candidate) => isQueryableTable(catalog, candidate));
       if (!table) continue;
       return {
         catalogId: catalog.id,
@@ -124,6 +145,9 @@ export function sameQuerySource(a: QueryTableSource, b: QueryTableSource): boole
       a.localRegistryId === b.localRegistryId
     );
   }
+  if (a.kind === 'object_store_table_root' && b.kind === 'object_store_table_root') {
+    return a.provider === b.provider && a.tableUri === b.tableUri;
+  }
   return false;
 }
 
@@ -134,7 +158,7 @@ function querySourceForTableRef(
   const catalog = catalogs.find((candidate) => candidate.id === activeTable.catalogId);
   const schema = catalog?.schemas.find((candidate) => candidate.name === activeTable.schemaName);
   const table = schema?.tables.find((candidate) => candidate.name === activeTable.tableName);
-  if (!catalog || !schema || !table || !isQueryableTable(table)) return undefined;
+  if (!catalog || !schema || !table || !isQueryableTable(catalog, table)) return undefined;
   return querySourceForTable(catalog, schema.name, table);
 }
 
@@ -172,11 +196,42 @@ function querySourceForTable(
     };
   }
 
+  const tableUri = publicObjectStoreTableUri(catalog, table);
+  if (tableUri) {
+    return {
+      kind: 'object_store_table_root',
+      provider: 'gcs',
+      catalogName: catalog.alias,
+      schemaName,
+      tableName: table.name,
+      tableUri,
+      storage: tableUri,
+      region: catalog.region || SAMPLE_QUERY_SOURCE.region,
+      snapshot: table.snapshot,
+      rows: table.rows,
+      files: table.files,
+      size: table.size,
+      protocol: table.protocol,
+    };
+  }
+
   return SAMPLE_QUERY_SOURCE;
 }
 
 function isQueryableTable(
+  catalog: QueryCatalogCandidate,
   table: QueryCatalogCandidate['schemas'][number]['tables'][number],
 ): boolean {
-  return !!table.manifestUrl || !!table.localRegistryId;
+  return (
+    !!table.manifestUrl || !!table.localRegistryId || !!publicObjectStoreTableUri(catalog, table)
+  );
+}
+
+function publicObjectStoreTableUri(
+  catalog: QueryCatalogCandidate,
+  table: QueryCatalogCandidate['schemas'][number]['tables'][number],
+): string | undefined {
+  if (catalog.kind !== 'object_store' || catalog.provider !== 'gcs') return undefined;
+  const tableUri = table.uri || catalog.storage;
+  return tableUri.startsWith('gs://') ? tableUri : undefined;
 }
