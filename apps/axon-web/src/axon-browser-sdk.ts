@@ -639,6 +639,7 @@ export type BrowserWorkerSqlCommand = {
   output?: BrowserWorkerSqlOutput;
 };
 
+// Internal worker control message only. It is fire-and-forget and has no response envelope.
 export type BrowserWorkerCancelCommand = {
   request_id: string;
   query_id?: string;
@@ -1192,15 +1193,6 @@ export function inspectParquetCommand(
       request_id: requestId,
       name,
       path,
-    },
-  };
-}
-
-export function cancelCommand(requestId: string, queryId?: string): BrowserWorkerCommand {
-  return {
-    cancel: {
-      request_id: requestId,
-      query_id: queryId,
     },
   };
 }

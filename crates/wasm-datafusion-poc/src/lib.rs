@@ -2366,11 +2366,18 @@ fn map_datafusion_error(error: datafusion::error::DataFusionError) -> QueryError
         return query_error;
     }
 
-    QueryError::new(
-        QueryErrorCode::ExecutionFailed,
-        format!("experimental browser DataFusion query failed: {error}"),
-        runtime_target(),
-    )
+    match error {
+        DataFusionError::NotImplemented(message) => QueryError::new(
+            QueryErrorCode::UnsupportedFeature,
+            message,
+            runtime_target(),
+        ),
+        other => QueryError::new(
+            QueryErrorCode::ExecutionFailed,
+            format!("experimental browser DataFusion query failed: {other}"),
+            runtime_target(),
+        ),
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

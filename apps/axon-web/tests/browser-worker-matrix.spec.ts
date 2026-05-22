@@ -23,6 +23,7 @@ type SerializedWorkerError = {
 const BINARY_STRING_INT_PARQUET_BASE64 =
   'UEFSMRUEFRgVGEwVBhUAEgAAAQAAAAIAAAADAAAAFQAVCBUILBUGFRAVBhUGAAACAyQAFQQVKhUqTBUGFQASAAADAAAAAAECAwAAAAMEBQMAAAAGBwgVABUIFQgsFQYVEBUGFQYAAAIDJAAZEgIZGAQBAAAAGRgEAwAAABUCGRYAABkSAhkYAwABAhkYAwYHCBUCGRYAABkcFjwVKhYAAAAZHBasARUqFgAAGRYSABUCGTxIBnNjaGVtYRUEABUCJQAYAmlkABUMJQAYB3BheWxvYWQAFgYZHBksJgAcFQIZNQAGEBkYAmlkFQAWBhZeFl4mPCYIHBgEAwAAABgEAQAAABYAKAQDAAAAGAQBAAAAEREAGSwVBBUAFQIAFQAVEBUCAAAWrgIVFBbWARUuACYAHBUMGTUABhAZGAdwYXlsb2FkFQAWBhZwFnAmrAEmZhw2ACgDBgcIGAMAAQIREQAZLBUEFQAVAgAVABUQFQIAPBYSAAAWwgIVHBaEAhUqABbOARYGJggWzgEUAAAoGXBhcnF1ZXQtcnMgdmVyc2lvbiA1Ny4zLjAZLBwAABwAAAADAQAAUEFSMQ==';
 const BINARY_STRING_INT_PARQUET_BYTES = Buffer.from(BINARY_STRING_INT_PARQUET_BASE64, 'base64');
+const BINARY_STRING_INT_PARQUET_SIZE_BYTES = BINARY_STRING_INT_PARQUET_BYTES.byteLength;
 const BINARY_STRING_INT_PARQUET_PATH =
   '**/fixtures/browser-datafusion-runtime/binary-string-int.parquet';
 
@@ -48,179 +49,182 @@ test('opens Delta Sharing URL-mode descriptors through the real browser query wo
   await routeBinaryStringIntParquet(page);
   await page.goto('/');
 
-  const result = await page.evaluate(async () => {
-    const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
-    const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
-      type: 'module',
-    });
-    const postedCommands: string[] = [];
-    const workerEvents: string[] = [];
-    const recordingWorker = {
-      addEventListener: worker.addEventListener.bind(worker),
-      removeEventListener: worker.removeEventListener.bind(worker),
-      terminate: worker.terminate.bind(worker),
-      postMessage(message: unknown): void {
-        postedCommands.push(JSON.stringify(message));
-        worker.postMessage(message);
-      },
-    };
-    const client = sdk.createAxonBrowserClient({
-      worker: recordingWorker,
-      onEvent: (event: unknown) => workerEvents.push(JSON.stringify(event)),
-    });
-
-    const manifest = (await (
-      await fetch('/fixtures/prod-like/delta-log-manifest.json')
-    ).json()) as {
-      data_files: Array<{
-        relative_path: string;
-        url_path: string;
-        size_bytes: number;
-        partition_values: Record<string, string>;
-      }>;
-      expected_latest_version: number;
-    };
-    const maybeActiveFiles = ['B', 'D'].map((category) =>
-      manifest.data_files.findLast((file) => file.partition_values.category === category),
-    );
-    if (maybeActiveFiles.some((file) => file === undefined)) {
-      throw new Error('expected active B and D fixture files in prod-like manifest');
-    }
-    const activeFiles = maybeActiveFiles as Array<NonNullable<(typeof maybeActiveFiles)[number]>>;
-
-    let sharingRequest:
-      | {
-          authorization: string | null;
-          body: string;
-          method: string | undefined;
-          url: string;
-        }
-      | undefined;
-    const sharingFetch = async (
-      input: RequestInfo | URL,
-      init?: RequestInit,
-    ): Promise<Response> => {
-      const headers = new Headers(init?.headers);
-      sharingRequest = {
-        authorization: headers.get('authorization'),
-        body: String(init?.body ?? ''),
-        method: init?.method,
-        url: String(input),
+  const result = await page.evaluate(
+    async ({ runtimeFixtureSizeBytes }: { runtimeFixtureSizeBytes: number }) => {
+      const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+      const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
+        type: 'module',
+      });
+      const postedCommands: string[] = [];
+      const workerEvents: string[] = [];
+      const recordingWorker = {
+        addEventListener: worker.addEventListener.bind(worker),
+        removeEventListener: worker.removeEventListener.bind(worker),
+        terminate: worker.terminate.bind(worker),
+        postMessage(message: unknown): void {
+          postedCommands.push(JSON.stringify(message));
+          worker.postMessage(message);
+        },
       };
-      const expiresAt = new Date(Date.now() + 600_000).toISOString();
-      const lines = [
-        JSON.stringify({ protocol: { minReaderVersion: 1 } }),
-        JSON.stringify({ metaData: { id: 'shared-orders', partitionColumns: ['category'] } }),
-        ...activeFiles.map((file) =>
-          JSON.stringify({
-            file: {
-              id: file.relative_path,
-              url: new URL(`${file.url_path}?X-Amz-Signature=signed-fixture-url`, location.href)
-                .href,
-              size: file.size_bytes,
-              partitionValues: file.partition_values,
-              expirationTimestamp: expiresAt,
-            },
-          }),
-        ),
-      ];
-      return new Response(lines.join('\n'), {
-        headers: {
-          'content-type': 'application/x-ndjson',
-          'delta-table-version': String(manifest.expected_latest_version),
+      const client = sdk.createAxonBrowserClient({
+        worker: recordingWorker,
+        onEvent: (event: unknown) => workerEvents.push(JSON.stringify(event)),
+      });
+
+      const manifest = (await (
+        await fetch('/fixtures/prod-like/delta-log-manifest.json')
+      ).json()) as {
+        data_files: Array<{
+          relative_path: string;
+          url_path: string;
+          size_bytes: number;
+          partition_values: Record<string, string>;
+        }>;
+        expected_latest_version: number;
+      };
+      const maybeActiveFiles = ['B', 'D'].map((category) =>
+        manifest.data_files.findLast((file) => file.partition_values.category === category),
+      );
+      if (maybeActiveFiles.some((file) => file === undefined)) {
+        throw new Error('expected active B and D fixture files in prod-like manifest');
+      }
+      const activeFiles = maybeActiveFiles as Array<NonNullable<(typeof maybeActiveFiles)[number]>>;
+
+      let sharingRequest:
+        | {
+            authorization: string | null;
+            body: string;
+            method: string | undefined;
+            url: string;
+          }
+        | undefined;
+      const sharingFetch = async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ): Promise<Response> => {
+        const headers = new Headers(init?.headers);
+        sharingRequest = {
+          authorization: headers.get('authorization'),
+          body: String(init?.body ?? ''),
+          method: init?.method,
+          url: String(input),
+        };
+        const expiresAt = new Date(Date.now() + 600_000).toISOString();
+        const lines = [
+          JSON.stringify({ protocol: { minReaderVersion: 1 } }),
+          JSON.stringify({ metaData: { id: 'shared-orders', partitionColumns: ['category'] } }),
+          ...activeFiles.map((file) =>
+            JSON.stringify({
+              file: {
+                id: file.relative_path,
+                url: new URL(`${file.url_path}?X-Amz-Signature=signed-fixture-url`, location.href)
+                  .href,
+                size: file.size_bytes,
+                partitionValues: file.partition_values,
+                expirationTimestamp: expiresAt,
+              },
+            }),
+          ),
+        ];
+        return new Response(lines.join('\n'), {
+          headers: {
+            'content-type': 'application/x-ndjson',
+            'delta-table-version': String(manifest.expected_latest_version),
+          },
+        });
+      };
+
+      const session = await sdk.createDeltaSharingClient({ fetch: sharingFetch }).connect({
+        source: 'json',
+        value: {
+          endpoint: 'https://sharing.example.test/delta-sharing',
+          bearerToken: 'secret-profile-token',
+          expirationTime: '2026-12-31T00:00:00Z',
         },
       });
-    };
 
-    const session = await sdk.createDeltaSharingClient({ fetch: sharingFetch }).connect({
-      source: 'json',
-      value: {
-        endpoint: 'https://sharing.example.test/delta-sharing',
-        bearerToken: 'secret-profile-token',
-        expirationTime: '2026-12-31T00:00:00Z',
-      },
-    });
+      try {
+        const opened = await client.openDeltaShare('shared_orders', {
+          session,
+          table: { share: 'retail_share', schema: 'sales', table: 'orders' },
+          responseFormat: 'auto',
+          requestId: 'open-delta-sharing-real-worker',
+        });
+        const queryResult = await client.query(
+          'shared_orders',
+          'SELECT category, id, value FROM shared_orders ORDER BY id',
+          { requestId: 'query-delta-sharing-real-worker' },
+        );
+        const runtimeFixtureUrl = new URL(
+          '/fixtures/browser-datafusion-runtime/binary-string-int.parquet',
+          location.href,
+        ).href;
+        const openedRuntime = await client.openDeltaTable(
+          'worker_runtime_types',
+          {
+            table_uri: new URL('/fixtures/browser-datafusion-runtime/table', location.href).href,
+            snapshot_version: 0,
+            partition_column_types: { category: 'string' },
+            browser_compatibility: { capabilities: {} },
+            required_capabilities: { capabilities: {} },
+            active_files: [
+              {
+                path: 'category=runtime/part-000.parquet',
+                url: runtimeFixtureUrl,
+                size_bytes: runtimeFixtureSizeBytes,
+                partition_values: { category: 'runtime' },
+              },
+            ],
+          },
+          { requestId: 'open-browser-datafusion-runtime-types' },
+        );
+        const typedResult = await client.query(
+          'worker_runtime_types',
+          'SELECT payload, category, id FROM worker_runtime_types ORDER BY id',
+          { requestId: 'query-browser-datafusion-runtime-types' },
+        );
+        const openCommand =
+          postedCommands.find(
+            (command) => command.includes('open_delta_table') && command.includes('shared_orders'),
+          ) ?? '';
+        const openedSnapshot = JSON.parse(openCommand).open_delta_table.snapshot;
+        const runtimeOpenCommand =
+          postedCommands.find(
+            (command) =>
+              command.includes('open_delta_table') && command.includes('worker_runtime_types'),
+          ) ?? '';
 
-    try {
-      const opened = await client.openDeltaShare('shared_orders', {
-        session,
-        table: { share: 'retail_share', schema: 'sales', table: 'orders' },
-        responseFormat: 'auto',
-        requestId: 'open-delta-sharing-real-worker',
-      });
-      const queryResult = await client.query(
-        'shared_orders',
-        'SELECT category, id, value FROM shared_orders ORDER BY id',
-        { requestId: 'query-delta-sharing-real-worker' },
-      );
-      const runtimeFixtureUrl = new URL(
-        '/fixtures/browser-datafusion-runtime/binary-string-int.parquet',
-        location.href,
-      ).href;
-      const openedRuntime = await client.openDeltaTable(
-        'worker_runtime_types',
-        {
-          table_uri: new URL('/fixtures/browser-datafusion-runtime/table', location.href).href,
-          snapshot_version: 0,
-          partition_column_types: { category: 'string' },
-          browser_compatibility: { capabilities: {} },
-          required_capabilities: { capabilities: {} },
-          active_files: [
-            {
-              path: 'category=runtime/part-000.parquet',
-              url: runtimeFixtureUrl,
-              size_bytes: 442,
-              partition_values: { category: 'runtime' },
-            },
-          ],
-        },
-        { requestId: 'open-browser-datafusion-runtime-types' },
-      );
-      const typedResult = await client.query(
-        'worker_runtime_types',
-        'SELECT payload, category, id FROM worker_runtime_types ORDER BY id',
-        { requestId: 'query-browser-datafusion-runtime-types' },
-      );
-      const openCommand =
-        postedCommands.find(
-          (command) => command.includes('open_delta_table') && command.includes('shared_orders'),
-        ) ?? '';
-      const openedSnapshot = JSON.parse(openCommand).open_delta_table.snapshot;
-      const runtimeOpenCommand =
-        postedCommands.find(
-          (command) =>
-            command.includes('open_delta_table') && command.includes('worker_runtime_types'),
-        ) ?? '';
-
-      return {
-        activeFileCount: openedSnapshot.active_files.length,
-        commandLog: postedCommands.join('\n'),
-        deltaSharing: opened.deltaSharing,
-        executedOn: queryResult.response.executed_on,
-        ipcByteLength: queryResult.result.bytes.byteLength,
-        ipcByteType: queryResult.result.bytes.constructor.name,
-        ipcContentType: queryResult.result.content_type,
-        ipcFormat: queryResult.result.format,
-        openCommand,
-        preview: queryResult.preview,
-        runtimeOpenCommand,
-        typedOpenedName: openedRuntime.name,
-        typedResult: {
-          contentType: typedResult.result.content_type,
-          executedOn: typedResult.response.executed_on,
-          format: typedResult.result.format,
-          preview: typedResult.preview,
-          byteLength: typedResult.result.bytes.byteLength,
-          byteType: typedResult.result.bytes.constructor.name,
-        },
-        queryCommand: postedCommands.find((command) => command.includes('"sql"')) ?? '',
-        sharingRequest,
-        workerEvents,
-      };
-    } finally {
-      client.terminate();
-    }
-  });
+        return {
+          activeFileCount: openedSnapshot.active_files.length,
+          commandLog: postedCommands.join('\n'),
+          deltaSharing: opened.deltaSharing,
+          executedOn: queryResult.response.executed_on,
+          ipcByteLength: queryResult.result.bytes.byteLength,
+          ipcByteType: queryResult.result.bytes.constructor.name,
+          ipcContentType: queryResult.result.content_type,
+          ipcFormat: queryResult.result.format,
+          openCommand,
+          preview: queryResult.preview,
+          runtimeOpenCommand,
+          typedOpenedName: openedRuntime.name,
+          typedResult: {
+            contentType: typedResult.result.content_type,
+            executedOn: typedResult.response.executed_on,
+            format: typedResult.result.format,
+            preview: typedResult.preview,
+            byteLength: typedResult.result.bytes.byteLength,
+            byteType: typedResult.result.bytes.constructor.name,
+          },
+          queryCommand: postedCommands.find((command) => command.includes('"sql"')) ?? '',
+          sharingRequest,
+          workerEvents,
+        };
+      } finally {
+        client.terminate();
+      }
+    },
+    { runtimeFixtureSizeBytes: BINARY_STRING_INT_PARQUET_SIZE_BYTES },
+  );
 
   expect(result.deltaSharing).toMatchObject({
     kind: 'delta_sharing_snapshot_descriptor',
@@ -364,25 +368,22 @@ test('surfaces unsupported feature errors from the real browser query worker', a
   expect(result.workerEvents.join('\n')).toContain('unsupported_feature');
 });
 
-test('preserves cancellation errors from the real browser query worker', async ({ page }) => {
+test('dispose removes the DataFusion table from the real browser worker session', async ({
+  page,
+}) => {
   await routeBinaryStringIntParquet(page);
   await page.goto('/');
 
-  const result = await page.evaluate(async () => {
-    const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
-    const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
-      type: 'module',
-    });
-    const workerEvents: string[] = [];
-    const client = sdk.createAxonBrowserClient({
-      worker,
-      onEvent: (event: unknown) => workerEvents.push(JSON.stringify(event)),
-    });
+  const result = await page.evaluate(
+    async ({ runtimeFixtureSizeBytes }: { runtimeFixtureSizeBytes: number }) => {
+      const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+      const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
+        type: 'module',
+      });
+      const client = sdk.createAxonBrowserClient({ worker });
 
-    try {
-      await client.openDeltaTable(
-        'cancelled_runtime_types',
-        {
+      try {
+        const snapshot = {
           table_uri: new URL('/fixtures/browser-datafusion-runtime/table', location.href).href,
           snapshot_version: 0,
           partition_column_types: { category: 'string' },
@@ -395,61 +396,219 @@ test('preserves cancellation errors from the real browser query worker', async (
                 '/fixtures/browser-datafusion-runtime/binary-string-int.parquet',
                 location.href,
               ).href,
-              size_bytes: 442,
+              size_bytes: runtimeFixtureSizeBytes,
               partition_values: { category: 'runtime' },
             },
           ],
-        },
-        { requestId: 'open-real-worker-cancellation' },
-      );
-      worker.postMessage({
-        cancel: {
-          request_id: 'cancel-stale-real-worker-query',
-          query_id: 'query-that-is-not-active',
-        },
-      });
-      const healthyResult = await client.query(
-        'cancelled_runtime_types',
-        'SELECT payload, category, id FROM cancelled_runtime_types ORDER BY id',
-        { requestId: 'query-after-stale-real-worker-cancellation' },
-      );
-      const cancellationQuery = client.query(
-        'cancelled_runtime_types',
-        'SELECT payload, category, id FROM cancelled_runtime_types ORDER BY id',
-        { requestId: 'query-real-worker-cancellation' },
-      );
-      worker.postMessage({
-        cancel: {
-          request_id: 'cancel-real-worker-query',
-          query_id: 'query-real-worker-cancellation',
-        },
-      });
-
-      return {
-        cancellation: await captureWorkerError(cancellationQuery),
-        healthyPreview: healthyResult.preview,
-        workerEvents,
-      };
-    } finally {
-      client.terminate();
-    }
-
-    async function captureWorkerError(promise: Promise<unknown>): Promise<SerializedWorkerError> {
-      try {
-        await promise;
-      } catch (error) {
-        const candidate = error as Partial<SerializedWorkerError>;
-        return {
-          name: String(candidate.name),
-          message: String(candidate.message),
-          fallbackReason: candidate.fallbackReason,
-          queryError: candidate.queryError,
         };
+        const opened = await client.openDeltaTable('disposed_runtime_types', snapshot, {
+          requestId: 'open-dispose-removes-real-worker-table',
+        });
+        const disposed = await client.dispose('disposed_runtime_types', {
+          requestId: 'dispose-removes-real-worker-table',
+        });
+        const response = await sendRawWorkerRequest(worker, {
+          sql: {
+            request_id: 'query-disposed-real-worker-table',
+            name: 'disposed_runtime_types',
+            output: 'arrow_ipc_stream',
+            query: {
+              table_uri: snapshot.table_uri,
+              snapshot_version: snapshot.snapshot_version,
+              sql: 'SELECT payload, category, id FROM disposed_runtime_types ORDER BY id',
+              preferred_target: 'browser_wasm',
+              options: { collect_metrics: true },
+            },
+          },
+        });
+        const missingDisposed = await client.dispose('disposed_runtime_types', {
+          requestId: 'dispose-missing-real-worker-table',
+        });
+
+        return {
+          disposedName: disposed.name,
+          missingDisposedName: missingDisposed.name,
+          openedName: opened.name,
+          response: summarizeRawWorkerResponse(response),
+        };
+      } finally {
+        client.terminate();
       }
 
-      throw new Error('expected browser worker request to fail');
-    }
+      async function sendRawWorkerRequest(
+        targetWorker: Worker,
+        command: unknown,
+      ): Promise<unknown> {
+        return new Promise((resolve, reject) => {
+          const timeout = window.setTimeout(() => {
+            targetWorker.removeEventListener('message', onMessage);
+            reject(new Error('timed out waiting for raw worker response'));
+          }, 10_000);
+          const onMessage = (event: MessageEvent<unknown>) => {
+            const data = event.data as {
+              error?: { request_id?: string };
+              success?: { request_id?: string };
+            };
+            const requestId = data.error?.request_id ?? data.success?.request_id;
+            if (requestId !== 'query-disposed-real-worker-table') {
+              return;
+            }
+            window.clearTimeout(timeout);
+            targetWorker.removeEventListener('message', onMessage);
+            resolve(event.data);
+          };
+
+          targetWorker.addEventListener('message', onMessage);
+          targetWorker.postMessage(command);
+        });
+      }
+
+      function summarizeRawWorkerResponse(response: unknown): unknown {
+        const message = response as {
+          error?: unknown;
+          success?: { request_id?: string };
+        };
+        if (message.error) {
+          return { error: message.error };
+        }
+        if (message.success) {
+          return { success: { request_id: message.success.request_id } };
+        }
+        return response;
+      }
+    },
+    { runtimeFixtureSizeBytes: BINARY_STRING_INT_PARQUET_SIZE_BYTES },
+  );
+
+  expect(result.openedName).toBe('disposed_runtime_types');
+  expect(result.disposedName).toBe('disposed_runtime_types');
+  expect(result.missingDisposedName).toBe('disposed_runtime_types');
+  expect(result.response).toMatchObject({
+    error: {
+      request_id: 'query-disposed-real-worker-table',
+      error: {
+        code: 'invalid_request',
+        message: expect.stringContaining("'disposed_runtime_types'"),
+        target: 'browser_wasm',
+      },
+    },
   });
+});
+
+test('preserves cancellation errors from the real browser query worker', async ({ page }) => {
+  await routeBinaryStringIntParquet(page, { delayMs: 100 });
+  await page.goto('/');
+
+  const result = await page.evaluate(
+    async ({ runtimeFixtureSizeBytes }: { runtimeFixtureSizeBytes: number }) => {
+      const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+      const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
+        type: 'module',
+      });
+      const workerEvents: string[] = [];
+      let executingProgressResolver: (() => void) | undefined;
+      const executingProgress = new Promise<void>((resolve) => {
+        executingProgressResolver = resolve;
+      });
+      const client = sdk.createAxonBrowserClient({
+        worker,
+        onEvent: (event: unknown) => {
+          workerEvents.push(JSON.stringify(event));
+          const progress = (
+            event as {
+              progress?: {
+                context?: { request_id?: string };
+                stage?: string;
+              };
+            }
+          ).progress;
+          if (
+            progress?.context?.request_id === 'query-real-worker-cancellation' &&
+            progress.stage === 'executing'
+          ) {
+            executingProgressResolver?.();
+          }
+        },
+      });
+
+      try {
+        await client.openDeltaTable(
+          'cancelled_runtime_types',
+          {
+            table_uri: new URL('/fixtures/browser-datafusion-runtime/table', location.href).href,
+            snapshot_version: 0,
+            partition_column_types: { category: 'string' },
+            browser_compatibility: { capabilities: {} },
+            required_capabilities: { capabilities: {} },
+            active_files: [
+              {
+                path: 'category=runtime/part-000.parquet',
+                url: new URL(
+                  '/fixtures/browser-datafusion-runtime/binary-string-int.parquet',
+                  location.href,
+                ).href,
+                size_bytes: runtimeFixtureSizeBytes,
+                partition_values: { category: 'runtime' },
+              },
+            ],
+          },
+          { requestId: 'open-real-worker-cancellation' },
+        );
+        worker.postMessage({
+          cancel: {
+            request_id: 'cancel-stale-real-worker-query',
+            query_id: 'query-that-is-not-active',
+          },
+        });
+        const healthyResult = await client.query(
+          'cancelled_runtime_types',
+          'SELECT payload, category, id FROM cancelled_runtime_types ORDER BY id',
+          { requestId: 'query-after-stale-real-worker-cancellation' },
+        );
+        const cancellationQuery = client.query(
+          'cancelled_runtime_types',
+          'SELECT payload, category, id FROM cancelled_runtime_types ORDER BY id',
+          { requestId: 'query-real-worker-cancellation' },
+        );
+        await executingProgress;
+        postWorkerCancel(worker, 'cancel-real-worker-query', 'query-real-worker-cancellation');
+
+        return {
+          cancellation: await captureWorkerError(cancellationQuery),
+          healthyPreview: healthyResult.preview,
+          workerEvents,
+        };
+      } finally {
+        client.terminate();
+      }
+
+      async function captureWorkerError(promise: Promise<unknown>): Promise<SerializedWorkerError> {
+        try {
+          await promise;
+        } catch (error) {
+          const candidate = error as Partial<SerializedWorkerError>;
+          return {
+            name: String(candidate.name),
+            message: String(candidate.message),
+            fallbackReason: candidate.fallbackReason,
+            queryError: candidate.queryError,
+          };
+        }
+
+        throw new Error('expected browser worker request to fail');
+      }
+
+      function postWorkerCancel(targetWorker: Worker, requestId: string, queryId: string): void {
+        targetWorker.postMessage({
+          cancel: {
+            request_id: requestId,
+            query_id: queryId,
+          },
+        });
+      }
+    },
+    { runtimeFixtureSizeBytes: BINARY_STRING_INT_PARQUET_SIZE_BYTES },
+  );
 
   expect(result.cancellation).toMatchObject({
     name: 'AxonWorkerError',
@@ -484,10 +643,20 @@ test('preserves fallback-required errors from browser worker envelopes', async (
   });
 });
 
-async function routeBinaryStringIntParquet(page: Page): Promise<void> {
+type RouteBinaryStringIntParquetOptions = {
+  delayMs?: number;
+};
+
+async function routeBinaryStringIntParquet(
+  page: Page,
+  options: RouteBinaryStringIntParquetOptions = {},
+): Promise<void> {
   await page.route(BINARY_STRING_INT_PARQUET_PATH, async (route) => {
     const totalLength = BINARY_STRING_INT_PARQUET_BYTES.byteLength;
     const range = route.request().headers().range;
+    if (options.delayMs) {
+      await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+    }
 
     if (!range) {
       await route.fulfill({

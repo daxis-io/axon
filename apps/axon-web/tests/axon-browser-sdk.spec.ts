@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 
+import * as browserSdk from '../src/axon-browser-sdk';
 import {
   AxonProtocolError,
   AxonSdkError,
@@ -274,6 +275,10 @@ test('createAxonBrowserClient constructs a worker from the selected bundle', () 
       Reflect.deleteProperty(workerGlobal, 'Worker');
     }
   }
+});
+
+test('does not export cancelCommand as a request-response SDK helper', () => {
+  expect(Object.hasOwn(browserSdk, 'cancelCommand')).toBe(false);
 });
 
 test('getPlatformFeatures tracks browser isolation, SIMD, threads, and BigInt64Array', () => {

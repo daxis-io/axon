@@ -241,6 +241,11 @@ impl SandboxQuerySession {
         })
     }
 
+    pub fn dispose_table(&mut self, name: String) -> Result<String, JsValue> {
+        self.session.dispose_table(&name);
+        Ok(name)
+    }
+
     pub async fn sql(
         &mut self,
         name: String,

@@ -93,6 +93,8 @@ async function handleCommand(command: BrowserWorkerCommand): Promise<void> {
       return;
     }
     if ('dispose' in command) {
+      const session = await ensureSession(context);
+      await session.dispose_table(command.dispose.name);
       postResponse({
         disposed: {
           request_id: command.dispose.request_id,

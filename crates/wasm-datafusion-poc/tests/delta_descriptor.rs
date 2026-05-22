@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use query_contract::PartitionColumnType;
+use query_contract::{PartitionColumnType, QueryErrorCode};
 
 #[test]
 fn descriptor_preserves_table_schema_version_and_active_file_facts() {
@@ -90,6 +90,52 @@ fn descriptor_preserves_optional_deletion_vector_facts() {
     assert_eq!(deletion_vector.offset, Some(12));
     assert_eq!(deletion_vector.size_in_bytes, Some(256));
     assert_eq!(deletion_vector.cardinality, Some(3));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn descriptor_deletion_vectors_fail_as_unsupported_feature_through_arrow_ipc() {
+    let mut engine = wasm_datafusion_poc::WasmDataFusionEngine::new();
+
+    engine
+        .open_delta_table(wasm_datafusion_poc::DeltaTableDescriptor {
+            table_name: "events".to_string(),
+            table_version: 8,
+            schema: descriptor_schema(),
+            partition_columns: Vec::new(),
+            partition_column_types: BTreeMap::new(),
+            active_files: vec![wasm_datafusion_poc::DeltaActiveFile {
+                path: "part-001.parquet".to_string(),
+                url: "https://example.test/table/part-001.parquet".to_string(),
+                size_bytes: 2048,
+                partition_values: BTreeMap::new(),
+                object_etag: None,
+                stats_json: None,
+                deletion_vector: Some(wasm_datafusion_poc::DeletionVectorDescriptor {
+                    storage_type: "u".to_string(),
+                    path_or_inline_dv: "dv/part-001.bin".to_string(),
+                    offset: Some(12),
+                    size_in_bytes: Some(256),
+                    cardinality: Some(3),
+                }),
+            }],
+        })
+        .await
+        .expect("Delta descriptor should register");
+
+    let error = engine
+        .sql_to_arrow_ipc_result("SELECT id FROM events")
+        .await
+        .expect_err("descriptor scans with deletion vectors should fail");
+
+    assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+    assert!(
+        error
+            .message
+            .contains("browser DataFusion scan cannot execute"),
+        "unexpected error message: {}",
+        error.message
+    );
 }
 
 fn descriptor_schema() -> SchemaRef {

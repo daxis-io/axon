@@ -711,12 +711,25 @@ fn browser_execution_reports_metrics_for_pruned_and_empty_scans() {
             &sql,
         );
 
-        assert_eq!(
-            browser_result.metrics().bytes_fetched,
-            execution_plan.scan().candidate_bytes(),
-            "sql '{}': fetched bytes should match the candidate scan bytes",
-            sql
-        );
+        if execution_plan.scan().candidate_file_count() == 0 {
+            assert_eq!(
+                browser_result.metrics().bytes_fetched,
+                0,
+                "sql '{}': empty scans should not fetch object bytes",
+                sql
+            );
+        } else {
+            assert!(
+                browser_result.metrics().bytes_fetched > 0,
+                "sql '{}': non-empty scans should fetch range bytes",
+                sql
+            );
+            assert!(
+                browser_result.metrics().bytes_fetched <= execution_plan.scan().candidate_bytes(),
+                "sql '{}': fetched range bytes should not exceed candidate object bytes",
+                sql
+            );
+        }
         assert_eq!(
             browser_result.metrics().files_touched,
             native_result.metrics.files_touched,
@@ -740,7 +753,7 @@ fn browser_execution_rejects_bootstrap_to_execution_etag_drift_on_real_fixture_f
         snapshot_version: None,
     })
     .expect("latest snapshot should resolve");
-    let server = LoopbackObjectServer::from_fixture_paths_with_options(
+    let bootstrap_server = LoopbackObjectServer::from_fixture_paths_with_options(
         &fixture,
         resolved_snapshot
             .active_files
@@ -748,15 +761,26 @@ fn browser_execution_rejects_bootstrap_to_execution_etag_drift_on_real_fixture_f
             .map(|file| file.path.clone()),
         LoopbackObjectServerOptions {
             range_etag: Some("\"bootstrap-v1\"".to_string()),
-            full_etag: Some("\"execution-v2\"".to_string()),
+            ..LoopbackObjectServerOptions::default()
+        },
+    );
+    let execution_server = LoopbackObjectServer::from_fixture_paths_with_options(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+        LoopbackObjectServerOptions {
+            range_etag: Some("\"execution-v2\"".to_string()),
             ..LoopbackObjectServerOptions::default()
         },
     );
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
         .expect("default browser runtime config should be supported");
-    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let bootstrap_materialized =
+        materialize_loopback_snapshot(&resolved_snapshot, &bootstrap_server);
     let bootstrapped = runtime()
-        .block_on(session.bootstrap_snapshot_metadata(&materialized))
+        .block_on(session.bootstrap_snapshot_metadata(&bootstrap_materialized))
         .expect("browser snapshot metadata bootstrap should succeed");
     assert!(
         bootstrapped
@@ -765,6 +789,8 @@ fn browser_execution_rejects_bootstrap_to_execution_etag_drift_on_real_fixture_f
             .all(|file| file.object_etag() == Some("\"bootstrap-v1\"")),
         "bootstrap should preserve the observed object etag for every file",
     );
+    let execution_materialized =
+        materialize_loopback_snapshot(&resolved_snapshot, &execution_server);
 
     let sql = format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'A' ORDER BY id");
     let execution_plan = execution_plan_for_case(
@@ -775,11 +801,11 @@ fn browser_execution_rejects_bootstrap_to_execution_etag_drift_on_real_fixture_f
         &sql,
     );
     let error = runtime()
-        .block_on(session.execute_plan(&materialized, &execution_plan))
+        .block_on(session.execute_plan(&execution_materialized, &execution_plan))
         .expect_err("etag drift between bootstrap and execution should fail");
 
     assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
-    assert!(error.message.contains("entity tag"));
+    assert!(error.message.contains("ETag"));
 }
 
 #[test]
@@ -790,23 +816,19 @@ fn browser_execution_reports_nonzero_duration_metrics_for_successful_reads() {
         snapshot_version: None,
     })
     .expect("latest snapshot should resolve");
-    let server = LoopbackObjectServer::from_fixture_paths_with_options(
+    let server = LoopbackObjectServer::from_fixture_paths(
         &fixture,
         resolved_snapshot
             .active_files
             .iter()
             .map(|file| file.path.clone()),
-        LoopbackObjectServerOptions {
-            full_read_delay: Some(std::time::Duration::from_millis(25)),
-            ..LoopbackObjectServerOptions::default()
-        },
     );
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig {
         request_timeout_ms: 250,
         execution_timeout_ms: 1_000,
         ..BrowserRuntimeConfig::default()
     })
-    .expect("delayed full-read browser runtime config should be supported");
+    .expect("browser runtime config should be supported");
     let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
     let bootstrapped = runtime()
         .block_on(session.bootstrap_snapshot_metadata(&materialized))
@@ -835,8 +857,8 @@ fn browser_execution_reports_nonzero_duration_metrics_for_successful_reads() {
         "browser/native rows should match for delayed metric cases",
     );
     assert!(
-        browser_result.metrics().duration_ms >= 20,
-        "duration should reflect the delayed full-object read, got {} ms",
+        browser_result.metrics().duration_ms > 0,
+        "duration should reflect successful range-read execution, got {} ms",
         browser_result.metrics().duration_ms
     );
     assert!(

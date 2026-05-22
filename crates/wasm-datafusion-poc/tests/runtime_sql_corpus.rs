@@ -1,45 +1,161 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
-use arrow_array::{Array, BooleanArray, Int32Array, Int64Array, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_array::{
+    cast::AsArray, Array, BooleanArray, Int32Array, Int64Array, RecordBatch, StringArray,
+};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use wasm_datafusion_poc::{DeltaActiveFile, DeltaTableDescriptor, WasmDataFusionEngine};
 
 #[tokio::test]
 async fn browser_datafusion_runtime_matches_sql_corpus() {
     let corpus = load_corpus();
+    let execution_paths = corpus_execution_paths();
+    assert!(
+        execution_paths
+            .iter()
+            .any(|path| path.uses_axon_scan_exec()),
+        "runtime SQL corpus should include a descriptor-backed AxonParquetScanExec path"
+    );
 
     for case in corpus {
-        let mut engine = wasm_datafusion_poc::WasmDataFusionEngine::new();
-        let batch = corpus_table();
-        engine
-            .register_record_batches("t", batch.schema(), vec![batch])
-            .await
-            .unwrap_or_else(|error| panic!("{}: table registration failed: {error:?}", case.name));
+        for path in execution_paths {
+            execute_corpus_case(path, &case).await;
+        }
+    }
+}
 
-        let (schema, batches) = engine
-            .sql_to_record_batches(&case.sql)
-            .await
-            .unwrap_or_else(|error| panic!("{}: SQL query failed: {error:?}", case.name));
+#[derive(Clone, Copy)]
+enum CorpusExecutionPath {
+    MemTable,
+    DescriptorBackedAxonScan,
+}
 
-        let actual_columns = schema
-            .fields()
-            .iter()
-            .map(|field| field.name().to_string())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            actual_columns, case.expected_columns,
-            "{}: output columns differed",
-            case.name
-        );
+impl CorpusExecutionPath {
+    fn name(self) -> &'static str {
+        match self {
+            Self::MemTable => "MemTable",
+            Self::DescriptorBackedAxonScan => "descriptor-backed AxonParquetScanExec",
+        }
+    }
 
-        let actual_rows = normalize_batches(&batches);
-        assert_eq!(
-            actual_rows, case.expected_rows,
-            "{}: output rows differed",
-            case.name
+    fn uses_axon_scan_exec(self) -> bool {
+        matches!(self, Self::DescriptorBackedAxonScan)
+    }
+}
+
+fn corpus_execution_paths() -> [CorpusExecutionPath; 2] {
+    [
+        CorpusExecutionPath::MemTable,
+        CorpusExecutionPath::DescriptorBackedAxonScan,
+    ]
+}
+
+async fn execute_corpus_case(path: CorpusExecutionPath, case: &CorpusCase) {
+    let mut engine = WasmDataFusionEngine::new();
+    register_corpus_table(path, &mut engine, corpus_table()).await;
+
+    if path.uses_axon_scan_exec() {
+        let physical_plan = explain_physical_plan_text(&engine, &case.sql).await;
+        assert!(
+            physical_plan.contains("AxonParquetScanExec"),
+            "{} via {}: expected descriptor-backed AxonParquetScanExec path:\n{physical_plan}",
+            case.name,
+            path.name()
         );
     }
+
+    let (schema, batches) = engine
+        .sql_to_record_batches(&case.sql)
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "{} via {}: SQL query failed: {error:?}",
+                case.name,
+                path.name()
+            )
+        });
+
+    let actual_columns = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual_columns,
+        case.expected_columns,
+        "{} via {}: output columns differed",
+        case.name,
+        path.name()
+    );
+
+    let actual_rows = normalize_batches(&batches);
+    assert_eq!(
+        actual_rows,
+        case.expected_rows,
+        "{} via {}: output rows differed",
+        case.name,
+        path.name()
+    );
+}
+
+async fn register_corpus_table(
+    path: CorpusExecutionPath,
+    engine: &mut WasmDataFusionEngine,
+    batch: RecordBatch,
+) {
+    match path {
+        CorpusExecutionPath::MemTable => engine
+            .register_record_batches("t", batch.schema(), vec![batch])
+            .await
+            .unwrap_or_else(|error| panic!("{} registration failed: {error:?}", path.name())),
+        CorpusExecutionPath::DescriptorBackedAxonScan => engine
+            .open_delta_table_with_record_batch_partitions(
+                corpus_delta_descriptor(batch.schema()),
+                vec![vec![batch]],
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{} registration failed: {error:?}", path.name())),
+    }
+}
+
+async fn explain_physical_plan_text(engine: &WasmDataFusionEngine, sql: &str) -> String {
+    let (_schema, batches) = engine
+        .sql_to_record_batches(&format!("EXPLAIN {sql}"))
+        .await
+        .expect("EXPLAIN should run through DataFusion");
+    let mut lines = Vec::new();
+
+    for batch in batches {
+        for row_index in 0..batch.num_rows() {
+            for column_index in 0..batch.num_columns() {
+                match batch.schema().field(column_index).data_type() {
+                    DataType::Utf8 => lines.push(
+                        batch
+                            .column(column_index)
+                            .as_string::<i32>()
+                            .value(row_index)
+                            .to_string(),
+                    ),
+                    DataType::LargeUtf8 => lines.push(
+                        batch
+                            .column(column_index)
+                            .as_string::<i64>()
+                            .value(row_index)
+                            .to_string(),
+                    ),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    lines
+        .join("\n")
+        .split_once("physical_plan\n")
+        .map(|(_header, physical_plan)| physical_plan.to_string())
+        .expect("EXPLAIN output should include a physical plan")
 }
 
 #[derive(Debug)]
@@ -169,6 +285,25 @@ fn corpus_table() -> RecordBatch {
         ],
     )
     .expect("corpus table should construct")
+}
+
+fn corpus_delta_descriptor(schema: SchemaRef) -> DeltaTableDescriptor {
+    DeltaTableDescriptor {
+        table_name: "t".to_string(),
+        table_version: 42,
+        schema,
+        partition_columns: Vec::new(),
+        partition_column_types: BTreeMap::new(),
+        active_files: vec![DeltaActiveFile {
+            path: "part-000.parquet".to_string(),
+            url: "https://example.test/corpus/part-000.parquet".to_string(),
+            size_bytes: 4096,
+            partition_values: BTreeMap::new(),
+            object_etag: Some("\"corpus-etag\"".to_string()),
+            stats_json: Some(r#"{"numRecords":4}"#.to_string()),
+            deletion_vector: None,
+        }],
+    }
 }
 
 fn normalize_batches(batches: &[RecordBatch]) -> Vec<Vec<Scalar>> {
