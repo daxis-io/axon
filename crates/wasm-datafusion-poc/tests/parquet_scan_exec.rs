@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use arrow_array::{
-    cast::AsArray, Array, BinaryArray, BooleanArray, Float32Array, Float64Array, Int32Array,
-    RecordBatch, StringArray,
+    cast::AsArray, Array, BinaryArray, BooleanArray, Date32Array, Float32Array, Float64Array,
+    Int32Array, RecordBatch, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
 };
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use bytes::Bytes;
 use parquet::data_type::{
     BoolType, ByteArray, ByteArrayType, DoubleType, FloatType, Int32Type, Int64Type,
@@ -445,6 +445,78 @@ fn browser_readable_primitive_columns_scan_with_optional_nulls_through_datafusio
 }
 
 #[test]
+fn browser_readable_date_and_utc_timestamp_columns_scan_through_datafusion() {
+    let _guard = PARQUET_SCAN_TEST_LOCK
+        .lock()
+        .expect("Parquet scan tests should serialize local HTTP servers");
+    test_runtime().block_on(async {
+        let object = parquet_bytes_with_optional_date_and_timestamp(&[
+            (
+                1,
+                Some(20_209),
+                Some(1_746_057_600_000_000),
+                Some(1_746_057_600_000),
+            ),
+            (2, None, None, None),
+            (
+                3,
+                Some(20_210),
+                Some(1_746_144_000_123_456),
+                Some(1_746_144_000),
+            ),
+        ]);
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let server = RequestCapturingServer::new(object);
+        let mut engine = WasmDataFusionEngine::new();
+
+        engine
+            .open_delta_table(delta_descriptor(
+                "events",
+                date_timestamp_descriptor_schema(),
+                server.url(),
+                object_size,
+            ))
+            .await
+            .expect("Delta descriptor should register DATE and UTC timestamp fields");
+
+        let (schema, batches) = engine
+            .sql_to_record_batches(
+                "SELECT id, event_date, event_ts_micros, event_ts_millis \
+                 FROM events \
+                 WHERE event_date = DATE '2025-05-01' \
+                 ORDER BY id",
+            )
+            .await
+            .expect(
+                "DataFusion should execute SQL over browser-readable DATE and timestamp columns",
+            );
+
+        assert_eq!(schema.field(1).data_type(), &DataType::Date32);
+        assert_eq!(
+            schema.field(2).data_type(),
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+        );
+        assert_eq!(
+            schema.field(3).data_type(),
+            &DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into()))
+        );
+        assert_eq!(int64_column_values(&batches, 0), vec![1]);
+        assert_eq!(
+            optional_date32_column_values(&batches, 1),
+            vec![Some(20_209)]
+        );
+        assert_eq!(
+            optional_timestamp_microsecond_column_values(&batches, 2),
+            vec![Some(1_746_057_600_000_000)]
+        );
+        assert_eq!(
+            optional_timestamp_millisecond_column_values(&batches, 3),
+            vec![Some(1_746_057_600_000)]
+        );
+    });
+}
+
+#[test]
 fn browser_readable_binary_json_byte_array_scan_with_optional_nulls() {
     let _guard = PARQUET_SCAN_TEST_LOCK
         .lock()
@@ -796,6 +868,24 @@ fn primitive_optional_descriptor_schema() -> SchemaRef {
     ]))
 }
 
+fn date_timestamp_descriptor_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("event_date", DataType::Date32, true),
+        Field::new(
+            "event_ts_micros",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        ),
+        Field::new(
+            "event_ts_millis",
+            DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
+            true,
+        ),
+        Field::new("category", DataType::Utf8, true),
+    ]))
+}
+
 fn binary_json_optional_descriptor_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -1112,6 +1202,8 @@ type OptionalPrimitiveRow = (
     Option<f64>,
 );
 
+type OptionalDateTimestampRow = (i64, Option<i32>, Option<i64>, Option<i64>);
+
 fn parquet_bytes_with_optional_primitives(rows: &[OptionalPrimitiveRow]) -> Vec<u8> {
     let schema = Arc::new(
         parse_message_type(
@@ -1232,6 +1324,100 @@ fn parquet_bytes_with_optional_primitives(rows: &[OptionalPrimitiveRow]) -> Vec<
         column
             .close()
             .expect("maybe_f64 column writer should close");
+    }
+    row_group.close().expect("row-group writer should close");
+    writer.close().expect("file writer should close");
+    bytes
+}
+
+fn parquet_bytes_with_optional_date_and_timestamp(rows: &[OptionalDateTimestampRow]) -> Vec<u8> {
+    let schema = Arc::new(
+        parse_message_type(
+            "message schema { \
+             REQUIRED INT64 id; \
+             OPTIONAL INT32 event_date (DATE); \
+             OPTIONAL INT64 event_ts_micros (TIMESTAMP(MICROS,true)); \
+             OPTIONAL INT64 event_ts_millis (TIMESTAMP(MILLIS,true)); \
+             }",
+        )
+        .expect("parquet schema should parse"),
+    );
+    let mut bytes = Vec::new();
+    let mut writer = SerializedFileWriter::new(
+        &mut bytes,
+        schema,
+        Arc::new(WriterProperties::builder().build()),
+    )
+    .expect("parquet writer should construct");
+    let ids = rows.iter().map(|row| row.0).collect::<Vec<_>>();
+    let dates = rows.iter().filter_map(|row| row.1).collect::<Vec<_>>();
+    let date_def_levels = rows
+        .iter()
+        .map(|row| i16::from(row.1.is_some()))
+        .collect::<Vec<_>>();
+    let timestamps = rows.iter().filter_map(|row| row.2).collect::<Vec<_>>();
+    let timestamp_def_levels = rows
+        .iter()
+        .map(|row| i16::from(row.2.is_some()))
+        .collect::<Vec<_>>();
+    let millisecond_timestamps = rows.iter().filter_map(|row| row.3).collect::<Vec<_>>();
+    let millisecond_timestamp_def_levels = rows
+        .iter()
+        .map(|row| i16::from(row.3.is_some()))
+        .collect::<Vec<_>>();
+
+    let mut row_group = writer
+        .next_row_group()
+        .expect("row-group writer should construct");
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("id column writer should be returned")
+    {
+        column
+            .typed::<Int64Type>()
+            .write_batch(&ids, None, None)
+            .expect("id values should write");
+        column.close().expect("id column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("event_date column writer should be returned")
+    {
+        column
+            .typed::<Int32Type>()
+            .write_batch(&dates, Some(&date_def_levels), None)
+            .expect("event_date values should write");
+        column
+            .close()
+            .expect("event_date column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("event_ts_micros column writer should be returned")
+    {
+        column
+            .typed::<Int64Type>()
+            .write_batch(&timestamps, Some(&timestamp_def_levels), None)
+            .expect("event_ts_micros values should write");
+        column
+            .close()
+            .expect("event_ts_micros column writer should close");
+    }
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("event_ts_millis column writer should be returned")
+    {
+        column
+            .typed::<Int64Type>()
+            .write_batch(
+                &millisecond_timestamps,
+                Some(&millisecond_timestamp_def_levels),
+                None,
+            )
+            .expect("event_ts_millis values should write");
+        column
+            .close()
+            .expect("event_ts_millis column writer should close");
     }
     row_group.close().expect("row-group writer should close");
     writer.close().expect("file writer should close");
@@ -1462,6 +1648,78 @@ fn optional_int64_column_values(batches: &[RecordBatch], column_index: usize) ->
             let array = batch
                 .column(column_index)
                 .as_primitive::<arrow_array::types::Int64Type>();
+            (0..array.len())
+                .map(|index| {
+                    if array.is_null(index) {
+                        None
+                    } else {
+                        Some(array.value(index))
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn optional_date32_column_values(batches: &[RecordBatch], column_index: usize) -> Vec<Option<i32>> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let array = batch
+                .column(column_index)
+                .as_any()
+                .downcast_ref::<Date32Array>()
+                .expect("column should be an Arrow Date32Array");
+            (0..array.len())
+                .map(|index| {
+                    if array.is_null(index) {
+                        None
+                    } else {
+                        Some(array.value(index))
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn optional_timestamp_microsecond_column_values(
+    batches: &[RecordBatch],
+    column_index: usize,
+) -> Vec<Option<i64>> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let array = batch
+                .column(column_index)
+                .as_any()
+                .downcast_ref::<TimestampMicrosecondArray>()
+                .expect("column should be an Arrow TimestampMicrosecondArray");
+            (0..array.len())
+                .map(|index| {
+                    if array.is_null(index) {
+                        None
+                    } else {
+                        Some(array.value(index))
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn optional_timestamp_millisecond_column_values(
+    batches: &[RecordBatch],
+    column_index: usize,
+) -> Vec<Option<i64>> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let array = batch
+                .column(column_index)
+                .as_any()
+                .downcast_ref::<TimestampMillisecondArray>()
+                .expect("column should be an Arrow TimestampMillisecondArray");
             (0..array.len())
                 .map(|index| {
                     if array.is_null(index) {

@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+arrow-schema = "=57.3.0"
 query-contract = { path = "../query-contract" }
 sqlparser = { version = "=0.59.0", features = ["visitor"] }
 wasm-datafusion-poc = { path = "../wasm-datafusion-poc" }

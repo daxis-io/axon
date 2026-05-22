@@ -7,7 +7,8 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen_test::wasm_bindgen_test;
 use wasm_http_object_store::{
     BrowserCacheMode, BrowserObjectRangeReader, ByteExtent, ExtentCacheEntry, ExtentCacheKey,
-    OpfsPersistentExtentCache, PersistentCacheFuture, PersistentExtentCache,
+    HttpMetadataProbeRequirements, HttpRangeReader, OpfsPersistentExtentCache,
+    PersistentCacheFuture, PersistentExtentCache,
 };
 
 #[derive(Default)]
@@ -117,6 +118,25 @@ async fn opfs_cache_overwrites_matching_extent_and_evicts_oldest_extent() {
     assert_eq!(overwritten.bytes.as_ref(), b"cccc");
 }
 
+#[wasm_bindgen_test(async)]
+async fn blob_url_metadata_probe_handles_zero_byte_objects() {
+    let url = blob_url_from_bytes(&[]);
+    let metadata = HttpRangeReader::new()
+        .probe_metadata(
+            &url,
+            HttpMetadataProbeRequirements {
+                require_size: true,
+                require_etag: false,
+            },
+        )
+        .await
+        .expect("zero-byte blob URL metadata should resolve");
+    revoke_blob_url(&url);
+
+    assert_eq!(metadata.size_bytes, Some(0));
+    assert_eq!(metadata.etag, None);
+}
+
 fn mock_opfs_directory() -> JsValue {
     js_sys::Function::new_no_args(
         r#"
@@ -151,4 +171,19 @@ fn mock_opfs_directory() -> JsValue {
     )
     .call0(&JsValue::UNDEFINED)
     .expect("mock OPFS directory should be constructed")
+}
+
+fn blob_url_from_bytes(bytes: &[u8]) -> String {
+    let bytes = js_sys::Uint8Array::from(bytes);
+    js_sys::Function::new_with_args("bytes", "return URL.createObjectURL(new Blob([bytes]));")
+        .call1(&JsValue::UNDEFINED, &bytes)
+        .expect("blob URL should be created")
+        .as_string()
+        .expect("blob URL should be a string")
+}
+
+fn revoke_blob_url(url: &str) {
+    js_sys::Function::new_with_args("url", "URL.revokeObjectURL(url);")
+        .call1(&JsValue::UNDEFINED, &JsValue::from_str(url))
+        .expect("blob URL should be revoked");
 }

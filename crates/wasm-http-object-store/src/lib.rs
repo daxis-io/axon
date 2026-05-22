@@ -1800,78 +1800,71 @@ async fn read_blob_url_range(
     validation: Option<HttpRangeValidation>,
 ) -> Result<HttpRangeReadResult, QueryError> {
     let display_url = redacted_url(url);
-    let _ = range.header_value()?;
     if validation.is_some() {
         return Err(protocol_error(format!(
             "range validation for '{display_url}' requires an ETag, but browser-local blob URLs do not expose one"
         )));
     }
 
-    let blob = fetch_blob_url_blob(url, &display_url).await?;
-    let object_size = blob_size_to_u64(blob.size())?;
-    let bytes = match range {
-        HttpByteRange::Full => blob_to_bytes(&blob).await?,
-        HttpByteRange::Bounded { offset, length } => {
-            read_blob_url_extent(&blob, &display_url, object_size, offset, length).await?
+    let range_header = range.header_value()?;
+    let response = fetch_blob_url_response(url, range_header.as_deref(), &display_url).await?;
+    let status = js_response_status(&response, &display_url)?;
+    if let Some(error) = map_status_error(status, &display_url) {
+        return Err(error);
+    }
+
+    let content_range = if range.expects_partial_response() {
+        if status != StatusCode::PARTIAL_CONTENT {
+            return Err(protocol_error(format!(
+                "range request to browser-local blob URL '{display_url}' expected HTTP 206 Partial Content, got {status}"
+            )));
         }
-        HttpByteRange::FromOffset { offset } => {
-            if offset > object_size {
-                return Err(protocol_error(format!(
-                    "browser-local blob URL '{display_url}' only exposes {object_size} bytes, but offset {offset} was requested"
-                )));
-            }
-            read_blob_url_extent(
-                &blob,
-                &display_url,
-                object_size,
-                offset,
-                object_size - offset,
-            )
-            .await?
+        let content_range = parse_js_content_range(&response, &display_url)?;
+        range.validate_content_range(content_range, &display_url)?;
+        Some(content_range)
+    } else {
+        if status != StatusCode::OK {
+            return Err(protocol_error(format!(
+                "full-object request to browser-local blob URL '{display_url}' expected HTTP 200 OK, got {status}"
+            )));
         }
-        HttpByteRange::Suffix { length } => {
-            let offset = object_size.saturating_sub(length);
-            read_blob_url_extent(
-                &blob,
-                &display_url,
-                object_size,
-                offset,
-                object_size - offset,
-            )
-            .await?
+        None
+    };
+
+    let object_size = match content_range {
+        Some(content_range) => Some(content_range.total_size),
+        None => {
+            parse_optional_js_response_header_u64(&response, CONTENT_LENGTH.as_str(), &display_url)?
         }
     };
+    let bytes = response_array_buffer_bytes(
+        &response,
+        format!("browser fetch response body for '{display_url}' failed"),
+    )
+    .await?;
+    if let Some(content_range) = content_range {
+        let expected_length = content_range
+            .end
+            .checked_sub(content_range.start)
+            .and_then(|delta| delta.checked_add(1))
+            .ok_or_else(|| protocol_error("content-range length overflowed u64"))?;
+
+        if bytes.len() as u64 != expected_length {
+            return Err(protocol_error(format!(
+                "browser-local blob response body from '{display_url}' returned {} bytes, but Content-Range declared {expected_length}",
+                bytes.len()
+            )));
+        }
+    }
 
     Ok(HttpRangeReadResult {
         metadata: HttpObjectMetadata {
             url: display_url,
-            size_bytes: Some(object_size),
+            size_bytes: object_size.or(Some(bytes.len() as u64)),
             etag: None,
         },
         bytes,
     })
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn read_blob_url_extent(
-    blob: &web_sys::Blob,
-    display_url: &str,
-    object_size: u64,
-    offset: u64,
-    length: u64,
-) -> Result<Bytes, QueryError> {
-    let end = offset
-        .checked_add(length)
-        .ok_or_else(|| protocol_error("browser-local blob byte range overflowed u64"))?;
-    if end > object_size {
-        return Err(protocol_error(format!(
-            "browser-local blob URL '{display_url}' only exposes {object_size} bytes, but extent {offset}..{end} was requested"
-        )));
-    }
-    if length == 0 {
-        return Ok(Bytes::new());
-    }
-    read_blob_extent(blob, display_url, ByteExtent::new(offset, length)?).await
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1880,9 +1873,86 @@ async fn probe_blob_url_metadata(
     requirements: HttpMetadataProbeRequirements,
 ) -> Result<HttpObjectMetadata, QueryError> {
     let display_url = redacted_url(url);
-    let blob = fetch_blob_url_blob(url, &display_url).await?;
+    let response = match fetch_blob_url_response(url, Some("bytes=0-0"), &display_url).await {
+        Ok(response) => response,
+        Err(_) => {
+            return probe_blob_url_metadata_via_full_fetch(url, &display_url, requirements).await;
+        }
+    };
+    let status = js_response_status(&response, &display_url)?;
+    if status == StatusCode::RANGE_NOT_SATISFIABLE {
+        let unsatisfied_size =
+            parse_js_unsatisfied_content_range_total_size(&response, &display_url)?;
+        if unsatisfied_size == Some(0) {
+            let metadata = HttpObjectMetadata {
+                url: display_url,
+                size_bytes: Some(0),
+                etag: None,
+            };
+            validate_metadata_probe_requirements(&metadata, requirements)?;
+            return Ok(metadata);
+        }
+    }
+    if let Some(error) = map_status_error(status, &display_url) {
+        return Err(error);
+    }
+    if status != StatusCode::PARTIAL_CONTENT {
+        return Err(protocol_error(format!(
+            "metadata probe to browser-local blob URL '{display_url}' expected HTTP 206 Partial Content, got {status}"
+        )));
+    }
+
+    let content_range = parse_js_content_range(&response, &display_url)?;
+    HttpByteRange::Bounded {
+        offset: 0,
+        length: 1,
+    }
+    .validate_content_range(content_range, &display_url)?;
+    let bytes = response_array_buffer_bytes(
+        &response,
+        format!("browser metadata probe body for '{display_url}' failed"),
+    )
+    .await?;
+    if bytes.len() != 1 {
+        return Err(protocol_error(format!(
+            "browser metadata probe body from '{display_url}' returned {} bytes, expected 1",
+            bytes.len()
+        )));
+    }
+
     let metadata = HttpObjectMetadata {
         url: display_url,
+        size_bytes: Some(content_range.total_size),
+        etag: None,
+    };
+    validate_metadata_probe_requirements(&metadata, requirements)?;
+    Ok(metadata)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn probe_blob_url_metadata_via_full_fetch(
+    url: &Url,
+    display_url: &str,
+    requirements: HttpMetadataProbeRequirements,
+) -> Result<HttpObjectMetadata, QueryError> {
+    let response = fetch_blob_url_response(url, None, display_url).await?;
+    let status = js_response_status(&response, display_url)?;
+    if let Some(error) = map_status_error(status, display_url) {
+        return Err(error);
+    }
+    if status != StatusCode::OK {
+        return Err(protocol_error(format!(
+            "metadata fallback to browser-local blob URL '{display_url}' expected HTTP 200 OK, got {status}"
+        )));
+    }
+
+    let blob = response_blob(
+        &response,
+        format!("browser metadata fallback Blob for '{display_url}' failed"),
+    )
+    .await?;
+    let metadata = HttpObjectMetadata {
+        url: display_url.to_string(),
         size_bytes: Some(blob_size_to_u64(blob.size())?),
         etag: None,
     };
@@ -1891,60 +1961,160 @@ async fn probe_blob_url_metadata(
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn fetch_blob_url_blob(url: &Url, display_url: &str) -> Result<web_sys::Blob, QueryError> {
+async fn fetch_blob_url_response(
+    url: &Url,
+    range_header: Option<&str>,
+    display_url: &str,
+) -> Result<JsValue, QueryError> {
     let global = js_sys::global();
     let fetch = js_function(&global, "fetch")?;
-    let response = fetch
-        .call1(&global, &JsValue::from_str(url.as_str()))
-        .map_err(|error| js_cache_error(format!("browser fetch for '{display_url}' failed"), error))
-        .and_then(|promise| {
-            promise
-                .dyn_into::<Promise>()
-                .map_err(|error| js_cache_error("browser fetch did not return a Promise", error))
-        })?;
-    let response = JsFuture::from(response).await.map_err(|error| {
-        js_cache_error(format!("browser fetch for '{display_url}' failed"), error)
-    })?;
-    let ok = Reflect::get(&response, &JsValue::from_str("ok"))
-        .ok()
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false);
-    if !ok {
-        let status = Reflect::get(&response, &JsValue::from_str("status"))
-            .ok()
-            .and_then(|value| value.as_f64())
-            .and_then(|value| u16::try_from(value as u64).ok())
-            .and_then(|status| StatusCode::from_u16(status).ok());
-        if let Some(status) = status {
-            if let Some(error) = map_status_error(status, display_url) {
-                return Err(error);
-            }
-        }
-        return Err(cache_error(format!(
-            "browser fetch for '{display_url}' did not return a successful response"
-        )));
+    let promise = if let Some(range_header) = range_header {
+        let headers = Object::new();
+        Reflect::set(
+            &headers,
+            &JsValue::from_str(RANGE.as_str()),
+            &JsValue::from_str(range_header),
+        )
+        .map_err(|error| js_cache_error("browser blob fetch headers could not be set", error))?;
+        let init = Object::new();
+        Reflect::set(&init, &JsValue::from_str("headers"), &headers)
+            .map_err(|error| js_cache_error("browser blob fetch init could not be set", error))?;
+        fetch.call2(&global, &JsValue::from_str(url.as_str()), &init)
+    } else {
+        fetch.call1(&global, &JsValue::from_str(url.as_str()))
     }
+    .map_err(|error| js_cache_error(format!("browser fetch for '{display_url}' failed"), error))?
+    .dyn_into::<Promise>()
+    .map_err(|error| js_cache_error("browser fetch did not return a Promise", error))?;
 
-    let blob = js_function(&response, "blob")?
+    JsFuture::from(promise)
+        .await
+        .map_err(|error| js_cache_error(format!("browser fetch for '{display_url}' failed"), error))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn response_array_buffer_bytes(
+    response: &JsValue,
+    context: String,
+) -> Result<Bytes, QueryError> {
+    let buffer = js_function(response, "arrayBuffer")?
         .call0(&response)
         .map_err(|error| {
             js_cache_error(
-                format!("browser fetch response for '{display_url}' could not produce a Blob"),
+                "browser fetch response could not produce an ArrayBuffer",
                 error,
             )
         })?;
-    let blob = await_js_promise(blob).await.map_err(|error| {
-        js_cache_error(
-            format!("browser fetch response Blob for '{display_url}' failed"),
-            error,
-        )
+    let buffer = await_js_promise(buffer)
+        .await
+        .map_err(|error| js_cache_error(context, error))?;
+    Ok(array_buffer_to_bytes(&buffer))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn response_blob(response: &JsValue, context: String) -> Result<web_sys::Blob, QueryError> {
+    let blob = js_function(response, "blob")?
+        .call0(response)
+        .map_err(|error| {
+            js_cache_error("browser fetch response could not produce a Blob", error)
+        })?;
+    let blob = await_js_promise(blob)
+        .await
+        .map_err(|error| js_cache_error(context, error))?;
+    blob.dyn_into::<web_sys::Blob>()
+        .map_err(|error| js_cache_error("browser fetch response returned a non-Blob value", error))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_response_status(response: &JsValue, display_url: &str) -> Result<StatusCode, QueryError> {
+    let status = Reflect::get(response, &JsValue::from_str("status"))
+        .map_err(|error| js_cache_error("browser response status could not be read", error))?
+        .as_f64()
+        .ok_or_else(|| {
+            cache_error(format!(
+                "browser response from '{display_url}' did not expose a numeric status"
+            ))
+        })?;
+    let status = u16::try_from(status as u64).map_err(|_| {
+        cache_error(format!(
+            "browser response from '{display_url}' returned out-of-range status {status}"
+        ))
     })?;
-    blob.dyn_into::<web_sys::Blob>().map_err(|error| {
-        js_cache_error(
-            format!("browser fetch response for '{display_url}' returned a non-Blob value"),
-            error,
-        )
+    StatusCode::from_u16(status).map_err(|error| {
+        cache_error(format!(
+            "browser response from '{display_url}' returned invalid status {status}: {error}"
+        ))
     })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn js_response_header(
+    response: &JsValue,
+    name: &str,
+    display_url: &str,
+) -> Result<Option<String>, QueryError> {
+    let headers = Reflect::get(response, &JsValue::from_str("headers"))
+        .map_err(|error| js_cache_error("browser response headers could not be read", error))?;
+    let get = js_function(&headers, "get")?;
+    let value = get
+        .call1(&headers, &JsValue::from_str(name))
+        .map_err(|error| {
+            js_cache_error(
+                format!("browser response header '{name}' for '{display_url}' could not be read"),
+                error,
+            )
+        })?;
+    if value.is_null() || value.is_undefined() {
+        return Ok(None);
+    }
+    value.as_string().map(Some).ok_or_else(|| {
+        cache_error(format!(
+            "browser response header '{name}' for '{display_url}' was not a string"
+        ))
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_js_content_range(
+    response: &JsValue,
+    display_url: &str,
+) -> Result<ParsedContentRange, QueryError> {
+    let content_range = js_response_header(response, CONTENT_RANGE.as_str(), display_url)?
+        .ok_or_else(|| {
+            protocol_error(format!(
+                "partial response from '{display_url}' did not include a Content-Range header"
+            ))
+        })?;
+    parse_content_range_value(&content_range, display_url)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_js_unsatisfied_content_range_total_size(
+    response: &JsValue,
+    display_url: &str,
+) -> Result<Option<u64>, QueryError> {
+    let Some(content_range) = js_response_header(response, CONTENT_RANGE.as_str(), display_url)?
+    else {
+        return Ok(None);
+    };
+    parse_unsatisfied_content_range_total_size_value(&content_range, display_url)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_optional_js_response_header_u64(
+    response: &JsValue,
+    name: &str,
+    display_url: &str,
+) -> Result<Option<u64>, QueryError> {
+    js_response_header(response, name, display_url)?
+        .map(|value| {
+            value.parse::<u64>().map_err(|error| {
+                protocol_error(format!(
+                    "browser response header '{name}' for '{display_url}' returned an invalid integer: {error}"
+                ))
+            })
+        })
+        .transpose()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1952,10 +2122,15 @@ async fn blob_to_bytes(blob: &web_sys::Blob) -> Result<Bytes, QueryError> {
     let buffer = JsFuture::from(blob.array_buffer())
         .await
         .map_err(|error| js_cache_error("browser Blob arrayBuffer failed", error))?;
-    let array = Uint8Array::new(&buffer);
+    Ok(array_buffer_to_bytes(&buffer))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn array_buffer_to_bytes(buffer: &JsValue) -> Bytes {
+    let array = Uint8Array::new(buffer);
     let mut bytes = vec![0_u8; array.length() as usize];
     array.copy_to(bytes.as_mut_slice());
-    Ok(Bytes::from(bytes))
+    Bytes::from(bytes)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2406,6 +2581,13 @@ fn parse_content_range(
             ))
         })?;
 
+    parse_content_range_value(content_range, display_url)
+}
+
+fn parse_content_range_value(
+    content_range: &str,
+    display_url: &str,
+) -> Result<ParsedContentRange, QueryError> {
     let (unit, spec) = content_range.split_once(' ').ok_or_else(|| {
         protocol_error(format!(
             "partial response from '{display_url}' returned an invalid Content-Range header: {content_range}"
@@ -2482,6 +2664,13 @@ fn parse_unsatisfied_content_range_total_size(
         ))
     })?;
 
+    parse_unsatisfied_content_range_total_size_value(content_range, display_url)
+}
+
+fn parse_unsatisfied_content_range_total_size_value(
+    content_range: &str,
+    display_url: &str,
+) -> Result<Option<u64>, QueryError> {
     let (unit, spec) = content_range.split_once(' ').ok_or_else(|| {
         protocol_error(format!(
             "response from '{display_url}' returned an invalid Content-Range header: {content_range}"

@@ -4,10 +4,13 @@ use std::io::Cursor;
 use arrow_array::cast::{
     as_boolean_array, as_largestring_array, as_primitive_array, as_string_array,
 };
-use arrow_array::types::{Float32Type, Float64Type, Int32Type, Int64Type};
+use arrow_array::types::{
+    Date32Type, Float32Type, Float64Type, Int32Type, Int64Type, TimestampMicrosecondType,
+    TimestampMillisecondType,
+};
 use arrow_array::Array;
 use arrow_ipc::reader::StreamReader;
-use arrow_schema::DataType as ArrowDataType;
+use arrow_schema::{DataType as ArrowDataType, TimeUnit};
 use js_sys::{Object, Reflect, Uint8Array};
 use query_contract::{
     BrowserHttpSnapshotDescriptor, ExecutionTarget, QueryError, QueryErrorCode, QueryRequest,
@@ -460,10 +463,46 @@ fn preview_value(array: &dyn Array, row_index: usize) -> Value {
                 .map(Value::Number)
                 .unwrap_or(Value::Null)
         }
+        ArrowDataType::Date32 => preview_date32_value(array, row_index),
+        ArrowDataType::Timestamp(TimeUnit::Millisecond, Some(timezone))
+            if is_utc_timezone(timezone.as_ref()) =>
+        {
+            preview_timestamp_millisecond_value(array, row_index)
+        }
+        ArrowDataType::Timestamp(TimeUnit::Microsecond, Some(timezone))
+            if is_utc_timezone(timezone.as_ref()) =>
+        {
+            preview_timestamp_microsecond_value(array, row_index)
+        }
         ArrowDataType::Utf8 => json!(as_string_array(array).value(row_index)),
         ArrowDataType::LargeUtf8 => json!(as_largestring_array(array).value(row_index)),
         other => json!(format!("<unsupported {other}>")),
     }
+}
+
+fn preview_date32_value(array: &dyn Array, row_index: usize) -> Value {
+    as_primitive_array::<Date32Type>(array)
+        .value_as_date(row_index)
+        .map(|value| json!(value.to_string()))
+        .unwrap_or(Value::Null)
+}
+
+fn preview_timestamp_millisecond_value(array: &dyn Array, row_index: usize) -> Value {
+    as_primitive_array::<TimestampMillisecondType>(array)
+        .value_as_datetime(row_index)
+        .map(|value| json!(format!("{}Z", value.format("%Y-%m-%dT%H:%M:%S%.3f"))))
+        .unwrap_or(Value::Null)
+}
+
+fn preview_timestamp_microsecond_value(array: &dyn Array, row_index: usize) -> Value {
+    as_primitive_array::<TimestampMicrosecondType>(array)
+        .value_as_datetime(row_index)
+        .map(|value| json!(format!("{}Z", value.format("%Y-%m-%dT%H:%M:%S%.6f"))))
+        .unwrap_or(Value::Null)
+}
+
+fn is_utc_timezone(timezone: &str) -> bool {
+    matches!(timezone, "UTC" | "Z" | "+00:00" | "-00:00")
 }
 
 fn preview_error(error: impl std::fmt::Display) -> QueryError {
@@ -499,6 +538,14 @@ fn query_error_to_js_value(error: QueryError) -> JsValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use arrow_array::{
+        ArrayRef, Date32Array, Int64Array, RecordBatch, TimestampMicrosecondArray,
+        TimestampMillisecondArray,
+    };
+    use arrow_ipc::writer::StreamWriter;
+    use arrow_schema::{Field, Schema, TimeUnit};
     use serde_json::json;
 
     #[test]
@@ -537,5 +584,72 @@ mod tests {
                 "null_count": "9007199254740998"
             })
         );
+    }
+
+    #[test]
+    fn arrow_ipc_preview_formats_date32_and_utc_timestamp_values() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", ArrowDataType::Int64, false),
+            Field::new("event_date", ArrowDataType::Date32, true),
+            Field::new(
+                "event_ts_micros",
+                ArrowDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+            ),
+            Field::new(
+                "event_ts_millis",
+                ArrowDataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
+                true,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef,
+                Arc::new(Date32Array::from(vec![Some(20_209), None])) as ArrayRef,
+                Arc::new(
+                    TimestampMicrosecondArray::from(vec![Some(1_746_057_600_000_000), None])
+                        .with_timezone("UTC"),
+                ) as ArrayRef,
+                Arc::new(
+                    TimestampMillisecondArray::from(vec![Some(1_746_057_600_000), None])
+                        .with_timezone("UTC"),
+                ) as ArrayRef,
+            ],
+        )
+        .expect("record batch should construct");
+        let ipc = arrow_ipc_bytes(batch);
+
+        let preview = preview_from_arrow_ipc(&ipc, 10).expect("preview should decode Arrow IPC");
+
+        assert_eq!(
+            preview.columns,
+            vec!["id", "event_date", "event_ts_micros", "event_ts_millis"]
+        );
+        assert_eq!(
+            preview.rows,
+            vec![
+                vec![
+                    json!("1"),
+                    json!("2025-05-01"),
+                    json!("2025-05-01T00:00:00.000000Z"),
+                    json!("2025-05-01T00:00:00.000Z")
+                ],
+                vec![json!("2"), Value::Null, Value::Null, Value::Null],
+            ]
+        );
+    }
+
+    fn arrow_ipc_bytes(batch: RecordBatch) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut bytes, batch.schema().as_ref())
+                .expect("Arrow IPC writer should construct");
+            writer
+                .write(&batch)
+                .expect("record batch should write to Arrow IPC stream");
+            writer.finish().expect("Arrow IPC stream should finish");
+        }
+        bytes
     }
 }

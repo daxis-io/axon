@@ -25,6 +25,8 @@ The schema adapter admits only field shapes that have browser scan evidence:
 - `Boolean`
 - signed `Int32` and `Int64`
 - `Float32` and `Float64`
+- `Date32` from Parquet `DATE`
+- UTC `Timestamp(Millisecond)` and `Timestamp(Microsecond)` from Parquet UTC timestamp annotations and legacy `TIMESTAMP_MILLIS`/`TIMESTAMP_MICROS`
 - `Utf8` from Parquet UTF8/String and JSON byte-array annotations
 - `Binary` from unannotated byte arrays plus raw BSON, ENUM, GEOMETRY, GEOGRAPHY, and unrecognized byte-array annotations
 - optional nulls for the primitive/string/binary shapes covered by `parquet_scan_exec`
@@ -46,7 +48,8 @@ Current scan parity covers:
 
 Unsupported feature classes remain explicit:
 
-- nested/list/map fields, variant, unknown logical type, decimals, timestamps, fixed-size binary, UUID, interval, and other unproven Parquet/Arrow shapes
+- nested/list/map fields, variant, unknown logical type, decimals, fixed-size binary, UUID, interval, and other unproven Parquet/Arrow shapes
+- local/non-UTC timestamps, nanosecond timestamps, INT96 timestamps, time-only fields, and timestamp fields with conflicting logical/converted annotations
 - Delta deletion vectors in `AxonParquetScanExec`
 - non-`SELECT` SQL, multi-statement SQL, joins/subqueries that read outside the opened table, and table-function forms outside the one-table scope
 - Delta protocol/table features that the control plane or snapshot reconstruction classifies as native-only or terminal unsupported

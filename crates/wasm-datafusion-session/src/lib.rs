@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::mem::size_of;
 use std::ops::ControlFlow;
 
+use arrow_schema::TimeUnit;
 use query_contract::{
     BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, ParquetInspectionSummary,
     PartitionColumnType, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest,
@@ -27,9 +28,9 @@ use wasm_datafusion_poc::{
 use wasm_query_runtime::{
     runtime_target, BootstrappedBrowserSnapshot, BrowserExecutionBudget,
     BrowserParquetConvertedType, BrowserParquetField, BrowserParquetLogicalType,
-    BrowserParquetPhysicalType, BrowserParquetRepetition, BrowserRuntimeConfig,
-    BrowserRuntimeInstant, BrowserRuntimeSession, MaterializedBrowserSnapshot,
-    RuntimeArrowIpcResult,
+    BrowserParquetPhysicalType, BrowserParquetRepetition, BrowserParquetTimeUnit,
+    BrowserRuntimeConfig, BrowserRuntimeInstant, BrowserRuntimeSession,
+    MaterializedBrowserSnapshot, RuntimeArrowIpcResult,
 };
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -475,13 +476,33 @@ fn datafusion_int32_type_from_parquet_field(
         Some(BrowserParquetLogicalType::Integer {
             bit_width: 32,
             is_signed: true,
-        }) => return Ok(DeltaTableFieldDataType::Int32),
+        }) => {
+            return if matches!(
+                field.converted_type.as_ref(),
+                None | Some(BrowserParquetConvertedType::Int32)
+            ) {
+                Ok(DeltaTableFieldDataType::Int32)
+            } else {
+                Err(unsupported_datafusion_parquet_field(field))
+            };
+        }
+        Some(BrowserParquetLogicalType::Date) => {
+            return if matches!(
+                field.converted_type.as_ref(),
+                None | Some(BrowserParquetConvertedType::Date)
+            ) {
+                Ok(DeltaTableFieldDataType::Date32)
+            } else {
+                Err(unsupported_datafusion_parquet_field(field))
+            };
+        }
         Some(_) => return Err(unsupported_datafusion_parquet_field(field)),
         None => {}
     }
 
     match field.converted_type.as_ref() {
         None | Some(BrowserParquetConvertedType::Int32) => Ok(DeltaTableFieldDataType::Int32),
+        Some(BrowserParquetConvertedType::Date) => Ok(DeltaTableFieldDataType::Date32),
         Some(_) => Err(unsupported_datafusion_parquet_field(field)),
     }
 }
@@ -493,15 +514,72 @@ fn datafusion_int64_type_from_parquet_field(
         Some(BrowserParquetLogicalType::Integer {
             bit_width: 64,
             is_signed: true,
-        }) => return Ok(DeltaTableFieldDataType::Int64),
+        }) => {
+            return if matches!(
+                field.converted_type.as_ref(),
+                None | Some(BrowserParquetConvertedType::Int64)
+            ) {
+                Ok(DeltaTableFieldDataType::Int64)
+            } else {
+                Err(unsupported_datafusion_parquet_field(field))
+            };
+        }
+        Some(BrowserParquetLogicalType::Timestamp {
+            is_adjusted_to_utc: true,
+            unit,
+        }) => {
+            let Some(time_unit) = datafusion_timestamp_time_unit(unit) else {
+                return Err(unsupported_datafusion_parquet_field(field));
+            };
+            return if converted_timestamp_type_matches(field.converted_type.as_ref(), time_unit) {
+                Ok(DeltaTableFieldDataType::Timestamp(
+                    time_unit,
+                    Some("UTC".into()),
+                ))
+            } else {
+                Err(unsupported_datafusion_parquet_field(field))
+            };
+        }
         Some(_) => return Err(unsupported_datafusion_parquet_field(field)),
         None => {}
     }
 
     match field.converted_type.as_ref() {
         None | Some(BrowserParquetConvertedType::Int64) => Ok(DeltaTableFieldDataType::Int64),
+        Some(BrowserParquetConvertedType::TimestampMillis) => Ok(
+            DeltaTableFieldDataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
+        ),
+        Some(BrowserParquetConvertedType::TimestampMicros) => Ok(
+            DeltaTableFieldDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        ),
         Some(_) => Err(unsupported_datafusion_parquet_field(field)),
     }
+}
+
+fn datafusion_timestamp_time_unit(unit: &BrowserParquetTimeUnit) -> Option<TimeUnit> {
+    match unit {
+        BrowserParquetTimeUnit::Millis => Some(TimeUnit::Millisecond),
+        BrowserParquetTimeUnit::Micros => Some(TimeUnit::Microsecond),
+        BrowserParquetTimeUnit::Nanos => None,
+    }
+}
+
+fn converted_timestamp_type_matches(
+    converted_type: Option<&BrowserParquetConvertedType>,
+    time_unit: TimeUnit,
+) -> bool {
+    matches!(
+        (converted_type, time_unit),
+        (None, _)
+            | (
+                Some(BrowserParquetConvertedType::TimestampMillis),
+                TimeUnit::Millisecond
+            )
+            | (
+                Some(BrowserParquetConvertedType::TimestampMicros),
+                TimeUnit::Microsecond
+            )
+    )
 }
 
 fn datafusion_byte_array_type_from_parquet_field(
@@ -986,7 +1064,6 @@ pub fn memory_baseline_bytes() -> u64 {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use wasm_query_runtime::BrowserParquetTimeUnit;
 
     use query_contract::{BrowserHttpFileDescriptor, CapabilityReport};
     use wasm_query_runtime::{
@@ -1380,6 +1457,151 @@ mod tests {
     }
 
     #[test]
+    fn schema_adapter_date_parquet_fields_map_to_datafusion_date32() {
+        let cases = [
+            parquet_field(
+                "date_logical",
+                BrowserParquetPhysicalType::Int32,
+                Some(BrowserParquetLogicalType::Date),
+                None,
+            ),
+            parquet_field(
+                "date_converted",
+                BrowserParquetPhysicalType::Int32,
+                None,
+                Some(BrowserParquetConvertedType::Date),
+            ),
+            parquet_field(
+                "date_logical_and_converted",
+                BrowserParquetPhysicalType::Int32,
+                Some(BrowserParquetLogicalType::Date),
+                Some(BrowserParquetConvertedType::Date),
+            ),
+        ];
+
+        for field in cases {
+            let data_type = datafusion_data_type_from_parquet_field(&field)
+                .expect("browser DataFusion should mirror Arrow DATE mapping");
+
+            assert_eq!(
+                data_type,
+                DeltaTableFieldDataType::Date32,
+                "field {}",
+                field.name
+            );
+        }
+    }
+
+    #[test]
+    fn schema_adapter_utc_timestamp_parquet_fields_map_to_datafusion_timestamps() {
+        let cases = [
+            (
+                parquet_field(
+                    "timestamp_millis_logical",
+                    BrowserParquetPhysicalType::Int64,
+                    Some(BrowserParquetLogicalType::Timestamp {
+                        is_adjusted_to_utc: true,
+                        unit: BrowserParquetTimeUnit::Millis,
+                    }),
+                    None,
+                ),
+                DeltaTableFieldDataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
+            ),
+            (
+                parquet_field(
+                    "timestamp_micros_logical",
+                    BrowserParquetPhysicalType::Int64,
+                    Some(BrowserParquetLogicalType::Timestamp {
+                        is_adjusted_to_utc: true,
+                        unit: BrowserParquetTimeUnit::Micros,
+                    }),
+                    None,
+                ),
+                DeltaTableFieldDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            ),
+            (
+                parquet_field(
+                    "timestamp_millis_converted",
+                    BrowserParquetPhysicalType::Int64,
+                    None,
+                    Some(BrowserParquetConvertedType::TimestampMillis),
+                ),
+                DeltaTableFieldDataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
+            ),
+            (
+                parquet_field(
+                    "timestamp_micros_converted",
+                    BrowserParquetPhysicalType::Int64,
+                    None,
+                    Some(BrowserParquetConvertedType::TimestampMicros),
+                ),
+                DeltaTableFieldDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            ),
+        ];
+
+        for (field, expected) in cases {
+            let data_type = datafusion_data_type_from_parquet_field(&field)
+                .expect("browser DataFusion should mirror Arrow UTC timestamp mapping");
+
+            assert_eq!(data_type, expected, "field {}", field.name);
+        }
+    }
+
+    #[test]
+    fn schema_adapter_unsupported_timestamp_shapes_remain_explicitly_unsupported() {
+        let cases = [
+            parquet_field(
+                "timestamp_local_micros",
+                BrowserParquetPhysicalType::Int64,
+                Some(BrowserParquetLogicalType::Timestamp {
+                    is_adjusted_to_utc: false,
+                    unit: BrowserParquetTimeUnit::Micros,
+                }),
+                None,
+            ),
+            parquet_field(
+                "timestamp_nanos",
+                BrowserParquetPhysicalType::Int64,
+                Some(BrowserParquetLogicalType::Timestamp {
+                    is_adjusted_to_utc: true,
+                    unit: BrowserParquetTimeUnit::Nanos,
+                }),
+                None,
+            ),
+            parquet_field(
+                "time_micros",
+                BrowserParquetPhysicalType::Int64,
+                Some(BrowserParquetLogicalType::Time {
+                    is_adjusted_to_utc: true,
+                    unit: BrowserParquetTimeUnit::Micros,
+                }),
+                None,
+            ),
+            parquet_field(
+                "timestamp_conflicting_converted",
+                BrowserParquetPhysicalType::Int64,
+                Some(BrowserParquetLogicalType::Timestamp {
+                    is_adjusted_to_utc: true,
+                    unit: BrowserParquetTimeUnit::Millis,
+                }),
+                Some(BrowserParquetConvertedType::TimestampMicros),
+            ),
+        ];
+
+        for field in cases {
+            let error = datafusion_data_type_from_parquet_field(&field)
+                .expect_err("unsupported timestamp field shapes should fail explicitly");
+
+            assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+            assert!(
+                error.message.contains(&field.name),
+                "error should include the unsupported field name: {}",
+                error.message
+            );
+        }
+    }
+
+    #[test]
     fn schema_adapter_unsupported_parquet_shapes_remain_explicitly_unsupported() {
         let cases = [
             parquet_field(
@@ -1429,15 +1651,6 @@ mod tests {
                 None,
                 None,
             ),
-            parquet_field(
-                "timestamp_micros",
-                BrowserParquetPhysicalType::Int64,
-                Some(BrowserParquetLogicalType::Timestamp {
-                    is_adjusted_to_utc: true,
-                    unit: BrowserParquetTimeUnit::Micros,
-                }),
-                None,
-            ),
         ];
 
         for field in cases {
@@ -1461,15 +1674,15 @@ mod tests {
     #[test]
     fn unsupported_classification_messages_use_stable_runtime_categories() {
         let schema_error = datafusion_data_type_from_parquet_field(&parquet_field(
-            "timestamp_micros",
+            "timestamp_local_micros",
             BrowserParquetPhysicalType::Int64,
             Some(BrowserParquetLogicalType::Timestamp {
-                is_adjusted_to_utc: true,
+                is_adjusted_to_utc: false,
                 unit: BrowserParquetTimeUnit::Micros,
             }),
             None,
         ))
-        .expect_err("unproven timestamp schema should remain unsupported");
+        .expect_err("local timestamp schema should remain unsupported");
 
         assert_eq!(schema_error.code, QueryErrorCode::UnsupportedFeature);
         assert!(

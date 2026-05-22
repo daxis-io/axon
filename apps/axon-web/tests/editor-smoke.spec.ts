@@ -331,6 +331,38 @@ test.describe('editor (Phase 1 smoke)', () => {
     ).toBe(false);
   });
 
+  test('queries the query-engine stress Delta table with DATE and timestamp columns in browser WASM', async ({
+    page,
+  }) => {
+    const tableDir = process.env.AXON_STRESS_DELTA_PATH;
+    if (!tableDir) {
+      test.skip(
+        true,
+        'Set AXON_STRESS_DELTA_PATH=/Users/ethanurbanski/delta-tables/query-engine-stress-delta to run this local smoke.',
+      );
+      return;
+    }
+
+    await connectLocalDeltaFolder(page, tableDir, 'stress-local', {
+      expectedTable: 'query_engine_stress_delta',
+    });
+
+    await page
+      .locator('.code-input')
+      .fill(
+        "SELECT event_id, event_date, event_ts, region FROM query_engine_stress_delta WHERE region = 'us-east' AND event_date = DATE '2025-05-13' LIMIT 5",
+      );
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+    await expect(page.locator('.res-meta')).toContainText(/browser · wasm/i, {
+      timeout: 120_000,
+    });
+    await expect(page.locator('table.grid tbody tr')).toHaveCount(5, { timeout: 120_000 });
+    await expect(page.locator('table.grid')).toContainText('event_date');
+    await expect(page.locator('table.grid')).toContainText('2025-05-13');
+    await expect(page.locator('table.grid')).toContainText('event_ts');
+  });
+
   test('local Delta metadata registry does not copy active Parquet data files', async ({
     page,
   }) => {
@@ -724,7 +756,7 @@ async function connectLocalDeltaFolder(
   page: Page,
   tableDir: string,
   alias: string,
-  options: { expectPersisted?: boolean } = {},
+  options: { expectPersisted?: boolean; expectedTable?: string | RegExp } = {},
 ): Promise<string> {
   await page.goto('/');
   await page.getByRole('button', { name: /^Connect$/ }).click();
@@ -745,7 +777,9 @@ async function connectLocalDeltaFolder(
   await reviewDialog.getByRole('button', { name: /Connect catalog/ }).click();
 
   await expect(page.locator('.conn-pill')).toContainText(alias, { timeout: 15_000 });
-  await expect(page.locator('.queryref-bar .qref')).toContainText('axon_prod_like_fixture');
+  await expect(page.locator('.queryref-bar .qref')).toContainText(
+    options.expectedTable ?? 'axon_prod_like_fixture',
+  );
 
   const localRegistryId = await page.evaluate((catalogAlias) => {
     const catalogs = JSON.parse(localStorage.getItem('axon.connect.catalogs.v1') ?? '[]') as Array<{
