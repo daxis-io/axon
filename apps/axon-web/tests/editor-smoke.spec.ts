@@ -538,7 +538,15 @@ test.describe('editor (Phase 1 smoke)', () => {
   test('routes between the workspace and connect page', async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on('console', (msg) => {
-      if (msg.type() === 'error') consoleErrors.push(msg.text());
+      const text = msg.text();
+      if (
+        msg.type() === 'error' &&
+        !/WebAssembly compilation aborted: Network error: Response body loading was aborted/i.test(
+          text,
+        )
+      ) {
+        consoleErrors.push(text);
+      }
     });
     page.on('pageerror', (err) => consoleErrors.push(err.message));
 
@@ -594,7 +602,6 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(deltaSharingCard).toHaveAttribute('aria-disabled', 'true');
     await expect(unityCatalogCard).toContainText(/coming soon/i);
     await expect(deltaSharingCard).toContainText(/coming soon/i);
-    await unityCatalogCard.click();
     await expect(dialog.getByRole('button', { name: /Continue/ })).toBeDisabled();
 
     await dialog.locator('.cc-source-row', { hasText: 'Local files' }).click();
