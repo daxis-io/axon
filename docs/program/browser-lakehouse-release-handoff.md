@@ -98,12 +98,14 @@ Browser HTTP URL attachment
 
 ## Evidence In Repo
 
+- `docs/program/browser-datafusion-runtime-parity.md` records the newer `apps/axon-web` browser DataFusion runtime parity envelope, including supported SQL classes, field types, scan optimizations, unsupported feature categories, and browser-worker proof.
 - `crates/query-contract/tests/release_handoff_examples.rs` validates the request, descriptor, and hard-fail examples.
 - `crates/browser-sdk/tests/release_handoff_examples.rs` validates the session-backed worker command and response examples.
 - `crates/browser-engine-worker/tests/worker_artifact.rs` validates the worker artifact report example and session-capability / Arrow IPC reporting contract.
 - `crates/delta-control-plane/tests/browser_http_descriptor.rs` covers deterministic browser URL attachment and URL redaction behavior.
 - `crates/delta-control-plane/tests/browser_snapshot_preflight.rs` covers descriptor-to-runtime supported-path execution over loopback-served fixture data.
 - `crates/wasm-query-runtime/tests/browser_runtime.rs` covers native-only reroutes and terminal unsupported behavior before browser I/O.
+- `crates/wasm-datafusion-session` and `crates/wasm-datafusion-poc` cover browser DataFusion schema classification, SQL scope enforcement, scan pruning/residual correctness, budgets, cancellation, and Arrow IPC output.
 
 ## Explicit External Boundary
 

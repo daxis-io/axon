@@ -1449,7 +1449,7 @@ impl ExecutionPlan for AxonParquetScanExec {
 fn delta_active_file_to_scan_target(active_file: &DeltaActiveFile) -> DataFusionResult<ScanTarget> {
     if active_file.deletion_vector.is_some() {
         return Err(DataFusionError::NotImplemented(
-            "AxonParquetScanExec does not yet support Delta deletion vectors".to_string(),
+            "browser DataFusion scan cannot execute Delta deletion vectors".to_string(),
         ));
     }
 
@@ -2505,6 +2505,36 @@ mod tests {
                 "physical plan text: {physical_plan}"
             );
         });
+    }
+
+    #[test]
+    fn unsupported_scan_features_use_stable_runtime_category_message() {
+        let active_file = DeltaActiveFile {
+            path: "part-000.parquet".to_string(),
+            url: "https://example.test/part-000.parquet".to_string(),
+            size_bytes: 1024,
+            partition_values: BTreeMap::new(),
+            object_etag: None,
+            stats_json: None,
+            deletion_vector: Some(DeletionVectorDescriptor {
+                storage_type: "u".to_string(),
+                path_or_inline_dv: "dv/part-000.bin".to_string(),
+                offset: Some(0),
+                size_in_bytes: Some(128),
+                cardinality: Some(1),
+            }),
+        };
+
+        let error = delta_active_file_to_scan_target(&active_file)
+            .expect_err("deletion vectors should remain unsupported by the scan path");
+
+        match error {
+            DataFusionError::NotImplemented(message) => assert!(
+                message.starts_with("browser DataFusion scan cannot execute"),
+                "scan unsupported error should use stable category wording: {message}"
+            ),
+            other => panic!("expected DataFusion unsupported-feature error, got {other:?}"),
+        }
     }
 
     #[test]

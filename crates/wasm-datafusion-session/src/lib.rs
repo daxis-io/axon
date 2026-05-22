@@ -416,7 +416,9 @@ fn datafusion_partition_column_type(
         Some(PartitionColumnType::Boolean) => Ok(DeltaTableFieldDataType::Boolean),
         Some(PartitionColumnType::Unsupported) => Err(QueryError::new(
             QueryErrorCode::UnsupportedFeature,
-            format!("browser DataFusion does not support partition column '{column}' type"),
+            format!(
+                "browser DataFusion schema does not yet support partition column '{column}' type"
+            ),
             runtime_target(),
         )),
     }
@@ -551,7 +553,7 @@ fn unsupported_datafusion_parquet_field(field: &BrowserParquetField) -> QueryErr
     QueryError::new(
         QueryErrorCode::UnsupportedFeature,
         format!(
-            "browser DataFusion does not yet support Parquet field '{}' with physical type {}, logical type {}, converted type {}, definition level {}, repetition level {}, repetition {}",
+            "browser DataFusion schema does not yet support Parquet field '{}' with physical type {}, logical type {}, converted type {}, definition level {}, repetition level {}, repetition {}",
             field.name,
             field.physical_type,
             logical_type,
@@ -799,7 +801,14 @@ fn wrong_datafusion_table_error(table_name: &str) -> QueryError {
 }
 
 fn invalid_datafusion_sql(message: impl Into<String>) -> QueryError {
-    QueryError::new(QueryErrorCode::InvalidRequest, message, runtime_target())
+    QueryError::new(
+        QueryErrorCode::InvalidRequest,
+        format!(
+            "browser DataFusion SQL scope does not allow: {}",
+            message.into()
+        ),
+        runtime_target(),
+    )
 }
 
 fn datafusion_query_budget_from_runtime_config(
@@ -1447,6 +1456,42 @@ mod tests {
                 error.message
             );
         }
+    }
+
+    #[test]
+    fn unsupported_classification_messages_use_stable_runtime_categories() {
+        let schema_error = datafusion_data_type_from_parquet_field(&parquet_field(
+            "timestamp_micros",
+            BrowserParquetPhysicalType::Int64,
+            Some(BrowserParquetLogicalType::Timestamp {
+                is_adjusted_to_utc: true,
+                unit: BrowserParquetTimeUnit::Micros,
+            }),
+            None,
+        ))
+        .expect_err("unproven timestamp schema should remain unsupported");
+
+        assert_eq!(schema_error.code, QueryErrorCode::UnsupportedFeature);
+        assert!(
+            schema_error
+                .message
+                .starts_with("browser DataFusion schema does not yet support"),
+            "schema error should use stable category wording: {}",
+            schema_error.message
+        );
+
+        let sql_error =
+            validate_datafusion_sql_scope("events", "CREATE TABLE copied AS SELECT * FROM events")
+                .expect_err("non-SELECT SQL should remain outside browser DataFusion scope");
+
+        assert_eq!(sql_error.code, QueryErrorCode::InvalidRequest);
+        assert!(
+            sql_error
+                .message
+                .starts_with("browser DataFusion SQL scope does not allow"),
+            "SQL scope error should use stable category wording: {}",
+            sql_error.message
+        );
     }
 
     #[test]
