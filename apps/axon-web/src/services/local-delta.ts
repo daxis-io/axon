@@ -74,8 +74,7 @@ export type LocalDeltaRuntime = {
 export type LocalDeltaPersistenceMode =
   | 'session_handles'
   | 'persisted_directory_handle'
-  | 'metadata_only_reselect'
-  | 'bounded_browser_cache';
+  | 'metadata_only_reselect';
 
 export type OpenLocalDeltaOptions = {
   schemaName?: string;
@@ -101,14 +100,13 @@ type LocalDeltaTableFiles = {
   dataEntries: LocalDeltaFileEntry[];
 };
 
-type LocalDeltaRegistryBackend = 'metadata_only' | 'directory_handle' | 'opfs' | 'indexeddb_blob';
+type LocalDeltaRegistryBackend = 'metadata_only' | 'directory_handle';
 
 type LocalDeltaRegistryFileRecord = {
   relativePath: string;
   sizeBytes: number;
   lastModified?: number;
   mimeType?: string;
-  bytes?: ArrayBuffer;
 };
 
 type LocalDeltaRegistryRecord = {
@@ -143,11 +141,7 @@ type LocalLogFacts = {
 const LOCAL_DELTA_DB_NAME = 'axon-local-delta-registry';
 const LOCAL_DELTA_DB_VERSION = 1;
 const LOCAL_DELTA_STORE = 'tables';
-const LOCAL_DELTA_OPFS_ROOT = 'axon-local-delta-tables';
 const LOCAL_DELTA_ACTIVE_ID_KEY = 'axon-local-delta-active-id';
-const LOCAL_DELTA_INDEXED_DB_BLOB_BUDGET_BYTES = 512 * 1024 * 1024;
-const LOCAL_DELTA_PERSISTENCE_CONCURRENCY = 4;
-const LOCAL_DELTA_FULL_COPY_PERSISTENCE_ENABLED = false;
 
 let wasmReady: Promise<unknown> | undefined;
 const sessionLocalDeltaTables = new Map<string, LocalDeltaTableFiles>();
@@ -228,17 +222,6 @@ export async function unregisterLocalDeltaRuntime(registryId: string): Promise<v
 
   if (activeLocalDeltaRegistryId() === registryId) {
     clearActiveLocalDeltaRegistryId();
-  }
-
-  let record: LocalDeltaRegistryRecord | undefined;
-  try {
-    record = await getLocalDeltaRegistryRecord(registryId);
-  } catch {
-    // Missing or blocked registry access should not keep session state alive.
-  }
-
-  if (record?.backend === 'opfs') {
-    await removeOpfsLocalDeltaTable(registryId);
   }
 
   try {
@@ -477,32 +460,6 @@ async function persistLocalDeltaTable(
     }
   }
 
-  if (
-    LOCAL_DELTA_FULL_COPY_PERSISTENCE_ENABLED &&
-    (await tryWriteLocalDeltaTableToOpfs(id, table))
-  ) {
-    try {
-      await putLocalDeltaRegistryRecord({
-        ...baseRecord,
-        backend: 'opfs',
-        files,
-      });
-    } catch (error) {
-      await removeOpfsLocalDeltaTable(id);
-      throw error;
-    }
-    return { ...table, registryId: id, persistenceMode: 'bounded_browser_cache' };
-  }
-
-  if (LOCAL_DELTA_FULL_COPY_PERSISTENCE_ENABLED) {
-    await putLocalDeltaRegistryRecord({
-      ...baseRecord,
-      backend: 'indexeddb_blob',
-      files: await localDeltaIndexedDbBlobRecords(table),
-    });
-    return { ...table, registryId: id, persistenceMode: 'bounded_browser_cache' };
-  }
-
   await putLocalDeltaRegistryRecord({
     ...baseRecord,
     backend: 'metadata_only',
@@ -561,16 +518,7 @@ async function loadLocalDeltaTable(registryId: string): Promise<LocalDeltaTableF
     return loadDirectoryHandleLocalDeltaTable(record);
   }
 
-  if (record.backend === 'opfs') {
-    const table = await loadOpfsLocalDeltaTable(record);
-    if (table) return table;
-    if (record.files.every((file) => file.bytes)) {
-      return loadIndexedDbBlobLocalDeltaTable(record);
-    }
-    return undefined;
-  }
-
-  return loadIndexedDbBlobLocalDeltaTable(record);
+  return undefined;
 }
 
 function localDeltaMetadataRecords(table: LocalDeltaTableFiles): LocalDeltaRegistryFileRecord[] {
@@ -584,66 +532,6 @@ function localDeltaMetadataRecord(entry: LocalDeltaFileEntry): LocalDeltaRegistr
     lastModified: entry.file.lastModified,
     mimeType: entry.file.type,
   };
-}
-
-async function localDeltaIndexedDbBlobRecords(
-  table: LocalDeltaTableFiles,
-): Promise<LocalDeltaRegistryFileRecord[]> {
-  const totalBytes = localDeltaTableSizeBytes(table);
-  if (totalBytes > LOCAL_DELTA_INDEXED_DB_BLOB_BUDGET_BYTES) {
-    throw new LocalDeltaError(
-      'registry_unavailable',
-      `Local Delta table ${formatBytes(totalBytes)} exceeds the ${formatBytes(
-        LOCAL_DELTA_INDEXED_DB_BLOB_BUDGET_BYTES,
-      )} IndexedDB persistence budget.`,
-    );
-  }
-
-  return mapWithConcurrency([...table.filesByRelativePath.values()], async (entry) => ({
-    ...localDeltaMetadataRecord(entry),
-    bytes: await entry.file.arrayBuffer(),
-  }));
-}
-
-function localDeltaTableSizeBytes(table: LocalDeltaTableFiles): number {
-  return [...table.filesByRelativePath.values()].reduce(
-    (total, entry) => total + entry.file.size,
-    0,
-  );
-}
-
-async function tryWriteLocalDeltaTableToOpfs(
-  id: string,
-  table: LocalDeltaTableFiles,
-): Promise<boolean> {
-  const root = await opfsLocalDeltaRoot();
-  if (!root) return false;
-
-  try {
-    const tableDirectory = await root.getDirectoryHandle(id, { create: true });
-    await mapWithConcurrency([...table.filesByRelativePath.values()], (entry) =>
-      writeOpfsFile(tableDirectory, entry.relativePath, entry.file),
-    );
-    return true;
-  } catch (error) {
-    console.warn('OPFS local Delta table import failed; using IndexedDB blob registry:', error);
-    try {
-      await root.removeEntry(id, { recursive: true });
-    } catch {
-      // Best-effort cleanup only.
-    }
-    return false;
-  }
-}
-
-async function removeOpfsLocalDeltaTable(registryId: string): Promise<void> {
-  const root = await opfsLocalDeltaRoot();
-  if (!root) return;
-  try {
-    await root.removeEntry(registryId, { recursive: true });
-  } catch {
-    // Best-effort cleanup only.
-  }
 }
 
 async function loadDirectoryHandleLocalDeltaTable(
@@ -707,60 +595,6 @@ function validateLocalDeltaTableAgainstRecord(
       );
     }
   }
-}
-
-async function loadOpfsLocalDeltaTable(
-  record: LocalDeltaRegistryRecord,
-): Promise<LocalDeltaTableFiles | undefined> {
-  const root = await opfsLocalDeltaRoot();
-  if (!root) return undefined;
-
-  try {
-    const tableDirectory = await root.getDirectoryHandle(record.id);
-    const entries = await Promise.all(
-      record.files.map(async (fileRecord) => {
-        const fileHandle = await getOpfsFileHandle(tableDirectory, fileRecord.relativePath);
-        const file = await fileHandle.getFile();
-        if (file.size !== fileRecord.sizeBytes) {
-          throw new Error(
-            `Persisted local file '${fileRecord.relativePath}' size ${file.size} did not match registry size ${fileRecord.sizeBytes}.`,
-          );
-        }
-        return localDeltaFileEntry(record.tableRootName, fileRecord.relativePath, file);
-      }),
-    );
-    return buildLocalDeltaTableFiles(record.tableRootName, entries, record.id, {
-      persistenceMode: 'bounded_browser_cache',
-    });
-  } catch (error) {
-    console.warn('Persisted OPFS local Delta table could not be reopened:', error);
-    return undefined;
-  }
-}
-
-function loadIndexedDbBlobLocalDeltaTable(record: LocalDeltaRegistryRecord): LocalDeltaTableFiles {
-  const entries = record.files.map((fileRecord) => {
-    if (!fileRecord.bytes) {
-      throw new LocalDeltaError(
-        'registry_unavailable',
-        `Persisted local file '${fileRecord.relativePath}' was missing stored bytes.`,
-      );
-    }
-    const file = new File([fileRecord.bytes], fileRecord.relativePath.split('/').at(-1) ?? 'file', {
-      lastModified: fileRecord.lastModified,
-      type: fileRecord.mimeType,
-    });
-    if (file.size !== fileRecord.sizeBytes) {
-      throw new LocalDeltaError(
-        'registry_unavailable',
-        `Persisted local file '${fileRecord.relativePath}' size ${file.size} did not match registry size ${fileRecord.sizeBytes}.`,
-      );
-    }
-    return localDeltaFileEntry(record.tableRootName, fileRecord.relativePath, file);
-  });
-  return buildLocalDeltaTableFiles(record.tableRootName, entries, record.id, {
-    persistenceMode: 'bounded_browser_cache',
-  });
 }
 
 async function readLocalLogFacts(logEntries: LocalDeltaFileEntry[]): Promise<LocalLogFacts> {
@@ -952,18 +786,6 @@ function partitionType(value: unknown): PartitionColumnType {
   return 'unsupported';
 }
 
-function localDeltaFileEntry(
-  tableRootName: string,
-  relativePath: string,
-  file: File,
-): LocalDeltaFileEntry {
-  return {
-    file,
-    browserPath: `${tableRootName}/${relativePath}`,
-    relativePath,
-  };
-}
-
 function localDeltaRegistryId(tableRootName: string): string {
   const safeName = tableRootName.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
   return `${safeName || 'delta-table'}-${Date.now().toString(36)}-${Math.random()
@@ -1038,18 +860,6 @@ async function getLocalDeltaRegistryRecords(): Promise<LocalDeltaRegistryRecord[
   });
 }
 
-async function getLocalDeltaRegistryRecord(
-  registryId: string,
-): Promise<LocalDeltaRegistryRecord | undefined> {
-  const db = await openLocalDeltaRegistryDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(LOCAL_DELTA_STORE, 'readonly');
-    const request = tx.objectStore(LOCAL_DELTA_STORE).get(registryId);
-    request.onerror = () => reject(request.error ?? new Error('local Delta registry read failed'));
-    request.onsuccess = () => resolve(request.result as LocalDeltaRegistryRecord | undefined);
-  });
-}
-
 async function deleteLocalDeltaRegistryRecord(registryId: string): Promise<void> {
   const db = await openLocalDeltaRegistryDb();
   return new Promise((resolve, reject) => {
@@ -1059,70 +869,6 @@ async function deleteLocalDeltaRegistryRecord(registryId: string): Promise<void>
     tx.onerror = () => reject(tx.error ?? new Error('local Delta registry delete failed'));
     tx.onabort = () => reject(tx.error ?? new Error('local Delta registry delete aborted'));
   });
-}
-
-async function opfsLocalDeltaRoot(): Promise<FileSystemDirectoryHandle | undefined> {
-  try {
-    const storage = navigator.storage;
-    if (!storage || typeof storage.getDirectory !== 'function') return undefined;
-    const root = await storage.getDirectory();
-    return root.getDirectoryHandle(LOCAL_DELTA_OPFS_ROOT, { create: true });
-  } catch {
-    return undefined;
-  }
-}
-
-async function writeOpfsFile(
-  root: FileSystemDirectoryHandle,
-  relativePath: string,
-  file: File,
-): Promise<void> {
-  const fileHandle = await getOrCreateOpfsFileHandle(root, relativePath);
-  const writable = await fileHandle.createWritable();
-  try {
-    await writable.write(file);
-  } finally {
-    await writable.close();
-  }
-}
-
-async function getOrCreateOpfsFileHandle(
-  root: FileSystemDirectoryHandle,
-  relativePath: string,
-): Promise<FileSystemFileHandle> {
-  const segments = validateOpfsPathSegments(relativePath);
-  const filename = segments.at(-1);
-  if (!filename) {
-    throw new LocalDeltaError('invalid_path', `Path '${relativePath}' did not include a filename.`);
-  }
-
-  let directory = root;
-  for (const segment of segments.slice(0, -1)) {
-    directory = await directory.getDirectoryHandle(segment, { create: true });
-  }
-  return directory.getFileHandle(filename, { create: true });
-}
-
-async function getOpfsFileHandle(
-  root: FileSystemDirectoryHandle,
-  relativePath: string,
-): Promise<FileSystemFileHandle> {
-  const segments = validateOpfsPathSegments(relativePath);
-  const filename = segments.at(-1);
-  if (!filename) {
-    throw new LocalDeltaError('invalid_path', `Path '${relativePath}' did not include a filename.`);
-  }
-
-  let directory = root;
-  for (const segment of segments.slice(0, -1)) {
-    directory = await directory.getDirectoryHandle(segment);
-  }
-  return directory.getFileHandle(filename);
-}
-
-function validateOpfsPathSegments(relativePath: string): string[] {
-  validateLocalRelativePath(relativePath);
-  return relativePath.split('/').map((segment) => decodeDeltaPath(segment));
 }
 
 function fileBrowserPath(file: File): string {
@@ -1215,23 +961,6 @@ function trackLocalObjectUrl(registryId: string, url: string): string {
   urls.add(url);
   localObjectUrlsByRegistryId.set(registryId, urls);
   return url;
-}
-
-async function mapWithConcurrency<T, R>(
-  values: T[],
-  mapper: (value: T) => Promise<R>,
-  concurrency = LOCAL_DELTA_PERSISTENCE_CONCURRENCY,
-): Promise<R[]> {
-  const results: R[] = [];
-  let index = 0;
-  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
-    while (index < values.length) {
-      const current = index++;
-      results[current] = await mapper(values[current]);
-    }
-  });
-  await Promise.all(workers);
-  return results;
 }
 
 function sanitizeSqlIdentifier(name: string): string {

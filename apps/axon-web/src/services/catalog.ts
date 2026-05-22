@@ -1,6 +1,7 @@
 import type { Catalog, CatalogTable } from './types.ts';
 import { deriveCatalogTable, getCurrentSession, getSession, subscribeSession } from './query.ts';
 import { SAMPLE_QUERY_SOURCE, sameQuerySource, type QueryTableSource } from './query-source.ts';
+import { LocalDeltaError } from './local-delta.ts';
 
 export async function loadCatalog(
   source: QueryTableSource = SAMPLE_QUERY_SOURCE,
@@ -9,7 +10,9 @@ export async function loadCatalog(
     const state = await getSession(source);
     return buildCatalog(deriveCatalogTable(state), state.source);
   } catch (error) {
-    if (source.kind === 'local_delta') return buildLocalDeltaCatalogFallback(source);
+    if (source.kind === 'local_delta' && canUseLocalDeltaCatalogFallback(error)) {
+      return buildLocalDeltaCatalogFallback(source);
+    }
     throw error;
   }
 }
@@ -65,6 +68,10 @@ function buildLocalDeltaCatalogFallback(
       },
     ],
   };
+}
+
+function canUseLocalDeltaCatalogFallback(error: unknown): boolean {
+  return error instanceof LocalDeltaError && error.code === 'registry_unavailable';
 }
 
 function protocolFromLabel(label: string | undefined) {

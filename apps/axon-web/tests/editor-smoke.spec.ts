@@ -1,10 +1,16 @@
 import { expect, test, type Page } from '@playwright/test';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connectorFeaturesFromEnv } from '../src/services/connector-features.ts';
 
 const APP_ORIGIN = new URL(process.env.PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:5174').origin;
 const LOCAL_DELTA_ACTIVE_ID_KEY = 'axon-local-delta-active-id';
+
+type LocalDeltaFixtureFile = {
+  relativePath: string;
+  bytes: number[];
+};
 
 // Phase 1 smoke test: editor mounts, catalog populates, and a query returns rows.
 // Lives under tests/ so it benefits from the same baseURL config as the sandbox
@@ -475,6 +481,141 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.locator('.results')).toContainText(/Select the folder again/i);
   });
 
+  test('persists File System Access directory handles across reload for local Delta catalogs', async ({
+    page,
+  }) => {
+    const tableDir = fileURLToPath(new URL('../public/fixtures/prod-like/table', import.meta.url));
+    const localRegistryId = await connectLocalDeltaDirectoryHandle(page, tableDir, 'handle-local');
+
+    const registryRecord = await localDeltaRegistryRecord(page, localRegistryId);
+    expect(registryRecord?.backend).toBe('directory_handle');
+    expect(
+      registryRecord?.files.some((file) => file.path.endsWith('.parquet') && file.hasBytes),
+    ).toBe(false);
+
+    await page.reload();
+    await expect(page.locator('.conn-pill')).toContainText('handle-local', {
+      timeout: 15_000,
+    });
+
+    await page
+      .locator('.code-input')
+      .fill('SELECT COUNT(*) AS row_count FROM axon_prod_like_fixture');
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+    await expect(page.locator('.res-meta')).toContainText(/browser · wasm/i, {
+      timeout: 30_000,
+    });
+    await expect(page.locator('table.grid')).toContainText('row_count');
+    await expect(page.locator('table.grid')).toContainText('4');
+  });
+
+  test('unexpected local Delta registry errors surface instead of using fallback catalog metadata', async ({
+    page,
+  }) => {
+    const consoleErrors: string[] = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') consoleErrors.push(msg.text());
+    });
+    await page.addInitScript(() => {
+      localStorage.setItem(
+        'axon.connect.catalogs.v1',
+        JSON.stringify([
+          {
+            id: 'broken-local',
+            alias: 'broken-local',
+            kind: 'local',
+            storage: 'Local folder: broken',
+            region: 'browser-local',
+            status: 'connected',
+            connectedAt: 'test fixture',
+            schemas: [
+              {
+                name: 'default',
+                tables: [
+                  {
+                    name: 'broken_local_table',
+                    snapshot: 3,
+                    rows: 4,
+                    files: 2,
+                    size: 'fixture',
+                    protocol: 'r2/w5',
+                    localRegistryId: 'broken-registry',
+                  },
+                ],
+              },
+            ],
+          },
+        ]),
+      );
+      const originalOpen = window.indexedDB.open.bind(window.indexedDB);
+      Object.defineProperty(window.indexedDB, 'open', {
+        configurable: true,
+        value: (name: string, version?: number) => {
+          if (name === 'axon-local-delta-registry') {
+            throw new Error('registry boom');
+          }
+          return originalOpen(name, version);
+        },
+      });
+    });
+
+    await page.goto('/');
+
+    await expect
+      .poll(() => consoleErrors.join('\n'), { timeout: 15_000 })
+      .toContain('failed to load catalog');
+    expect(consoleErrors.join('\n')).toContain('registry boom');
+  });
+
+  test('cancelling File System Access directory picker leaves local connect dialog stable', async ({
+    page,
+  }) => {
+    const browserErrors: string[] = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') browserErrors.push(msg.text());
+    });
+    page.on('pageerror', (err) => browserErrors.push(err.message));
+    await page.addInitScript(() => {
+      Object.defineProperty(window, '__axonUnhandledRejections', {
+        configurable: true,
+        value: [],
+        writable: true,
+      });
+      window.addEventListener('unhandledrejection', (event) => {
+        const reason = event.reason;
+        (
+          window as Window & { __axonUnhandledRejections?: string[] }
+        ).__axonUnhandledRejections?.push(
+          reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason),
+        );
+      });
+      Object.defineProperty(window, 'showDirectoryPicker', {
+        configurable: true,
+        value: async () => {
+          throw new DOMException('The user aborted a request.', 'AbortError');
+        },
+      });
+    });
+
+    await page.goto('/');
+    const localDialog = await openLocalDeltaConnectDialog(page);
+    await localDialog.locator('.cc-drop').click();
+
+    await expect(localDialog).toContainText(/Local Delta table directory/i);
+    await expect(localDialog.getByText(/Delta log parsed/i)).toHaveCount(0);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as Window & { __axonUnhandledRejections?: string[] })
+              .__axonUnhandledRejections ?? [],
+        ),
+      )
+      .toEqual([]);
+    expect(browserErrors, `browser errors:\n${browserErrors.join('\n')}`).toEqual([]);
+  });
+
   test('loads selected connected catalog, populates table, runs a query', async ({
     page,
     context,
@@ -569,6 +710,16 @@ test.describe('editor (Phase 1 smoke)', () => {
   });
 });
 
+async function openLocalDeltaConnectDialog(page: Page) {
+  await page.getByRole('button', { name: /^Connect$/ }).click();
+
+  const sourceDialog = page.getByRole('dialog', { name: 'Connect a Delta source' });
+  await sourceDialog.locator('.cc-source-card', { hasText: 'Local files' }).click();
+  await sourceDialog.getByRole('button', { name: /Continue/ }).click();
+
+  return page.getByRole('dialog', { name: 'Connect a local Delta folder' });
+}
+
 async function connectLocalDeltaFolder(
   page: Page,
   tableDir: string,
@@ -608,6 +759,116 @@ async function connectLocalDeltaFolder(
   }, alias);
   if (options.expectPersisted !== false) expect(localRegistryId).toBeTruthy();
   return localRegistryId ?? '';
+}
+
+async function connectLocalDeltaDirectoryHandle(
+  page: Page,
+  tableDir: string,
+  alias: string,
+): Promise<string> {
+  await installDirectoryPickerFixture(page, localDeltaFixtureFiles(tableDir), 'opfs-prod-like');
+  await page.goto('/');
+  const localDialog = await openLocalDeltaConnectDialog(page);
+  await localDialog.locator('.cc-drop').click();
+  await expect(localDialog).toContainText(/Delta log parsed/i);
+  await expect(localDialog).toContainText(/Reload: directory handle stored/i);
+  await localDialog.getByRole('button', { name: 'Test connection' }).click();
+  await expect(localDialog).toContainText(/source check passed/i);
+  await localDialog.getByRole('button', { name: /Discover tables/ }).click();
+  const reviewDialog = page.getByRole('dialog', { name: 'Review & name catalog' });
+  await expect(reviewDialog).toContainText(/Detected 1 local Delta table/i);
+  await reviewDialog.getByLabel('Catalog alias').fill(alias);
+  await reviewDialog.getByRole('button', { name: /Connect catalog/ }).click();
+
+  await expect(page.locator('.conn-pill')).toContainText(alias, { timeout: 15_000 });
+  await expect(page.locator('.queryref-bar .qref')).toContainText('axon_prod_like_fixture');
+
+  const localRegistryId = await page.evaluate((catalogAlias) => {
+    const catalogs = JSON.parse(localStorage.getItem('axon.connect.catalogs.v1') ?? '[]') as Array<{
+      alias: string;
+      schemas: Array<{ tables: Array<{ localRegistryId?: string }> }>;
+    }>;
+    return catalogs
+      .find((catalog) => catalog.alias === catalogAlias)
+      ?.schemas.flatMap((schema) => schema.tables)
+      .find((table) => table.localRegistryId)?.localRegistryId;
+  }, alias);
+  expect(localRegistryId).toBeTruthy();
+  return localRegistryId ?? '';
+}
+
+async function installDirectoryPickerFixture(
+  page: Page,
+  files: LocalDeltaFixtureFile[],
+  tableName: string,
+): Promise<void> {
+  await page.addInitScript(
+    ({ records, rootName }) => {
+      async function directoryFor(
+        root: FileSystemDirectoryHandle,
+        segments: string[],
+      ): Promise<FileSystemDirectoryHandle> {
+        let directory = root;
+        for (const segment of segments) {
+          directory = await directory.getDirectoryHandle(segment, { create: true });
+        }
+        return directory;
+      }
+
+      async function writeFixtureFile(
+        root: FileSystemDirectoryHandle,
+        relativePath: string,
+        bytes: number[],
+      ): Promise<void> {
+        const segments = relativePath.split('/');
+        const fileName = segments.pop();
+        if (!fileName) throw new Error(`fixture path '${relativePath}' did not include a file`);
+        const directory = await directoryFor(root, segments);
+        const fileHandle = await directory.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+        try {
+          await writable.write(new Uint8Array(bytes));
+        } finally {
+          await writable.close();
+        }
+      }
+
+      Object.defineProperty(window, 'showDirectoryPicker', {
+        configurable: true,
+        value: async () => {
+          const storageRoot = await navigator.storage.getDirectory();
+          const fixtureRoot = await storageRoot.getDirectoryHandle('axon-test-local-delta', {
+            create: true,
+          });
+          try {
+            await fixtureRoot.removeEntry(rootName, { recursive: true });
+          } catch {
+            // The test fixture is created lazily; no prior entry is expected on a clean context.
+          }
+          const tableRoot = await fixtureRoot.getDirectoryHandle(rootName, { create: true });
+          for (const file of records) {
+            await writeFixtureFile(tableRoot, file.relativePath, file.bytes);
+          }
+          return tableRoot;
+        },
+      });
+    },
+    { records: files, rootName: tableName },
+  );
+}
+
+function localDeltaFixtureFiles(rootDir: string, prefix = ''): LocalDeltaFixtureFile[] {
+  return readdirSync(join(rootDir, prefix), { withFileTypes: true }).flatMap((entry) => {
+    const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) return localDeltaFixtureFiles(rootDir, relativePath);
+    if (!entry.isFile()) return [];
+    return [
+      {
+        relativePath,
+        bytes: [...readFileSync(join(rootDir, relativePath))],
+      },
+    ];
+  });
 }
 
 async function blockDurableLocalDeltaRegistry(page: Page): Promise<void> {

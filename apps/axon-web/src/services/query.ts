@@ -79,6 +79,7 @@ type SessionState = {
 let wasmReady: Promise<unknown> | undefined;
 let session: SessionState | undefined;
 let sessionInit: { source: QueryTableSource; promise: Promise<SessionState> } | undefined;
+let sessionGeneration = 0;
 let requestCounter = 0;
 let coldStartMs: number | undefined;
 
@@ -226,17 +227,31 @@ export async function getSession(
   if (session && sameQuerySource(session.source, source)) return session;
   if (sessionInit && sameQuerySource(sessionInit.source, source)) return sessionInit.promise;
   discardQuerySession();
-  {
-    const t0 = performance.now();
-    const promise = buildSession(source).then((s) => {
+  const generation = ++sessionGeneration;
+  const t0 = performance.now();
+  const promise = buildSession(source)
+    .then((s) => {
+      if (
+        generation !== sessionGeneration ||
+        !sessionInit ||
+        sessionInit.promise !== promise ||
+        !sameQuerySource(sessionInit.source, source)
+      ) {
+        disposeSession(s);
+        throw new DOMException('stale query session discarded', 'AbortError');
+      }
       session = s;
       coldStartMs = Math.round(performance.now() - t0);
       sessionSubscribers.forEach((fn) => fn(s));
       return s;
+    })
+    .finally(() => {
+      if (generation === sessionGeneration && sessionInit?.promise === promise) {
+        sessionInit = undefined;
+      }
     });
-    sessionInit = { source, promise };
-  }
-  return sessionInit.promise;
+  sessionInit = { source, promise };
+  return promise;
 }
 
 export function getCurrentSession(
@@ -247,12 +262,18 @@ export function getCurrentSession(
 }
 
 export function discardQuerySession(source?: QueryTableSource): void {
+  let discarded = false;
   if (session && (!source || sameQuerySource(session.source, source))) {
     disposeSession(session);
     session = undefined;
+    discarded = true;
   }
   if (sessionInit && (!source || sameQuerySource(sessionInit.source, source))) {
     sessionInit = undefined;
+    discarded = true;
+  }
+  if (discarded) {
+    sessionGeneration += 1;
   }
 }
 

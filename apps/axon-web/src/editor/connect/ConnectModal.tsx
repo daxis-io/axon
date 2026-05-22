@@ -495,8 +495,20 @@ function ConfigLocal({
       setError('Use the local folder input to select a Delta table directory.');
       return;
     }
-    const handle = await picker({ mode: 'read' });
-    await openRuntime(() => openLocalDeltaTableFromDirectoryHandle(handle));
+    setOver(false);
+    setPicking(true);
+    setError(null);
+    try {
+      const handle = await picker({ mode: 'read' });
+      await openRuntime(() => openLocalDeltaTableFromDirectoryHandle(handle));
+    } catch (err) {
+      if (!isAbortError(err)) {
+        setForm({ ...form, detected: null, localDelta: null });
+        setError(localDeltaErrorMessage(err));
+      }
+    } finally {
+      setPicking(false);
+    }
   };
 
   const openSelectedFiles = (files: FileList | null) => {
@@ -677,13 +689,21 @@ function detectedFromRuntime(runtime: LocalDeltaRuntime) {
 function localDeltaPersistenceLabel(persistence: LocalDeltaRuntime['persistence']): string {
   if (persistence === 'persisted_directory_handle') return 'directory handle stored';
   if (persistence === 'metadata_only_reselect') return 'metadata saved; reselect may be required';
-  if (persistence === 'bounded_browser_cache') return 'bounded browser cache';
   return 'current session only';
 }
 
 function localDeltaErrorMessage(error: unknown): string {
   if (error instanceof LocalDeltaError) return error.message;
   return error instanceof Error ? error.message : String(error);
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'name' in error &&
+    (error as { name?: unknown }).name === 'AbortError'
+  );
 }
 
 // ─── Object storage config ──────────────────────────────
