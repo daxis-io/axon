@@ -16,7 +16,7 @@ use query_contract::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
-use wasm_datafusion_session::BrowserDataFusionSession;
+use wasm_datafusion_session::{BrowserDataFusionCancellation, BrowserDataFusionSession};
 use wasm_delta_snapshot::{
     BrowserDeltaLogManifest, BrowserDeltaLogObject, BrowserHttpDeltaLogStorageHandler,
     DefaultJsonHandler, DefaultParquetHandler, SnapshotResolver,
@@ -165,8 +165,21 @@ where
 }
 
 #[wasm_bindgen]
+pub struct SandboxQueryCancellation {
+    cancellation: BrowserDataFusionCancellation,
+}
+
+#[wasm_bindgen]
+impl SandboxQueryCancellation {
+    pub fn cancel(&self) {
+        self.cancellation.cancel_running_queries();
+    }
+}
+
+#[wasm_bindgen]
 pub struct SandboxQuerySession {
     session: BrowserDataFusionSession,
+    cancellation: BrowserDataFusionCancellation,
 }
 
 #[wasm_bindgen]
@@ -181,8 +194,18 @@ impl SandboxQuerySession {
         let session =
             BrowserDataFusionSession::new(runtime_config, DEFAULT_QUERY_SESSION_CACHE_BYTES)
                 .map_err(query_error_to_js_value)?;
+        let cancellation = session.cancellation_handle();
 
-        Ok(Self { session })
+        Ok(Self {
+            session,
+            cancellation,
+        })
+    }
+
+    pub fn cancellation(&self) -> SandboxQueryCancellation {
+        SandboxQueryCancellation {
+            cancellation: self.cancellation.clone(),
+        }
     }
 
     pub async fn open_delta_table(

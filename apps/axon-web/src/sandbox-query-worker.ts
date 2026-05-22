@@ -1,6 +1,7 @@
-import init, { SandboxQuerySession } from './wasm/axon_web_wasm';
+import init, { SandboxQueryCancellation, SandboxQuerySession } from './wasm/axon_web_wasm';
 import {
   ARROW_IPC_STREAM_CONTENT_TYPE,
+  type BrowserWorkerCancelCommand,
   type BrowserWorkerCommand,
   type BrowserWorkerEventContext,
   type BrowserWorkerEventEnvelope,
@@ -63,9 +64,16 @@ const QUERY_PREVIEW_LIMIT = 100;
 const workerScope = self as unknown as SandboxWorkerScope;
 
 let sessionPromise: Promise<SandboxQuerySession> | undefined;
+let cancellationToken: SandboxQueryCancellation | undefined;
+let activeQueryId: string | undefined;
 let commandQueue = Promise.resolve();
 
 workerScope.addEventListener('message', (event: MessageEvent<BrowserWorkerCommand>) => {
+  if ('cancel' in event.data) {
+    void handleCancel(event.data.cancel);
+    return;
+  }
+
   commandQueue = commandQueue.catch(() => undefined).then(() => handleCommand(event.data));
 });
 
@@ -157,43 +165,71 @@ async function handleSql(
     throw queryError('invalid_request', 'sandbox worker only supports Arrow IPC stream output');
   }
 
-  emitProgress(context, 'started');
-  emitLog(context, 'info', 'sandbox worker executing SQL query');
-  emitProgress(context, 'planning');
-  const session = await ensureSession(context);
-  emitProgress(context, 'executing');
+  activeQueryId = command.request_id;
+  try {
+    emitProgress(context, 'started');
+    emitLog(context, 'info', 'sandbox worker executing SQL query');
+    emitProgress(context, 'planning');
+    const session = await ensureSession(context);
+    emitProgress(context, 'executing');
 
-  const bridgeValue = (await session.sql(
-    command.name,
-    JSON.stringify(command.query),
-    QUERY_PREVIEW_LIMIT,
-  )) as SandboxSqlBridgeValue;
-  const metadata = JSON.parse(bridgeValue.metadata_json) as SandboxSqlMetadata;
-  const preview = normalizePreview(metadata.preview);
+    const bridgeValue = (await session.sql(
+      command.name,
+      JSON.stringify(command.query),
+      QUERY_PREVIEW_LIMIT,
+    )) as SandboxSqlBridgeValue;
+    const metadata = JSON.parse(bridgeValue.metadata_json) as SandboxSqlMetadata;
+    const preview = normalizePreview(metadata.preview);
 
-  emitRangeReadMetrics(context, metadata.response.metrics);
-  if (metadata.response.fallback_reason) {
-    emitFallback(context, metadata.response.fallback_reason);
-  }
-  emitCacheMetrics(context, metadata.cache_metrics);
-  emitProgress(context, 'arrow_ipc_ready');
-  emitProgress(context, 'finished');
+    emitRangeReadMetrics(context, metadata.response.metrics);
+    if (metadata.response.fallback_reason) {
+      emitFallback(context, metadata.response.fallback_reason);
+    }
+    emitCacheMetrics(context, metadata.cache_metrics);
+    emitProgress(context, 'arrow_ipc_ready');
+    emitProgress(context, 'finished');
 
-  postResponse(
-    {
-      success: {
-        request_id: command.request_id,
-        response: metadata.response,
-        result: {
-          format: 'stream',
-          content_type: ARROW_IPC_STREAM_CONTENT_TYPE,
-          bytes: bridgeValue.arrow_ipc_bytes,
+    postResponse(
+      {
+        success: {
+          request_id: command.request_id,
+          response: metadata.response,
+          result: {
+            format: 'stream',
+            content_type: ARROW_IPC_STREAM_CONTENT_TYPE,
+            bytes: bridgeValue.arrow_ipc_bytes,
+          },
+          preview,
         },
-        preview,
       },
-    },
-    [bridgeValue.arrow_ipc_bytes.buffer],
-  );
+      [bridgeValue.arrow_ipc_bytes.buffer],
+    );
+  } finally {
+    if (activeQueryId === command.request_id) {
+      activeQueryId = undefined;
+    }
+  }
+}
+
+async function handleCancel(command: BrowserWorkerCancelCommand): Promise<void> {
+  const queryId = command.query_id ?? command.request_id;
+  const context: BrowserWorkerEventContext = {
+    phase: 'query',
+    request_id: command.request_id,
+    query_id: queryId,
+  };
+
+  try {
+    if (activeQueryId !== queryId) {
+      emitLog(context, 'debug', 'sandbox worker ignored cancellation for inactive query');
+      return;
+    }
+    const token = await ensureCancellationToken(context);
+    token.cancel();
+    emitLog(context, 'info', 'sandbox worker cancelled running browser DataFusion queries');
+  } catch (error) {
+    emitErrorEvents(context, normalizeQueryError(error));
+  }
 }
 
 function ensureSession(commandContext: BrowserWorkerEventContext): Promise<SandboxQuerySession> {
@@ -206,12 +242,23 @@ function ensureSession(commandContext: BrowserWorkerEventContext): Promise<Sandb
     emitLog(context, 'info', 'sandbox worker instantiating query bridge');
     sessionPromise = init().then(() => {
       const session = new SandboxQuerySession();
+      cancellationToken = session.cancellation();
       emitProgress(context, 'finished');
       return session;
     });
   }
 
   return sessionPromise;
+}
+
+async function ensureCancellationToken(
+  commandContext: BrowserWorkerEventContext,
+): Promise<SandboxQueryCancellation> {
+  await ensureSession(commandContext);
+  if (!cancellationToken) {
+    throw queryError('execution_failed', 'sandbox worker cancellation handle was not initialized');
+  }
+  return cancellationToken;
 }
 
 function normalizePreview(preview: SandboxWireResultPreview): BrowserWorkerResultPreview {
@@ -343,6 +390,13 @@ function commandContext(command: BrowserWorkerCommand): BrowserWorkerEventContex
       table_name: command.sql.name,
     };
   }
+  if ('cancel' in command) {
+    return {
+      phase: 'query',
+      request_id: command.cancel.request_id,
+      query_id: command.cancel.query_id ?? command.cancel.request_id,
+    };
+  }
   if ('open_table' in command) {
     return {
       phase: 'open',
@@ -366,6 +420,9 @@ function requestId(command: BrowserWorkerCommand): string {
   }
   if ('sql' in command) {
     return command.sql.request_id;
+  }
+  if ('cancel' in command) {
+    return command.cancel.request_id;
   }
   if ('open_table' in command) {
     return command.open_table.request_id;

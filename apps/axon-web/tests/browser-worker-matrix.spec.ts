@@ -20,6 +20,12 @@ type SerializedWorkerError = {
   queryError?: unknown;
 };
 
+const BINARY_STRING_INT_PARQUET_BASE64 =
+  'UEFSMRUEFRgVGEwVBhUAEgAAAQAAAAIAAAADAAAAFQAVCBUILBUGFRAVBhUGAAACAyQAFQQVKhUqTBUGFQASAAADAAAAAAECAwAAAAMEBQMAAAAGBwgVABUIFQgsFQYVEBUGFQYAAAIDJAAZEgIZGAQBAAAAGRgEAwAAABUCGRYAABkSAhkYAwABAhkYAwYHCBUCGRYAABkcFjwVKhYAAAAZHBasARUqFgAAGRYSABUCGTxIBnNjaGVtYRUEABUCJQAYAmlkABUMJQAYB3BheWxvYWQAFgYZHBksJgAcFQIZNQAGEBkYAmlkFQAWBhZeFl4mPCYIHBgEAwAAABgEAQAAABYAKAQDAAAAGAQBAAAAEREAGSwVBBUAFQIAFQAVEBUCAAAWrgIVFBbWARUuACYAHBUMGTUABhAZGAdwYXlsb2FkFQAWBhZwFnAmrAEmZhw2ACgDBgcIGAMAAQIREQAZLBUEFQAVAgAVABUQFQIAPBYSAAAWwgIVHBaEAhUqABbOARYGJggWzgEUAAAoGXBhcnF1ZXQtcnMgdmVyc2lvbiA1Ny4zLjAZLBwAABwAAAADAQAAUEFSMQ==';
+const BINARY_STRING_INT_PARQUET_BYTES = Buffer.from(BINARY_STRING_INT_PARQUET_BASE64, 'base64');
+const BINARY_STRING_INT_PARQUET_PATH =
+  '**/fixtures/browser-datafusion-runtime/binary-string-int.parquet';
+
 test('starts a real browser Worker and handles Arrow IPC success envelopes', async ({ page }) => {
   const result = await runWorkerProbe(page, 'success');
 
@@ -39,6 +45,7 @@ test('starts a real browser Worker and handles Arrow IPC success envelopes', asy
 test('opens Delta Sharing URL-mode descriptors through the real browser query worker', async ({
   page,
 }) => {
+  await routeBinaryStringIntParquet(page);
   await page.goto('/');
 
   const result = await page.evaluate(async () => {
@@ -143,20 +150,70 @@ test('opens Delta Sharing URL-mode descriptors through the real browser query wo
       });
       const queryResult = await client.query(
         'shared_orders',
-        'SELECT COUNT(*) AS row_count FROM shared_orders',
+        'SELECT category, id, value FROM shared_orders ORDER BY id',
         { requestId: 'query-delta-sharing-real-worker' },
       );
+      const runtimeFixtureUrl = new URL(
+        '/fixtures/browser-datafusion-runtime/binary-string-int.parquet',
+        location.href,
+      ).href;
+      const openedRuntime = await client.openDeltaTable(
+        'worker_runtime_types',
+        {
+          table_uri: new URL('/fixtures/browser-datafusion-runtime/table', location.href).href,
+          snapshot_version: 0,
+          partition_column_types: { category: 'string' },
+          browser_compatibility: { capabilities: {} },
+          required_capabilities: { capabilities: {} },
+          active_files: [
+            {
+              path: 'category=runtime/part-000.parquet',
+              url: runtimeFixtureUrl,
+              size_bytes: 442,
+              partition_values: { category: 'runtime' },
+            },
+          ],
+        },
+        { requestId: 'open-browser-datafusion-runtime-types' },
+      );
+      const typedResult = await client.query(
+        'worker_runtime_types',
+        'SELECT payload, category, id FROM worker_runtime_types ORDER BY id',
+        { requestId: 'query-browser-datafusion-runtime-types' },
+      );
       const openCommand =
-        postedCommands.find((command) => command.includes('open_delta_table')) ?? '';
+        postedCommands.find(
+          (command) => command.includes('open_delta_table') && command.includes('shared_orders'),
+        ) ?? '';
       const openedSnapshot = JSON.parse(openCommand).open_delta_table.snapshot;
+      const runtimeOpenCommand =
+        postedCommands.find(
+          (command) =>
+            command.includes('open_delta_table') && command.includes('worker_runtime_types'),
+        ) ?? '';
 
       return {
         activeFileCount: openedSnapshot.active_files.length,
+        commandLog: postedCommands.join('\n'),
         deltaSharing: opened.deltaSharing,
         executedOn: queryResult.response.executed_on,
+        ipcByteLength: queryResult.result.bytes.byteLength,
+        ipcByteType: queryResult.result.bytes.constructor.name,
+        ipcContentType: queryResult.result.content_type,
+        ipcFormat: queryResult.result.format,
         openCommand,
+        preview: queryResult.preview,
+        runtimeOpenCommand,
+        typedOpenedName: openedRuntime.name,
+        typedResult: {
+          contentType: typedResult.result.content_type,
+          executedOn: typedResult.response.executed_on,
+          format: typedResult.result.format,
+          preview: typedResult.preview,
+          byteLength: typedResult.result.bytes.byteLength,
+          byteType: typedResult.result.bytes.constructor.name,
+        },
         queryCommand: postedCommands.find((command) => command.includes('"sql"')) ?? '',
-        rowCount: String(queryResult.preview?.rows?.[0]?.[0]),
         sharingRequest,
         workerEvents,
       };
@@ -178,26 +235,238 @@ test('opens Delta Sharing URL-mode descriptors through the real browser query wo
   });
   expect(result.activeFileCount).toBe(2);
   expect(result.executedOn).toBe('browser_wasm');
-  expect(result.rowCount).toBe('4');
+  expect(result.ipcFormat).toBe('stream');
+  expect(result.ipcContentType).toBe('application/vnd.apache.arrow.stream');
+  expect(result.ipcByteType).toBe('Uint8Array');
+  expect(result.ipcByteLength).toBeGreaterThan(0);
+  expect(result.preview).toMatchObject({
+    columns: ['category', 'id', 'value'],
+    row_count: 4,
+    truncated: false,
+  });
+  const sharingRows = result.preview.rows as Array<[string, number, number]>;
+  expect(sharingRows).toHaveLength(4);
+  expect(sharingRows.map((row) => row[0])).toEqual(['B', 'B', 'D', 'D']);
+  for (const row of sharingRows) {
+    expect(typeof row[1]).toBe('number');
+    expect(typeof row[2]).toBe('number');
+    expect(row[2]).toBe(row[1] * 10);
+  }
+  expect(result.typedOpenedName).toBe('worker_runtime_types');
+  expect(result.typedResult).toMatchObject({
+    byteType: 'Uint8Array',
+    contentType: 'application/vnd.apache.arrow.stream',
+    executedOn: 'browser_wasm',
+    format: 'stream',
+    preview: {
+      columns: ['payload', 'category', 'id'],
+      rows: [
+        ['<unsupported Binary>', 'runtime', 1],
+        ['<unsupported Binary>', 'runtime', 2],
+        ['<unsupported Binary>', 'runtime', 3],
+      ],
+      row_count: 3,
+      truncated: false,
+    },
+  });
+  expect(result.typedResult.byteLength).toBeGreaterThan(0);
   expect(result.openCommand).toContain('/fixtures/prod-like/table/category=B/');
   expect(result.openCommand).toContain('/fixtures/prod-like/table/category=D/');
-  expect(result.openCommand).not.toContain('secret-profile-token');
-  expect(result.openCommand).not.toContain('bearerToken');
-  expect(result.queryCommand).not.toContain('secret-profile-token');
+  expect(result.runtimeOpenCommand).toContain(
+    '/fixtures/browser-datafusion-runtime/binary-string-int.parquet',
+  );
+  expect(result.commandLog).not.toContain('secret-profile-token');
+  expect(result.commandLog).not.toContain('bearerToken');
   expect(result.workerEvents.join('\n')).toContain('range_read_metrics');
 });
 
-test('preserves cancellation errors from browser worker envelopes', async ({ page }) => {
-  const result = await runWorkerProbe(page, 'cancellation');
+test('surfaces unsupported feature errors from the real browser query worker', async ({ page }) => {
+  await page.goto('/');
+
+  const result = await page.evaluate(async () => {
+    const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+    const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
+      type: 'module',
+    });
+    const workerEvents: string[] = [];
+    const client = sdk.createAxonBrowserClient({
+      worker,
+      onEvent: (event: unknown) => workerEvents.push(JSON.stringify(event)),
+    });
+    const manifest = (await (
+      await fetch('/fixtures/prod-like/delta-log-manifest.json')
+    ).json()) as {
+      data_files: Array<{
+        relative_path: string;
+        url_path: string;
+        size_bytes: number;
+        partition_values: Record<string, string>;
+      }>;
+    };
+    const activeFile = manifest.data_files.findLast(
+      (file) => file.partition_values.category === 'B',
+    );
+    if (!activeFile) {
+      throw new Error('expected active B fixture file in prod-like manifest');
+    }
+    const snapshot = {
+      table_uri: new URL(
+        '/fixtures/browser-datafusion-runtime/unsupported-partition',
+        location.href,
+      ).href,
+      snapshot_version: 1,
+      partition_column_types: { category: 'unsupported' },
+      browser_compatibility: { capabilities: {} },
+      required_capabilities: { capabilities: {} },
+      active_files: [
+        {
+          path: activeFile.relative_path,
+          url: new URL(activeFile.url_path, location.href).href,
+          size_bytes: activeFile.size_bytes,
+          partition_values: activeFile.partition_values,
+        },
+      ],
+    };
+
+    try {
+      await client.openDeltaTable('unsupported_partition', snapshot, {
+        requestId: 'open-unsupported-partition',
+      });
+    } catch (error) {
+      const candidate = error as {
+        message?: string;
+        name?: string;
+        queryError?: unknown;
+      };
+      return {
+        error: {
+          message: String(candidate.message),
+          name: String(candidate.name),
+          queryError: candidate.queryError,
+        },
+        workerEvents,
+      };
+    } finally {
+      client.terminate();
+    }
+
+    throw new Error('expected unsupported partition type to fail');
+  });
+
+  expect(result.error).toMatchObject({
+    name: 'AxonWorkerError',
+    queryError: {
+      code: 'unsupported_feature',
+      target: 'browser_wasm',
+    },
+  });
+  expect(result.error.message).toContain("partition column 'category' type");
+  expect(result.workerEvents.join('\n')).toContain('unsupported_feature');
+});
+
+test('preserves cancellation errors from the real browser query worker', async ({ page }) => {
+  await routeBinaryStringIntParquet(page);
+  await page.goto('/');
+
+  const result = await page.evaluate(async () => {
+    const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+    const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
+      type: 'module',
+    });
+    const workerEvents: string[] = [];
+    const client = sdk.createAxonBrowserClient({
+      worker,
+      onEvent: (event: unknown) => workerEvents.push(JSON.stringify(event)),
+    });
+
+    try {
+      await client.openDeltaTable(
+        'cancelled_runtime_types',
+        {
+          table_uri: new URL('/fixtures/browser-datafusion-runtime/table', location.href).href,
+          snapshot_version: 0,
+          partition_column_types: { category: 'string' },
+          browser_compatibility: { capabilities: {} },
+          required_capabilities: { capabilities: {} },
+          active_files: [
+            {
+              path: 'category=runtime/part-000.parquet',
+              url: new URL(
+                '/fixtures/browser-datafusion-runtime/binary-string-int.parquet',
+                location.href,
+              ).href,
+              size_bytes: 442,
+              partition_values: { category: 'runtime' },
+            },
+          ],
+        },
+        { requestId: 'open-real-worker-cancellation' },
+      );
+      worker.postMessage({
+        cancel: {
+          request_id: 'cancel-stale-real-worker-query',
+          query_id: 'query-that-is-not-active',
+        },
+      });
+      const healthyResult = await client.query(
+        'cancelled_runtime_types',
+        'SELECT payload, category, id FROM cancelled_runtime_types ORDER BY id',
+        { requestId: 'query-after-stale-real-worker-cancellation' },
+      );
+      const cancellationQuery = client.query(
+        'cancelled_runtime_types',
+        'SELECT payload, category, id FROM cancelled_runtime_types ORDER BY id',
+        { requestId: 'query-real-worker-cancellation' },
+      );
+      worker.postMessage({
+        cancel: {
+          request_id: 'cancel-real-worker-query',
+          query_id: 'query-real-worker-cancellation',
+        },
+      });
+
+      return {
+        cancellation: await captureWorkerError(cancellationQuery),
+        healthyPreview: healthyResult.preview,
+        workerEvents,
+      };
+    } finally {
+      client.terminate();
+    }
+
+    async function captureWorkerError(promise: Promise<unknown>): Promise<SerializedWorkerError> {
+      try {
+        await promise;
+      } catch (error) {
+        const candidate = error as Partial<SerializedWorkerError>;
+        return {
+          name: String(candidate.name),
+          message: String(candidate.message),
+          fallbackReason: candidate.fallbackReason,
+          queryError: candidate.queryError,
+        };
+      }
+
+      throw new Error('expected browser worker request to fail');
+    }
+  });
 
   expect(result.cancellation).toMatchObject({
     name: 'AxonWorkerError',
-    message: 'experimental browser DataFusion query cancelled during Arrow IPC batch encoding',
   });
+  expect(result.cancellation.message).toContain(
+    'experimental browser DataFusion query cancelled during',
+  );
   expect(result.cancellation?.queryError).toMatchObject({
     code: 'execution_failed',
     target: 'browser_wasm',
   });
+  expect(result.healthyPreview).toMatchObject({
+    columns: ['payload', 'category', 'id'],
+    row_count: 3,
+    truncated: false,
+  });
+  expect(result.workerEvents.join('\n')).toContain('cancellation');
 });
 
 test('preserves fallback-required errors from browser worker envelopes', async ({ page }) => {
@@ -214,6 +483,58 @@ test('preserves fallback-required errors from browser worker envelopes', async (
     fallback_reason: 'browser_runtime_constraint',
   });
 });
+
+async function routeBinaryStringIntParquet(page: Page): Promise<void> {
+  await page.route(BINARY_STRING_INT_PARQUET_PATH, async (route) => {
+    const totalLength = BINARY_STRING_INT_PARQUET_BYTES.byteLength;
+    const range = route.request().headers().range;
+
+    if (!range) {
+      await route.fulfill({
+        status: 200,
+        headers: {
+          'accept-ranges': 'bytes',
+          'content-length': String(totalLength),
+          'content-type': 'application/octet-stream',
+        },
+        body: BINARY_STRING_INT_PARQUET_BYTES,
+      });
+      return;
+    }
+
+    const match = /^bytes=(\d+)-(\d*)$/.exec(range);
+    const start = match ? Number(match[1]) : Number.NaN;
+    const requestedEnd = match?.[2] ? Number(match[2]) : totalLength - 1;
+    const end = Math.min(requestedEnd, totalLength - 1);
+    if (
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(end) ||
+      start < 0 ||
+      end < start ||
+      start >= totalLength
+    ) {
+      await route.fulfill({
+        status: 416,
+        headers: {
+          'content-range': `bytes */${totalLength}`,
+        },
+        body: '',
+      });
+      return;
+    }
+
+    await route.fulfill({
+      status: 206,
+      headers: {
+        'accept-ranges': 'bytes',
+        'content-length': String(end - start + 1),
+        'content-range': `bytes ${start}-${end}/${totalLength}`,
+        'content-type': 'application/octet-stream',
+      },
+      body: BINARY_STRING_INT_PARQUET_BYTES.subarray(start, end + 1),
+    });
+  });
+}
 
 async function runWorkerProbe(page: Page, probe: WorkerProbe): Promise<WorkerProbeResult> {
   await page.goto('/');

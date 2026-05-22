@@ -20,8 +20,9 @@ use sqlparser::ast::{
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 use wasm_datafusion_poc::{
-    DataFusionArrowIpcResult, DataFusionScanMetricsSummary, DeltaTableDescriptor,
-    DeltaTableFieldDataType, DeltaTableSchema, DeltaTableSchemaField, WasmDataFusionEngine,
+    BrowserQueryCancellation, DataFusionArrowIpcResult, DataFusionScanMetricsSummary,
+    DeltaTableDescriptor, DeltaTableFieldDataType, DeltaTableSchema, DeltaTableSchemaField,
+    WasmDataFusionEngine,
 };
 use wasm_query_runtime::{
     runtime_target, BootstrappedBrowserSnapshot, BrowserExecutionBudget,
@@ -70,6 +71,17 @@ pub struct BrowserDataFusionSession {
     next_access_millis: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct BrowserDataFusionCancellation {
+    cancellation: BrowserQueryCancellation,
+}
+
+impl BrowserDataFusionCancellation {
+    pub fn cancel_running_queries(&self) {
+        self.cancellation.cancel();
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CachedDataFusionTable {
     descriptor: BrowserHttpSnapshotDescriptor,
@@ -106,6 +118,12 @@ impl BrowserDataFusionSession {
 
     pub fn datafusion_query_budget(&self) -> BrowserDataFusionQueryBudget {
         self.query_budget
+    }
+
+    pub fn cancellation_handle(&self) -> BrowserDataFusionCancellation {
+        BrowserDataFusionCancellation {
+            cancellation: self.datafusion.cancellation_token(),
+        }
     }
 
     pub fn max_cached_bytes(&self) -> u64 {

@@ -639,6 +639,11 @@ export type BrowserWorkerSqlCommand = {
   output?: BrowserWorkerSqlOutput;
 };
 
+export type BrowserWorkerCancelCommand = {
+  request_id: string;
+  query_id?: string;
+};
+
 export type BrowserWorkerDisposeCommand = {
   request_id: string;
   name: string;
@@ -649,6 +654,7 @@ export type BrowserWorkerCommand =
   | { open_delta_table: BrowserWorkerOpenDeltaTableCommand }
   | { inspect_parquet: BrowserWorkerInspectParquetCommand }
   | { sql: BrowserWorkerSqlCommand }
+  | { cancel: BrowserWorkerCancelCommand }
   | { dispose: BrowserWorkerDisposeCommand };
 
 export type ArrowIpcFormat = 'stream' | 'file';
@@ -1186,6 +1192,15 @@ export function inspectParquetCommand(
       request_id: requestId,
       name,
       path,
+    },
+  };
+}
+
+export function cancelCommand(requestId: string, queryId?: string): BrowserWorkerCommand {
+  return {
+    cancel: {
+      request_id: requestId,
+      query_id: queryId,
     },
   };
 }
@@ -3761,6 +3776,9 @@ function commandRequestId(command: BrowserWorkerCommand): string {
   }
   if ('sql' in command) {
     return command.sql.request_id;
+  }
+  if ('cancel' in command) {
+    return command.cancel.request_id;
   }
   return command.dispose.request_id;
 }
