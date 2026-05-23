@@ -7,7 +7,7 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen_test::wasm_bindgen_test;
 use wasm_http_object_store::{
     BrowserCacheMode, BrowserObjectRangeReader, ByteExtent, ExtentCacheEntry, ExtentCacheKey,
-    HttpMetadataProbeRequirements, HttpRangeReader, OpfsPersistentExtentCache,
+    HttpByteRange, HttpMetadataProbeRequirements, HttpRangeReader, OpfsPersistentExtentCache,
     PersistentCacheFuture, PersistentExtentCache,
 };
 
@@ -137,6 +137,59 @@ async fn blob_url_metadata_probe_handles_zero_byte_objects() {
     assert_eq!(metadata.etag, None);
 }
 
+#[wasm_bindgen_test(async)]
+async fn blob_url_range_read_falls_back_when_browser_ignores_range_header() {
+    let offset = 512 * 1024_u64;
+    let mut payload = vec![b'x'; offset as usize + 512 * 1024];
+    payload[offset as usize..offset as usize + 3].copy_from_slice(b"cde");
+    let url = blob_url_from_bytes(&payload);
+    install_fetch_that_ignores_blob_range(&url);
+
+    let result = HttpRangeReader::new()
+        .read_range(&url, HttpByteRange::Bounded { offset, length: 3 })
+        .await
+        .expect("blob URL range read should fall back when fetch ignores Range");
+
+    restore_fetch_mock();
+    revoke_blob_url(&url);
+
+    assert_eq!(result.metadata.size_bytes, Some(payload.len() as u64));
+    assert_eq!(result.metadata.etag, None);
+    let bytes = result.bytes;
+    assert_eq!(bytes.as_ref(), b"cde");
+    let bytes = bytes
+        .try_into_mut()
+        .expect("fallback range bytes should be uniquely owned");
+    assert_eq!(
+        bytes.capacity(),
+        bytes.len(),
+        "blob URL range fallback should not retain unused full-response capacity"
+    );
+}
+
+#[wasm_bindgen_test(async)]
+async fn blob_url_metadata_probe_falls_back_when_browser_ignores_range_header() {
+    let url = blob_url_from_bytes(b"abcdef");
+    install_fetch_that_ignores_blob_range(&url);
+
+    let metadata = HttpRangeReader::new()
+        .probe_metadata(
+            &url,
+            HttpMetadataProbeRequirements {
+                require_size: true,
+                require_etag: false,
+            },
+        )
+        .await
+        .expect("blob URL metadata probe should fall back when fetch ignores Range");
+
+    restore_fetch_mock();
+    revoke_blob_url(&url);
+
+    assert_eq!(metadata.size_bytes, Some(6));
+    assert_eq!(metadata.etag, None);
+}
+
 fn mock_opfs_directory() -> JsValue {
     js_sys::Function::new_no_args(
         r#"
@@ -186,4 +239,37 @@ fn revoke_blob_url(url: &str) {
     js_sys::Function::new_with_args("url", "URL.revokeObjectURL(url);")
         .call1(&JsValue::UNDEFINED, &JsValue::from_str(url))
         .expect("blob URL should be revoked");
+}
+
+fn install_fetch_that_ignores_blob_range(url: &str) {
+    js_sys::Function::new_with_args(
+        "url",
+        r#"
+        if (!globalThis.__axonOriginalFetch) {
+          globalThis.__axonOriginalFetch = globalThis.fetch;
+        }
+        globalThis.fetch = (input, init) => {
+          const requestUrl = typeof input === 'string' ? input : input?.url;
+          if (requestUrl === url && init?.headers && new Headers(init.headers).has('range')) {
+            return globalThis.__axonOriginalFetch.call(globalThis, input);
+          }
+          return globalThis.__axonOriginalFetch.call(globalThis, input, init);
+        };
+        "#,
+    )
+    .call1(&JsValue::UNDEFINED, &JsValue::from_str(url))
+    .expect("fetch mock should be installed");
+}
+
+fn restore_fetch_mock() {
+    js_sys::Function::new_no_args(
+        r#"
+        if (globalThis.__axonOriginalFetch) {
+          globalThis.fetch = globalThis.__axonOriginalFetch;
+          delete globalThis.__axonOriginalFetch;
+        }
+        "#,
+    )
+    .call0(&JsValue::UNDEFINED)
+    .expect("fetch mock should be restored");
 }

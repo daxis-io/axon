@@ -1814,6 +1814,9 @@ async fn read_blob_url_range(
     }
 
     let content_range = if range.expects_partial_response() {
+        if status == StatusCode::OK {
+            return read_blob_url_full_response_range(&response, &display_url, range).await;
+        }
         if status != StatusCode::PARTIAL_CONTENT {
             return Err(protocol_error(format!(
                 "range request to browser-local blob URL '{display_url}' expected HTTP 206 Partial Content, got {status}"
@@ -1896,6 +1899,10 @@ async fn probe_blob_url_metadata(
     if let Some(error) = map_status_error(status, &display_url) {
         return Err(error);
     }
+    if status == StatusCode::OK {
+        return probe_blob_url_metadata_from_full_response(&response, &display_url, requirements)
+            .await;
+    }
     if status != StatusCode::PARTIAL_CONTENT {
         return Err(protocol_error(format!(
             "metadata probe to browser-local blob URL '{display_url}' expected HTTP 206 Partial Content, got {status}"
@@ -1946,18 +1953,125 @@ async fn probe_blob_url_metadata_via_full_fetch(
         )));
     }
 
+    probe_blob_url_metadata_from_full_response(&response, display_url, requirements).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn probe_blob_url_metadata_from_full_response(
+    response: &JsValue,
+    display_url: &str,
+    requirements: HttpMetadataProbeRequirements,
+) -> Result<HttpObjectMetadata, QueryError> {
     let blob = response_blob(
-        &response,
+        response,
         format!("browser metadata fallback Blob for '{display_url}' failed"),
     )
     .await?;
+    let size_bytes = blob_size_to_u64(blob.size())?;
+    if let Some(content_length) =
+        parse_optional_js_response_header_u64(response, CONTENT_LENGTH.as_str(), display_url)?
+    {
+        if content_length != size_bytes {
+            return Err(protocol_error(format!(
+                "browser metadata fallback body from '{display_url}' exposed {size_bytes} bytes, but Content-Length declared {content_length}"
+            )));
+        }
+    }
     let metadata = HttpObjectMetadata {
         url: display_url.to_string(),
-        size_bytes: Some(blob_size_to_u64(blob.size())?),
+        size_bytes: Some(size_bytes),
         etag: None,
     };
     validate_metadata_probe_requirements(&metadata, requirements)?;
     Ok(metadata)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_blob_url_full_response_range(
+    response: &JsValue,
+    display_url: &str,
+    range: HttpByteRange,
+) -> Result<HttpRangeReadResult, QueryError> {
+    let bytes = response_array_buffer_bytes(
+        response,
+        format!("browser range fallback body for '{display_url}' failed"),
+    )
+    .await?;
+    let object_size = validate_blob_full_response_size(response, bytes.len(), display_url)?;
+    let bytes = slice_blob_full_response_bytes(bytes, range, object_size, display_url)?;
+
+    Ok(HttpRangeReadResult {
+        metadata: HttpObjectMetadata {
+            url: display_url.to_string(),
+            size_bytes: Some(object_size),
+            etag: None,
+        },
+        bytes,
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn validate_blob_full_response_size(
+    response: &JsValue,
+    byte_len: usize,
+    display_url: &str,
+) -> Result<u64, QueryError> {
+    let actual_size = byte_len as u64;
+    if let Some(content_length) =
+        parse_optional_js_response_header_u64(response, CONTENT_LENGTH.as_str(), display_url)?
+    {
+        if content_length != actual_size {
+            return Err(protocol_error(format!(
+                "browser-local blob response body from '{display_url}' returned {actual_size} bytes, but Content-Length declared {content_length}"
+            )));
+        }
+        return Ok(content_length);
+    }
+
+    Ok(actual_size)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn slice_blob_full_response_bytes(
+    bytes: Bytes,
+    range: HttpByteRange,
+    object_size: u64,
+    display_url: &str,
+) -> Result<Bytes, QueryError> {
+    let (start, end) = match range {
+        HttpByteRange::Full => return Ok(bytes),
+        HttpByteRange::Bounded { offset, length } => {
+            let end = offset
+                .checked_add(length)
+                .ok_or_else(|| protocol_error("bounded byte range overflowed u64"))?;
+            if offset >= object_size || end > object_size {
+                return Err(protocol_error(format!(
+                    "browser-local blob URL '{display_url}' only exposes {object_size} bytes, but bytes {offset}..{end} were requested"
+                )));
+            }
+            (offset, end)
+        }
+        HttpByteRange::FromOffset { offset } => {
+            if offset >= object_size {
+                return Err(protocol_error(format!(
+                    "browser-local blob URL '{display_url}' only exposes {object_size} bytes, but bytes from {offset} were requested"
+                )));
+            }
+            (offset, object_size)
+        }
+        HttpByteRange::Suffix { length } => (object_size.saturating_sub(length), object_size),
+    };
+    let start = usize::try_from(start).map_err(|_| {
+        protocol_error("browser-local blob range start exceeded addressable memory")
+    })?;
+    let end = usize::try_from(end)
+        .map_err(|_| protocol_error("browser-local blob range end exceeded addressable memory"))?;
+
+    if start == 0 && end == bytes.len() {
+        return Ok(bytes);
+    }
+
+    Ok(Bytes::copy_from_slice(&bytes[start..end]))
 }
 
 #[cfg(target_arch = "wasm32")]
