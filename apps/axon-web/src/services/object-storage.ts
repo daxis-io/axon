@@ -1,6 +1,7 @@
 import type {
   BrowserHttpFileDescriptor,
   BrowserHttpSnapshotDescriptor,
+  CapabilityReport,
   PartitionColumnType,
 } from '../axon-browser-sdk.ts';
 
@@ -51,6 +52,8 @@ type ResolvedPublicSnapshot = {
   table_uri: string;
   snapshot_version: number;
   partition_column_types?: Partial<Record<string, PartitionColumnType>>;
+  browser_compatibility?: CapabilityReport;
+  required_capabilities?: CapabilityReport;
   active_files: Array<{
     path: string;
     size_bytes: number;
@@ -184,8 +187,8 @@ export async function resolvePublicObjectStorageDescriptor(input: {
     table_uri: root.tableUri,
     snapshot_version: snapshot.snapshot_version,
     partition_column_types: snapshot.partition_column_types ?? {},
-    browser_compatibility: { capabilities: {} },
-    required_capabilities: { capabilities: {} },
+    browser_compatibility: snapshot.browser_compatibility ?? { capabilities: {} },
+    required_capabilities: snapshot.required_capabilities ?? { capabilities: {} },
     active_files: snapshot.active_files.map(
       (file): BrowserHttpFileDescriptor => ({
         path: file.path,
@@ -196,6 +199,24 @@ export async function resolvePublicObjectStorageDescriptor(input: {
       }),
     ),
   };
+}
+
+export async function preflightPublicObjectStorageDescriptorRangeRead(input: {
+  descriptor: BrowserHttpSnapshotDescriptor;
+  preflightParquetMetadataForTargets: (targetsJson: string) => Promise<string>;
+}): Promise<void> {
+  const target = input.descriptor.active_files[0];
+  if (!target) return;
+
+  try {
+    await input.preflightParquetMetadataForTargets(JSON.stringify([target]));
+  } catch (error) {
+    throw accessFailed(
+      `public object storage active Parquet range-read failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 }
 
 type GcsListEntry = {

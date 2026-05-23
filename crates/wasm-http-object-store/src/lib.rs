@@ -2283,8 +2283,10 @@ impl HttpRangeReader {
         if let Some(range_header) = &range_header {
             request = request.header(RANGE, range_header);
         }
-        if let Some(validation) = validation.clone() {
-            request = validation.apply_request(request)?;
+        if range.expects_partial_response() {
+            if let Some(validation) = validation.clone() {
+                request = validation.apply_request(request)?;
+            }
         }
         if let Some(timeout) = timeout {
             request = request.timeout(timeout);

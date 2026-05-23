@@ -4,6 +4,7 @@ import {
   buildPublicDeltaLogManifest,
   publicObjectUrl,
   parsePublicObjectStorageTableRoot,
+  preflightPublicObjectStorageDescriptorRangeRead,
   resolvePublicObjectStorageDescriptor,
 } from '../src/services/object-storage.ts';
 
@@ -156,6 +157,16 @@ test.describe('public object storage', () => {
           table_uri: tableUri,
           snapshot_version: 0,
           partition_column_types: {},
+          browser_compatibility: {
+            capabilities: {
+              deletion_vectors: 'native_only',
+            },
+          },
+          required_capabilities: {
+            capabilities: {
+              deletion_vectors: 'native_only',
+            },
+          },
           active_files: [
             {
               path: 'category=A/part-000.parquet',
@@ -173,8 +184,16 @@ test.describe('public object storage', () => {
       table_uri: 'gs://bucket/table',
       snapshot_version: 0,
       partition_column_types: {},
-      browser_compatibility: { capabilities: {} },
-      required_capabilities: { capabilities: {} },
+      browser_compatibility: {
+        capabilities: {
+          deletion_vectors: 'native_only',
+        },
+      },
+      required_capabilities: {
+        capabilities: {
+          deletion_vectors: 'native_only',
+        },
+      },
       active_files: [
         {
           path: 'category=A/part-000.parquet',
@@ -185,5 +204,46 @@ test.describe('public object storage', () => {
         },
       ],
     });
+  });
+
+  test('preflights an active data file range-read before accepting a public table root', async () => {
+    const targets: unknown[] = [];
+
+    await preflightPublicObjectStorageDescriptorRangeRead({
+      descriptor: {
+        table_uri: 'gs://bucket/table',
+        snapshot_version: 0,
+        partition_column_types: {},
+        active_files: [
+          {
+            path: 'category=A/part-000.parquet',
+            url: 'https://storage.googleapis.com/bucket/table/category%3DA/part-000.parquet',
+            size_bytes: 128,
+            partition_values: { category: 'A' },
+            stats: '{"numRecords":1}',
+          },
+          {
+            path: 'category=B/part-001.parquet',
+            url: 'https://storage.googleapis.com/bucket/table/category%3DB/part-001.parquet',
+            size_bytes: 256,
+            partition_values: { category: 'B' },
+          },
+        ],
+      },
+      preflightParquetMetadataForTargets: async (targetsJson) => {
+        targets.push(...JSON.parse(targetsJson));
+        return JSON.stringify([{ path: 'category=A/part-000.parquet' }]);
+      },
+    });
+
+    expect(targets).toEqual([
+      {
+        path: 'category=A/part-000.parquet',
+        url: 'https://storage.googleapis.com/bucket/table/category%3DA/part-000.parquet',
+        size_bytes: 128,
+        partition_values: { category: 'A' },
+        stats: '{"numRecords":1}',
+      },
+    ]);
   });
 });

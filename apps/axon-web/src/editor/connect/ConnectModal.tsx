@@ -14,7 +14,10 @@ import {
   type MouseEvent,
   type ReactNode,
 } from 'react';
-import init, { resolve_delta_snapshot_from_manifest } from '../../wasm/axon_web_wasm.js';
+import init, {
+  preflight_parquet_metadata_for_targets,
+  resolve_delta_snapshot_from_manifest,
+} from '../../wasm/axon_web_wasm.js';
 import { IconChevR, IconClose, IconKey, IconTable } from '../components/icons.tsx';
 import {
   LOCAL_DISCOVERY,
@@ -36,7 +39,10 @@ import {
   type LocalDeltaRuntime,
   type LocalFileSystemDirectoryHandle,
 } from '../../services/local-delta.ts';
-import { resolvePublicObjectStorageDescriptor } from '../../services/object-storage.ts';
+import {
+  preflightPublicObjectStorageDescriptorRangeRead,
+  resolvePublicObjectStorageDescriptor,
+} from '../../services/object-storage.ts';
 
 type Props = {
   initialStep?: 1 | 2 | 3;
@@ -170,6 +176,10 @@ export function ConnectModal({
           provider: 'gcs',
           tableUri: form.uri,
           resolveDeltaSnapshotFromManifest: resolve_delta_snapshot_from_manifest,
+        });
+        await preflightPublicObjectStorageDescriptorRangeRead({
+          descriptor,
+          preflightParquetMetadataForTargets: preflight_parquet_metadata_for_targets,
         });
         setForm({
           ...form,
@@ -829,7 +839,12 @@ function ConfigObjectStore({
               <button
                 key={p.id}
                 className={form.provider === p.id ? 'active' : ''}
-                onClick={() => setForm({ ...form, provider: p.id, objectStorage: null })}
+                disabled={p.id !== 'gcs'}
+                title={p.id === 'gcs' ? undefined : 'Public object storage currently supports GCS'}
+                onClick={() => {
+                  if (p.id !== 'gcs') return;
+                  setForm({ ...form, provider: p.id, objectStorage: null });
+                }}
               >
                 <span className={'g ' + p.id}>{p.scheme.replace('://', '').toUpperCase()}</span>
                 {p.label}
@@ -1644,7 +1659,7 @@ function subtitleForConfig(s: SourceId | null) {
   if (!s) return '';
   return {
     local: 'Read a Delta table directly from this machine — nothing leaves disk.',
-    object_store: 'Bring up an S3, GCS, ADLS, or R2 bucket as a queryable catalog.',
+    object_store: 'Bring up a public GCS Delta table root as a queryable catalog.',
     unity_catalog: 'Use a session-backed broker that returns ReadAccessPlan responses.',
     delta_share: 'Read tables shared by another organisation through the open protocol.',
   }[s];

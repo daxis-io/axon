@@ -7,7 +7,9 @@ import {
 } from '../src/services/object-storage.ts';
 
 const liveTableUri = process.env.AXON_LIVE_PUBLIC_GCS_TABLE_URI;
-const liveOrigin = process.env.AXON_LIVE_PUBLIC_GCS_ORIGIN ?? 'http://localhost:5173';
+const liveOrigin =
+  process.env.AXON_LIVE_PUBLIC_GCS_ORIGIN ??
+  new URL(process.env.PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:5173').origin;
 
 test.describe('public GCS live smoke', () => {
   test.skip(!liveTableUri, 'set AXON_LIVE_PUBLIC_GCS_TABLE_URI to run live public GCS smoke');
@@ -47,6 +49,43 @@ test.describe('public GCS live smoke', () => {
         .toString('utf8'),
     ).toBe('PAR1');
   });
+
+  test('app connects and queries a live public GCS Delta table root in browser WASM', async ({
+    page,
+  }) => {
+    const tableName = liveTableUri!.split('/').filter(Boolean).at(-1) ?? 'public_table';
+
+    await page.goto('/');
+    await page.getByRole('button', { name: /^Connect$/ }).click();
+    const sourceDialog = page.getByRole('dialog', { name: 'Connect a Delta source' });
+    await sourceDialog.locator('.cc-source-card', { hasText: 'Object storage' }).click();
+    await sourceDialog.getByRole('button', { name: /Continue/ }).click();
+
+    const configDialog = page.getByRole('dialog', { name: 'Connect to object storage' });
+    await configDialog
+      .locator('.cc-input.mono.has-prefix')
+      .fill(liveTableUri!.replace(/^gs:\/\//, ''));
+    await configDialog.getByRole('button', { name: 'Test connection' }).click();
+    await expect(configDialog).toContainText(/source check passed/i, { timeout: 60_000 });
+    await configDialog.getByRole('button', { name: /Discover tables/ }).click();
+
+    const reviewDialog = page.getByRole('dialog', { name: 'Review & name catalog' });
+    await reviewDialog.getByLabel('Catalog alias').fill('live-public-gcs');
+    await reviewDialog.getByRole('button', { name: /Connect catalog/ }).click();
+
+    await expect(page.locator('.conn-pill')).toContainText('live-public-gcs', {
+      timeout: 30_000,
+    });
+    await page
+      .locator('.code-input')
+      .fill(`SELECT COUNT(*) AS row_count FROM ${quoteSqlIdentifier(tableName)}`);
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+    await expect(page.locator('.res-meta')).toContainText(/browser · wasm/i, {
+      timeout: 60_000,
+    });
+    await expect(page.locator('table.grid')).toContainText('row_count');
+  });
 });
 
 function addPathFromDeltaLog(log: string): string {
@@ -56,4 +95,8 @@ function addPathFromDeltaLog(log: string): string {
     if (typeof action.add?.path === 'string') return action.add.path;
   }
   throw new Error('Delta log did not contain an add action');
+}
+
+function quoteSqlIdentifier(identifier: string): string {
+  return `"${identifier.replaceAll('"', '""')}"`;
 }
