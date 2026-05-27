@@ -39,8 +39,8 @@ export const SOURCES: SourceCard[] = [
   {
     id: 'object_store',
     title: 'Object storage',
-    blurb: 'Read AWS, GCP, Azure, or R2 Delta logs from the browser.',
-    examples: '_delta_log listing · browser range reads',
+    blurb: 'Read public GCS Delta logs from the browser.',
+    examples: 'public gs:// table root · browser range reads',
     owners: {
       access: 'Browser',
       snapshot: 'Browser',

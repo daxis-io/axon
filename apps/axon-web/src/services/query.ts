@@ -18,6 +18,7 @@ import {
 } from '../axon-browser-sdk.ts';
 import type { CatalogTable, QueryEvent, QueryExecRequest, QueryRunOutcome } from './types.ts';
 import { loadLocalDeltaRuntime, releaseLocalDeltaObjectUrls } from './local-delta.ts';
+import { resolvePublicObjectStorageDescriptor } from './object-storage.ts';
 import {
   defaultQueryPage,
   queryResultPageRequest,
@@ -155,6 +156,23 @@ async function buildSession(source: QueryTableSource): Promise<SessionState> {
         schemaName: runtime.schemaName,
         storage: runtime.storageLabel,
       },
+    };
+  }
+
+  if (source.kind === 'object_store_table_root') {
+    await ensureWasm();
+    const descriptor = await resolvePublicObjectStorageDescriptor({
+      provider: source.provider,
+      tableUri: source.tableUri,
+      resolveDeltaSnapshotFromManifest: resolve_delta_snapshot_from_manifest,
+    });
+
+    return {
+      client: createQueryClient(),
+      descriptor,
+      snapshot: snapshotFromBrowserDescriptor(descriptor),
+      tableOpened: false,
+      source,
     };
   }
 

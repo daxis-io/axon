@@ -85,6 +85,37 @@ snapshot resolver. These inputs are not forced back through `_delta_log` listing
 
 Both paths converge on `BrowserHttpSnapshotDescriptor -> openDeltaTable()`.
 
+## Public GCS Table-Root Requirements
+
+The first production public object-storage path supports browser-readable GCS
+Delta table roots. The user supplies a logical URI such as:
+
+```text
+gs://axon-public-delta-fixture-20260522-6cf5c6/axon-smoke-delta
+```
+
+Axon maps that root to the public Cloud Storage HTTPS endpoint, lists
+`_delta_log/`, reads the log objects, reconstructs the snapshot with
+`wasm-delta-snapshot`, maps active data-file paths back to public HTTPS object
+URLs, and opens the resulting `BrowserHttpSnapshotDescriptor`.
+
+Required storage behavior:
+
+- Anonymous listing for the table root's `_delta_log/` prefix.
+- Anonymous `GET`/`HEAD` for Delta log objects.
+- Anonymous `GET` with `Range` for active Parquet data files.
+- CORS for the app origin, including `GET`, `HEAD`, `OPTIONS`, request header
+  `Range`, and exposed response headers `Content-Length`, `Content-Range`,
+  `Accept-Ranges`, `ETag`, `x-goog-generation`, and `x-goog-hash`.
+- No userinfo, query strings, fragments, signed URL parameters, service-account
+  material, bearer tokens, or cloud SDK credentials in browser-facing inputs.
+
+The manifest/materialized-descriptor path remains supported for fixtures,
+brokered manifests, Delta Sharing URL-mode file actions, and deployments that
+choose to provide browser-safe descriptor material directly. Public GCS
+table-root reconstruction is the default object-storage UX when the table is
+already safe for anonymous browser reads.
+
 ## Access Broker Boundary
 
 An access broker may authenticate a user, authorize a table, evaluate policy,

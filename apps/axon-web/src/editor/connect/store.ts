@@ -170,7 +170,7 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
           size: t.size,
           protocol: t.protocol,
           features: t.features,
-          uri: t.name,
+          uri: source === 'object_store' ? (t.uri ?? form.uri) : t.name,
           manifestUrl: t.manifestUrl,
           localRegistryId: source === 'local' ? form.localDelta?.registryId : undefined,
           localPersistence: source === 'local' ? form.localDelta?.persistence : undefined,

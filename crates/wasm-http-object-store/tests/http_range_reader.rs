@@ -70,6 +70,38 @@ fn full_reads_support_injected_reqwest_clients() {
 }
 
 #[test]
+fn full_reads_validate_response_identity_without_if_range_header() {
+    let (url, requests, server) = spawn_test_server(|request| {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/object");
+        TestResponse {
+            status_line: "200 OK",
+            headers: vec![
+                ("Content-Length".to_string(), "11".to_string()),
+                ("ETag".to_string(), "\"v1\"".to_string()),
+            ],
+            body: b"hello world".to_vec(),
+        }
+    });
+
+    let reader = HttpRangeReader::new();
+    let result = runtime()
+        .block_on(reader.read_range_with_validation(
+            &url,
+            HttpByteRange::Full,
+            Some(HttpRangeValidation::if_range_etag("\"v1\"".to_string())),
+            None,
+        ))
+        .expect("full read should validate the response ETag");
+
+    let request = finish_request(server, requests);
+    assert!(!request.headers.contains_key("range"));
+    assert!(!request.headers.contains_key("if-range"));
+    assert_eq!(result.metadata.etag, Some("\"v1\"".to_string()));
+    assert_eq!(result.bytes.as_ref(), b"hello world");
+}
+
+#[test]
 fn read_results_clone_bytes_without_copying() {
     let (url, _, server) =
         spawn_test_server(|request| full_or_ranged_response(request, b"abcdefghij"));

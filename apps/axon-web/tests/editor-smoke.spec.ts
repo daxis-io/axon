@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -580,7 +580,7 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(consoleErrors, `console errors:\n${consoleErrors.join('\n')}`).toEqual([]);
   });
 
-  test('connect source flows fail closed without browser-owned credentials', async ({ page }) => {
+  test('connect source flows stay browser-owned without private credentials', async ({ page }) => {
     await page.goto('/connect');
 
     await expect(page.getByRole('button', { name: 'Unity Catalog' })).toBeDisabled();
@@ -592,6 +592,9 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(dialog).not.toContainText(/all four sources support the same sql surface area/i);
     await expect(dialog.locator('.cc-source-row', { hasText: 'Object storage' })).toContainText(
       /Access\s*Browser/i,
+    );
+    await expect(dialog.locator('.cc-source-row', { hasText: 'Object storage' })).toContainText(
+      /public GCS/i,
     );
     await expect(dialog.locator('.cc-source-row', { hasText: 'Object storage' })).toContainText(
       /Snapshot\s*Browser/i,
@@ -630,16 +633,103 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(configDialog).toContainText(/browser-local delta log access/i);
     await expect(configDialog).not.toContainText(/trusted delta snapshot descriptor resolver/i);
     await expect(configDialog).not.toContainText(/BFF/i);
+    await expect(configDialog.getByRole('button', { name: /AWS S3/ })).toBeDisabled();
+    await expect(configDialog.getByRole('button', { name: /Azure ADLS Gen2/ })).toBeDisabled();
+    await expect(configDialog.getByRole('button', { name: /Cloudflare R2/ })).toBeDisabled();
     await expect(
       configDialog.getByText(
         /secret key|access key|SAS|bearer token|service-account JSON|encrypted/i,
       ),
     ).toHaveCount(0);
 
+    const gcsParquetPath = prodLikeParquetPath('category=A');
+    const gcsParquetBytes = readFileSync(
+      new URL(`../public/fixtures/prod-like/table/${gcsParquetPath}`, import.meta.url),
+    );
+    const gcsDataRequests: string[] = [];
+
+    await page.route('https://storage.googleapis.com/acme-lake?*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/xml',
+        headers: { 'access-control-allow-origin': APP_ORIGIN },
+        body: `<?xml version="1.0" encoding="UTF-8"?>
+          <ListBucketResult>
+            <IsTruncated>false</IsTruncated>
+            <Contents>
+              <Key>silver/_delta_log/00000000000000000000.json</Key>
+            </Contents>
+          </ListBucketResult>`,
+      });
+    });
+    await page.route(
+      'https://storage.googleapis.com/acme-lake/silver/_delta_log/00000000000000000000.json',
+      async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': APP_ORIGIN },
+          body: [
+            JSON.stringify({ protocol: { minReaderVersion: 1, minWriterVersion: 2 } }),
+            JSON.stringify({
+              metaData: {
+                id: 'public-object-storage-test',
+                format: { provider: 'parquet', options: {} },
+                schemaString: JSON.stringify({
+                  type: 'struct',
+                  fields: [
+                    { name: 'id', type: 'long', nullable: true, metadata: {} },
+                    { name: 'category', type: 'string', nullable: true, metadata: {} },
+                  ],
+                }),
+                partitionColumns: [],
+                configuration: {},
+              },
+            }),
+            JSON.stringify({
+              add: {
+                path: gcsParquetPath,
+                partitionValues: {},
+                size: gcsParquetBytes.length,
+                modificationTime: 1779479201568,
+                dataChange: true,
+                stats: JSON.stringify({
+                  numRecords: 4,
+                  minValues: { id: 1, category: 'alpha' },
+                  maxValues: { id: 4, category: 'gamma' },
+                  nullCount: { id: 0, category: 0 },
+                }),
+              },
+            }),
+          ].join('\n'),
+        });
+      },
+    );
+    await page.route(
+      `https://storage.googleapis.com/acme-lake/silver/category%3DA/*`,
+      async (route) => {
+        gcsDataRequests.push(route.request().headers().range ?? 'full');
+        await fulfillRangeRequest(route, gcsParquetBytes, APP_ORIGIN);
+      },
+    );
+
     await configDialog.getByRole('button', { name: 'Test connection' }).click();
-    await expect(configDialog.getByText(/connection verified/i)).toHaveCount(0);
-    await expect(configDialog).toContainText(/browser-local storage access not configured/i);
-    await expect(configDialog.getByRole('button', { name: /Discover tables/ })).toBeDisabled();
+    await expect(configDialog).toContainText(/source check passed/i);
+    await expect(configDialog).toContainText(/Delta log is browser-readable/i);
+    expect(gcsDataRequests.length).toBeGreaterThan(0);
+    await configDialog.getByRole('button', { name: /Discover tables/ }).click();
+
+    const reviewDialog = page.getByRole('dialog', { name: 'Review & name catalog' });
+    await expect(reviewDialog).toContainText(/Detected 1 public Delta table/i);
+    await expect(reviewDialog).toContainText(/silver/i);
+    await reviewDialog.getByRole('button', { name: /Connect catalog/ }).click();
+
+    const persisted = await page.evaluate(
+      () => localStorage.getItem('axon.connect.catalogs.v1') ?? '',
+    );
+    expect(persisted).toContain('gs://acme-lake/silver');
+    expect(persisted).not.toContain('storage.googleapis.com');
+    expect(persisted).not.toContain('X-Goog');
   });
 
   test('local Delta connect prefers persistent browser folder access when supported', async ({
@@ -1315,6 +1405,7 @@ function connectResultFixture({
       uri: 'gs://acme-lake/silver',
       region: 'us-central1',
       endpoint: 'browser-local',
+      objectStorage: null,
       uc_mode: 'databricks',
       uc_host: '',
       uc_bff_url: '',
@@ -1489,6 +1580,54 @@ async function connectLocalDeltaDirectoryHandle(
   return localRegistryId ?? '';
 }
 
+async function fulfillRangeRequest(route: Route, bytes: Buffer, origin: string): Promise<void> {
+  const range = route.request().headers().range;
+  if (!range) {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/octet-stream',
+      headers: {
+        'access-control-allow-origin': origin,
+        'access-control-expose-headers': 'Content-Length, Content-Range, Accept-Ranges, ETag',
+        'accept-ranges': 'bytes',
+        'content-length': String(bytes.length),
+      },
+      body: bytes,
+    });
+    return;
+  }
+
+  const bounded = /^bytes=(\d+)-(\d+)?$/.exec(range);
+  const suffix = /^bytes=-(\d+)$/.exec(range);
+  let start: number;
+  let end: number;
+  if (bounded) {
+    start = Number(bounded[1]);
+    end = bounded[2] === undefined ? bytes.length - 1 : Number(bounded[2]);
+  } else if (suffix) {
+    const length = Number(suffix[1]);
+    start = Math.max(0, bytes.length - length);
+    end = bytes.length - 1;
+  } else {
+    throw new Error(`unsupported test range header: ${range}`);
+  }
+
+  const body = bytes.subarray(start, end + 1);
+  await route.fulfill({
+    status: 206,
+    contentType: 'application/octet-stream',
+    headers: {
+      'access-control-allow-origin': origin,
+      'access-control-expose-headers': 'Content-Length, Content-Range, Accept-Ranges, ETag',
+      'accept-ranges': 'bytes',
+      'content-range': `bytes ${start}-${end}/${bytes.length}`,
+      'content-length': String(body.length),
+      etag: '"editor-smoke-public-gcs"',
+    },
+    body,
+  });
+}
+
 async function installDirectoryPickerFixture(
   page: Page,
   files: LocalDeltaFixtureFile[],
@@ -1561,6 +1700,15 @@ function localDeltaFixtureFiles(rootDir: string, prefix = ''): LocalDeltaFixture
       },
     ];
   });
+}
+
+function prodLikeParquetPath(categoryPath: string): string {
+  const categoryDir = fileURLToPath(
+    new URL(`../public/fixtures/prod-like/table/${categoryPath}/`, import.meta.url),
+  );
+  const fileName = readdirSync(categoryDir).find((name) => name.endsWith('.parquet'));
+  if (!fileName) throw new Error(`no Parquet fixture found under ${categoryPath}`);
+  return `${categoryPath}/${fileName}`;
 }
 
 async function blockDurableLocalDeltaRegistry(page: Page): Promise<void> {
