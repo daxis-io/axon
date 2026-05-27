@@ -71,6 +71,13 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(source).not.toContain('<IconSparkle');
   });
 
+  test('editor shell mounts Vercel Web Analytics once at the app root', () => {
+    const source = readFileSync(new URL('../src/editor/main.tsx', import.meta.url), 'utf8');
+
+    expect(source).toContain("import { Analytics } from '@vercel/analytics/react';");
+    expect(source).toContain('<Analytics />');
+  });
+
   test('connect results default into a workspace Axon catalog with table source bindings', () => {
     const catalog = buildCatalogFromResult(
       connectResultFixture({
