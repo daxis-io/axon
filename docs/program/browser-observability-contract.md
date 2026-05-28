@@ -3,7 +3,7 @@
 - Date: 2026-05-01
 - Scope: repo-owned metrics and evidence emitted by the browser lakehouse worker boundary and runtime artifact path
 
-This document defines the metrics and routing signals the repository already emits today. It does not claim that dashboards, alert routing, or service-level telemetry pipelines exist in this repository.
+This is the list of metrics and routing signals the repo emits today. There are no dashboards, alert routing, or service-level telemetry pipelines in this repository.
 
 ## Repo-Owned Execution Fields
 
@@ -24,7 +24,7 @@ This document defines the metrics and routing signals the repository already emi
 
 - `executed_on`: `browser_wasm` or `native`
 - `capabilities`: capability report returned by the runtime chosen for execution
-- `fallback_reason`: structured reroute reason when the browser path required native execution
+- `fallback_reason`: why the browser path rerouted to native, when it did
 - `QueryResponse` does not carry row-shaped result payloads; large results stay in the SDK worker envelope as Arrow IPC bytes.
 
 `BrowserWorkerArtifactReport`
@@ -55,38 +55,32 @@ This document defines the metrics and routing signals the repository already emi
 
 `BrowserWorkerEventEnvelope`
 
-Live worker events are typed observability messages emitted before the final worker response. They
-do not replace `QueryResponse.metrics`, and large results still move through Arrow IPC in
-`BrowserWorkerResponseEnvelope::Success`.
+Live worker events are typed observability messages emitted before the final worker response. They don't replace `QueryResponse.metrics`, and large results still move through Arrow IPC in `BrowserWorkerResponseEnvelope::Success`.
 
 - `progress`: lifecycle stage for `instantiate`, `open`, or `query`; stages are `started`, `planning`, `executing`, `arrow_ipc_ready`, and `finished`
-- `log`: structured worker log with `debug`, `info`, `warn`, or `error` level
+- `log`: structured worker log with context, message, and `debug`, `info`, `warn`, or `error` level
 - `range_read_metrics`: live range-read and bootstrap fields: bytes fetched, files touched/skipped, row groups touched/skipped, footer reads, rows emitted, snapshot bootstrap duration, and access mode when tracked
 - `cache_metrics`: session cache counters plus optional browser object-store transport cache counters
-- `fallback`: structured `FallbackReason` observed before a fallback response or fallback-required error
+- `fallback`: the `FallbackReason` observed before a fallback response or fallback-required error
 - `cancellation`: query cancellation surfaced as a typed event before the terminal response
-- `terminal_error`: final structured `QueryError` emitted before `BrowserWorkerResponseEnvelope::Error`
+- `terminal_error`: final `QueryError` emitted before `BrowserWorkerResponseEnvelope::Error`
 
-Every command-scoped event carries a context with `phase`, `request_id`, `table_name`, and, for
-query commands, `query_id`. Until the public query request grows a separate query identifier, the
-worker sets `query_id` to the SQL command `request_id`.
+Every command-scoped event carries a context with `phase`, `request_id`, `table_name`, and, for query commands, `query_id`. Until the public query request grows its own query identifier, the worker sets `query_id` to the SQL command `request_id`.
 
-The browser TypeScript SDK routes `BrowserWorkerEventEnvelope` messages to the optional `onEvent`
-handler and keeps them separate from terminal worker response envelopes so live events do not
-resolve or reject active requests.
+The browser TypeScript SDK routes `BrowserWorkerEventEnvelope` messages to the optional `onEvent` handler and keeps them separate from terminal worker response envelopes, so live events don't resolve or reject active requests.
 
 ## Current Evidence Sources
 
 - `crates/wasm-http-object-store` computes transport cache metrics for the browser object-store seam.
-- `crates/wasm-query-runtime` computes browser metrics and structured fallback outcomes.
+- `crates/wasm-query-runtime` computes browser metrics and fallback outcomes.
 - `crates/browser-sdk` preserves those fields through the worker envelope.
 - `crates/browser-engine-worker` reports runtime SKU, Arrow IPC result transport, artifact identity, startup, memory baselines, and live worker events for worker instantiate/open/query handling.
 - `tests/perf/report_browser_worker_artifact.sh` enforces the shipped worker artifact size budget.
-- `tests/security/verify_browser_dependency_guardrails.sh` proves the worker dependency tree and artifact remain inside the current trust boundary.
+- `tests/security/verify_browser_dependency_guardrails.sh` proves the worker dependency tree and artifact stay inside the current trust boundary.
 
 ## Dashboard Inputs For External Teams
 
-The following inputs are ready for an external dashboard pipeline once the trusted service and telemetry plumbing exist:
+These inputs are ready for an external dashboard pipeline once the trusted service and telemetry plumbing exist:
 
 - bytes fetched
 - files touched
@@ -111,12 +105,12 @@ The following inputs are ready for an external dashboard pipeline once the trust
 
 ## Alert Candidates
 
-These are the repo-owned thresholds or trend candidates that external dashboards may choose to monitor:
+Repo-owned thresholds or trends an external dashboard might watch:
 
 - worker artifact size budget failure
 - unexpected worker SKU or artifact identity drift across release evidence
-- unexpected rise in browser fallback frequency by capability gate
-- unexpected rise in persistent cache errors at the browser object-store seam
+- a rise in browser fallback frequency by capability gate
+- a rise in persistent cache errors at the browser object-store seam
 - loss of pruning effectiveness shown by `files_skipped`
 - loss of row-group pruning effectiveness shown by `row_groups_skipped`
 - browser startup or memory baseline drift
@@ -126,4 +120,4 @@ These are the repo-owned thresholds or trend candidates that external dashboards
 
 - No dashboard or alerting system is implemented in this repository.
 - No control-plane or service-level request correlation exists in this repository.
-- Query-level cache-hit ratio remains deferred until object-store cache metrics are plumbed through the worker and telemetry pipeline.
+- Query-level cache-hit ratio is deferred until object-store cache metrics are plumbed through the worker and telemetry pipeline.
