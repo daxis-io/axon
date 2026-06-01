@@ -1,6 +1,22 @@
 import { expect, test } from '@playwright/test';
 
 import * as browserSdk from '../src/axon-browser-sdk';
+import { openDaxisResolvedDeltaTable } from '../examples/daxis-descriptor-resolver';
+import {
+  DaxisReadAccessPlanError,
+  openDaxisReadAccessPlanTable,
+} from '../examples/daxis-read-access-plan';
+import {
+  DaxisObjectGrantError,
+  createDaxisObjectGrantClient,
+  createDaxisObjectGrantAdapter,
+} from '../examples/daxis-object-grant-adapter';
+import {
+  DaxisHeadlessQueryError,
+  executeDaxisApprovedAxonRead,
+  validateDaxisApprovedAxonReadDescriptor,
+  type DaxisApprovedAxonReadDescriptor,
+} from '../examples/daxis-headless-query';
 import {
   AxonProtocolError,
   AxonSdkError,
@@ -46,10 +62,9 @@ const snapshot: BrowserHttpSnapshotDescriptor = {
   ],
 };
 
-class FakeWorker implements Pick<
-  Worker,
-  'addEventListener' | 'removeEventListener' | 'postMessage' | 'terminate'
-> {
+class FakeWorker
+  implements Pick<Worker, 'addEventListener' | 'removeEventListener' | 'postMessage' | 'terminate'>
+{
   readonly commands: BrowserWorkerCommand[] = [];
   terminated = false;
   private readonly listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
@@ -279,6 +294,30 @@ test('createAxonBrowserClient constructs a worker from the selected bundle', () 
 
 test('does not export cancelCommand as a request-response SDK helper', () => {
   expect(Object.hasOwn(browserSdk, 'cancelCommand')).toBe(false);
+});
+
+test('cancelQuery sends a fire-and-forget worker cancellation without pending request state', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  client.cancelQuery('query-daxis-timeout', { requestId: 'cancel-daxis-timeout' });
+
+  expect(worker.commands).toEqual([
+    {
+      cancel: {
+        request_id: 'cancel-daxis-timeout',
+        query_id: 'query-daxis-timeout',
+      },
+    },
+  ]);
+
+  const opened = client.openDeltaTable('events', snapshot, { requestId: 'cancel-daxis-timeout' });
+  worker.emitMessage({ opened: { request_id: 'cancel-daxis-timeout', name: 'events' } });
+
+  await expect(opened).resolves.toEqual({
+    request_id: 'cancel-daxis-timeout',
+    name: 'events',
+  });
 });
 
 test('getPlatformFeatures tracks browser isolation, SIMD, threads, and BigInt64Array', () => {
@@ -798,7 +837,7 @@ test('DeltaSharingClient imports a bearer profile and lists shares without expos
       shareCredentialsVersion: 1,
       endpoint: 'https://sharing.example.test/api/2.1/unity-catalog/delta-sharing/',
       bearerToken: 'secret-profile-token',
-      expirationTime: '2026-06-01T00:00:00Z',
+      expirationTime: '2100-01-01T00:00:00Z',
     }),
   });
 
@@ -1711,6 +1750,1355 @@ test('openDeltaLocation can call an HTTP resolver with the typed request body', 
   }
 });
 
+test('Daxis descriptor resolver example opens through the SDK without exposing credentials to the worker', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+  const resolverResponse = deltaLocationResponse({
+    provider: 'gcs',
+    table_uri: 'gs://daxis-prod-lakehouse/sales/orders',
+    requested_snapshot_version: undefined,
+    resolved_snapshot_version: 42,
+    requested_access_mode: 'auto',
+    actual_access_mode: 'signed_url',
+    expires_at_epoch_ms: 4_102_444_800_000,
+    correlation_id: 'daxis-req-01JABCDEF',
+    descriptor: {
+      ...snapshot,
+      table_uri: 'gs://daxis-prod-lakehouse/sales/orders',
+      snapshot_version: 42,
+      active_files: snapshot.active_files.map((file) => ({
+        ...file,
+        path: 'order_date=2026-05-30/part-00000.parquet',
+        url: 'https://storage.googleapis.com/daxis-prod-lakehouse/sales/orders/order_date=2026-05-30/part-00000.parquet?X-Goog-Signature=redacted',
+        partition_values: { order_date: '2026-05-30' },
+      })),
+    },
+  });
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    return jsonResponse(resolverResponse);
+  }) as typeof fetch;
+
+  try {
+    const openedPromise = openDaxisResolvedDeltaTable(client, {
+      tableName: 'orders',
+      tableUri: 'gs://daxis-prod-lakehouse/sales/orders',
+      credentialProfileId: 'daxis-workspace-prod-read',
+      credentialProfileDisplayName: 'Daxis workspace production read grant',
+      resolverUrl: '/v1/query/delta/snapshot-descriptor',
+      requestId: 'req-daxis-open-orders',
+    });
+
+    await expect.poll(() => worker.commands.length).toBe(1);
+
+    expect(String(calls[0].input)).toBe('/v1/query/delta/snapshot-descriptor');
+    expect(calls[0].init?.method).toBe('POST');
+    expect(new Headers(calls[0].init?.headers).get('x-daxis-request-id')).toBe(
+      'req-daxis-open-orders',
+    );
+    expect(calls[0].init?.body).toBe(
+      JSON.stringify({
+        provider: 'gcs',
+        table_uri: 'gs://daxis-prod-lakehouse/sales/orders',
+        credential_profile: {
+          id: 'daxis-workspace-prod-read',
+          display_name: 'Daxis workspace production read grant',
+        },
+        requested_access_mode: 'auto',
+      }),
+    );
+    expect(worker.commands[0]).toEqual({
+      open_delta_table: {
+        request_id: 'req-daxis-open-orders',
+        name: 'orders',
+        snapshot: resolverResponse.descriptor,
+      },
+    });
+    const workerPayload = JSON.stringify(worker.commands[0]);
+    expect(workerPayload).not.toContain('credential_profile');
+    expect(workerPayload).not.toContain('daxis-workspace-prod-read');
+
+    worker.emitMessage({ opened: { request_id: 'req-daxis-open-orders', name: 'orders' } });
+    await expect(openedPromise).resolves.toMatchObject({
+      name: 'orders',
+      location: {
+        provider: 'gcs',
+        table_uri: 'gs://daxis-prod-lakehouse/sales/orders',
+        resolved_snapshot_version: 42,
+        actual_access_mode: 'signed_url',
+        correlation_id: 'daxis-req-01JABCDEF',
+      },
+    });
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis descriptor resolver example preserves structured Daxis resolver errors', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    return jsonResponse(
+      {
+        code: 'storage_auth_failed',
+        message: 'Daxis storage broker could not mint browser-safe URLs for this table',
+        correlation_id: 'daxis-req-01JERROR',
+      },
+      {},
+      403,
+    );
+  }) as typeof fetch;
+
+  try {
+    await expect(
+      openDaxisResolvedDeltaTable(client, {
+        tableName: 'orders',
+        tableUri: 'gs://daxis-prod-lakehouse/sales/orders',
+        credentialProfileId: 'daxis-workspace-prod-read',
+        resolverUrl: '/v1/query/delta/snapshot-descriptor',
+        requestId: 'req-daxis-open-denied',
+      }),
+    ).rejects.toMatchObject({
+      name: 'DeltaLocationResolverError',
+      code: 'storage_auth_failed',
+      message: 'Daxis storage broker could not mint browser-safe URLs for this table',
+      correlationId: 'daxis-req-01JERROR',
+    } satisfies Partial<DeltaLocationResolverError>);
+
+    expect(calls).toHaveLength(1);
+    expect(new Headers(calls[0].init?.headers).get('x-daxis-request-id')).toBe(
+      'req-daxis-open-denied',
+    );
+    expect(worker.commands).toHaveLength(0);
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis read-access-plan example opens brokered Delta plans without Daxis session data in the worker', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    return jsonResponse(brokeredDeltaPlan());
+  }) as typeof fetch;
+
+  try {
+    const openedPromise = openDaxisReadAccessPlanTable(client, {
+      tableName: 'orders',
+      fullName: 'main.sales.orders',
+      session: { id: 'daxis-browser-session-123', displayName: 'Daxis browser session' },
+      readAccessPlanUrl: '/v1/catalog/read-access-plan',
+      requestId: 'req-daxis-read-plan',
+      brokeredDelta: {
+        resolveSnapshot: async (plan) => {
+          expect(plan.grantId).toBe('grant-456');
+          return brokeredSnapshot();
+        },
+        batchSign: async (plan, paths) => {
+          expect(plan.grantId).toBe('grant-456');
+          expect(paths).toEqual(['part-000.parquet']);
+          return {
+            signedUrls: paths.map((path) => ({
+              path,
+              url: `https://storage.example.test/${path}?X-Amz-Signature=abc`,
+              expiresAtEpochMs: 4_102_444_800_000,
+            })),
+          };
+        },
+      },
+    });
+
+    await expect.poll(() => worker.commands.length).toBe(1);
+
+    expect(calls).toHaveLength(1);
+    expect(String(calls[0].input)).toBe('/v1/catalog/read-access-plan');
+    expect(calls[0].init?.method).toBe('POST');
+    expect(new Headers(calls[0].init?.headers).get('x-daxis-request-id')).toBe(
+      'req-daxis-read-plan',
+    );
+    expect(calls[0].init?.body).toBe(
+      JSON.stringify({
+        fullName: 'main.sales.orders',
+        session: {
+          id: 'daxis-browser-session-123',
+          displayName: 'Daxis browser session',
+        },
+      }),
+    );
+    expect(worker.commands[0]).toMatchObject({
+      open_delta_table: {
+        request_id: 'req-daxis-read-plan',
+        name: 'orders',
+        snapshot: {
+          table_uri: 's3://prod-bucket/tables/orders',
+          active_files: [
+            {
+              path: 'part-000.parquet',
+              url: 'https://storage.example.test/part-000.parquet?X-Amz-Signature=abc',
+            },
+          ],
+        },
+      },
+    });
+    const workerPayload = JSON.stringify(worker.commands[0]);
+    expect(workerPayload).not.toContain('grant-456');
+    expect(workerPayload).not.toContain('daxis-browser-session-123');
+
+    worker.emitMessage({ opened: { request_id: 'req-daxis-read-plan', name: 'orders' } });
+    await expect(openedPromise).resolves.toMatchObject({
+      status: 'opened',
+      planType: 'brokered_delta',
+      tableId: 'tbl-123',
+      fullName: 'main.sales.orders',
+    });
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis read-access-plan example preserves SQL fallback without worker handoff', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+
+  fetchGlobal.fetch = (async () =>
+    jsonResponse({
+      plan_type: 'sql_fallback_required',
+      tableId: 'tbl-governed',
+      fullName: 'main.secure.payments',
+      reason: 'row_filter',
+      message: 'Daxis policy requires server execution because this table has a row filter.',
+      statementEndpoint: 'https://daxis.example.test/v1/query/sql/statements',
+      warehouseRequired: true,
+    })) as typeof fetch;
+
+  try {
+    await expect(
+      openDaxisReadAccessPlanTable(client, {
+        tableName: 'payments',
+        fullName: 'main.secure.payments',
+        readAccessPlanUrl: '/v1/catalog/read-access-plan',
+      }),
+    ).resolves.toMatchObject({
+      status: 'sql_fallback_required',
+      reason: 'row_filter',
+      statementEndpoint: 'https://daxis.example.test/v1/query/sql/statements',
+    });
+    expect(worker.commands).toHaveLength(0);
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis read-access-plan example preserves structured Daxis plan errors without worker handoff', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    return jsonResponse(
+      {
+        code: 'broker_unavailable',
+        message: 'Daxis read-access planning is temporarily unavailable',
+        correlation_id: 'daxis-read-01JERROR',
+      },
+      {},
+      503,
+    );
+  }) as typeof fetch;
+
+  try {
+    await expect(
+      openDaxisReadAccessPlanTable(client, {
+        tableName: 'orders',
+        fullName: 'main.sales.orders',
+        readAccessPlanUrl: '/v1/catalog/read-access-plan',
+        requestId: 'req-daxis-read-plan-error',
+      }),
+    ).rejects.toMatchObject({
+      name: 'DaxisReadAccessPlanError',
+      code: 'broker_unavailable',
+      status: 503,
+      message: 'Daxis read-access planning is temporarily unavailable',
+      correlationId: 'daxis-read-01JERROR',
+    } satisfies Partial<DaxisReadAccessPlanError>);
+
+    expect(calls).toHaveLength(1);
+    expect(new Headers(calls[0].init?.headers).get('x-daxis-request-id')).toBe(
+      'req-daxis-read-plan-error',
+    );
+    expect(worker.commands).toHaveLength(0);
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis object-grant adapter opens brokered Delta plans through grant-scoped batch signing', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    if (String(input) === '/v1/catalog/read-access-plan') {
+      return jsonResponse(brokeredDeltaPlan());
+    }
+    if (String(input) === '/object-grants/grant-456/batch-sign') {
+      return jsonResponse({
+        signedUrls: [
+          {
+            path: 'part-000.parquet',
+            url: 'https://storage.example.test/part-000.parquet?X-Amz-Signature=abc',
+            expiresAtEpochMs: 4_102_444_800_000,
+          },
+        ],
+      });
+    }
+    throw new Error(`unexpected Daxis fetch call: ${String(input)}`);
+  }) as typeof fetch;
+
+  try {
+    const adapter = createDaxisObjectGrantAdapter({
+      objectGrantBaseUrl: '/object-grants',
+      requestId: 'req-daxis-grant-open',
+      resolveSnapshot: async (plan) => {
+        expect(plan.grantId).toBe('grant-456');
+        return brokeredSnapshot();
+      },
+    });
+
+    const openedPromise = openDaxisReadAccessPlanTable(client, {
+      tableName: 'orders',
+      fullName: 'main.sales.orders',
+      readAccessPlanUrl: '/v1/catalog/read-access-plan',
+      requestId: 'req-daxis-grant-open',
+      brokeredDelta: adapter,
+    });
+
+    await expect.poll(() => worker.commands.length).toBe(1);
+
+    expect(calls).toHaveLength(2);
+    expect(String(calls[1].input)).toBe('/object-grants/grant-456/batch-sign');
+    expect(calls[1].init?.method).toBe('POST');
+    expect(new Headers(calls[1].init?.headers).get('x-daxis-request-id')).toBe(
+      'req-daxis-grant-open',
+    );
+    expect(calls[1].init?.body).toBe(JSON.stringify({ paths: ['part-000.parquet'] }));
+
+    expect(worker.commands[0]).toMatchObject({
+      open_delta_table: {
+        request_id: 'req-daxis-grant-open',
+        name: 'orders',
+        snapshot: {
+          active_files: [
+            {
+              path: 'part-000.parquet',
+              url: 'https://storage.example.test/part-000.parquet?X-Amz-Signature=abc',
+            },
+          ],
+        },
+      },
+    });
+    const workerPayload = JSON.stringify(worker.commands[0]);
+    expect(workerPayload).not.toContain('grant-456');
+    expect(workerPayload).not.toContain('object-grants');
+
+    worker.emitMessage({ opened: { request_id: 'req-daxis-grant-open', name: 'orders' } });
+    await expect(openedPromise).resolves.toMatchObject({
+      status: 'opened',
+      planType: 'brokered_delta',
+      tableId: 'tbl-123',
+      fullName: 'main.sales.orders',
+    });
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis object-grant adapter preserves structured grant errors', async () => {
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    return jsonResponse(
+      {
+        code: 'grant_expired',
+        message: 'Daxis object grant expired before batch signing completed',
+        correlation_id: 'daxis-grant-01JERROR',
+      },
+      {},
+      401,
+    );
+  }) as typeof fetch;
+
+  try {
+    const adapter = createDaxisObjectGrantAdapter({
+      objectGrantBaseUrl: '/object-grants',
+      requestId: 'req-daxis-grant-error',
+      resolveSnapshot: async () => brokeredSnapshot(),
+    });
+
+    await expect(
+      adapter.batchSign(brokeredDeltaPlan(), ['part-000.parquet']),
+    ).rejects.toMatchObject({
+      name: 'DaxisObjectGrantError',
+      code: 'grant_expired',
+      status: 401,
+      message: 'Daxis object grant expired before batch signing completed',
+      correlationId: 'daxis-grant-01JERROR',
+    } satisfies Partial<DaxisObjectGrantError>);
+
+    expect(calls).toHaveLength(1);
+    expect(String(calls[0].input)).toBe('/object-grants/grant-456/batch-sign');
+    expect(new Headers(calls[0].init?.headers).get('x-daxis-request-id')).toBe(
+      'req-daxis-grant-error',
+    );
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis object-grant client calls grant-scoped list, head, and range routes', async () => {
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+  const rangeBytes = new Uint8Array(Array.from({ length: 16 }, (_, index) => index + 1));
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = String(input);
+    if (url === '/object-grants/grant-456/list') {
+      return jsonResponse({
+        objects: [{ path: 'part-000.parquet', sizeBytes: 512, etag: '"part-000-v7"' }],
+      });
+    }
+    if (url === '/object-grants/grant-456/head') {
+      return jsonResponse({ path: 'part-000.parquet', sizeBytes: 512, etag: '"part-000-v7"' });
+    }
+    if (url === '/object-grants/grant-456/range?path=part-000.parquet&start=0&end=16') {
+      return new Response(rangeBytes, {
+        status: 206,
+        headers: { 'content-type': 'application/octet-stream' },
+      });
+    }
+    throw new Error(`unexpected Daxis object grant call: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const grantClient = createDaxisObjectGrantClient({
+      objectGrantBaseUrl: '/object-grants',
+      requestId: 'req-daxis-object-grant-routes',
+    });
+    const plan = brokeredDeltaPlan();
+
+    await expect(grantClient.list(plan, 'part-')).resolves.toEqual({
+      objects: [{ path: 'part-000.parquet', sizeBytes: 512, etag: '"part-000-v7"' }],
+    });
+    await expect(grantClient.head(plan, 'part-000.parquet')).resolves.toEqual({
+      path: 'part-000.parquet',
+      sizeBytes: 512,
+      etag: '"part-000-v7"',
+    });
+    await expect(
+      grantClient.range(plan, { path: 'part-000.parquet', start: 0, end: 16 }),
+    ).resolves.toEqual(rangeBytes);
+
+    expect(calls).toHaveLength(3);
+    expect(calls.map((call) => String(call.input))).toEqual([
+      '/object-grants/grant-456/list',
+      '/object-grants/grant-456/head',
+      '/object-grants/grant-456/range?path=part-000.parquet&start=0&end=16',
+    ]);
+    expect(calls[0].init?.method).toBe('POST');
+    expect(calls[0].init?.body).toBe(JSON.stringify({ prefix: 'part-' }));
+    expect(calls[1].init?.method).toBe('POST');
+    expect(calls[1].init?.body).toBe(JSON.stringify({ path: 'part-000.parquet' }));
+    expect(calls[2].init?.method).toBe('GET');
+    for (const call of calls) {
+      expect(new Headers(call.init?.headers).get('x-daxis-request-id')).toBe(
+        'req-daxis-object-grant-routes',
+      );
+    }
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis object-grant client preserves structured range errors', async () => {
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+
+  fetchGlobal.fetch = (async () =>
+    jsonResponse(
+      {
+        code: 'range_not_authorized',
+        message: 'Daxis object grant does not authorize this byte range',
+        correlation_id: 'daxis-range-01JERROR',
+      },
+      {},
+      403,
+    )) as typeof fetch;
+
+  try {
+    const grantClient = createDaxisObjectGrantClient({
+      objectGrantBaseUrl: '/object-grants',
+      requestId: 'req-daxis-range-error',
+    });
+
+    await expect(
+      grantClient.range(brokeredDeltaPlan(), { path: 'part-000.parquet', start: 0, end: 16 }),
+    ).rejects.toMatchObject({
+      name: 'DaxisObjectGrantError',
+      code: 'range_not_authorized',
+      status: 403,
+      message: 'Daxis object grant does not authorize this byte range',
+      correlationId: 'daxis-range-01JERROR',
+    } satisfies Partial<DaxisObjectGrantError>);
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis object-grant client rejects expired grants before route calls', async () => {
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    throw new Error('expired grant should not call fetch');
+  }) as typeof fetch;
+
+  try {
+    const grantClient = createDaxisObjectGrantClient({
+      objectGrantBaseUrl: '/object-grants',
+      requestId: 'req-daxis-expired-grant',
+    });
+
+    await expect(
+      grantClient.head({ ...brokeredDeltaPlan(), expiresAtEpochMs: 1 }, 'part-000.parquet'),
+    ).rejects.toMatchObject({
+      name: 'DaxisObjectGrantError',
+      code: 'grant_expired',
+      message: 'Daxis object grant expired before the route call was issued',
+    } satisfies Partial<DaxisObjectGrantError>);
+    expect(calls).toHaveLength(0);
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis object-grant client rejects unavailable proxy-range capability before route calls', async () => {
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    throw new Error('proxy range should not call fetch when the plan denies it');
+  }) as typeof fetch;
+
+  try {
+    const grantClient = createDaxisObjectGrantClient({
+      objectGrantBaseUrl: '/object-grants',
+      requestId: 'req-daxis-proxy-range-denied',
+    });
+
+    await expect(
+      grantClient.range(
+        {
+          ...brokeredDeltaPlan(),
+          objectAccess: { ...brokeredDeltaPlan().objectAccess, proxyRange: false },
+        },
+        { path: 'part-000.parquet', start: 0, end: 16 },
+      ),
+    ).rejects.toMatchObject({
+      name: 'DaxisObjectGrantError',
+      code: 'proxy_range_unavailable',
+      message: 'Daxis object grant does not allow proxy range reads',
+    } satisfies Partial<DaxisObjectGrantError>);
+    expect(calls).toHaveLength(0);
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis object-grant client rejects unavailable JSON route capabilities before route calls', async () => {
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    throw new Error('denied object grant capability should not call fetch');
+  }) as typeof fetch;
+
+  try {
+    const grantClient = createDaxisObjectGrantClient({
+      objectGrantBaseUrl: '/object-grants',
+      requestId: 'req-daxis-route-denied',
+    });
+    const plan = brokeredDeltaPlan();
+
+    await expect(
+      grantClient.list({ ...plan, objectAccess: { ...plan.objectAccess, list: false } }, 'part-'),
+    ).rejects.toMatchObject({
+      name: 'DaxisObjectGrantError',
+      code: 'object_grant_list_unavailable',
+      message: 'Daxis object grant does not allow list requests',
+    } satisfies Partial<DaxisObjectGrantError>);
+
+    await expect(
+      grantClient.head(
+        { ...plan, objectAccess: { ...plan.objectAccess, head: false } },
+        'part-000.parquet',
+      ),
+    ).rejects.toMatchObject({
+      name: 'DaxisObjectGrantError',
+      code: 'object_grant_head_unavailable',
+      message: 'Daxis object grant does not allow head requests',
+    } satisfies Partial<DaxisObjectGrantError>);
+
+    await expect(
+      grantClient.batchSign({ ...plan, objectAccess: { ...plan.objectAccess, batchSign: false } }, [
+        'part-000.parquet',
+      ]),
+    ).rejects.toMatchObject({
+      name: 'DaxisObjectGrantError',
+      code: 'batch_sign_unavailable',
+      message: 'Daxis object grant does not allow batch signing',
+    } satisfies Partial<DaxisObjectGrantError>);
+
+    expect(calls).toHaveLength(0);
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis object-grant client rejects malformed successful JSON route responses', async () => {
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    const url = String(input);
+    if (url === '/object-grants/grant-456/list') {
+      return jsonResponse({ objects: [{ path: 'part-000.parquet', sizeBytes: -1 }] });
+    }
+    if (url === '/object-grants/grant-456/head') {
+      return jsonResponse({ path: 42, sizeBytes: 512 });
+    }
+    if (url === '/object-grants/grant-456/batch-sign') {
+      return jsonResponse({
+        signedUrls: [{ path: 'part-000.parquet', url: 'not-a-url', expiresAtEpochMs: 1 }],
+      });
+    }
+    throw new Error(`unexpected Daxis object grant call: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const grantClient = createDaxisObjectGrantClient({
+      objectGrantBaseUrl: '/object-grants',
+      requestId: 'req-daxis-malformed-grant-response',
+    });
+    const plan = brokeredDeltaPlan();
+
+    await expect(grantClient.list(plan, 'part-')).rejects.toMatchObject({
+      name: 'DaxisObjectGrantError',
+      code: 'invalid_object_grant_response',
+      status: 200,
+    } satisfies Partial<DaxisObjectGrantError>);
+    await expect(grantClient.head(plan, 'part-000.parquet')).rejects.toMatchObject({
+      name: 'DaxisObjectGrantError',
+      code: 'invalid_object_grant_response',
+      status: 200,
+    } satisfies Partial<DaxisObjectGrantError>);
+    await expect(grantClient.batchSign(plan, ['part-000.parquet'])).rejects.toMatchObject({
+      name: 'DaxisObjectGrantError',
+      code: 'invalid_object_grant_response',
+      status: 200,
+    } satisfies Partial<DaxisObjectGrantError>);
+    expect(calls).toHaveLength(3);
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis object-grant client rejects invalid range requests before route calls', async () => {
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    throw new Error('invalid range requests should not call fetch');
+  }) as typeof fetch;
+
+  try {
+    const grantClient = createDaxisObjectGrantClient({
+      objectGrantBaseUrl: '/object-grants',
+      requestId: 'req-daxis-invalid-range',
+    });
+
+    await expect(
+      grantClient.range(brokeredDeltaPlan(), { path: '', start: 0, end: 16 }),
+    ).rejects.toMatchObject({
+      name: 'DaxisObjectGrantError',
+      code: 'invalid_object_grant_request',
+      message: 'Daxis object grant range path must be a non-empty string',
+    } satisfies Partial<DaxisObjectGrantError>);
+    await expect(
+      grantClient.range(brokeredDeltaPlan(), { path: 'part-000.parquet', start: 16, end: 16 }),
+    ).rejects.toMatchObject({
+      name: 'DaxisObjectGrantError',
+      code: 'invalid_object_grant_request',
+      message: 'Daxis object grant range start must be less than end',
+    } satisfies Partial<DaxisObjectGrantError>);
+    expect(calls).toHaveLength(0);
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis object-grant client rejects malformed successful range responses', async () => {
+  const fetchGlobal = globalThis as typeof globalThis & { fetch?: typeof fetch };
+  const previousFetch = fetchGlobal.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+
+  fetchGlobal.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init });
+    if (calls.length === 1) {
+      return new Response(new Uint8Array(Array.from({ length: 16 }, (_, index) => index)), {
+        status: 206,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    return new Response(new Uint8Array([1, 2, 3, 4]), {
+      status: 206,
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+  }) as typeof fetch;
+
+  try {
+    const grantClient = createDaxisObjectGrantClient({
+      objectGrantBaseUrl: '/object-grants',
+      requestId: 'req-daxis-malformed-range',
+    });
+    const plan = brokeredDeltaPlan();
+
+    await expect(
+      grantClient.range(plan, { path: 'part-000.parquet', start: 0, end: 16 }),
+    ).rejects.toMatchObject({
+      name: 'DaxisObjectGrantError',
+      code: 'invalid_object_grant_response',
+      status: 206,
+      message: 'Daxis object grant range response must use application/octet-stream',
+    } satisfies Partial<DaxisObjectGrantError>);
+
+    await expect(
+      grantClient.range(plan, { path: 'part-000.parquet', start: 0, end: 16 }),
+    ).rejects.toMatchObject({
+      name: 'DaxisObjectGrantError',
+      code: 'invalid_object_grant_response',
+      status: 206,
+      message: 'Daxis object grant range response returned 4 bytes for a 16-byte request',
+    } satisfies Partial<DaxisObjectGrantError>);
+    expect(calls).toHaveLength(2);
+  } finally {
+    if (previousFetch) {
+      fetchGlobal.fetch = previousFetch;
+    } else {
+      Reflect.deleteProperty(fetchGlobal, 'fetch');
+    }
+  }
+});
+
+test('Daxis headless query example executes an approved descriptor and returns a Daxis envelope', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const resultPromise = executeDaxisApprovedAxonRead(client, daxisApprovedAxonReadDescriptor(), {
+    tableName: 'orders',
+    nowEpochMs: 1_800_000_000_000,
+    workerArtifactId: 'axon-web-worker@sha256:test',
+  });
+
+  await Promise.resolve();
+  expect(worker.commands[0]).toMatchObject({
+    open_delta_table: {
+      request_id: 'req-daxis-headless-saved-query',
+      name: 'orders',
+      snapshot: {
+        table_uri: 'gs://daxis-prod-lakehouse/sales/orders',
+        snapshot_version: 42,
+      },
+    },
+  });
+
+  worker.emitMessage({
+    opened: {
+      request_id: 'req-daxis-headless-saved-query',
+      name: 'orders',
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(worker.commands[1]).toMatchObject({
+    sql: {
+      request_id: 'exec-daxis-headless-saved-query',
+      name: 'orders',
+      query: {
+        table_uri: 'gs://daxis-prod-lakehouse/sales/orders',
+        snapshot_version: 42,
+        sql: 'select order_id, amount_cents from orders order by amount_cents desc limit 2',
+        preferred_target: 'browser_wasm',
+        options: {
+          collect_metrics: true,
+          result_page: {
+            limit: 500,
+            offset: 0,
+          },
+          runtime_limits: {
+            max_arrow_ipc_bytes: 1048576,
+            max_result_rows: 500,
+            max_scan_bytes: 10485760,
+          },
+        },
+      },
+      output: 'arrow_ipc_stream',
+    },
+  });
+
+  worker.emitMessage({
+    success: {
+      request_id: 'exec-daxis-headless-saved-query',
+      response: queryResponse({
+        metrics: {
+          bytes_fetched: 32768,
+          duration_ms: 18,
+          files_touched: 1,
+          files_skipped: 0,
+          rows_emitted: 2,
+        },
+      }),
+      result: {
+        format: 'stream',
+        content_type: 'application/vnd.apache.arrow.stream',
+        bytes: [1, 2, 3, 4],
+      },
+    },
+  });
+
+  const result = await resultPromise;
+
+  expect(result.envelope).toMatchObject({
+    schema_version: 'daxis.query_result.v1',
+    status: 'executed',
+    execution_engine: 'axon_browser',
+    result_transport: 'arrow_ipc',
+    surface_kind: 'saved_query',
+    request_id: 'req-daxis-headless-saved-query',
+    execution_id: 'exec-daxis-headless-saved-query',
+    metrics: {
+      rows_returned: 2,
+      arrow_ipc_bytes: 4,
+      scan_bytes: 32768,
+      duration_ms: 18,
+    },
+    diagnostics: {
+      worker_artifact_id: 'axon-web-worker@sha256:test',
+      sql_fingerprint: 'sqlfp_saved_orders_20260530',
+    },
+  });
+  if (result.arrowIpc === null) {
+    throw new Error('expected Daxis headless query to return Arrow IPC bytes');
+  }
+  expect(result.arrowIpc.bytes).toEqual(new Uint8Array([1, 2, 3, 4]));
+});
+
+test('Daxis headless query example withholds results over the approved output budget', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const descriptor = daxisApprovedAxonReadDescriptor();
+  descriptor.limits.max_arrow_ipc_bytes = 3;
+
+  const resultPromise = executeDaxisApprovedAxonRead(client, descriptor, {
+    tableName: 'orders',
+    nowEpochMs: 1_800_000_000_000,
+  });
+
+  await Promise.resolve();
+  worker.emitMessage({
+    opened: {
+      request_id: 'req-daxis-headless-saved-query',
+      name: 'orders',
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  worker.emitMessage({
+    success: {
+      request_id: 'exec-daxis-headless-saved-query',
+      response: queryResponse({
+        metrics: {
+          bytes_fetched: 32768,
+          duration_ms: 18,
+          files_touched: 1,
+          files_skipped: 0,
+          rows_emitted: 2,
+        },
+      }),
+      result: {
+        format: 'stream',
+        content_type: 'application/vnd.apache.arrow.stream',
+        bytes: [1, 2, 3, 4],
+      },
+    },
+  });
+
+  const result = await resultPromise;
+
+  expect(result.envelope).toMatchObject({
+    schema_version: 'daxis.query_result.v1',
+    status: 'fallback',
+    execution_engine: null,
+    result_transport: null,
+    fallback_reason: 'runtime_budget_overflow',
+    block_reason: null,
+    diagnostics: {
+      budget_field: 'max_arrow_ipc_bytes',
+      actual_bytes: '4',
+      limit_bytes: '3',
+    },
+  });
+  expect(result.arrowIpc).toBeNull();
+});
+
+test('Daxis headless query example withholds results over the approved scan budget', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const descriptor = daxisApprovedAxonReadDescriptor();
+  descriptor.limits.max_scan_bytes = 32767;
+
+  const resultPromise = executeDaxisApprovedAxonRead(client, descriptor, {
+    tableName: 'orders',
+    nowEpochMs: 1_800_000_000_000,
+  });
+
+  await Promise.resolve();
+  worker.emitMessage({
+    opened: {
+      request_id: 'req-daxis-headless-saved-query',
+      name: 'orders',
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  worker.emitMessage({
+    success: {
+      request_id: 'exec-daxis-headless-saved-query',
+      response: queryResponse({
+        metrics: {
+          bytes_fetched: 32768,
+          duration_ms: 18,
+          files_touched: 1,
+          files_skipped: 0,
+          rows_emitted: 2,
+        },
+      }),
+      result: {
+        format: 'stream',
+        content_type: 'application/vnd.apache.arrow.stream',
+        bytes: [1, 2],
+      },
+    },
+  });
+
+  const result = await resultPromise;
+
+  expect(result.envelope).toMatchObject({
+    schema_version: 'daxis.query_result.v1',
+    status: 'fallback',
+    fallback_reason: 'runtime_budget_overflow',
+    diagnostics: {
+      budget_field: 'max_scan_bytes',
+      actual_bytes: '32768',
+      limit_bytes: '32767',
+    },
+  });
+  expect(result.arrowIpc).toBeNull();
+});
+
+test('Daxis headless query example withholds results over the approved row budget', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const descriptor = daxisApprovedAxonReadDescriptor();
+  descriptor.limits.max_result_rows = 1;
+
+  const resultPromise = executeDaxisApprovedAxonRead(client, descriptor, {
+    tableName: 'orders',
+    nowEpochMs: 1_800_000_000_000,
+  });
+
+  await Promise.resolve();
+  worker.emitMessage({
+    opened: {
+      request_id: 'req-daxis-headless-saved-query',
+      name: 'orders',
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  worker.emitMessage({
+    success: {
+      request_id: 'exec-daxis-headless-saved-query',
+      response: queryResponse({
+        metrics: {
+          bytes_fetched: 1024,
+          duration_ms: 18,
+          files_touched: 1,
+          files_skipped: 0,
+          rows_emitted: 2,
+        },
+      }),
+      result: {
+        format: 'stream',
+        content_type: 'application/vnd.apache.arrow.stream',
+        bytes: [1, 2],
+      },
+    },
+  });
+
+  const result = await resultPromise;
+
+  expect(result.envelope).toMatchObject({
+    schema_version: 'daxis.query_result.v1',
+    status: 'fallback',
+    fallback_reason: 'runtime_budget_overflow',
+    diagnostics: {
+      budget_field: 'max_result_rows',
+      actual_rows: '2',
+      limit_rows: '1',
+    },
+  });
+  expect(result.arrowIpc).toBeNull();
+});
+
+test('Daxis headless query example returns fallback when execution exceeds timeout budget', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const descriptor = daxisApprovedAxonReadDescriptor();
+  descriptor.limits.timeout_ms = 1;
+
+  const resultPromise = executeDaxisApprovedAxonRead(client, descriptor, {
+    tableName: 'orders',
+    nowEpochMs: 1_800_000_000_000,
+  });
+
+  await Promise.resolve();
+  worker.emitMessage({
+    opened: {
+      request_id: 'req-daxis-headless-saved-query',
+      name: 'orders',
+    },
+  });
+
+  const result = await resultPromise;
+
+  expect(result.envelope).toMatchObject({
+    schema_version: 'daxis.query_result.v1',
+    status: 'fallback',
+    execution_engine: null,
+    result_transport: null,
+    fallback_reason: 'runtime_budget_overflow',
+    diagnostics: {
+      budget_field: 'timeout_ms',
+      limit_ms: '1',
+      stage: 'query',
+    },
+  });
+  expect(result.arrowIpc).toBeNull();
+  expect(worker.commands[2]).toEqual({
+    cancel: {
+      request_id: 'cancel-exec-daxis-headless-saved-query',
+      query_id: 'exec-daxis-headless-saved-query',
+    },
+  });
+  expect(worker.terminated).toBe(true);
+});
+
+test('Daxis headless query example terminates the client when open exceeds timeout budget', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const descriptor = daxisApprovedAxonReadDescriptor();
+  descriptor.limits.timeout_ms = 1;
+
+  const result = await executeDaxisApprovedAxonRead(client, descriptor, {
+    tableName: 'orders',
+    nowEpochMs: 1_800_000_000_000,
+  });
+
+  expect(result.envelope).toMatchObject({
+    schema_version: 'daxis.query_result.v1',
+    status: 'fallback',
+    fallback_reason: 'runtime_budget_overflow',
+    diagnostics: {
+      budget_field: 'timeout_ms',
+      limit_ms: '1',
+      stage: 'open',
+    },
+  });
+  expect(result.arrowIpc).toBeNull();
+  expect(worker.terminated).toBe(true);
+});
+
+test('Daxis headless query example rejects unapproved descriptors before worker handoff', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const descriptor = daxisApprovedAxonReadDescriptor();
+  descriptor.validated_sql.read_only = false;
+
+  await expect(
+    executeDaxisApprovedAxonRead(client, descriptor, { nowEpochMs: 1_800_000_000_000 }),
+  ).rejects.toMatchObject({
+    name: 'DaxisHeadlessQueryError',
+    code: 'non_read_only_sql',
+  } satisfies Partial<DaxisHeadlessQueryError>);
+  expect(worker.commands).toHaveLength(0);
+});
+
+test('Daxis headless query example rejects unknown descriptor fields before worker handoff', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const descriptor = daxisApprovedAxonReadDescriptor() as DaxisApprovedAxonReadDescriptor & {
+    tables: [
+      DaxisApprovedAxonReadDescriptor['tables'][number] & {
+        descriptor: DaxisApprovedAxonReadDescriptor['tables'][number]['descriptor'] & {
+          access_token?: string;
+        };
+      },
+    ];
+  };
+  descriptor.tables[0].descriptor.access_token = 'secret-token';
+
+  await expect(
+    executeDaxisApprovedAxonRead(client, descriptor, { nowEpochMs: 1_800_000_000_000 }),
+  ).rejects.toMatchObject({
+    name: 'DaxisHeadlessQueryError',
+    code: 'invalid_descriptor',
+  } satisfies Partial<DaxisHeadlessQueryError>);
+  expect(worker.commands).toHaveLength(0);
+});
+
+test('Daxis headless query example rejects unknown active-file fields before worker handoff', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const descriptor = daxisApprovedAxonReadDescriptor() as DaxisApprovedAxonReadDescriptor & {
+    tables: [
+      DaxisApprovedAxonReadDescriptor['tables'][number] & {
+        descriptor: DaxisApprovedAxonReadDescriptor['tables'][number]['descriptor'] & {
+          active_files: Array<
+            DaxisApprovedAxonReadDescriptor['tables'][number]['descriptor']['active_files'][number] & {
+              raw_prompt?: string;
+            }
+          >;
+        };
+      },
+    ];
+  };
+  descriptor.tables[0].descriptor.active_files[0].raw_prompt = 'show me customer emails';
+
+  await expect(
+    executeDaxisApprovedAxonRead(client, descriptor, { nowEpochMs: 1_800_000_000_000 }),
+  ).rejects.toMatchObject({
+    name: 'DaxisHeadlessQueryError',
+    code: 'invalid_descriptor',
+  } satisfies Partial<DaxisHeadlessQueryError>);
+  expect(worker.commands).toHaveLength(0);
+});
+
+test('Daxis headless descriptor validation rejects unknown nested capability keys', () => {
+  const descriptor = daxisApprovedAxonReadDescriptor() as DaxisApprovedAxonReadDescriptor & {
+    tables: [
+      DaxisApprovedAxonReadDescriptor['tables'][number] & {
+        descriptor: DaxisApprovedAxonReadDescriptor['tables'][number]['descriptor'] & {
+          required_capabilities: {
+            capabilities: Record<string, string>;
+          };
+        };
+      },
+    ];
+  };
+  descriptor.tables[0].descriptor.required_capabilities = {
+    capabilities: {
+      signed_url_access: 'supported',
+      access_token: 'secret-token',
+    },
+  };
+
+  expect(() => validateDaxisApprovedAxonReadDescriptor(descriptor, 1_800_000_000_000)).toThrow(
+    /known capability key/,
+  );
+});
+
+test('Daxis headless descriptor validation rejects invalid partition column types', () => {
+  const descriptor = daxisApprovedAxonReadDescriptor();
+  const mutableDescriptor = descriptor as unknown as {
+    tables: [{ descriptor: { partition_column_types: Record<string, string> } }];
+  };
+  mutableDescriptor.tables[0].descriptor.partition_column_types = {
+    region: 'secret-token',
+  };
+
+  expect(() => validateDaxisApprovedAxonReadDescriptor(descriptor, 1_800_000_000_000)).toThrow(
+    /partition_column_types\.region/,
+  );
+});
+
+test('Daxis headless descriptor validation rejects non-string partition values', () => {
+  const descriptor = daxisApprovedAxonReadDescriptor();
+  const mutableDescriptor = descriptor as unknown as {
+    tables: [
+      { descriptor: { active_files: Array<{ partition_values: Record<string, unknown> }> } },
+    ];
+  };
+  mutableDescriptor.tables[0].descriptor.active_files[0].partition_values = {
+    region: { raw_prompt: 'show me customer emails' },
+  };
+
+  expect(() => validateDaxisApprovedAxonReadDescriptor(descriptor, 1_800_000_000_000)).toThrow(
+    /partition_values\.region/,
+  );
+});
+
+test('Daxis headless query example rejects multi-table descriptors before worker handoff', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const descriptor = daxisApprovedAxonReadDescriptor() as DaxisApprovedAxonReadDescriptor & {
+    tables: Array<DaxisApprovedAxonReadDescriptor['tables'][number]>;
+  };
+  descriptor.tables.push({
+    ...descriptor.tables[0],
+    table_id: 'tbl_daxis_sales_customers',
+    descriptor_id: 'desc_daxis_sales_customers_v42',
+  });
+
+  await expect(
+    executeDaxisApprovedAxonRead(client, descriptor as DaxisApprovedAxonReadDescriptor, {
+      nowEpochMs: 1_800_000_000_000,
+    }),
+  ).rejects.toMatchObject({
+    name: 'DaxisHeadlessQueryError',
+    code: 'invalid_descriptor',
+    message: 'Daxis-approved descriptor v1 requires exactly one table descriptor',
+  } satisfies Partial<DaxisHeadlessQueryError>);
+  expect(worker.commands).toHaveLength(0);
+});
+
+test('Daxis headless query example maps pre-handoff cancellation into a cancelled envelope', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const controller = new AbortController();
+  controller.abort('user navigated away');
+
+  const result = await executeDaxisApprovedAxonRead(client, daxisApprovedAxonReadDescriptor(), {
+    nowEpochMs: 1_800_000_000_000,
+    signal: controller.signal,
+  });
+
+  expect(result.envelope).toMatchObject({
+    schema_version: 'daxis.query_result.v1',
+    status: 'cancelled',
+    execution_engine: null,
+    result_transport: null,
+    fallback_reason: null,
+    block_reason: null,
+    request_id: 'req-daxis-headless-saved-query',
+    execution_id: 'exec-daxis-headless-saved-query',
+  });
+  expect(result.arrowIpc).toBeNull();
+  expect(worker.commands).toHaveLength(0);
+});
+
 test('openDeltaLocation rejects malformed successful HTTP resolver responses', async () => {
   const worker = new FakeWorker();
   const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
@@ -2214,6 +3602,73 @@ function deltaSharingAccessPlan() {
       },
     ],
   } as const;
+}
+
+function daxisApprovedAxonReadDescriptor(): DaxisApprovedAxonReadDescriptor {
+  return {
+    schema_version: 'daxis.approved_axon_read.v1',
+    request_id: 'req-daxis-headless-saved-query',
+    correlation_id: 'corr-daxis-headless-saved-query',
+    execution_id: 'exec-daxis-headless-saved-query',
+    workspace_id: 'workspace_sales',
+    surface_kind: 'saved_query',
+    intent_kind: 'sql',
+    input_artifact_kind: 'saved_sql',
+    compiled_artifact_kind: 'validated_sql',
+    query_id: 'query-daxis-headless-saved-query',
+    validated_sql: {
+      sql: 'select order_id, amount_cents from orders order by amount_cents desc limit 2',
+      dialect: 'daxis_sql_v1',
+      fingerprint: 'sqlfp_saved_orders_20260530',
+      validation_id: 'sqlval_saved_orders_20260530',
+      read_only: true,
+    },
+    tables: [
+      {
+        catalog_id: 'catalog_main',
+        table_id: 'tbl_daxis_sales_orders',
+        descriptor_id: 'desc_daxis_sales_orders_v42',
+        table_uri: 'gs://daxis-prod-lakehouse/sales/orders',
+        full_name: 'main.sales.orders',
+        snapshot_version: 42,
+        schema_hash: 'sha256:orders-schema-v7',
+        descriptor_schema_hash: 'sha256:orders-schema-v7',
+        descriptor: {
+          table_uri: 'gs://daxis-prod-lakehouse/sales/orders',
+          snapshot_version: 42,
+          partition_column_types: {
+            order_date: 'string',
+          },
+          active_files: [
+            {
+              path: 'order_date=2026-05-30/part-00000.parquet',
+              url: 'https://storage.googleapis.com/daxis-prod-lakehouse/sales/orders/order_date=2026-05-30/part-00000.parquet?X-Goog-Signature=redacted',
+              size_bytes: 32768,
+              partition_values: {
+                order_date: '2026-05-30',
+              },
+            },
+          ],
+        },
+      },
+    ],
+    access_proof: {
+      policy_decision_id: 'policy_decision_saved_orders_20260530',
+      read_access_decision: 'approved',
+      expires_at_epoch_ms: 1_800_000_060_000,
+    },
+    limits: {
+      max_result_rows: 500,
+      max_arrow_ipc_bytes: 1_048_576,
+      max_scan_bytes: 10_485_760,
+      timeout_ms: 15_000,
+      cancellation_deadline_epoch_ms: 1_800_000_015_000,
+    },
+    runtime_preference: {
+      preferred_engine: 'axon_browser',
+      allow_remote_fallback: true,
+    },
+  };
 }
 
 function queryResponse(overrides: Partial<QueryResponse> = {}): QueryResponse {

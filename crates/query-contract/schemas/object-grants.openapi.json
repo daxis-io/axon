@@ -13,7 +13,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/ObjectGrantListRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/ObjectGrantListRequest"
+              }
             }
           }
         },
@@ -22,7 +24,9 @@
             "description": "Object paths visible through this grant.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ObjectGrantListResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectGrantListResponse"
+                }
               }
             }
           }
@@ -37,7 +41,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/ObjectGrantHeadRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/ObjectGrantHeadRequest"
+              }
             }
           }
         },
@@ -64,7 +70,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/ObjectGrantBatchSignRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/ObjectGrantBatchSignRequest"
+              }
             }
           }
         },
@@ -73,7 +81,9 @@
             "description": "Short-lived object-scoped bearer URLs.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ObjectGrantBatchSignResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectGrantBatchSignResponse"
+                }
               }
             }
           }
@@ -101,10 +111,16 @@
               }
             }
           },
-          "401": { "description": "The object grant is expired or unauthenticated." },
-          "403": { "description": "The object grant does not authorize this path or range." },
+          "401": {
+            "description": "The object grant is expired or unauthenticated."
+          },
+          "403": {
+            "description": "The object grant does not authorize this path or range."
+          },
           "404": { "description": "The granted object path does not exist." },
-          "416": { "description": "The requested byte range is invalid for this object." }
+          "416": {
+            "description": "The requested byte range is invalid for this object."
+          }
         }
       }
     }
@@ -204,6 +220,57 @@
           "path": { "type": "string", "minLength": 1 },
           "url": { "type": "string", "format": "uri" },
           "expiresAtEpochMs": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "ObjectGrantAuditRange": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["start", "end"],
+        "properties": {
+          "start": { "type": "integer", "minimum": 0 },
+          "end": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "ObjectGrantAuditEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "eventId",
+          "eventType",
+          "occurredAtEpochMs",
+          "tenantId",
+          "workspaceId",
+          "userSubject",
+          "tableId",
+          "fullName",
+          "grantId",
+          "queryId",
+          "requestId",
+          "correlationId",
+          "action",
+          "objectPath",
+          "outcome"
+        ],
+        "properties": {
+          "eventId": { "type": "string", "minLength": 1 },
+          "eventType": { "type": "string", "const": "object_grant_access" },
+          "occurredAtEpochMs": { "type": "integer", "minimum": 0 },
+          "tenantId": { "type": "string", "minLength": 1 },
+          "workspaceId": { "type": "string", "minLength": 1 },
+          "userSubject": { "type": "string", "minLength": 1 },
+          "tableId": { "type": "string", "minLength": 1 },
+          "fullName": { "type": "string", "minLength": 1 },
+          "grantId": { "type": "string", "minLength": 1 },
+          "queryId": { "type": "string", "minLength": 1 },
+          "requestId": { "type": "string", "minLength": 1 },
+          "correlationId": { "type": "string", "minLength": 1 },
+          "action": {
+            "type": "string",
+            "enum": ["list", "head", "batch_sign", "range"]
+          },
+          "objectPath": { "type": "string", "minLength": 1 },
+          "range": { "$ref": "#/components/schemas/ObjectGrantAuditRange" },
+          "outcome": { "type": "string", "enum": ["allowed", "denied"] }
         }
       }
     }

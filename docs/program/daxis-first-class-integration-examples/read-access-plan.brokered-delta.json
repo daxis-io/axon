@@ -1,0 +1,21 @@
+{
+  "plan_type": "brokered_delta",
+  "tableId": "tbl_daxis_sales_orders",
+  "fullName": "main.sales.orders",
+  "tableRoot": "gs://daxis-prod-lakehouse/sales/orders",
+  "grantId": "grant_daxis_sales_orders_01JABCDEF",
+  "expiresAtEpochMs": 1800000300000,
+  "deltaAccessMode": "delta_log",
+  "policyAuthority": {
+    "authority": "unity_catalog",
+    "directExternalEngineRead": "confirmed"
+  },
+  "objectAccess": {
+    "list": true,
+    "head": true,
+    "get": true,
+    "rangeGet": true,
+    "batchSign": true,
+    "proxyRange": true
+  }
+}

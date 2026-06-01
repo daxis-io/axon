@@ -1,0 +1,25 @@
+{
+  "schema_version": "daxis.query_result.v1",
+  "status": "executed",
+  "execution_engine": "axon_browser",
+  "result_transport": "arrow_ipc",
+  "surface_kind": "builder",
+  "intent_kind": "semantic_query",
+  "input_artifact_kind": "builder_plan",
+  "compiled_artifact_kind": "validated_sql",
+  "request_id": "req-daxis-builder-orders",
+  "correlation_id": "corr-daxis-builder-orders",
+  "query_id": "query-daxis-builder-orders",
+  "execution_id": "exec-daxis-builder-orders",
+  "workspace_id": "workspace_sales",
+  "metrics": {
+    "rows_returned": 2,
+    "arrow_ipc_bytes": 640,
+    "scan_bytes": 32768,
+    "duration_ms": 18
+  },
+  "diagnostics": {
+    "worker_artifact_id": "axon-web-worker@sha256:abc123",
+    "sql_fingerprint": "sqlfp_builder_orders_20260530"
+  }
+}

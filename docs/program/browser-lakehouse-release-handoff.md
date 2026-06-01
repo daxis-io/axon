@@ -10,7 +10,7 @@ This is the repo-owned handoff bundle for the browser lakehouse release seam. It
 - The March 31 browser-engine release baseline for this bundle is git commit `0e19f1d`.
 - There's still no `services/query-api` directory or equivalent trusted-service implementation in this repository.
 - Delta snapshot reconstruction already lives in `crates/wasm-delta-snapshot`.
-- Browser execution V1 is the narrow runtime plus streaming scan plus an in-memory session shell, not broad browser DataFusion.
+- Browser execution V1 is the narrow runtime plus streaming scan plus an in-memory session shell. The Daxis-facing app worker now has a separate browser DataFusion artifact report and runtime isolation gate.
 - The shipped session shell is in-memory only.
 - Persistent-cache hooks exist in repo, with a narrow OPFS extent-cache backend below the in-memory session shell. OPFS / IndexedDB session-level persistent caches are still deferred.
 - Signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation are external blockers.
@@ -33,7 +33,10 @@ All examples below are checked into [`docs/program/browser-lakehouse-release-han
 - `browser-worker-response.native-fallback.json`: native reroute result carrying its fallback reason.
 - `browser-worker-response.disposed.json`: session-dispose acknowledgement from the worker.
 - `browser-worker-response.hard-fail.json`: terminal error envelope with no fallback reason.
-- `browser-worker-artifact-report.narrow.json`: shipped worker artifact report showing the default runtime SKU, session-shell capability, Arrow IPC worker boundary, and artifact identity.
+- `browser-worker-artifact-report.narrow.json`: legacy narrow worker artifact report showing the compatibility runtime SKU, session-shell capability, Arrow IPC worker boundary, and artifact identity.
+- `browser-worker-artifact-report.datafusion.json`: Daxis-facing app worker artifact report showing `browser_datafusion` as the default runtime SKU for descriptor-backed browser reads.
+
+Daxis-specific handoff fixtures live in [`docs/program/daxis-first-class-integration-examples/`](./daxis-first-class-integration-examples). They cover `POST /v1/query/delta/snapshot-descriptor`, descriptor fail-closed cases, `POST /v1/catalog/read-access-plan`, grant-scoped object route payloads, the object-grant OpenAPI schema, audit event evidence shape, and the browser-safe `brokered_delta`, `delta_sharing`, `sql_fallback_required`, and `blocked` plan outcomes. The release-facing hash manifest lives at [`docs/release-gates/daxis-contract-artifacts.sha256`](../release-gates/daxis-contract-artifacts.sha256).
 
 ## Field Semantics
 
@@ -68,13 +71,15 @@ All examples below are checked into [`docs/program/browser-lakehouse-release-han
 
 `runtime_sku`
 
-- Worker artifact reports use `narrow` for the current shipped browser runtime plus in-memory session shell.
-- `sql` is reserved for the larger browser SQL SKU in later launch-hardening work; Sprint 1 only freezes the vocabulary.
+- Worker artifact reports use `narrow` for the legacy browser runtime plus in-memory session shell.
+- Worker artifact reports use `browser_datafusion` for the Daxis-facing app worker that routes descriptor-backed reads through `axon-web-wasm`.
+- `sql` is reserved for a future non-DataFusion browser SQL SKU.
 
 `capabilities`
 
 - `session_shell = true` means the worker owns reusable in-memory table/session state.
-- `browser_datafusion = false` means the shipped worker isn't claiming broad browser DataFusion as the V1 execution target.
+- `browser_datafusion = false` means the narrow compatibility worker is not claiming the DataFusion execution target.
+- `browser_datafusion = true` means the Daxis-facing app worker routes browser SQL execution through the DataFusion session path.
 - The OPFS extent-cache backend sits below the session shell; IndexedDB and session-level persistence stay deferred even when `session_shell = true`.
 
 `result_transport`
@@ -100,8 +105,12 @@ Browser HTTP URL attachment
 
 - `docs/program/browser-datafusion-runtime-parity.md` records the newer `apps/axon-web` browser DataFusion runtime parity envelope: supported SQL classes, field types, scan optimizations, unsupported feature categories, and browser-worker proof.
 - `crates/query-contract/tests/release_handoff_examples.rs` validates the request, descriptor, and hard-fail examples.
+- `crates/query-contract/tests/release_handoff_examples.rs` also validates the Daxis first-class integration fixtures for descriptor resolution, read-access-plan outcomes, object-grant routes, and object-grant audit event evidence.
+- `crates/query-contract/tests/query_contract.rs` validates the checked-in read-access-plan JSON Schema and object-grant OpenAPI fixture, including the closed `ObjectGrantAuditEvent` component.
+- `tests/conformance/verify_daxis_contract_artifacts.sh` verifies the Daxis SDK examples, schemas, OpenAPI document, and JSON fixtures against the checked-in SHA-256 manifest.
 - `crates/browser-sdk/tests/release_handoff_examples.rs` validates the session-backed worker command and response examples.
 - `crates/browser-engine-worker/tests/worker_artifact.rs` validates the worker artifact report example and the session-capability / Arrow IPC reporting contract.
+- `cargo test -p axon-web-wasm` validates the DataFusion app worker artifact report example and the browser DataFusion bridge contract.
 - `crates/delta-control-plane/tests/browser_http_descriptor.rs` covers deterministic browser URL attachment and URL redaction.
 - `crates/delta-control-plane/tests/browser_snapshot_preflight.rs` covers descriptor-to-runtime supported-path execution over loopback-served fixture data.
 - `crates/wasm-query-runtime/tests/browser_runtime.rs` covers native-only reroutes and terminal unsupported behavior before browser I/O.
@@ -119,10 +128,11 @@ These items are external and stay external in release docs until code exists:
 - production XML-endpoint CORS/origin validation
 - live dashboards
 - production oncall / control-plane outage handling
+- Daxis rollout controls and production table compatibility dashboard
 
 Repo-deferred, but not external-service proof:
 
 - IndexedDB persistent-cache backends and session-level persistent table caches
-- browser DataFusion as the default SKU
+- release-process full app-size evidence for `axon-web-wasm`; the exact Daxis default-worker command is recorded in [`docs/release-gates/daxis-browser-datafusion-budget-profile.json`](../release-gates/daxis-browser-datafusion-budget-profile.json), and the Daxis M3 isolation plan is recorded in [`docs/release-gates/daxis-browser-runtime-isolation-plan.json`](../release-gates/daxis-browser-runtime-isolation-plan.json)
 
 See [`docs/release-gates/browser-wasm-delta-gcs-external-blockers.md`](../release-gates/browser-wasm-delta-gcs-external-blockers.md) for the owner-by-owner blocker register.

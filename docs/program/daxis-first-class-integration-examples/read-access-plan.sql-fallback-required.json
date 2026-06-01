@@ -1,0 +1,9 @@
+{
+  "plan_type": "sql_fallback_required",
+  "tableId": "tbl_daxis_sales_orders_masked",
+  "fullName": "main.secure.orders",
+  "reason": "row_filter",
+  "message": "Daxis policy requires server execution because this table has a row filter.",
+  "statementEndpoint": "https://daxis.example.test/v1/query/sql/statements",
+  "warehouseRequired": true
+}

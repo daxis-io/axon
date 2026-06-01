@@ -11,7 +11,7 @@ use deltalake::{DeltaTable, TableProperty};
 use native_query_runtime::{bootstrap_table, execute_query, DEFAULT_TABLE_NAME};
 use query_contract::{
     CapabilityKey, CapabilityState, ExecutionTarget, QueryErrorCode, QueryExecutionOptions,
-    QueryRequest, QueryResultPage, MAX_QUERY_RESULT_PAGE_LIMIT,
+    QueryRequest, QueryResultPage, QueryRuntimeLimits, MAX_QUERY_RESULT_PAGE_LIMIT,
 };
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
@@ -960,6 +960,7 @@ fn execute_query_optionally_returns_explain_output() {
         include_explain: true,
         collect_metrics: true,
         result_page: None,
+        runtime_limits: None,
     });
 
     let result = execute_query(request).expect("query should execute");
@@ -986,6 +987,7 @@ fn execute_query_applies_result_page_limit_and_offset() {
             limit: 2,
             offset: 2,
         }),
+        runtime_limits: None,
     });
 
     let result = execute_query(request).expect("query page should execute");
@@ -1013,6 +1015,7 @@ fn execute_query_rejects_result_pages_over_runtime_limit() {
             limit: MAX_QUERY_RESULT_PAGE_LIMIT + 1,
             offset: 0,
         }),
+        runtime_limits: None,
     });
 
     let error = execute_query(request).expect_err("oversized result pages should be rejected");
@@ -1021,6 +1024,33 @@ fn execute_query_rejects_result_pages_over_runtime_limit() {
     assert!(
         error.message.contains("result page limit"),
         "error should describe the oversized result page limit: {}",
+        error.message
+    );
+}
+
+#[test]
+fn execute_query_rejects_browser_runtime_limits() {
+    let fixture = TestTableFixture::create();
+    let request = QueryRequest::new(
+        &fixture.table_uri,
+        format!("SELECT id FROM {DEFAULT_TABLE_NAME} ORDER BY id"),
+        ExecutionTarget::Native,
+    )
+    .with_options(QueryExecutionOptions {
+        runtime_limits: Some(QueryRuntimeLimits {
+            max_result_rows: Some(1),
+            max_arrow_ipc_bytes: None,
+            max_scan_bytes: None,
+        }),
+        ..QueryExecutionOptions::default()
+    });
+
+    let error = execute_query(request).expect_err("native runtime should reject browser limits");
+
+    assert_eq!(error.code, QueryErrorCode::InvalidRequest);
+    assert!(
+        error.message.contains("runtime_limits"),
+        "error should identify unsupported runtime limits: {}",
         error.message
     );
 }
@@ -1040,6 +1070,7 @@ fn execute_query_wraps_top_level_offset_before_applying_result_page() {
             limit: 2,
             offset: 2,
         }),
+        runtime_limits: None,
     });
 
     let result = execute_query(request).expect("offset query page should execute");

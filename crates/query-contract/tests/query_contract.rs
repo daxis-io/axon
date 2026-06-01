@@ -2,19 +2,21 @@ use std::collections::BTreeMap;
 
 use query_contract::{
     delta_protocol_feature, delta_protocol_feature_names, validate_browser_object_url,
-    validate_delta_location_resolve_request, validate_delta_location_resolve_response,
-    BrokeredDeltaAccessMode, BrokeredDeltaReadPlan, BrokeredObjectAccess, BrokeredPolicyAuthority,
-    BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor,
-    BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport, CapabilityState, CredentialProfileRef,
-    DeltaLocationRefresh, DeltaLocationResolveRequest, DeltaLocationResolveResponse,
-    DeltaLocationResolverError, DeltaLocationResolverErrorCode, DeltaObjectStoreProvider,
-    DeltaProtocolFeatureClass, DeltaProtocolFeatureEnablement, DeltaProtocolFeatureKind,
-    DirectExternalEngineReadSupport, ExecutionTarget, FallbackReason, ObjectGrantBatchSignRequest,
-    ObjectGrantHeadRequest, ObjectGrantListRequest, PartitionColumnType, PolicyAuthorityKind,
-    QueryError, QueryErrorCode, QueryExecutionOptions, QueryMetricsSummary, QueryRequest,
-    QueryResponse, QueryResultPage, ReadAccessPlan, ReadAccessPlanReason, ResolvedFileDescriptor,
-    ResolvedSnapshotDescriptor, ResolverActualAccessMode, ResolverRequestedAccessMode,
-    SnapshotResolutionRequest, SqlFallbackRequiredPlan,
+    validate_daxis_approved_axon_read_descriptor, validate_daxis_result_envelope,
+    validate_delta_location_resolve_exchange, validate_delta_location_resolve_request,
+    validate_delta_location_resolve_response, BrokeredDeltaAccessMode, BrokeredDeltaReadPlan,
+    BrokeredObjectAccess, BrokeredPolicyAuthority, BrowserAccessMode, BrowserHttpFileDescriptor,
+    BrowserHttpSnapshotDescriptor, BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport,
+    CapabilityState, CredentialProfileRef, DeltaLocationRefresh, DeltaLocationResolveRequest,
+    DeltaLocationResolveResponse, DeltaLocationResolverError, DeltaLocationResolverErrorCode,
+    DeltaObjectStoreProvider, DeltaProtocolFeatureClass, DeltaProtocolFeatureEnablement,
+    DeltaProtocolFeatureKind, DirectExternalEngineReadSupport, ExecutionTarget, FallbackReason,
+    ObjectGrantBatchSignRequest, ObjectGrantHeadRequest, ObjectGrantListRequest,
+    PartitionColumnType, PolicyAuthorityKind, QueryError, QueryErrorCode, QueryExecutionOptions,
+    QueryMetricsSummary, QueryRequest, QueryResponse, QueryResultPage, ReadAccessPlan,
+    ReadAccessPlanReason, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
+    ResolverActualAccessMode, ResolverRequestedAccessMode, SnapshotResolutionRequest,
+    SqlFallbackRequiredPlan,
 };
 use schemars::schema_for;
 use serde_json::{json, Value};
@@ -829,6 +831,62 @@ fn object_grant_openapi_fixture_documents_browser_routes() {
 }
 
 #[test]
+fn object_grant_openapi_fixture_documents_audit_event_schema() {
+    let fixture = include_str!("../schemas/object-grants.openapi.json");
+    let openapi: serde_json::Value =
+        serde_json::from_str(fixture).expect("object grant OpenAPI fixture should be valid JSON");
+
+    let schemas = openapi["components"]["schemas"]
+        .as_object()
+        .expect("OpenAPI fixture should contain component schemas");
+    let audit_event = schemas
+        .get("ObjectGrantAuditEvent")
+        .expect("OpenAPI fixture should document object-grant audit events");
+
+    assert_eq!(audit_event["additionalProperties"], json!(false));
+    assert_eq!(
+        audit_event["required"],
+        json!([
+            "eventId",
+            "eventType",
+            "occurredAtEpochMs",
+            "tenantId",
+            "workspaceId",
+            "userSubject",
+            "tableId",
+            "fullName",
+            "grantId",
+            "queryId",
+            "requestId",
+            "correlationId",
+            "action",
+            "objectPath",
+            "outcome"
+        ])
+    );
+    assert_eq!(
+        audit_event["properties"]["eventType"]["const"],
+        json!("object_grant_access")
+    );
+    assert_eq!(
+        audit_event["properties"]["action"]["enum"],
+        json!(["list", "head", "batch_sign", "range"])
+    );
+    assert_eq!(
+        audit_event["properties"]["outcome"]["enum"],
+        json!(["allowed", "denied"])
+    );
+    assert_eq!(
+        audit_event["properties"]["range"]["$ref"],
+        json!("#/components/schemas/ObjectGrantAuditRange")
+    );
+    assert_eq!(
+        schemas["ObjectGrantAuditRange"]["additionalProperties"],
+        json!(false)
+    );
+}
+
+#[test]
 fn query_request_serializes_single_table_locator_and_execution_options() {
     let mut request = QueryRequest::new(
         "gs://axon-fixtures/sample_table",
@@ -839,6 +897,7 @@ fn query_request_serializes_single_table_locator_and_execution_options() {
         include_explain: true,
         collect_metrics: false,
         result_page: None,
+        runtime_limits: None,
     });
     request.snapshot_version = Some(3);
 
@@ -873,6 +932,7 @@ fn query_request_serializes_result_page_execution_options() {
             limit: 501,
             offset: 500,
         }),
+        runtime_limits: None,
     });
 
     let json = serde_json::to_value(&request).expect("query request should serialize");
@@ -882,6 +942,39 @@ fn query_request_serializes_result_page_execution_options() {
         json!({
             "limit": 501,
             "offset": 500
+        })
+    );
+}
+
+#[test]
+fn query_request_serializes_runtime_execution_limits() {
+    let request = QueryRequest::new(
+        "gs://axon-fixtures/sample_table",
+        "SELECT * FROM axon_table",
+        ExecutionTarget::BrowserWasm,
+    )
+    .with_options(QueryExecutionOptions {
+        include_explain: false,
+        collect_metrics: true,
+        result_page: Some(QueryResultPage {
+            limit: 500,
+            offset: 0,
+        }),
+        runtime_limits: Some(query_contract::QueryRuntimeLimits {
+            max_result_rows: Some(500),
+            max_arrow_ipc_bytes: Some(1_048_576),
+            max_scan_bytes: Some(10_485_760),
+        }),
+    });
+
+    let json = serde_json::to_value(&request).expect("query request should serialize");
+
+    assert_eq!(
+        json["options"]["runtime_limits"],
+        json!({
+            "max_result_rows": 500,
+            "max_arrow_ipc_bytes": 1048576,
+            "max_scan_bytes": 10485760
         })
     );
 }
@@ -1144,6 +1237,69 @@ fn delta_location_resolve_request_validation_accepts_logical_object_store_uris()
         validate_delta_location_resolve_request(&request)
             .unwrap_or_else(|error| panic!("{table_uri} should validate: {error:?}"));
     }
+}
+
+#[test]
+fn delta_location_resolve_exchange_validation_rejects_responses_for_the_wrong_request() {
+    let request = DeltaLocationResolveRequest {
+        provider: DeltaObjectStoreProvider::Gcs,
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        credential_profile: CredentialProfileRef {
+            id: "prod-readonly".to_string(),
+            display_name: None,
+        },
+        requested_access_mode: ResolverRequestedAccessMode::SignedUrl,
+        snapshot_version: Some(12),
+    };
+    let mut response = DeltaLocationResolveResponse {
+        descriptor: BrowserHttpSnapshotDescriptor {
+            table_uri: "axon-resolved://session/events/v12".to_string(),
+            snapshot_version: 12,
+            partition_column_types: BTreeMap::new(),
+            browser_compatibility: CapabilityReport::default(),
+            required_capabilities: CapabilityReport::default(),
+            active_files: Vec::new(),
+        },
+        provider: DeltaObjectStoreProvider::Gcs,
+        table_uri: "gs://axon-fixtures/sample_table".to_string(),
+        requested_snapshot_version: Some(12),
+        resolved_snapshot_version: 12,
+        requested_access_mode: Some(ResolverRequestedAccessMode::SignedUrl),
+        actual_access_mode: ResolverActualAccessMode::SignedUrl,
+        expires_at_epoch_ms: 4_102_444_800_000,
+        correlation_id: Some("corr-request-match".to_string()),
+        warnings: Vec::new(),
+        refresh: None,
+    };
+
+    validate_delta_location_resolve_exchange(&request, &response, 4_102_444_700_000)
+        .expect("matching resolver exchange should validate");
+
+    response.table_uri = "gs://axon-fixtures/other_table".to_string();
+    let error = validate_delta_location_resolve_exchange(&request, &response, 4_102_444_700_000)
+        .expect_err("resolver responses must match the requested table URI");
+    assert_eq!(error.code, DeltaLocationResolverErrorCode::PolicyBlocked);
+    assert_eq!(error.correlation_id.as_deref(), Some("corr-request-match"));
+
+    response.table_uri = request.table_uri.clone();
+    response.resolved_snapshot_version = 11;
+    response.descriptor.snapshot_version = 11;
+    let error = validate_delta_location_resolve_exchange(&request, &response, 4_102_444_700_000)
+        .expect_err("resolver responses must match the requested snapshot");
+    assert_eq!(
+        error.code,
+        DeltaLocationResolverErrorCode::SnapshotVersionNotFound
+    );
+
+    response.resolved_snapshot_version = 12;
+    response.descriptor.snapshot_version = 12;
+    response.actual_access_mode = ResolverActualAccessMode::Proxy;
+    let error = validate_delta_location_resolve_exchange(&request, &response, 4_102_444_700_000)
+        .expect_err("resolver responses must satisfy the requested access mode");
+    assert_eq!(
+        error.code,
+        DeltaLocationResolverErrorCode::AccessModeNotSupported
+    );
 }
 
 #[test]
@@ -1505,4 +1661,205 @@ fn browser_object_url_validation_combined_policy_allows_loopback_and_blob() {
     .expect("combined host-test policy should allow browser-local blob URLs");
 
     assert_eq!(blob_url.scheme(), "blob");
+}
+
+#[test]
+fn daxis_result_envelope_accepts_executed_axon_browser_result_shape() {
+    let envelope = json!({
+        "schema_version": "daxis.query_result.v1",
+        "status": "executed",
+        "execution_engine": "axon_browser",
+        "result_transport": "arrow_ipc",
+        "surface_kind": "saved_query",
+        "intent_kind": "sql",
+        "input_artifact_kind": "saved_sql",
+        "compiled_artifact_kind": "validated_sql",
+        "request_id": "req-01JHEADLESS",
+        "correlation_id": "corr-01JHEADLESS",
+        "query_id": "qry-01JHEADLESS",
+        "execution_id": "exec-01JHEADLESS",
+        "workspace_id": "ws-01JHEADLESS",
+        "metrics": {
+            "rows_returned": 2,
+            "arrow_ipc_bytes": 640,
+            "scan_bytes": 4096,
+            "duration_ms": 18
+        },
+        "diagnostics": {
+            "worker_artifact_id": "axon-web-worker@sha256:abc123",
+            "sql_fingerprint": "sqlfp_8cc7e5"
+        }
+    });
+
+    validate_daxis_result_envelope(&envelope).expect("executed envelope should validate");
+}
+
+#[test]
+fn daxis_result_envelope_rejects_conflicting_fallback_and_block_reasons() {
+    let envelope = json!({
+        "schema_version": "daxis.query_result.v1",
+        "status": "fallback",
+        "execution_engine": null,
+        "result_transport": null,
+        "fallback_reason": "unsupported_sql",
+        "block_reason": "policy_denied",
+        "surface_kind": "api",
+        "intent_kind": "sql",
+        "input_artifact_kind": "raw_sql",
+        "compiled_artifact_kind": "validated_sql",
+        "request_id": "req-conflict",
+        "correlation_id": "corr-conflict",
+        "query_id": "qry-conflict",
+        "execution_id": "exec-conflict",
+        "workspace_id": "ws-conflict",
+        "metrics": {},
+        "diagnostics": {}
+    });
+
+    let error = validate_daxis_result_envelope(&envelope)
+        .expect_err("fallback and block reasons should be mutually exclusive");
+
+    assert!(error.message.contains("fallback_reason and block_reason"));
+}
+
+#[test]
+fn daxis_result_envelope_serializes_null_terminal_metadata() {
+    let envelope = query_contract::DaxisResultEnvelope {
+        schema_version: "daxis.query_result.v1".to_string(),
+        status: query_contract::DaxisQueryStatus::Rejected,
+        execution_engine: None,
+        result_transport: None,
+        fallback_reason: None,
+        block_reason: Some(query_contract::DaxisQueryBlockReason::PolicyDenied),
+        surface_kind: query_contract::DaxisSurfaceKind::Api,
+        intent_kind: query_contract::DaxisIntentKind::Sql,
+        input_artifact_kind: query_contract::DaxisInputArtifactKind::RawSql,
+        compiled_artifact_kind: query_contract::DaxisCompiledArtifactKind::ValidatedSql,
+        request_id: "req-null-metadata".to_string(),
+        correlation_id: "corr-null-metadata".to_string(),
+        query_id: "qry-null-metadata".to_string(),
+        execution_id: "exec-null-metadata".to_string(),
+        workspace_id: "ws-null-metadata".to_string(),
+        metrics: query_contract::DaxisQueryMetrics::default(),
+        diagnostics: Default::default(),
+    };
+
+    let json = serde_json::to_value(&envelope).expect("envelope should serialize");
+
+    assert_eq!(json["execution_engine"], serde_json::Value::Null);
+    assert_eq!(json["result_transport"], serde_json::Value::Null);
+    assert_eq!(json["fallback_reason"], serde_json::Value::Null);
+}
+
+#[test]
+fn daxis_approved_axon_read_descriptor_accepts_validated_read_only_sql() {
+    let descriptor = daxis_approved_axon_read_descriptor_json();
+
+    validate_daxis_approved_axon_read_descriptor(&descriptor, 1_800_000_000_000)
+        .expect("approved Axon descriptor should validate");
+}
+
+#[test]
+fn daxis_approved_axon_read_descriptor_rejects_unvalidated_sql() {
+    let mut descriptor = daxis_approved_axon_read_descriptor_json();
+    descriptor["validated_sql"]["validation_id"] = json!("");
+
+    let error = validate_daxis_approved_axon_read_descriptor(&descriptor, 1_800_000_000_000)
+        .expect_err("validation id must be present before Axon execution");
+
+    assert!(error.message.contains("validation_id"));
+}
+
+#[test]
+fn daxis_approved_axon_read_descriptor_rejects_multiple_table_descriptors() {
+    let mut descriptor = daxis_approved_axon_read_descriptor_json();
+    let second_table = descriptor["tables"][0].clone();
+    descriptor["tables"]
+        .as_array_mut()
+        .unwrap()
+        .push(second_table);
+
+    let error = validate_daxis_approved_axon_read_descriptor(&descriptor, 1_800_000_000_000)
+        .expect_err("v1 approved Axon descriptors should stay single-table");
+
+    assert!(error.message.contains("exactly one table descriptor"));
+}
+
+#[test]
+fn daxis_approved_axon_read_descriptor_rejects_table_descriptor_mismatch() {
+    let mut descriptor = daxis_approved_axon_read_descriptor_json();
+    descriptor["tables"][0]["descriptor"]["table_uri"] =
+        json!("gs://daxis-prod-lakehouse/sales/customers");
+
+    let error = validate_daxis_approved_axon_read_descriptor(&descriptor, 1_800_000_000_000)
+        .expect_err("table URI mismatch should fail closed");
+
+    assert!(error.message.contains("table_uri"));
+}
+
+fn daxis_approved_axon_read_descriptor_json() -> Value {
+    json!({
+        "schema_version": "daxis.approved_axon_read.v1",
+        "request_id": "req-01JHEADLESS",
+        "correlation_id": "corr-01JHEADLESS",
+        "query_id": "qry-01JHEADLESS",
+        "execution_id": "exec-01JHEADLESS",
+        "workspace_id": "ws-01JHEADLESS",
+        "surface_kind": "saved_query",
+        "intent_kind": "sql",
+        "input_artifact_kind": "saved_sql",
+        "compiled_artifact_kind": "validated_sql",
+        "validated_sql": {
+            "sql": "select order_id, total from orders where order_date >= DATE '2026-05-01'",
+            "dialect": "daxis_sql_v1",
+            "fingerprint": "sqlfp_8cc7e5",
+            "validation_id": "sqlval-01JHEADLESS",
+            "read_only": true
+        },
+        "tables": [
+            {
+                "catalog_id": "cat-prod",
+                "table_id": "tbl-orders",
+                "descriptor_id": "desc-orders-v42",
+                "table_uri": "gs://daxis-prod-lakehouse/sales/orders",
+                "full_name": "main.sales.orders",
+                "snapshot_version": 42,
+                "schema_hash": "sha256:orders-schema",
+                "descriptor_schema_hash": "sha256:orders-schema",
+                "descriptor": {
+                    "table_uri": "gs://daxis-prod-lakehouse/sales/orders",
+                    "snapshot_version": 42,
+                    "partition_column_types": {
+                        "order_date": "string"
+                    },
+                    "active_files": [
+                        {
+                            "path": "order_date=2026-05-30/part-00000.parquet",
+                            "url": "https://storage.googleapis.com/daxis-prod-lakehouse/sales/orders/order_date=2026-05-30/part-00000.parquet?X-Goog-Signature=redacted",
+                            "size_bytes": 4096,
+                            "partition_values": {
+                                "order_date": "2026-05-30"
+                            }
+                        }
+                    ]
+                }
+            }
+        ],
+        "access_proof": {
+            "policy_decision_id": "pol-01JHEADLESS",
+            "read_access_decision": "approved",
+            "expires_at_epoch_ms": 1_800_000_060_000_u64
+        },
+        "limits": {
+            "max_result_rows": 500,
+            "max_arrow_ipc_bytes": 1048576,
+            "max_scan_bytes": 10485760,
+            "timeout_ms": 15000,
+            "cancellation_deadline_epoch_ms": 1_800_000_015_000_u64
+        },
+        "runtime_preference": {
+            "preferred_engine": "axon_browser",
+            "allow_remote_fallback": true
+        }
+    })
 }

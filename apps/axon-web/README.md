@@ -75,7 +75,7 @@ This Playwright browser matrix is a local/manual gate for now rather than a CI s
 
 ## TypeScript worker SDK wrapper
 
-The app package also carries the first TypeScript SDK wrapper for Axon's browser worker envelope in [`src/axon-browser-sdk.ts`](src/axon-browser-sdk.ts). It creates or accepts a browser `Worker`, sends the `open_delta_table`, `sql`, and `dispose` commands, normalizes Arrow IPC result bytes to `Uint8Array`, routes typed runtime event envelopes to an optional `onEvent` handler, and raises `AxonWorkerError` with the structured `fallback_reason` when the worker returns an error envelope.
+The app package also carries the first TypeScript SDK wrapper for Axon's browser worker envelope in [`src/axon-browser-sdk.ts`](src/axon-browser-sdk.ts). It creates or accepts a browser `Worker`, sends the `open_delta_table`, `sql`, fire-and-forget `cancel`, and `dispose` commands, normalizes Arrow IPC result bytes to `Uint8Array`, routes typed runtime event envelopes to an optional `onEvent` handler, and raises `AxonWorkerError` with the structured `fallback_reason` when the worker returns an error envelope.
 
 `openDeltaLocation()` is a thin SDK wrapper around a trusted Delta snapshot descriptor resolver. It sends a logical object-store URI plus an opaque storage access profile, validates the resolver envelope, enforces descriptor expiry with `descriptor_expired`, asserts `resolved_snapshot_version === descriptor.snapshot_version`, and then forwards the returned `BrowserHttpSnapshotDescriptor` unchanged through the existing `openDeltaTable()` worker path. The resolved open result includes resolver metadata such as `resolved_snapshot_version`, `actual_access_mode`, `expires_at_epoch_ms`, and `correlation_id`, but it does not include descriptor file URLs. Resolver access modes are separate from runtime `BrowserAccessMode`: `auto`, `signed_url`, and `proxy` describe resolver behavior, while the worker still receives browser-safe HTTP descriptors.
 
@@ -124,6 +124,12 @@ const opened = await client.openDeltaLocation('events', {
 
 console.log(opened.location.resolved_snapshot_version, opened.location.actual_access_mode);
 ```
+
+The Daxis-specific descriptor resolver helper in [`examples/daxis-descriptor-resolver.ts`](examples/daxis-descriptor-resolver.ts) wraps the same SDK path for `POST /v1/query/delta/snapshot-descriptor`. It sends only the logical table URI, resolver URL, `x-daxis-request-id` header, and opaque credential profile reference to Daxis, preserves structured resolver error codes and correlation IDs, then opens the returned `BrowserHttpSnapshotDescriptor` through the worker without forwarding the credential profile.
+
+The Daxis read-access-plan helper in [`examples/daxis-read-access-plan.ts`](examples/daxis-read-access-plan.ts) wraps `POST /v1/catalog/read-access-plan` through `openUnityCatalogTable()`. It sends the same `x-daxis-request-id` header when a request ID is provided, preserves structured Daxis read-plan errors with HTTP status and correlation IDs, consumes `brokered_delta` and `delta_sharing` plans through the existing descriptor handoff path, preserves `sql_fallback_required` and `blocked` states before worker handoff, and keeps Daxis session and grant identifiers out of worker commands.
+
+The Daxis object-grant helper in [`examples/daxis-object-grant-adapter.ts`](examples/daxis-object-grant-adapter.ts) exposes a grant-scoped client for `list`, `head`, `batch-sign`, and `range` routes, plus a `BrokeredDeltaPlanAdapter` wrapper for the SDK batch-sign step. It keeps grant IDs in Daxis route calls instead of worker commands, forwards `x-daxis-request-id`, rejects expired grants, denied route capabilities, malformed route payloads, invalid ranges, and malformed range responses before handoff, returns range bytes through the grant route, and preserves structured grant errors with HTTP status and correlation IDs.
 
 `AXON_BROWSER_BUNDLE_MANIFEST` ships the current single-threaded baseline bundle and records future
 SIMD / threaded / SIMD-threaded bundle IDs as `status: 'future'`. `selectBundle` ignores future

@@ -92,6 +92,7 @@ async fn execute_query_async(request: QueryRequest) -> Result<NativeQueryResult,
     }
 
     validate_snapshot_version(request.snapshot_version, runtime_target())?;
+    validate_native_runtime_limits(request.options.runtime_limits)?;
     validate_query_sql(&request.sql)?;
     let execution_sql = native_sql_with_result_page(&request.sql, request.options.result_page)?;
 
@@ -170,6 +171,18 @@ fn read_only_sql_options() -> SQLOptions {
         .with_allow_ddl(false)
         .with_allow_dml(false)
         .with_allow_statements(false)
+}
+
+fn validate_native_runtime_limits(
+    runtime_limits: Option<query_contract::QueryRuntimeLimits>,
+) -> Result<(), QueryError> {
+    if runtime_limits.is_some() {
+        return Err(invalid_query_request(
+            "native runtime does not support QueryRequest.options.runtime_limits; route bounded browser reads to a browser runtime",
+        ));
+    }
+
+    Ok(())
 }
 
 fn native_sql_with_result_page(

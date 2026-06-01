@@ -1,0 +1,21 @@
+{
+  "eventId": "audit_daxis_object_read_01JABCDEF",
+  "eventType": "object_grant_access",
+  "occurredAtEpochMs": 4102444800123,
+  "tenantId": "tenant_daxis_prod",
+  "workspaceId": "workspace_sales",
+  "userSubject": "user:analyst@example.test",
+  "tableId": "tbl_daxis_sales_orders",
+  "fullName": "main.sales.orders",
+  "grantId": "grant_daxis_sales_orders_01JABCDEF",
+  "queryId": "axon-query-01JABCDEF",
+  "requestId": "req-daxis-object-read",
+  "correlationId": "daxis-corr-01JABCDEF",
+  "action": "range",
+  "objectPath": "order_date=2026-05-30/part-00000.parquet",
+  "range": {
+    "start": 0,
+    "end": 16384
+  },
+  "outcome": "allowed"
+}

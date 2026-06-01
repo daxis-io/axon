@@ -1,0 +1,20 @@
+{
+  "schema_version": "daxis.query_result.v1",
+  "status": "rejected",
+  "execution_engine": null,
+  "result_transport": null,
+  "block_reason": "policy_denied",
+  "surface_kind": "api",
+  "intent_kind": "sql",
+  "input_artifact_kind": "raw_sql",
+  "compiled_artifact_kind": "validated_sql",
+  "request_id": "req-daxis-policy-denied",
+  "correlation_id": "corr-daxis-policy-denied",
+  "query_id": "query-daxis-policy-denied",
+  "execution_id": "exec-daxis-policy-denied",
+  "workspace_id": "workspace_sales",
+  "metrics": {},
+  "diagnostics": {
+    "policy_decision_id": "policy_decision_denied_orders"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "profile": "daxis_browser_datafusion_m3",
+  "runtimeSku": "browser_datafusion",
+  "defaultWorkerSku": true,
+  "workerArtifactReport": "docs/program/browser-lakehouse-release-handoff-examples/browser-worker-artifact-report.datafusion.json",
+  "owner": "Runtime / engine team",
+  "queryBudget": {
+    "maxScanBytes": 67108864,
+    "maxOutputIpcBytes": 16777216,
+    "maxBatchesInFlight": 1,
+    "maxRowsReturned": 100000
+  },
+  "artifactBudget": {
+    "brotliBudgetBytes": 6291456,
+    "reportCommand": "AXON_DF_SIZE_PACKAGE=axon-web-wasm AXON_DF_SIZE_WASM_STEM=axon_web_wasm AXON_DF_BROTLI_BUDGET_BYTES=6291456 bash tests/perf/report_datafusion_wasm_size.sh"
+  },
+  "startupBudget": {
+    "streamingInitMs": 5000,
+    "firstTinyQueryMs": 5000,
+    "repeatedTinyQueryFiveRunsMs": 10000,
+    "firstParquetMetadataQueryMs": 8000,
+    "firstRealDeltaParquetQueryMs": 10000,
+    "scanMetricsMs": 5000,
+    "reportCommand": "bash tests/perf/browser_datafusion_engine_smoke.sh"
+  },
+  "memoryBudget": {
+    "sessionStructBytes": 1048576,
+    "profileScope": "Rust struct baseline and query budget profile only; browser heap dashboards remain M4 Daxis operations work"
+  },
+  "verificationCommands": [
+    "cargo test -p wasm-datafusion-poc --test query_budgets",
+    "cargo test -p wasm-datafusion-poc --test daxis_query_corpus",
+    "cargo test -p wasm-datafusion-poc --test daxis_budget_profile",
+    "AXON_DF_SIZE_PACKAGE=axon-web-wasm AXON_DF_SIZE_WASM_STEM=axon_web_wasm AXON_DF_BROTLI_BUDGET_BYTES=6291456 bash tests/perf/report_datafusion_wasm_size.sh",
+    "bash tests/perf/browser_datafusion_engine_smoke.sh"
+  ],
+  "notes": [
+    "This is the M3 Daxis browser DataFusion worker profile for the Axon Daxis-facing default runtime SKU.",
+    "The artifact command targets the axon-web-wasm Daxis-facing default worker and requires wasm-bindgen, wasm-opt, brotli, and twiggy.",
+    "M4 production dashboards, alerts, oncall, tenant rollout controls, and compatibility dashboards remain outside this repo-owned profile."
+  ]
+}

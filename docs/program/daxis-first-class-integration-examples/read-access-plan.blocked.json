@@ -1,0 +1,7 @@
+{
+  "plan_type": "blocked",
+  "tableId": "tbl_daxis_sales_orders_unknown",
+  "fullName": "main.sales.orders",
+  "reason": "unknown_policy_state",
+  "message": "Daxis could not prove browser read policy for this table, so the browser must not open it."
+}

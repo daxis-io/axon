@@ -145,6 +145,63 @@ struct SandboxCacheMetrics {
     max_session_cached_bytes: u64,
 }
 
+#[derive(Debug, Serialize)]
+struct SandboxWorkerArtifactReport {
+    runtime_sku: &'static str,
+    default_worker_sku: bool,
+    result_transport: &'static str,
+    capabilities: SandboxWorkerArtifactCapabilities,
+    identity: SandboxWorkerArtifactIdentity,
+    startup: SandboxWorkerStartupReport,
+    memory: SandboxWorkerMemoryReport,
+}
+
+#[derive(Debug, Serialize)]
+struct SandboxWorkerArtifactCapabilities {
+    session_shell: bool,
+    browser_datafusion: bool,
+    descriptor_backed_delta: bool,
+    browser_safe_http: bool,
+    cancellation: bool,
+    arrow_ipc_preview: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct SandboxWorkerArtifactIdentity {
+    package_name: &'static str,
+    package_version: &'static str,
+    wasm_artifact: &'static str,
+    worker_entrypoint: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct SandboxWorkerStartupReport {
+    target: &'static str,
+    access_mode: &'static str,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    max_session_cached_bytes: u64,
+    default_preview_limit: usize,
+    datafusion_query_budget: SandboxWorkerQueryBudgetReport,
+}
+
+#[derive(Debug, Serialize)]
+struct SandboxWorkerQueryBudgetReport {
+    max_scan_bytes: Option<u64>,
+    max_output_ipc_bytes: Option<u64>,
+    max_batches_in_flight: Option<usize>,
+    max_rows_returned: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct SandboxWorkerMemoryReport {
+    #[serde(serialize_with = "serialize_decimal_string")]
+    datafusion_session_bytes: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    command_envelope_json_bytes: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    max_session_cached_bytes: u64,
+}
+
 fn serialize_decimal_string<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
 where
     T: std::fmt::Display,
@@ -189,14 +246,11 @@ pub struct SandboxQuerySession {
 impl SandboxQuerySession {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Result<SandboxQuerySession, JsValue> {
-        let runtime_config = BrowserRuntimeConfig {
-            object_access_mode: BrowserObjectAccessMode::BrowserSafeHttp,
-            allow_cloud_credentials: false,
-            ..BrowserRuntimeConfig::default()
-        };
-        let session =
-            BrowserDataFusionSession::new(runtime_config, DEFAULT_QUERY_SESSION_CACHE_BYTES)
-                .map_err(query_error_to_js_value)?;
+        let session = BrowserDataFusionSession::new(
+            default_sandbox_runtime_config(),
+            DEFAULT_QUERY_SESSION_CACHE_BYTES,
+        )
+        .map_err(query_error_to_js_value)?;
         let cancellation = session.cancellation_handle();
 
         Ok(Self {
@@ -275,6 +329,16 @@ impl SandboxQuerySession {
 
         sql_bridge_value(&metadata, &arrow_ipc_bytes)
     }
+}
+
+#[wasm_bindgen]
+pub fn sandbox_query_worker_artifact_report() -> Result<String, JsValue> {
+    let report = build_sandbox_query_worker_artifact_report().map_err(query_error_to_js_value)?;
+    serde_json::to_string(&report).map_err(|error| {
+        JsValue::from_str(&format!(
+            "sandbox query worker artifact report serialization failed: {error}"
+        ))
+    })
 }
 
 #[wasm_bindgen]
@@ -367,6 +431,79 @@ pub async fn preflight_parquet_metadata_for_targets(
     serde_json::to_string(&outputs).map_err(|error| {
         JsValue::from_str(&format!("Parquet preflight serialization failed: {error}"))
     })
+}
+
+fn default_sandbox_runtime_config() -> BrowserRuntimeConfig {
+    BrowserRuntimeConfig {
+        object_access_mode: BrowserObjectAccessMode::BrowserSafeHttp,
+        allow_cloud_credentials: false,
+        ..BrowserRuntimeConfig::default()
+    }
+}
+
+fn build_sandbox_query_worker_artifact_report() -> Result<SandboxWorkerArtifactReport, QueryError> {
+    let session = BrowserDataFusionSession::new(
+        default_sandbox_runtime_config(),
+        DEFAULT_QUERY_SESSION_CACHE_BYTES,
+    )?;
+    let query_budget = session.datafusion_query_budget();
+
+    Ok(SandboxWorkerArtifactReport {
+        runtime_sku: "browser_datafusion",
+        default_worker_sku: true,
+        result_transport: "arrow_ipc",
+        capabilities: SandboxWorkerArtifactCapabilities {
+            session_shell: true,
+            browser_datafusion: true,
+            descriptor_backed_delta: true,
+            browser_safe_http: true,
+            cancellation: true,
+            arrow_ipc_preview: true,
+        },
+        identity: SandboxWorkerArtifactIdentity {
+            package_name: "axon-web-wasm",
+            package_version: env!("CARGO_PKG_VERSION"),
+            wasm_artifact: "axon_web_wasm_bg.wasm",
+            worker_entrypoint: "apps/axon-web/src/sandbox-query-worker.ts",
+        },
+        startup: SandboxWorkerStartupReport {
+            target: "browser_wasm",
+            access_mode: "browser_safe_http",
+            max_session_cached_bytes: DEFAULT_QUERY_SESSION_CACHE_BYTES,
+            default_preview_limit: DEFAULT_QUERY_PREVIEW_LIMIT,
+            datafusion_query_budget: SandboxWorkerQueryBudgetReport {
+                max_scan_bytes: query_budget.max_scan_bytes,
+                max_output_ipc_bytes: query_budget.max_output_ipc_bytes,
+                max_batches_in_flight: query_budget.max_batches_in_flight,
+                max_rows_returned: query_budget.max_rows_returned,
+            },
+        },
+        memory: SandboxWorkerMemoryReport {
+            datafusion_session_bytes: wasm_datafusion_session::memory_baseline_bytes(),
+            command_envelope_json_bytes: sample_command_envelope_json_bytes(),
+            max_session_cached_bytes: DEFAULT_QUERY_SESSION_CACHE_BYTES,
+        },
+    })
+}
+
+fn sample_command_envelope_json_bytes() -> u64 {
+    u64::try_from(
+        json!({
+            "sql": {
+                "request_id": "daxis-worker-artifact-report",
+                "name": "orders",
+                "query": {
+                    "table_uri": "daxis://catalog/main/sales/orders",
+                    "sql": "SELECT COUNT(*) AS rows FROM orders",
+                    "preferred_target": "browser_wasm"
+                },
+                "output": "arrow_ipc_stream"
+            }
+        })
+        .to_string()
+        .len(),
+    )
+    .unwrap_or(u64::MAX)
 }
 
 fn cache_metrics(session: &BrowserDataFusionSession) -> SandboxCacheMetrics {
@@ -538,6 +675,7 @@ fn query_error_to_js_value(error: QueryError) -> JsValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     use arrow_array::{
@@ -638,6 +776,62 @@ mod tests {
                 vec![json!("2"), Value::Null, Value::Null, Value::Null],
             ]
         );
+    }
+
+    #[test]
+    fn sandbox_query_worker_artifact_report_names_datafusion_default() {
+        let report = sandbox_query_worker_artifact_report()
+            .expect("sandbox query worker artifact report should serialize");
+        let report: Value =
+            serde_json::from_str(&report).expect("artifact report should parse as JSON");
+
+        assert_eq!(report["runtime_sku"], "browser_datafusion");
+        assert_eq!(report["default_worker_sku"], true);
+        assert_eq!(report["result_transport"], "arrow_ipc");
+        assert_eq!(report["capabilities"]["browser_datafusion"], true);
+        assert_eq!(report["capabilities"]["session_shell"], true);
+        assert_eq!(report["identity"]["package_name"], "axon-web-wasm");
+        assert_eq!(
+            report["identity"]["package_version"],
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(report["identity"]["wasm_artifact"], "axon_web_wasm_bg.wasm");
+        assert_eq!(
+            report["identity"]["worker_entrypoint"],
+            "apps/axon-web/src/sandbox-query-worker.ts"
+        );
+        assert_eq!(report["startup"]["target"], "browser_wasm");
+        assert_eq!(report["startup"]["access_mode"], "browser_safe_http");
+        assert_eq!(
+            report["startup"]["max_session_cached_bytes"],
+            json!("67108864")
+        );
+        assert!(
+            report["memory"]["datafusion_session_bytes"]
+                .as_str()
+                .expect("session bytes should be a decimal string")
+                .parse::<u64>()
+                .expect("session bytes should parse")
+                > 0
+        );
+    }
+
+    #[test]
+    fn datafusion_worker_artifact_example_matches_generated_report() {
+        let generated = sandbox_query_worker_artifact_report()
+            .expect("sandbox query worker artifact report should serialize");
+        let example = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../docs/program/browser-lakehouse-release-handoff-examples")
+                .join("browser-worker-artifact-report.datafusion.json"),
+        )
+        .expect("DataFusion worker artifact example should exist");
+
+        let generated: Value =
+            serde_json::from_str(&generated).expect("generated report should parse");
+        let example: Value = serde_json::from_str(&example).expect("example report should parse");
+
+        assert_eq!(example, generated);
     }
 
     fn arrow_ipc_bytes(batch: RecordBatch) -> Vec<u8> {

@@ -1,0 +1,78 @@
+{
+  "plan": "daxis_browser_runtime_isolation_m3",
+  "owner": "Runtime / engine team",
+  "daxisTargetRuntimeSku": "browser_datafusion",
+  "currentDaxisWorkerSku": "browser_datafusion",
+  "legacyCompatibilityWorkerSku": "narrow_session",
+  "datafusionDefaultWorkerSku": true,
+  "defaultWorkerArtifactReport": "docs/program/browser-lakehouse-release-handoff-examples/browser-worker-artifact-report.datafusion.json",
+  "runtimeBoundaries": [
+    {
+      "name": "legacy_narrow_worker",
+      "crate": "browser-engine-worker",
+      "routingStatus": "compatibility_scaffold",
+      "defaultWorkerSku": false,
+      "scope": "Legacy narrow session shell kept as compatibility scaffolding. It remains isolated from DataFusion and is not the Daxis default read-compute worker SKU.",
+      "mustNotDependOn": ["wasm-datafusion-poc", "datafusion"],
+      "verificationCommands": [
+        "bash tests/conformance/verify_browser_worker_dependency_boundary.sh"
+      ]
+    },
+    {
+      "name": "daxis_datafusion_default",
+      "crate": "axon-web-wasm",
+      "routingStatus": "daxis_default",
+      "defaultWorkerSku": true,
+      "artifactReport": "docs/program/browser-lakehouse-release-handoff-examples/browser-worker-artifact-report.datafusion.json",
+      "scope": "Daxis-facing browser DataFusion worker for descriptor-backed Delta/Parquet reads. It must not route through the legacy narrow session.",
+      "mustDependOn": [
+        "wasm-datafusion-session",
+        "wasm-datafusion-poc",
+        "datafusion"
+      ],
+      "mustNotDependOn": ["wasm-query-session"],
+      "verificationCommands": [
+        "bash tests/conformance/verify_axon_web_datafusion_runtime.sh"
+      ]
+    }
+  ],
+  "removalPlan": [
+    {
+      "phase": "integration",
+      "channel": "integration",
+      "requirement": "Keep new Daxis-facing capability work on the axon-web-wasm browser DataFusion path while preserving the narrow worker only as an isolated compatibility scaffold.",
+      "legacyNarrowRuntimeAction": "Do not add Daxis descriptor, read-access-plan, object-grant, or query-corpus capability to the legacy narrow worker path."
+    },
+    {
+      "phase": "candidate",
+      "channel": "candidate",
+      "requirement": "Promote Daxis rollout only after the DataFusion worker artifact report, Daxis query corpus, budget gates, and browser matrix coverage cover Daxis-critical open/query/cancel flows.",
+      "legacyNarrowRuntimeAction": "Remove the narrow worker from Daxis routing decisions or leave it behind an explicit non-Daxis compatibility switch."
+    },
+    {
+      "phase": "stable",
+      "channel": "stable",
+      "requirement": "Require repeatable release evidence, production telemetry, fallback dashboards, oncall runbooks, and tenant or workspace rollout controls before Daxis treats Axon as stable default read compute.",
+      "legacyNarrowRuntimeAction": "Delete the legacy narrow runtime or keep it only as a documented fixture/compatibility target with no production Daxis routing."
+    }
+  ],
+  "promotionRequirements": [
+    "Daxis query corpus passes through browser DataFusion in-memory and descriptor-backed paths.",
+    "Daxis budget profile stays inside the documented scan, output, row, artifact, startup, and memory envelopes.",
+    "The Axon worker artifact report names browser DataFusion as the Daxis default runtime SKU before Daxis default routing changes.",
+    "Browser matrix coverage includes Daxis-critical descriptor open, query, cancel, unsupported-feature, and worker-terminal-error flows.",
+    "Daxis production dashboards and oncall runbooks exist before stable default routing."
+  ],
+  "verificationCommands": [
+    "bash tests/conformance/verify_browser_worker_dependency_boundary.sh",
+    "bash tests/conformance/verify_axon_web_datafusion_runtime.sh",
+    "cargo test -p wasm-datafusion-poc --test daxis_query_corpus",
+    "cargo test -p wasm-datafusion-poc --test daxis_budget_profile",
+    "cargo test -p wasm-datafusion-poc --test daxis_runtime_isolation_plan"
+  ],
+  "notes": [
+    "This plan closes the M3 removal-or-isolation planning gap for the Axon repo by making axon-web-wasm the Daxis-facing DataFusion worker SKU.",
+    "The narrow worker remains a compatibility scaffold with no Daxis routing claim.",
+    "M4 production dashboards, oncall runbooks, tenant rollout controls, and compatibility dashboards remain outside this repo-owned isolation plan."
+  ]
+}

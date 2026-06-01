@@ -12,7 +12,7 @@ use arrow_schema::TimeUnit;
 use query_contract::{
     BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, ParquetInspectionSummary,
     PartitionColumnType, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest,
-    QueryResponse, QueryResultPage, MAX_QUERY_RESULT_PAGE_LIMIT,
+    QueryResponse, QueryResultPage, QueryRuntimeLimits, MAX_QUERY_RESULT_PAGE_LIMIT,
 };
 use sqlparser::ast::{
     ObjectName, Query as SqlQuery, Select, SelectFlavor, SetExpr as SqlSetExpr,
@@ -242,13 +242,26 @@ impl BrowserDataFusionSession {
         };
         let started_at = BrowserRuntimeInstant::now();
         let sql = datafusion_sql_with_result_page(&request.sql, request.options.result_page)?;
-        let datafusion_result = if request.options.include_explain {
-            self.datafusion
-                .sql_to_arrow_ipc_result_with_physical_plan(sql.as_ref())
-                .await?
+        let query_budget =
+            datafusion_query_budget_for_request(self.query_budget, request.options.runtime_limits);
+        let has_request_budget = query_budget != self.query_budget;
+        let datafusion_result = if has_request_budget {
+            self.reregister_datafusion_table_with_budget(name, query_budget)
+                .await?;
+            let result = self
+                .execute_datafusion_sql(sql.as_ref(), request.options.include_explain)
+                .await;
+            let restore_result = self
+                .reregister_datafusion_table_with_budget(name, self.query_budget)
+                .await;
+            match (result, restore_result) {
+                (Ok(datafusion_result), Ok(())) => datafusion_result,
+                (Err(error), Ok(())) => return Err(error),
+                (Ok(_), Err(error)) => return Err(error),
+                (Err(error), Err(_)) => return Err(error),
+            }
         } else {
-            self.datafusion
-                .sql_to_arrow_ipc_result(sql.as_ref())
+            self.execute_datafusion_sql(sql.as_ref(), request.options.include_explain)
                 .await?
         };
         let explain = datafusion_result.physical_plan.clone();
@@ -272,6 +285,43 @@ impl BrowserDataFusionSession {
             },
             runtime_result,
         })
+    }
+
+    async fn execute_datafusion_sql(
+        &self,
+        sql: &str,
+        include_explain: bool,
+    ) -> Result<DataFusionArrowIpcResult, QueryError> {
+        if include_explain {
+            self.datafusion
+                .sql_to_arrow_ipc_result_with_physical_plan(sql)
+                .await
+        } else {
+            self.datafusion.sql_to_arrow_ipc_result(sql).await
+        }
+    }
+
+    async fn reregister_datafusion_table_with_budget(
+        &mut self,
+        name: &str,
+        query_budget: BrowserDataFusionQueryBudget,
+    ) -> Result<(), QueryError> {
+        let (descriptor, bootstrapped) = {
+            let table = self
+                .tables
+                .get(name)
+                .ok_or_else(|| missing_table_error(name))?;
+            (table.descriptor.clone(), table.bootstrapped.clone())
+        };
+        let schema = datafusion_delta_schema(&descriptor, bootstrapped.as_ref())?;
+        let delta_descriptor = DeltaTableDescriptor::from_browser_http_snapshot(
+            name.to_string(),
+            &descriptor,
+            schema,
+        )?;
+        self.datafusion.set_query_budget(query_budget.into());
+        self.datafusion.deregister_table(name)?;
+        self.datafusion.open_delta_table(delta_descriptor).await
     }
 
     pub fn remove_table(&mut self, name: &str) -> Option<CachedDataFusionTable> {
@@ -970,6 +1020,40 @@ fn datafusion_query_budget_from_runtime_config(
         .unwrap_or_default()
 }
 
+fn datafusion_query_budget_for_request(
+    session_budget: BrowserDataFusionQueryBudget,
+    request_limits: Option<QueryRuntimeLimits>,
+) -> BrowserDataFusionQueryBudget {
+    let Some(request_limits) = request_limits else {
+        return session_budget;
+    };
+
+    BrowserDataFusionQueryBudget {
+        max_scan_bytes: min_optional_budget(
+            session_budget.max_scan_bytes,
+            request_limits.max_scan_bytes,
+        ),
+        max_output_ipc_bytes: min_optional_budget(
+            session_budget.max_output_ipc_bytes,
+            request_limits.max_arrow_ipc_bytes,
+        ),
+        max_batches_in_flight: session_budget.max_batches_in_flight,
+        max_rows_returned: min_optional_budget(
+            session_budget.max_rows_returned,
+            request_limits.max_result_rows,
+        ),
+    }
+}
+
+fn min_optional_budget(session_limit: Option<u64>, request_limit: Option<u64>) -> Option<u64> {
+    match (session_limit, request_limit) {
+        (Some(session_limit), Some(request_limit)) => Some(session_limit.min(request_limit)),
+        (Some(session_limit), None) => Some(session_limit),
+        (None, Some(request_limit)) => Some(request_limit),
+        (None, None) => None,
+    }
+}
+
 fn validate_datafusion_execution_budget(
     table: &CachedDataFusionTable,
     execution_budget: Option<BrowserExecutionBudget>,
@@ -1202,6 +1286,43 @@ mod tests {
         assert!(
             explain.contains("events"),
             "explain text should reference the registered table: {explain}"
+        );
+    }
+
+    #[test]
+    fn datafusion_session_applies_request_runtime_limits() {
+        let mut session = BrowserDataFusionSession::new(BrowserRuntimeConfig::default(), u64::MAX)
+            .expect("default browser runtime config should be supported");
+        let descriptor = empty_delta_descriptor();
+        let request = QueryRequest::new(
+            descriptor.table_uri.clone(),
+            "SELECT COUNT(*) AS rows FROM events",
+            ExecutionTarget::BrowserWasm,
+        )
+        .with_options(query_contract::QueryExecutionOptions {
+            runtime_limits: Some(query_contract::QueryRuntimeLimits {
+                max_result_rows: None,
+                max_arrow_ipc_bytes: Some(1),
+                max_scan_bytes: None,
+            }),
+            ..query_contract::QueryExecutionOptions::default()
+        });
+
+        let error = test_runtime()
+            .block_on(async {
+                session
+                    .open_delta_table("events", descriptor)
+                    .await
+                    .expect("open_delta_table should register the DataFusion table");
+                session.sql("events", &request).await
+            })
+            .expect_err("per-request Arrow IPC budget should be enforced");
+
+        assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+        assert!(
+            error.message.contains("max_output_ipc_bytes"),
+            "error should describe the request runtime budget: {}",
+            error.message
         );
     }
 

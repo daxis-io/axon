@@ -1851,15 +1851,28 @@ impl WasmDataFusionEngine {
     }
 
     pub fn with_budget(query_budget: BrowserQueryBudget) -> Self {
+        Self::with_budget_and_cancellation(query_budget, BrowserQueryCancellation::default())
+    }
+
+    pub fn with_budget_and_cancellation(
+        query_budget: BrowserQueryBudget,
+        cancellation: BrowserQueryCancellation,
+    ) -> Self {
         Self {
             ctx: SessionContext::new(),
             query_budget,
-            cancellation: BrowserQueryCancellation::default(),
+            cancellation,
         }
     }
 
     pub fn query_budget(&self) -> BrowserQueryBudget {
         self.query_budget
+    }
+
+    pub fn set_query_budget(&mut self, query_budget: BrowserQueryBudget) -> BrowserQueryBudget {
+        let previous = self.query_budget;
+        self.query_budget = query_budget;
+        previous
     }
 
     pub fn cancellation_token(&self) -> BrowserQueryCancellation {

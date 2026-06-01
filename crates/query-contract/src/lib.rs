@@ -140,6 +140,17 @@ pub struct QueryResultPage {
     pub offset: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueryRuntimeLimits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_result_rows: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_arrow_ipc_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_scan_bytes: Option<u64>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct QueryExecutionOptions {
     #[serde(default)]
@@ -148,6 +159,8 @@ pub struct QueryExecutionOptions {
     pub collect_metrics: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_page: Option<QueryResultPage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_limits: Option<QueryRuntimeLimits>,
 }
 
 impl Default for QueryExecutionOptions {
@@ -156,6 +169,7 @@ impl Default for QueryExecutionOptions {
             include_explain: false,
             collect_metrics: default_collect_metrics(),
             result_page: None,
+            runtime_limits: None,
         }
     }
 }
@@ -246,6 +260,7 @@ pub struct BrowserHttpFileDescriptor {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrowserHttpSnapshotDescriptor {
     pub table_uri: String,
     pub snapshot_version: i64,
@@ -399,9 +414,10 @@ pub fn validate_delta_location_resolve_response(
     now_epoch_ms: u64,
 ) -> Result<(), DeltaLocationResolverError> {
     if response.expires_at_epoch_ms <= now_epoch_ms {
-        return Err(DeltaLocationResolverError::new(
+        return Err(delta_location_response_error(
             DeltaLocationResolverErrorCode::DescriptorExpired,
             "resolved Delta descriptor has expired",
+            response,
         ));
     }
 
@@ -411,28 +427,32 @@ pub fn validate_delta_location_resolve_response(
         || response.resolved_snapshot_version < 0
         || response.descriptor.snapshot_version < 0
     {
-        return Err(DeltaLocationResolverError::new(
+        return Err(delta_location_response_error(
             DeltaLocationResolverErrorCode::InvalidSnapshotVersion,
             "resolved Delta snapshot versions must be non-negative integers",
+            response,
         ));
     }
 
     if response.descriptor.snapshot_version != response.resolved_snapshot_version {
-        return Err(DeltaLocationResolverError::new(
+        return Err(delta_location_response_error(
             DeltaLocationResolverErrorCode::PolicyBlocked,
             "resolved snapshot metadata did not match the descriptor snapshot version",
+            response,
         ));
     }
 
     if let Some(refresh) = &response.refresh {
         if !refresh.same_snapshot_required {
-            return Err(DeltaLocationResolverError::new(
+            return Err(delta_location_response_error(
                 DeltaLocationResolverErrorCode::PolicyBlocked,
                 "Delta location refresh must require the same resolved snapshot",
+                response,
             ));
         }
         if let Some(refresh_url) = &refresh.refresh_url {
-            validate_resolver_url(refresh_url, "refresh URL")?;
+            validate_resolver_url(refresh_url, "refresh URL")
+                .map_err(|error| attach_delta_location_response_correlation(error, response))?;
         }
     }
 
@@ -444,14 +464,119 @@ pub fn validate_delta_location_resolve_response(
             "Delta descriptor active file URL",
         )
         .map_err(|error| {
-            DeltaLocationResolverError::new(
+            delta_location_response_error(
                 DeltaLocationResolverErrorCode::PolicyBlocked,
                 error.message,
+                response,
             )
         })?;
     }
 
     validate_delta_table_uri(response.provider, &response.table_uri)
+        .map_err(|error| attach_delta_location_response_correlation(error, response))
+}
+
+/// Validate a complete browser resolver exchange, including request/response consistency.
+///
+/// `validate_delta_location_resolve_response` is useful for checking a standalone resolver
+/// envelope. Call this function when the original request is available and the caller needs to
+/// prove that the resolver did not answer for a different provider, table, snapshot, or access
+/// mode.
+pub fn validate_delta_location_resolve_exchange(
+    request: &DeltaLocationResolveRequest,
+    response: &DeltaLocationResolveResponse,
+    now_epoch_ms: u64,
+) -> Result<(), DeltaLocationResolverError> {
+    validate_delta_location_resolve_request(request)?;
+    validate_delta_location_resolve_response(response, now_epoch_ms)?;
+
+    if response.provider != request.provider {
+        return Err(delta_location_response_error(
+            DeltaLocationResolverErrorCode::PolicyBlocked,
+            format!(
+                "resolver response provider '{:?}' did not match request provider '{:?}'",
+                response.provider, request.provider
+            ),
+            response,
+        ));
+    }
+
+    if response.table_uri != request.table_uri {
+        return Err(delta_location_response_error(
+            DeltaLocationResolverErrorCode::PolicyBlocked,
+            "resolver response table URI did not match the requested Delta location",
+            response,
+        ));
+    }
+
+    if let Some(requested_snapshot_version) = request.snapshot_version {
+        if response.requested_snapshot_version != Some(requested_snapshot_version) {
+            return Err(delta_location_response_error(
+                DeltaLocationResolverErrorCode::SnapshotVersionNotFound,
+                "resolver response did not confirm the requested Delta snapshot version",
+                response,
+            ));
+        }
+        if response.resolved_snapshot_version != requested_snapshot_version {
+            return Err(delta_location_response_error(
+                DeltaLocationResolverErrorCode::SnapshotVersionNotFound,
+                "resolver response resolved a different Delta snapshot version",
+                response,
+            ));
+        }
+    }
+
+    if let Some(requested_access_mode) = response.requested_access_mode {
+        if requested_access_mode != request.requested_access_mode {
+            return Err(delta_location_response_error(
+                DeltaLocationResolverErrorCode::AccessModeNotSupported,
+                "resolver response requested access mode did not match the SDK request",
+                response,
+            ));
+        }
+    }
+
+    let requested_access_mode_satisfied =
+        match (request.requested_access_mode, response.actual_access_mode) {
+            (ResolverRequestedAccessMode::Auto, _) => true,
+            (ResolverRequestedAccessMode::SignedUrl, ResolverActualAccessMode::SignedUrl) => true,
+            (ResolverRequestedAccessMode::Proxy, ResolverActualAccessMode::Proxy) => true,
+            _ => false,
+        };
+    if !requested_access_mode_satisfied {
+        return Err(delta_location_response_error(
+            DeltaLocationResolverErrorCode::AccessModeNotSupported,
+            "resolver response actual access mode did not satisfy the SDK request",
+            response,
+        ));
+    }
+
+    Ok(())
+}
+
+fn delta_location_response_error(
+    code: DeltaLocationResolverErrorCode,
+    message: impl Into<String>,
+    response: &DeltaLocationResolveResponse,
+) -> DeltaLocationResolverError {
+    let error = DeltaLocationResolverError::new(code, message);
+    if let Some(correlation_id) = &response.correlation_id {
+        error.with_correlation_id(correlation_id.clone())
+    } else {
+        error
+    }
+}
+
+fn attach_delta_location_response_correlation(
+    error: DeltaLocationResolverError,
+    response: &DeltaLocationResolveResponse,
+) -> DeltaLocationResolverError {
+    if error.correlation_id.is_none() {
+        if let Some(correlation_id) = &response.correlation_id {
+            return error.with_correlation_id(correlation_id.clone());
+        }
+    }
+    error
 }
 
 fn validate_credential_profile_ref(
@@ -1076,6 +1201,51 @@ pub struct ObjectGrantRangeRequest {
     pub end: u64,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectGrantAuditAction {
+    List,
+    Head,
+    BatchSign,
+    Range,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectGrantAuditOutcome {
+    Allowed,
+    Denied,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectGrantAuditRange {
+    pub start: u64,
+    pub end: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObjectGrantAuditEvent {
+    pub event_id: String,
+    pub event_type: String,
+    pub occurred_at_epoch_ms: u64,
+    pub tenant_id: String,
+    pub workspace_id: String,
+    pub user_subject: String,
+    pub table_id: String,
+    pub full_name: String,
+    pub grant_id: String,
+    pub query_id: String,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub action: ObjectGrantAuditAction,
+    pub object_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<ObjectGrantAuditRange>,
+    pub outcome: ObjectGrantAuditOutcome,
+}
+
 fn deserialize_required_true<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -1260,6 +1430,451 @@ pub struct QueryResponse {
     pub metrics: QueryMetricsSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explain: Option<String>,
+}
+
+pub const DAXIS_QUERY_RESULT_SCHEMA_VERSION: &str = "daxis.query_result.v1";
+pub const DAXIS_APPROVED_AXON_READ_SCHEMA_VERSION: &str = "daxis.approved_axon_read.v1";
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaxisQueryStatus {
+    Executed,
+    Rejected,
+    Fallback,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaxisExecutionEngine {
+    AxonBrowser,
+    RemoteWorker,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaxisResultTransport {
+    ArrowIpc,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaxisSurfaceKind {
+    Agent,
+    DashboardTile,
+    Builder,
+    SavedQuery,
+    Api,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaxisIntentKind {
+    Sql,
+    SemanticQuery,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaxisInputArtifactKind {
+    RawSql,
+    SavedSql,
+    BuilderPlan,
+    SemanticPlan,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaxisCompiledArtifactKind {
+    ValidatedSql,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaxisQueryFallbackReason {
+    UnsupportedSql,
+    RemoteRequired,
+    EstimatesOverBudget,
+    BrowserDisabled,
+    DescriptorFailure,
+    WorkerUnavailable,
+    WorkerVersionMismatch,
+    Cancellation,
+    RuntimeBudgetOverflow,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaxisQueryBlockReason {
+    MissingAccessPlan,
+    PolicyDenied,
+    NonReadOnlySql,
+    UnvalidatedSql,
+    InvalidCatalogReference,
+    ExpiredDescriptor,
+    UnsupportedSurface,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaxisQueryMetrics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows_returned: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrow_ipc_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaxisResultEnvelope {
+    pub schema_version: String,
+    pub status: DaxisQueryStatus,
+    #[serde(default)]
+    pub execution_engine: Option<DaxisExecutionEngine>,
+    #[serde(default)]
+    pub result_transport: Option<DaxisResultTransport>,
+    #[serde(default)]
+    pub fallback_reason: Option<DaxisQueryFallbackReason>,
+    #[serde(default)]
+    pub block_reason: Option<DaxisQueryBlockReason>,
+    pub surface_kind: DaxisSurfaceKind,
+    pub intent_kind: DaxisIntentKind,
+    pub input_artifact_kind: DaxisInputArtifactKind,
+    pub compiled_artifact_kind: DaxisCompiledArtifactKind,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub query_id: String,
+    pub execution_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub metrics: DaxisQueryMetrics,
+    #[serde(default)]
+    pub diagnostics: BTreeMap<String, String>,
+}
+
+pub fn validate_daxis_result_envelope(
+    envelope: &serde_json::Value,
+) -> Result<DaxisResultEnvelope, QueryError> {
+    let envelope: DaxisResultEnvelope =
+        serde_json::from_value(envelope.clone()).map_err(|error| {
+            daxis_contract_error(format!("invalid Daxis query result envelope: {error}"))
+        })?;
+
+    if envelope.schema_version != DAXIS_QUERY_RESULT_SCHEMA_VERSION {
+        return Err(daxis_contract_error(format!(
+            "Daxis query result schema_version must be {DAXIS_QUERY_RESULT_SCHEMA_VERSION}"
+        )));
+    }
+    require_non_empty_daxis_field("request_id", &envelope.request_id)?;
+    require_non_empty_daxis_field("correlation_id", &envelope.correlation_id)?;
+    require_non_empty_daxis_field("query_id", &envelope.query_id)?;
+    require_non_empty_daxis_field("execution_id", &envelope.execution_id)?;
+    require_non_empty_daxis_field("workspace_id", &envelope.workspace_id)?;
+
+    if envelope.fallback_reason.is_some() && envelope.block_reason.is_some() {
+        return Err(daxis_contract_error(
+            "Daxis fallback_reason and block_reason are mutually exclusive",
+        ));
+    }
+
+    match envelope.status {
+        DaxisQueryStatus::Executed => {
+            if envelope.execution_engine.is_none() {
+                return Err(daxis_contract_error(
+                    "executed Daxis result envelope requires execution_engine",
+                ));
+            }
+            if envelope.result_transport.is_none() {
+                return Err(daxis_contract_error(
+                    "executed Daxis result envelope requires result_transport",
+                ));
+            }
+            if envelope.fallback_reason.is_some() || envelope.block_reason.is_some() {
+                return Err(daxis_contract_error(
+                    "executed Daxis result envelope must not include fallback or block reasons",
+                ));
+            }
+        }
+        DaxisQueryStatus::Rejected => {
+            if envelope.block_reason.is_none() {
+                return Err(daxis_contract_error(
+                    "rejected Daxis result envelope requires block_reason",
+                ));
+            }
+            if envelope.execution_engine.is_some() || envelope.result_transport.is_some() {
+                return Err(daxis_contract_error(
+                    "rejected Daxis result envelope must not include execution metadata",
+                ));
+            }
+        }
+        DaxisQueryStatus::Fallback => {
+            if envelope.fallback_reason.is_none() {
+                return Err(daxis_contract_error(
+                    "fallback Daxis result envelope requires fallback_reason",
+                ));
+            }
+            if envelope.result_transport.is_some() {
+                return Err(daxis_contract_error(
+                    "fallback Daxis result envelope must not include result_transport",
+                ));
+            }
+        }
+        DaxisQueryStatus::Failed | DaxisQueryStatus::Cancelled => {}
+    }
+
+    Ok(envelope)
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaxisSqlDialect {
+    DaxisSqlV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaxisValidatedSql {
+    pub sql: String,
+    pub dialect: DaxisSqlDialect,
+    pub fingerprint: String,
+    pub validation_id: String,
+    pub read_only: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaxisApprovedTableDescriptor {
+    pub catalog_id: String,
+    pub table_id: String,
+    pub descriptor_id: String,
+    pub table_uri: String,
+    pub full_name: String,
+    pub snapshot_version: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor_schema_hash: Option<String>,
+    pub descriptor: BrowserHttpSnapshotDescriptor,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaxisReadAccessDecision {
+    Approved,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaxisAccessProof {
+    pub policy_decision_id: String,
+    pub read_access_decision: DaxisReadAccessDecision,
+    pub expires_at_epoch_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaxisRuntimeLimits {
+    pub max_result_rows: u64,
+    pub max_arrow_ipc_bytes: u64,
+    pub max_scan_bytes: u64,
+    pub timeout_ms: u64,
+    pub cancellation_deadline_epoch_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaxisPreferredEngine {
+    AxonBrowser,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaxisRuntimePreference {
+    pub preferred_engine: DaxisPreferredEngine,
+    pub allow_remote_fallback: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaxisApprovedAxonReadDescriptor {
+    pub schema_version: String,
+    pub request_id: String,
+    pub correlation_id: String,
+    pub query_id: String,
+    pub execution_id: String,
+    pub workspace_id: String,
+    pub surface_kind: DaxisSurfaceKind,
+    pub intent_kind: DaxisIntentKind,
+    pub input_artifact_kind: DaxisInputArtifactKind,
+    pub compiled_artifact_kind: DaxisCompiledArtifactKind,
+    pub validated_sql: DaxisValidatedSql,
+    pub tables: Vec<DaxisApprovedTableDescriptor>,
+    pub access_proof: DaxisAccessProof,
+    pub limits: DaxisRuntimeLimits,
+    pub runtime_preference: DaxisRuntimePreference,
+}
+
+pub fn validate_daxis_approved_axon_read_descriptor(
+    descriptor: &serde_json::Value,
+    now_epoch_ms: u64,
+) -> Result<DaxisApprovedAxonReadDescriptor, QueryError> {
+    let descriptor: DaxisApprovedAxonReadDescriptor = serde_json::from_value(descriptor.clone())
+        .map_err(|error| {
+            daxis_contract_error(format!(
+                "invalid Daxis-approved Axon read descriptor: {error}"
+            ))
+        })?;
+
+    if descriptor.schema_version != DAXIS_APPROVED_AXON_READ_SCHEMA_VERSION {
+        return Err(daxis_contract_error(format!(
+            "Daxis-approved Axon read descriptor schema_version must be {DAXIS_APPROVED_AXON_READ_SCHEMA_VERSION}"
+        )));
+    }
+    require_non_empty_daxis_field("request_id", &descriptor.request_id)?;
+    require_non_empty_daxis_field("correlation_id", &descriptor.correlation_id)?;
+    require_non_empty_daxis_field("query_id", &descriptor.query_id)?;
+    require_non_empty_daxis_field("execution_id", &descriptor.execution_id)?;
+    require_non_empty_daxis_field("workspace_id", &descriptor.workspace_id)?;
+    validate_daxis_validated_sql(&descriptor.validated_sql)?;
+
+    if descriptor.tables.is_empty() {
+        return Err(daxis_contract_error(
+            "Daxis-approved Axon read descriptor requires at least one table descriptor",
+        ));
+    }
+    if descriptor.tables.len() != 1 {
+        return Err(daxis_contract_error(
+            "Daxis-approved Axon read descriptor v1 requires exactly one table descriptor",
+        ));
+    }
+    for table in &descriptor.tables {
+        validate_daxis_table_descriptor(table)?;
+    }
+
+    require_non_empty_daxis_field(
+        "access_proof.policy_decision_id",
+        &descriptor.access_proof.policy_decision_id,
+    )?;
+    if descriptor.access_proof.expires_at_epoch_ms <= now_epoch_ms {
+        return Err(daxis_contract_error(
+            "Daxis-approved Axon read descriptor access proof has expired",
+        ));
+    }
+    validate_daxis_runtime_limits(&descriptor.limits, now_epoch_ms)?;
+
+    Ok(descriptor)
+}
+
+fn validate_daxis_validated_sql(sql: &DaxisValidatedSql) -> Result<(), QueryError> {
+    require_non_empty_daxis_field("validated_sql.sql", &sql.sql)?;
+    require_non_empty_daxis_field("validated_sql.fingerprint", &sql.fingerprint)?;
+    require_non_empty_daxis_field("validated_sql.validation_id", &sql.validation_id)?;
+    if !sql.read_only {
+        return Err(daxis_contract_error(
+            "Daxis-approved Axon read descriptor requires validated_sql.read_only=true",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_daxis_table_descriptor(table: &DaxisApprovedTableDescriptor) -> Result<(), QueryError> {
+    require_non_empty_daxis_field("tables[].catalog_id", &table.catalog_id)?;
+    require_non_empty_daxis_field("tables[].table_id", &table.table_id)?;
+    require_non_empty_daxis_field("tables[].descriptor_id", &table.descriptor_id)?;
+    require_non_empty_daxis_field("tables[].table_uri", &table.table_uri)?;
+    require_non_empty_daxis_field("tables[].full_name", &table.full_name)?;
+
+    if table.snapshot_version < 0 {
+        return Err(daxis_contract_error(
+            "Daxis table descriptor snapshot_version must be non-negative",
+        ));
+    }
+    if table.table_uri != table.descriptor.table_uri {
+        return Err(daxis_contract_error(
+            "Daxis table descriptor table_uri must match descriptor.table_uri",
+        ));
+    }
+    if table.snapshot_version != table.descriptor.snapshot_version {
+        return Err(daxis_contract_error(
+            "Daxis table descriptor snapshot_version must match descriptor.snapshot_version",
+        ));
+    }
+    if let (Some(schema_hash), Some(descriptor_schema_hash)) =
+        (&table.schema_hash, &table.descriptor_schema_hash)
+    {
+        if schema_hash != descriptor_schema_hash {
+            return Err(daxis_contract_error(
+                "Daxis table descriptor schema_hash must match descriptor_schema_hash",
+            ));
+        }
+    }
+    for file in &table.descriptor.active_files {
+        validate_browser_object_url(
+            &file.url,
+            ExecutionTarget::BrowserWasm,
+            BrowserObjectUrlPolicy::HttpsOnly,
+            "Daxis-approved Axon descriptor file URL",
+        )?;
+    }
+
+    Ok(())
+}
+
+fn validate_daxis_runtime_limits(
+    limits: &DaxisRuntimeLimits,
+    now_epoch_ms: u64,
+) -> Result<(), QueryError> {
+    if limits.max_result_rows == 0 {
+        return Err(daxis_contract_error(
+            "Daxis-approved Axon read descriptor max_result_rows must be positive",
+        ));
+    }
+    if limits.max_arrow_ipc_bytes == 0 {
+        return Err(daxis_contract_error(
+            "Daxis-approved Axon read descriptor max_arrow_ipc_bytes must be positive",
+        ));
+    }
+    if limits.max_scan_bytes == 0 {
+        return Err(daxis_contract_error(
+            "Daxis-approved Axon read descriptor max_scan_bytes must be positive",
+        ));
+    }
+    if limits.timeout_ms == 0 {
+        return Err(daxis_contract_error(
+            "Daxis-approved Axon read descriptor timeout_ms must be positive",
+        ));
+    }
+    if limits.cancellation_deadline_epoch_ms <= now_epoch_ms {
+        return Err(daxis_contract_error(
+            "Daxis-approved Axon read descriptor cancellation deadline has expired",
+        ));
+    }
+
+    Ok(())
+}
+
+fn require_non_empty_daxis_field(field: &str, value: &str) -> Result<(), QueryError> {
+    if value.trim().is_empty() {
+        return Err(daxis_contract_error(format!(
+            "Daxis contract field {field} must not be empty"
+        )));
+    }
+
+    Ok(())
+}
+
+fn daxis_contract_error(message: impl Into<String>) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidRequest,
+        message,
+        ExecutionTarget::BrowserWasm,
+    )
 }
 
 #[cfg(test)]

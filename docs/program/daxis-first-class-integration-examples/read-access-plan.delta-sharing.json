@@ -1,0 +1,16 @@
+{
+  "plan_type": "delta_sharing",
+  "tableId": "share_retail_orders",
+  "fullName": "retail_share.sales.orders",
+  "sharingEndpoint": "https://sharing.example.test/delta-sharing",
+  "expiresAtEpochMs": 1800000300000,
+  "files": [
+    {
+      "path": "part-00000.parquet",
+      "url": "https://storage.googleapis.com/daxis-sharing-cache/retail/sales/orders/part-00000.parquet?X-Goog-Signature=redacted",
+      "size_bytes": 16384,
+      "partition_values": {},
+      "stats": "{\"numRecords\":64}"
+    }
+  ]
+}

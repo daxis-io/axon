@@ -73,11 +73,24 @@ npm run format:check
 npm run lint
 npm exec -- tsc --noEmit
 npm run test:sdk
-npm run test:browser:editor-smoke -- --grep "object storage|connect source flows"
-npm run test:browser:public-gcs-live
 ```
 
-Expected: all local checks pass. The live smoke may report skipped tests when the live table env var is absent.
+Start Vite in a second terminal because the browser smoke configs do not start it:
+
+```bash
+cd apps/axon-web
+npm run dev
+```
+
+Run the browser smokes from the first terminal:
+
+```bash
+cd apps/axon-web
+PLAYWRIGHT_BASE_URL=https://127.0.0.1:5173 npm run test:browser:editor-smoke -- --grep "object storage|connect source flows"
+AXON_LIVE_PUBLIC_GCS_TABLE_URI=gs://axon-public-delta-fixture-20260522-6cf5c6/axon-smoke-delta PLAYWRIGHT_BASE_URL=https://127.0.0.1:5173 npm run test:browser:public-gcs-live
+```
+
+Expected: all local checks pass. The live smoke may report skipped tests when the live table env var is absent; with the repo-documented fixture URI above, it should exercise the live GCS path.
 
 ## Task 3: Browser DataFusion And Release Evidence Gates
 
@@ -142,14 +155,15 @@ Expected: docs either remain unchanged because evidence matches, or changes are 
 
 ## Execution Results
 
-- Worktree: `/Users/ethanurbanski/axon/.worktrees/roadmap-next-steps` on branch `feat/roadmap-next-steps`.
+- Worktree: `/Users/ethanurbanski/axon` on branch `main`.
 - GitHub triage: `gh issue list --state open` and `gh pr list --state open` both returned `[]`.
 - Dependency setup: `npm install` required network approval after sandbox DNS failed, then installed 178 packages with 0 vulnerabilities.
 - Generated setup: `npm run build:wasm` completed and produced the ignored `apps/axon-web/src/wasm` bridge; `npm run build:fixture` generated the prod-like fixture needed by editor smoke tests.
 - App static gates: `npm run format:check`, `npm run lint`, and `npm exec -- tsc --noEmit` passed after generated WASM bindings existed.
 - SDK and public object-storage unit gates: `npm run test:sdk` passed 64 tests.
-- Browser editor smoke: the sandboxed run failed before app code because Chromium could not use macOS `MachPortRendezvousServer`; the unsandboxed run then needed an existing Vite server and generated fixture. With `PLAYWRIGHT_BASE_URL=https://127.0.0.1:5174` and Vite running, the focused smoke passed 1 test.
-- Live public GCS smoke: `npm run test:browser:public-gcs-live` skipped 2 tests because `AXON_LIVE_PUBLIC_GCS_TABLE_URI` was not set.
+- Browser editor smoke: the sandboxed run failed before app code because Chromium could not use macOS `MachPortRendezvousServer`; the unsandboxed run then needed an existing Vite server and generated fixture. With `PLAYWRIGHT_BASE_URL=https://127.0.0.1:5173` and Vite running, the focused smoke passed 1 test.
+- Live public GCS smoke: the initial skip-safe run skipped 2 tests because `AXON_LIVE_PUBLIC_GCS_TABLE_URI` was not set. Follow-up validation with `AXON_LIVE_PUBLIC_GCS_TABLE_URI=gs://axon-public-delta-fixture-20260522-6cf5c6/axon-smoke-delta` and `PLAYWRIGHT_BASE_URL=https://127.0.0.1:5173` passed 2 tests against the repo-documented public fixture.
+- CI automation handoff: `gh variable list --repo daxis-io/axon` and `gh secret list --repo daxis-io/axon` returned no repository-level Actions configuration, and `gh api repos/daxis-io/axon/environments` returned `total_count: 0`. Org-level Actions variables/secrets could not be inspected because `gh variable list --org daxis-io` and `gh secret list --org daxis-io` returned HTTP 403 with the current token. No browser public GCS workflow gate was added because configured live fixture env could not be proven.
 - Rust DataFusion gate: `cargo test -p wasm-datafusion-poc` passed.
 - Rust session gate: fresh worktree target builds were killed silently during `datafusion-catalog`; rerunning with `CARGO_TARGET_DIR=/Users/ethanurbanski/axon/target` passed 24 tests.
 - Delta control-plane preflight: sandboxed run failed because loopback listener bind was denied; unsandboxed run with the shared target cache passed 16 tests.
@@ -157,9 +171,10 @@ Expected: docs either remain unchanged because evidence matches, or changes are 
 
 ## Roadmap Disposition
 
-- Public object-storage remains the immediate repo-owned release-candidate track. The local, non-live gates reproduce with the setup steps above.
+- Public object-storage remains the immediate repo-owned release-candidate track. The local gates and the repo-documented live public GCS fixture reproduce with the setup steps above.
 - No release-gate docs needed downgrade: the current documented external blockers remain accurate.
 - External launch blockers remain outside repo proof: signed URL/proxy issuance, TTL approval, audit/correlation, production CORS validation, dashboards, oncall, and CI/live fixture provisioning.
+- CI/live public GCS automation remains blocked until `AXON_LIVE_PUBLIC_GCS_TABLE_URI` is configured as a repo-accessible Actions variable and the live fixture owner is documented.
 - Default-worker DataFusion remains the next repo-owned product decision after public object-storage validation, because the app path is proven but the shipped worker SKU is still separately gated.
 - The root checkout has an untracked `docs/plans/2026-05-26-issue-132-catalog-run-index.md`; it is cross-project Arco/Daxis planning and was not folded into this Axon browser-lakehouse roadmap.
 

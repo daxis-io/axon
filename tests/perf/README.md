@@ -40,6 +40,10 @@ The repeatable DataFusion size report requires local `cargo`, `wasm-bindgen`, `w
 
 ```bash
 bash tests/perf/report_datafusion_wasm_size.sh
+AXON_DF_SIZE_PACKAGE=axon-web-wasm \
+  AXON_DF_SIZE_WASM_STEM=axon_web_wasm \
+  AXON_DF_BROTLI_BUDGET_BYTES=6291456 \
+  bash tests/perf/report_datafusion_wasm_size.sh
 AXON_DF_SIZE_PACKAGE=wasm-datafusion-planner-poc \
   bash tests/perf/report_datafusion_wasm_size.sh
 AXON_DF_SIZE_PACKAGE=wasm-datafusion-planner-poc \

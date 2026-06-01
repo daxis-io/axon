@@ -1,0 +1,9 @@
+{
+  "signedUrls": [
+    {
+      "path": "order_date=2026-05-30/part-00000.parquet",
+      "url": "https://storage.googleapis.com/daxis-prod-lakehouse/sales/orders/order_date=2026-05-30/part-00000.parquet?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=redacted&X-Goog-Signature=redacted",
+      "expiresAtEpochMs": 1800000300000
+    }
+  ]
+}

@@ -25,7 +25,7 @@ const BINARY_STRING_INT_PARQUET_BASE64 =
 const BINARY_STRING_INT_PARQUET_BYTES = Buffer.from(BINARY_STRING_INT_PARQUET_BASE64, 'base64');
 const BINARY_STRING_INT_PARQUET_SIZE_BYTES = BINARY_STRING_INT_PARQUET_BYTES.byteLength;
 const BINARY_STRING_INT_PARQUET_PATH =
-  '**/fixtures/browser-datafusion-runtime/binary-string-int.parquet';
+  '**/fixtures/browser-datafusion-runtime/binary-string-int.parquet**';
 
 test('starts a real browser Worker and handles Arrow IPC success envelopes', async ({ page }) => {
   const result = await runWorkerProbe(page, 'success');
@@ -281,6 +281,157 @@ test('opens Delta Sharing URL-mode descriptors through the real browser query wo
   );
   expect(result.commandLog).not.toContain('secret-profile-token');
   expect(result.commandLog).not.toContain('bearerToken');
+  expect(result.workerEvents.join('\n')).toContain('range_read_metrics');
+});
+
+test('opens Daxis descriptor-resolver tables through the real browser query worker', async ({
+  page,
+}) => {
+  const resolverRequests: Array<{
+    body: unknown;
+    headers: Record<string, string>;
+  }> = [];
+
+  await routeBinaryStringIntParquet(page);
+  await page.route('**/__daxis-test/snapshot-descriptor', async (route) => {
+    const request = route.request();
+    resolverRequests.push({
+      body: request.postDataJSON(),
+      headers: request.headers(),
+    });
+    const origin = new URL(request.url()).origin;
+    const expiresAtEpochMs = Date.now() + 600_000;
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        descriptor: {
+          table_uri: 'gs://daxis-prod/orders',
+          snapshot_version: 42,
+          partition_column_types: { category: 'string' },
+          browser_compatibility: { capabilities: {} },
+          required_capabilities: { capabilities: {} },
+          active_files: [
+            {
+              path: 'category=runtime/part-000.parquet',
+              url: `${origin}/fixtures/browser-datafusion-runtime/binary-string-int.parquet?X-Goog-Signature=daxis-fixture`,
+              size_bytes: BINARY_STRING_INT_PARQUET_SIZE_BYTES,
+              partition_values: { category: 'runtime' },
+            },
+          ],
+        },
+        provider: 'gcs',
+        table_uri: 'gs://daxis-prod/orders',
+        requested_snapshot_version: 42,
+        resolved_snapshot_version: 42,
+        requested_access_mode: 'signed_url',
+        actual_access_mode: 'signed_url',
+        expires_at_epoch_ms: expiresAtEpochMs,
+        correlation_id: 'corr-daxis-browser-matrix',
+      }),
+    });
+  });
+  await page.goto('/');
+
+  const result = await page.evaluate(async () => {
+    const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+    const daxis = await import(
+      new URL('/examples/daxis-descriptor-resolver.ts', location.href).href
+    );
+    const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
+      type: 'module',
+    });
+    const postedCommands: string[] = [];
+    const workerEvents: string[] = [];
+    const recordingWorker = {
+      addEventListener: worker.addEventListener.bind(worker),
+      removeEventListener: worker.removeEventListener.bind(worker),
+      terminate: worker.terminate.bind(worker),
+      postMessage(message: unknown): void {
+        postedCommands.push(JSON.stringify(message));
+        worker.postMessage(message);
+      },
+    };
+    const client = sdk.createAxonBrowserClient({
+      worker: recordingWorker,
+      onEvent: (event: unknown) => workerEvents.push(JSON.stringify(event)),
+    });
+
+    try {
+      const opened = await daxis.openDaxisResolvedDeltaTable(client, {
+        tableName: 'daxis_orders',
+        tableUri: 'gs://daxis-prod/orders',
+        credentialProfileId: 'prod-readonly-profile',
+        credentialProfileDisplayName: 'Production readonly',
+        resolverUrl: '/__daxis-test/snapshot-descriptor',
+        requestedAccessMode: 'signed_url',
+        snapshotVersion: 42,
+        requestId: 'daxis-browser-matrix-open',
+      });
+      const queryResult = await client.query(
+        'daxis_orders',
+        'SELECT payload, category, id FROM daxis_orders ORDER BY id',
+        { requestId: 'daxis-browser-matrix-query' },
+      );
+
+      return {
+        commandLog: postedCommands.join('\n'),
+        executedOn: queryResult.response.executed_on,
+        location: opened.location,
+        preview: queryResult.preview,
+        result: {
+          byteLength: queryResult.result.bytes.byteLength,
+          byteType: queryResult.result.bytes.constructor.name,
+          contentType: queryResult.result.content_type,
+          format: queryResult.result.format,
+        },
+        workerEvents,
+      };
+    } finally {
+      client.terminate();
+    }
+  });
+
+  expect(resolverRequests).toHaveLength(1);
+  expect(resolverRequests[0].headers['x-daxis-request-id']).toBe('daxis-browser-matrix-open');
+  expect(resolverRequests[0].body).toEqual({
+    provider: 'gcs',
+    table_uri: 'gs://daxis-prod/orders',
+    credential_profile: {
+      id: 'prod-readonly-profile',
+      display_name: 'Production readonly',
+    },
+    requested_access_mode: 'signed_url',
+    snapshot_version: 42,
+  });
+  expect(result.location).toMatchObject({
+    provider: 'gcs',
+    table_uri: 'gs://daxis-prod/orders',
+    requested_snapshot_version: 42,
+    resolved_snapshot_version: 42,
+    requested_access_mode: 'signed_url',
+    actual_access_mode: 'signed_url',
+    correlation_id: 'corr-daxis-browser-matrix',
+  });
+  expect(result.executedOn).toBe('browser_wasm');
+  expect(result.result).toMatchObject({
+    byteType: 'Uint8Array',
+    contentType: 'application/vnd.apache.arrow.stream',
+    format: 'stream',
+  });
+  expect(result.result.byteLength).toBeGreaterThan(0);
+  expect(result.preview).toMatchObject({
+    columns: ['payload', 'category', 'id'],
+    rows: [
+      ['<unsupported Binary>', 'runtime', 1],
+      ['<unsupported Binary>', 'runtime', 2],
+      ['<unsupported Binary>', 'runtime', 3],
+    ],
+    row_count: 3,
+    truncated: false,
+  });
+  expect(result.commandLog).toContain('daxis_orders');
+  expect(result.commandLog).not.toContain('prod-readonly-profile');
+  expect(result.commandLog).not.toContain('credential_profile');
   expect(result.workerEvents.join('\n')).toContain('range_read_metrics');
 });
 
@@ -554,11 +705,8 @@ test('preserves cancellation errors from the real browser query worker', async (
           },
           { requestId: 'open-real-worker-cancellation' },
         );
-        worker.postMessage({
-          cancel: {
-            request_id: 'cancel-stale-real-worker-query',
-            query_id: 'query-that-is-not-active',
-          },
+        client.cancelQuery('query-that-is-not-active', {
+          requestId: 'cancel-stale-real-worker-query',
         });
         const healthyResult = await client.query(
           'cancelled_runtime_types',
@@ -571,7 +719,9 @@ test('preserves cancellation errors from the real browser query worker', async (
           { requestId: 'query-real-worker-cancellation' },
         );
         await executingProgress;
-        postWorkerCancel(worker, 'cancel-real-worker-query', 'query-real-worker-cancellation');
+        client.cancelQuery('query-real-worker-cancellation', {
+          requestId: 'cancel-real-worker-query',
+        });
 
         return {
           cancellation: await captureWorkerError(cancellationQuery),
@@ -596,15 +746,6 @@ test('preserves cancellation errors from the real browser query worker', async (
         }
 
         throw new Error('expected browser worker request to fail');
-      }
-
-      function postWorkerCancel(targetWorker: Worker, requestId: string, queryId: string): void {
-        targetWorker.postMessage({
-          cancel: {
-            request_id: requestId,
-            query_id: queryId,
-          },
-        });
       }
     },
     { runtimeFixtureSizeBytes: BINARY_STRING_INT_PARQUET_SIZE_BYTES },

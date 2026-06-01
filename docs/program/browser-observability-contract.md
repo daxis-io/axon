@@ -103,6 +103,8 @@ These inputs are ready for an external dashboard pipeline once the trusted servi
 - worker startup baseline
 - worker memory baseline
 
+The Daxis-specific dashboard, runbook, rollout-control, and compatibility-dashboard handoff is recorded in [`daxis-operational-maturity.md`](./daxis-operational-maturity.md) and checked by [`../release-gates/daxis-operational-readiness.json`](../release-gates/daxis-operational-readiness.json). That handoff uses these repo-owned fields as inputs, then adds Daxis-owned tenant, workspace, catalog, policy, access-mode, audit, rollout, and oncall context.
+
 ## Alert Candidates
 
 Repo-owned thresholds or trends an external dashboard might watch:

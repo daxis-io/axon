@@ -1,0 +1,467 @@
+{
+  "matrix": "daxis_first_class_strategy_traceability",
+  "strategy": "docs/program/daxis-first-class-integration-strategy.md",
+  "owner": "Runtime / engine team with Daxis platform owners",
+  "milestones": {
+    "M0": {
+      "goal": "Make the Daxis browser read-compute architecture explicit.",
+      "deliverables": [
+        {
+          "id": "daxis_architecture_docs",
+          "status": "external_required",
+          "summary": "Daxis architecture docs name Axon as the browser read engine and update Daxis terminology away from DuckDB-WASM.",
+          "evidence": [
+            "docs/program/daxis-first-class-integration-strategy.md",
+            "docs/release-gates/daxis-production-rollout-decisions.json"
+          ],
+          "externalOwner": "Daxis product and architecture owners",
+          "externalProof": "Daxis repository docs and product architecture references are updated."
+        },
+        {
+          "id": "first_contract_descriptor_resolver",
+          "status": "repo_verified",
+          "summary": "The first integration contract is server-resolved descriptor resolution.",
+          "evidence": [
+            "docs/program/daxis-first-class-integration-strategy.md",
+            "apps/axon-web/examples/daxis-descriptor-resolver.ts",
+            "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-request.latest.json",
+            "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-response.signed-url.json"
+          ]
+        },
+        {
+          "id": "endpoint_envelopes_fixture_backed",
+          "status": "repo_verified",
+          "summary": "Descriptor resolver, read-access-plan, and object-grant envelopes are fixture-backed.",
+          "evidence": [
+            "docs/program/daxis-first-class-integration-examples/README.md",
+            "crates/query-contract/tests/release_handoff_examples.rs",
+            "tests/conformance/verify_daxis_contract_artifacts.sh"
+          ]
+        },
+        {
+          "id": "responsibility_plan",
+          "status": "repo_verified",
+          "summary": "Frontend, gateway, catalog, storage, query, and Axon responsibilities are named.",
+          "evidence": [
+            "docs/program/daxis-first-class-integration-strategy.md",
+            "docs/release-gates/daxis-operational-readiness.json"
+          ]
+        }
+      ],
+      "exitCriteria": [
+        {
+          "id": "axon_docs_point_to_handoff",
+          "status": "repo_verified",
+          "summary": "Axon docs point to the Daxis handoff path.",
+          "evidence": [
+            "docs/program/daxis-first-class-integration-strategy.md",
+            "docs/program/browser-lakehouse-release-handoff.md"
+          ]
+        },
+        {
+          "id": "no_browser_credentials",
+          "status": "repo_verified",
+          "summary": "Browser-visible examples and tests avoid raw credentials and signing capability.",
+          "evidence": [
+            "apps/axon-web/tests/axon-browser-sdk.spec.ts",
+            "apps/axon-web/tests/browser-worker-matrix.spec.ts",
+            "tests/conformance/verify_daxis_contract_artifacts.sh"
+          ]
+        },
+        {
+          "id": "daxis_names_axon_default_browser_engine",
+          "status": "external_required",
+          "summary": "Daxis product architecture names Axon as the default browser read engine.",
+          "evidence": [
+            "docs/program/daxis-first-class-integration-strategy.md",
+            "docs/release-gates/daxis-production-rollout-decisions.json"
+          ],
+          "externalOwner": "Daxis product and architecture owners",
+          "externalProof": "Daxis production architecture docs and rollout plan reference Axon as the browser read engine."
+        }
+      ]
+    },
+    "M1": {
+      "goal": "Allow Daxis to open governed Delta tables in Axon through trusted descriptors.",
+      "deliverables": [
+        {
+          "id": "daxis_descriptor_endpoint",
+          "status": "external_required",
+          "summary": "Daxis implements the descriptor resolver service endpoint.",
+          "evidence": [
+            "docs/release-gates/daxis-production-rollout-decisions.json",
+            "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-request.latest.json",
+            "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-response.signed-url.json"
+          ],
+          "externalOwner": "Daxis gateway, catalog, and storage platform",
+          "externalProof": "Daxis service endpoint is deployed and exercised end to end."
+        },
+        {
+          "id": "signed_or_proxy_urls",
+          "status": "repo_verified",
+          "summary": "Axon contract examples and SDK paths accept signed URL or proxy URL descriptors.",
+          "evidence": [
+            "apps/axon-web/examples/daxis-descriptor-resolver.ts",
+            "apps/axon-web/tests/axon-browser-sdk.spec.ts",
+            "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-response.signed-url.json"
+          ]
+        },
+        {
+          "id": "sdk_descriptor_example",
+          "status": "repo_verified",
+          "summary": "Axon provides the Daxis descriptor resolver SDK example.",
+          "evidence": [
+            "apps/axon-web/examples/daxis-descriptor-resolver.ts",
+            "apps/axon-web/tests/axon-browser-sdk.spec.ts",
+            "apps/axon-web/tests/browser-worker-matrix.spec.ts"
+          ]
+        },
+        {
+          "id": "daxis_frontend_flow",
+          "status": "external_required",
+          "summary": "Daxis frontend opens and queries through the Axon SDK.",
+          "evidence": [
+            "apps/axon-web/tests/browser-worker-matrix.spec.ts",
+            "docs/program/daxis-first-class-integration-strategy.md"
+          ],
+          "externalOwner": "Daxis web platform",
+          "externalProof": "Daxis UI open/query/cancel flow is tested against the Daxis control plane."
+        },
+        {
+          "id": "descriptor_negative_contract_tests",
+          "status": "repo_verified",
+          "summary": "Expiry, snapshot version mismatch, path escape, and malformed descriptors fail closed.",
+          "evidence": [
+            "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-response.expired.json",
+            "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-response.snapshot-version-mismatch.json",
+            "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-response.path-escape.json",
+            "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-response.invalid-descriptor.json",
+            "crates/query-contract/tests/release_handoff_examples.rs"
+          ]
+        }
+      ],
+      "exitCriteria": [
+        {
+          "id": "controlled_table_browser_query",
+          "status": "repo_verified",
+          "summary": "The real browser worker matrix covers Daxis descriptor resolver open/query.",
+          "evidence": [
+            "apps/axon-web/tests/browser-worker-matrix.spec.ts",
+            "tests/conformance/verify_daxis_release_evidence.sh"
+          ]
+        },
+        {
+          "id": "reason_preserving_fallback",
+          "status": "repo_verified",
+          "summary": "Fallback-required and block states stay structured.",
+          "evidence": [
+            "apps/axon-web/examples/daxis-read-access-plan.ts",
+            "apps/axon-web/tests/axon-browser-sdk.spec.ts",
+            "docs/program/daxis-first-class-integration-examples/read-access-plan.sql-fallback-required.json",
+            "docs/program/daxis-first-class-integration-examples/read-access-plan.blocked.json"
+          ]
+        },
+        {
+          "id": "correlation_survives_handoff",
+          "status": "repo_verified",
+          "summary": "Request and correlation IDs survive SDK, resolver error, and worker handoff paths.",
+          "evidence": [
+            "apps/axon-web/examples/daxis-descriptor-resolver.ts",
+            "apps/axon-web/tests/axon-browser-sdk.spec.ts",
+            "apps/axon-web/tests/browser-worker-matrix.spec.ts"
+          ]
+        }
+      ]
+    },
+    "M2": {
+      "goal": "Support richer governed reads without fully materialized descriptors.",
+      "deliverables": [
+        {
+          "id": "daxis_read_access_plan_endpoint",
+          "status": "external_required",
+          "summary": "Daxis implements the read-access-plan endpoint.",
+          "evidence": [
+            "apps/axon-web/examples/daxis-read-access-plan.ts",
+            "docs/program/daxis-first-class-integration-examples/read-access-plan.brokered-delta.json"
+          ],
+          "externalOwner": "Daxis catalog and gateway platform",
+          "externalProof": "Daxis read-access-plan endpoint is deployed with policy-backed plan outcomes."
+        },
+        {
+          "id": "object_grant_routes",
+          "status": "repo_verified",
+          "summary": "Object grant route envelopes cover list, head, batch-sign, and range.",
+          "evidence": [
+            "apps/axon-web/examples/daxis-object-grant-adapter.ts",
+            "docs/program/daxis-first-class-integration-examples/object-grants.list-request.json",
+            "docs/program/daxis-first-class-integration-examples/object-grants.head-request.json",
+            "docs/program/daxis-first-class-integration-examples/object-grants.batch-sign-request.json",
+            "docs/program/daxis-first-class-integration-examples/object-grants.range-request.json",
+            "crates/query-contract/schemas/object-grants.openapi.json"
+          ]
+        },
+        {
+          "id": "brokered_delta_adapter",
+          "status": "repo_verified",
+          "summary": "Axon SDK examples include brokered Delta read-plan and object-grant helpers.",
+          "evidence": [
+            "apps/axon-web/examples/daxis-read-access-plan.ts",
+            "apps/axon-web/examples/daxis-object-grant-adapter.ts",
+            "apps/axon-web/tests/axon-browser-sdk.spec.ts"
+          ]
+        },
+        {
+          "id": "grant_expiry_and_fallback",
+          "status": "repo_verified",
+          "summary": "Grant expiry, route capability, malformed payload, and invalid range behavior are checked before handoff.",
+          "evidence": [
+            "apps/axon-web/examples/daxis-object-grant-adapter.ts",
+            "apps/axon-web/tests/axon-browser-sdk.spec.ts"
+          ]
+        },
+        {
+          "id": "storage_cors_proxy_validation",
+          "status": "external_required",
+          "summary": "Production CORS and proxy-mode validation remain Daxis storage and security work.",
+          "evidence": [
+            "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
+            "docs/release-gates/daxis-operational-readiness.json"
+          ],
+          "externalOwner": "Daxis storage platform and security engineering",
+          "externalProof": "Production endpoint CORS/proxy validation exists for the Daxis app origin."
+        }
+      ],
+      "exitCriteria": [
+        {
+          "id": "plan_outcomes_explicit",
+          "status": "repo_verified",
+          "summary": "Descriptor, grant, proxy, Delta Sharing, fallback, and blocked states are represented.",
+          "evidence": [
+            "docs/program/daxis-first-class-integration-examples/read-access-plan.brokered-delta.json",
+            "docs/program/daxis-first-class-integration-examples/read-access-plan.delta-sharing.json",
+            "docs/program/daxis-first-class-integration-examples/read-access-plan.sql-fallback-required.json",
+            "docs/program/daxis-first-class-integration-examples/read-access-plan.blocked.json",
+            "crates/query-contract/schemas/read-access-plan.schema.json"
+          ]
+        },
+        {
+          "id": "axon_consumes_without_policy_ownership",
+          "status": "repo_verified",
+          "summary": "Axon consumes plans without owning Daxis policy.",
+          "evidence": [
+            "docs/program/daxis-first-class-integration-strategy.md",
+            "apps/axon-web/examples/daxis-read-access-plan.ts"
+          ]
+        },
+        {
+          "id": "object_access_audit_evidence",
+          "status": "repo_verified",
+          "summary": "Audit event fixture ties object access to tenant, workspace, table, grant, request, correlation, and Axon query IDs.",
+          "evidence": [
+            "docs/program/daxis-first-class-integration-examples/object-grants.audit-event.range.json",
+            "crates/query-contract/tests/release_handoff_examples.rs",
+            "crates/query-contract/schemas/object-grants.openapi.json"
+          ]
+        }
+      ]
+    },
+    "M3": {
+      "goal": "Make browser DataFusion the production runtime target for Daxis.",
+      "deliverables": [
+        {
+          "id": "datafusion_default_runtime",
+          "status": "repo_verified",
+          "summary": "The Axon Daxis-facing worker artifact reports browser DataFusion as the default runtime SKU.",
+          "evidence": [
+            "docs/release-gates/daxis-browser-runtime-isolation-plan.json",
+            "docs/program/browser-lakehouse-release-handoff-examples/browser-worker-artifact-report.datafusion.json",
+            "apps/axon-web/src/lib.rs",
+            "tests/conformance/verify_axon_web_datafusion_runtime.sh"
+          ]
+        },
+        {
+          "id": "daxis_query_corpus",
+          "status": "repo_verified",
+          "summary": "Daxis-shaped browser DataFusion corpus covers in-memory and descriptor-backed paths.",
+          "evidence": [
+            "tests/conformance/daxis-browser-datafusion-query-corpus.json",
+            "crates/wasm-datafusion-poc/tests/daxis_query_corpus.rs",
+            "docs/program/browser-datafusion-runtime-parity.md"
+          ]
+        },
+        {
+          "id": "runtime_budget_profile",
+          "status": "repo_verified",
+          "summary": "Daxis runtime budgets are recorded and checked.",
+          "evidence": [
+            "docs/release-gates/daxis-browser-datafusion-budget-profile.json",
+            "crates/wasm-datafusion-poc/tests/daxis_budget_profile.rs"
+          ]
+        },
+        {
+          "id": "legacy_runtime_isolation",
+          "status": "repo_verified",
+          "summary": "Legacy narrow runtime and Daxis-facing DataFusion default boundaries are explicit and checked.",
+          "evidence": [
+            "docs/release-gates/daxis-browser-runtime-isolation-plan.json",
+            "crates/wasm-datafusion-poc/tests/daxis_runtime_isolation_plan.rs",
+            "tests/conformance/verify_browser_worker_dependency_boundary.sh",
+            "tests/conformance/verify_axon_web_datafusion_runtime.sh"
+          ]
+        },
+        {
+          "id": "browser_matrix_daxis_flows",
+          "status": "repo_verified",
+          "summary": "Browser matrix covers Daxis descriptor resolver open/query through the real worker.",
+          "evidence": [
+            "apps/axon-web/tests/browser-worker-matrix.spec.ts",
+            "tests/conformance/verify_daxis_release_evidence.sh"
+          ]
+        }
+      ],
+      "exitCriteria": [
+        {
+          "id": "daxis_exploratory_queries_datafusion",
+          "status": "repo_verified",
+          "summary": "Supported Daxis exploratory query shapes run through browser DataFusion in the candidate path.",
+          "evidence": [
+            "tests/conformance/daxis-browser-datafusion-query-corpus.json",
+            "crates/wasm-datafusion-poc/tests/daxis_query_corpus.rs"
+          ]
+        },
+        {
+          "id": "unsupported_queries_deterministic",
+          "status": "repo_verified",
+          "summary": "Unsupported queries and features return deterministic errors or fallback.",
+          "evidence": [
+            "apps/axon-web/tests/browser-worker-matrix.spec.ts",
+            "crates/wasm-datafusion-session/src/lib.rs",
+            "docs/program/browser-datafusion-runtime-parity.md"
+          ]
+        },
+        {
+          "id": "budget_evidence",
+          "status": "repo_verified",
+          "summary": "Runtime size, startup, memory, scan, output, and row budgets are recorded for candidate release evidence.",
+          "evidence": [
+            "docs/release-gates/daxis-browser-datafusion-budget-profile.json",
+            "docs/release-gates/daxis-browser-runtime-isolation-plan.json",
+            "tests/conformance/verify_daxis_release_evidence.sh"
+          ]
+        }
+      ]
+    },
+    "M4": {
+      "goal": "Make Axon safe to operate as default Daxis read compute.",
+      "deliverables": [
+        {
+          "id": "production_dashboards",
+          "status": "external_required",
+          "summary": "Daxis production dashboards are specified, not implemented in this repo.",
+          "evidence": [
+            "docs/program/daxis-operational-maturity.md",
+            "docs/release-gates/daxis-operational-readiness.json",
+            "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md"
+          ],
+          "externalOwner": "Daxis SRE / production engineering",
+          "externalProof": "Live Daxis dashboards and alert ownership exist."
+        },
+        {
+          "id": "production_runbooks",
+          "status": "external_required",
+          "summary": "Daxis production runbook requirements are specified, not implemented in this repo.",
+          "evidence": [
+            "docs/program/daxis-operational-maturity.md",
+            "docs/release-gates/daxis-operational-readiness.json",
+            "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md"
+          ],
+          "externalOwner": "Daxis SRE / production engineering",
+          "externalProof": "Service-aware production incident playbooks and oncall ownership exist."
+        },
+        {
+          "id": "release_evidence_automation",
+          "status": "repo_verified",
+          "summary": "Daxis release evidence gates are scriptable.",
+          "evidence": [
+            "tests/conformance/verify_daxis_release_evidence.sh",
+            "tests/conformance/verify_daxis_external_proof_packet.sh",
+            "tests/conformance/verify_daxis_release_bundle_manifest.sh",
+            "tests/conformance/verify_daxis_pr_checklist.sh",
+            ".github/pull_request_template.md",
+            "docs/release-gates/daxis-release-bundle-manifest.json",
+            "tests/conformance/verify_daxis_release_evidence_test.sh",
+            "docs/release-gates/browser-wasm-delta-gcs-release-evidence.md"
+          ]
+        },
+        {
+          "id": "rollout_controls",
+          "status": "external_required",
+          "summary": "Daxis rollout-control dimensions and states are specified, not implemented in this repo.",
+          "evidence": [
+            "docs/release-gates/daxis-operational-readiness.json",
+            "docs/release-gates/daxis-production-rollout-decisions.json",
+            "docs/program/daxis-operational-maturity.md"
+          ],
+          "externalOwner": "Daxis product platform",
+          "externalProof": "Daxis control plane can force server fallback by tenant, workspace, table class, runtime SKU, release channel, and browser family."
+        },
+        {
+          "id": "production_table_compatibility_dashboard",
+          "status": "external_required",
+          "summary": "Daxis production table compatibility dashboard fields are specified, not populated in this repo.",
+          "evidence": [
+            "docs/release-gates/daxis-operational-readiness.json",
+            "docs/release-gates/daxis-production-rollout-decisions.json",
+            "docs/program/daxis-operational-maturity.md"
+          ],
+          "externalOwner": "Daxis catalog platform and QA / performance engineering",
+          "externalProof": "Daxis production compatibility inventory is populated for the rollout segment."
+        }
+      ],
+      "exitCriteria": [
+        {
+          "id": "rollout_by_segment_defined",
+          "status": "repo_verified",
+          "summary": "Tenant, workspace, table class, runtime SKU, and release channel rollout dimensions are defined.",
+          "evidence": [
+            "docs/release-gates/daxis-operational-readiness.json",
+            "docs/release-gates/daxis-production-rollout-decisions.json"
+          ]
+        },
+        {
+          "id": "operator_debug_contract_defined",
+          "status": "repo_verified",
+          "summary": "Operators have a contract for dashboard signals, runbooks, fallback reasons, and object-access correlation.",
+          "evidence": [
+            "docs/program/daxis-operational-maturity.md",
+            "docs/program/browser-observability-contract.md",
+            "docs/release-gates/daxis-operational-readiness.json"
+          ]
+        },
+        {
+          "id": "repeatable_go_no_go_evidence",
+          "status": "repo_verified",
+          "summary": "Axon releases have repeatable Daxis go/no-go evidence commands.",
+          "evidence": [
+            "tests/conformance/verify_daxis_release_evidence.sh",
+            "tests/conformance/verify_daxis_external_proof_packet.sh",
+            "docs/release-gates/daxis-external-proof-packet.json",
+            "tests/conformance/verify_daxis_release_bundle_manifest.sh",
+            "tests/conformance/verify_daxis_pr_checklist.sh",
+            "docs/release-gates/daxis-release-bundle-manifest.json",
+            "docs/release-gates/browser-wasm-delta-gcs-release-evidence.md"
+          ]
+        }
+      ]
+    }
+  },
+  "releaseGates": [
+    "bash tests/conformance/verify_daxis_contract_artifacts.sh",
+    "bash tests/conformance/verify_daxis_rollout_decisions.sh",
+    "bash tests/conformance/verify_daxis_operational_readiness.sh",
+    "bash tests/conformance/verify_daxis_external_proof_packet.sh",
+    "bash tests/conformance/verify_daxis_release_bundle_manifest.sh",
+    "bash tests/conformance/verify_daxis_pr_checklist.sh",
+    "bash tests/conformance/verify_daxis_release_evidence.sh --list"
+  ]
+}

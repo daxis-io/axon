@@ -1,0 +1,256 @@
+{
+  "packet": "daxis_external_proof_packet",
+  "scope": "Proof artifacts Daxis must provide before Axon can be treated as production default browser read compute.",
+  "owner": "Daxis product, platform, storage, catalog, web, security, and SRE owners",
+  "sourceDocs": [
+    "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md",
+    "docs/release-gates/daxis-strategy-traceability.json",
+    "docs/release-gates/daxis-production-rollout-decisions.json",
+    "docs/release-gates/daxis-operational-readiness.json",
+    "docs/program/daxis-external-proof-handoff.md",
+    "docs/program/daxis-first-class-integration-strategy.md"
+  ],
+  "externalItems": [
+    {
+      "id": "daxis_architecture_docs",
+      "milestone": "M0",
+      "owner": "Daxis product and architecture owners",
+      "summary": "Daxis architecture and product docs name Axon as browser read compute and remove stale DuckDB-WASM terminology for this path.",
+      "requiredProofArtifacts": [
+        "Daxis architecture doc links or commit SHAs",
+        "Daxis browser read-compute terminology diff",
+        "Named owner approval"
+      ],
+      "acceptanceChecks": [
+        "Docs name Axon as browser read compute",
+        "Docs keep Daxis as policy, auth, audit, and fallback owner",
+        "Docs do not imply browser-owned credentials or signing"
+      ],
+      "rollbackEvidence": "Docs include server fallback as the default rollback path for unsupported browser execution.",
+      "axonReferences": [
+        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/release-gates/daxis-strategy-traceability.json"
+      ]
+    },
+    {
+      "id": "daxis_names_axon_default_browser_engine",
+      "milestone": "M0",
+      "owner": "Daxis product and architecture owners",
+      "summary": "Daxis product architecture names Axon as the default browser read engine before default routing is claimed.",
+      "requiredProofArtifacts": [
+        "Daxis product architecture reference naming Axon as the default browser read engine",
+        "Rollout or release-channel approval showing the default engine claim is intentional",
+        "Owner signoff for server fallback as the rollback path"
+      ],
+      "acceptanceChecks": [
+        "Default-engine wording is tied to supported interactive browser reads, not all Daxis compute",
+        "The architecture reference preserves Daxis ownership of policy, audit, access grants, and fallback",
+        "The rollout state can still use integration or candidate channels before stable_default"
+      ],
+      "rollbackEvidence": "Daxis architecture and rollout docs describe how a segment returns to server_fallback if Axon cannot remain the default browser path.",
+      "axonReferences": [
+        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/release-gates/daxis-strategy-traceability.json",
+        "docs/release-gates/daxis-production-rollout-decisions.json"
+      ]
+    },
+    {
+      "id": "daxis_descriptor_endpoint",
+      "milestone": "M1",
+      "owner": "Daxis gateway, catalog, and storage platform",
+      "summary": "Daxis implements the descriptor resolver endpoint and proves descriptor success and fail-closed behavior.",
+      "requiredProofArtifacts": [
+        "Endpoint test output for POST /v1/query/delta/snapshot-descriptor",
+        "Signed URL or proxy URL scoping evidence",
+        "Expiry, snapshot mismatch, path escape, and malformed descriptor negative test output",
+        "Request and correlation ID propagation logs"
+      ],
+      "acceptanceChecks": [
+        "Resolver returns BrowserHttpSnapshotDescriptor-compatible payloads",
+        "Resolver never returns raw cloud credentials",
+        "Resolver preserves requested snapshot rules",
+        "Resolver errors preserve structured code and correlation ID"
+      ],
+      "rollbackEvidence": "Daxis can route affected tenants or table classes to server_fallback while preserving the resolver failure reason.",
+      "axonReferences": [
+        "apps/axon-web/examples/daxis-descriptor-resolver.ts",
+        "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-response.signed-url.json",
+        "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-response.snapshot-version-mismatch.json"
+      ]
+    },
+    {
+      "id": "daxis_frontend_flow",
+      "milestone": "M1",
+      "owner": "Daxis web platform",
+      "summary": "Daxis UI opens a governed table through the Axon SDK, queries it, handles fallback/block states, and preserves request IDs.",
+      "requiredProofArtifacts": [
+        "Daxis frontend open/query/cancel test output",
+        "Daxis UI fallback and block rendering test output",
+        "Worker command capture showing no credential profile identifiers or secrets",
+        "Browser matrix result for the supported rollout browsers"
+      ],
+      "acceptanceChecks": [
+        "Daxis UI calls Daxis endpoints rather than private Axon internals",
+        "Daxis UI passes descriptors or read plans through the public Axon SDK",
+        "Daxis UI preserves fallback and block reasons internally",
+        "Daxis UI can cancel or roll back to server execution"
+      ],
+      "rollbackEvidence": "Daxis feature flag or rollout control can disable browser execution for the affected segment.",
+      "axonReferences": [
+        "apps/axon-web/tests/browser-worker-matrix.spec.ts",
+        "apps/axon-web/examples/daxis-descriptor-resolver.ts"
+      ]
+    },
+    {
+      "id": "daxis_read_access_plan_endpoint",
+      "milestone": "M2",
+      "owner": "Daxis catalog and gateway platform",
+      "summary": "Daxis implements read-access-plan outcomes for brokered_delta, delta_sharing, sql_fallback_required, and blocked.",
+      "requiredProofArtifacts": [
+        "Endpoint test output for POST /v1/catalog/read-access-plan",
+        "Policy denied and policy unknown test output",
+        "Fallback-required routing test output",
+        "Correlation logs from gateway, catalog, and query service"
+      ],
+      "acceptanceChecks": [
+        "Endpoint returns closed read-access-plan variants",
+        "Endpoint preserves policy and fallback reasons",
+        "Endpoint does not expose direct catalog tokens or raw credentials",
+        "Endpoint can return server fallback without opening the Axon worker"
+      ],
+      "rollbackEvidence": "Daxis can return sql_fallback_required for affected table classes or tenants.",
+      "axonReferences": [
+        "apps/axon-web/examples/daxis-read-access-plan.ts",
+        "docs/program/daxis-first-class-integration-examples/read-access-plan.brokered-delta.json",
+        "crates/query-contract/schemas/read-access-plan.schema.json"
+      ]
+    },
+    {
+      "id": "storage_cors_proxy_validation",
+      "milestone": "M2",
+      "owner": "Daxis storage platform and security engineering",
+      "summary": "Daxis validates signed URL CORS and proxy mode against the production endpoint shape.",
+      "requiredProofArtifacts": [
+        "Production XML endpoint CORS validation output",
+        "Proxy range-read validation output",
+        "Allowed origin, allowed method, exposed header, and range-read evidence",
+        "URL redaction evidence for logs and UI events"
+      ],
+      "acceptanceChecks": [
+        "Signed URL reads expose required range headers to the Daxis origin",
+        "Proxy mode enforces grant and path scope",
+        "CORS failure can switch the table or segment to proxy or server fallback",
+        "Signed URLs are object-scoped and short-lived"
+      ],
+      "rollbackEvidence": "Daxis can switch access mode to proxy or server_fallback for the affected segment.",
+      "axonReferences": [
+        "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
+        "docs/program/browser-embedding-deployment.md",
+        "docs/release-gates/daxis-production-rollout-decisions.json"
+      ]
+    },
+    {
+      "id": "production_dashboards",
+      "milestone": "M4",
+      "owner": "Daxis SRE / production engineering",
+      "summary": "Daxis production dashboards expose browser execution, fallback/block reasons, data fetch/object access, and worker health.",
+      "requiredProofArtifacts": [
+        "Dashboard URLs",
+        "Alert owner list",
+        "Sample dashboard panels for the first rollout segment",
+        "Metric freshness and retention policy"
+      ],
+      "acceptanceChecks": [
+        "Dashboards break down by tenant, workspace, table class, runtime SKU, release channel, and browser family",
+        "Dashboards preserve fallback and block reasons",
+        "Dashboards correlate browser bytes with Daxis access evidence",
+        "Dashboards expose worker startup and terminal errors"
+      ],
+      "rollbackEvidence": "Dashboard includes a segment-level view showing server_fallback after rollback.",
+      "axonReferences": [
+        "docs/program/daxis-operational-maturity.md",
+        "docs/release-gates/daxis-operational-readiness.json",
+        "docs/program/browser-observability-contract.md"
+      ]
+    },
+    {
+      "id": "production_runbooks",
+      "milestone": "M4",
+      "owner": "Daxis SRE / production engineering",
+      "summary": "Daxis production runbooks cover resolver failure, object-grant failure, CORS failure, worker startup failure, and elevated fallback rates.",
+      "requiredProofArtifacts": [
+        "Runbook URLs",
+        "Oncall ownership and escalation policy",
+        "Incident drill or tabletop result",
+        "Rollback procedure evidence"
+      ],
+      "acceptanceChecks": [
+        "Each runbook has owner, symptoms, first checks, rollback, and escalation path",
+        "Runbooks preserve request and correlation IDs during triage",
+        "Runbooks distinguish Daxis service failures from Axon runtime failures",
+        "Runbooks include fallback or kill-switch instructions"
+      ],
+      "rollbackEvidence": "Runbook drill proves Daxis can force server_fallback without a new Axon release.",
+      "axonReferences": [
+        "docs/program/daxis-operational-maturity.md",
+        "docs/release-gates/daxis-operational-readiness.json",
+        "docs/program/browser-release-integration-runbook.md"
+      ]
+    },
+    {
+      "id": "rollout_controls",
+      "milestone": "M4",
+      "owner": "Daxis product platform",
+      "summary": "Daxis rollout controls support tenant, workspace, table class, runtime SKU, release channel, and browser-family segmentation.",
+      "requiredProofArtifacts": [
+        "Rollout configuration schema",
+        "Kill-switch test output",
+        "Segment promotion and rollback audit log",
+        "Server fallback routing proof"
+      ],
+      "acceptanceChecks": [
+        "Rollout can move a segment through disabled, server_fallback, descriptor_only, brokered_grants, browser_datafusion, and stable_default",
+        "Kill switch can force server_fallback by segment",
+        "Rollout state is visible in telemetry",
+        "Rollback preserves user state and fallback reasons"
+      ],
+      "rollbackEvidence": "Kill-switch test proves affected tenants or workspaces return to server_fallback.",
+      "axonReferences": [
+        "docs/release-gates/daxis-operational-readiness.json",
+        "docs/release-gates/daxis-production-rollout-decisions.json",
+        "docs/program/daxis-operational-maturity.md"
+      ]
+    },
+    {
+      "id": "production_table_compatibility_dashboard",
+      "milestone": "M4",
+      "owner": "Daxis catalog platform and QA / performance engineering",
+      "summary": "Daxis production compatibility dashboard inventories current tables against Axon browser support.",
+      "requiredProofArtifacts": [
+        "Compatibility dashboard URL",
+        "Production table inventory export",
+        "Last Axon release and query corpus result per rollout segment",
+        "Blocked/fallback table-class list"
+      ],
+      "acceptanceChecks": [
+        "Dashboard includes tenant, workspace, table, table class, Delta protocol, Delta features, policy decision, access mode, browser compatibility, fallback reason, and last verification time",
+        "Dashboard separates production candidates from policy-blocked, server-only, proxy-only, unknown-feature, and unsupported SQL/table cases",
+        "Dashboard is refreshed before candidate and stable promotions",
+        "Dashboard can explain why each table is eligible, fallback-only, or blocked"
+      ],
+      "rollbackEvidence": "Compatibility dashboard identifies affected tables before and after rollback.",
+      "axonReferences": [
+        "docs/release-gates/daxis-operational-readiness.json",
+        "docs/release-gates/daxis-production-rollout-decisions.json",
+        "docs/program/daxis-operational-maturity.md"
+      ]
+    }
+  ],
+  "handoffChecklist": [
+    "Attach Axon release evidence output.",
+    "Attach Daxis service endpoint test results.",
+    "Attach Daxis rollout-control proof.",
+    "Attach Daxis dashboard and oncall proof.",
+    "Confirm server fallback rollback path."
+  ]
+}

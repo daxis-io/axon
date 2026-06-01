@@ -1,0 +1,24 @@
+{
+  "schema_version": "daxis.query_result.v1",
+  "status": "fallback",
+  "execution_engine": null,
+  "result_transport": null,
+  "fallback_reason": "runtime_budget_overflow",
+  "surface_kind": "dashboard_tile",
+  "intent_kind": "sql",
+  "input_artifact_kind": "saved_sql",
+  "compiled_artifact_kind": "validated_sql",
+  "request_id": "req-daxis-runtime-budget",
+  "correlation_id": "corr-daxis-runtime-budget",
+  "query_id": "query-daxis-runtime-budget",
+  "execution_id": "exec-daxis-runtime-budget",
+  "workspace_id": "workspace_sales",
+  "metrics": {
+    "scan_bytes": 15728640,
+    "duration_ms": 15000
+  },
+  "diagnostics": {
+    "limit": "max_scan_bytes",
+    "sql_fingerprint": "sqlfp_dashboard_orders_over_budget"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": "daxis.query_result.v1",
+  "status": "fallback",
+  "execution_engine": null,
+  "result_transport": null,
+  "fallback_reason": "unsupported_sql",
+  "surface_kind": "builder",
+  "intent_kind": "semantic_query",
+  "input_artifact_kind": "builder_plan",
+  "compiled_artifact_kind": "validated_sql",
+  "request_id": "req-daxis-unsupported-sql",
+  "correlation_id": "corr-daxis-unsupported-sql",
+  "query_id": "query-daxis-unsupported-sql",
+  "execution_id": "exec-daxis-unsupported-sql",
+  "workspace_id": "workspace_sales",
+  "metrics": {},
+  "diagnostics": {
+    "sql_fingerprint": "sqlfp_unsupported_window"
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "schema_version": "daxis.approved_axon_read.v1",
+  "request_id": "req-daxis-headless-saved-query",
+  "correlation_id": "corr-daxis-headless-saved-query",
+  "query_id": "query-daxis-headless-saved-query",
+  "execution_id": "exec-daxis-headless-saved-query",
+  "workspace_id": "workspace_sales",
+  "surface_kind": "saved_query",
+  "intent_kind": "sql",
+  "input_artifact_kind": "saved_sql",
+  "compiled_artifact_kind": "validated_sql",
+  "validated_sql": {
+    "sql": "select order_id, customer_tier, amount_cents from orders where order_date = DATE '2026-05-30' order by amount_cents desc limit 2",
+    "dialect": "daxis_sql_v1",
+    "fingerprint": "sqlfp_saved_orders_20260530",
+    "validation_id": "sqlval_saved_orders_20260530",
+    "read_only": true
+  },
+  "tables": [
+    {
+      "catalog_id": "catalog_main",
+      "table_id": "tbl_daxis_sales_orders",
+      "descriptor_id": "desc_daxis_sales_orders_v42",
+      "table_uri": "gs://daxis-prod-lakehouse/sales/orders",
+      "full_name": "main.sales.orders",
+      "snapshot_version": 42,
+      "schema_hash": "sha256:orders-schema-v7",
+      "descriptor_schema_hash": "sha256:orders-schema-v7",
+      "descriptor": {
+        "table_uri": "gs://daxis-prod-lakehouse/sales/orders",
+        "snapshot_version": 42,
+        "partition_column_types": {
+          "order_date": "string"
+        },
+        "active_files": [
+          {
+            "path": "order_date=2026-05-30/part-00000.parquet",
+            "url": "https://storage.googleapis.com/daxis-prod-lakehouse/sales/orders/order_date=2026-05-30/part-00000.parquet?X-Goog-Signature=redacted",
+            "size_bytes": 32768,
+            "partition_values": {
+              "order_date": "2026-05-30"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "access_proof": {
+    "policy_decision_id": "policy_decision_saved_orders_20260530",
+    "read_access_decision": "approved",
+    "expires_at_epoch_ms": 1800000060000
+  },
+  "limits": {
+    "max_result_rows": 500,
+    "max_arrow_ipc_bytes": 1048576,
+    "max_scan_bytes": 10485760,
+    "timeout_ms": 15000,
+    "cancellation_deadline_epoch_ms": 1800000015000
+  },
+  "runtime_preference": {
+    "preferred_engine": "axon_browser",
+    "allow_remote_fallback": true
+  }
+}

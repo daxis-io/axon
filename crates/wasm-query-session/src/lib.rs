@@ -8,8 +8,9 @@ use std::collections::BTreeMap;
 use std::mem::size_of;
 
 use query_contract::{
-    BrowserHttpSnapshotDescriptor, ExecutionTarget, ParquetInspectionSummary, QueryError,
-    QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse,
+    BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, ParquetInspectionSummary,
+    QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse,
+    QueryRuntimeLimits,
 };
 use wasm_query_runtime::{
     runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserExecutionPlan,
@@ -193,11 +194,15 @@ impl BrowserQuerySession {
             )?;
             execution_plan
         };
+        let query_budget =
+            query_budget_for_request(self.query_budget, request.options.runtime_limits);
+        validate_plan_budget(&plan, query_budget)?;
         let started_at = BrowserRuntimeInstant::now();
         let runtime_result = self
             .runtime
             .execute_plan_to_arrow_ipc(&materialized, &plan)
             .await?;
+        validate_arrow_result_budget(&runtime_result, query_budget)?;
         let explain = if request.options.include_explain {
             Some(format!("{plan:#?}"))
         } else {
@@ -388,6 +393,96 @@ fn query_budget_from_runtime_config(config: &BrowserRuntimeConfig) -> BrowserQue
             max_rows_returned: Some(execution_budget.max_rows),
         })
         .unwrap_or_default()
+}
+
+fn query_budget_for_request(
+    session_budget: BrowserQueryBudget,
+    request_limits: Option<QueryRuntimeLimits>,
+) -> BrowserQueryBudget {
+    let request_limits = request_limits.unwrap_or_default();
+    BrowserQueryBudget {
+        max_scan_bytes: min_optional_budget(
+            session_budget.max_scan_bytes,
+            request_limits.max_scan_bytes,
+        ),
+        max_output_ipc_bytes: min_optional_budget(
+            session_budget.max_output_ipc_bytes,
+            request_limits.max_arrow_ipc_bytes,
+        ),
+        max_batches_in_flight: session_budget.max_batches_in_flight,
+        max_rows_returned: min_optional_budget(
+            session_budget.max_rows_returned,
+            request_limits.max_result_rows,
+        ),
+    }
+}
+
+fn min_optional_budget(session_limit: Option<u64>, request_limit: Option<u64>) -> Option<u64> {
+    match (session_limit, request_limit) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(limit), None) | (None, Some(limit)) => Some(limit),
+        (None, None) => None,
+    }
+}
+
+fn validate_plan_budget(
+    plan: &BrowserExecutionPlan,
+    query_budget: BrowserQueryBudget,
+) -> Result<(), QueryError> {
+    if let Some(max_scan_bytes) = query_budget.max_scan_bytes {
+        let candidate_bytes = plan.scan().candidate_bytes();
+        if candidate_bytes > max_scan_bytes {
+            return Err(browser_budget_exceeded_error(
+                "max_scan_bytes",
+                candidate_bytes,
+                max_scan_bytes,
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_arrow_result_budget(
+    runtime_result: &RuntimeArrowIpcResult,
+    query_budget: BrowserQueryBudget,
+) -> Result<(), QueryError> {
+    if let Some(max_rows_returned) = query_budget.max_rows_returned {
+        if runtime_result.row_count > max_rows_returned {
+            return Err(browser_budget_exceeded_error(
+                "max_rows_returned",
+                runtime_result.row_count,
+                max_rows_returned,
+            ));
+        }
+    }
+
+    if let Some(max_output_ipc_bytes) = query_budget.max_output_ipc_bytes {
+        if runtime_result.encoded_bytes > max_output_ipc_bytes {
+            return Err(browser_budget_exceeded_error(
+                "max_output_ipc_bytes",
+                runtime_result.encoded_bytes,
+                max_output_ipc_bytes,
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn browser_budget_exceeded_error(
+    observed_kind: &str,
+    observed: u64,
+    max_allowed: u64,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::FallbackRequired,
+        format!(
+            "browser execution exceeded the configured {observed_kind} budget ({observed} > {max_allowed})"
+        ),
+        runtime_target(),
+    )
+    .with_fallback_reason(FallbackReason::BrowserRuntimeConstraint)
 }
 
 fn cached_table_bytes(

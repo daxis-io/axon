@@ -1,0 +1,272 @@
+{
+  "readiness": "daxis_m4_operational_maturity",
+  "owner": "Runtime / engine team with Daxis SRE, storage, catalog, gateway, and web platform owners",
+  "repoOwnedScope": "Axon-owned metrics, fallback vocabulary, contract fixtures, release evidence commands, and operational templates for Daxis integration.",
+  "externalProductionScope": "Daxis-owned production dashboards, alert routing, oncall schedules, rollout configuration services, production table inventories, audit pipelines, and service incident playbooks.",
+  "sourceDocs": [
+    "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md",
+    "docs/program/daxis-operational-maturity.md",
+    "docs/program/browser-observability-contract.md",
+    "docs/program/browser-release-integration-runbook.md",
+    "docs/program/daxis-first-class-integration-strategy.md",
+    "docs/program/daxis-external-proof-handoff.md",
+    "docs/release-gates/daxis-production-rollout-decisions.json",
+    "docs/release-gates/daxis-external-proof-packet.json",
+    "docs/release-gates/daxis-release-bundle-manifest.json",
+    "docs/release-gates/browser-wasm-delta-gcs-release-evidence.md",
+    "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md"
+  ],
+  "dashboards": [
+    {
+      "name": "browser_execution",
+      "owner": "Daxis SRE / production engineering",
+      "purpose": "Show where Daxis executes interactive reads and whether Axon browser execution is the selected path.",
+      "requiredBreakdowns": [
+        "tenantId",
+        "workspaceId",
+        "tableClass",
+        "runtimeSku",
+        "releaseChannel",
+        "browserFamily"
+      ],
+      "signals": [
+        "executed_on",
+        "runtime_sku",
+        "selected_bundle_tier",
+        "query_duration_ms",
+        "snapshot_bootstrap_duration_ms",
+        "arrow_ipc_bytes",
+        "rows_returned"
+      ]
+    },
+    {
+      "name": "fallback_and_block_reasons",
+      "owner": "Daxis query platform",
+      "purpose": "Track deterministic server fallback, policy block, and unsupported-feature reasons without losing the original routing decision.",
+      "requiredBreakdowns": [
+        "tenantId",
+        "workspaceId",
+        "catalogTableId",
+        "runtimeSku",
+        "fallbackReason",
+        "queryShape"
+      ],
+      "signals": [
+        "fallback_reason",
+        "query_error_code",
+        "policy_decision",
+        "access_mode_decision",
+        "server_fallback_target"
+      ]
+    },
+    {
+      "name": "data_fetch_and_object_access",
+      "owner": "Daxis storage platform",
+      "purpose": "Correlate browser bytes and object-grant reads with storage broker authorization evidence.",
+      "requiredBreakdowns": [
+        "tenantId",
+        "workspaceId",
+        "tableId",
+        "grantId",
+        "accessMode",
+        "storageProvider"
+      ],
+      "signals": [
+        "bytes_fetched",
+        "bytes_reused",
+        "files_touched",
+        "files_skipped",
+        "row_groups_touched",
+        "row_groups_skipped",
+        "footer_reads",
+        "object_grant_action",
+        "object_grant_outcome"
+      ]
+    },
+    {
+      "name": "worker_health",
+      "owner": "Runtime / engine team",
+      "purpose": "Expose browser worker startup, cancellation, terminal error, and artifact drift signals before rollout widens.",
+      "requiredBreakdowns": [
+        "runtimeSku",
+        "workerArtifact",
+        "browserFamily",
+        "bundleTier",
+        "releaseChannel"
+      ],
+      "signals": [
+        "worker_startup_ms",
+        "worker_memory_bytes",
+        "worker_terminal_error",
+        "cancellation_count",
+        "artifact_size_bytes",
+        "artifact_brotli_bytes"
+      ]
+    }
+  ],
+  "runbooks": [
+    {
+      "name": "resolver_failure",
+      "owner": "Daxis gateway and catalog platform",
+      "symptoms": [
+        "descriptor resolver returns resolver_unavailable",
+        "descriptor resolver returns invalid_table_uri or snapshot_version_not_found",
+        "correlation_id missing from resolver errors"
+      ],
+      "firstChecks": [
+        "Confirm request_id and correlation_id are present across UI, gateway, catalog, and resolver logs.",
+        "Check catalog lookup, policy decision, and pinned snapshot resolution for the affected table.",
+        "Verify resolver responses still match the Daxis descriptor fixtures and schema hash manifest.",
+        "Confirm Axon worker commands do not contain credential profile identifiers or table-root credentials."
+      ],
+      "rollback": "Route affected tenants or table classes to server_fallback while preserving the resolver failure reason."
+    },
+    {
+      "name": "object_grant_failure",
+      "owner": "Daxis storage platform",
+      "symptoms": [
+        "object grant list/head/batch-sign/range returns invalid_object_grant_response",
+        "grant expires before browser handoff",
+        "object access audit event missing grant, table, or query identity"
+      ],
+      "firstChecks": [
+        "Confirm grant expiry, route capability flags, and grant-scoped path validation.",
+        "Check object grant audit events for tenantId, workspaceId, tableId, grantId, requestId, correlationId, and axonQueryId.",
+        "Verify signed URL or proxy range responses are object-scoped and do not broaden table-root access.",
+        "Run the Axon object-grant SDK and contract artifact gates before widening rollout."
+      ],
+      "rollback": "Disable brokered_delta for the affected rollout segment and return read-access plans as sql_fallback_required."
+    },
+    {
+      "name": "cors_failure",
+      "owner": "Daxis storage platform and security engineering",
+      "symptoms": [
+        "range reads fail with storage_cors_failed or object_store_protocol",
+        "browser cannot read signed XML endpoint responses",
+        "preflight headers differ from the production endpoint shape"
+      ],
+      "firstChecks": [
+        "Validate the exact production XML endpoint path used by signed URLs, not a localhost or JSON API substitute.",
+        "Confirm Access-Control-Allow-Origin, allowed methods, exposed headers, and range-read behavior for the Daxis app origin.",
+        "Check whether proxy mode is required for the tenant, browser, or storage provider.",
+        "Verify failing URLs are redacted in UI events, logs, and error diagnostics."
+      ],
+      "rollback": "Switch the affected access mode to proxy or server_fallback until production CORS evidence is restored."
+    },
+    {
+      "name": "worker_startup_failure",
+      "owner": "Runtime / engine team and Daxis web platform",
+      "symptoms": [
+        "worker initialization fails",
+        "WASM artifact or bundle selection drifts",
+        "browser matrix starts failing for supported Daxis flows"
+      ],
+      "firstChecks": [
+        "Check worker artifact identity, runtimeSku, selected bundle tier, and browser feature probes.",
+        "Run the browser worker matrix for descriptor open/query/cancel and unsupported-feature paths.",
+        "Run dependency guardrails and worker artifact size reports for the legacy narrow and DataFusion default paths.",
+        "Compare startup and memory baselines against the latest release evidence bundle."
+      ],
+      "rollback": "Disable browser execution for affected browser families or release channels and route to server_fallback."
+    },
+    {
+      "name": "elevated_fallback_rates",
+      "owner": "Daxis query platform and runtime / engine team",
+      "symptoms": [
+        "browser fallback frequency rises above the rollout threshold",
+        "unsupported_feature or browser_runtime_constraint spikes",
+        "server compute usage increases for tables expected to run in browser"
+      ],
+      "firstChecks": [
+        "Break down fallback_reason by tenantId, workspaceId, tableClass, runtimeSku, table features, and query shape.",
+        "Compare affected SQL classes against the Daxis query corpus and browser DataFusion parity record.",
+        "Check recent rollout changes, artifact identity, dependency changes, and compatibility dashboard drift.",
+        "Confirm Daxis preserves the original fallback or block reason when routing to server execution."
+      ],
+      "rollback": "Narrow rollout to the last stable tenant, workspace, or table-class segment and keep server fallback enabled."
+    }
+  ],
+  "rolloutControls": {
+    "owner": "Daxis product platform",
+    "requiredDimensions": [
+      "tenantId",
+      "workspaceId",
+      "tableClass",
+      "runtimeSku",
+      "releaseChannel"
+    ],
+    "requiredStates": [
+      "disabled",
+      "server_fallback",
+      "descriptor_only",
+      "brokered_grants",
+      "browser_datafusion",
+      "stable_default"
+    ],
+    "killSwitch": "A Daxis-owned control must force server_fallback by tenant, workspace, table class, browser family, and runtime SKU without requiring a new Axon release.",
+    "promotionOrder": ["experimental", "integration", "candidate", "stable"]
+  },
+  "compatibilityDashboard": {
+    "owner": "Daxis catalog platform and QA / performance engineering",
+    "requiredFields": [
+      "tenantId",
+      "workspaceId",
+      "tableId",
+      "catalogName",
+      "schemaName",
+      "tableName",
+      "tableClass",
+      "deltaProtocol",
+      "deltaFeatures",
+      "policyDecision",
+      "accessModeDecision",
+      "browserCompatibility",
+      "fallbackReason",
+      "lastVerifiedAt",
+      "lastAxonRelease",
+      "lastCorpusResult"
+    ],
+    "minimumSegments": [
+      "production_candidate_tables",
+      "tables_blocked_by_policy",
+      "tables_requiring_server_fallback",
+      "tables_requiring_proxy_access",
+      "tables_with_unknown_delta_features"
+    ]
+  },
+  "releaseEvidenceAutomation": {
+    "owner": "Runtime / engine team",
+    "runner": "tests/conformance/verify_daxis_release_evidence.sh",
+    "verificationCommands": [
+      "cargo check --workspace --locked",
+      "cargo test -p query-contract",
+      "cargo test -p wasm-datafusion-poc",
+      "cargo test -p wasm-datafusion-session",
+      "cargo test -p axon-web-wasm",
+      "bash tests/conformance/verify_daxis_contract_artifacts.sh",
+      "bash tests/conformance/verify_browser_worker_dependency_boundary.sh",
+      "bash tests/conformance/verify_axon_web_datafusion_runtime.sh",
+      "bash tests/conformance/verify_daxis_rollout_decisions.sh",
+      "bash tests/conformance/verify_daxis_operational_readiness.sh",
+      "bash tests/conformance/verify_daxis_strategy_traceability.sh",
+      "bash tests/conformance/verify_daxis_external_proof_packet.sh",
+      "bash tests/conformance/verify_daxis_architecture_adr.sh",
+      "bash tests/conformance/verify_daxis_release_bundle_manifest.sh",
+      "bash tests/conformance/verify_daxis_pr_checklist.sh",
+      "bash tests/perf/report_datafusion_wasm_size_test.sh",
+      "cargo check -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p wasm-query-session -p browser-sdk -p browser-engine-worker --target wasm32-unknown-unknown --locked",
+      "npm exec -- tsc --noEmit",
+      "npm run test:sdk",
+      "npm run build:fixture",
+      "npm run build:wasm",
+      "npm exec -- playwright test --config=playwright.config.ts --grep \"Daxis descriptor-resolver|preserves cancellation errors|surfaces unsupported feature errors\""
+    ]
+  },
+  "stableDefaultBlockers": [
+    "Production dashboard URLs and alert ownership are absent from this repository.",
+    "Production oncall schedules and service incident playbooks are absent from this repository.",
+    "Tenant and workspace rollout controls are Daxis service work outside this repository.",
+    "Production table compatibility inventory is Daxis catalog and QA work outside this repository.",
+    "External proof artifacts listed in docs/release-gates/daxis-external-proof-packet.json are Daxis-owned and absent from this repository."
+  ]
+}

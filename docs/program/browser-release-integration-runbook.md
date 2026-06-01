@@ -105,7 +105,7 @@ Look at:
 - wasm-target package drift
 - the worker artifact should claim `session_shell = true` and `browser_datafusion = false`
 
-The CI size budget applies to the shipped browser worker artifact. The DataFusion WASM size report tracks the target DataFusion engine budget separately until that engine becomes the shipped browser query path. For size evidence, run `bash tests/perf/report_datafusion_wasm_size.sh` or use the manual CI dispatch input, and set `AXON_DF_BROTLI_BUDGET_BYTES` for opt-in Brotli budget checks.
+The CI size budget applies to the shipped browser worker artifact. For Daxis default-worker DataFusion size evidence, run `AXON_DF_SIZE_PACKAGE=axon-web-wasm AXON_DF_SIZE_WASM_STEM=axon_web_wasm AXON_DF_BROTLI_BUDGET_BYTES=6291456 bash tests/perf/report_datafusion_wasm_size.sh` when the release environment has `wasm-bindgen`, `wasm-opt`, `brotli`, and `twiggy`.
 
 ## 5. Browser Dependency Guardrail Failure
 

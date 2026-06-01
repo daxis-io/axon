@@ -1,0 +1,216 @@
+{
+  "manifest": "daxis_release_bundle_manifest",
+  "strategy": "docs/program/daxis-first-class-integration-strategy.md",
+  "owner": "Runtime / engine team with Daxis release, product, security, storage, catalog, query, and SRE owners",
+  "scope": "Machine-readable checklist for the release evidence bundle Axon must provide before Daxis rollout review.",
+  "sourceDocs": [
+    "docs/program/daxis-first-class-integration-strategy.md",
+    "docs/release-gates/browser-wasm-delta-gcs-release-evidence.md",
+    "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
+    "docs/release-gates/daxis-production-rollout-decisions.json",
+    "docs/release-gates/daxis-operational-readiness.json",
+    "docs/release-gates/daxis-strategy-traceability.json",
+    "docs/release-gates/daxis-external-proof-packet.json",
+    "docs/release-gates/daxis-release-migration-notes-template.md",
+    "docs/program/browser-datafusion-runtime-parity.md",
+    "docs/program/browser-delta-compatibility-matrix.md",
+    "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md"
+  ],
+  "bundleItems": [
+    {
+      "id": "git_sha",
+      "status": "release_process_required",
+      "owner": "Release owner",
+      "description": "Attach the exact Axon release commit SHA used for the Daxis rollout decision.",
+      "releaseAttachment": "Release commit SHA and branch or tag name.",
+      "evidence": [
+        "docs/release-gates/browser-wasm-delta-gcs-release-evidence.md"
+      ]
+    },
+    {
+      "id": "contract_versions_schema_hashes",
+      "status": "repo_verified",
+      "owner": "Runtime / engine team",
+      "description": "Record the SDK examples, JSON Schema, OpenAPI, and fixture hashes that form the Daxis handoff surface.",
+      "evidence": [
+        "docs/release-gates/daxis-contract-artifacts.sha256",
+        "crates/query-contract/schemas/read-access-plan.schema.json",
+        "crates/query-contract/schemas/object-grants.openapi.json"
+      ],
+      "verificationCommands": [
+        "bash tests/conformance/verify_daxis_contract_artifacts.sh"
+      ]
+    },
+    {
+      "id": "rust_test_summary",
+      "status": "repo_verified",
+      "owner": "Runtime / engine team",
+      "description": "Attach Rust workspace compile, contract, and browser DataFusion test output for the Daxis-supported runtime surface.",
+      "evidence": [
+        "tests/conformance/verify_daxis_release_evidence.sh",
+        "crates/query-contract/tests/release_handoff_examples.rs",
+        "crates/wasm-datafusion-poc/tests/daxis_query_corpus.rs",
+        "apps/axon-web/src/lib.rs"
+      ],
+      "verificationCommands": [
+        "cargo check --workspace --locked",
+        "cargo test -p query-contract",
+        "cargo test -p wasm-datafusion-poc",
+        "cargo test -p wasm-datafusion-session",
+        "cargo test -p axon-web-wasm"
+      ]
+    },
+    {
+      "id": "typescript_test_summary",
+      "status": "repo_verified",
+      "owner": "Runtime / engine team and Daxis web platform",
+      "description": "Attach TypeScript SDK and browser-worker matrix evidence for Daxis descriptor, read-plan, and object-grant helpers.",
+      "evidence": [
+        "apps/axon-web/tests/axon-browser-sdk.spec.ts",
+        "apps/axon-web/tests/browser-worker-matrix.spec.ts",
+        "apps/axon-web/tsconfig.json",
+        "apps/axon-web/examples/daxis-descriptor-resolver.ts",
+        "apps/axon-web/examples/daxis-read-access-plan.ts",
+        "apps/axon-web/examples/daxis-object-grant-adapter.ts"
+      ],
+      "verificationCommands": [
+        "npm exec -- tsc --noEmit",
+        "npm run test:sdk",
+        "npm exec -- playwright test --config=playwright.config.ts --grep \"Daxis descriptor-resolver|preserves cancellation errors|surfaces unsupported feature errors\""
+      ]
+    },
+    {
+      "id": "wasm_target_checks",
+      "status": "repo_verified",
+      "owner": "Runtime / engine team",
+      "description": "Attach WASM build evidence for the Daxis-facing axon-web browser DataFusion default worker.",
+      "evidence": [
+        "apps/axon-web/package.json",
+        "docs/release-gates/browser-wasm-delta-gcs-release-evidence.md",
+        "tests/conformance/verify_daxis_release_evidence.sh"
+      ],
+      "verificationCommands": [
+        "cargo check -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p wasm-query-session -p browser-sdk -p browser-engine-worker --target wasm32-unknown-unknown --locked",
+        "npm run build:fixture",
+        "npm run build:wasm"
+      ]
+    },
+    {
+      "id": "browser_matrix_result",
+      "status": "repo_verified",
+      "owner": "Runtime / engine team and Daxis web platform",
+      "description": "Attach Chromium, Firefox, and WebKit coverage for opening and querying a Daxis descriptor-resolver table, preserving SDK cancellation errors, and surfacing unsupported-feature errors through the real browser worker.",
+      "evidence": [
+        "apps/axon-web/tests/browser-worker-matrix.spec.ts",
+        "tests/conformance/verify_daxis_release_evidence.sh"
+      ],
+      "verificationCommands": [
+        "npm exec -- playwright test --config=playwright.config.ts --grep \"Daxis descriptor-resolver|preserves cancellation errors|surfaces unsupported feature errors\""
+      ]
+    },
+    {
+      "id": "worker_artifact_size",
+      "status": "release_process_required",
+      "owner": "Runtime / engine team",
+      "description": "Attach the worker or axon-web-wasm artifact size report that corresponds to the release commit.",
+      "releaseAttachment": "Worker artifact size output and, for the Daxis DataFusion default worker, output from AXON_DF_SIZE_PACKAGE=axon-web-wasm AXON_DF_SIZE_WASM_STEM=axon_web_wasm AXON_DF_BROTLI_BUDGET_BYTES=6291456 bash tests/perf/report_datafusion_wasm_size.sh when the release process includes the optional size toolchain.",
+      "evidence": [
+        "tests/perf/report_browser_worker_artifact.sh",
+        "docs/release-gates/daxis-browser-datafusion-budget-profile.json",
+        "docs/program/browser-lakehouse-release-handoff-examples/browser-worker-artifact-report.datafusion.json",
+        "docs/program/browser-datafusion-runtime-parity.md"
+      ]
+    },
+    {
+      "id": "dependency_guardrail_result",
+      "status": "repo_verified",
+      "owner": "Runtime / engine team and security engineering",
+      "description": "Attach dependency guardrail evidence showing browser packages do not pick up signing or service-account dependency classes.",
+      "evidence": [
+        "tests/conformance/verify_browser_worker_dependency_boundary.sh",
+        "tests/conformance/verify_axon_web_datafusion_runtime.sh",
+        "tests/security/verify_browser_dependency_guardrails.sh"
+      ],
+      "verificationCommands": [
+        "bash tests/conformance/verify_browser_worker_dependency_boundary.sh",
+        "bash tests/conformance/verify_axon_web_datafusion_runtime.sh"
+      ]
+    },
+    {
+      "id": "known_fallback_reasons",
+      "status": "repo_verified",
+      "owner": "Runtime / engine team and Daxis query platform",
+      "description": "Attach the fallback, block, unsupported-feature, and runtime-error vocabulary Daxis should preserve when routing away from browser execution.",
+      "evidence": [
+        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/program/browser-datafusion-runtime-parity.md",
+        "crates/query-contract/tests/query_contract.rs"
+      ],
+      "verificationCommands": [
+        "cargo test -p query-contract",
+        "cargo test -p wasm-datafusion-session"
+      ]
+    },
+    {
+      "id": "supported_sql_delta_feature_matrix",
+      "status": "repo_verified",
+      "owner": "Runtime / engine team",
+      "description": "Attach the supported SQL, unsupported SQL, Delta feature, schema, and browser DataFusion compatibility matrix.",
+      "evidence": [
+        "docs/program/browser-datafusion-runtime-parity.md",
+        "docs/program/browser-delta-compatibility-matrix.md",
+        "tests/conformance/daxis-browser-datafusion-query-corpus.json"
+      ],
+      "verificationCommands": [
+        "cargo test -p wasm-datafusion-poc --test daxis_query_corpus"
+      ]
+    },
+    {
+      "id": "daxis_compatibility_notes",
+      "status": "repo_verified",
+      "owner": "Runtime / engine team with Daxis platform owners",
+      "description": "Attach Daxis-specific compatibility notes for endpoint names, access modes, release channels, table eligibility, and external proof requirements.",
+      "evidence": [
+        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/release-gates/daxis-production-rollout-decisions.json",
+        "docs/release-gates/daxis-strategy-traceability.json",
+        "docs/release-gates/daxis-external-proof-packet.json"
+      ],
+      "verificationCommands": [
+        "bash tests/conformance/verify_daxis_rollout_decisions.sh",
+        "bash tests/conformance/verify_daxis_strategy_traceability.sh",
+        "bash tests/conformance/verify_daxis_external_proof_packet.sh"
+      ]
+    },
+    {
+      "id": "migration_notes",
+      "status": "release_process_required",
+      "owner": "Release owner with Daxis platform owners",
+      "description": "Attach migration notes for any breaking Daxis contract, runtime, fallback, or compatibility change; attach a no-breaking-change statement otherwise.",
+      "releaseAttachment": "Use docs/release-gates/daxis-release-migration-notes-template.md to attach migration notes or an explicit no-breaking-change statement for this release.",
+      "evidence": [
+        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/release-gates/daxis-release-migration-notes-template.md",
+        "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md"
+      ]
+    },
+    {
+      "id": "external_blockers",
+      "status": "repo_verified",
+      "owner": "Runtime / engine team with Daxis production owners",
+      "description": "Attach the current external blockers and proof packet so Daxis-owned production work is not inferred from repo evidence.",
+      "evidence": [
+        "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
+        "docs/release-gates/daxis-external-proof-packet.json",
+        "docs/program/daxis-external-proof-handoff.md"
+      ],
+      "verificationCommands": [
+        "bash tests/conformance/verify_daxis_external_proof_packet.sh"
+      ]
+    }
+  ],
+  "releaseEvidenceCommands": [
+    "bash tests/conformance/verify_daxis_release_evidence.sh --list",
+    "bash tests/conformance/verify_daxis_release_bundle_manifest.sh"
+  ]
+}

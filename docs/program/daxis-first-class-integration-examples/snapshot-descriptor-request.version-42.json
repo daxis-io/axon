@@ -1,0 +1,10 @@
+{
+  "provider": "gcs",
+  "table_uri": "gs://daxis-prod-lakehouse/sales/orders",
+  "credential_profile": {
+    "id": "daxis-workspace-prod-read",
+    "display_name": "Daxis workspace production read grant"
+  },
+  "requested_access_mode": "auto",
+  "snapshot_version": 42
+}

@@ -7,3 +7,4 @@
 - [ADR-0005: Read-Only MVP First, With Explicit Delta Compatibility Policy](./ADR-0005-read-only-mvp-and-delta-compatibility-policy.md)
 - [ADR-0006: Upstream-First Fork Policy With Explicit Version Cadence](./ADR-0006-upstream-first-fork-policy-and-version-cadence.md)
 - [ADR-0007: Release Gates Prioritize Range Reads, Conformance, Observability, And Constrained Browser Mode](./ADR-0007-release-gates-range-reads-conformance-observability-browser-mode.md)
+- [ADR-0008: Daxis Browser Read Compute Uses Axon Contracts And Daxis Control Plane](./ADR-0008-daxis-browser-read-compute-contract.md)

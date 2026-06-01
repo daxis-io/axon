@@ -7,8 +7,9 @@ mod support;
 
 use delta_control_plane::resolve_snapshot;
 use query_contract::{
-    BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget, QueryErrorCode,
-    QueryRequest, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
+    BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason,
+    QueryErrorCode, QueryExecutionOptions, QueryRequest, QueryRuntimeLimits,
+    ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 use support::{LoopbackObjectServer, TestTableFixture};
 use wasm_query_runtime::{
@@ -306,6 +307,102 @@ fn session_sql_omits_explain_by_default() {
         result.response.explain.is_none(),
         "explain must be None when include_explain is false; got: {:?}",
         result.response.explain
+    );
+}
+
+#[test]
+fn session_sql_enforces_request_runtime_limits() {
+    let fixture = TestTableFixture::create_partitioned();
+    let resolved_snapshot = resolve_latest_snapshot(&fixture);
+    let server = LoopbackObjectServer::from_fixture_paths(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+    );
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
+        .expect("default browser runtime config should be supported");
+    session
+        .cache_table("events", materialized, None)
+        .expect("session should cache snapshot");
+
+    let request = query_request(
+        &resolved_snapshot.table_uri,
+        resolved_snapshot.snapshot_version,
+        "SELECT id FROM axon_table WHERE category = 'A' ORDER BY id LIMIT 2",
+    )
+    .with_options(QueryExecutionOptions {
+        runtime_limits: Some(QueryRuntimeLimits {
+            max_result_rows: Some(1),
+            max_arrow_ipc_bytes: None,
+            max_scan_bytes: None,
+        }),
+        ..QueryExecutionOptions::default()
+    });
+
+    let error = runtime()
+        .block_on(session.sql("events", &request))
+        .expect_err("request row budget should be enforced");
+
+    assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+    assert_eq!(
+        error.fallback_reason,
+        Some(FallbackReason::BrowserRuntimeConstraint)
+    );
+    assert!(
+        error.message.contains("max_rows_returned"),
+        "error should identify the request budget: {}",
+        error.message
+    );
+}
+
+#[test]
+fn session_sql_enforces_request_scan_runtime_limits_before_execution() {
+    let fixture = TestTableFixture::create_partitioned();
+    let resolved_snapshot = resolve_latest_snapshot(&fixture);
+    let server = LoopbackObjectServer::from_fixture_paths(
+        &fixture,
+        resolved_snapshot
+            .active_files
+            .iter()
+            .map(|file| file.path.clone()),
+    );
+    let materialized = materialize_loopback_snapshot(&resolved_snapshot, &server);
+    let mut session = BrowserQuerySession::new(BrowserRuntimeConfig::default(), u64::MAX)
+        .expect("default browser runtime config should be supported");
+    session
+        .cache_table("events", materialized, None)
+        .expect("session should cache snapshot");
+
+    let request = query_request(
+        &resolved_snapshot.table_uri,
+        resolved_snapshot.snapshot_version,
+        "SELECT id FROM axon_table ORDER BY id LIMIT 6",
+    )
+    .with_options(QueryExecutionOptions {
+        runtime_limits: Some(QueryRuntimeLimits {
+            max_result_rows: None,
+            max_arrow_ipc_bytes: None,
+            max_scan_bytes: Some(1),
+        }),
+        ..QueryExecutionOptions::default()
+    });
+
+    let error = runtime()
+        .block_on(session.sql("events", &request))
+        .expect_err("request scan budget should be enforced");
+
+    assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+    assert_eq!(
+        error.fallback_reason,
+        Some(FallbackReason::BrowserRuntimeConstraint)
+    );
+    assert!(
+        error.message.contains("max_scan_bytes"),
+        "error should identify the request budget: {}",
+        error.message
     );
 }
 

@@ -1,0 +1,45 @@
+{
+  "descriptor": {
+    "table_uri": "gs://daxis-prod-lakehouse/sales/orders",
+    "snapshot_version": 42,
+    "partition_column_types": {
+      "order_date": "string"
+    },
+    "browser_compatibility": {
+      "capabilities": {
+        "range_reads": "supported",
+        "signed_url_access": "supported"
+      }
+    },
+    "required_capabilities": {
+      "capabilities": {
+        "range_reads": "supported",
+        "signed_url_access": "supported"
+      }
+    },
+    "active_files": [
+      {
+        "path": "order_date=2026-05-29/part-00000.parquet",
+        "url": "https://storage.googleapis.com/daxis-prod-lakehouse/sales/orders/order_date=2026-05-29/part-00000.parquet?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=redacted&X-Goog-Signature=redacted",
+        "size_bytes": 24576,
+        "partition_values": {
+          "order_date": "2026-05-29"
+        },
+        "stats": "{\"numRecords\":128}"
+      }
+    ]
+  },
+  "provider": "gcs",
+  "table_uri": "gs://daxis-prod-lakehouse/sales/orders",
+  "resolved_snapshot_version": 42,
+  "requested_access_mode": "auto",
+  "actual_access_mode": "signed_url",
+  "expires_at_epoch_ms": 1700000000000,
+  "correlation_id": "daxis-req-01JEXPIRED",
+  "warnings": [],
+  "refresh": {
+    "refresh_url": "https://daxis.example.test/v1/query/delta/snapshot-descriptor/daxis-req-01JEXPIRED/refresh",
+    "refresh_after_epoch_ms": 1699999940000,
+    "same_snapshot_required": true
+  }
+}

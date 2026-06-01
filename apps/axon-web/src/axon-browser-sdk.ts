@@ -80,6 +80,13 @@ export type QueryExecutionOptions = {
   include_explain?: boolean;
   collect_metrics?: boolean;
   result_page?: QueryResultPageRequest;
+  runtime_limits?: QueryRuntimeLimits;
+};
+
+export type QueryRuntimeLimits = {
+  max_result_rows?: number;
+  max_arrow_ipc_bytes?: number;
+  max_scan_bytes?: number;
 };
 
 export type QueryRequest = {
@@ -1030,6 +1037,7 @@ export interface AxonBrowserClient {
     options?: AxonRequestOptions,
   ): Promise<AxonQueryResult>;
   query(name: string, sql: string, options?: AxonQueryOptions): Promise<AxonQueryResult>;
+  cancelQuery(queryId: string, options?: AxonRequestOptions): void;
   dispose(name: string, options?: AxonRequestOptions): Promise<BrowserWorkerDisposedEnvelope>;
   terminate(): void;
 }
@@ -1185,6 +1193,15 @@ export function queryCommand(
       name,
       query: request,
       output: 'arrow_ipc_stream',
+    },
+  };
+}
+
+function cancelQueryCommand(requestId: string, queryId: string): BrowserWorkerCommand {
+  return {
+    cancel: {
+      request_id: requestId,
+      query_id: queryId,
     },
   };
 }
@@ -3653,6 +3670,19 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
       ...success,
       fallbackReason: success.response.fallback_reason,
     };
+  }
+
+  cancelQuery(queryId: string, options: AxonRequestOptions = {}): void {
+    if (this.terminated) {
+      throw new AxonSdkError('Axon browser client has been terminated');
+    }
+
+    const requestId = options.requestId ?? this.requestId();
+    try {
+      this.worker.postMessage(cancelQueryCommand(requestId, queryId));
+    } catch (error) {
+      throw toError(error);
+    }
   }
 
   async dispose(
