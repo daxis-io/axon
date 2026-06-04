@@ -1,0 +1,121 @@
+# Daxis External Proof Attachment Template
+
+Use this template when attaching Daxis-owned production proof to the Axon rollout packet. Complete one copy for each item in `docs/release-gates/daxis-external-proof-packet.json`.
+
+Do not attach browser-visible secrets, signed URLs, raw credentials, service-account material, private customer identifiers, or unredacted tenant data.
+
+## Proof Attachment Metadata
+
+| Field                          | Value |
+| ------------------------------ | ----- |
+| `item_id`                      |       |
+| `milestone`                    |       |
+| `owner`                        |       |
+| `captured_at`                  |       |
+| `environment`                  |       |
+| `rollout_segment`              |       |
+| `artifact_uri`                 |       |
+| `verification_command_or_url`  |       |
+| `exit_status_or_review_status` |       |
+| `rollback_evidence_uri`        |       |
+| `daxis_commit_sha`             |       |
+| `daxis_ref`                    |       |
+| `daxis_origin_remote_url`      |       |
+| `daxis_worktree_status`        |       |
+| `daxis_worktree_review`        |       |
+
+`exit_status_or_review_status` must be one of:
+
+- attached
+- reviewed
+- accepted
+- rejected
+
+## External Proof Items
+
+Use the matching guidance for `item_id`.
+
+Attach Daxis external-state helper output for the rollout segment before accepting any item.
+Helper output must include the Daxis commit SHA, branch or detached-ref label, origin remote URL, and working-tree status from `git rev-parse HEAD`, `git rev-parse --abbrev-ref HEAD`, `git remote get-url origin`, and `git status --short`.
+Classify the Daxis working-tree status as `clean`, `dirty_reviewed`, or `dirty_rejected`; do not accept proof from a dirty Daxis checkout without owner review that ties every modified or untracked path to the rollout segment.
+
+### `daxis_architecture_docs`
+
+- Attach Daxis architecture doc links or commit SHAs.
+- Attach the Daxis browser read-compute terminology diff.
+- Attach named owner approval.
+- Link server-fallback rollback evidence in `rollback_evidence_uri`.
+
+### `daxis_names_axon_default_browser_engine`
+
+- Attach the Daxis product architecture reference naming Axon as the default browser read engine.
+- Attach release-channel or rollout approval showing the default-engine claim is intentional.
+- Attach owner signoff for server fallback as the rollback path.
+
+### `daxis_descriptor_endpoint`
+
+- Attach endpoint test output for `POST /v1/query/delta/snapshot-descriptor`.
+- Attach signed URL or proxy URL scoping evidence.
+- Attach expiry, snapshot mismatch, path escape, and malformed descriptor negative test output.
+- Attach request and correlation ID propagation logs.
+
+### `daxis_frontend_flow`
+
+- Attach Daxis frontend open/query/cancel test output.
+- Attach Daxis UI fallback and block rendering test output.
+- Attach worker command capture showing no credential profile identifiers or secrets.
+- Attach browser matrix output for supported rollout browsers.
+
+### `daxis_read_access_plan_endpoint`
+
+- Attach endpoint test output for `POST /v1/catalog/read-access-plan`.
+- Attach policy-denied and policy-unknown test output.
+- Attach fallback-required routing test output.
+- Attach correlation logs from gateway, catalog, and query service.
+
+### `storage_cors_proxy_validation`
+
+- Attach production XML endpoint CORS validation output.
+- Attach proxy range-read validation output.
+- Attach allowed origin, allowed method, exposed header, and range-read evidence.
+- Attach URL redaction evidence for logs and UI events.
+
+### `production_dashboards`
+
+- Attach dashboard URLs.
+- Attach alert owner list.
+- Attach sample dashboard panels for the first rollout segment.
+- Attach metric freshness and retention policy.
+
+### `production_runbooks`
+
+- Attach runbook URLs.
+- Attach oncall ownership and escalation policy.
+- Attach incident drill or tabletop result.
+- Attach rollback procedure evidence.
+
+### `rollout_controls`
+
+- Attach rollout configuration schema.
+- Attach kill-switch test output.
+- Attach segment promotion and rollback audit log.
+- Attach server fallback routing proof.
+
+### `production_table_compatibility_dashboard`
+
+- Attach compatibility dashboard URL.
+- Attach production table inventory export.
+- Attach the last Axon release and query corpus result per rollout segment.
+- Attach blocked or fallback table-class list.
+
+## Review
+
+| Role                        | Name | Review state | Notes |
+| --------------------------- | ---- | ------------ | ----- |
+| Daxis product owner         |      |              |       |
+| Daxis platform owner        |      |              |       |
+| Daxis catalog/storage owner |      |              |       |
+| Daxis web platform owner    |      |              |       |
+| Daxis security owner        |      |              |       |
+| Daxis SRE owner             |      |              |       |
+| Axon runtime / engine owner |      |              |       |

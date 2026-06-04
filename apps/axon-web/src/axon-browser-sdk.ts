@@ -116,6 +116,14 @@ export type BrowserHttpSnapshotDescriptor = {
   active_files: BrowserHttpFileDescriptor[];
 };
 
+export type BrowserHttpParquetDatasetDescriptor = {
+  table_uri: string;
+  partition_column_types?: Partial<Record<string, PartitionColumnType>>;
+  browser_compatibility?: CapabilityReport;
+  required_capabilities?: CapabilityReport;
+  files: BrowserHttpFileDescriptor[];
+};
+
 export type DeltaSharingProfileSource = 'uploaded_profile' | 'oidc_profile_url';
 export type DeltaSharingAuthMode = 'bearer' | 'oidc';
 export type DeltaSharingResponseFormat = 'auto' | 'parquet' | 'delta';
@@ -639,6 +647,12 @@ export type BrowserWorkerOpenDeltaTableCommand = {
   snapshot: BrowserHttpSnapshotDescriptor;
 };
 
+export type BrowserWorkerOpenParquetDatasetCommand = {
+  request_id: string;
+  name: string;
+  dataset: BrowserHttpParquetDatasetDescriptor;
+};
+
 export type BrowserWorkerInspectParquetCommand = {
   request_id: string;
   name: string;
@@ -666,6 +680,7 @@ export type BrowserWorkerDisposeCommand = {
 export type BrowserWorkerCommand =
   | { open_table: BrowserWorkerOpenTableCommand }
   | { open_delta_table: BrowserWorkerOpenDeltaTableCommand }
+  | { open_parquet_dataset: BrowserWorkerOpenParquetDatasetCommand }
   | { inspect_parquet: BrowserWorkerInspectParquetCommand }
   | { sql: BrowserWorkerSqlCommand }
   | { cancel: BrowserWorkerCancelCommand }
@@ -941,15 +956,15 @@ export const AXON_BROWSER_BUNDLE_MANIFEST: BrowserBundleManifest = {
     {
       id: 'baseline',
       tier: 'baseline',
-      workerUrl: '/workers/browser-engine-worker.js',
-      wasmUrl: '/workers/browser_engine_worker.wasm',
+      workerUrl: '/workers/axon-web-worker.js',
+      wasmUrl: '/workers/axon_web_wasm_bg.wasm',
     },
     {
       id: 'simd',
       tier: 'simd',
       status: 'future',
-      workerUrl: '/workers/browser-engine-worker.simd.js',
-      wasmUrl: '/workers/browser_engine_worker.simd.wasm',
+      workerUrl: '/workers/axon-web-worker.simd.js',
+      wasmUrl: '/workers/axon_web_wasm_bg.simd.wasm',
       requiredFeatures: {
         wasmSIMD: true,
       },
@@ -958,8 +973,8 @@ export const AXON_BROWSER_BUNDLE_MANIFEST: BrowserBundleManifest = {
       id: 'threaded',
       tier: 'threaded',
       status: 'future',
-      workerUrl: '/workers/browser-engine-worker.threaded.js',
-      wasmUrl: '/workers/browser_engine_worker.threaded.wasm',
+      workerUrl: '/workers/axon-web-worker.threaded.js',
+      wasmUrl: '/workers/axon_web_wasm_bg.threaded.wasm',
       requiredFeatures: {
         crossOriginIsolated: true,
         wasmThreads: true,
@@ -969,8 +984,8 @@ export const AXON_BROWSER_BUNDLE_MANIFEST: BrowserBundleManifest = {
       id: 'simd-threaded',
       tier: 'simd_threaded',
       status: 'future',
-      workerUrl: '/workers/browser-engine-worker.simd-threaded.js',
-      wasmUrl: '/workers/browser_engine_worker.simd-threaded.wasm',
+      workerUrl: '/workers/axon-web-worker.simd-threaded.js',
+      wasmUrl: '/workers/axon_web_wasm_bg.simd-threaded.wasm',
       requiredFeatures: {
         crossOriginIsolated: true,
         wasmSIMD: true,
@@ -1022,6 +1037,11 @@ export interface AxonBrowserClient {
     name: string,
     options: DeltaSharingOpenOptions,
   ): Promise<DeltaSharingOpenedEnvelope>;
+  openParquetDataset(
+    name: string,
+    dataset: BrowserHttpParquetDatasetDescriptor,
+    options?: AxonRequestOptions,
+  ): Promise<BrowserWorkerOpenedEnvelope>;
   openUnityCatalogTable(
     name: string,
     options: UnityCatalogOpenOptions,
@@ -1046,6 +1066,11 @@ type PendingRequest = {
   expected: 'opened' | 'success' | 'parquet_inspection' | 'disposed';
   resolve: (response: BrowserWorkerResponseEnvelope) => void;
   reject: (error: Error) => void;
+};
+
+type OpenedTableMetadata = {
+  table_uri: string;
+  snapshot_version?: number;
 };
 
 export class AxonWorkerError extends Error {
@@ -1178,6 +1203,20 @@ export function openDeltaTableCommand(
       request_id: requestId,
       name,
       snapshot,
+    },
+  };
+}
+
+export function openParquetDatasetCommand(
+  requestId: string,
+  name: string,
+  dataset: BrowserHttpParquetDatasetDescriptor,
+): BrowserWorkerCommand {
+  return {
+    open_parquet_dataset: {
+      request_id: requestId,
+      name,
+      dataset,
     },
   };
 }
@@ -3388,7 +3427,7 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
   private readonly requestId: RequestIdFactory;
   private readonly onEvent?: BrowserWorkerEventHandler;
   private readonly pending = new Map<string, PendingRequest>();
-  private readonly tables = new Map<string, BrowserHttpSnapshotDescriptor>();
+  private readonly tables = new Map<string, OpenedTableMetadata>();
   private terminated = false;
 
   private readonly handleWorkerMessage = (event: MessageEvent<unknown>): void => {
@@ -3471,7 +3510,34 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
         `worker opened table '${opened.name}' for request '${requestId}', but '${name}' was requested`,
       );
     }
-    this.tables.set(name, snapshot);
+    this.tables.set(name, {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+    });
+    return opened;
+  }
+
+  async openParquetDataset(
+    name: string,
+    dataset: BrowserHttpParquetDatasetDescriptor,
+    options: AxonRequestOptions = {},
+  ): Promise<BrowserWorkerOpenedEnvelope> {
+    const requestId = options.requestId ?? this.requestId();
+    const response = await this.send(openParquetDatasetCommand(requestId, name, dataset), 'opened');
+    if (!('opened' in response)) {
+      throw new AxonProtocolError(
+        `worker response for request '${requestId}' did not contain an opened envelope`,
+      );
+    }
+    const opened = response.opened;
+    if (opened.name !== name) {
+      throw new AxonProtocolError(
+        `worker opened table '${opened.name}' for request '${requestId}', but '${name}' was requested`,
+      );
+    }
+    this.tables.set(name, {
+      table_uri: dataset.table_uri,
+    });
     return opened;
   }
 
@@ -3798,6 +3864,9 @@ function commandRequestId(command: BrowserWorkerCommand): string {
   }
   if ('open_delta_table' in command) {
     return command.open_delta_table.request_id;
+  }
+  if ('open_parquet_dataset' in command) {
+    return command.open_parquet_dataset.request_id;
   }
   if ('inspect_parquet' in command) {
     return command.inspect_parquet.request_id;

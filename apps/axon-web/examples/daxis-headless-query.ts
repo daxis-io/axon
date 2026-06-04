@@ -3,6 +3,7 @@ import {
   redactUrlSecrets,
   type ArrowIpcResult,
   type AxonBrowserClient,
+  type BrowserAccessMode,
   type BrowserHttpSnapshotDescriptor,
   type BrowserHttpFileDescriptor,
   type CapabilityKey,
@@ -162,6 +163,50 @@ export type DaxisRuntimePreference = {
   allow_remote_fallback: boolean;
 };
 
+const DAXIS_SURFACE_KINDS = new Set<DaxisSurfaceKind>([
+  'agent',
+  'dashboard_tile',
+  'builder',
+  'saved_query',
+  'api',
+]);
+const DAXIS_INTENT_KINDS = new Set<DaxisIntentKind>(['sql', 'semantic_query']);
+const DAXIS_INPUT_ARTIFACT_KINDS = new Set<DaxisInputArtifactKind>([
+  'raw_sql',
+  'saved_sql',
+  'builder_plan',
+  'semantic_plan',
+]);
+const DAXIS_COMPILED_ARTIFACT_KINDS = new Set<DaxisCompiledArtifactKind>(['validated_sql']);
+const DAXIS_SURFACE_METADATA = {
+  agent: {
+    intentKind: 'semantic_query',
+    inputArtifactKind: 'semantic_plan',
+  },
+  dashboard_tile: {
+    intentKind: 'sql',
+    inputArtifactKind: 'saved_sql',
+  },
+  builder: {
+    intentKind: 'semantic_query',
+    inputArtifactKind: 'builder_plan',
+  },
+  saved_query: {
+    intentKind: 'sql',
+    inputArtifactKind: 'saved_sql',
+  },
+  api: {
+    intentKind: 'sql',
+    inputArtifactKind: 'raw_sql',
+  },
+} satisfies Record<
+  DaxisSurfaceKind,
+  {
+    intentKind: DaxisIntentKind;
+    inputArtifactKind: DaxisInputArtifactKind;
+  }
+>;
+
 export type DaxisApprovedAxonReadDescriptor = {
   schema_version: 'daxis.approved_axon_read.v1';
   request_id: string;
@@ -185,6 +230,13 @@ export type DaxisResultMetrics = {
   arrow_ipc_bytes?: number;
   scan_bytes?: number;
   duration_ms?: number;
+  files_touched?: number;
+  files_skipped?: number;
+  row_groups_touched?: number;
+  row_groups_skipped?: number;
+  footer_reads?: number;
+  snapshot_bootstrap_duration_ms?: number;
+  access_mode?: BrowserAccessMode;
 };
 
 export type DaxisResultEnvelope = {
@@ -288,6 +340,7 @@ export async function executeDaxisApprovedAxonRead(
         envelope: terminalEnvelope(descriptor, {
           status: 'fallback',
           fallbackReason: 'runtime_budget_overflow',
+          metrics: daxisMetricsFromQueryResult(result.response.metrics, result.result),
           diagnostics: budgetOverflowDiagnostics,
         }),
         arrowIpc: null,
@@ -443,6 +496,31 @@ export function validateDaxisApprovedAxonReadDescriptor(
       'Daxis-approved descriptor v1 requires exactly one table descriptor',
     );
   }
+  const surfaceKind = requireAllowedValue(
+    descriptor.surface_kind,
+    'surface_kind',
+    DAXIS_SURFACE_KINDS,
+    'unsupported_surface',
+  );
+  const intentKind = requireAllowedValue(
+    descriptor.intent_kind,
+    'intent_kind',
+    DAXIS_INTENT_KINDS,
+    'invalid_descriptor',
+  );
+  const inputArtifactKind = requireAllowedValue(
+    descriptor.input_artifact_kind,
+    'input_artifact_kind',
+    DAXIS_INPUT_ARTIFACT_KINDS,
+    'invalid_descriptor',
+  );
+  const compiledArtifactKind = requireAllowedValue(
+    descriptor.compiled_artifact_kind,
+    'compiled_artifact_kind',
+    DAXIS_COMPILED_ARTIFACT_KINDS,
+    'invalid_descriptor',
+  );
+  validateSurfaceMetadata(surfaceKind, intentKind, inputArtifactKind);
   validateLimits(descriptor.limits, nowEpochMs);
   const table = validateApprovedTableDescriptor(descriptor.tables[0]);
   return {
@@ -452,10 +530,10 @@ export function validateDaxisApprovedAxonReadDescriptor(
     query_id: descriptor.query_id,
     execution_id: descriptor.execution_id,
     workspace_id: descriptor.workspace_id,
-    surface_kind: descriptor.surface_kind,
-    intent_kind: descriptor.intent_kind,
-    input_artifact_kind: descriptor.input_artifact_kind,
-    compiled_artifact_kind: descriptor.compiled_artifact_kind,
+    surface_kind: surfaceKind,
+    intent_kind: intentKind,
+    input_artifact_kind: inputArtifactKind,
+    compiled_artifact_kind: compiledArtifactKind,
     validated_sql: { ...descriptor.validated_sql },
     tables: [table],
     access_proof: { ...descriptor.access_proof },
@@ -499,17 +577,37 @@ function executedEnvelope(
     status: 'executed',
     executionEngine: 'axon_browser',
     resultTransport: 'arrow_ipc',
-    metrics: {
-      rows_returned: metrics.rows_emitted,
-      arrow_ipc_bytes: arrowIpc.bytes.byteLength,
-      scan_bytes: metrics.bytes_fetched,
-      duration_ms: metrics.duration_ms,
-    },
+    metrics: daxisMetricsFromQueryResult(metrics, arrowIpc),
     diagnostics: {
       ...(options.workerArtifactId ? { worker_artifact_id: options.workerArtifactId } : {}),
       sql_fingerprint: descriptor.validated_sql.fingerprint,
     },
   });
+}
+
+function daxisMetricsFromQueryResult(
+  metrics: QueryMetricsSummary,
+  arrowIpc: ArrowIpcResult,
+): DaxisResultMetrics {
+  return {
+    rows_returned: metrics.rows_emitted,
+    arrow_ipc_bytes: arrowIpc.bytes.byteLength,
+    scan_bytes: metrics.bytes_fetched,
+    duration_ms: metrics.duration_ms,
+    files_touched: metrics.files_touched,
+    files_skipped: metrics.files_skipped,
+    ...(metrics.row_groups_touched !== undefined
+      ? { row_groups_touched: metrics.row_groups_touched }
+      : {}),
+    ...(metrics.row_groups_skipped !== undefined
+      ? { row_groups_skipped: metrics.row_groups_skipped }
+      : {}),
+    ...(metrics.footer_reads !== undefined ? { footer_reads: metrics.footer_reads } : {}),
+    ...(metrics.snapshot_bootstrap_duration_ms !== undefined
+      ? { snapshot_bootstrap_duration_ms: metrics.snapshot_bootstrap_duration_ms }
+      : {}),
+    ...(metrics.access_mode !== undefined ? { access_mode: metrics.access_mode } : {}),
+  };
 }
 
 function resultBudgetOverflowDiagnostics(
@@ -702,6 +800,35 @@ function requireNonEmpty(value: string, field: string): void {
     throw new DaxisHeadlessQueryError(
       'invalid_descriptor',
       `Daxis-approved descriptor ${field} must not be empty`,
+    );
+  }
+}
+
+function requireAllowedValue<T extends string>(
+  value: unknown,
+  field: string,
+  allowedValues: ReadonlySet<T>,
+  code: DaxisHeadlessQueryError['code'],
+): T {
+  if (typeof value !== 'string' || !allowedValues.has(value as T)) {
+    throw new DaxisHeadlessQueryError(
+      code,
+      `Daxis-approved descriptor ${field} must be one of ${Array.from(allowedValues).join(', ')}`,
+    );
+  }
+  return value as T;
+}
+
+function validateSurfaceMetadata(
+  surfaceKind: DaxisSurfaceKind,
+  intentKind: DaxisIntentKind,
+  inputArtifactKind: DaxisInputArtifactKind,
+): void {
+  const expected = DAXIS_SURFACE_METADATA[surfaceKind];
+  if (intentKind !== expected.intentKind || inputArtifactKind !== expected.inputArtifactKind) {
+    throw new DaxisHeadlessQueryError(
+      'invalid_descriptor',
+      `Daxis-approved descriptor surface ${surfaceKind} must use intent_kind=${expected.intentKind} and input_artifact_kind=${expected.inputArtifactKind}`,
     );
   }
 }

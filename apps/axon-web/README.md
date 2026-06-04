@@ -61,6 +61,12 @@ When validating the local Delta editor flow against an existing dev server, run 
 PLAYWRIGHT_BASE_URL=https://127.0.0.1:5173 npm run test:browser:local-delta -- --reporter=line
 ```
 
+The public GCS live smoke is env-gated. Without `AXON_LIVE_PUBLIC_GCS_TABLE_URI`, it reports skips without starting Vite; with the variable set, Playwright starts Vite for the browser query path.
+
+```bash
+AXON_LIVE_PUBLIC_GCS_TABLE_URI=gs://bucket/table npm run test:browser:public-gcs-live -- --reporter=line
+```
+
 In the Codex macOS execution sandbox, Chromium can fail before any app code runs with `bootstrap_check_in ... MachPortRendezvousServer ... Permission denied`. Treat that as an environment failure and rerun the same Playwright browser command outside the sandbox or with elevated execution permissions before diagnosing app behavior.
 
 To run one browser while iterating:
@@ -80,6 +86,8 @@ The app package also carries the first TypeScript SDK wrapper for Axon's browser
 `openDeltaLocation()` is a thin SDK wrapper around a trusted Delta snapshot descriptor resolver. It sends a logical object-store URI plus an opaque storage access profile, validates the resolver envelope, enforces descriptor expiry with `descriptor_expired`, asserts `resolved_snapshot_version === descriptor.snapshot_version`, and then forwards the returned `BrowserHttpSnapshotDescriptor` unchanged through the existing `openDeltaTable()` worker path. The resolved open result includes resolver metadata such as `resolved_snapshot_version`, `actual_access_mode`, `expires_at_epoch_ms`, and `correlation_id`, but it does not include descriptor file URLs. Resolver access modes are separate from runtime `BrowserAccessMode`: `auto`, `signed_url`, and `proxy` describe resolver behavior, while the worker still receives browser-safe HTTP descriptors.
 
 `openUnityCatalogTable()` is contract-first for UC. It asks an authenticated app/BFF session for a `ReadAccessPlan`, consumes `brokered_delta` and `delta_sharing` plans by adapting them into the existing `openDeltaTable()` descriptor path, returns structured `sql_fallback_required` or `blocked` states before worker handoff, and never accepts browser-owned UC tokens or client secrets.
+
+`openParquetDataset()` opens ordinary Parquet files without Delta log metadata. The caller supplies a `BrowserHttpParquetDatasetDescriptor` with browser-safe file URLs, optional partition metadata, and the logical dataset URI used by later `query(name, sql)` calls. Unlike Delta opens, Parquet dataset queries do not require or inject a `snapshot_version`.
 
 ```ts
 import {
@@ -107,6 +115,24 @@ const arrowIpcBytes = result.result.bytes;
 
 await client.dispose('events');
 client.terminate();
+```
+
+Plain Parquet open:
+
+```ts
+await client.openParquetDataset('events', {
+  table_uri: 'https://data.example.test/events',
+  files: [
+    {
+      path: 'part-000.parquet',
+      url: 'https://data.example.test/events/part-000.parquet',
+      size_bytes: 1048576,
+      partition_values: {},
+    },
+  ],
+});
+
+const result = await client.query('events', 'SELECT COUNT(*) AS row_count FROM events');
 ```
 
 Resolver-backed open:

@@ -21,11 +21,11 @@ use futures_util::{
 #[cfg(test)]
 use parquet::record::Field as ParquetField;
 use query_contract::{
-    validate_browser_object_url, BrowserAccessMode, BrowserHttpSnapshotDescriptor,
-    BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport, CapabilityState, ExecutionTarget,
-    FallbackReason, ParquetInspectionSummary, PartitionColumnType, QueryError, QueryErrorCode,
-    QueryMetricsSummary, QueryRequest, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
-    SnapshotResolutionRequest,
+    validate_browser_object_url, BrowserAccessMode, BrowserHttpParquetDatasetDescriptor,
+    BrowserHttpSnapshotDescriptor, BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport,
+    CapabilityState, ExecutionTarget, FallbackReason, ParquetInspectionSummary,
+    PartitionColumnType, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest,
+    ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 use reqwest::Url;
 use sqlparser::ast::{
@@ -1677,6 +1677,65 @@ impl BrowserRuntimeSession {
                 .ok_or_else(|| {
                     execution_runtime_error(format!(
                         "resolved snapshot file '{}' did not have a browser object source",
+                        file.path
+                    ))
+                })
+        })
+    }
+
+    /// Validates and materializes a browser HTTP Parquet dataset descriptor without Delta log
+    /// snapshot metadata. Browser builds accept HTTPS or browser-local blob URLs; host tests may
+    /// also use loopback HTTP servers for deterministic range-read coverage.
+    pub fn materialize_parquet_dataset(
+        &self,
+        descriptor: &BrowserHttpParquetDatasetDescriptor,
+    ) -> Result<MaterializedBrowserSnapshot, QueryError> {
+        validate_unique_descriptor_paths(&descriptor.files)?;
+        let resolved = ResolvedSnapshotDescriptor {
+            table_uri: descriptor.table_uri.clone(),
+            snapshot_version: 0,
+            partition_column_types: descriptor.partition_column_types.clone(),
+            browser_compatibility: effective_browser_compatibility(
+                &descriptor.browser_compatibility,
+                &descriptor.required_capabilities,
+            ),
+            required_capabilities: descriptor.required_capabilities.clone(),
+            active_files: descriptor
+                .files
+                .iter()
+                .map(|file| ResolvedFileDescriptor {
+                    path: file.path.clone(),
+                    size_bytes: file.size_bytes,
+                    partition_values: file.partition_values.clone(),
+                    stats: file.stats.clone(),
+                })
+                .collect(),
+        };
+        let object_sources_by_path = descriptor
+            .files
+            .iter()
+            .map(|file| {
+                Ok((
+                    file.path.clone(),
+                    BrowserObjectSource {
+                        url: validate_browser_object_url(
+                            &file.url,
+                            runtime_target(),
+                            BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTestsOrBrowserLocalBlob,
+                            "browser object URL",
+                        )?,
+                    },
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, QueryError>>()?;
+
+        self.materialize_resolved_snapshot(&resolved, |file| {
+            object_sources_by_path
+                .get(&file.path)
+                .cloned()
+                .ok_or_else(|| {
+                    execution_runtime_error(format!(
+                        "Parquet dataset file '{}' did not have a browser object source",
                         file.path
                     ))
                 })

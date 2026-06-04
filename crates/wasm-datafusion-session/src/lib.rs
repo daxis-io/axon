@@ -10,9 +10,10 @@ use std::ops::ControlFlow;
 
 use arrow_schema::TimeUnit;
 use query_contract::{
-    BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, ParquetInspectionSummary,
-    PartitionColumnType, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest,
-    QueryResponse, QueryResultPage, QueryRuntimeLimits, MAX_QUERY_RESULT_PAGE_LIMIT,
+    BrowserHttpParquetDatasetDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget,
+    FallbackReason, ParquetInspectionSummary, PartitionColumnType, QueryError, QueryErrorCode,
+    QueryMetricsSummary, QueryRequest, QueryResponse, QueryResultPage, QueryRuntimeLimits,
+    MAX_QUERY_RESULT_PAGE_LIMIT,
 };
 use sqlparser::ast::{
     ObjectName, Query as SqlQuery, Select, SelectFlavor, SetExpr as SqlSetExpr,
@@ -37,6 +38,7 @@ use wasm_query_runtime::{
 pub const OWNER: &str = "Runtime / engine team";
 pub const RESPONSIBILITY: &str =
     "DataFusion-backed browser session for UI/runtime builds over browser-safe descriptors.";
+const PARQUET_DATASET_RUNTIME_VERSION: i64 = 0;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BrowserDataFusionQueryBudget {
@@ -155,8 +157,28 @@ impl BrowserDataFusionSession {
         name: impl Into<String>,
         descriptor: BrowserHttpSnapshotDescriptor,
     ) -> Result<(), QueryError> {
-        let name = name.into();
         let materialized = self.runtime.materialize_snapshot(&descriptor)?;
+        self.open_materialized_table(name.into(), descriptor, materialized)
+            .await
+    }
+
+    pub async fn open_parquet_dataset(
+        &mut self,
+        name: impl Into<String>,
+        dataset: BrowserHttpParquetDatasetDescriptor,
+    ) -> Result<(), QueryError> {
+        let materialized = self.runtime.materialize_parquet_dataset(&dataset)?;
+        let descriptor = snapshot_descriptor_from_parquet_dataset(dataset);
+        self.open_materialized_table(name.into(), descriptor, materialized)
+            .await
+    }
+
+    async fn open_materialized_table(
+        &mut self,
+        name: String,
+        descriptor: BrowserHttpSnapshotDescriptor,
+        materialized: MaterializedBrowserSnapshot,
+    ) -> Result<(), QueryError> {
         let bootstrapped = if materialized.active_files().is_empty() {
             None
         } else {
@@ -416,6 +438,19 @@ impl CachedDataFusionTable {
 
     pub fn last_used_millis(&self) -> u64 {
         self.last_used_millis
+    }
+}
+
+fn snapshot_descriptor_from_parquet_dataset(
+    dataset: BrowserHttpParquetDatasetDescriptor,
+) -> BrowserHttpSnapshotDescriptor {
+    BrowserHttpSnapshotDescriptor {
+        table_uri: dataset.table_uri,
+        snapshot_version: PARQUET_DATASET_RUNTIME_VERSION,
+        partition_column_types: dataset.partition_column_types,
+        browser_compatibility: dataset.browser_compatibility,
+        required_capabilities: dataset.required_capabilities,
+        active_files: dataset.files,
     }
 }
 

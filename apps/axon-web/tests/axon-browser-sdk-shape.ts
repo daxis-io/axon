@@ -9,6 +9,7 @@ import {
   type BrowserDeltaSource,
   type BrowserBundleManifest,
   type BrowserHttpFileDescriptor,
+  type BrowserHttpParquetDatasetDescriptor,
   type BrowserHttpSnapshotDescriptor,
   type BrowserObjectGrantDescriptor,
   type DeltaLocationResolutionMode,
@@ -39,8 +40,24 @@ const snapshot: BrowserHttpSnapshotDescriptor = {
   ],
 };
 
+const parquetDataset: BrowserHttpParquetDatasetDescriptor = {
+  table_uri: 'https://example.invalid/datasets/events',
+  partition_column_types: {},
+  browser_compatibility: { capabilities: {} },
+  required_capabilities: { capabilities: {} },
+  files: [
+    {
+      path: 'part-000.parquet',
+      url: 'https://example.invalid/part-000.parquet',
+      size_bytes: 128,
+      partition_values: {},
+    },
+  ],
+};
+
 async function sdkShapeCompiles(client: AxonBrowserClient): Promise<Uint8Array> {
   await client.openDeltaTable('events', snapshot);
+  await client.openParquetDataset('parquet_events', parquetDataset);
 
   const request: QueryRequest = {
     table_uri: snapshot.table_uri,

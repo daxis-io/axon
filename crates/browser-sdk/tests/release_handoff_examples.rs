@@ -31,6 +31,27 @@ fn browser_worker_open_table_example_matches_contract() {
 }
 
 #[test]
+fn browser_worker_open_parquet_dataset_example_matches_contract() {
+    let command: BrowserWorkerCommand = serde_json::from_str(&read_example(
+        "browser-worker-command.open-parquet-dataset.json",
+    ))
+    .expect("browser worker open_parquet_dataset example should deserialize");
+
+    match command {
+        BrowserWorkerCommand::OpenParquetDataset(command) => {
+            assert_eq!(command.request_id, "req-open-parquet-001");
+            assert_eq!(command.name, "plain_parquet_events");
+            assert_eq!(
+                command.dataset.table_uri,
+                "https://storage.example.invalid/datasets/plain-parquet-events"
+            );
+            assert_eq!(command.dataset.files.len(), 1);
+        }
+        _ => panic!("expected open_parquet_dataset command example"),
+    }
+}
+
+#[test]
 fn browser_worker_sql_example_matches_contract() {
     let command: BrowserWorkerCommand =
         serde_json::from_str(&read_example("browser-worker-request.supported.json"))

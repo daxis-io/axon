@@ -49,6 +49,7 @@ Record every Daxis-facing change. Mark unchanged areas as `unchanged`; do not le
 - Worker artifact size output:
 - Daxis production rollout decision:
 - External proof packet status:
+- Stable default promotion state:
 
 ## Migration Plan
 

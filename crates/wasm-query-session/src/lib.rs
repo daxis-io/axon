@@ -8,9 +8,9 @@ use std::collections::BTreeMap;
 use std::mem::size_of;
 
 use query_contract::{
-    BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, ParquetInspectionSummary,
-    QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse,
-    QueryRuntimeLimits,
+    BrowserHttpParquetDatasetDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget,
+    FallbackReason, ParquetInspectionSummary, QueryError, QueryErrorCode, QueryMetricsSummary,
+    QueryRequest, QueryResponse, QueryRuntimeLimits,
 };
 use wasm_query_runtime::{
     runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserExecutionPlan,
@@ -21,6 +21,7 @@ use wasm_query_runtime::{
 pub const OWNER: &str = "Runtime / engine team";
 pub const RESPONSIBILITY: &str =
     "Legacy in-memory browser session caching for narrow runtime-owned descriptors and snapshots.";
+const PARQUET_DATASET_RUNTIME_VERSION: i64 = 0;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BrowserQueryBudget {
@@ -137,6 +138,26 @@ impl BrowserQuerySession {
     ) -> Result<(), QueryError> {
         let name = name.into();
         let materialized = self.runtime.materialize_snapshot(&descriptor)?;
+        let bootstrapped = if materialized.active_files().is_empty() {
+            None
+        } else {
+            Some(
+                self.runtime
+                    .bootstrap_snapshot_metadata(&materialized)
+                    .await?,
+            )
+        };
+        self.insert_table(name, Some(descriptor), materialized, bootstrapped, None)
+    }
+
+    pub async fn open_parquet_dataset(
+        &mut self,
+        name: impl Into<String>,
+        dataset: BrowserHttpParquetDatasetDescriptor,
+    ) -> Result<(), QueryError> {
+        let name = name.into();
+        let materialized = self.runtime.materialize_parquet_dataset(&dataset)?;
+        let descriptor = snapshot_descriptor_from_parquet_dataset(dataset);
         let bootstrapped = if materialized.active_files().is_empty() {
             None
         } else {
@@ -370,6 +391,19 @@ impl CachedTable {
 
     pub fn last_used_millis(&self) -> u64 {
         self.last_used_millis
+    }
+}
+
+fn snapshot_descriptor_from_parquet_dataset(
+    dataset: BrowserHttpParquetDatasetDescriptor,
+) -> BrowserHttpSnapshotDescriptor {
+    BrowserHttpSnapshotDescriptor {
+        table_uri: dataset.table_uri,
+        snapshot_version: PARQUET_DATASET_RUNTIME_VERSION,
+        partition_column_types: dataset.partition_column_types,
+        browser_compatibility: dataset.browser_compatibility,
+        required_capabilities: dataset.required_capabilities,
+        active_files: dataset.files,
     }
 }
 

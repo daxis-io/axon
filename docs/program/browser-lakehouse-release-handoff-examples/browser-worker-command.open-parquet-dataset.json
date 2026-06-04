@@ -1,0 +1,24 @@
+{
+  "open_parquet_dataset": {
+    "request_id": "req-open-parquet-001",
+    "name": "plain_parquet_events",
+    "dataset": {
+      "table_uri": "https://storage.example.invalid/datasets/plain-parquet-events",
+      "required_capabilities": {
+        "capabilities": {
+          "range_reads": "supported"
+        }
+      },
+      "files": [
+        {
+          "path": "event_date=2026-06-01/part-000.parquet",
+          "url": "https://storage.example.invalid/datasets/plain-parquet-events/event_date=2026-06-01/part-000.parquet",
+          "size_bytes": 1048576,
+          "partition_values": {
+            "event_date": "2026-06-01"
+          }
+        }
+      ]
+    }
+  }
+}

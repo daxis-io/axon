@@ -3,13 +3,14 @@
 set -euo pipefail
 
 artifact="${1:-target/wasm32-unknown-unknown/release/browser_engine_worker.wasm}"
+dependency_package="${AXON_BROWSER_DEPENDENCY_PACKAGE:-browser-engine-worker}"
 tree_file="$(mktemp)"
 trap 'rm -f "$tree_file"' EXIT
 
 if [ -n "${AXON_BROWSER_WORKER_TREE_FILE:-}" ]; then
   cp "$AXON_BROWSER_WORKER_TREE_FILE" "$tree_file"
 else
-  cargo tree -p browser-engine-worker --target wasm32-unknown-unknown --locked --prefix none > "$tree_file"
+  cargo tree -p "$dependency_package" --target wasm32-unknown-unknown --locked --prefix none > "$tree_file"
 fi
 
 denylist='^(aws-config|aws-credential-types|aws-sdk-[^[:space:]]*|aws-smithy-[^[:space:]]*|azure_core|azure_identity|azure_storage|gcp_auth|google-cloud-[^[:space:]]*|jsonwebtoken|opendal|yup-oauth2)([[:space:]]|$)'

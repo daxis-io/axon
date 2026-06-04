@@ -5,11 +5,55 @@
   "sourceDocs": [
     "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md",
     "docs/release-gates/daxis-strategy-traceability.json",
+    "docs/release-gates/daxis-release-bundle-manifest.json",
     "docs/release-gates/daxis-production-rollout-decisions.json",
     "docs/release-gates/daxis-operational-readiness.json",
+    "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
     "docs/program/daxis-external-proof-handoff.md",
+    "docs/release-gates/daxis-external-proof-attachment-template.md",
     "docs/program/daxis-first-class-integration-strategy.md"
   ],
+  "daxisVerificationPlan": {
+    "purpose": "Current-state checks Daxis owners can run before attaching Daxis proof artifacts. These commands make the Daxis-side evidence reviewable, but they do not replace production endpoint, dashboard, rollout-control, or oncall proof.",
+    "axonHelperCommand": "bash tests/conformance/verify_daxis_external_state.sh",
+    "activeArchitecturePaths": [
+      "README.md",
+      "CLAUDE.md",
+      "docs/architecture/daxis-control-plane-architecture.md",
+      "crates/daxis-query/src/lib.rs",
+      "crates/daxis-query/tests/contracts.rs"
+    ],
+    "commands": [
+      "git rev-parse HEAD",
+      "git rev-parse --abbrev-ref HEAD",
+      "git remote get-url origin",
+      "git status --short",
+      "cargo test -p daxis-query --test contracts",
+      "rg -n \"Axon browser WASM|Browser read compute|Headless query gateway\" README.md CLAUDE.md docs/architecture/daxis-control-plane-architecture.md crates/daxis-query"
+    ]
+  },
+  "proofAttachmentSchema": {
+    "purpose": "Minimum metadata every Daxis proof attachment carries during rollout review so proof is attributable, repeatable, scoped to a rollout segment, and tied to rollback evidence.",
+    "templatePath": "docs/release-gates/daxis-external-proof-attachment-template.md",
+    "requiredMetadata": [
+      "item_id",
+      "milestone",
+      "owner",
+      "captured_at",
+      "environment",
+      "rollout_segment",
+      "artifact_uri",
+      "verification_command_or_url",
+      "exit_status_or_review_status",
+      "rollback_evidence_uri",
+      "daxis_commit_sha",
+      "daxis_ref",
+      "daxis_origin_remote_url",
+      "daxis_worktree_status",
+      "daxis_worktree_review"
+    ],
+    "requiredReviewStates": ["attached", "reviewed", "accepted", "rejected"]
+  },
   "externalItems": [
     {
       "id": "daxis_architecture_docs",
@@ -246,11 +290,40 @@
       ]
     }
   ],
+  "stableDefaultPromotionGate": {
+    "purpose": "Prevent stable_default promotion until release-process attachments and Daxis production proof are accepted.",
+    "currentPromotionState": "blocked_external_proof_required",
+    "requiredReleaseProcessAttachments": [
+      "git_sha",
+      "worker_artifact_size",
+      "public_gcs_live_smoke",
+      "release_notes",
+      "migration_notes"
+    ],
+    "requiredExternalProofItemIds": [
+      "daxis_architecture_docs",
+      "daxis_names_axon_default_browser_engine",
+      "daxis_descriptor_endpoint",
+      "daxis_frontend_flow",
+      "daxis_read_access_plan_endpoint",
+      "storage_cors_proxy_validation",
+      "production_dashboards",
+      "production_runbooks",
+      "rollout_controls",
+      "production_table_compatibility_dashboard"
+    ],
+    "requiredReviewState": "accepted",
+    "requiredReleaseEvidenceCommand": "bash tests/conformance/verify_daxis_release_evidence.sh",
+    "requiredRollbackState": "server_fallback",
+    "blockerRegister": "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md"
+  },
   "handoffChecklist": [
     "Attach Axon release evidence output.",
+    "Attach Daxis external-state helper output.",
     "Attach Daxis service endpoint test results.",
     "Attach Daxis rollout-control proof.",
     "Attach Daxis dashboard and oncall proof.",
-    "Confirm server fallback rollback path."
+    "Confirm server fallback rollback path.",
+    "Confirm stableDefaultPromotionGate accepted state."
   ]
 }

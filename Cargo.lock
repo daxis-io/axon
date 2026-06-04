@@ -4241,6 +4241,7 @@ name = "wasm-datafusion-session"
 version = "0.1.0"
 dependencies = [
  "arrow-schema",
+ "parquet",
  "query-contract",
  "sqlparser",
  "tokio",

@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Date: 2026-03-28
-- Scope: turn Axon's current browser preflight and narrow execution slice into a production-oriented browser engine for read-heavy Delta and Parquet workloads
+- Scope: make browser DataFusion the Daxis-facing default read engine while keeping legacy narrow execution isolated for compatibility
 - Related:
   - [WASM + Delta Lake on GCS Program Bundle](./wasm-delta-gcs-program.md)
   - [EPIC-04: Browser DataFusion WASM Runtime And HTTP Object-Store Hardening](../epics/EPIC-04-browser-datafusion-wasm-runtime-and-http-object-store-hardening.md)
@@ -14,6 +14,8 @@
 ## Decision Summary
 
 The next browser-engine phase stays inside Axon as new workspace crates. Not a new repository, and not more logic crammed into the current crates.
+Daxis-facing app worker is browser DataFusion-backed.
+Legacy narrow runtime and session shell remain compatibility-only.
 
 The shape:
 
@@ -41,7 +43,7 @@ The target browser SKU:
 - Arrow IPC output from the DataFusion engine wrapper
 - a DataFusion-owned in-memory session shell in `crates/wasm-datafusion-session`
 
-The DataFusion and legacy narrow session shells are in-memory only. The object-store seam now has a narrow OPFS extent-cache backend; OPFS / IndexedDB session-level persistent caches are still deferred. Signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation stay outside the repo-owned V1 success claims.
+The DataFusion and legacy narrow session shells are in-memory only. The object-store seam now has a narrow OPFS extent-cache backend; OPFS / IndexedDB session-level persistent caches are still deferred. Signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation stay outside repo-owned browser-engine success claims.
 
 Broad browser DataFusion is no longer a deferred direction. The browser query engine target is DataFusion-backed Delta/Parquet execution. The 30-day gate, recorded in the browser DataFusion size audit, came back: keep going toward a DataFusion physical execution engine with custom Axon table and scan integration. Bundle size is a release budget, not a reason to replace DataFusion execution with an Axon IR.
 

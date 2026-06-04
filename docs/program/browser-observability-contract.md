@@ -25,11 +25,32 @@ This is the list of metrics and routing signals the repo emits today. There are 
 - `executed_on`: `browser_wasm` or `native`
 - `capabilities`: capability report returned by the runtime chosen for execution
 - `fallback_reason`: why the browser path rerouted to native, when it did
+- `arrow_ipc_bytes`: Arrow IPC result byte length reported in Daxis result envelopes when present
 - `QueryResponse` does not carry row-shaped result payloads; large results stay in the SDK worker envelope as Arrow IPC bytes.
+
+## Daxis Result Metrics Mapping
+
+`DaxisResultMetrics`
+
+Executed `daxis.query_result.v1` envelopes map Axon runtime facts into Daxis-facing names:
+
+- `rows_returned`: maps from `QueryMetricsSummary.rows_emitted`
+- `arrow_ipc_bytes`: maps from the Arrow IPC result byte length
+- `scan_bytes`: maps from `QueryMetricsSummary.bytes_fetched`
+- `duration_ms`: maps from `QueryMetricsSummary.duration_ms`
+- `files_touched`: maps from `QueryMetricsSummary.files_touched`
+- `files_skipped`: maps from `QueryMetricsSummary.files_skipped`
+- `row_groups_touched`: maps from `QueryMetricsSummary.row_groups_touched` when tracked
+- `row_groups_skipped`: maps from `QueryMetricsSummary.row_groups_skipped` when tracked
+- `footer_reads`: maps from `QueryMetricsSummary.footer_reads` when tracked
+- `snapshot_bootstrap_duration_ms`: maps from `QueryMetricsSummary.snapshot_bootstrap_duration_ms` when tracked
+- `access_mode`: maps from `QueryMetricsSummary.access_mode` when tracked
+
+Fallback, rejection, failure, and cancellation envelopes keep `metrics` as an object and may omit runtime-only fields that were not observed before handoff.
 
 `BrowserWorkerArtifactReport`
 
-- `runtime_sku`: `narrow` for the shipped browser runtime, with `sql` reserved as the larger future SKU label
+- `runtime_sku`: `browser_datafusion` for the Daxis-facing default `axon-web-wasm` worker; `narrow` remains the legacy `browser-engine-worker` compatibility SKU
 - `result_transport`: `arrow_ipc`, the only large-result transport across the worker boundary
 - `identity.package_name`: Cargo package name for the shipped worker artifact
 - `identity.package_version`: Cargo package version for the shipped worker artifact
@@ -90,6 +111,7 @@ These inputs are ready for an external dashboard pipeline once the trusted servi
 - footer reads
 - rows emitted
 - snapshot bootstrap duration
+- arrow IPC bytes
 - access mode
 - fallback reason
 - runtime SKU

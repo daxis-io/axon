@@ -299,6 +299,45 @@ impl BrowserWorker {
                     }
                 }
             }
+            BrowserWorkerCommand::OpenParquetDataset(command) => {
+                let context = BrowserWorkerEventContext::open(
+                    command.request_id.clone(),
+                    command.name.clone(),
+                );
+                emit_event(BrowserWorkerEventEnvelope::progress(
+                    context.clone(),
+                    BrowserWorkerProgressStage::Started,
+                ));
+                emit_event(BrowserWorkerEventEnvelope::log(
+                    context.clone(),
+                    BrowserWorkerLogLevel::Info,
+                    "browser worker opening Parquet dataset descriptor",
+                ));
+                match self
+                    .session
+                    .open_parquet_dataset(command.name.clone(), command.dataset)
+                    .await
+                {
+                    Ok(()) => {
+                        emit_open_bootstrap_metrics(
+                            &mut emit_event,
+                            &context,
+                            &self.session,
+                            &command.name,
+                        );
+                        emit_cache_metrics(&mut emit_event, &context, &self.session);
+                        emit_event(BrowserWorkerEventEnvelope::progress(
+                            context,
+                            BrowserWorkerProgressStage::Finished,
+                        ));
+                        BrowserWorkerResponseEnvelope::opened(command.request_id, command.name)
+                    }
+                    Err(error) => {
+                        emit_error_events(&mut emit_event, context, &error);
+                        BrowserWorkerResponseEnvelope::error(command.request_id, error)
+                    }
+                }
+            }
             BrowserWorkerCommand::InspectParquet(command) => {
                 let context = BrowserWorkerEventContext::inspect(
                     command.request_id.clone(),

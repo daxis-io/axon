@@ -250,7 +250,7 @@
 
 **Goal:** make the browser engine measurable and shippable with explicit size budgets, compatibility evidence, security guardrails, and clear external blockers.
 
-### BL-13 Split narrow and SQL SKUs with artifact reporting
+### BL-13 Split DataFusion and legacy narrow SKUs with artifact reporting
 
 - Owner: Web platform team
 - Area: `area/perf`
@@ -258,9 +258,9 @@
 - Milestone: `M4`
 - Depends on: `BL-11`
 - Scope:
-  - default narrow runtime SKU
-  - opt-in larger SQL SKU
-  - worker artifact reports enabled feature set and SKU identity
+  - Daxis-facing DataFusion runtime SKU
+  - legacy narrow compatibility SKU
+  - worker artifact reports enabled feature set, SKU identity, and browser DataFusion availability
 - Exit evidence:
   - `cargo test -p browser-engine-worker --locked`
   - `cargo test -p browser-engine-worker --target wasm32-unknown-unknown --locked --test wasm_smoke -- --nocapture`

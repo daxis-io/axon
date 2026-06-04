@@ -1,6 +1,7 @@
 {
   "matrix": "daxis_first_class_strategy_traceability",
   "strategy": "docs/program/daxis-first-class-integration-strategy.md",
+  "externalProofPacket": "docs/release-gates/daxis-external-proof-packet.json",
   "owner": "Runtime / engine team with Daxis platform owners",
   "milestones": {
     "M0": {
@@ -286,6 +287,7 @@
           "evidence": [
             "tests/conformance/daxis-browser-datafusion-query-corpus.json",
             "crates/wasm-datafusion-poc/tests/daxis_query_corpus.rs",
+            "tests/conformance/verify_daxis_query_corpus_coverage.sh",
             "docs/program/browser-datafusion-runtime-parity.md"
           ]
         },
@@ -326,7 +328,8 @@
           "summary": "Supported Daxis exploratory query shapes run through browser DataFusion in the candidate path.",
           "evidence": [
             "tests/conformance/daxis-browser-datafusion-query-corpus.json",
-            "crates/wasm-datafusion-poc/tests/daxis_query_corpus.rs"
+            "crates/wasm-datafusion-poc/tests/daxis_query_corpus.rs",
+            "tests/conformance/verify_daxis_query_corpus_coverage.sh"
           ]
         },
         {
@@ -459,9 +462,13 @@
     "bash tests/conformance/verify_daxis_contract_artifacts.sh",
     "bash tests/conformance/verify_daxis_rollout_decisions.sh",
     "bash tests/conformance/verify_daxis_operational_readiness.sh",
+    "bash tests/conformance/verify_daxis_strategy_document.sh",
+    "bash tests/conformance/verify_daxis_strategy_traceability.sh",
     "bash tests/conformance/verify_daxis_external_proof_packet.sh",
+    "bash tests/conformance/verify_daxis_architecture_adr.sh",
     "bash tests/conformance/verify_daxis_release_bundle_manifest.sh",
     "bash tests/conformance/verify_daxis_pr_checklist.sh",
+    "bash tests/conformance/verify_daxis_release_evidence.sh",
     "bash tests/conformance/verify_daxis_release_evidence.sh --list"
   ]
 }

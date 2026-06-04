@@ -17,7 +17,11 @@
   - [Daxis production rollout decisions](../release-gates/daxis-production-rollout-decisions.json)
   - [Daxis strategy traceability matrix](../release-gates/daxis-strategy-traceability.json)
   - [Daxis external proof packet](../release-gates/daxis-external-proof-packet.json)
+  - [Daxis external proof attachment template](../release-gates/daxis-external-proof-attachment-template.md)
   - [Daxis release bundle manifest](../release-gates/daxis-release-bundle-manifest.json)
+  - [Daxis release attachment template](../release-gates/daxis-release-attachment-template.md)
+  - [Daxis release notes template](../release-gates/daxis-release-notes-template.md)
+  - [Daxis release migration notes template](../release-gates/daxis-release-migration-notes-template.md)
   - [Browser WASM + Delta on GCS launch checklist](../release-gates/browser-wasm-delta-gcs-launch-checklist.md)
   - [External blockers](../release-gates/browser-wasm-delta-gcs-external-blockers.md)
 
@@ -32,7 +36,7 @@ The target integration is browser-first and control-plane-governed:
 
 This boundary is the central design rule. The browser runtime must never become authoritative for Daxis policy, cloud credentials, catalog identity, signing, or audit. The browser receives only browser-safe descriptors, opaque grant identifiers, short-lived object-scoped URLs, proxy URLs, non-secret capability facts, and structured fallback or block decisions.
 
-The long-term product behavior should be "browser first, deterministic fallback." For supported interactive reads, Daxis should route execution to Axon in the browser by default. For unsupported query shapes, unsupported Delta features, governed table constraints, storage-access failures, or browser budget violations, the system should return explicit fallback reasons and route to server execution only through Daxis-owned policy.
+The long-term product behavior should be "browser first, deterministic fallback". For supported interactive reads, Daxis should route execution to Axon in the browser by default. For unsupported query shapes, unsupported Delta features, governed table constraints, storage-access failures, or browser budget violations, the system should return explicit fallback reasons and route to server execution only through Daxis-owned policy.
 
 ## Product Vision
 
@@ -127,7 +131,7 @@ received_intent
   -> executed | rejected | fallback | failed | cancelled
 ```
 
-Daxis owns every state through `routed` and owns the final result envelope for every terminal status. Axon owns only the browser execution segment after it receives a Daxis-approved Axon read descriptor. That descriptor contains validated read-only SQL, table descriptors, access proof, runtime limits, and fallback preference. Axon must never receive raw prompts, builder plans, semantic plans, or unvalidated generated SQL.
+Daxis owns every state through `routed` and owns the final result envelope for every terminal status. Axon owns only browser execution after it receives a Daxis-approved Axon read descriptor. That descriptor contains validated read-only SQL, table descriptors, access proof, runtime limits, and fallback preference. Axon must never receive raw prompts, builder plans, semantic plans, or unvalidated generated SQL.
 
 The first executable slice is a saved SQL query that compiles to validated Daxis SQL, resolves one browser-safe Delta descriptor, routes to `axon_browser`, executes with Arrow IPC transport, and returns the same envelope shape used by the synthetic agent, dashboard tile, builder, saved query, and API fixtures.
 
@@ -287,7 +291,7 @@ The M3 runtime isolation plan [`../release-gates/daxis-browser-runtime-isolation
 
 ## Daxis Integration Responsibility Plan
 
-The first implementation should keep ownership explicit across product and platform boundaries.
+The first implementation should keep ownership explicit across product and platform boundaries. Daxis product platform, gateway, catalog, storage broker, and query service own policy, auth, audit, routing, and fallback.
 
 | Area                  | Owner                  | Responsibilities                                                                                                                                                                   | Must Not Own                                                                                                                                    |
 | --------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -347,11 +351,12 @@ Axon should return structured runtime failures for:
 
 - unsupported SQL
 - unsupported schemas
-- unsupported Delta features
+- unsupported Delta protocol features
 - unknown protocol features
 - range read failures
 - invalid or expired descriptors
-- browser budget violations
+- signed URL expired
+- browser budget exceeded
 - cancellation
 - network and object-store protocol failures
 - worker initialization failures
@@ -375,7 +380,7 @@ The Daxis gateway and product surface should preserve the reason internally even
 
 ## Security And Governance
 
-The most important security requirement is that browser code never receives production secrets.
+The most important security requirement is that browser code never receives production secrets. Browser code must never receive raw credentials.
 
 Forbidden browser-visible values include:
 
@@ -463,7 +468,7 @@ Axon should continue to use a layered test strategy.
 
 Required gates for Axon engine changes:
 
-- Rust formatting.
+- Rust formatting with `cargo fmt --check`.
 - Workspace compile checks.
 - Host tests for query contracts, router, native runtime, control-plane descriptor support, browser runtime, browser DataFusion session, object store, Parquet engine, Delta snapshot, SDK, and worker.
 - `wasm32-unknown-unknown` compile checks for browser crates.
@@ -487,6 +492,9 @@ Daxis integration gates should include:
 - request and correlation ID propagation test
 
 No browser feature should be called supported until it has both runtime coverage and a compatibility statement in the docs.
+For the Daxis browser query corpus, `bash tests/conformance/verify_daxis_query_corpus_coverage.sh` enforces that runtime cases, declared SQL classes, and browser DataFusion parity statements stay aligned.
+
+The strategy document itself is checked by `bash tests/conformance/verify_daxis_strategy_document.sh` so the Daxis default-browser-engine boundary, linked release artifacts, and release-gate commands do not drift silently.
 
 ## Release And Compatibility Policy
 
@@ -498,6 +506,7 @@ Axon releases intended for Daxis should include a release evidence bundle:
 - TypeScript test summary
 - WASM target checks
 - browser matrix result
+- public GCS live-smoke output or skip-safe output plus blocker record
 - worker artifact size
 - dependency guardrail result
 - known fallback reasons
@@ -506,7 +515,7 @@ Axon releases intended for Daxis should include a release evidence bundle:
 - migration notes
 - external blockers
 
-The machine-readable bundle checklist is [`../release-gates/daxis-release-bundle-manifest.json`](../release-gates/daxis-release-bundle-manifest.json), checked by `bash tests/conformance/verify_daxis_release_bundle_manifest.sh`. It distinguishes repo-verified artifacts from release-process attachments such as the exact commit SHA, worker artifact size output, and migration notes or a no-breaking-change statement. Release owners should complete [`../release-gates/daxis-release-migration-notes-template.md`](../release-gates/daxis-release-migration-notes-template.md) for the migration-note attachment so Daxis-facing breaking-change decisions, no-breaking statements, evidence, owner signoff, and rollback impact are recorded consistently.
+The machine-readable bundle checklist is [`../release-gates/daxis-release-bundle-manifest.json`](../release-gates/daxis-release-bundle-manifest.json), checked by `bash tests/conformance/verify_daxis_release_bundle_manifest.sh`. It distinguishes repo-verified artifacts from release-process attachments such as the exact commit SHA, worker artifact size output, public GCS live-smoke output or skip-safe blocker record, Daxis-facing release notes, and migration notes or a no-breaking-change statement. Its `releaseAttachmentSchema` names [`../release-gates/daxis-release-attachment-template.md`](../release-gates/daxis-release-attachment-template.md) and the metadata each release-process attachment must carry, including item ID, release commit, release ref, owner, capture time, artifact URI, verification command or statement, exit or review status, and rollback or migration-note URI. Release owners should complete [`../release-gates/daxis-release-notes-template.md`](../release-gates/daxis-release-notes-template.md) for release notes that document query-result semantics, Daxis result metrics and observability fields, fallback behavior, supported SQL and Delta feature claims, descriptor validation, public error taxonomy, runtime budgets, worker artifact changes, security-boundary impact, external proof packet status, and `stableDefaultPromotionGate` `currentPromotionState`. Release owners should complete [`../release-gates/daxis-release-migration-notes-template.md`](../release-gates/daxis-release-migration-notes-template.md) for the migration-note attachment so Daxis-facing breaking-change decisions, no-breaking statements, evidence, owner signoff, rollback impact, and stable-default promotion state are recorded consistently.
 
 Recommended release channels:
 
@@ -544,7 +553,7 @@ Every non-trivial PR should include:
 
 The milestone deliverables and exit criteria below are mapped to current evidence in [`../release-gates/daxis-strategy-traceability.json`](../release-gates/daxis-strategy-traceability.json), checked by `bash tests/conformance/verify_daxis_strategy_traceability.sh`. The matrix distinguishes Axon repo-verified work from Daxis production work that still requires external proof.
 
-The external proof handoff is recorded in [`daxis-external-proof-handoff.md`](./daxis-external-proof-handoff.md) and [`../release-gates/daxis-external-proof-packet.json`](../release-gates/daxis-external-proof-packet.json), checked by `bash tests/conformance/verify_daxis_external_proof_packet.sh`. It names the Daxis-owned production artifacts required before stable default routing.
+The external proof handoff is recorded in [`daxis-external-proof-handoff.md`](./daxis-external-proof-handoff.md) and [`../release-gates/daxis-external-proof-packet.json`](../release-gates/daxis-external-proof-packet.json), checked by `bash tests/conformance/verify_daxis_external_proof_packet.sh`. It names the Daxis-owned production artifacts required before stable default routing and carries the `stableDefaultPromotionGate` and current `currentPromotionState` value, `blocked_external_proof_required`, that tie accepted external proof to accepted release-process attachments, full release-evidence output, the external blocker register, and `server_fallback` rollback evidence.
 
 ### M0: Daxis Alignment
 
@@ -698,6 +707,13 @@ Before merging a Daxis-relevant Axon change, verify the checked-in pull request 
 - WASM target checks still pass.
 - Worker artifact size impact is known.
 - Browser matrix coverage is updated when worker behavior changes.
+- Release-process evidence uses `docs/release-gates/daxis-release-attachment-template.md` for git SHA, worker size, public GCS live smoke, release notes, and migration notes.
+- Daxis-facing release notes use `docs/release-gates/daxis-release-notes-template.md` for semantic, Daxis result metrics and observability fields, fallback, compatibility, descriptor, error-taxonomy, runtime-budget, worker-artifact, and trust-boundary changes.
+- Daxis-facing migration notes use `docs/release-gates/daxis-release-migration-notes-template.md` for breaking changes or explicit no-breaking-change statements.
+- Daxis-owned production proof uses `docs/release-gates/daxis-external-proof-attachment-template.md` before stable default routing.
+- Rollout and fallback changes preserve `sql_fallback_required`, `server_fallback`, and `blocked` states.
+- Promotion requires passing release evidence, no broadened browser trust boundary, and Daxis-owned rollout controls.
+- Stable default routing is gated on `docs/release-gates/daxis-external-proof-packet.json` `stableDefaultPromotionGate` acceptance.
 - Relevant docs and release evidence are updated.
 
 ## Handoff Summary

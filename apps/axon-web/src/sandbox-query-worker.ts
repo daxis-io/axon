@@ -8,6 +8,7 @@ import {
   type BrowserWorkerInspectParquetCommand,
   type BrowserWorkerLogLevel,
   type BrowserWorkerOpenDeltaTableCommand,
+  type BrowserWorkerOpenParquetDatasetCommand,
   type BrowserWorkerProgressStage,
   type BrowserWorkerResultPreview,
   type BrowserWorkerResponseEnvelope,
@@ -85,6 +86,10 @@ async function handleCommand(command: BrowserWorkerCommand): Promise<void> {
       await handleOpenDeltaTable(command.open_delta_table, context);
       return;
     }
+    if ('open_parquet_dataset' in command) {
+      await handleOpenParquetDataset(command.open_parquet_dataset, context);
+      return;
+    }
     if ('inspect_parquet' in command) {
       await handleInspectParquet(command.inspect_parquet, context);
       return;
@@ -127,6 +132,27 @@ async function handleOpenDeltaTable(
   const session = await ensureSession(context);
   const output = JSON.parse(
     await session.open_delta_table(command.name, JSON.stringify(command.snapshot)),
+  ) as SandboxOpenTableOutput;
+
+  emitCacheMetrics(context, output.cache_metrics);
+  emitProgress(context, 'finished');
+  postResponse({
+    opened: {
+      request_id: command.request_id,
+      name: command.name,
+    },
+  });
+}
+
+async function handleOpenParquetDataset(
+  command: BrowserWorkerOpenParquetDatasetCommand,
+  context: BrowserWorkerEventContext,
+): Promise<void> {
+  emitProgress(context, 'started');
+  emitLog(context, 'info', 'sandbox worker opening Parquet dataset descriptor');
+  const session = await ensureSession(context);
+  const output = JSON.parse(
+    await session.open_parquet_dataset(command.name, JSON.stringify(command.dataset)),
   ) as SandboxOpenTableOutput;
 
   emitCacheMetrics(context, output.cache_metrics);
@@ -378,6 +404,13 @@ function commandContext(command: BrowserWorkerCommand): BrowserWorkerEventContex
       table_name: command.open_delta_table.name,
     };
   }
+  if ('open_parquet_dataset' in command) {
+    return {
+      phase: 'open',
+      request_id: command.open_parquet_dataset.request_id,
+      table_name: command.open_parquet_dataset.name,
+    };
+  }
   if ('inspect_parquet' in command) {
     return {
       phase: 'inspect',
@@ -417,6 +450,9 @@ function commandContext(command: BrowserWorkerCommand): BrowserWorkerEventContex
 function requestId(command: BrowserWorkerCommand): string {
   if ('open_delta_table' in command) {
     return command.open_delta_table.request_id;
+  }
+  if ('open_parquet_dataset' in command) {
+    return command.open_parquet_dataset.request_id;
   }
   if ('inspect_parquet' in command) {
     return command.inspect_parquet.request_id;

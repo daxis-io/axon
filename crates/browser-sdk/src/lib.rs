@@ -1,8 +1,9 @@
 //! Public browser SDK contracts for worker-hosted query execution.
 
 use query_contract::{
-    BrowserAccessMode, BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason,
-    ParquetInspectionSummary, QueryError, QueryMetricsSummary, QueryRequest, QueryResponse,
+    BrowserAccessMode, BrowserHttpParquetDatasetDescriptor, BrowserHttpSnapshotDescriptor,
+    ExecutionTarget, FallbackReason, ParquetInspectionSummary, QueryError, QueryMetricsSummary,
+    QueryRequest, QueryResponse,
 };
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,14 @@ pub struct BrowserWorkerOpenDeltaTableCommand {
     pub request_id: String,
     pub name: String,
     pub snapshot: BrowserHttpSnapshotDescriptor,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerOpenParquetDatasetCommand {
+    pub request_id: String,
+    pub name: String,
+    pub dataset: BrowserHttpParquetDatasetDescriptor,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -77,6 +86,7 @@ pub struct BrowserWorkerDisposeCommand {
 pub enum BrowserWorkerCommand {
     OpenTable(BrowserWorkerOpenTableCommand),
     OpenDeltaTable(BrowserWorkerOpenDeltaTableCommand),
+    OpenParquetDataset(BrowserWorkerOpenParquetDatasetCommand),
     InspectParquet(BrowserWorkerInspectParquetCommand),
     Sql(BrowserWorkerSqlCommand),
     Dispose(BrowserWorkerDisposeCommand),
@@ -104,6 +114,18 @@ impl BrowserWorkerCommand {
             request_id: request_id.into(),
             name: name.into(),
             snapshot,
+        })
+    }
+
+    pub fn open_parquet_dataset(
+        request_id: impl Into<String>,
+        name: impl Into<String>,
+        dataset: BrowserHttpParquetDatasetDescriptor,
+    ) -> Self {
+        Self::OpenParquetDataset(BrowserWorkerOpenParquetDatasetCommand {
+            request_id: request_id.into(),
+            name: name.into(),
+            dataset,
         })
     }
 
@@ -143,6 +165,7 @@ impl BrowserWorkerCommand {
         match self {
             Self::OpenTable(command) => &command.request_id,
             Self::OpenDeltaTable(command) => &command.request_id,
+            Self::OpenParquetDataset(command) => &command.request_id,
             Self::InspectParquet(command) => &command.request_id,
             Self::Sql(command) => &command.request_id,
             Self::Dispose(command) => &command.request_id,
@@ -153,6 +176,7 @@ impl BrowserWorkerCommand {
         match self {
             Self::OpenTable(command) => &command.name,
             Self::OpenDeltaTable(command) => &command.name,
+            Self::OpenParquetDataset(command) => &command.name,
             Self::InspectParquet(command) => &command.name,
             Self::Sql(command) => &command.name,
             Self::Dispose(command) => &command.name,

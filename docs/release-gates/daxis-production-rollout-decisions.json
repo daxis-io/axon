@@ -8,7 +8,10 @@
     "docs/program/daxis-operational-maturity.md",
     "docs/release-gates/daxis-browser-datafusion-budget-profile.json",
     "docs/release-gates/daxis-contract-artifacts.sha256",
-    "docs/release-gates/daxis-operational-readiness.json"
+    "docs/release-gates/daxis-external-proof-packet.json",
+    "docs/release-gates/daxis-operational-readiness.json",
+    "docs/release-gates/daxis-release-bundle-manifest.json",
+    "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md"
   ],
   "decisions": {
     "endpointNames": {
@@ -100,6 +103,34 @@
       "status": "decided",
       "channels": ["experimental", "integration", "candidate", "stable"],
       "promotionRule": "Promote only with passing release evidence, no broadened browser trust boundary, and Daxis-owned rollout controls for the target segment.",
+      "stableDefaultGate": {
+        "externalProofPacket": "docs/release-gates/daxis-external-proof-packet.json",
+        "releaseBundleManifest": "docs/release-gates/daxis-release-bundle-manifest.json",
+        "requiredReleaseProcessAttachments": [
+          "git_sha",
+          "worker_artifact_size",
+          "public_gcs_live_smoke",
+          "release_notes",
+          "migration_notes"
+        ],
+        "requiredExternalProofItemIds": [
+          "daxis_architecture_docs",
+          "daxis_names_axon_default_browser_engine",
+          "daxis_descriptor_endpoint",
+          "daxis_frontend_flow",
+          "daxis_read_access_plan_endpoint",
+          "storage_cors_proxy_validation",
+          "production_dashboards",
+          "production_runbooks",
+          "rollout_controls",
+          "production_table_compatibility_dashboard"
+        ],
+        "requiredReviewState": "accepted",
+        "requiredReleaseEvidenceCommand": "bash tests/conformance/verify_daxis_release_evidence.sh",
+        "requiredRollbackState": "server_fallback",
+        "currentPromotionState": "blocked_external_proof_required",
+        "blockerRegister": "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md"
+      },
       "evidence": [
         "docs/program/daxis-first-class-integration-strategy.md",
         "docs/release-gates/daxis-operational-readiness.json",
@@ -128,6 +159,7 @@
       "evidence": [
         "docs/program/daxis-first-class-integration-strategy.md",
         "tests/conformance/daxis-browser-datafusion-query-corpus.json",
+        "tests/conformance/verify_daxis_query_corpus_coverage.sh",
         "docs/program/browser-datafusion-runtime-parity.md"
       ]
     },

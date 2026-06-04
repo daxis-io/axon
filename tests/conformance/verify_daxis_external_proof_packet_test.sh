@@ -8,14 +8,19 @@ trap 'rm -rf "$tmpdir"' EXIT
 repo_root="$tmpdir/repo"
 packet="$repo_root/docs/release-gates/daxis-external-proof-packet.json"
 traceability="$repo_root/docs/release-gates/daxis-strategy-traceability.json"
+release_bundle="$repo_root/docs/release-gates/daxis-release-bundle-manifest.json"
+rollout_register="$repo_root/docs/release-gates/daxis-production-rollout-decisions.json"
 
-mkdir -p "$repo_root/docs/program" "$repo_root/docs/release-gates"
+mkdir -p "$repo_root/docs/program" "$repo_root/docs/release-gates" "$repo_root/tests/conformance"
 
 for doc in \
+  docs/adr/ADR-0008-daxis-browser-read-compute-contract.md \
   docs/program/daxis-first-class-integration-strategy.md \
   docs/program/daxis-operational-maturity.md \
   docs/program/daxis-external-proof-handoff.md \
+  docs/release-gates/daxis-external-proof-attachment-template.md \
   docs/release-gates/daxis-strategy-traceability.json \
+  docs/release-gates/daxis-release-bundle-manifest.json \
   docs/release-gates/daxis-production-rollout-decisions.json \
   docs/release-gates/daxis-operational-readiness.json \
   docs/release-gates/browser-wasm-delta-gcs-external-blockers.md; do
@@ -23,14 +28,213 @@ for doc in \
   printf '# test fixture\n' >"$repo_root/$doc"
 done
 
+write_proof_attachment_template() {
+  cat >"$repo_root/docs/release-gates/daxis-external-proof-attachment-template.md" <<'EOF'
+# Daxis External Proof Attachment Template
+
+Do not attach browser-visible secrets, signed URLs, raw credentials, service-account material, private customer identifiers, or unredacted tenant data.
+
+## Proof Attachment Metadata
+
+- item_id:
+- milestone:
+- owner:
+- captured_at:
+- environment:
+- rollout_segment:
+- artifact_uri:
+- verification_command_or_url:
+- exit_status_or_review_status:
+- rollback_evidence_uri:
+- daxis_commit_sha:
+- daxis_ref:
+- daxis_origin_remote_url:
+- daxis_worktree_status:
+- daxis_worktree_review:
+
+## External Proof Items
+
+Use the matching guidance for `item_id`.
+
+Attach Daxis external-state helper output for the rollout segment before accepting any item.
+Helper output must include the Daxis commit SHA, branch or detached-ref label, origin remote URL, and working-tree status from `git rev-parse HEAD`, `git rev-parse --abbrev-ref HEAD`, `git remote get-url origin`, and `git status --short`.
+Classify the Daxis working-tree status as `clean`, `dirty_reviewed`, or `dirty_rejected`; do not accept proof from a dirty Daxis checkout without owner review that ties every modified or untracked path to the rollout segment.
+
+### `daxis_architecture_docs`
+
+- Attach Daxis architecture doc links or commit SHAs.
+- Attach the Daxis browser read-compute terminology diff.
+
+### `daxis_names_axon_default_browser_engine`
+
+- Attach the Daxis product architecture reference naming Axon as the default browser read engine.
+- Attach release-channel or rollout approval.
+
+### `daxis_descriptor_endpoint`
+
+- Attach endpoint test output for `POST /v1/query/delta/snapshot-descriptor`.
+- Attach expiry, snapshot mismatch, path escape, and malformed descriptor negative test output.
+- Attach request and correlation ID propagation logs.
+
+### `daxis_frontend_flow`
+
+- Attach Daxis frontend open/query/cancel test output.
+- Attach worker command capture showing no credential profile identifiers or secrets.
+
+### `daxis_read_access_plan_endpoint`
+
+- Attach endpoint test output for `POST /v1/catalog/read-access-plan`.
+- Attach policy-denied and policy-unknown test output.
+
+### `storage_cors_proxy_validation`
+
+- Attach production XML endpoint CORS validation output.
+- Attach URL redaction evidence for logs and UI events.
+
+### `production_dashboards`
+
+- Attach dashboard URLs.
+
+### `production_runbooks`
+
+- Attach oncall ownership and escalation policy.
+
+### `rollout_controls`
+
+- Attach rollout configuration schema.
+- Attach server fallback routing proof.
+
+### `production_table_compatibility_dashboard`
+
+- Attach compatibility dashboard URL.
+- Attach blocked or fallback table-class list.
+
+## Review State
+
+- attached
+- reviewed
+- accepted
+- rejected
+
+## Review
+
+- Daxis product owner
+- Daxis platform owner
+- Daxis catalog/storage owner
+- Daxis web platform owner
+- Daxis security owner
+- Daxis SRE owner
+- Axon runtime / engine owner
+EOF
+}
+
+write_external_proof_handoff() {
+  cat >"$repo_root/docs/program/daxis-external-proof-handoff.md" <<'EOF'
+# Daxis External Proof Handoff
+
+The machine-readable packet is `docs/release-gates/daxis-external-proof-packet.json`, checked by
+`bash tests/conformance/verify_daxis_external_proof_packet.sh`.
+
+Every Daxis proof attachment should use `docs/release-gates/daxis-external-proof-attachment-template.md`
+and carry the metadata named in `proofAttachmentSchema`.
+
+The Daxis verification plan includes:
+
+- `AXON_DAXIS_PLATFORM_REPO_ROOT=/path/to/daxis-platform bash tests/conformance/verify_daxis_external_state.sh`
+- `git rev-parse HEAD`
+- `git rev-parse --abbrev-ref HEAD`
+- `git remote get-url origin`
+- `git status --short`
+- `cargo test -p daxis-query --test contracts`
+- `rg -n "Axon browser WASM|Browser read compute|Headless query gateway" README.md CLAUDE.md docs/architecture/daxis-control-plane-architecture.md crates/daxis-query`
+
+External proof items:
+
+- `daxis_architecture_docs`
+- `daxis_names_axon_default_browser_engine`
+- `daxis_descriptor_endpoint`
+- `daxis_frontend_flow`
+- `daxis_read_access_plan_endpoint`
+- `storage_cors_proxy_validation`
+- `production_dashboards`
+- `production_runbooks`
+- `rollout_controls`
+- `production_table_compatibility_dashboard`
+
+The `stableDefaultPromotionGate` requires release-process attachments for:
+
+- `currentPromotionState`
+- `blocked_external_proof_required`
+
+- `git_sha`
+- `worker_artifact_size`
+- `public_gcs_live_smoke`
+- `release_notes`
+- `migration_notes`
+
+It also requires `bash tests/conformance/verify_daxis_release_evidence.sh`,
+accepted Daxis external proof, and `server_fallback` rollback evidence.
+EOF
+}
+
+write_external_state_helper() {
+  cat >"$repo_root/tests/conformance/verify_daxis_external_state.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  --list)
+    printf '%s\n' \
+      "git rev-parse HEAD" \
+      "git rev-parse --abbrev-ref HEAD" \
+      "git remote get-url origin" \
+      "git status --short" \
+      "cargo test -p daxis-query --test contracts" \
+      "rg -n \"Axon browser WASM|Browser read compute|Headless query gateway\" README.md CLAUDE.md docs/architecture/daxis-control-plane-architecture.md crates/daxis-query"
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+}
+
+write_external_blocker_register() {
+  cat >"$repo_root/docs/release-gates/browser-wasm-delta-gcs-external-blockers.md" <<'EOF'
+# Browser WASM + Delta on GCS External Blockers
+
+## Stable Default External Proof Items
+
+The `stableDefaultPromotionGate` remains `blocked_external_proof_required` until each Daxis-owned proof item below is attached, reviewed, accepted, and tied to `server_fallback` rollback evidence:
+
+- `daxis_architecture_docs`
+- `daxis_names_axon_default_browser_engine`
+- `daxis_descriptor_endpoint`
+- `daxis_frontend_flow`
+- `daxis_read_access_plan_endpoint`
+- `storage_cors_proxy_validation`
+- `production_dashboards`
+- `production_runbooks`
+- `rollout_controls`
+- `production_table_compatibility_dashboard`
+EOF
+}
+
+write_proof_attachment_template
+write_external_proof_handoff
+write_external_state_helper
+write_external_blocker_register
+
 write_valid_packet() {
-  python3 - "$packet" "$traceability" <<'PY'
+  python3 - "$packet" "$traceability" "$release_bundle" "$rollout_register" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 traceability_path = Path(sys.argv[2])
+release_bundle_path = Path(sys.argv[3])
+rollout_register_path = Path(sys.argv[4])
 items = [
     ("daxis_architecture_docs", "M0"),
     ("daxis_names_axon_default_browser_engine", "M0"),
@@ -47,12 +251,57 @@ packet = {
     "packet": "daxis_external_proof_packet",
     "scope": "test fixture",
     "sourceDocs": [
+        "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md",
         "docs/release-gates/daxis-strategy-traceability.json",
+        "docs/release-gates/daxis-release-bundle-manifest.json",
         "docs/release-gates/daxis-production-rollout-decisions.json",
         "docs/release-gates/daxis-operational-readiness.json",
+        "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
         "docs/program/daxis-external-proof-handoff.md",
         "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/release-gates/daxis-external-proof-attachment-template.md",
     ],
+    "daxisVerificationPlan": {
+        "purpose": "Current-state checks Daxis owners run before attaching proof.",
+        "axonHelperCommand": "bash tests/conformance/verify_daxis_external_state.sh",
+        "activeArchitecturePaths": [
+            "README.md",
+            "CLAUDE.md",
+            "docs/architecture/daxis-control-plane-architecture.md",
+            "crates/daxis-query/src/lib.rs",
+            "crates/daxis-query/tests/contracts.rs",
+        ],
+        "commands": [
+            "git rev-parse HEAD",
+            "git rev-parse --abbrev-ref HEAD",
+            "git remote get-url origin",
+            "git status --short",
+            "cargo test -p daxis-query --test contracts",
+            "rg -n \"Axon browser WASM|Browser read compute|Headless query gateway\" README.md CLAUDE.md docs/architecture/daxis-control-plane-architecture.md crates/daxis-query",
+        ],
+    },
+    "proofAttachmentSchema": {
+        "purpose": "Minimum metadata every Daxis proof attachment carries during rollout review.",
+        "templatePath": "docs/release-gates/daxis-external-proof-attachment-template.md",
+        "requiredMetadata": [
+            "item_id",
+            "milestone",
+            "owner",
+            "captured_at",
+            "environment",
+            "rollout_segment",
+            "artifact_uri",
+            "verification_command_or_url",
+            "exit_status_or_review_status",
+            "rollback_evidence_uri",
+            "daxis_commit_sha",
+            "daxis_ref",
+            "daxis_origin_remote_url",
+            "daxis_worktree_status",
+            "daxis_worktree_review",
+        ],
+        "requiredReviewStates": ["attached", "reviewed", "accepted", "rejected"],
+    },
     "externalItems": [
         {
             "id": item_id,
@@ -68,12 +317,30 @@ packet = {
         }
         for item_id, milestone in items
     ],
+    "stableDefaultPromotionGate": {
+        "purpose": "Prevent stable_default promotion until release-process attachments and Daxis production proof are accepted.",
+        "currentPromotionState": "blocked_external_proof_required",
+        "requiredReleaseProcessAttachments": [
+            "git_sha",
+            "worker_artifact_size",
+            "public_gcs_live_smoke",
+            "release_notes",
+            "migration_notes",
+        ],
+        "requiredExternalProofItemIds": [item_id for item_id, _milestone in items],
+        "requiredReviewState": "accepted",
+        "requiredReleaseEvidenceCommand": "bash tests/conformance/verify_daxis_release_evidence.sh",
+        "requiredRollbackState": "server_fallback",
+        "blockerRegister": "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
+    },
     "handoffChecklist": [
         "Attach Axon release evidence output.",
+        "Attach Daxis external-state helper output.",
         "Attach Daxis service endpoint test results.",
         "Attach Daxis rollout-control proof.",
         "Attach Daxis dashboard and oncall proof.",
         "Confirm server fallback rollback path.",
+        "Confirm stableDefaultPromotionGate accepted state.",
     ],
 }
 path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,6 +373,56 @@ matrix = {
 }
 with open(traceability_path, "w", encoding="utf-8") as handle:
     json.dump(matrix, handle)
+
+release_bundle = {
+    "manifest": "daxis_release_bundle_manifest",
+    "releaseAttachmentSchema": {
+        "releaseProcessItemIds": [
+            "git_sha",
+            "worker_artifact_size",
+            "public_gcs_live_smoke",
+            "release_notes",
+            "migration_notes",
+        ]
+    },
+    "releaseEvidenceCommands": ["bash tests/conformance/verify_daxis_release_evidence.sh"],
+    "bundleItems": [
+        {"id": "git_sha", "status": "release_process_required"},
+        {"id": "worker_artifact_size", "status": "release_process_required"},
+        {"id": "public_gcs_live_smoke", "status": "release_process_required"},
+        {"id": "release_notes", "status": "release_process_required"},
+        {"id": "migration_notes", "status": "release_process_required"},
+    ],
+}
+with open(release_bundle_path, "w", encoding="utf-8") as handle:
+    json.dump(release_bundle, handle)
+
+rollout_register = {
+    "register": "daxis_production_rollout_decisions",
+    "decisions": {
+        "releaseChannels": {
+            "stableDefaultGate": {
+                "externalProofPacket": "docs/release-gates/daxis-external-proof-packet.json",
+                "releaseBundleManifest": "docs/release-gates/daxis-release-bundle-manifest.json",
+                "requiredReleaseProcessAttachments": [
+                    "git_sha",
+                    "worker_artifact_size",
+                    "public_gcs_live_smoke",
+                    "release_notes",
+                    "migration_notes",
+                ],
+                "requiredExternalProofItemIds": [item_id for item_id, _milestone in items],
+                "requiredReviewState": "accepted",
+                "requiredReleaseEvidenceCommand": "bash tests/conformance/verify_daxis_release_evidence.sh",
+                "requiredRollbackState": "server_fallback",
+                "currentPromotionState": "blocked_external_proof_required",
+                "blockerRegister": "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
+            }
+        }
+    },
+}
+with open(rollout_register_path, "w", encoding="utf-8") as handle:
+    json.dump(rollout_register, handle)
 PY
 }
 
@@ -125,6 +442,102 @@ import sys
 path = sys.argv[1]
 with open(path, encoding="utf-8") as handle:
     packet = json.load(handle)
+packet["sourceDocs"].remove("docs/adr/ADR-0008-daxis-browser-read-compute-contract.md")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected missing Daxis architecture ADR source doc to be rejected" >&2
+  exit 1
+fi
+write_valid_packet
+
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["daxisVerificationPlan"].pop("axonHelperCommand")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected missing Daxis external-state helper command to be rejected" >&2
+  exit 1
+fi
+write_valid_packet
+
+python3 - "$repo_root/tests/conformance/verify_daxis_external_state.sh" <<'PY'
+import sys
+
+path = sys.argv[1]
+with open(path, "w", encoding="utf-8") as handle:
+    handle.write(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "case \"${1:-}\" in\n"
+        "  --list)\n"
+        "    printf '%s\\n' \"cargo test -p daxis-query --test contracts\"\n"
+        "    ;;\n"
+        "  *) exit 0 ;;\n"
+        "esac\n"
+    )
+PY
+
+if verify_fixture; then
+  echo "expected stale Daxis external-state helper command list to be rejected" >&2
+  exit 1
+fi
+write_external_state_helper
+write_valid_packet
+
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["sourceDocs"].append("docs/program/daxis-first-class-integration-strategy.md")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected duplicate external proof source docs to be rejected" >&2
+  exit 1
+fi
+write_valid_packet
+
+write_external_proof_handoff
+python3 - "$repo_root/docs/program/daxis-external-proof-handoff.md" <<'PY'
+import sys
+
+path = sys.argv[1]
+with open(path, "w", encoding="utf-8") as handle:
+    handle.write(
+        "# Daxis External Proof Handoff\n\n"
+        "Attach the external proof packet before rollout review.\n"
+    )
+PY
+
+if verify_fixture; then
+  echo "expected stale external proof handoff doc to be rejected" >&2
+  exit 1
+fi
+write_external_proof_handoff
+
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
 packet["externalItems"] = [
     item for item in packet["externalItems"] if item["id"] != "production_runbooks"
 ]
@@ -136,6 +549,108 @@ if verify_fixture; then
   echo "expected missing production runbooks proof item to be rejected" >&2
   exit 1
 fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import copy
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["externalItems"].append(copy.deepcopy(packet["externalItems"][0]))
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected duplicate external proof items to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$repo_root/docs/release-gates/daxis-external-proof-attachment-template.md" <<'PY'
+import sys
+
+path = sys.argv[1]
+with open(path, "w", encoding="utf-8") as handle:
+    handle.write(
+        "# Daxis External Proof Attachment Template\n\n"
+        "Do not attach browser-visible secrets, signed URLs, raw credentials, service-account material, private customer identifiers, or unredacted tenant data.\n\n"
+        "## Proof Attachment Metadata\n\n"
+        "- item_id:\n"
+        "- milestone:\n"
+        "- owner:\n"
+        "- captured_at:\n"
+        "- environment:\n"
+        "- rollout_segment:\n"
+        "- artifact_uri:\n"
+        "- verification_command_or_url:\n"
+        "- exit_status_or_review_status:\n"
+        "- rollback_evidence_uri:\n\n"
+        "## External Proof Items\n\n"
+        "- daxis_architecture_docs\n"
+        "- daxis_names_axon_default_browser_engine\n"
+        "- daxis_descriptor_endpoint\n"
+        "- daxis_frontend_flow\n"
+        "- daxis_read_access_plan_endpoint\n"
+        "- storage_cors_proxy_validation\n"
+        "- production_dashboards\n"
+        "- production_runbooks\n"
+        "- rollout_controls\n"
+        "- production_table_compatibility_dashboard\n\n"
+        "## Review State\n\n"
+        "- attached\n"
+        "- reviewed\n"
+        "- accepted\n"
+        "- rejected\n"
+    )
+PY
+
+if verify_fixture; then
+  echo "expected proof attachment template missing per-item evidence guidance to be rejected" >&2
+  exit 1
+fi
+write_proof_attachment_template
+
+python3 - "$repo_root/docs/release-gates/daxis-external-proof-attachment-template.md" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace(
+    "Attach Daxis external-state helper output for the rollout segment before accepting any item.\n",
+    "",
+)
+path.write_text(text, encoding="utf-8")
+PY
+
+if verify_fixture; then
+  echo "expected proof attachment template missing external-state helper output guidance to be rejected" >&2
+  exit 1
+fi
+write_proof_attachment_template
+
+python3 - "$repo_root/docs/release-gates/daxis-external-proof-attachment-template.md" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace(
+    "Helper output must include the Daxis commit SHA, branch or detached-ref label, origin remote URL, and working-tree status from `git rev-parse HEAD`, `git rev-parse --abbrev-ref HEAD`, `git remote get-url origin`, and `git status --short`.\n",
+    "",
+)
+path.write_text(text, encoding="utf-8")
+PY
+
+if verify_fixture; then
+  echo "expected proof attachment template missing external-state git attribution guidance to be rejected" >&2
+  exit 1
+fi
+write_proof_attachment_template
 
 write_valid_packet
 python3 - "$packet" <<'PY'
@@ -188,6 +703,498 @@ PY
 
 if verify_fixture; then
   echo "expected missing handoff checklist item to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["handoffChecklist"].remove("Attach Daxis external-state helper output.")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected missing Daxis external-state handoff checklist item to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["handoffChecklist"].remove("Confirm stableDefaultPromotionGate accepted state.")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected missing stableDefaultPromotionGate handoff checklist item to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet.pop("daxisVerificationPlan")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected missing Daxis verification plan to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["daxisVerificationPlan"]["commands"] = [
+    command
+    for command in packet["daxisVerificationPlan"]["commands"]
+    if command != "cargo test -p daxis-query --test contracts"
+]
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected missing Daxis query contract verification command to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["daxisVerificationPlan"]["activeArchitecturePaths"].append("README.md")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected duplicate Daxis active architecture paths to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["daxisVerificationPlan"]["commands"].append("cargo test -p daxis-query --test contracts")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected duplicate Daxis verification commands to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["daxisVerificationPlan"]["commands"].append(
+    "cargo test -p daxis-query --test stale-contract"
+)
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected unsupported Daxis verification command to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet.pop("proofAttachmentSchema")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected missing proof attachment schema to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet.pop("stableDefaultPromotionGate")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected missing stable default promotion gate to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["stableDefaultPromotionGate"].pop("currentPromotionState")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected stable default promotion gate missing current promotion state to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["stableDefaultPromotionGate"]["requiredReviewState"] = "reviewed"
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected stable default promotion gate without accepted review state to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["stableDefaultPromotionGate"]["requiredReleaseProcessAttachments"].remove("public_gcs_live_smoke")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected stable default promotion gate missing public GCS release attachment to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["stableDefaultPromotionGate"]["requiredExternalProofItemIds"].remove("rollout_controls")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected stable default promotion gate missing rollout-controls proof to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$release_bundle" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+manifest["releaseAttachmentSchema"]["releaseProcessItemIds"].append("release_decision_record")
+manifest["bundleItems"].append({"id": "release_decision_record", "status": "release_process_required"})
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+  echo "expected stable default promotion gate missing release bundle process item to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["stableDefaultPromotionGate"]["requiredReleaseProcessAttachments"].append("stale_release_attachment")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected stable default promotion gate stale release attachment to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$rollout_register" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    register = json.load(handle)
+gate = register["decisions"]["releaseChannels"]["stableDefaultGate"]
+gate["blockerRegister"] = "docs/release-gates/stale-external-blockers.md"
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(register, handle)
+PY
+
+if verify_fixture; then
+  echo "expected stable default promotion gate blocker-register drift from rollout register to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$repo_root/docs/release-gates/browser-wasm-delta-gcs-external-blockers.md" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace("- `daxis_descriptor_endpoint`\n", "")
+path.write_text(text, encoding="utf-8")
+PY
+
+if verify_fixture; then
+  echo "expected external blocker register missing stable-default proof item to be rejected" >&2
+  exit 1
+fi
+write_external_blocker_register
+
+write_valid_packet
+python3 - "$rollout_register" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    register = json.load(handle)
+gate = register["decisions"]["releaseChannels"]["stableDefaultGate"]
+gate["requiredReleaseProcessAttachments"].remove("public_gcs_live_smoke")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(register, handle)
+PY
+
+if verify_fixture; then
+  echo "expected stable default promotion gate release-attachment drift from rollout register to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["externalItems"][0]["owner"] = "Different Daxis owner"
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected external proof owner drift from traceability matrix to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["proofAttachmentSchema"].pop("templatePath")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected missing proof attachment template path to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$repo_root/docs/release-gates/daxis-external-proof-attachment-template.md" <<'PY'
+import sys
+
+path = sys.argv[1]
+with open(path, "w", encoding="utf-8") as handle:
+    handle.write(
+        "# Daxis External Proof Attachment Template\n\n"
+        "Do not attach browser-visible secrets, signed URLs, raw credentials, service-account material, private customer identifiers, or unredacted tenant data.\n\n"
+        "## Proof Attachment Metadata\n\n"
+        "- item_id:\n"
+        "- milestone:\n"
+        "- owner:\n"
+        "- captured_at:\n"
+        "- environment:\n"
+        "- rollout_segment:\n"
+        "- artifact_uri:\n"
+        "- verification_command_or_url:\n"
+        "- exit_status_or_review_status:\n"
+        "- rollback_evidence_uri:\n"
+        "- daxis_commit_sha:\n"
+        "- daxis_ref:\n"
+        "- daxis_origin_remote_url:\n"
+        "- daxis_worktree_status:\n"
+        "- daxis_worktree_review:\n"
+    )
+PY
+
+if verify_fixture; then
+  echo "expected proof attachment template missing evidence guidance to be rejected" >&2
+  exit 1
+fi
+write_proof_attachment_template
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["proofAttachmentSchema"]["requiredMetadata"].remove("rollback_evidence_uri")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected missing rollback evidence attachment metadata to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["proofAttachmentSchema"]["requiredMetadata"].append("item_id")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected duplicate proof attachment metadata fields to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["proofAttachmentSchema"]["requiredMetadata"].remove("daxis_worktree_review")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected missing Daxis working-tree review attachment metadata to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["proofAttachmentSchema"]["requiredReviewStates"].append("accepted")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected duplicate proof attachment review states to be rejected" >&2
+  exit 1
+fi
+
+write_valid_packet
+python3 - "$packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["handoffChecklist"].append("Confirm stableDefaultPromotionGate accepted state.")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+  echo "expected duplicate external proof handoff checklist items to be rejected" >&2
   exit 1
 fi
 

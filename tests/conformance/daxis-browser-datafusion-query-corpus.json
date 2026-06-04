@@ -2,6 +2,7 @@
   {
     "name": "recent_open_orders",
     "sql": "SELECT order_id, customer_tier, amount_cents FROM orders WHERE order_date = '2026-05-30' AND status <> 'cancelled' ORDER BY amount_cents DESC LIMIT 2",
+    "covered_sql_classes": ["projection", "filtering", "ordering", "limit", "descriptor_backed_scan"],
     "expected_columns": ["order_id", "customer_tier", "amount_cents"],
     "expected_rows": [
       [1001, "gold", 12500],
@@ -11,6 +12,7 @@
   {
     "name": "tier_revenue_summary",
     "sql": "SELECT customer_tier, COUNT(*) AS order_count, SUM(amount_cents) AS gross_cents FROM orders WHERE status <> 'cancelled' GROUP BY customer_tier ORDER BY customer_tier",
+    "covered_sql_classes": ["projection", "filtering", "grouped_aggregate", "ordering", "descriptor_backed_scan"],
     "expected_columns": ["customer_tier", "order_count", "gross_cents"],
     "expected_rows": [
       ["gold", 3, 49500],
@@ -20,6 +22,7 @@
   {
     "name": "priority_net_amounts",
     "sql": "SELECT order_id, CAST(amount_cents - CASE WHEN discount_cents IS NULL THEN 0 ELSE discount_cents END AS BIGINT) AS net_cents, CASE WHEN is_priority THEN 'priority' ELSE 'standard' END AS priority_bucket FROM orders ORDER BY order_id",
+    "covered_sql_classes": ["projection", "ordering", "arithmetic", "cast", "case_expression", "descriptor_backed_scan"],
     "expected_columns": ["order_id", "net_cents", "priority_bucket"],
     "expected_rows": [
       [1001, 12000, "priority"],

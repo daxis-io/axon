@@ -112,7 +112,8 @@ udf-abi, udf-host-wasi      Placeholders for hosted UDF execution
 
 - Native SQL over Delta tables, with snapshot pinning, partition pruning, and execution-derived metrics.
 - A browser runtime that bootstraps a snapshot, plans a candidate file set, prunes partitions and integer footer stats, and runs a known SQL subset (filter, project, group, common aggregates, aligned `ORDER BY` / `LIMIT`).
-- Browser-side DataFusion through `wasm-datafusion-session` for the sandbox UI runtime.
+- Browser-side DataFusion through `wasm-datafusion-session` for the sandbox UI runtime and the Daxis-facing `axon-web-wasm` browser DataFusion default worker.
+- Standard Parquet datasets through browser-safe file descriptors, using the same Parquet range-read and DataFusion query path without requiring Delta log metadata.
 - An OPFS persistent extent cache in `wasm-http-object-store`, bounded per object identity. If persistence fails, it's a cache miss, not an error.
 - A TypeScript SDK with a manifest-based bundle selector. The default bundle is single-threaded; SIMD and threaded tiers exist but aren't assumed.
 - A query router that returns a fallback reason instead of guessing.
@@ -122,7 +123,7 @@ udf-abi, udf-host-wasi      Placeholders for hosted UDF execution
 
 - A `services/query-api` HTTP service. Signed URL issuance, proxy-mode requests, audit logging, request correlation, and CORS validation are all external for now.
 - Session-level persistent caches in `wasm-query-session`. The lower-level OPFS adapter exists; the session itself is still in-memory only.
-- A shipped worker artifact with broad browser DataFusion. DataFusion is reachable through the sandbox UI session, but the default worker reports `browser_datafusion = false` on purpose.
+- A standalone npm package asset pipeline that copies the Daxis-facing `axon-web-worker.js` and `axon_web_wasm_bg.wasm` artifacts into `dist/worker/`; app deployments package those assets today. The legacy `browser-engine-worker` artifact remains compatibility evidence, not the Daxis default worker.
 
 The full launch checklist lives in [`docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md`](docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md). External blockers are in [`docs/release-gates/browser-wasm-delta-gcs-external-blockers.md`](docs/release-gates/browser-wasm-delta-gcs-external-blockers.md).
 

@@ -21,6 +21,16 @@ Queries outside the opened table scope are rejected before execution as `Invalid
 
 The Daxis query-shape corpus lives in [`../../tests/conformance/daxis-browser-datafusion-query-corpus.json`](../../tests/conformance/daxis-browser-datafusion-query-corpus.json). It is executed by `cargo test -p wasm-datafusion-poc --test daxis_query_corpus` through both an in-memory reference path and the descriptor-backed `AxonParquetScanExec` path.
 
+## Daxis Query Corpus Coverage
+
+Each Daxis corpus case declares `covered_sql_classes` so supported query claims stay tied to runtime evidence and this compatibility statement.
+
+| Case | Covered SQL classes |
+| ---- | ------------------- |
+| `recent_open_orders` | projection, filtering, ordering, limit, descriptor-backed `AxonParquetScanExec` |
+| `tier_revenue_summary` | projection, filtering, grouped aggregates, ordering, descriptor-backed `AxonParquetScanExec` |
+| `priority_net_amounts` | projection, ordering, arithmetic, `CAST`, `CASE` expressions, descriptor-backed `AxonParquetScanExec` |
+
 ## Supported Arrow And Parquet Field Types
 
 The schema adapter admits only field shapes that have browser scan evidence:

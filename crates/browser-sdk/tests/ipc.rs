@@ -7,11 +7,11 @@ use browser_sdk::{
     BrowserWorkerTransportCacheMetrics,
 };
 use query_contract::{
-    BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey,
-    CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, ParquetCompressionSummary,
-    ParquetInspectionColumn, ParquetInspectionColumnChunk, ParquetInspectionRowGroup,
-    ParquetInspectionSummary, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest,
-    QueryResponse,
+    BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpParquetDatasetDescriptor,
+    BrowserHttpSnapshotDescriptor, CapabilityKey, CapabilityReport, CapabilityState,
+    ExecutionTarget, FallbackReason, ParquetCompressionSummary, ParquetInspectionColumn,
+    ParquetInspectionColumnChunk, ParquetInspectionRowGroup, ParquetInspectionSummary, QueryError,
+    QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse,
 };
 
 #[test]
@@ -120,6 +120,37 @@ fn browser_sdk_round_trips_open_delta_table_and_arrow_ipc_sql_output() {
             assert_eq!(command.request.sql, "select count(*) as rows from events");
         }
         _ => panic!("expected sql command"),
+    }
+}
+
+#[test]
+fn browser_sdk_round_trips_open_parquet_dataset_command() {
+    let dataset = sample_parquet_dataset_descriptor();
+    let open_parquet_dataset =
+        BrowserWorkerCommand::open_parquet_dataset("req-open-parquet", "events", dataset.clone());
+
+    let serialized_open =
+        serde_json::to_value(&open_parquet_dataset).expect("open parquet dataset serializes");
+    assert!(
+        serialized_open.get("open_parquet_dataset").is_some(),
+        "OpenParquetDataset should use the browser open_parquet_dataset command tag"
+    );
+    assert!(serialized_open["open_parquet_dataset"]["dataset"]
+        .get("snapshot_version")
+        .is_none());
+    assert!(serialized_open["open_parquet_dataset"]["dataset"]
+        .get("active_files")
+        .is_none());
+
+    let round_tripped_open: BrowserWorkerCommand =
+        serde_json::from_value(serialized_open).expect("open parquet dataset deserializes");
+    match round_tripped_open {
+        BrowserWorkerCommand::OpenParquetDataset(command) => {
+            assert_eq!(command.request_id, "req-open-parquet");
+            assert_eq!(command.name, "events");
+            assert_eq!(command.dataset, dataset);
+        }
+        _ => panic!("expected open_parquet_dataset command"),
     }
 }
 
@@ -637,6 +668,31 @@ fn sample_snapshot_descriptor() -> BrowserHttpSnapshotDescriptor {
             url: "https://example.invalid/part-000.parquet".to_string(),
             size_bytes: 128,
             partition_values: BTreeMap::new(),
+            stats: None,
+        }],
+    }
+}
+
+fn sample_parquet_dataset_descriptor() -> BrowserHttpParquetDatasetDescriptor {
+    BrowserHttpParquetDatasetDescriptor {
+        table_uri: "https://example.invalid/datasets/events".to_string(),
+        partition_column_types: BTreeMap::from([(
+            "event_date".to_string(),
+            query_contract::PartitionColumnType::String,
+        )]),
+        browser_compatibility: CapabilityReport::default(),
+        required_capabilities: CapabilityReport::from_pairs([(
+            CapabilityKey::RangeReads,
+            CapabilityState::Supported,
+        )]),
+        files: vec![BrowserHttpFileDescriptor {
+            path: "event_date=2026-06-01/part-000.parquet".to_string(),
+            url: "https://storage.example.invalid/events/part-000.parquet".to_string(),
+            size_bytes: 1234,
+            partition_values: BTreeMap::from([(
+                "event_date".to_string(),
+                Some("2026-06-01".to_string()),
+            )]),
             stats: None,
         }],
     }

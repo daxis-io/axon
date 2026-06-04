@@ -3,7 +3,7 @@
 - Date: 2026-03-31
 - Scope: work required for launch that is not implemented in this repository
 
-The repository can prove the browser engine, control-plane descriptor seam, worker artifact, and repo-level guardrails. Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`, and the shipped V1 remains narrow runtime + streaming scan + in-memory session shell. It cannot prove the service and operational items below because the required code or infrastructure is not present here, and signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation stay outside repo-owned success claims.
+The repository can prove the browser engine, control-plane descriptor seam, worker artifact, and repo-level guardrails. Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`, and the Daxis-facing app worker now reports browser DataFusion as its default runtime SKU while the narrow runtime remains compatibility-only. It cannot prove the service and operational items below because the required code or infrastructure is not present here, and signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation stay outside repo-owned browser-engine success claims.
 
 | Blocker                                                   | Owner                                                       | Current repo state                                                                                                                                                                                                                                        | Required external proof                                         |
 | --------------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
@@ -18,7 +18,23 @@ The repository can prove the browser engine, control-plane descriptor seam, work
 | Production oncall / control-plane outage playbook         | SRE / production engineering                                | Repo runbook is local-only and service-agnostic                                                                                                                                                                                                           | Service-aware incident playbook with oncall ownership           |
 | Env-gated GCS fixture provisioning, IAM, and CI variables | Storage platform team                                       | The repo-documented public fixture passed local live smoke when supplied through `AXON_LIVE_PUBLIC_GCS_TABLE_URI`; repo-level Actions variables/secrets list no live fixture env, and org-level Actions names were not inspectable with the current token | Fixture ownership, runner identity, and CI variables configured |
 
+## Stable Default External Proof Items
+
+The `stableDefaultPromotionGate` remains `blocked_external_proof_required` until every Daxis-owned item below is attached, reviewed, and accepted with `server_fallback` rollback evidence for the rollout segment:
+
+| Proof item                                      | Required external proof                                                                 |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `daxis_architecture_docs`                       | Daxis architecture docs name Axon as browser read compute and preserve Daxis ownership. |
+| `daxis_names_axon_default_browser_engine`       | Daxis product architecture names Axon as the default browser read engine.               |
+| `daxis_descriptor_endpoint`                     | Descriptor resolver endpoint is deployed and exercised end to end.                      |
+| `daxis_frontend_flow`                           | Daxis UI open/query/cancel flow is tested against the control plane.                    |
+| `daxis_read_access_plan_endpoint`               | Read-access-plan endpoint is deployed with policy-backed outcomes.                      |
+| `storage_cors_proxy_validation`                 | Production CORS and proxy-mode validation exists for the Daxis app origin.              |
+| `production_dashboards`                         | Live Daxis dashboards and alert ownership exist.                                        |
+| `production_runbooks`                           | Service-aware incident playbooks and oncall ownership exist.                            |
+| `rollout_controls`                              | Daxis can force server fallback by rollout segment.                                     |
+| `production_table_compatibility_dashboard`      | Production compatibility inventory is populated for the rollout segment.                |
+
 Explicit repo deferrals that must not be mistaken for shipped launch scope:
 
 - OPFS / IndexedDB persistent-cache backends
-- browser DataFusion as the default execution SKU

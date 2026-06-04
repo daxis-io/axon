@@ -167,7 +167,7 @@ Browser delivery also constrains the decision. The DataFusion engine path should
 IPC rather than row JSON for large results, load WASM through streaming instantiation where hosting
 allows it, and treat single-threaded WASM as the product baseline. `SharedArrayBuffer`, shared WASM
 memory, high-precision memory APIs, and threaded execution depend on cross-origin isolation, so they
-are acceleration tiers rather than V1 assumptions. OPFS-backed persistent caches may become useful
+are acceleration tiers rather than first-default-profile assumptions. OPFS-backed persistent caches may become useful
 for metadata, footers, and selected byte ranges, but the engine should not require OPFS to be
 correct.
 
@@ -301,7 +301,7 @@ This profile should be treated as the minimum investigation target, not as a fin
 | Capability | Browser DataFusion need | Current Axon status |
 | --- | --- | --- |
 | Read-only `SELECT` | Required | Custom runtime already requires `SELECT` only |
-| Single table source | Required for V1 | Custom runtime requires one source relation |
+| Single table source | Required for the first Daxis DataFusion default profile | Custom runtime requires one source relation |
 | Projection and aliases | Required | Custom runtime supports passthrough projection and aliases |
 | Filter predicates | Required | Custom runtime supports `AND`, comparison, `IN`, `IS NULL`, `IS NOT NULL` |
 | Limit | Required | Custom runtime supports `LIMIT` |
@@ -314,7 +314,7 @@ This profile should be treated as the minimum investigation target, not as a fin
 | Parquet-backed table registration | Required | Proven in `wasm-datafusion-poc` host tests through `AxonParquetScanExec` and browser range I/O |
 | Delta active-file registration | Required | Proven for trusted descriptors through `AxonDeltaTableProvider`; Kernel-derived descriptors remain future protocol-layer work |
 
-## Out Of Browser V1 Profile
+## Outside Browser DataFusion Default Profile
 
 These should be treated as removable or feature-gatable unless a future product requirement says
 otherwise:
@@ -324,11 +324,11 @@ otherwise:
 | CSV datasource | Not needed for Delta/Parquet browser SKU |
 | JSON datasource | Not needed for Delta/Parquet browser SKU |
 | Avro datasource | Not needed |
-| Broad scalar-function registry | Not needed by V1 unless individual functions are explicitly required |
-| Regex/string/unicode-heavy function sets | Probably not needed by V1 |
+| Broad scalar-function registry | Not needed by the first Daxis DataFusion default profile unless individual functions are explicitly required |
+| Regex/string/unicode-heavy function sets | Probably not needed by the first Daxis DataFusion default profile |
 | Crypto functions | Not needed |
-| Window functions | Not needed by V1 |
-| Table functions | Not needed by V1 |
+| Window functions | Not needed by the first Daxis DataFusion default profile |
+| Table functions | Not needed by the first Daxis DataFusion default profile |
 | Broad catalog/session features | Minimize; keep only what `MemTable` or table provider registration requires |
 | Native filesystem integrations | Not needed in browser |
 | Cloud SDKs, signing, OpenDAL service integrations | Not allowed in browser runtime |
@@ -410,7 +410,7 @@ scan layer:
 | `datafusion-datasource-arrow` | Maybe | Needed only if it helps table registration or in-memory fixtures |
 | `datafusion-functions` broad registry | Partially | Gate to required scalar functions, or avoid registering broad built-ins |
 | aggregate functions | Yes, narrow subset | Gate to `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`; defer arrays/booleans unless required |
-| window/table functions | No for V1 | Candidate for feature split |
+| window/table functions | No for the first Daxis DataFusion default profile | Candidate for feature split |
 | `object_store` | Maybe | Needed only if DataFusion table registration requires it; browser transport should remain Axon-owned |
 | Arrow CSV/JSON features | No | Candidate for Arrow default-feature reduction if DataFusion allows it |
 | Arrow IPC | Yes | Keep for result boundary |
@@ -535,7 +535,7 @@ compress, profile, and run correctness tests.
 | DataFusion engine size remains in the current 5.5 MiB Brotli class | Continue; optimize and cache rather than replace DataFusion execution |
 | DataFusion engine grows materially after Delta/Parquet scan integration | Split features, codecs, and datasource surfaces before reconsidering architecture |
 | Delta Kernel core brings unwanted browser dependencies | Keep it isolated, disable features, or pause the Kernel path before replacing browser snapshot code |
-| Delta Kernel cached handler model cannot resolve required snapshots | Add an explicit cache-miss retry trampoline or constrain V1 to trusted descriptors / known-version open |
+| Delta Kernel cached handler model cannot resolve required snapshots | Add an explicit cache-miss retry trampoline or constrain the first Daxis DataFusion default open path to trusted descriptors / known-version open |
 | DataFusion scan pushdown cannot use Axon's Delta/Parquet facts | Improve `AxonDeltaTableProvider` and `AxonParquetScanExec`; do not fall back to an Axon IR by default |
 | DataFusion physical execution cannot meet memory/cancellation budgets | Add browser budget controls, fallback rules, and operator limits |
 | DataFusion-native Parquet/browser object-store path proves simpler and faster | Consider replacing `AxonParquetScanExec` later |
@@ -578,7 +578,7 @@ compress, profile, and run correctness tests.
 
 ## Open Questions
 
-- What exact SQL grammar should the DataFusion browser engine accept in V1?
+- What exact SQL grammar should the DataFusion browser engine accept in the first Daxis default profile?
 - Which scalar functions are product requirements rather than convenience?
 - Which Parquet encodings and compression codecs are mandatory for target datasets?
 - Should query-plan caching happen only in the browser, or can some deployments compile/cache plans

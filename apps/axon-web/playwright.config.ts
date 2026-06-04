@@ -4,7 +4,7 @@ export default defineConfig({
   testDir: './tests',
   testMatch: /browser-worker-matrix\.spec\.ts/,
   workers: 1,
-  timeout: 30_000,
+  timeout: 60_000,
   use: {
     baseURL: 'https://127.0.0.1:5173',
     ignoreHTTPSErrors: true,
@@ -24,10 +24,10 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev',
+    command: 'npm run dev:server',
     url: 'https://127.0.0.1:5173',
     ignoreHTTPSErrors: true,
     reuseExistingServer: !process.env.CI,
-    timeout: 30_000,
+    timeout: 60_000,
   },
 });

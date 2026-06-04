@@ -13,8 +13,8 @@ use arrow_ipc::reader::StreamReader;
 use arrow_schema::{DataType as ArrowDataType, TimeUnit};
 use js_sys::{Object, Reflect, Uint8Array};
 use query_contract::{
-    BrowserHttpSnapshotDescriptor, ExecutionTarget, QueryError, QueryErrorCode, QueryRequest,
-    QueryResponse, SnapshotResolutionRequest,
+    BrowserHttpParquetDatasetDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget,
+    QueryError, QueryErrorCode, QueryRequest, QueryResponse, SnapshotResolutionRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -283,6 +283,28 @@ impl SandboxQuerySession {
         .map_err(|error| {
             JsValue::from_str(&format!(
                 "open table metadata serialization failed: {error}"
+            ))
+        })
+    }
+
+    pub async fn open_parquet_dataset(
+        &mut self,
+        name: String,
+        dataset_json: String,
+    ) -> Result<String, JsValue> {
+        let dataset = serde_json::from_str::<BrowserHttpParquetDatasetDescriptor>(&dataset_json)
+            .map_err(|error| JsValue::from_str(&format!("invalid Parquet descriptor: {error}")))?;
+        self.session
+            .open_parquet_dataset(name.clone(), dataset)
+            .await
+            .map_err(query_error_to_js_value)?;
+
+        serde_json::to_string(&SandboxOpenTableOutput {
+            cache_metrics: cache_metrics(&self.session),
+        })
+        .map_err(|error| {
+            JsValue::from_str(&format!(
+                "open Parquet dataset metadata serialization failed: {error}"
             ))
         })
     }

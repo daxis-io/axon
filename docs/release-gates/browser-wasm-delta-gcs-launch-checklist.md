@@ -6,10 +6,10 @@
 ## Documentation
 
 - [x] Browser compatibility is documented in `README.md` and backed by CI checks for `wasm32-unknown-unknown` coverage across the browser crates plus the internal worker artifact.
-- [x] Delta compatibility is documented in `README.md` and the browser engine strategy docs, including already repo-owned snapshot reconstruction in `wasm-delta-snapshot` plus the `wasm-parquet-engine` / `wasm-query-session` split.
+- [x] Delta compatibility is documented in `README.md` and the browser engine strategy docs, including already repo-owned snapshot reconstruction in `wasm-delta-snapshot` plus `wasm-parquet-engine`, `wasm-datafusion-session`, and legacy `wasm-query-session` compatibility isolation.
 - [x] Security reporting is documented in `SECURITY.md` and `tests/security/README.md`.
 - [x] Canonical handoff examples live in `docs/program/browser-lakehouse-release-handoff.md` and `docs/program/browser-lakehouse-release-handoff-examples/`, including the session-backed worker command contract and the worker artifact report contract for runtime SKU, session capability, Arrow IPC transport, and artifact identity.
-- [x] Repo-owned release evidence keeps Axon runtime scope separate from external blockers: the Daxis-facing app worker reports browser DataFusion as its default SKU, the legacy narrow worker remains compatibility-only, and signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation remain outside repo-owned success claims.
+- [x] Repo-owned release evidence keeps Axon runtime scope separate from external blockers: the Daxis-facing app worker reports browser DataFusion as its default SKU, the legacy narrow worker remains compatibility-only, and signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation remain outside repo-owned browser-engine success claims.
 
 ## Release Gates
 
@@ -17,8 +17,8 @@
 - [x] Host tests run for `wasm-query-runtime`, `query-router`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `browser-sdk`, and `browser-engine-worker`.
 - [x] Host tests run for `wasm-query-session` to verify repeated-query reuse, in-memory eviction, and dispose semantics.
 - [x] Dedicated `wasm32-unknown-unknown` smoke suites run in CI for `browser-sdk`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-engine-worker`.
-- [x] Browser release-artifact size reporting is enforced in CI on the real `browser-engine-worker.wasm` artifact.
-- [x] Browser DataFusion engine size reporting remains optional release-process evidence until the full size toolchain is available in the gate, separate from correctness and runtime-SKU evidence.
+- [x] Legacy narrow worker artifact size reporting remains enforced in CI on the real `browser-engine-worker.wasm` artifact.
+- [x] Daxis DataFusion default worker size reporting remains release-process evidence for `axon-web-wasm` until the full size toolchain is available in the gate, separate from correctness and runtime-SKU evidence.
 - [x] Host-proxy worker startup baseline is reported in CI from the worker baseline tests, and wasm smoke validates the same artifact-report path on the browser target.
 - [x] The worker artifact report names the runtime SKU, session-shell capability, Arrow IPC result transport, browser access mode, and shipped wasm artifact identity on both host and wasm paths.
 - [x] Host-proxy worker memory baseline is reported in CI from the worker baseline tests; blocking thresholds remain deferred.
@@ -48,7 +48,7 @@
 - [x] Browser runtime ships single-partition by default.
 - [x] The legacy narrow runtime + streaming scan + in-memory session shell remains documented as compatibility-only, while the Daxis-facing app worker is DataFusion-backed Delta/Parquet execution.
 - [x] The shipped session shell is documented as in-memory only; persistent-cache hooks may exist below it, but OPFS / IndexedDB backends remain deferred.
-- [x] Browser bundle size is tracked in CI on the real worker artifact.
+- [x] Browser bundle size is tracked in CI on the legacy narrow worker artifact and in release-process evidence for the Daxis DataFusion default worker.
 - [x] Browser DataFusion budget reporting is tracked for the Daxis-facing default worker; optional Brotli budget checks are not the current always-on worker size gate.
 - [x] Browser packages do not depend on signing or service-account code.
 - [x] Hosted UDF runtime remains separate from browser runtime dependencies.
@@ -78,5 +78,7 @@
 - Repo-owned release evidence: `docs/release-gates/browser-wasm-delta-gcs-release-evidence.md`
 - External blocker register: `docs/release-gates/browser-wasm-delta-gcs-external-blockers.md`
 - Daxis external proof handoff: `docs/program/daxis-external-proof-handoff.md`
+- Daxis external proof attachment template: `docs/release-gates/daxis-external-proof-attachment-template.md`
 - Daxis browser read-compute ADR: `docs/adr/ADR-0008-daxis-browser-read-compute-contract.md`
 - Daxis release bundle manifest: `docs/release-gates/daxis-release-bundle-manifest.json`
+- Daxis release attachment template: `docs/release-gates/daxis-release-attachment-template.md`

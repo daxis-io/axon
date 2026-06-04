@@ -1198,32 +1198,43 @@ fn execute_query_maps_permission_denied_files_to_access_denied() {
     use std::os::unix::fs::PermissionsExt;
 
     struct PermissionRestoreGuard {
-        path: PathBuf,
-        original_permissions: fs::Permissions,
+        files: Vec<(PathBuf, fs::Permissions)>,
     }
 
     impl Drop for PermissionRestoreGuard {
         fn drop(&mut self) {
-            let _ = fs::set_permissions(&self.path, self.original_permissions.clone());
+            for (path, original_permissions) in &self.files {
+                let _ = fs::set_permissions(path, original_permissions.clone());
+            }
         }
     }
 
     let fixture = TestTableFixture::create();
     let data_files = fixture.data_file_paths();
-    let denied_file = data_files
-        .first()
-        .expect("fixture should have at least one parquet data file");
-    let original_permissions = fs::metadata(denied_file)
-        .expect("metadata should load")
-        .permissions();
-
-    let mut denied_permissions = original_permissions.clone();
-    denied_permissions.set_mode(0o000);
-    fs::set_permissions(denied_file, denied_permissions).expect("permissions should update");
+    assert!(
+        !data_files.is_empty(),
+        "fixture should have at least one parquet data file"
+    );
+    let restore_files = data_files
+        .iter()
+        .map(|path| {
+            let original_permissions = fs::metadata(path)
+                .expect("metadata should load")
+                .permissions();
+            (path.to_path_buf(), original_permissions)
+        })
+        .collect::<Vec<_>>();
     let _restore_guard = PermissionRestoreGuard {
-        path: denied_file.to_path_buf(),
-        original_permissions,
+        files: restore_files,
     };
+
+    for denied_file in &data_files {
+        let mut denied_permissions = fs::metadata(denied_file)
+            .expect("metadata should load")
+            .permissions();
+        denied_permissions.set_mode(0o000);
+        fs::set_permissions(denied_file, denied_permissions).expect("permissions should update");
+    }
 
     let request = QueryRequest::new(
         &fixture.table_uri,
@@ -1233,7 +1244,12 @@ fn execute_query_maps_permission_denied_files_to_access_denied() {
 
     let error = execute_query(request).expect_err("permission denied should surface");
 
-    assert_eq!(error.code, QueryErrorCode::AccessDenied);
+    assert_eq!(
+        error.code,
+        QueryErrorCode::AccessDenied,
+        "permission-denied query error message: {}",
+        error.message
+    );
 }
 
 #[test]

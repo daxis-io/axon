@@ -31,6 +31,7 @@ import {
   snapshotFromBrokeredDeltaReadPlan,
   validateDeltaLocationResolveResponse,
   type BrowserBundleManifest,
+  type BrowserHttpParquetDatasetDescriptor,
   type BrowserHttpSnapshotDescriptor,
   type BrowserWorkerEventEnvelope,
   type BrowserWorkerCommand,
@@ -62,9 +63,25 @@ const snapshot: BrowserHttpSnapshotDescriptor = {
   ],
 };
 
-class FakeWorker
-  implements Pick<Worker, 'addEventListener' | 'removeEventListener' | 'postMessage' | 'terminate'>
-{
+const parquetDataset: BrowserHttpParquetDatasetDescriptor = {
+  table_uri: 'https://example.invalid/datasets/events',
+  partition_column_types: {},
+  browser_compatibility: { capabilities: {} },
+  required_capabilities: { capabilities: {} },
+  files: [
+    {
+      path: 'part-000.parquet',
+      url: 'https://example.invalid/part-000.parquet',
+      size_bytes: 128,
+      partition_values: {},
+    },
+  ],
+};
+
+class FakeWorker implements Pick<
+  Worker,
+  'addEventListener' | 'removeEventListener' | 'postMessage' | 'terminate'
+> {
   readonly commands: BrowserWorkerCommand[] = [];
   terminated = false;
   private readonly listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
@@ -173,6 +190,16 @@ test('selectBundle keeps the single-threaded baseline when optional features are
 
   expect(selected.bundle.id).toBe('baseline');
   expect(selected.features).toEqual(baselineOnlyFeatures);
+});
+
+test('default bundle manifest points baseline at the Daxis-facing DataFusion worker artifact', () => {
+  const selected = selectBundle(browserSdk.AXON_BROWSER_BUNDLE_MANIFEST, baselineOnlyFeatures);
+
+  expect(selected.bundle.id).toBe('baseline');
+  expect(selected.bundle.workerUrl).toBe('/workers/axon-web-worker.js');
+  expect(selected.bundle.wasmUrl).toBe('/workers/axon_web_wasm_bg.wasm');
+  expect(String(selected.bundle.workerUrl)).not.toContain('browser-engine-worker');
+  expect(String(selected.bundle.wasmUrl)).not.toContain('browser_engine_worker');
 });
 
 test('selectBundle prefers a SIMD bundle without requiring cross-origin isolation', () => {
@@ -641,6 +668,59 @@ test('rejects a duplicate active request id without orphaning the first request'
   worker.emitMessage({ opened: { request_id: 'req-duplicate', name: 'events' } });
 
   await expect(first).resolves.toEqual({ request_id: 'req-duplicate', name: 'events' });
+});
+
+test('openParquetDataset opens standard Parquet files without Delta snapshot metadata', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const openedPromise = client.openParquetDataset('events', parquetDataset, {
+    requestId: 'req-open-parquet',
+  });
+
+  expect(worker.commands).toEqual([
+    {
+      open_parquet_dataset: {
+        request_id: 'req-open-parquet',
+        name: 'events',
+        dataset: parquetDataset,
+      },
+    },
+  ]);
+
+  worker.emitMessage({ opened: { request_id: 'req-open-parquet', name: 'events' } });
+  await expect(openedPromise).resolves.toEqual({
+    request_id: 'req-open-parquet',
+    name: 'events',
+  });
+
+  const resultPromise = client.query('events', 'SELECT id FROM events', {
+    requestId: 'req-query-parquet',
+  });
+  const queryCommand = worker.commands[1];
+  expect(queryCommand).toHaveProperty('sql');
+  if (!('sql' in queryCommand)) {
+    throw new Error('expected sql command');
+  }
+  expect(queryCommand.sql.query.table_uri).toBe(parquetDataset.table_uri);
+  expect(queryCommand.sql.query).not.toHaveProperty('snapshot_version');
+
+  worker.emitMessage({
+    success: {
+      request_id: 'req-query-parquet',
+      response: queryResponse({ executed_on: 'browser_wasm' }),
+      result: {
+        format: 'stream',
+        content_type: 'application/vnd.apache.arrow.stream',
+        bytes: [1, 2, 3, 4],
+      },
+    },
+  });
+  await expect(resultPromise).resolves.toMatchObject({
+    response: {
+      executed_on: 'browser_wasm',
+    },
+  });
 });
 
 test('normalizes Arrow IPC bytes and exposes success fallback reasons', async () => {
@@ -2657,7 +2737,12 @@ test('Daxis headless query example executes an approved descriptor and returns a
           duration_ms: 18,
           files_touched: 1,
           files_skipped: 0,
+          row_groups_touched: 2,
+          row_groups_skipped: 3,
+          footer_reads: 1,
           rows_emitted: 2,
+          snapshot_bootstrap_duration_ms: 7,
+          access_mode: 'browser_safe_http',
         },
       }),
       result: {
@@ -2683,6 +2768,13 @@ test('Daxis headless query example executes an approved descriptor and returns a
       arrow_ipc_bytes: 4,
       scan_bytes: 32768,
       duration_ms: 18,
+      files_touched: 1,
+      files_skipped: 0,
+      row_groups_touched: 2,
+      row_groups_skipped: 3,
+      footer_reads: 1,
+      snapshot_bootstrap_duration_ms: 7,
+      access_mode: 'browser_safe_http',
     },
     diagnostics: {
       worker_artifact_id: 'axon-web-worker@sha256:test',
@@ -2724,7 +2816,12 @@ test('Daxis headless query example withholds results over the approved output bu
           duration_ms: 18,
           files_touched: 1,
           files_skipped: 0,
+          row_groups_touched: 2,
+          row_groups_skipped: 3,
+          footer_reads: 1,
           rows_emitted: 2,
+          snapshot_bootstrap_duration_ms: 7,
+          access_mode: 'browser_safe_http',
         },
       }),
       result: {
@@ -2782,7 +2879,12 @@ test('Daxis headless query example withholds results over the approved scan budg
           duration_ms: 18,
           files_touched: 1,
           files_skipped: 0,
+          row_groups_touched: 2,
+          row_groups_skipped: 3,
+          footer_reads: 1,
           rows_emitted: 2,
+          snapshot_bootstrap_duration_ms: 7,
+          access_mode: 'browser_safe_http',
         },
       }),
       result: {
@@ -2803,6 +2905,19 @@ test('Daxis headless query example withholds results over the approved scan budg
       budget_field: 'max_scan_bytes',
       actual_bytes: '32768',
       limit_bytes: '32767',
+    },
+    metrics: {
+      rows_returned: 2,
+      arrow_ipc_bytes: 2,
+      scan_bytes: 32768,
+      duration_ms: 18,
+      files_touched: 1,
+      files_skipped: 0,
+      row_groups_touched: 2,
+      row_groups_skipped: 3,
+      footer_reads: 1,
+      snapshot_bootstrap_duration_ms: 7,
+      access_mode: 'browser_safe_http',
     },
   });
   expect(result.arrowIpc).toBeNull();
@@ -3072,6 +3187,111 @@ test('Daxis headless query example rejects multi-table descriptors before worker
     message: 'Daxis-approved descriptor v1 requires exactly one table descriptor',
   } satisfies Partial<DaxisHeadlessQueryError>);
   expect(worker.commands).toHaveLength(0);
+});
+
+test('Daxis headless descriptor validation rejects unknown taxonomy values', () => {
+  const invalidCases: Array<{
+    field: 'surface_kind' | 'intent_kind' | 'input_artifact_kind' | 'compiled_artifact_kind';
+    value: string;
+    code: DaxisHeadlessQueryError['code'];
+    message: string;
+  }> = [
+    {
+      field: 'surface_kind',
+      value: 'notebook',
+      code: 'unsupported_surface',
+      message: 'Daxis-approved descriptor surface_kind must be one of',
+    },
+    {
+      field: 'intent_kind',
+      value: 'prompt',
+      code: 'invalid_descriptor',
+      message: 'Daxis-approved descriptor intent_kind must be one of',
+    },
+    {
+      field: 'input_artifact_kind',
+      value: 'raw_prompt',
+      code: 'invalid_descriptor',
+      message: 'Daxis-approved descriptor input_artifact_kind must be one of',
+    },
+    {
+      field: 'compiled_artifact_kind',
+      value: 'unvalidated_sql',
+      code: 'invalid_descriptor',
+      message: 'Daxis-approved descriptor compiled_artifact_kind must be one of',
+    },
+  ];
+
+  for (const invalidCase of invalidCases) {
+    const descriptor = daxisApprovedAxonReadDescriptor();
+    const mutableDescriptor = descriptor as unknown as Record<string, unknown>;
+    mutableDescriptor[invalidCase.field] = invalidCase.value;
+
+    expect(() =>
+      validateDaxisApprovedAxonReadDescriptor(descriptor, 1_800_000_000_000),
+    ).toThrowError(
+      expect.objectContaining({
+        name: 'DaxisHeadlessQueryError',
+        code: invalidCase.code,
+        message: expect.stringContaining(invalidCase.message),
+      }),
+    );
+  }
+});
+
+test('Daxis headless descriptor validation rejects incompatible surface metadata', () => {
+  const invalidCases: Array<{
+    surface_kind: DaxisApprovedAxonReadDescriptor['surface_kind'];
+    intent_kind: DaxisApprovedAxonReadDescriptor['intent_kind'];
+    input_artifact_kind: DaxisApprovedAxonReadDescriptor['input_artifact_kind'];
+    message: string;
+  }> = [
+    {
+      surface_kind: 'agent',
+      intent_kind: 'sql',
+      input_artifact_kind: 'raw_sql',
+      message:
+        'Daxis-approved descriptor surface agent must use intent_kind=semantic_query and input_artifact_kind=semantic_plan',
+    },
+    {
+      surface_kind: 'builder',
+      intent_kind: 'semantic_query',
+      input_artifact_kind: 'raw_sql',
+      message:
+        'Daxis-approved descriptor surface builder must use intent_kind=semantic_query and input_artifact_kind=builder_plan',
+    },
+    {
+      surface_kind: 'api',
+      intent_kind: 'semantic_query',
+      input_artifact_kind: 'semantic_plan',
+      message:
+        'Daxis-approved descriptor surface api must use intent_kind=sql and input_artifact_kind=raw_sql',
+    },
+    {
+      surface_kind: 'dashboard_tile',
+      intent_kind: 'sql',
+      input_artifact_kind: 'builder_plan',
+      message:
+        'Daxis-approved descriptor surface dashboard_tile must use intent_kind=sql and input_artifact_kind=saved_sql',
+    },
+  ];
+
+  for (const invalidCase of invalidCases) {
+    const descriptor = daxisApprovedAxonReadDescriptor();
+    descriptor.surface_kind = invalidCase.surface_kind;
+    descriptor.intent_kind = invalidCase.intent_kind;
+    descriptor.input_artifact_kind = invalidCase.input_artifact_kind;
+
+    expect(() =>
+      validateDaxisApprovedAxonReadDescriptor(descriptor, 1_800_000_000_000),
+    ).toThrowError(
+      expect.objectContaining({
+        name: 'DaxisHeadlessQueryError',
+        code: 'invalid_descriptor',
+        message: invalidCase.message,
+      }),
+    );
+  }
 });
 
 test('Daxis headless query example maps pre-handoff cancellation into a cancelled envelope', async () => {

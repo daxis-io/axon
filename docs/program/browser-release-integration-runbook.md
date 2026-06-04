@@ -5,9 +5,9 @@
 
 This runbook covers what's in the repository today. It doesn't cover production control-plane deployment, signed URL issuance, live dashboards, or oncall for an external service.
 
-Browser V1 here is the narrow runtime plus streaming scan plus an in-memory session shell. The target is a DataFusion-powered Delta/Parquet browser engine, once the DataFusion table provider and scan integration gates pass. Delta snapshot reconstruction already lives in `crates/wasm-delta-snapshot`. Signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation are external blockers, not repo-owned regressions.
+The Daxis-facing app worker is browser DataFusion-backed. The legacy narrow runtime plus streaming scan plus an in-memory session shell remains compatibility-only for repo-owned regression evidence. Delta snapshot reconstruction already lives in `crates/wasm-delta-snapshot`. Signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation are external blockers, not repo-owned regressions.
 
-## 1. Session Shell Regression
+## 1. Legacy Session Shell Regression
 
 Symptom:
 
@@ -17,7 +17,7 @@ Symptom:
 
 Cause:
 
-- the V1 session shell drifted away from the worker contract
+- the compatibility session shell drifted away from the worker contract
 
 Local commands:
 
@@ -103,7 +103,8 @@ Look at:
 - dependencies that snuck into the worker
 - command or response envelope growth
 - wasm-target package drift
-- the worker artifact should claim `session_shell = true` and `browser_datafusion = false`
+- the legacy worker artifact should claim `session_shell = true` and `browser_datafusion = false`
+- the Daxis-facing app worker artifact should report `runtime_sku = browser_datafusion` through `axon-web-wasm`
 
 The CI size budget applies to the shipped browser worker artifact. For Daxis default-worker DataFusion size evidence, run `AXON_DF_SIZE_PACKAGE=axon-web-wasm AXON_DF_SIZE_WASM_STEM=axon_web_wasm AXON_DF_BROTLI_BUDGET_BYTES=6291456 bash tests/perf/report_datafusion_wasm_size.sh` when the release environment has `wasm-bindgen`, `wasm-opt`, `brotli`, and `twiggy`.
 

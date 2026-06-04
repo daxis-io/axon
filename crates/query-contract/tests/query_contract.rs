@@ -6,15 +6,15 @@ use query_contract::{
     validate_delta_location_resolve_exchange, validate_delta_location_resolve_request,
     validate_delta_location_resolve_response, BrokeredDeltaAccessMode, BrokeredDeltaReadPlan,
     BrokeredObjectAccess, BrokeredPolicyAuthority, BrowserAccessMode, BrowserHttpFileDescriptor,
-    BrowserHttpSnapshotDescriptor, BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport,
-    CapabilityState, CredentialProfileRef, DeltaLocationRefresh, DeltaLocationResolveRequest,
-    DeltaLocationResolveResponse, DeltaLocationResolverError, DeltaLocationResolverErrorCode,
-    DeltaObjectStoreProvider, DeltaProtocolFeatureClass, DeltaProtocolFeatureEnablement,
-    DeltaProtocolFeatureKind, DirectExternalEngineReadSupport, ExecutionTarget, FallbackReason,
-    ObjectGrantBatchSignRequest, ObjectGrantHeadRequest, ObjectGrantListRequest,
-    PartitionColumnType, PolicyAuthorityKind, QueryError, QueryErrorCode, QueryExecutionOptions,
-    QueryMetricsSummary, QueryRequest, QueryResponse, QueryResultPage, ReadAccessPlan,
-    ReadAccessPlanReason, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
+    BrowserHttpParquetDatasetDescriptor, BrowserHttpSnapshotDescriptor, BrowserObjectUrlPolicy,
+    CapabilityKey, CapabilityReport, CapabilityState, CredentialProfileRef, DeltaLocationRefresh,
+    DeltaLocationResolveRequest, DeltaLocationResolveResponse, DeltaLocationResolverError,
+    DeltaLocationResolverErrorCode, DeltaObjectStoreProvider, DeltaProtocolFeatureClass,
+    DeltaProtocolFeatureEnablement, DeltaProtocolFeatureKind, DirectExternalEngineReadSupport,
+    ExecutionTarget, FallbackReason, ObjectGrantBatchSignRequest, ObjectGrantHeadRequest,
+    ObjectGrantListRequest, PartitionColumnType, PolicyAuthorityKind, QueryError, QueryErrorCode,
+    QueryExecutionOptions, QueryMetricsSummary, QueryRequest, QueryResponse, QueryResultPage,
+    ReadAccessPlan, ReadAccessPlanReason, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
     ResolverActualAccessMode, ResolverRequestedAccessMode, SnapshotResolutionRequest,
     SqlFallbackRequiredPlan,
 };
@@ -195,6 +195,65 @@ fn query_response_serializes_without_absent_fallback_reason() {
             }
         })
     );
+}
+
+#[test]
+fn browser_http_parquet_dataset_descriptor_serializes_without_delta_snapshot_fields() {
+    let descriptor = BrowserHttpParquetDatasetDescriptor {
+        table_uri: "https://example.invalid/datasets/events".to_string(),
+        partition_column_types: BTreeMap::from([(
+            "event_date".to_string(),
+            PartitionColumnType::String,
+        )]),
+        browser_compatibility: CapabilityReport::default(),
+        required_capabilities: CapabilityReport::from_pairs([(
+            CapabilityKey::RangeReads,
+            CapabilityState::Supported,
+        )]),
+        files: vec![BrowserHttpFileDescriptor {
+            path: "event_date=2026-06-01/part-000.parquet".to_string(),
+            url: "https://storage.example.invalid/events/part-000.parquet".to_string(),
+            size_bytes: 1234,
+            partition_values: BTreeMap::from([(
+                "event_date".to_string(),
+                Some("2026-06-01".to_string()),
+            )]),
+            stats: None,
+        }],
+    };
+
+    let json = serde_json::to_value(&descriptor).expect("Parquet descriptor should serialize");
+
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "table_uri": "https://example.invalid/datasets/events",
+            "partition_column_types": {
+                "event_date": "string"
+            },
+            "required_capabilities": {
+                "capabilities": {
+                    "range_reads": "supported"
+                }
+            },
+            "files": [
+                {
+                    "path": "event_date=2026-06-01/part-000.parquet",
+                    "url": "https://storage.example.invalid/events/part-000.parquet",
+                    "size_bytes": 1234,
+                    "partition_values": {
+                        "event_date": "2026-06-01"
+                    }
+                }
+            ]
+        })
+    );
+    assert!(json.get("snapshot_version").is_none());
+    assert!(json.get("active_files").is_none());
+
+    let round_tripped: BrowserHttpParquetDatasetDescriptor =
+        serde_json::from_value(json).expect("Parquet descriptor should deserialize");
+    assert_eq!(round_tripped, descriptor);
 }
 
 #[test]

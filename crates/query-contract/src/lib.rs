@@ -273,6 +273,19 @@ pub struct BrowserHttpSnapshotDescriptor {
     pub active_files: Vec<BrowserHttpFileDescriptor>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserHttpParquetDatasetDescriptor {
+    pub table_uri: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub partition_column_types: BTreeMap<String, PartitionColumnType>,
+    #[serde(default, skip_serializing_if = "capability_report_is_empty")]
+    pub browser_compatibility: CapabilityReport,
+    #[serde(default, skip_serializing_if = "capability_report_is_empty")]
+    pub required_capabilities: CapabilityReport,
+    pub files: Vec<BrowserHttpFileDescriptor>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeltaObjectStoreProvider {
@@ -1528,6 +1541,20 @@ pub struct DaxisQueryMetrics {
     pub scan_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_touched: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_skipped: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_groups_touched: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_groups_skipped: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_bootstrap_duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_mode: Option<BrowserAccessMode>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
