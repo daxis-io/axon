@@ -37,6 +37,17 @@ current Daxis verification-plan commands can be run from Axon with:
 AXON_DAXIS_PLATFORM_REPO_ROOT=/path/to/daxis-platform bash tests/conformance/verify_daxis_external_state.sh
 ```
 
+For proof attachments, also capture the machine-readable summary:
+
+```bash
+AXON_DAXIS_PLATFORM_REPO_ROOT=/path/to/daxis-platform bash tests/conformance/verify_daxis_external_state.sh --json
+```
+
+That summary uses `schema_version` `daxis.external_state.v1` and records the
+Daxis commit SHA, ref, origin remote URL, clean or dirty worktree status,
+required dirty-worktree review classification, contract-test status, and
+architecture-scan status.
+
 The helper lists and runs these Daxis-side checks:
 
 ```bash
@@ -48,10 +59,10 @@ cargo test -p daxis-query --test contracts
 rg -n "Axon browser WASM|Browser read compute|Headless query gateway" README.md CLAUDE.md docs/architecture/daxis-control-plane-architecture.md crates/daxis-query
 ```
 
-Attach the helper output with the Daxis proof artifacts so every review has the
-Daxis commit SHA, branch or detached-ref label, origin remote URL, working-tree
-status, contract-test output, and architecture terminology scan captured for
-the rollout segment.
+Attach the helper transcript and JSON summary with the Daxis proof artifacts so
+every review has the Daxis commit SHA, branch or detached-ref label, origin
+remote URL, working-tree status, contract-test output, and architecture
+terminology scan captured for the rollout segment.
 If `git status --short` is non-empty, classify the Daxis working-tree status as
 `dirty_reviewed` or `dirty_rejected` in the attachment and include owner review
 that ties every modified or untracked path to the rollout segment. Clean
@@ -63,7 +74,9 @@ and carry the metadata named in `proofAttachmentSchema`: item ID, milestone,
 owner, capture time, environment, rollout segment, artifact URI, verification
 command or dashboard URL, exit or review status, rollback evidence URI, Daxis
 commit SHA, Daxis ref, Daxis origin remote URL, Daxis working-tree status, and
-Daxis working-tree review classification.
+Daxis working-tree review classification. Attach `daxis_external_state_json_uri`
+and `daxis_external_state_schema_version` for the helper JSON summary so
+reviewers can verify the exact Daxis checkout state without parsing logs.
 This keeps rollout proof attributable and repeatable instead of relying on
 loose links or screenshots.
 

@@ -16,6 +16,7 @@
   "daxisVerificationPlan": {
     "purpose": "Current-state checks Daxis owners can run before attaching Daxis proof artifacts. These commands make the Daxis-side evidence reviewable, but they do not replace production endpoint, dashboard, rollout-control, or oncall proof.",
     "axonHelperCommand": "bash tests/conformance/verify_daxis_external_state.sh",
+    "jsonSummaryCommand": "bash tests/conformance/verify_daxis_external_state.sh --json",
     "activeArchitecturePaths": [
       "README.md",
       "CLAUDE.md",
@@ -50,7 +51,9 @@
       "daxis_ref",
       "daxis_origin_remote_url",
       "daxis_worktree_status",
-      "daxis_worktree_review"
+      "daxis_worktree_review",
+      "daxis_external_state_schema_version",
+      "daxis_external_state_json_uri"
     ],
     "requiredReviewStates": ["attached", "reviewed", "accepted", "rejected"]
   },
