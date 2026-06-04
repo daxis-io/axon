@@ -37,6 +37,9 @@ case "$*" in
     printf '%s\n' "https://github.com/daxis-io/daxis-platform.git"
     ;;
   "status --short")
+    if [[ -n "${GIT_STATUS_OUTPUT:-}" ]]; then
+      printf '%s\n' "$GIT_STATUS_OUTPUT"
+    fi
     exit 0
     ;;
   *)
@@ -104,6 +107,56 @@ if [[ "$(cat "$git_log")" != "$expected_git_log" ]]; then
   echo "Daxis external-state helper did not capture Daxis git identity, branch, remote, and status" >&2
   exit 1
 fi
+
+: >"$cargo_log"
+: >"$git_log"
+json_output="$(run_helper --json)"
+python3 - "$json_output" <<'PY'
+import json
+import sys
+
+summary = json.loads(sys.argv[1])
+expected_paths = [
+    "README.md",
+    "CLAUDE.md",
+    "docs/architecture/daxis-control-plane-architecture.md",
+    "crates/daxis-query/src/lib.rs",
+    "crates/daxis-query/tests/contracts.rs",
+]
+
+assert summary["schema_version"] == "daxis.external_state.v1"
+assert summary["daxis_commit_sha"] == "0123456789abcdef0123456789abcdef01234567"
+assert summary["daxis_ref"] == "main"
+assert summary["daxis_origin_remote_url"] == "https://github.com/daxis-io/daxis-platform.git"
+assert summary["daxis_worktree_status"] == "clean"
+assert summary["daxis_worktree_status_lines"] == []
+assert summary["daxis_worktree_review_required"] == "clean"
+assert summary["active_architecture_paths"] == expected_paths
+assert summary["contract_test"]["command"] == "cargo test -p daxis-query --test contracts"
+assert summary["contract_test"]["exit_status"] == 0
+assert summary["architecture_scan"]["command"] == (
+    'rg -n "Axon browser WASM|Browser read compute|Headless query gateway" '
+    "README.md CLAUDE.md docs/architecture/daxis-control-plane-architecture.md crates/daxis-query"
+)
+assert summary["architecture_scan"]["exit_status"] == 0
+PY
+
+dirty_json_output="$(
+  GIT_STATUS_OUTPUT=$' M docs/architecture/daxis-control-plane-architecture.md\n?? tmp-proof.md' \
+    run_helper --json
+)"
+python3 - "$dirty_json_output" <<'PY'
+import json
+import sys
+
+summary = json.loads(sys.argv[1])
+assert summary["daxis_worktree_status"] == "dirty"
+assert summary["daxis_worktree_status_lines"] == [
+    " M docs/architecture/daxis-control-plane-architecture.md",
+    "?? tmp-proof.md",
+]
+assert summary["daxis_worktree_review_required"] == "dirty_reviewed_or_dirty_rejected"
+PY
 
 write_valid_daxis_repo
 cat >"$daxis_repo/README.md" <<'EOF'
