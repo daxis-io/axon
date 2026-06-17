@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CapabilityMatrixRow,
   CommitEntry,
@@ -61,6 +61,8 @@ type ResultsProps = {
 };
 
 type ResultsTab = 'results' | 'plan' | 'snapshot' | 'messages' | 'history';
+const AUTO_LOAD_RESULT_ROW_LIMIT = 10_000;
+const AUTO_LOAD_THRESHOLD_VIEWPORTS = 2;
 
 export function Results({
   runState,
@@ -93,6 +95,7 @@ export function Results({
     value: ResultCell;
   } | null>(null);
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
+  const autoLoadRequestedAtRowsRef = useRef<number | null>(null);
 
   const cols: ResultColumn[] = resultData?.columns ?? [];
   const allRows: ResultCell[][] = resultData?.rows ?? [];
@@ -132,6 +135,31 @@ export function Results({
   const pageEnd = Math.min(sorted.length, endIndex);
   const hasMoreRows = resultData?.page?.has_more === true;
   const loadedRows = resultData?.page?.loaded_rows ?? sorted.length;
+
+  useEffect(() => {
+    autoLoadRequestedAtRowsRef.current = null;
+  }, [loadedRows]);
+
+  function updateResultScroll(element: HTMLDivElement) {
+    setScrollTop(element.scrollTop);
+    if (
+      !hasMoreRows ||
+      !onLoadMoreRows ||
+      loadingMoreRows ||
+      loadedRows >= AUTO_LOAD_RESULT_ROW_LIMIT
+    ) {
+      return;
+    }
+
+    const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+    const threshold = element.clientHeight * AUTO_LOAD_THRESHOLD_VIEWPORTS;
+    if (distanceFromBottom > threshold || autoLoadRequestedAtRowsRef.current === loadedRows) {
+      return;
+    }
+
+    autoLoadRequestedAtRowsRef.current = loadedRows;
+    onLoadMoreRows();
+  }
 
   function clickHeader(c: ResultColumn) {
     setSort((s) => {
@@ -388,7 +416,7 @@ export function Results({
           <div
             className="table-wrap"
             ref={tableWrapRef}
-            onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+            onScroll={(event) => updateResultScroll(event.currentTarget)}
           >
             <table className="grid">
               <thead>

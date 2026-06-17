@@ -424,110 +424,7 @@ test.describe('editor (Phase 1 smoke)', () => {
   });
 
   test('load-more control disables after editing SQL for the current result', async ({ page }) => {
-    await page.addInitScript(() => {
-      type Listener = EventListenerOrEventListenerObject;
-      class FakeQueryWorker {
-        private listeners = new Map<string, Set<Listener>>();
-
-        addEventListener(type: string, listener: Listener): void {
-          const listeners = this.listeners.get(type) ?? new Set<Listener>();
-          listeners.add(listener);
-          this.listeners.set(type, listeners);
-        }
-
-        removeEventListener(type: string, listener: Listener): void {
-          this.listeners.get(type)?.delete(listener);
-        }
-
-        postMessage(command: unknown): void {
-          const payload = command as {
-            open_delta_table?: { request_id: string; name: string };
-            sql?: {
-              request_id: string;
-              name: string;
-              query?: { options?: { result_page?: { limit?: number; offset?: number } } };
-            };
-            dispose?: { request_id: string; name: string };
-          };
-          if (payload.open_delta_table) {
-            this.emit({
-              opened: {
-                request_id: payload.open_delta_table.request_id,
-                name: payload.open_delta_table.name,
-              },
-            });
-            return;
-          }
-          if (payload.dispose) {
-            this.emit({
-              disposed: {
-                request_id: payload.dispose.request_id,
-                name: payload.dispose.name,
-              },
-            });
-            return;
-          }
-          if (payload.sql) {
-            const resultPage = payload.sql.query?.options?.result_page;
-            const limit = resultPage?.limit ?? 501;
-            const offset = resultPage?.offset ?? 0;
-            const rows = Array.from({ length: limit }, (_, index) => [offset + index + 1]);
-            this.emit({
-              success: {
-                request_id: payload.sql.request_id,
-                response: {
-                  executed_on: 'browser_wasm',
-                  capabilities: { capabilities: {} },
-                  metrics: {
-                    bytes_fetched: 0,
-                    duration_ms: 0,
-                    files_touched: 0,
-                    files_skipped: 0,
-                    rows_emitted: rows.length,
-                  },
-                  explain: 'fake editor pagination plan',
-                },
-                result: {
-                  format: 'stream',
-                  content_type: 'application/vnd.apache.arrow.stream',
-                  bytes: [],
-                },
-                preview: {
-                  columns: ['id'],
-                  rows,
-                  row_count: rows.length,
-                  preview_row_limit: limit,
-                  truncated: false,
-                },
-              },
-            });
-          }
-        }
-
-        terminate(): void {
-          this.listeners.clear();
-        }
-
-        private emit(data: unknown): void {
-          const event = new MessageEvent('message', { data });
-          queueMicrotask(() => {
-            const listeners = this.listeners.get('message') ?? new Set<Listener>();
-            for (const listener of listeners) {
-              if (typeof listener === 'function') {
-                listener.call(this, event);
-              } else {
-                listener.handleEvent(event);
-              }
-            }
-          });
-        }
-      }
-
-      Object.defineProperty(window, 'Worker', {
-        configurable: true,
-        value: FakeQueryWorker,
-      });
-    });
+    await installFakePaginationWorker(page);
 
     await page.goto('/');
 
@@ -540,6 +437,24 @@ test.describe('editor (Phase 1 smoke)', () => {
     await page.locator('.code-input').fill('SELECT id FROM axon_prod_like_fixture WHERE id = 1');
 
     await expect(loadNext).toBeDisabled();
+  });
+
+  test('scrolling near the loaded result bottom automatically loads the next batch', async ({
+    page,
+  }) => {
+    await installFakePaginationWorker(page);
+    await page.goto('/');
+
+    await page.locator('.code-input').fill('SELECT id FROM axon_prod_like_fixture ORDER BY id');
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+    await expect(page.locator('.res-meta')).toContainText('500 rows+', { timeout: 15_000 });
+
+    await page.locator('.table-wrap').evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+      node.dispatchEvent(new Event('scroll', { bubbles: true }));
+    });
+
+    await expect(page.locator('.res-meta')).toContainText('1,000 rows+', { timeout: 15_000 });
   });
 
   test('routes between the workspace and connect page', async ({ page }) => {
@@ -1540,6 +1455,113 @@ async function installUnavailableDirectoryPicker(page: Page): Promise<void> {
     Object.defineProperty(window, 'showDirectoryPicker', {
       configurable: true,
       value: undefined,
+    });
+  });
+}
+
+async function installFakePaginationWorker(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    type Listener = EventListenerOrEventListenerObject;
+    class FakeQueryWorker {
+      private listeners = new Map<string, Set<Listener>>();
+
+      addEventListener(type: string, listener: Listener): void {
+        const listeners = this.listeners.get(type) ?? new Set<Listener>();
+        listeners.add(listener);
+        this.listeners.set(type, listeners);
+      }
+
+      removeEventListener(type: string, listener: Listener): void {
+        this.listeners.get(type)?.delete(listener);
+      }
+
+      postMessage(command: unknown): void {
+        const payload = command as {
+          open_delta_table?: { request_id: string; name: string };
+          sql?: {
+            request_id: string;
+            name: string;
+            query?: { options?: { result_page?: { limit?: number; offset?: number } } };
+          };
+          dispose?: { request_id: string; name: string };
+        };
+        if (payload.open_delta_table) {
+          this.emit({
+            opened: {
+              request_id: payload.open_delta_table.request_id,
+              name: payload.open_delta_table.name,
+            },
+          });
+          return;
+        }
+        if (payload.dispose) {
+          this.emit({
+            disposed: {
+              request_id: payload.dispose.request_id,
+              name: payload.dispose.name,
+            },
+          });
+          return;
+        }
+        if (payload.sql) {
+          const resultPage = payload.sql.query?.options?.result_page;
+          const limit = resultPage?.limit ?? 501;
+          const offset = resultPage?.offset ?? 0;
+          const rows = Array.from({ length: limit }, (_, index) => [offset + index + 1]);
+          this.emit({
+            success: {
+              request_id: payload.sql.request_id,
+              response: {
+                executed_on: 'browser_wasm',
+                capabilities: { capabilities: {} },
+                metrics: {
+                  bytes_fetched: 0,
+                  duration_ms: 0,
+                  files_touched: 0,
+                  files_skipped: 0,
+                  rows_emitted: rows.length,
+                },
+                explain: 'fake editor pagination plan',
+              },
+              result: {
+                format: 'stream',
+                content_type: 'application/vnd.apache.arrow.stream',
+                bytes: [],
+              },
+              preview: {
+                columns: ['id'],
+                rows,
+                row_count: rows.length,
+                preview_row_limit: limit,
+                truncated: false,
+              },
+            },
+          });
+        }
+      }
+
+      terminate(): void {
+        this.listeners.clear();
+      }
+
+      private emit(data: unknown): void {
+        const event = new MessageEvent('message', { data });
+        queueMicrotask(() => {
+          const listeners = this.listeners.get('message') ?? new Set<Listener>();
+          for (const listener of listeners) {
+            if (typeof listener === 'function') {
+              listener.call(this, event);
+            } else {
+              listener.handleEvent(event);
+            }
+          }
+        });
+      }
+    }
+
+    Object.defineProperty(window, 'Worker', {
+      configurable: true,
+      value: FakeQueryWorker,
     });
   });
 }
