@@ -908,6 +908,7 @@ test.describe('editor (Phase 1 smoke)', () => {
 
     await connectLocalDeltaFolder(page, tableDir, 'stress-local', {
       expectedTable: 'query_engine_stress_delta',
+      parseTimeoutMs: 120_000,
     });
 
     await page
@@ -924,6 +925,38 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.locator('table.grid')).toContainText('event_date');
     await expect(page.locator('table.grid')).toContainText('2025-05-13');
     await expect(page.locator('table.grid')).toContainText('event_ts');
+  });
+
+  test('queries the complex Delta feature stress table in browser WASM', async ({ page }) => {
+    const tableDir = process.env.AXON_COMPLEX_DELTA_PATH;
+    if (!tableDir) {
+      test.skip(
+        true,
+        'Set AXON_COMPLEX_DELTA_PATH=/Users/ethanurbanski/axon/.generated-delta/query-engine-complex-features-delta to run this local smoke.',
+      );
+      return;
+    }
+
+    await connectLocalDeltaFolder(page, tableDir, 'complex-local', {
+      expectedTable: 'query_engine_complex_features_delta',
+      parseTimeoutMs: 120_000,
+    });
+
+    await page
+      .locator('.code-input')
+      .fill(
+        "SELECT event_id, event_date, event_ts, region, ingest_bucket, status FROM query_engine_complex_features_delta WHERE region = 'us-east' AND ingest_bucket = 1 LIMIT 10",
+      );
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+    await expect(page.locator('.res-meta')).toContainText(/browser · wasm/i, {
+      timeout: 120_000,
+    });
+    await expect(page.locator('table.grid tbody tr')).toHaveCount(10, { timeout: 120_000 });
+    await expect(page.locator('table.grid')).toContainText('event_date');
+    await expect(page.locator('table.grid')).toContainText('event_ts');
+    await expect(page.locator('table.grid')).toContainText('ingest_bucket');
+    await expect(page.locator('table.grid')).toContainText('us-east');
   });
 
   test('local Delta metadata registry does not copy active Parquet data files', async ({
@@ -1404,7 +1437,11 @@ async function connectLocalDeltaFolder(
   page: Page,
   tableDir: string,
   alias: string,
-  options: { expectPersisted?: boolean; expectedTable?: string | RegExp } = {},
+  options: {
+    expectPersisted?: boolean;
+    expectedTable?: string | RegExp;
+    parseTimeoutMs?: number;
+  } = {},
 ): Promise<string> {
   await installUnavailableDirectoryPicker(page);
   await page.goto('/');
@@ -1416,7 +1453,9 @@ async function connectLocalDeltaFolder(
 
   const localDialog = page.getByRole('dialog', { name: 'Connect a local Delta folder' });
   await localDialog.getByLabel('One-session local Delta folder import').setInputFiles(tableDir);
-  await expect(localDialog).toContainText(/Delta log parsed/i);
+  await expect(localDialog).toContainText(/Delta log parsed/i, {
+    timeout: options.parseTimeoutMs,
+  });
   await localDialog.getByRole('button', { name: 'Test connection' }).click();
   await expect(localDialog).toContainText(/source check passed/i);
   await localDialog.getByRole('button', { name: /Discover tables/ }).click();

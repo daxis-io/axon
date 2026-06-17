@@ -1,5 +1,6 @@
 target/
 .worktrees/
+.generated-delta/
 node_modules/
 apps/axon-web/dist/
 apps/axon-web/node_modules/
