@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-#[cfg(feature = "datafusion")]
 use std::error::Error as StdError;
 use std::future::Future;
 use std::path::PathBuf;
@@ -218,6 +217,14 @@ pub fn query_error_from_object_store_error(
         ObjectStoreError::PermissionDenied { .. } | ObjectStoreError::Unauthenticated { .. } => {
             QueryError::new(QueryErrorCode::AccessDenied, error.to_string(), target)
         }
+        ObjectStoreError::NotFound { source, .. }
+            if error_chain_contains_io_kind(
+                source.as_ref(),
+                std::io::ErrorKind::PermissionDenied,
+            ) =>
+        {
+            QueryError::new(QueryErrorCode::AccessDenied, error.to_string(), target)
+        }
         ObjectStoreError::NotFound { .. } => QueryError::new(
             QueryErrorCode::ObjectStoreProtocol,
             error.to_string(),
@@ -239,6 +246,23 @@ pub fn query_error_from_object_store_error(
 
 pub fn map_object_store_error(error: ObjectStoreError, target: ExecutionTarget) -> QueryError {
     query_error_from_object_store_error(&error, target)
+}
+
+fn error_chain_contains_io_kind(
+    error: &(dyn StdError + 'static),
+    kind: std::io::ErrorKind,
+) -> bool {
+    let mut current = Some(error);
+    while let Some(candidate) = current {
+        if candidate
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io_error| io_error.kind() == kind)
+        {
+            return true;
+        }
+        current = candidate.source();
+    }
+    false
 }
 
 #[cfg(feature = "datafusion")]
@@ -774,6 +798,23 @@ mod tests {
         let error = map_object_store_error(
             ObjectStoreError::PermissionDenied {
                 path: "_delta_log/00000000000000000000.json".to_string(),
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "permission denied",
+                )),
+            },
+            ExecutionTarget::Native,
+        );
+
+        assert_eq!(error.code, QueryErrorCode::AccessDenied);
+        assert_eq!(error.target, ExecutionTarget::Native);
+    }
+
+    #[test]
+    fn object_store_not_found_wrapping_permission_denied_maps_to_access_denied() {
+        let error = map_object_store_error(
+            ObjectStoreError::NotFound {
+                path: "part-00000.parquet".to_string(),
                 source: Box::new(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
                     "permission denied",
