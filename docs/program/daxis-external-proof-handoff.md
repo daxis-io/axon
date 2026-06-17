@@ -72,13 +72,81 @@ Every Daxis proof attachment should use
 [`docs/release-gates/daxis-external-proof-attachment-template.md`](../release-gates/daxis-external-proof-attachment-template.md)
 and carry the metadata named in `proofAttachmentSchema`: item ID, milestone,
 owner, capture time, environment, rollout segment, artifact URI, verification
-command or dashboard URL, exit or review status, rollback evidence URI, Daxis
-commit SHA, Daxis ref, Daxis origin remote URL, Daxis working-tree status, and
-Daxis working-tree review classification. Attach `daxis_external_state_json_uri`
-and `daxis_external_state_schema_version` for the helper JSON summary so
-reviewers can verify the exact Daxis checkout state without parsing logs.
+command or dashboard URL, exit or review status, rollback evidence URI, Axon
+release commit SHA, Axon release ref, Daxis commit SHA, Daxis ref, Daxis origin
+remote URL, Daxis working-tree status, and Daxis working-tree review
+classification. Attach `daxis_external_state_json_uri` and
+`daxis_external_state_schema_version` for the helper JSON summary, plus
+`daxis_external_state_json_sha256` for its SHA-256 digest, so reviewers can
+verify the exact Daxis checkout state without parsing logs or trusting mutable
+links. Record only the 64-character lowercase hexadecimal digest generated
+from the exact helper JSON bytes, for example with
+`shasum -a 256 path/to/external-state.json`. The packet also carries this rule
+as `proofAttachmentSchema.checksumFormat` so tooling does not need to scrape
+template prose. The strict local proof validation parses helper JSON and requires attachment metadata to match its schema version, Daxis commit SHA, ref, origin remote URL, worktree status, contract-test status, and architecture-scan status. It also carries
+`proofAttachmentSchema.allowedReleaseChannels`
+for the allowed `experimental`, `integration`, `candidate`, and `stable`
+channel values; `proofAttachmentSchema.allowedDaxisWorktreeStatuses` for the
+helper JSON `clean` and `dirty` worktree states;
+`proofAttachmentSchema.allowedDaxisWorktreeReviews` for `clean`,
+`dirty_reviewed`, and `dirty_rejected`; and
+`proofAttachmentSchema.acceptedDaxisWorktreeReviews` so stable default
+promotion accepts only `clean` or `dirty_reviewed`. Dirty checkout evidence
+must also attach `daxis_worktree_review_json_uri` and
+`daxis_worktree_review_json_sha256`, where the `daxis.dirty_worktree_review.v1`
+artifact uses `review_state` `accepted`, matches the helper JSON Daxis identity
+and status lines, and lists each dirty path in `reviewed_paths`. Use
+[`docs/release-gates/daxis-dirty-worktree-review-template.json`](../release-gates/daxis-dirty-worktree-review-template.json)
+as the starting artifact shape; the packet records that path as
+`proofAttachmentSchema.dirtyWorktreeReviewTemplatePath` and records the digest
+rule as
+`proofAttachmentSchema.dirtyWorktreeReviewChecksumFormat`. It also carries
+`proofAttachmentSchema.requiredReviewerRoles`
+for the Daxis product, platform, catalog/storage, web platform, security, SRE,
+and Axon runtime owner roles required for attachment review.
+Before stable default promotion, validate each completed proof attachment with
+`bash tests/conformance/verify_daxis_external_proof_attachment.sh --stable-default path/to/completed-proof-attachment.md`;
+the packet carries this exact command as
+`proofAttachmentSchema.stableDefaultValidationCommand`. Validate the completed
+proof attachment set with
+`bash tests/conformance/verify_daxis_external_proof_attachment.sh --stable-default-dir path/to/completed-proof-attachments`;
+the packet carries this exact command as
+`proofAttachmentSchema.stableDefaultDirectoryValidationCommand`.
+When proof packets contain local helper JSON artifacts, validate each completed
+proof attachment with
+`bash tests/conformance/verify_daxis_external_proof_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default path/to/completed-proof-attachment.md`;
+the packet carries this exact command as
+`proofAttachmentSchema.stableDefaultArtifactValidationCommand`. Validate the
+completed local proof attachment set with
+`bash tests/conformance/verify_daxis_external_proof_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default-dir path/to/completed-proof-attachments`;
+the packet carries this exact command as
+`proofAttachmentSchema.stableDefaultArtifactDirectoryValidationCommand`.
+Validate the complete stable-default promotion packet with
+`bash tests/conformance/verify_daxis_stable_default_promotion_packet.sh --artifact-root path/to/artifacts --release-attachments path/to/completed-release-attachments --proof-attachments path/to/completed-proof-attachments --release-evidence-log path/to/release-evidence.log --release-evidence-sha256 <sha256> --release-evidence-exit-status 0`;
+the packet and release bundle carry this exact command as
+`stableDefaultPromotionPacketValidationCommand`. The stable-default gate also
+requires the digest-producing release evidence artifact command through
+`requiredReleaseEvidenceArtifactCommand`
+(`bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log`).
+The stable-default promotion packet verifier compares the attached log against
+`bash tests/conformance/verify_daxis_release_evidence.sh --list`, rejects logs
+missing listed commands, and requires every release attachment and external
+proof attachment to share one Axon release commit, one Axon release ref, one
+release channel, and one rollout segment before it prints
+`daxis_stable_default_release_identity_verified=true`.
 This keeps rollout proof attributable and repeatable instead of relying on
 loose links or screenshots.
+
+Every accepted external proof attachment must also carry `release_channel`,
+`environment_class`, `axon_release_commit_sha`, and `axon_release_ref`. The
+packet's `proofAttachmentSchema.requiredEnvironmentClass` requires `production`
+so development or staging evidence cannot satisfy stable default routing,
+`release_channel` keeps the proof tied to the Daxis rollout channel under
+review, `proofAttachmentSchema.allowedReleaseChannels` keeps release-channel
+values finite, `proofAttachmentSchema.acceptedDaxisWorktreeReviews` rejects
+`dirty_rejected` proof for stable default promotion, and the Axon release
+fields keep external proof tied to the exact Axon release commit and branch or
+tag under review.
 
 The packet's `stableDefaultPromotionGate` keeps the final promotion rule
 machine-readable. Its current `currentPromotionState` is
@@ -87,7 +155,25 @@ attaches accepted proof for every external packet item, accepted
 release-process attachments for `git_sha`, `worker_artifact_size`,
 `public_gcs_live_smoke`, `release_notes`, and `migration_notes`, full
 `bash tests/conformance/verify_daxis_release_evidence.sh` output, the external
-blocker register, and a verified `server_fallback` rollback state.
+blocker register, `requiredReleaseChannel` `stable`, and a verified
+`server_fallback` rollback state.
+Its `requiredReleaseAttachmentSchemaFields` and
+`requiredProofAttachmentSchemaFields` entries keep the stable-default promotion
+gate tied to release attachments that include `artifact_sha256`,
+`release_channel`, `rollout_segment`,
+`releaseAttachmentSchema.allowedReleaseChannels`,
+`releaseAttachmentSchema.checksumFormat`, and
+`releaseAttachmentSchema.requiredReviewerRoles`, plus Daxis proof attachments
+that include `proofAttachmentSchema.allowedReleaseChannels` and are
+channel-scoped, production-environment-scoped,
+Axon-release-identity-pinned, digest-pinned, and owner-reviewed.
+The proof field list also includes `daxis_worktree_status`,
+`daxis_worktree_review`, `daxis_worktree_review_json_sha256`,
+`proofAttachmentSchema.allowedDaxisWorktreeStatuses`,
+`proofAttachmentSchema.allowedDaxisWorktreeReviews`, and
+`proofAttachmentSchema.acceptedDaxisWorktreeReviews`, so stable default
+promotion accepts only `clean` or digest-pinned `dirty_reviewed` Daxis checkout
+evidence.
 
 The stable external proof item IDs are:
 

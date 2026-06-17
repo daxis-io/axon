@@ -6,18 +6,18 @@ repo_root="${AXON_DAXIS_RELEASE_BUNDLE_REPO_ROOT:-$(pwd)}"
 manifest_file="${AXON_DAXIS_RELEASE_BUNDLE_MANIFEST_FILE:-docs/release-gates/daxis-release-bundle-manifest.json}"
 
 manifest_path() {
-  if [[ "$manifest_file" = /* ]]; then
-    printf "%s\n" "$manifest_file"
-    return
-  fi
+	if [[ "$manifest_file" = /* ]]; then
+		printf "%s\n" "$manifest_file"
+		return
+	fi
 
-  printf "%s/%s\n" "$repo_root" "$manifest_file"
+	printf "%s/%s\n" "$repo_root" "$manifest_file"
 }
 
 path="$(manifest_path)"
 if [[ ! -f "$path" ]]; then
-  echo "missing Daxis release bundle manifest: $manifest_file" >&2
-  exit 1
+	echo "missing Daxis release bundle manifest: $manifest_file" >&2
+	exit 1
 fi
 
 python3 - "$repo_root" "$path" <<'PY'
@@ -75,11 +75,13 @@ for required_source in [
     "docs/program/browser-delta-compatibility-matrix.md",
     "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md",
     "docs/release-gates/browser-wasm-delta-gcs-release-evidence.md",
+    "docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md",
     "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
     "docs/release-gates/daxis-production-rollout-decisions.json",
     "docs/release-gates/daxis-operational-readiness.json",
     "docs/release-gates/daxis-strategy-traceability.json",
     "docs/release-gates/daxis-external-proof-packet.json",
+    "docs/release-gates/daxis-dirty-worktree-review-template.json",
     "docs/release-gates/daxis-release-attachment-template.md",
     "docs/release-gates/daxis-release-notes-template.md",
     "docs/release-gates/daxis-release-migration-notes-template.md",
@@ -99,6 +101,18 @@ for required_text in [
     "docs/release-gates/daxis-release-bundle-manifest.json",
     "docs/release-gates/daxis-release-attachment-template.md",
     "release_process_required",
+    "artifact_sha256",
+    "release_channel",
+    "rollout_segment",
+    "releaseAttachmentSchema.allowedReleaseChannels",
+    "releaseAttachmentSchema.checksumFormat",
+    "releaseAttachmentSchema.requiredReviewerRoles",
+    "releaseAttachmentSchema.stableDefaultValidationCommand",
+    "releaseAttachmentSchema.stableDefaultDirectoryValidationCommand",
+    "64-character lowercase hexadecimal digest",
+    "shasum -a 256 path/to/artifact",
+    "bash tests/conformance/verify_daxis_release_attachment.sh --stable-default path/to/completed-release-attachment.md",
+    "bash tests/conformance/verify_daxis_release_attachment.sh --stable-default-dir path/to/completed-release-attachments",
     "stableDefaultPromotionGate",
     "cargo test -p wasm-datafusion-poc --test daxis_query_corpus",
     "bash tests/conformance/verify_daxis_query_corpus_coverage.sh",
@@ -118,10 +132,41 @@ for required_text in [
     "breaking-change plans or no-breaking-change statements",
     "external proof packet status",
     "currentPromotionState",
+    "The stable-default promotion packet verifier also compares the attached log against `bash tests/conformance/verify_daxis_release_evidence.sh --list`, rejects logs missing listed commands, and requires every release attachment and external proof attachment to share one Axon release commit, one Axon release ref, one release channel, and one rollout segment before it prints `daxis_stable_default_release_identity_verified=true`.",
 ]:
     expect(
         required_text in release_evidence_text,
         f"release evidence document missing required text: {required_text}",
+    )
+
+launch_checklist_doc = "docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md"
+expect(
+    launch_checklist_doc in source_docs,
+    "sourceDocs missing launch checklist document",
+)
+launch_checklist_text = (repo_root / launch_checklist_doc).read_text(encoding="utf-8")
+for required_text in [
+    "artifact_sha256",
+    "release_channel",
+    "rollout_segment",
+    "releaseAttachmentSchema.allowedReleaseChannels",
+    "releaseAttachmentSchema.checksumFormat",
+    "releaseAttachmentSchema.requiredReviewerRoles",
+    "releaseAttachmentSchema.stableDefaultValidationCommand",
+    "bash tests/conformance/verify_daxis_release_attachment.sh --stable-default path/to/completed-release-attachment.md",
+    "releaseAttachmentSchema.stableDefaultDirectoryValidationCommand",
+    "bash tests/conformance/verify_daxis_release_attachment.sh --stable-default-dir path/to/completed-release-attachments",
+    "daxis_external_state_json_sha256",
+    "proofAttachmentSchema.checksumFormat",
+    "proofAttachmentSchema.dirtyWorktreeReviewTemplatePath",
+    "proofAttachmentSchema.requiredReviewerRoles",
+    "daxis_stable_default_release_identity_verified=true",
+    "one Axon release commit",
+    "one Axon release ref",
+]:
+    expect(
+        required_text in launch_checklist_text,
+        f"launch checklist missing required release-proof text: {required_text}",
     )
 
 release_evidence_runner = repo_root / "tests/conformance/verify_daxis_release_evidence.sh"
@@ -207,6 +252,14 @@ expect(
 )
 for required_text in [
     "Use the matching guidance for `item_id`.",
+    "Set `release_channel` to the Daxis release channel this attachment supports: `experimental`, `integration`, `candidate`, or `stable`.",
+    "The only allowed `release_channel` values are `experimental`, `integration`, `candidate`, and `stable`; stable default promotion requires `stable`.",
+    "Set `rollout_segment` to the tenant, workspace, table-class, browser-family, or all-segments scope covered by this evidence.",
+    "To write an attachment-ready release evidence log and print its digest, run `bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log`.",
+    "Attach the SHA-256 digest of the release evidence artifact in `artifact_sha256`.",
+    "Record only the 64-character lowercase hexadecimal digest generated from the exact release evidence artifact bytes, for example with `shasum -a 256 path/to/artifact`.",
+    "Before stable default promotion, validate a completed release-process attachment with `bash tests/conformance/verify_daxis_release_attachment.sh --stable-default path/to/completed-release-attachment.md`.",
+    "Before stable default promotion, validate the completed release-process attachment set with `bash tests/conformance/verify_daxis_release_attachment.sh --stable-default-dir path/to/completed-release-attachments`.",
     "Attach the exact Axon release commit SHA.",
     "Attach the branch or tag name in `release_ref`.",
     "release packet URI, commit permalink, or tag permalink",
@@ -265,13 +318,17 @@ expect(
     isinstance(required_metadata, list) and required_metadata,
     "releaseAttachmentSchema requiredMetadata must not be empty",
 )
+expect_unique_text_list(required_metadata, "releaseAttachmentSchema requiredMetadata")
 for metadata_field in [
     "item_id",
     "release_commit_sha",
     "release_ref",
+    "release_channel",
+    "rollout_segment",
     "owner",
     "captured_at",
     "artifact_uri",
+    "artifact_sha256",
     "verification_command_or_statement",
     "exit_status_or_review_status",
     "rollback_or_migration_note_uri",
@@ -285,6 +342,138 @@ for metadata_field in [
         f"release attachment template missing metadata field: {metadata_field}",
     )
 
+expected_release_channels = ["experimental", "integration", "candidate", "stable"]
+allowed_release_channels = release_attachment_schema.get("allowedReleaseChannels", [])
+expect_unique_text_list(allowed_release_channels, "releaseAttachmentSchema allowedReleaseChannels")
+expect(
+    allowed_release_channels == expected_release_channels,
+    "releaseAttachmentSchema allowedReleaseChannels must define experimental, integration, candidate, stable",
+)
+for release_channel in expected_release_channels:
+    expect(
+        release_channel in template_text,
+        f"release attachment template missing allowed release channel: {release_channel}",
+    )
+
+checksum_format = release_attachment_schema.get("checksumFormat", {})
+expect(isinstance(checksum_format, dict), "releaseAttachmentSchema checksumFormat is required")
+expected_checksum_format = {
+    "field": "artifact_sha256",
+    "algorithm": "sha256",
+    "encoding": "lowercase_hex",
+    "length": 64,
+    "sourceBytes": "exact_release_evidence_artifact_bytes",
+}
+for key, expected_value in expected_checksum_format.items():
+    expect(
+        checksum_format.get(key) == expected_value,
+        f"releaseAttachmentSchema checksumFormat {key} must be {expected_value}",
+    )
+
+expected_stable_default_validation_command = (
+    "bash tests/conformance/verify_daxis_release_attachment.sh --stable-default path/to/completed-release-attachment.md"
+)
+expected_stable_default_directory_validation_command = (
+    "bash tests/conformance/verify_daxis_release_attachment.sh --stable-default-dir path/to/completed-release-attachments"
+)
+expected_stable_default_artifact_validation_command = (
+    "bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default path/to/completed-release-attachment.md"
+)
+expected_stable_default_artifact_directory_validation_command = (
+    "bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default-dir path/to/completed-release-attachments"
+)
+expected_release_evidence_artifact_command = (
+    "bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log"
+)
+expected_stable_default_promotion_packet_validation_command = (
+    "bash tests/conformance/verify_daxis_stable_default_promotion_packet.sh --artifact-root path/to/artifacts --release-attachments path/to/completed-release-attachments --proof-attachments path/to/completed-proof-attachments --release-evidence-log path/to/release-evidence.log --release-evidence-sha256 <sha256> --release-evidence-exit-status 0"
+)
+expect(
+    release_attachment_schema.get("stableDefaultValidationCommand")
+    == expected_stable_default_validation_command,
+    "releaseAttachmentSchema stableDefaultValidationCommand must name the stable-default release attachment validator",
+)
+expect(
+    release_attachment_schema.get("stableDefaultDirectoryValidationCommand")
+    == expected_stable_default_directory_validation_command,
+    "releaseAttachmentSchema stableDefaultDirectoryValidationCommand must name the stable-default release attachment directory validator",
+)
+expect(
+    release_attachment_schema.get("stableDefaultArtifactValidationCommand")
+    == expected_stable_default_artifact_validation_command,
+    "releaseAttachmentSchema stableDefaultArtifactValidationCommand must name the stable-default release attachment artifact validator",
+)
+expect(
+    release_attachment_schema.get("stableDefaultArtifactDirectoryValidationCommand")
+    == expected_stable_default_artifact_directory_validation_command,
+    "releaseAttachmentSchema stableDefaultArtifactDirectoryValidationCommand must name the stable-default release attachment artifact directory validator",
+)
+expect(
+    (repo_root / "tests/conformance/verify_daxis_release_attachment.sh").is_file(),
+    "missing stable-default release attachment validator",
+)
+expect(
+    manifest.get("stableDefaultPromotionPacketValidationCommand")
+    == expected_stable_default_promotion_packet_validation_command,
+    "stableDefaultPromotionPacketValidationCommand must name the stable-default promotion packet validator",
+)
+expect(
+    (repo_root / "tests/conformance/verify_daxis_stable_default_promotion_packet.sh").is_file(),
+    "missing stable-default promotion packet validator",
+)
+expect(
+    (repo_root / "tests/conformance/verify_daxis_stable_default_promotion_packet_test.sh").is_file(),
+    "missing stable-default promotion packet validator regression test",
+)
+expect(
+    expected_stable_default_validation_command in template_text,
+    "release attachment template missing stable-default validation command",
+)
+expect(
+    expected_stable_default_directory_validation_command in template_text,
+    "release attachment template missing stable-default directory validation command",
+)
+expect(
+    expected_stable_default_artifact_validation_command in template_text,
+    "release attachment template missing stable-default artifact validation command",
+)
+expect(
+    expected_stable_default_artifact_directory_validation_command in template_text,
+    "release attachment template missing stable-default artifact directory validation command",
+)
+expect(
+    expected_stable_default_validation_command in release_evidence_text,
+    "release evidence document missing stable-default release attachment validation command",
+)
+expect(
+    expected_stable_default_directory_validation_command in release_evidence_text,
+    "release evidence document missing stable-default release attachment directory validation command",
+)
+expect(
+    expected_stable_default_artifact_validation_command in release_evidence_text,
+    "release evidence document missing stable-default release attachment artifact validation command",
+)
+expect(
+    expected_stable_default_artifact_directory_validation_command in release_evidence_text,
+    "release evidence document missing stable-default release attachment artifact directory validation command",
+)
+expect(
+    expected_stable_default_promotion_packet_validation_command in release_evidence_text,
+    "release evidence document missing stable-default promotion packet validation command",
+)
+expect(
+    expected_stable_default_promotion_packet_validation_command in launch_checklist_text,
+    "launch checklist missing stable-default promotion packet validation command",
+)
+expect(
+    "requiredReleaseEvidenceArtifactCommand" in launch_checklist_text,
+    "launch checklist missing requiredReleaseEvidenceArtifactCommand",
+)
+expect(
+    expected_release_evidence_artifact_command in launch_checklist_text,
+    "launch checklist missing stable-default release evidence artifact command",
+)
+
 required_review_states = release_attachment_schema.get("requiredReviewStates", [])
 for review_state in ["attached", "reviewed", "accepted", "rejected"]:
     expect(
@@ -294,6 +483,27 @@ for review_state in ["attached", "reviewed", "accepted", "rejected"]:
     expect(
         review_state in template_text,
         f"release attachment template missing review state: {review_state}",
+    )
+
+required_reviewer_roles = release_attachment_schema.get("requiredReviewerRoles", [])
+expected_reviewer_roles = [
+    "Release owner",
+    "Runtime / engine owner",
+    "Daxis product owner",
+    "Daxis query platform owner",
+    "Daxis catalog/storage owner",
+    "Daxis security owner",
+    "Daxis SRE owner",
+]
+expect_unique_text_list(required_reviewer_roles, "releaseAttachmentSchema requiredReviewerRoles")
+expect(
+    required_reviewer_roles == expected_reviewer_roles,
+    "releaseAttachmentSchema requiredReviewerRoles must match the release attachment owner-review table",
+)
+for reviewer_role in expected_reviewer_roles:
+    expect(
+        reviewer_role in template_text,
+        f"release attachment template missing reviewer role: {reviewer_role}",
     )
 
 git_sha = item_by_id["git_sha"]
@@ -348,6 +558,7 @@ for required_text in [
     "Axon commit SHA:",
     "Branch or tag:",
     "Release channel:",
+    "Rollout segment:",
     "Release owner:",
     "Daxis rollout decision link:",
     "Migration notes link:",
@@ -401,6 +612,7 @@ for required_text in [
     "Axon commit SHA:",
     "Branch or tag:",
     "Release channel:",
+    "Rollout segment:",
     "Release owner:",
     "Daxis rollout decision link:",
     "## Compatibility Classification",
@@ -454,6 +666,7 @@ expect(migration_notes.get("status") == "release_process_required", "migration_n
 migration_notes_attachment = migration_notes.get("releaseAttachment", "")
 for required_text in [
     migration_template,
+    "release channel and rollout segment",
     "external proof packet status",
     "stableDefaultPromotionGate",
     "currentPromotionState",
@@ -472,6 +685,7 @@ expect(release_notes.get("status") == "release_process_required", "release_notes
 release_notes_attachment = release_notes.get("releaseAttachment", "")
 for required_text in [
     release_notes_template,
+    "release channel and rollout segment",
     "query results",
     "Daxis result metrics and observability fields",
     "fallback behavior",
@@ -626,6 +840,59 @@ expect(
     "releaseEvidenceCommands must include the external proof stableDefaultPromotionGate release evidence command",
 )
 expect(
+    stable_default_gate.get("requiredReleaseEvidenceArtifactCommand")
+    == expected_release_evidence_artifact_command,
+    "external proof stableDefaultPromotionGate must require the release evidence artifact writer",
+)
+expect(
+    manifest.get("releaseEvidenceArtifactCommand")
+    == stable_default_gate["requiredReleaseEvidenceArtifactCommand"],
+    "releaseEvidenceArtifactCommand must match the external proof stableDefaultPromotionGate",
+)
+expect(
+    stable_default_gate.get("requiredReleaseChannel") == "stable",
+    "external proof stableDefaultPromotionGate must require stable release channel",
+)
+expect(
+    "releaseAttachmentSchema.allowedReleaseChannels"
+    in stable_default_gate.get("requiredReleaseAttachmentSchemaFields", []),
+    "external proof stableDefaultPromotionGate must require release attachment allowedReleaseChannels",
+)
+expect(
+    "proofAttachmentSchema.allowedReleaseChannels"
+    in stable_default_gate.get("requiredProofAttachmentSchemaFields", []),
+    "external proof stableDefaultPromotionGate must require proof attachment allowedReleaseChannels",
+)
+for required_field in [
+    "daxis_worktree_status",
+    "daxis_worktree_review",
+    "daxis_worktree_review_json_sha256",
+    "proofAttachmentSchema.allowedDaxisWorktreeStatuses",
+    "proofAttachmentSchema.allowedDaxisWorktreeReviews",
+    "proofAttachmentSchema.acceptedDaxisWorktreeReviews",
+    "proofAttachmentSchema.dirtyWorktreeReviewChecksumFormat",
+    "proofAttachmentSchema.dirtyWorktreeReviewTemplatePath",
+]:
+    expect(
+        required_field in stable_default_gate.get("requiredProofAttachmentSchemaFields", []),
+        f"external proof stableDefaultPromotionGate must require proof attachment {required_field}",
+    )
+expect(
+    external_proof_packet.get("proofAttachmentSchema", {}).get("allowedReleaseChannels")
+    == expected_release_channels,
+    "external proof packet proofAttachmentSchema allowedReleaseChannels must match releaseAttachmentSchema",
+)
+expect(
+    external_proof_packet.get("proofAttachmentSchema", {}).get("acceptedDaxisWorktreeReviews")
+    == ["clean", "dirty_reviewed"],
+    "external proof packet proofAttachmentSchema must define accepted Daxis worktree reviews",
+)
+expect(
+    external_proof_packet.get("proofAttachmentSchema", {}).get("dirtyWorktreeReviewTemplatePath")
+    == "docs/release-gates/daxis-dirty-worktree-review-template.json",
+    "external proof packet proofAttachmentSchema must define dirtyWorktreeReviewTemplatePath",
+)
+expect(
     stable_default_gate.get("requiredRollbackState") == "server_fallback",
     "external proof stableDefaultPromotionGate must require server_fallback rollback",
 )
@@ -643,6 +910,9 @@ expect_unique_text_list(release_commands, "releaseEvidenceCommands")
 expected_release_commands = [
     "bash tests/conformance/verify_daxis_release_evidence.sh",
     "bash tests/conformance/verify_daxis_release_evidence.sh --list",
+    "bash tests/conformance/verify_daxis_external_proof_attachment_test.sh",
+    "bash tests/conformance/verify_daxis_release_attachment_test.sh",
+    "bash tests/conformance/verify_daxis_stable_default_promotion_packet_test.sh",
     "bash tests/conformance/verify_daxis_release_bundle_manifest.sh",
 ]
 for required_command in expected_release_commands:
@@ -651,6 +921,11 @@ unexpected_release_commands = sorted(set(release_commands) - set(expected_releas
 expect(
     not unexpected_release_commands,
     f"releaseEvidenceCommands has unsupported commands: {', '.join(unexpected_release_commands)}",
+)
+expect(
+    manifest.get("releaseEvidenceArtifactCommand")
+    == "bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log",
+    "releaseEvidenceArtifactCommand must point to the digest-pinned release evidence log writer",
 )
 
 print("Daxis release bundle manifest verified")

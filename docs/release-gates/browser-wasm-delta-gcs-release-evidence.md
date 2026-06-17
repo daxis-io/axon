@@ -25,7 +25,7 @@ This evidence pack maps repository-owned release claims to commands and artifact
 | Supported browser queries keep native parity and structured fallback routing                                      | `cargo test -p delta-control-plane --locked` and `cargo test -p wasm-query-runtime -p query-router --locked`                                                                                                                                                                                                                                                                                                                 |
 | The legacy in-memory session shell and compatibility worker contract stay repo-owned and testable                 | `cargo test -p wasm-query-session --locked` and `cargo test -p browser-sdk -p browser-engine-worker --locked`                                                                                                                                                                                                                                                                                                                |
 | Public object-storage table-root access remains a browser-owned product path                                      | `npm run test:sdk`, `PLAYWRIGHT_BASE_URL=https://127.0.0.1:5173 npm run test:browser:editor-smoke -- --grep "object storage\|connect source flows"`, and env-gated live fixture smoke with `AXON_LIVE_PUBLIC_GCS_TABLE_URI=gs://axon-public-delta-fixture-20260522-6cf5c6/axon-smoke-delta PLAYWRIGHT_BASE_URL=https://127.0.0.1:5173 npm run test:browser:public-gcs-live`                                                  |
-| The app WASM DataFusion runtime is the Daxis-facing default worker SKU                                            | `cargo test -p axon-web-wasm`, `cargo test -p wasm-datafusion-poc`, `cargo test -p wasm-datafusion-session`, `docs/program/browser-lakehouse-release-handoff-examples/browser-worker-artifact-report.datafusion.json`, and `bash tests/conformance/verify_axon_web_datafusion_runtime.sh`                                                                                                                                    |
+| The app WASM DataFusion runtime is the Daxis-facing default worker SKU                                            | `cargo test -p axon-web-wasm`, `cargo test -p wasm-datafusion-poc -- --test-threads=1`, `cargo test -p wasm-datafusion-session`, `docs/program/browser-lakehouse-release-handoff-examples/browser-worker-artifact-report.datafusion.json`, and `bash tests/conformance/verify_axon_web_datafusion_runtime.sh`                                                                                                                |
 | Daxis first-class integration contracts stay fixture-backed and hash-pinned                                       | `docs/program/daxis-first-class-integration-examples/`, `docs/release-gates/daxis-contract-artifacts.sha256`, `cargo test -p query-contract`, and `bash tests/conformance/verify_daxis_contract_artifacts.sh`                                                                                                                                                                                                                |
 | Daxis rollout, operations, traceability, external proof, architecture, and release-bundle decisions stay explicit | `docs/release-gates/daxis-production-rollout-decisions.json`, `docs/release-gates/daxis-operational-readiness.json`, `docs/release-gates/daxis-strategy-traceability.json`, `docs/release-gates/daxis-external-proof-packet.json`, `docs/release-gates/daxis-release-bundle-manifest.json`, `docs/adr/ADR-0008-daxis-browser-read-compute-contract.md`, and `bash tests/conformance/verify_daxis_release_evidence.sh --list` |
 
@@ -38,7 +38,8 @@ Run `bash tests/conformance/verify_daxis_release_evidence.sh` before Daxis
 release review and attach the captured output to the release packet.
 
 The manifest keeps five items as `release_process_required` because they must
-be captured for the exact release commit and rollout segment:
+be captured for the exact release commit, Daxis release channel, and rollout
+segment:
 
 - `git_sha`
 - `worker_artifact_size`
@@ -48,7 +49,38 @@ be captured for the exact release commit and rollout segment:
 
 Use
 [`docs/release-gates/daxis-release-attachment-template.md`](./daxis-release-attachment-template.md)
-for those attachments. Use
+for those attachments, including the `artifact_sha256` digest of each release
+evidence artifact, `release_channel`, and `rollout_segment`.
+`releaseAttachmentSchema.allowedReleaseChannels` records the allowed
+`experimental`, `integration`, `candidate`, and `stable` channel values, and
+stable default promotion requires the `stable` channel.
+`releaseAttachmentSchema.checksumFormat` records that release attachment digests
+are 64-character lowercase hexadecimal digests generated from the exact release
+evidence artifact bytes, for example with `shasum -a 256 path/to/artifact`.
+`releaseAttachmentSchema.requiredReviewerRoles` records the owner roles required
+for release attachment review. Validate completed stable-default
+release-process attachments with
+`bash tests/conformance/verify_daxis_release_attachment.sh --stable-default path/to/completed-release-attachment.md`;
+the manifest carries this exact command as
+`releaseAttachmentSchema.stableDefaultValidationCommand`. Validate the completed
+stable-default release-process attachment set with
+`bash tests/conformance/verify_daxis_release_attachment.sh --stable-default-dir path/to/completed-release-attachments`;
+the manifest carries this exact command as
+`releaseAttachmentSchema.stableDefaultDirectoryValidationCommand`. When release
+packets contain local evidence artifacts, validate completed stable-default
+release-process attachments with
+`bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default path/to/completed-release-attachment.md`;
+the manifest carries this exact command as
+`releaseAttachmentSchema.stableDefaultArtifactValidationCommand`. Validate the
+completed local release-process attachment set with
+`bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default-dir path/to/completed-release-attachments`;
+the manifest carries this exact command as
+`releaseAttachmentSchema.stableDefaultArtifactDirectoryValidationCommand`. Use
+`bash tests/conformance/verify_daxis_stable_default_promotion_packet.sh --artifact-root path/to/artifacts --release-attachments path/to/completed-release-attachments --proof-attachments path/to/completed-proof-attachments --release-evidence-log path/to/release-evidence.log --release-evidence-sha256 <sha256> --release-evidence-exit-status 0`
+to validate the complete stable-default promotion packet after accepted release
+attachments, accepted external proof attachments, and a successful release
+evidence log are staged together; the manifest carries this exact command as
+`stableDefaultPromotionPacketValidationCommand`. The stable-default promotion packet verifier also compares the attached log against `bash tests/conformance/verify_daxis_release_evidence.sh --list`, rejects logs missing listed commands, and requires every release attachment and external proof attachment to share one Axon release commit, one Axon release ref, one release channel, and one rollout segment before it prints `daxis_stable_default_release_identity_verified=true`. Use
 [`docs/release-gates/daxis-release-notes-template.md`](./daxis-release-notes-template.md)
 for Daxis-facing release notes covering query-result semantics, Daxis result
 metrics and observability fields, fallback behavior, supported SQL and Delta
@@ -123,10 +155,13 @@ bash tests/conformance/verify_daxis_operational_readiness.sh
 bash tests/conformance/verify_daxis_strategy_traceability_test.sh
 bash tests/conformance/verify_daxis_strategy_traceability.sh
 bash tests/conformance/verify_daxis_external_state_test.sh
+bash tests/conformance/verify_daxis_external_proof_attachment_test.sh
 bash tests/conformance/verify_daxis_external_proof_packet_test.sh
 bash tests/conformance/verify_daxis_external_proof_packet.sh
 bash tests/conformance/verify_daxis_architecture_adr_test.sh
 bash tests/conformance/verify_daxis_architecture_adr.sh
+bash tests/conformance/verify_daxis_release_attachment_test.sh
+bash tests/conformance/verify_daxis_stable_default_promotion_packet_test.sh
 bash tests/conformance/verify_daxis_release_bundle_manifest_test.sh
 bash tests/conformance/verify_daxis_release_bundle_manifest.sh
 bash tests/conformance/verify_daxis_pr_checklist_test.sh
@@ -181,7 +216,7 @@ npm exec -- tsc --noEmit
 npm run test:sdk
 
 cd ../..
-cargo test -p wasm-datafusion-poc
+cargo test -p wasm-datafusion-poc -- --test-threads=1
 cargo test -p wasm-datafusion-session
 cargo test -p axon-web-wasm
 cargo test -p delta-control-plane --test browser_snapshot_preflight

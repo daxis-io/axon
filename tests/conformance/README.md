@@ -25,12 +25,18 @@ Current contents:
 - `verify_daxis_strategy_traceability_test.sh`: regression coverage for the strategy traceability verifier.
 - `verify_daxis_external_state.sh`: optional helper for Daxis owners to run the external proof packet's current-state checks against a Daxis checkout through `AXON_DAXIS_PLATFORM_REPO_ROOT`; it lists and runs Daxis commit SHA, branch/ref, origin remote URL, working-tree status capture, the Daxis query contract test, and the active architecture terminology scan without treating those checks as accepted production proof.
 - `verify_daxis_external_state_test.sh`: regression coverage for the Daxis external-state helper.
+- `verify_daxis_external_proof_attachment.sh`: verifies completed Daxis external proof attachments before stable-default promotion; in local artifact mode it checks helper JSON bytes, helper-result identity, clean or digest-pinned dirty worktree review evidence, production environment class, stable release channel, and required reviewer metadata.
+- `verify_daxis_external_proof_attachment_test.sh`: regression coverage for the Daxis external proof attachment verifier.
 - `verify_daxis_external_proof_packet.sh`: verifies the Daxis external proof packet names the required ADR, strategy, rollout, readiness, release-bundle, traceability, blocker, handoff, and attachment-template source docs once; names each required production proof item once; keeps Daxis owners aligned with the traceability matrix; and checks unique verification-plan paths, exact supported verification-plan commands, acceptance checks, rollback evidence, Axon references, the proof attachment template, handoff checklist, and the stable-default promotion gate tying accepted external proof to release-process attachments.
 - `verify_daxis_external_proof_packet_test.sh`: regression coverage for the external proof packet verifier.
 - `verify_daxis_contract_artifacts.sh`: verifies the Daxis SDK examples, schemas, OpenAPI document, and JSON fixtures against the checked-in SHA-256 manifest, and rejects browser-visible raw credential fields in those artifacts.
 - `verify_daxis_contract_artifacts_test.sh`: regression coverage for the Daxis contract artifact verifier.
 - `verify_daxis_architecture_adr.sh`: verifies the Daxis browser read-compute architectural decision is captured as an indexed ADR and linked to the strategy, rollout, traceability, and external-proof artifacts.
 - `verify_daxis_architecture_adr_test.sh`: regression coverage for the Daxis architecture ADR verifier.
+- `verify_daxis_release_attachment.sh`: verifies completed Daxis release-process attachments before stable-default promotion; in local artifact mode it checks evidence artifact bytes, stable release channel, production rollout segment, required reviewer metadata, and attachment item coverage.
+- `verify_daxis_release_attachment_test.sh`: regression coverage for the Daxis release attachment verifier.
+- `verify_daxis_stable_default_promotion_packet.sh`: verifies a complete stable-default promotion packet by checking release evidence log status and digest, listed release-evidence commands, required release-evidence markers, release and proof attachment artifact validation, and a single shared release commit, release ref, release channel, and rollout segment across the packet.
+- `verify_daxis_stable_default_promotion_packet_test.sh`: regression coverage for the stable-default promotion packet verifier.
 - `verify_daxis_release_bundle_manifest.sh`: verifies that the Daxis release bundle covers commit identity, contract hashes, Rust and TypeScript summaries, WASM checks, browser matrix results, public GCS live smoke, artifact size, dependency guardrails, fallback reasons, compatibility notes, migration notes, and external blockers. It also enforces unique bundle item IDs, unique top-level source docs and release evidence commands, the required strategy, parity, compatibility, ADR, rollout, readiness, traceability, external-proof, release-evidence, blocker, and attachment-template source docs; keeps release-process attachments tied to `docs/release-gates/daxis-release-attachment-template.md`; requires migration notes to use `docs/release-gates/daxis-release-migration-notes-template.md`; and rejects unsupported top-level or item-level release evidence commands.
 - `verify_daxis_release_bundle_manifest_test.sh`: regression coverage for the Daxis release bundle manifest verifier.
 - `verify_daxis_pr_checklist.sh`: verifies the checked-in pull request template carries the Daxis-relevant trust-boundary, contract, fallback, parity, dependency, WASM, size, browser-matrix, release-attachment, external-proof, stable-default, rollout-promotion, docs, and release-evidence checklist; keeps referenced release and external-proof attachment templates populated with the checklist-backed item IDs; and requires the external proof packet stable-default gate to preserve accepted review, release-evidence, and server-fallback requirements.
@@ -69,6 +75,7 @@ Useful local commands:
 - `bash tests/conformance/verify_daxis_operational_readiness.sh`
 - `bash tests/conformance/verify_daxis_release_evidence_test.sh`
 - `bash tests/conformance/verify_daxis_release_evidence.sh --list`
+- `bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log`
 - `bash tests/conformance/verify_daxis_rollout_decisions_test.sh`
 - `bash tests/conformance/verify_daxis_rollout_decisions.sh`
 - `bash tests/conformance/verify_daxis_strategy_document_test.sh`
@@ -77,12 +84,20 @@ Useful local commands:
 - `bash tests/conformance/verify_daxis_strategy_traceability.sh`
 - `bash tests/conformance/verify_daxis_external_state_test.sh`
 - `AXON_DAXIS_PLATFORM_REPO_ROOT=/path/to/daxis-platform bash tests/conformance/verify_daxis_external_state.sh`
+- `bash tests/conformance/verify_daxis_external_proof_attachment_test.sh`
 - `bash tests/conformance/verify_daxis_contract_artifacts_test.sh`
 - `bash tests/conformance/verify_daxis_contract_artifacts.sh`
 - `bash tests/conformance/verify_daxis_external_proof_packet_test.sh`
 - `bash tests/conformance/verify_daxis_external_proof_packet.sh`
 - `bash tests/conformance/verify_daxis_architecture_adr_test.sh`
 - `bash tests/conformance/verify_daxis_architecture_adr.sh`
+- `bash tests/conformance/verify_daxis_release_attachment_test.sh`
+- `bash tests/conformance/verify_daxis_release_attachment.sh --stable-default path/to/completed-release-attachment.md`
+- `bash tests/conformance/verify_daxis_release_attachment.sh --stable-default-dir path/to/completed-release-attachments`
+- `bash tests/conformance/verify_daxis_external_proof_attachment.sh --stable-default path/to/completed-proof-attachment.md`
+- `bash tests/conformance/verify_daxis_external_proof_attachment.sh --stable-default-dir path/to/completed-proof-attachments`
+- `bash tests/conformance/verify_daxis_stable_default_promotion_packet.sh --artifact-root path/to/artifacts --release-attachments path/to/completed-release-attachments --proof-attachments path/to/completed-proof-attachments --release-evidence-log path/to/release-evidence.log --release-evidence-sha256 <sha256> --release-evidence-exit-status 0`
+- `bash tests/conformance/verify_daxis_stable_default_promotion_packet_test.sh`
 - `bash tests/conformance/verify_daxis_release_bundle_manifest_test.sh`
 - `bash tests/conformance/verify_daxis_release_bundle_manifest.sh`
 - `bash tests/conformance/verify_daxis_pr_checklist_test.sh`

@@ -11,9 +11,12 @@ Do not attach browser-visible secrets, signed URLs, raw credentials, service-acc
 | `item_id`                           |       |
 | `release_commit_sha`                |       |
 | `release_ref`                       |       |
+| `release_channel`                   |       |
+| `rollout_segment`                   |       |
 | `owner`                             |       |
 | `captured_at`                       |       |
 | `artifact_uri`                      |       |
+| `artifact_sha256`                   |       |
 | `verification_command_or_statement` |       |
 | `exit_status_or_review_status`      |       |
 | `rollback_or_migration_note_uri`    |       |
@@ -28,6 +31,17 @@ Do not attach browser-visible secrets, signed URLs, raw credentials, service-acc
 ## Release-Process Items
 
 Use the matching guidance for `item_id`.
+Set `release_channel` to the Daxis release channel this attachment supports: `experimental`, `integration`, `candidate`, or `stable`.
+The only allowed `release_channel` values are `experimental`, `integration`, `candidate`, and `stable`; stable default promotion requires `stable`.
+Set `rollout_segment` to the tenant, workspace, table-class, browser-family, or all-segments scope covered by this evidence.
+To write an attachment-ready release evidence log and print its digest, run `bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log`.
+Attach the SHA-256 digest of the release evidence artifact in `artifact_sha256`.
+Record only the 64-character lowercase hexadecimal digest generated from the exact release evidence artifact bytes, for example with `shasum -a 256 path/to/artifact`.
+Before stable default promotion, validate a completed release-process attachment with `bash tests/conformance/verify_daxis_release_attachment.sh --stable-default path/to/completed-release-attachment.md`.
+Before stable default promotion, validate the completed release-process attachment set with `bash tests/conformance/verify_daxis_release_attachment.sh --stable-default-dir path/to/completed-release-attachments`.
+When `artifact_uri` points at a relative or `file://` artifact in a local release packet, validate the completed release-process attachment with `bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default path/to/completed-release-attachment.md` so the script compares `artifact_sha256` to the artifact bytes.
+When a local release packet contains the completed attachment set and evidence artifacts, validate the set with `bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default-dir path/to/completed-release-attachments`.
+Remote `http://`, `https://`, and object-store artifact URIs remain reviewable metadata references for the non-artifact-root validators; the strict local artifact command does not fetch remote evidence.
 
 ### `git_sha`
 
@@ -63,6 +77,10 @@ Use the matching guidance for `item_id`.
 - Link the completed migration notes in `rollback_or_migration_note_uri`.
 
 ## Owner Review
+
+Stable default promotion requires every role listed below to include a reviewer
+name, `accepted` review state, and notes before the release attachment is
+accepted by `verify_daxis_release_attachment.sh`.
 
 | Role                        | Name | Review state | Notes |
 | --------------------------- | ---- | ------------ | ----- |

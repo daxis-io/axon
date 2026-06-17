@@ -106,7 +106,10 @@ The machine-readable gate is
 checked by `bash tests/conformance/verify_daxis_operational_readiness.sh`.
 The repo-owned release evidence runner is
 `bash tests/conformance/verify_daxis_release_evidence.sh`; use `--list` to
-print the gate set without executing it.
+print the gate set without executing it. Use
+`bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log`
+to produce the digest-pinned release evidence log required by stable-default
+promotion packets.
 
 Stable default blockers that remain outside this repository:
 

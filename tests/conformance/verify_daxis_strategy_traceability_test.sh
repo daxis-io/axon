@@ -12,23 +12,25 @@ release_evidence_runner="$repo_root/tests/conformance/verify_daxis_release_evide
 
 mkdir -p "$repo_root/docs/program" "$repo_root/docs/release-gates" "$repo_root/tests/conformance"
 for doc in \
-  docs/program/daxis-first-class-integration-strategy.md \
-  docs/program/browser-lakehouse-release-handoff-examples/browser-worker-artifact-report.datafusion.json \
-  docs/release-gates/browser-wasm-delta-gcs-release-evidence.md \
-  docs/release-gates/daxis-external-proof-packet.json \
-  tests/conformance/verify_axon_web_datafusion_runtime.sh \
-  tests/conformance/verify_browser_worker_dependency_boundary.sh \
-  tests/conformance/verify_daxis_external_proof_packet.sh \
-  tests/conformance/verify_daxis_pr_checklist.sh \
-  tests/conformance/verify_daxis_query_corpus_coverage.sh \
-  tests/conformance/verify_daxis_release_bundle_manifest.sh \
-  tests/conformance/verify_daxis_release_evidence_test.sh; do
-  mkdir -p "$repo_root/$(dirname "$doc")"
-  printf '# test fixture\n' >"$repo_root/$doc"
+	docs/program/daxis-first-class-integration-strategy.md \
+	docs/program/browser-lakehouse-release-handoff-examples/browser-worker-artifact-report.datafusion.json \
+	docs/release-gates/browser-wasm-delta-gcs-release-evidence.md \
+	docs/release-gates/daxis-external-proof-packet.json \
+	tests/conformance/verify_axon_web_datafusion_runtime.sh \
+	tests/conformance/verify_browser_worker_dependency_boundary.sh \
+	tests/conformance/verify_daxis_external_proof_packet.sh \
+	tests/conformance/verify_daxis_pr_checklist.sh \
+	tests/conformance/verify_daxis_query_corpus_coverage.sh \
+	tests/conformance/verify_daxis_release_bundle_manifest.sh \
+	tests/conformance/verify_daxis_external_state.sh \
+	tests/conformance/verify_daxis_external_state_test.sh \
+	tests/conformance/verify_daxis_release_evidence_test.sh; do
+	mkdir -p "$repo_root/$(dirname "$doc")"
+	printf '# test fixture\n' >"$repo_root/$doc"
 done
 
 write_valid_matrix() {
-  python3 - "$matrix" "$proof_packet" <<'PY'
+	python3 - "$matrix" "$proof_packet" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -136,6 +138,8 @@ milestones = {
                     "tests/conformance/verify_daxis_release_evidence.sh",
                     "tests/conformance/verify_daxis_release_evidence_test.sh",
                     "tests/conformance/verify_daxis_release_bundle_manifest.sh",
+                    "tests/conformance/verify_daxis_external_state.sh",
+                    "tests/conformance/verify_daxis_external_state_test.sh",
                     "tests/conformance/verify_daxis_external_proof_packet.sh",
                     "tests/conformance/verify_daxis_pr_checklist.sh",
                 ],
@@ -149,6 +153,8 @@ milestones = {
                 [
                     "tests/conformance/verify_daxis_release_evidence.sh",
                     "tests/conformance/verify_daxis_release_bundle_manifest.sh",
+                    "tests/conformance/verify_daxis_external_state.sh",
+                    "tests/conformance/verify_daxis_external_state_test.sh",
                     "tests/conformance/verify_daxis_external_proof_packet.sh",
                     "tests/conformance/verify_daxis_pr_checklist.sh",
                     "docs/release-gates/browser-wasm-delta-gcs-release-evidence.md",
@@ -169,6 +175,7 @@ matrix = {
         "bash tests/conformance/verify_daxis_operational_readiness.sh",
         "bash tests/conformance/verify_daxis_strategy_document.sh",
         "bash tests/conformance/verify_daxis_strategy_traceability.sh",
+        "bash tests/conformance/verify_daxis_external_state_test.sh",
         "bash tests/conformance/verify_daxis_external_proof_packet.sh",
         "bash tests/conformance/verify_daxis_architecture_adr.sh",
         "bash tests/conformance/verify_daxis_release_bundle_manifest.sh",
@@ -203,7 +210,7 @@ with open(proof_packet_path, "w", encoding="utf-8") as handle:
     json.dump(packet, handle)
 PY
 
-  cat >"$release_evidence_runner" <<'EOF'
+	cat >"$release_evidence_runner" <<'EOF'
 #!/usr/bin/env bash
 
 set -euo pipefail
@@ -216,6 +223,7 @@ bash tests/conformance/verify_daxis_rollout_decisions.sh
 bash tests/conformance/verify_daxis_operational_readiness.sh
 bash tests/conformance/verify_daxis_strategy_document.sh
 bash tests/conformance/verify_daxis_strategy_traceability.sh
+bash tests/conformance/verify_daxis_external_state_test.sh
 bash tests/conformance/verify_daxis_external_proof_packet.sh
 bash tests/conformance/verify_daxis_architecture_adr.sh
 bash tests/conformance/verify_daxis_release_bundle_manifest.sh
@@ -227,13 +235,13 @@ COMMANDS
     ;;
 esac
 EOF
-  chmod +x "$release_evidence_runner"
+	chmod +x "$release_evidence_runner"
 }
 
 verify_fixture() {
-  AXON_DAXIS_STRATEGY_REPO_ROOT="$repo_root" \
-    AXON_DAXIS_STRATEGY_TRACEABILITY_FILE="$matrix" \
-    bash tests/conformance/verify_daxis_strategy_traceability.sh >/dev/null 2>&1
+	AXON_DAXIS_STRATEGY_REPO_ROOT="$repo_root" \
+		AXON_DAXIS_STRATEGY_TRACEABILITY_FILE="$matrix" \
+		bash tests/conformance/verify_daxis_strategy_traceability.sh >/dev/null 2>&1
 }
 
 write_valid_matrix
@@ -253,8 +261,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected duplicate strategy traceability release gates to be rejected" >&2
-  exit 1
+	echo "expected duplicate strategy traceability release gates to be rejected" >&2
+	exit 1
 fi
 
 write_valid_matrix
@@ -271,8 +279,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected unsupported strategy traceability release gate to be rejected" >&2
-  exit 1
+	echo "expected unsupported strategy traceability release gate to be rejected" >&2
+	exit 1
 fi
 
 write_valid_matrix
@@ -292,8 +300,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected duplicate strategy traceability milestone item ids to be rejected" >&2
-  exit 1
+	echo "expected duplicate strategy traceability milestone item ids to be rejected" >&2
+	exit 1
 fi
 
 write_valid_matrix
@@ -310,8 +318,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing full release evidence gate to be rejected" >&2
-  exit 1
+	echo "expected missing full release evidence gate to be rejected" >&2
+	exit 1
 fi
 
 write_valid_matrix
@@ -328,8 +336,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing strategy traceability self-gate to be rejected" >&2
-  exit 1
+	echo "expected missing strategy traceability self-gate to be rejected" >&2
+	exit 1
 fi
 
 write_valid_matrix
@@ -346,8 +354,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing architecture ADR release gate to be rejected" >&2
-  exit 1
+	echo "expected missing architecture ADR release gate to be rejected" >&2
+	exit 1
 fi
 
 write_valid_matrix
@@ -371,8 +379,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing Daxis query corpus coverage verifier evidence to be rejected" >&2
-  exit 1
+	echo "expected missing Daxis query corpus coverage verifier evidence to be rejected" >&2
+	exit 1
 fi
 
 write_valid_matrix
@@ -395,8 +403,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing DataFusion default runtime verifier evidence to be rejected" >&2
-  exit 1
+	echo "expected missing DataFusion default runtime verifier evidence to be rejected" >&2
+	exit 1
 fi
 
 write_valid_matrix
@@ -417,8 +425,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing legacy runtime isolation traceability item to be rejected" >&2
-  exit 1
+	echo "expected missing legacy runtime isolation traceability item to be rejected" >&2
+	exit 1
 fi
 
 write_valid_matrix
@@ -448,8 +456,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing full release evidence command from M4 traceability to be rejected" >&2
-  exit 1
+	echo "expected missing full release evidence command from M4 traceability to be rejected" >&2
+	exit 1
 fi
 
 write_valid_matrix
@@ -464,8 +472,8 @@ path.write_text(text, encoding="utf-8")
 PY
 
 if verify_fixture; then
-  echo "expected traceability release gate missing from release evidence runner to be rejected" >&2
-  exit 1
+	echo "expected traceability release gate missing from release evidence runner to be rejected" >&2
+	exit 1
 fi
 
 write_valid_matrix
@@ -484,8 +492,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected traceability external proof packet drift to be rejected" >&2
-  exit 1
+	echo "expected traceability external proof packet drift to be rejected" >&2
+	exit 1
 fi
 
 write_valid_matrix
@@ -528,8 +536,8 @@ with open(packet_path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing default-browser-engine external proof item to be rejected" >&2
-  exit 1
+	echo "expected missing default-browser-engine external proof item to be rejected" >&2
+	exit 1
 fi
 
 write_valid_matrix
@@ -546,8 +554,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing external proof packet link to be rejected" >&2
-  exit 1
+	echo "expected missing external proof packet link to be rejected" >&2
+	exit 1
 fi
 
 echo "Daxis strategy traceability verifier regression coverage passed"

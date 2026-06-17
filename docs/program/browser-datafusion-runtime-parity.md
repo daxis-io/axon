@@ -25,10 +25,10 @@ The Daxis query-shape corpus lives in [`../../tests/conformance/daxis-browser-da
 
 Each Daxis corpus case declares `covered_sql_classes` so supported query claims stay tied to runtime evidence and this compatibility statement.
 
-| Case | Covered SQL classes |
-| ---- | ------------------- |
-| `recent_open_orders` | projection, filtering, ordering, limit, descriptor-backed `AxonParquetScanExec` |
-| `tier_revenue_summary` | projection, filtering, grouped aggregates, ordering, descriptor-backed `AxonParquetScanExec` |
+| Case                   | Covered SQL classes                                                                                   |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| `recent_open_orders`   | projection, filtering, ordering, limit, descriptor-backed `AxonParquetScanExec`                       |
+| `tier_revenue_summary` | projection, filtering, grouped aggregates, ordering, descriptor-backed `AxonParquetScanExec`          |
 | `priority_net_amounts` | projection, ordering, arithmetic, `CAST`, `CASE` expressions, descriptor-backed `AxonParquetScanExec` |
 
 ## Supported Arrow And Parquet Field Types
@@ -97,7 +97,7 @@ The local verification set for this runtime is:
 ```bash
 # From the repository root.
 cargo test -p wasm-datafusion-session
-cargo test -p wasm-datafusion-poc
+cargo test -p wasm-datafusion-poc -- --test-threads=1
 cargo test -p wasm-datafusion-poc --test daxis_query_corpus
 cargo test -p wasm-datafusion-poc --test daxis_budget_profile
 cargo test -p wasm-datafusion-poc --test daxis_runtime_isolation_plan

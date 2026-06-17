@@ -11,33 +11,38 @@ external_proof_packet="$repo_root/docs/release-gates/daxis-external-proof-packet
 
 mkdir -p "$repo_root/docs/program" "$repo_root/docs/release-gates" "$repo_root/tests/conformance"
 for doc in \
-  docs/adr/ADR-0008-daxis-browser-read-compute-contract.md \
-  docs/program/daxis-first-class-integration-strategy.md \
-  docs/release-gates/daxis-release-attachment-template.md \
-  docs/release-gates/daxis-release-notes-template.md \
-  docs/release-gates/daxis-release-migration-notes-template.md \
-  docs/release-gates/browser-wasm-delta-gcs-release-evidence.md \
-  docs/release-gates/browser-wasm-delta-gcs-external-blockers.md \
-  docs/release-gates/daxis-production-rollout-decisions.json \
-  docs/release-gates/daxis-operational-readiness.json \
-  docs/release-gates/daxis-strategy-traceability.json \
-  docs/release-gates/daxis-external-proof-packet.json \
-  docs/program/daxis-external-proof-handoff.md \
-  docs/program/browser-observability-contract.md \
-  docs/program/browser-datafusion-runtime-parity.md \
-  docs/program/browser-delta-compatibility-matrix.md \
-  crates/query-contract/tests/query_contract.rs \
-  tests/conformance/daxis-browser-datafusion-query-corpus.json \
-  tests/conformance/verify_daxis_query_corpus_coverage.sh \
-  tests/conformance/verify_daxis_external_state.sh \
-  tests/conformance/verify_daxis_external_state_test.sh \
-  tests/conformance/verify_daxis_release_evidence.sh; do
-  mkdir -p "$repo_root/$(dirname "$doc")"
-  printf '# test fixture\n' >"$repo_root/$doc"
+	docs/adr/ADR-0008-daxis-browser-read-compute-contract.md \
+	docs/program/daxis-first-class-integration-strategy.md \
+	docs/release-gates/daxis-release-attachment-template.md \
+	docs/release-gates/daxis-release-notes-template.md \
+	docs/release-gates/daxis-release-migration-notes-template.md \
+	docs/release-gates/browser-wasm-delta-gcs-release-evidence.md \
+	docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md \
+	docs/release-gates/browser-wasm-delta-gcs-external-blockers.md \
+	docs/release-gates/daxis-production-rollout-decisions.json \
+	docs/release-gates/daxis-operational-readiness.json \
+	docs/release-gates/daxis-strategy-traceability.json \
+	docs/release-gates/daxis-external-proof-packet.json \
+	docs/release-gates/daxis-dirty-worktree-review-template.json \
+	docs/program/daxis-external-proof-handoff.md \
+	docs/program/browser-observability-contract.md \
+	docs/program/browser-datafusion-runtime-parity.md \
+	docs/program/browser-delta-compatibility-matrix.md \
+	crates/query-contract/tests/query_contract.rs \
+	tests/conformance/daxis-browser-datafusion-query-corpus.json \
+	tests/conformance/verify_daxis_query_corpus_coverage.sh \
+	tests/conformance/verify_daxis_external_state.sh \
+	tests/conformance/verify_daxis_external_state_test.sh \
+	tests/conformance/verify_daxis_release_evidence.sh \
+	tests/conformance/verify_daxis_release_attachment.sh \
+	tests/conformance/verify_daxis_stable_default_promotion_packet.sh \
+	tests/conformance/verify_daxis_stable_default_promotion_packet_test.sh; do
+	mkdir -p "$repo_root/$(dirname "$doc")"
+	printf '# test fixture\n' >"$repo_root/$doc"
 done
 
 write_release_attachment_template() {
-  cat >"$repo_root/docs/release-gates/daxis-release-attachment-template.md" <<'EOF'
+	cat >"$repo_root/docs/release-gates/daxis-release-attachment-template.md" <<'EOF'
 # Daxis Release Attachment Template
 
 Do not attach browser-visible secrets, signed URLs, raw credentials, service-account material, or private customer identifiers.
@@ -47,9 +52,12 @@ Do not attach browser-visible secrets, signed URLs, raw credentials, service-acc
 - item_id:
 - release_commit_sha:
 - release_ref:
+- release_channel:
+- rollout_segment:
 - owner:
 - captured_at:
 - artifact_uri:
+- artifact_sha256:
 - verification_command_or_statement:
 - exit_status_or_review_status:
 - rollback_or_migration_note_uri:
@@ -57,6 +65,16 @@ Do not attach browser-visible secrets, signed URLs, raw credentials, service-acc
 ## Release-Process Items
 
 Use the matching guidance for `item_id`.
+Set `release_channel` to the Daxis release channel this attachment supports: `experimental`, `integration`, `candidate`, or `stable`.
+The only allowed `release_channel` values are `experimental`, `integration`, `candidate`, and `stable`; stable default promotion requires `stable`.
+Set `rollout_segment` to the tenant, workspace, table-class, browser-family, or all-segments scope covered by this evidence.
+To write an attachment-ready release evidence log and print its digest, run `bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log`.
+Attach the SHA-256 digest of the release evidence artifact in `artifact_sha256`.
+Record only the 64-character lowercase hexadecimal digest generated from the exact release evidence artifact bytes, for example with `shasum -a 256 path/to/artifact`.
+Before stable default promotion, validate a completed release-process attachment with `bash tests/conformance/verify_daxis_release_attachment.sh --stable-default path/to/completed-release-attachment.md`.
+Before stable default promotion, validate the completed release-process attachment set with `bash tests/conformance/verify_daxis_release_attachment.sh --stable-default-dir path/to/completed-release-attachments`.
+When the release packet contains local evidence artifacts, validate a completed release-process attachment with `bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default path/to/completed-release-attachment.md`.
+When the release packet contains local evidence artifacts, validate the completed release-process attachment set with `bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default-dir path/to/completed-release-attachments`.
 
 ### `git_sha`
 
@@ -107,12 +125,27 @@ EOF
 }
 
 write_release_evidence_doc() {
-  cat >"$repo_root/docs/release-gates/browser-wasm-delta-gcs-release-evidence.md" <<'EOF'
+	cat >"$repo_root/docs/release-gates/browser-wasm-delta-gcs-release-evidence.md" <<'EOF'
 # Browser WASM + Delta on GCS Release Evidence
 
 The Daxis release evidence bundle is controlled by `docs/release-gates/daxis-release-bundle-manifest.json`
 and uses `docs/release-gates/daxis-release-attachment-template.md` for `release_process_required`
-attachments.
+attachments, including the `artifact_sha256` digest of each release evidence artifact.
+Attachments also include `release_channel` and `rollout_segment`.
+`releaseAttachmentSchema.allowedReleaseChannels` records the allowed release channels.
+`releaseAttachmentSchema.checksumFormat` records that release attachment digests are 64-character lowercase hexadecimal digests generated from the exact release evidence artifact bytes, for example with `shasum -a 256 path/to/artifact`.
+`releaseAttachmentSchema.requiredReviewerRoles` records the owner roles required for release attachment review.
+Validate completed stable-default release-process attachments with `bash tests/conformance/verify_daxis_release_attachment.sh --stable-default path/to/completed-release-attachment.md`.
+The manifest carries the exact command as `releaseAttachmentSchema.stableDefaultValidationCommand`.
+Validate the completed stable-default release-process attachment set with `bash tests/conformance/verify_daxis_release_attachment.sh --stable-default-dir path/to/completed-release-attachments`.
+The manifest carries the exact command as `releaseAttachmentSchema.stableDefaultDirectoryValidationCommand`.
+When the release packet contains local evidence artifacts, validate completed stable-default release-process attachments with `bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default path/to/completed-release-attachment.md`.
+The manifest carries the exact command as `releaseAttachmentSchema.stableDefaultArtifactValidationCommand`.
+When the release packet contains local evidence artifacts, validate the completed stable-default release-process attachment set with `bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default-dir path/to/completed-release-attachments`.
+The manifest carries the exact command as `releaseAttachmentSchema.stableDefaultArtifactDirectoryValidationCommand`.
+Validate the complete stable-default promotion packet with `bash tests/conformance/verify_daxis_stable_default_promotion_packet.sh --artifact-root path/to/artifacts --release-attachments path/to/completed-release-attachments --proof-attachments path/to/completed-proof-attachments --release-evidence-log path/to/release-evidence.log --release-evidence-sha256 <sha256> --release-evidence-exit-status 0`.
+The manifest carries the exact command as `stableDefaultPromotionPacketValidationCommand`.
+The stable-default promotion packet verifier also compares the attached log against `bash tests/conformance/verify_daxis_release_evidence.sh --list`, rejects logs missing listed commands, and requires every release attachment and external proof attachment to share one Axon release commit, one Axon release ref, one release channel, and one rollout segment before it prints `daxis_stable_default_release_identity_verified=true`.
 
 Run `bash tests/conformance/verify_daxis_release_evidence.sh` before release review.
 
@@ -146,6 +179,7 @@ Daxis runner commands:
 - `bash tests/conformance/verify_daxis_external_state_test.sh`
 - `bash tests/conformance/verify_daxis_external_proof_packet.sh`
 - `bash tests/conformance/verify_daxis_architecture_adr.sh`
+- `bash tests/conformance/verify_daxis_stable_default_promotion_packet_test.sh`
 - `env AXON_BROWSER_DEPENDENCY_PACKAGE=axon-web-wasm bash tests/security/verify_browser_dependency_guardrails.sh target/wasm32-unknown-unknown/release/axon_web_wasm.wasm`
 - `bash tests/conformance/verify_daxis_pr_checklist.sh`
 - `bash tests/perf/report_datafusion_wasm_size_test.sh`
@@ -153,8 +187,23 @@ Daxis runner commands:
 EOF
 }
 
+write_launch_checklist() {
+	cat >"$repo_root/docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md" <<'EOF'
+# Browser WASM + Delta on GCS Launch Checklist
+
+## Release Hygiene
+
+- [x] Daxis release evidence gates are scriptable through `bash tests/conformance/verify_daxis_release_evidence.sh`; `--list` prints the exact gate set.
+- [x] Daxis release attachments require `artifact_sha256`, `release_channel`, `rollout_segment`, `releaseAttachmentSchema.allowedReleaseChannels`, `releaseAttachmentSchema.checksumFormat`, and `releaseAttachmentSchema.requiredReviewerRoles`.
+- [x] Daxis external proof attachments require `daxis_external_state_json_sha256`, `daxis_worktree_review_json_sha256`, `proofAttachmentSchema.allowedReleaseChannels`, `proofAttachmentSchema.acceptedDaxisWorktreeReviews`, `proofAttachmentSchema.checksumFormat`, `proofAttachmentSchema.dirtyWorktreeReviewChecksumFormat`, `proofAttachmentSchema.dirtyWorktreeReviewTemplatePath`, and `proofAttachmentSchema.requiredReviewerRoles`.
+- [x] Stable-default release and external proof attachments have scriptable validators through `releaseAttachmentSchema.stableDefaultValidationCommand` (`bash tests/conformance/verify_daxis_release_attachment.sh --stable-default path/to/completed-release-attachment.md`), `releaseAttachmentSchema.stableDefaultDirectoryValidationCommand` (`bash tests/conformance/verify_daxis_release_attachment.sh --stable-default-dir path/to/completed-release-attachments`), `proofAttachmentSchema.stableDefaultValidationCommand` (`bash tests/conformance/verify_daxis_external_proof_attachment.sh --stable-default path/to/completed-proof-attachment.md`), and `proofAttachmentSchema.stableDefaultDirectoryValidationCommand` (`bash tests/conformance/verify_daxis_external_proof_attachment.sh --stable-default-dir path/to/completed-proof-attachments`).
+- [x] Local release packets can additionally verify evidence artifact bytes through `releaseAttachmentSchema.stableDefaultArtifactValidationCommand` (`bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default path/to/completed-release-attachment.md`) and `releaseAttachmentSchema.stableDefaultArtifactDirectoryValidationCommand` (`bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default-dir path/to/completed-release-attachments`).
+- [x] Stable-default promotion packets can be verified with `stableDefaultPromotionPacketValidationCommand` (`bash tests/conformance/verify_daxis_stable_default_promotion_packet.sh --artifact-root path/to/artifacts --release-attachments path/to/completed-release-attachments --proof-attachments path/to/completed-proof-attachments --release-evidence-log path/to/release-evidence.log --release-evidence-sha256 <sha256> --release-evidence-exit-status 0`), require `requiredReleaseEvidenceArtifactCommand` (`bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log`), and print `daxis_stable_default_release_identity_verified=true` after one Axon release commit, one Axon release ref, one release channel, and one rollout segment are shared across release and proof attachments.
+EOF
+}
+
 write_release_evidence_runner() {
-  cat >"$repo_root/tests/conformance/verify_daxis_release_evidence.sh" <<'EOF'
+	cat >"$repo_root/tests/conformance/verify_daxis_release_evidence.sh" <<'EOF'
 #!/usr/bin/env bash
 
 set -euo pipefail
@@ -177,6 +226,7 @@ bash tests/conformance/verify_daxis_strategy_traceability.sh
 bash tests/conformance/verify_daxis_external_state_test.sh
 bash tests/conformance/verify_daxis_external_proof_packet.sh
 bash tests/conformance/verify_daxis_architecture_adr.sh
+bash tests/conformance/verify_daxis_stable_default_promotion_packet_test.sh
 env AXON_BROWSER_DEPENDENCY_PACKAGE=axon-web-wasm bash tests/security/verify_browser_dependency_guardrails.sh target/wasm32-unknown-unknown/release/axon_web_wasm.wasm
 bash tests/conformance/verify_daxis_pr_checklist.sh
 bash tests/perf/report_datafusion_wasm_size_test.sh
@@ -188,11 +238,11 @@ COMMANDS
     ;;
 esac
 EOF
-  chmod +x "$repo_root/tests/conformance/verify_daxis_release_evidence.sh"
+	chmod +x "$repo_root/tests/conformance/verify_daxis_release_evidence.sh"
 }
 
 write_release_notes_template() {
-  cat >"$repo_root/docs/release-gates/daxis-release-notes-template.md" <<'EOF'
+	cat >"$repo_root/docs/release-gates/daxis-release-notes-template.md" <<'EOF'
 # Daxis Release Notes Template
 
 Do not attach browser-visible secrets, signed URLs, raw credentials, service-account material, private customer identifiers, or unredacted tenant data.
@@ -202,6 +252,7 @@ Do not attach browser-visible secrets, signed URLs, raw credentials, service-acc
 - Axon commit SHA:
 - Branch or tag:
 - Release channel:
+- Rollout segment:
 - Release date:
 - Release owner:
 - Daxis rollout decision link:
@@ -259,7 +310,7 @@ EOF
 }
 
 write_migration_notes_template() {
-  cat >"$repo_root/docs/release-gates/daxis-release-migration-notes-template.md" <<'EOF'
+	cat >"$repo_root/docs/release-gates/daxis-release-migration-notes-template.md" <<'EOF'
 # Daxis Release Migration Notes Template
 
 Do not attach browser-visible secrets, signed URLs, raw credentials, service-account material, or private customer identifiers.
@@ -269,6 +320,7 @@ Do not attach browser-visible secrets, signed URLs, raw credentials, service-acc
 - Axon commit SHA:
 - Branch or tag:
 - Release channel:
+- Rollout segment:
 - Release date:
 - Release owner:
 - Daxis platform owners reviewed:
@@ -335,12 +387,13 @@ EOF
 
 write_release_attachment_template
 write_release_evidence_doc
+write_launch_checklist
 write_release_evidence_runner
 write_release_notes_template
 write_migration_notes_template
 
 write_valid_manifest() {
-  python3 - "$manifest" "$external_proof_packet" <<'PY'
+	python3 - "$manifest" "$external_proof_packet" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -439,7 +492,7 @@ for item_id in item_ids:
     if item_id == "migration_notes":
         item["status"] = "release_process_required"
         item.pop("verificationCommands")
-        item["releaseAttachment"] = "Use docs/release-gates/daxis-release-migration-notes-template.md to attach migration notes or an explicit no-breaking-change statement for this release, including the external proof packet status and stableDefaultPromotionGate currentPromotionState."
+        item["releaseAttachment"] = "Use docs/release-gates/daxis-release-migration-notes-template.md to attach migration notes or an explicit no-breaking-change statement for this release channel and rollout segment, including the external proof packet status and stableDefaultPromotionGate currentPromotionState."
         item["evidence"] = [
             "docs/program/daxis-first-class-integration-strategy.md",
             "docs/release-gates/daxis-release-migration-notes-template.md",
@@ -447,7 +500,7 @@ for item_id in item_ids:
     if item_id == "release_notes":
         item["status"] = "release_process_required"
         item.pop("verificationCommands")
-        item["releaseAttachment"] = "Use docs/release-gates/daxis-release-notes-template.md to attach Daxis-facing release notes or an explicit unchanged statement for query results, Daxis result metrics and observability fields, fallback behavior, SQL and Delta support, descriptor validation, error taxonomy, external proof packet status, and currentPromotionState."
+        item["releaseAttachment"] = "Use docs/release-gates/daxis-release-notes-template.md to attach Daxis-facing release notes or an explicit unchanged statement for this release channel and rollout segment, including query results, Daxis result metrics and observability fields, fallback behavior, SQL and Delta support, descriptor validation, error taxonomy, external proof packet status, and currentPromotionState."
         item["evidence"] = [
             "docs/program/daxis-first-class-integration-strategy.md",
             "docs/release-gates/daxis-release-notes-template.md",
@@ -475,11 +528,13 @@ manifest = {
         "docs/release-gates/daxis-release-notes-template.md",
         "docs/release-gates/daxis-release-migration-notes-template.md",
         "docs/release-gates/browser-wasm-delta-gcs-release-evidence.md",
+        "docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md",
         "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
         "docs/release-gates/daxis-production-rollout-decisions.json",
         "docs/release-gates/daxis-operational-readiness.json",
         "docs/release-gates/daxis-strategy-traceability.json",
         "docs/release-gates/daxis-external-proof-packet.json",
+        "docs/release-gates/daxis-dirty-worktree-review-template.json",
         "docs/program/browser-datafusion-runtime-parity.md",
         "docs/program/browser-delta-compatibility-matrix.md",
         "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md",
@@ -498,21 +553,50 @@ manifest = {
             "item_id",
             "release_commit_sha",
             "release_ref",
+            "release_channel",
+            "rollout_segment",
             "owner",
             "captured_at",
             "artifact_uri",
+            "artifact_sha256",
             "verification_command_or_statement",
             "exit_status_or_review_status",
             "rollback_or_migration_note_uri",
         ],
+        "allowedReleaseChannels": ["experimental", "integration", "candidate", "stable"],
+        "checksumFormat": {
+            "field": "artifact_sha256",
+            "algorithm": "sha256",
+            "encoding": "lowercase_hex",
+            "length": 64,
+            "sourceBytes": "exact_release_evidence_artifact_bytes",
+        },
+        "stableDefaultValidationCommand": "bash tests/conformance/verify_daxis_release_attachment.sh --stable-default path/to/completed-release-attachment.md",
+        "stableDefaultDirectoryValidationCommand": "bash tests/conformance/verify_daxis_release_attachment.sh --stable-default-dir path/to/completed-release-attachments",
+        "stableDefaultArtifactValidationCommand": "bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default path/to/completed-release-attachment.md",
+        "stableDefaultArtifactDirectoryValidationCommand": "bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default-dir path/to/completed-release-attachments",
         "requiredReviewStates": ["attached", "reviewed", "accepted", "rejected"],
+        "requiredReviewerRoles": [
+            "Release owner",
+            "Runtime / engine owner",
+            "Daxis product owner",
+            "Daxis query platform owner",
+            "Daxis catalog/storage owner",
+            "Daxis security owner",
+            "Daxis SRE owner",
+        ],
     },
     "bundleItems": items,
     "releaseEvidenceCommands": [
         "bash tests/conformance/verify_daxis_release_evidence.sh",
         "bash tests/conformance/verify_daxis_release_evidence.sh --list",
+        "bash tests/conformance/verify_daxis_external_proof_attachment_test.sh",
+        "bash tests/conformance/verify_daxis_release_attachment_test.sh",
+        "bash tests/conformance/verify_daxis_stable_default_promotion_packet_test.sh",
         "bash tests/conformance/verify_daxis_release_bundle_manifest.sh",
     ],
+    "releaseEvidenceArtifactCommand": "bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log",
+    "stableDefaultPromotionPacketValidationCommand": "bash tests/conformance/verify_daxis_stable_default_promotion_packet.sh --artifact-root path/to/artifacts --release-attachments path/to/completed-release-attachments --proof-attachments path/to/completed-proof-attachments --release-evidence-log path/to/release-evidence.log --release-evidence-sha256 <sha256> --release-evidence-exit-status 0",
 }
 path.parent.mkdir(parents=True, exist_ok=True)
 with open(path, "w", encoding="utf-8") as handle:
@@ -530,8 +614,51 @@ external_proof_packet = {
         ],
         "requiredReviewState": "accepted",
         "requiredReleaseEvidenceCommand": "bash tests/conformance/verify_daxis_release_evidence.sh",
+        "requiredReleaseEvidenceArtifactCommand": "bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log",
+        "requiredReleaseChannel": "stable",
         "requiredRollbackState": "server_fallback",
         "blockerRegister": "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
+        "requiredReleaseAttachmentSchemaFields": [
+            "artifact_sha256",
+            "release_channel",
+            "rollout_segment",
+            "releaseAttachmentSchema.allowedReleaseChannels",
+            "releaseAttachmentSchema.checksumFormat",
+            "releaseAttachmentSchema.requiredReviewerRoles",
+        ],
+        "requiredProofAttachmentSchemaFields": [
+            "release_channel",
+            "environment_class",
+            "axon_release_commit_sha",
+            "axon_release_ref",
+            "daxis_worktree_status",
+            "daxis_worktree_review",
+            "daxis_external_state_json_sha256",
+            "daxis_worktree_review_json_sha256",
+            "proofAttachmentSchema.allowedReleaseChannels",
+            "proofAttachmentSchema.allowedDaxisWorktreeStatuses",
+            "proofAttachmentSchema.allowedDaxisWorktreeReviews",
+            "proofAttachmentSchema.acceptedDaxisWorktreeReviews",
+            "proofAttachmentSchema.requiredEnvironmentClass",
+            "proofAttachmentSchema.checksumFormat",
+            "proofAttachmentSchema.dirtyWorktreeReviewChecksumFormat",
+            "proofAttachmentSchema.dirtyWorktreeReviewTemplatePath",
+            "proofAttachmentSchema.requiredReviewerRoles",
+        ],
+    },
+    "proofAttachmentSchema": {
+        "allowedReleaseChannels": ["experimental", "integration", "candidate", "stable"],
+        "allowedDaxisWorktreeStatuses": ["clean", "dirty"],
+        "allowedDaxisWorktreeReviews": ["clean", "dirty_reviewed", "dirty_rejected"],
+        "acceptedDaxisWorktreeReviews": ["clean", "dirty_reviewed"],
+        "dirtyWorktreeReviewTemplatePath": "docs/release-gates/daxis-dirty-worktree-review-template.json",
+        "dirtyWorktreeReviewChecksumFormat": {
+            "field": "daxis_worktree_review_json_sha256",
+            "algorithm": "sha256",
+            "encoding": "lowercase_hex",
+            "length": 64,
+            "sourceBytes": "exact_dirty_worktree_review_json_bytes",
+        },
     },
 }
 with open(external_proof_packet_path, "w", encoding="utf-8") as handle:
@@ -540,9 +667,9 @@ PY
 }
 
 verify_fixture() {
-  AXON_DAXIS_RELEASE_BUNDLE_REPO_ROOT="$repo_root" \
-    AXON_DAXIS_RELEASE_BUNDLE_MANIFEST_FILE="$manifest" \
-    bash tests/conformance/verify_daxis_release_bundle_manifest.sh >/dev/null 2>&1
+	AXON_DAXIS_RELEASE_BUNDLE_REPO_ROOT="$repo_root" \
+		AXON_DAXIS_RELEASE_BUNDLE_MANIFEST_FILE="$manifest" \
+		bash tests/conformance/verify_daxis_release_bundle_manifest.sh >/dev/null 2>&1
 }
 
 write_valid_manifest
@@ -561,8 +688,26 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected release bundle missing architecture ADR source doc to be rejected" >&2
-  exit 1
+	echo "expected release bundle missing architecture ADR source doc to be rejected" >&2
+	exit 1
+fi
+write_valid_manifest
+
+python3 - "$manifest" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+manifest["sourceDocs"].remove("docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+	echo "expected release bundle missing launch checklist source doc to be rejected" >&2
+	exit 1
 fi
 write_valid_manifest
 
@@ -579,10 +724,46 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected duplicate release bundle source docs to be rejected" >&2
-  exit 1
+	echo "expected duplicate release bundle source docs to be rejected" >&2
+	exit 1
 fi
 write_valid_manifest
+
+write_launch_checklist
+python3 - "$repo_root/docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace("`proofAttachmentSchema.requiredReviewerRoles`", "`proofAttachmentSchema.reviewers`")
+path.write_text(text, encoding="utf-8")
+PY
+
+if verify_fixture; then
+	echo "expected launch checklist missing external proof reviewer-role schema to be rejected" >&2
+	exit 1
+fi
+write_launch_checklist
+
+python3 - "$repo_root/docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace(
+    "require `requiredReleaseEvidenceArtifactCommand` (`bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log`), and ",
+    "",
+)
+path.write_text(text, encoding="utf-8")
+PY
+
+if verify_fixture; then
+	echo "expected launch checklist missing stable-default release evidence artifact command to be rejected" >&2
+	exit 1
+fi
+write_launch_checklist
 
 write_release_evidence_doc
 python3 - "$repo_root/docs/release-gates/browser-wasm-delta-gcs-release-evidence.md" <<'PY'
@@ -598,8 +779,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected release evidence doc missing stable-default and release-process coverage to be rejected" >&2
-  exit 1
+	echo "expected release evidence doc missing stable-default and release-process coverage to be rejected" >&2
+	exit 1
 fi
 write_release_evidence_doc
 
@@ -619,8 +800,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected release evidence doc missing Daxis migration notes template guidance to be rejected" >&2
-  exit 1
+	echo "expected release evidence doc missing Daxis migration notes template guidance to be rejected" >&2
+	exit 1
 fi
 write_release_evidence_doc
 
@@ -651,8 +832,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected release evidence doc missing Daxis default-worker dependency guardrail to be rejected" >&2
-  exit 1
+	echo "expected release evidence doc missing Daxis default-worker dependency guardrail to be rejected" >&2
+	exit 1
 fi
 write_release_evidence_doc
 
@@ -684,8 +865,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected release evidence doc missing Daxis query corpus command to be rejected" >&2
-  exit 1
+	echo "expected release evidence doc missing Daxis query corpus command to be rejected" >&2
+	exit 1
 fi
 write_release_evidence_doc
 
@@ -702,8 +883,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected release evidence doc missing Daxis PR checklist command to be rejected" >&2
-  exit 1
+	echo "expected release evidence doc missing Daxis PR checklist command to be rejected" >&2
+	exit 1
 fi
 write_release_evidence_doc
 
@@ -735,8 +916,8 @@ EOF
 chmod +x "$repo_root/tests/conformance/verify_daxis_release_evidence.sh"
 
 if verify_fixture; then
-  echo "expected release evidence doc missing a listed runner command to be rejected" >&2
-  exit 1
+	echo "expected release evidence doc missing a listed runner command to be rejected" >&2
+	exit 1
 fi
 write_release_evidence_runner
 
@@ -754,8 +935,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing release attachment schema to be rejected" >&2
-  exit 1
+	echo "expected missing release attachment schema to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -772,8 +953,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing release attachment template path to be rejected" >&2
-  exit 1
+	echo "expected missing release attachment template path to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -797,8 +978,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected release attachment template missing rollback metadata to be rejected" >&2
-  exit 1
+	echo "expected release attachment template missing rollback metadata to be rejected" >&2
+	exit 1
 fi
 write_release_attachment_template
 
@@ -836,8 +1017,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected release attachment template missing per-item evidence guidance to be rejected" >&2
-  exit 1
+	echo "expected release attachment template missing per-item evidence guidance to be rejected" >&2
+	exit 1
 fi
 write_release_attachment_template
 
@@ -854,8 +1035,8 @@ path.write_text(text, encoding="utf-8")
 PY
 
 if verify_fixture; then
-  echo "expected release attachment template missing release-note and migration proof-state guidance to be rejected" >&2
-  exit 1
+	echo "expected release attachment template missing release-note and migration proof-state guidance to be rejected" >&2
+	exit 1
 fi
 write_release_attachment_template
 
@@ -874,8 +1055,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected incomplete release notes template to be rejected" >&2
-  exit 1
+	echo "expected incomplete release notes template to be rejected" >&2
+	exit 1
 fi
 write_release_notes_template
 
@@ -892,8 +1073,25 @@ path.write_text(text, encoding="utf-8")
 PY
 
 if verify_fixture; then
-  echo "expected release notes template missing external proof and promotion-state evidence to be rejected" >&2
-  exit 1
+	echo "expected release notes template missing external proof and promotion-state evidence to be rejected" >&2
+	exit 1
+fi
+write_release_notes_template
+
+write_valid_manifest
+python3 - "$repo_root/docs/release-gates/daxis-release-notes-template.md" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace("- Rollout segment:\n", "")
+path.write_text(text, encoding="utf-8")
+PY
+
+if verify_fixture; then
+	echo "expected release notes template missing rollout segment to be rejected" >&2
+	exit 1
 fi
 write_release_notes_template
 
@@ -914,8 +1112,8 @@ path.write_text(text, encoding="utf-8")
 PY
 
 if verify_fixture; then
-  echo "expected release notes template missing Daxis result-metrics observability guidance to be rejected" >&2
-  exit 1
+	echo "expected release notes template missing Daxis result-metrics observability guidance to be rejected" >&2
+	exit 1
 fi
 write_release_notes_template
 
@@ -934,8 +1132,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected incomplete migration notes template to be rejected" >&2
-  exit 1
+	echo "expected incomplete migration notes template to be rejected" >&2
+	exit 1
 fi
 write_migration_notes_template
 
@@ -951,8 +1149,25 @@ path.write_text(text, encoding="utf-8")
 PY
 
 if verify_fixture; then
-  echo "expected migration notes template missing stable default promotion state to be rejected" >&2
-  exit 1
+	echo "expected migration notes template missing stable default promotion state to be rejected" >&2
+	exit 1
+fi
+write_migration_notes_template
+
+write_valid_manifest
+python3 - "$repo_root/docs/release-gates/daxis-release-migration-notes-template.md" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace("- Rollout segment:\n", "")
+path.write_text(text, encoding="utf-8")
+PY
+
+if verify_fixture; then
+	echo "expected migration notes template missing rollout segment to be rejected" >&2
+	exit 1
 fi
 write_migration_notes_template
 
@@ -970,8 +1185,205 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing rollback or migration-note attachment metadata to be rejected" >&2
-  exit 1
+	echo "expected missing rollback or migration-note attachment metadata to be rejected" >&2
+	exit 1
+fi
+
+write_valid_manifest
+python3 - "$manifest" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+manifest["releaseAttachmentSchema"]["requiredMetadata"].remove("artifact_sha256")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+	echo "expected missing release artifact checksum attachment metadata to be rejected" >&2
+	exit 1
+fi
+
+write_valid_manifest
+python3 - "$manifest" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+manifest["releaseAttachmentSchema"]["requiredMetadata"].remove("release_channel")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+	echo "expected missing release channel attachment metadata to be rejected" >&2
+	exit 1
+fi
+
+write_valid_manifest
+python3 - "$manifest" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+manifest["releaseAttachmentSchema"].pop("allowedReleaseChannels")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+	echo "expected release attachment schema missing allowed release channels to be rejected" >&2
+	exit 1
+fi
+
+write_valid_manifest
+python3 - "$manifest" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+manifest["releaseAttachmentSchema"]["requiredMetadata"].remove("rollout_segment")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+	echo "expected missing rollout segment attachment metadata to be rejected" >&2
+	exit 1
+fi
+
+write_valid_manifest
+python3 - "$repo_root/docs/release-gates/daxis-release-attachment-template.md" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace("Record only the 64-character lowercase hexadecimal digest generated from the exact release evidence artifact bytes, for example with `shasum -a 256 path/to/artifact`.\n", "")
+path.write_text(text, encoding="utf-8")
+PY
+
+if verify_fixture; then
+	echo "expected missing release artifact checksum format guidance to be rejected" >&2
+	exit 1
+fi
+
+write_release_attachment_template
+write_valid_manifest
+python3 - "$manifest" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+manifest["releaseAttachmentSchema"].pop("checksumFormat")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+	echo "expected missing release attachment checksumFormat schema to be rejected" >&2
+	exit 1
+fi
+
+write_valid_manifest
+python3 - "$manifest" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+manifest["releaseAttachmentSchema"].pop("stableDefaultValidationCommand")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+	echo "expected missing release stable-default attachment validation command to be rejected" >&2
+	exit 1
+fi
+
+write_valid_manifest
+python3 - "$manifest" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+manifest["releaseAttachmentSchema"].pop("stableDefaultDirectoryValidationCommand")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+	echo "expected missing release stable-default attachment directory validation command to be rejected" >&2
+	exit 1
+fi
+
+write_valid_manifest
+python3 - "$manifest" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+manifest["releaseAttachmentSchema"].pop("stableDefaultArtifactValidationCommand")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+	echo "expected missing release stable-default attachment artifact validation command to be rejected" >&2
+	exit 1
+fi
+
+write_valid_manifest
+python3 - "$manifest" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+manifest["releaseAttachmentSchema"].pop("stableDefaultArtifactDirectoryValidationCommand")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+	echo "expected missing release stable-default attachment artifact directory validation command to be rejected" >&2
+	exit 1
+fi
+
+write_valid_manifest
+python3 - "$manifest" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+manifest["releaseAttachmentSchema"].pop("requiredReviewerRoles")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+	echo "expected missing release attachment requiredReviewerRoles schema to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -988,8 +1400,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected release attachment schema to cover public GCS live smoke" >&2
-  exit 1
+	echo "expected release attachment schema to cover public GCS live smoke" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1008,8 +1420,26 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected stable default promotion gate release-process drift from external proof packet to be rejected" >&2
-  exit 1
+	echo "expected stable default promotion gate release-process drift from external proof packet to be rejected" >&2
+	exit 1
+fi
+
+write_valid_manifest
+python3 - "$external_proof_packet" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    packet = json.load(handle)
+packet["proofAttachmentSchema"].pop("acceptedDaxisWorktreeReviews")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(packet, handle)
+PY
+
+if verify_fixture; then
+	echo "expected external proof packet missing accepted Daxis worktree reviews to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1026,8 +1456,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected release attachment schema to require rejected review state" >&2
-  exit 1
+	echo "expected release attachment schema to require rejected review state" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1046,8 +1476,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing migration notes bundle item to be rejected" >&2
-  exit 1
+	echo "expected missing migration notes bundle item to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1066,8 +1496,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing release notes bundle item to be rejected" >&2
-  exit 1
+	echo "expected missing release notes bundle item to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1086,8 +1516,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing public GCS live smoke bundle item to be rejected" >&2
-  exit 1
+	echo "expected missing public GCS live smoke bundle item to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1105,8 +1535,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected duplicate release bundle item ids to be rejected" >&2
-  exit 1
+	echo "expected duplicate release bundle item ids to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1123,8 +1553,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing evidence path to be rejected" >&2
-  exit 1
+	echo "expected missing evidence path to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1145,8 +1575,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected git SHA to remain release-process evidence" >&2
-  exit 1
+	echo "expected git SHA to remain release-process evidence" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1165,8 +1595,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected git SHA release attachment to name commit SHA and branch or tag" >&2
-  exit 1
+	echo "expected git SHA release attachment to name commit SHA and branch or tag" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1185,8 +1615,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing Daxis default-worker size command to be rejected" >&2
-  exit 1
+	echo "expected missing Daxis default-worker size command to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1207,8 +1637,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected public GCS live smoke to remain release-process evidence" >&2
-  exit 1
+	echo "expected public GCS live smoke to remain release-process evidence" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1227,8 +1657,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected public GCS live smoke attachment to name the live env command and skip-safe fallback" >&2
-  exit 1
+	echo "expected public GCS live smoke attachment to name the live env command and skip-safe fallback" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1250,8 +1680,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing Daxis default-worker dependency guardrail command to be rejected" >&2
-  exit 1
+	echo "expected missing Daxis default-worker dependency guardrail command to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1270,8 +1700,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing Daxis architecture ADR compatibility-note command to be rejected" >&2
-  exit 1
+	echo "expected missing Daxis architecture ADR compatibility-note command to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1290,8 +1720,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing Daxis external-state helper external-blocker command to be rejected" >&2
-  exit 1
+	echo "expected missing Daxis external-state helper external-blocker command to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1310,8 +1740,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing Daxis external-state helper evidence to be rejected" >&2
-  exit 1
+	echo "expected missing Daxis external-state helper evidence to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1330,8 +1760,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected item-level verification command missing from the release evidence runner to be rejected" >&2
-  exit 1
+	echo "expected item-level verification command missing from the release evidence runner to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1352,8 +1782,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected migration notes to remain release-process evidence" >&2
-  exit 1
+	echo "expected migration notes to remain release-process evidence" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1372,8 +1802,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected migration notes release attachment to name the Daxis migration template" >&2
-  exit 1
+	echo "expected migration notes release attachment to name the Daxis migration template" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1392,8 +1822,54 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected migration notes release attachment to include external proof status and stable promotion state" >&2
-  exit 1
+	echo "expected migration notes release attachment to include external proof status and stable promotion state" >&2
+	exit 1
+fi
+
+write_valid_manifest
+python3 - "$manifest" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+for item in manifest["bundleItems"]:
+    if item["id"] == "migration_notes":
+        item["releaseAttachment"] = item["releaseAttachment"].replace(
+            " for this release channel and rollout segment",
+            "",
+        )
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+	echo "expected migration notes release attachment to include release-channel and rollout-segment scope" >&2
+	exit 1
+fi
+
+write_valid_manifest
+python3 - "$manifest" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+for item in manifest["bundleItems"]:
+    if item["id"] == "release_notes":
+        item["releaseAttachment"] = item["releaseAttachment"].replace(
+            " for this release channel and rollout segment",
+            "",
+        )
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+	echo "expected release notes release attachment to include release-channel and rollout-segment scope" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1410,8 +1886,26 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected release evidence commands to include the full Daxis release evidence runner" >&2
-  exit 1
+	echo "expected release evidence commands to include the full Daxis release evidence runner" >&2
+	exit 1
+fi
+
+write_valid_manifest
+python3 - "$manifest" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+manifest.pop("stableDefaultPromotionPacketValidationCommand")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle)
+PY
+
+if verify_fixture; then
+	echo "expected missing stable-default promotion packet validation command to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1428,8 +1922,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected duplicate release evidence commands to be rejected" >&2
-  exit 1
+	echo "expected duplicate release evidence commands to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1446,8 +1940,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected stale release evidence command to be rejected" >&2
-  exit 1
+	echo "expected stale release evidence command to be rejected" >&2
+	exit 1
 fi
 
 write_valid_manifest
@@ -1464,8 +1958,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected invalid bundle item status to be rejected" >&2
-  exit 1
+	echo "expected invalid bundle item status to be rejected" >&2
+	exit 1
 fi
 
 echo "Daxis release bundle manifest verifier regression coverage passed"

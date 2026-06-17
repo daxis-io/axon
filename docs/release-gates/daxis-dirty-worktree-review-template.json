@@ -1,0 +1,19 @@
+{
+  "schema_version": "daxis.dirty_worktree_review.v1",
+  "review_state": "accepted",
+  "reviewed_at": "YYYY-MM-DDTHH:MM:SSZ",
+  "reviewer": "Daxis owner name",
+  "reviewer_role": "Daxis platform owner",
+  "rollout_segment": "stable_default_segment",
+  "daxis_commit_sha": "40-character lowercase git SHA",
+  "daxis_ref": "main",
+  "daxis_origin_remote_url": "https://github.com/daxis-io/daxis-platform.git",
+  "daxis_worktree_status": "dirty",
+  "daxis_worktree_review": "dirty_reviewed",
+  "daxis_worktree_status_lines": [
+    " M path/to/modified-file",
+    "?? path/to/untracked-file"
+  ],
+  "reviewed_paths": ["path/to/modified-file", "path/to/untracked-file"],
+  "notes": "Explain why each dirty path is accepted for this rollout segment."
+}

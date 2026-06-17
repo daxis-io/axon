@@ -6,19 +6,19 @@ repo_root="${AXON_DAXIS_STRATEGY_DOCUMENT_REPO_ROOT:-$(pwd)}"
 strategy_file="${AXON_DAXIS_STRATEGY_DOCUMENT_FILE:-docs/program/daxis-first-class-integration-strategy.md}"
 
 resolve_path() {
-  local path="$1"
-  if [[ "$path" = /* ]]; then
-    printf "%s\n" "$path"
-    return
-  fi
+	local path="$1"
+	if [[ "$path" = /* ]]; then
+		printf "%s\n" "$path"
+		return
+	fi
 
-  printf "%s/%s\n" "$repo_root" "$path"
+	printf "%s/%s\n" "$repo_root" "$path"
 }
 
 strategy_path="$(resolve_path "$strategy_file")"
 if [[ ! -f "$strategy_path" ]]; then
-  echo "missing Daxis first-class integration strategy document: $strategy_file" >&2
-  exit 1
+	echo "missing Daxis first-class integration strategy document: $strategy_file" >&2
+	exit 1
 fi
 
 python3 - "$repo_root" "$strategy_path" "$strategy_file" <<'PY'
@@ -240,13 +240,57 @@ for required_text in [
     "server-side correlation ID",
     "audit evidence for read access",
     "release-process attachments",
+    "artifact SHA-256 digest",
+    "Daxis release channel",
+    "allowedReleaseChannels",
+    "requiredReleaseChannel",
+    "stable default promotion requires `stable`",
+    "allowedDaxisWorktreeStatuses",
+    "allowedDaxisWorktreeReviews",
+    "acceptedDaxisWorktreeReviews",
+    "stable default promotion accepts only `clean` or digest-pinned `dirty_reviewed`",
+    "rollout segment",
+    "releaseAttachmentSchema.checksumFormat",
+    "releaseAttachmentSchema.requiredReviewerRoles",
+    "releaseAttachmentSchema.stableDefaultValidationCommand",
+    "releaseAttachmentSchema.stableDefaultDirectoryValidationCommand",
+    "releaseAttachmentSchema.stableDefaultArtifactValidationCommand",
+    "releaseAttachmentSchema.stableDefaultArtifactDirectoryValidationCommand",
+    "stableDefaultPromotionPacketValidationCommand",
+    "verify_daxis_stable_default_promotion_packet.sh",
     "query-result semantics, Daxis result metrics and observability fields, fallback behavior",
     "public GCS live-smoke output or skip-safe blocker record",
     "Daxis-facing release notes use `docs/release-gates/daxis-release-notes-template.md` for semantic, Daxis result metrics and observability fields, fallback, compatibility, descriptor, error-taxonomy, runtime-budget, worker-artifact, and trust-boundary changes.",
     "Daxis-facing migration notes use `docs/release-gates/daxis-release-migration-notes-template.md` for breaking changes or explicit no-breaking-change statements.",
+    "Release-process evidence uses `docs/release-gates/daxis-release-attachment-template.md` for git SHA, worker size, public GCS live smoke, release notes, and migration notes, including `release_channel`, `rollout_segment`, and `releaseAttachmentSchema.allowedReleaseChannels`.",
+    "Daxis-owned production proof uses `docs/release-gates/daxis-external-proof-attachment-template.md` and `docs/release-gates/daxis-dirty-worktree-review-template.json` for dirty-checkout reviews, and attaches `release_channel`, production `environment_class`, `axon_release_commit_sha`, `axon_release_ref`, `proofAttachmentSchema.allowedReleaseChannels`, `proofAttachmentSchema.acceptedDaxisWorktreeReviews`, the `daxis.external_state.v1` JSON summary, its SHA-256 digest, and clean or digest-pinned dirty-reviewed Daxis worktree classification before stable default routing.",
     "Recommended release channels",
     "Treat docs, tests, and release evidence as part of the change",
     "stableDefaultPromotionGate",
+    "requiredReleaseAttachmentSchemaFields",
+    "requiredProofAttachmentSchemaFields",
+    "requiredReleaseEvidenceArtifactCommand",
+    "releaseAttachmentSchema.allowedReleaseChannels",
+    "releaseAttachmentSchema.stableDefaultValidationCommand",
+    "releaseAttachmentSchema.stableDefaultDirectoryValidationCommand",
+    "releaseAttachmentSchema.stableDefaultArtifactValidationCommand",
+    "releaseAttachmentSchema.stableDefaultArtifactDirectoryValidationCommand",
+    "proofAttachmentSchema.stableDefaultValidationCommand",
+    "proofAttachmentSchema.stableDefaultDirectoryValidationCommand",
+    "proofAttachmentSchema.stableDefaultArtifactValidationCommand",
+    "proofAttachmentSchema.stableDefaultArtifactDirectoryValidationCommand",
+    "requiredReleaseEvidenceArtifactCommand",
+    "stableDefaultPromotionPacketValidationCommand",
+    "verify_daxis_stable_default_promotion_packet.sh",
+    "proofAttachmentSchema.allowedReleaseChannels",
+    "proofAttachmentSchema.allowedDaxisWorktreeStatuses",
+    "proofAttachmentSchema.allowedDaxisWorktreeReviews",
+    "proofAttachmentSchema.acceptedDaxisWorktreeReviews",
+    "proofAttachmentSchema.dirtyWorktreeReviewTemplatePath",
+    "channel-scoped",
+    "segment-scoped",
+    "production-environment-scoped",
+    "Axon-release-identity-pinned",
     "currentPromotionState",
     "blocked_external_proof_required",
     "full release-evidence output",
@@ -259,7 +303,7 @@ for required_text in [
     "Interactive read queries use browser execution by default where policy allows.",
     "Daxis can explain why each query used browser execution, server fallback, or policy block.",
     "Daxis owner attachment of the proof artifacts listed in the external proof packet",
-    "Stable default routing is gated on `docs/release-gates/daxis-external-proof-packet.json` `stableDefaultPromotionGate` acceptance.",
+    "Stable default routing is gated on `docs/release-gates/daxis-external-proof-packet.json` `stableDefaultPromotionGate` acceptance, `requiredReleaseChannel` `stable`, `requiredReleaseEvidenceArtifactCommand`, and `stableDefaultPromotionPacketValidationCommand`.",
     "Make fallback deterministic.",
     "Make release evidence repeatable.",
 ]:

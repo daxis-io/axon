@@ -10,55 +10,88 @@ daxis_host_runtime_command='cargo test -p query-router -p native-query-runtime -
 public_gcs_live_command='npm run test:browser:public-gcs-live -- --reporter=line'
 
 for expected in \
-  "cargo check --workspace --locked" \
-  "cargo fmt --check" \
-  "cargo test -p query-contract" \
-  "cargo test -p wasm-datafusion-poc" \
-  "cargo test -p wasm-datafusion-poc --test daxis_query_corpus" \
-  "bash tests/conformance/verify_daxis_query_corpus_coverage_test.sh" \
-  "bash tests/conformance/verify_daxis_query_corpus_coverage.sh" \
-  "cargo test -p wasm-datafusion-session" \
-  "cargo test -p axon-web-wasm" \
-  "$daxis_host_runtime_command" \
-  "bash tests/conformance/verify_daxis_contract_artifacts.sh" \
-  "bash tests/conformance/verify_browser_worker_dependency_boundary.sh" \
-  "bash tests/conformance/verify_browser_observability_contract_test.sh" \
-  "bash tests/conformance/verify_browser_observability_contract.sh" \
-  "bash tests/conformance/verify_axon_web_datafusion_runtime.sh" \
-  "bash tests/conformance/verify_daxis_strategy_document_test.sh" \
-  "bash tests/conformance/verify_daxis_strategy_document.sh" \
-  "bash tests/conformance/verify_daxis_rollout_decisions.sh" \
-  "bash tests/conformance/verify_daxis_operational_readiness.sh" \
-  "bash tests/conformance/verify_daxis_strategy_traceability.sh" \
-  "bash tests/conformance/verify_daxis_external_proof_packet.sh" \
-  "bash tests/conformance/verify_daxis_architecture_adr.sh" \
-  "bash tests/conformance/verify_daxis_release_bundle_manifest.sh" \
-  "bash tests/conformance/verify_daxis_pr_checklist.sh" \
-  "bash tests/perf/report_datafusion_wasm_size_test.sh" \
-  "cargo check -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p wasm-query-session -p browser-sdk -p browser-engine-worker --target wasm32-unknown-unknown --locked" \
-  "npm exec -- tsc --noEmit" \
-  "npm run test:sdk" \
-  "npm run build:fixture" \
-  "npm run build:wasm" \
-  "$daxis_default_worker_guardrail_command" \
-  "bash tests/conformance/verify_daxis_contract_artifacts_test.sh" \
-  "bash tests/conformance/verify_browser_observability_contract_test.sh" \
-  "bash tests/conformance/verify_daxis_strategy_document_test.sh" \
-  "bash tests/conformance/verify_daxis_rollout_decisions_test.sh" \
-  "bash tests/conformance/verify_daxis_operational_readiness_test.sh" \
-  "bash tests/conformance/verify_daxis_strategy_traceability_test.sh" \
-  "bash tests/conformance/verify_daxis_external_state_test.sh" \
-  "bash tests/conformance/verify_daxis_external_proof_packet_test.sh" \
-  "bash tests/conformance/verify_daxis_architecture_adr_test.sh" \
-  "bash tests/conformance/verify_daxis_release_bundle_manifest_test.sh" \
-  "bash tests/conformance/verify_daxis_pr_checklist_test.sh" \
-  "bash tests/conformance/verify_daxis_release_evidence_test.sh" \
-  "$daxis_browser_matrix_command" \
-  "$public_gcs_live_command"; do
-  if [[ "$output" != *"$expected"* ]]; then
-    echo "Daxis release evidence runner is missing command: $expected" >&2
-    exit 1
-  fi
+	"cargo check --workspace --locked" \
+	"cargo fmt --check" \
+	"cargo test -p query-contract" \
+	"cargo test -p wasm-datafusion-poc -- --test-threads=1" \
+	"cargo test -p wasm-datafusion-poc --test daxis_query_corpus" \
+	"bash tests/conformance/verify_daxis_query_corpus_coverage_test.sh" \
+	"bash tests/conformance/verify_daxis_query_corpus_coverage.sh" \
+	"cargo test -p wasm-datafusion-session" \
+	"cargo test -p axon-web-wasm" \
+	"$daxis_host_runtime_command" \
+	"bash tests/conformance/verify_daxis_contract_artifacts.sh" \
+	"bash tests/conformance/verify_browser_worker_dependency_boundary.sh" \
+	"bash tests/conformance/verify_browser_observability_contract_test.sh" \
+	"bash tests/conformance/verify_browser_observability_contract.sh" \
+	"bash tests/conformance/verify_axon_web_datafusion_runtime.sh" \
+	"bash tests/conformance/verify_daxis_strategy_document_test.sh" \
+	"bash tests/conformance/verify_daxis_strategy_document.sh" \
+	"bash tests/conformance/verify_daxis_rollout_decisions.sh" \
+	"bash tests/conformance/verify_daxis_operational_readiness.sh" \
+	"bash tests/conformance/verify_daxis_strategy_traceability.sh" \
+	"bash tests/conformance/verify_daxis_external_proof_packet.sh" \
+	"bash tests/conformance/verify_daxis_architecture_adr.sh" \
+	"bash tests/conformance/verify_daxis_release_bundle_manifest.sh" \
+	"bash tests/conformance/verify_daxis_pr_checklist.sh" \
+	"bash tests/perf/report_datafusion_wasm_size_test.sh" \
+	"cargo check -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p wasm-query-runtime -p wasm-query-session -p browser-sdk -p browser-engine-worker --target wasm32-unknown-unknown --locked" \
+	"npm exec -- tsc --noEmit" \
+	"npm run test:sdk" \
+	"npm run build:fixture" \
+	"npm run build:wasm" \
+	"$daxis_default_worker_guardrail_command" \
+	"bash tests/conformance/verify_daxis_contract_artifacts_test.sh" \
+	"bash tests/conformance/verify_browser_observability_contract_test.sh" \
+	"bash tests/conformance/verify_daxis_strategy_document_test.sh" \
+	"bash tests/conformance/verify_daxis_rollout_decisions_test.sh" \
+	"bash tests/conformance/verify_daxis_operational_readiness_test.sh" \
+	"bash tests/conformance/verify_daxis_strategy_traceability_test.sh" \
+	"bash tests/conformance/verify_daxis_external_state_test.sh" \
+	"bash tests/conformance/verify_daxis_external_proof_attachment_test.sh" \
+	"bash tests/conformance/verify_daxis_external_proof_packet_test.sh" \
+	"bash tests/conformance/verify_daxis_architecture_adr_test.sh" \
+	"bash tests/conformance/verify_daxis_release_attachment_test.sh" \
+	"bash tests/conformance/verify_daxis_stable_default_promotion_packet_test.sh" \
+	"bash tests/conformance/verify_daxis_release_bundle_manifest_test.sh" \
+	"bash tests/conformance/verify_daxis_pr_checklist_test.sh" \
+	"bash tests/conformance/verify_daxis_release_evidence_test.sh" \
+	"$daxis_browser_matrix_command" \
+	"$public_gcs_live_command"; do
+	if [[ "$output" != *"$expected"* ]]; then
+		echo "Daxis release evidence runner is missing command: $expected" >&2
+		exit 1
+	fi
+done
+
+for expected in \
+	"verify_daxis_external_proof_attachment.sh" \
+	"verify_daxis_external_proof_attachment_test.sh" \
+	"verify_daxis_release_attachment.sh" \
+	"verify_daxis_release_attachment_test.sh" \
+	"verify_daxis_stable_default_promotion_packet.sh" \
+	"verify_daxis_stable_default_promotion_packet_test.sh"; do
+	if ! grep -Fq "$expected" tests/conformance/README.md; then
+		echo "Daxis conformance README is missing release-evidence command: $expected" >&2
+		exit 1
+	fi
+done
+
+if ! grep -Fq "bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log" tests/conformance/README.md; then
+	echo "Daxis conformance README is missing digest-pinned release evidence log command" >&2
+	exit 1
+fi
+
+for expected in \
+	"bash tests/conformance/verify_daxis_release_attachment.sh --stable-default path/to/completed-release-attachment.md" \
+	"bash tests/conformance/verify_daxis_release_attachment.sh --stable-default-dir path/to/completed-release-attachments" \
+	"bash tests/conformance/verify_daxis_external_proof_attachment.sh --stable-default path/to/completed-proof-attachment.md" \
+	"bash tests/conformance/verify_daxis_external_proof_attachment.sh --stable-default-dir path/to/completed-proof-attachments" \
+	"bash tests/conformance/verify_daxis_stable_default_promotion_packet.sh --artifact-root path/to/artifacts --release-attachments path/to/completed-release-attachments --proof-attachments path/to/completed-proof-attachments --release-evidence-log path/to/release-evidence.log --release-evidence-sha256 <sha256> --release-evidence-exit-status 0"; do
+	if ! grep -Fq "$expected" tests/conformance/README.md; then
+		echo "Daxis conformance README is missing stable-default command example: $expected" >&2
+		exit 1
+	fi
 done
 
 RUNNER_OUTPUT="$output" python3 - <<'PY'
@@ -88,71 +121,110 @@ if missing_commands:
 PY
 
 command_line_number() {
-  awk -v expected="$1" '$0 == expected { print NR; exit }' <<<"$output"
+	awk -v expected="$1" '$0 == expected { print NR; exit }' <<<"$output"
 }
 
 build_wasm_line="$(command_line_number "npm run build:wasm")"
 tsc_line="$(command_line_number "npm exec -- tsc --noEmit")"
 if [[ -z "$build_wasm_line" || -z "$tsc_line" || "$build_wasm_line" -ge "$tsc_line" ]]; then
-  echo "Daxis release evidence runner must build generated WASM bindings before TypeScript checking" >&2
-  exit 1
+	echo "Daxis release evidence runner must build generated WASM bindings before TypeScript checking" >&2
+	exit 1
 fi
 
 unquoted_daxis_browser_matrix_command='npm exec -- playwright test --config=playwright.config.ts --grep Daxis descriptor-resolver|preserves cancellation errors|surfaces unsupported feature errors'
 if [[ "$output" == *"$unquoted_daxis_browser_matrix_command"* ]]; then
-  echo "Daxis release evidence runner lists an unsafe unquoted browser-matrix grep command" >&2
-  exit 1
+	echo "Daxis release evidence runner lists an unsafe unquoted browser-matrix grep command" >&2
+	exit 1
 fi
 
 browser_matrix_config="apps/axon-web/playwright.config.ts"
 if grep -Fq "command: 'npm run dev'" "$browser_matrix_config"; then
-  echo "Daxis browser-matrix Playwright webServer must not rebuild fixture and WASM during release evidence" >&2
-  exit 1
+	echo "Daxis browser-matrix Playwright webServer must not rebuild fixture and WASM during release evidence" >&2
+	exit 1
 fi
 if ! grep -Fq '"dev:server": "vite --host 127.0.0.1"' apps/axon-web/package.json; then
-  echo "Daxis browser-matrix package scripts must expose a Vite-only dev server command" >&2
-  exit 1
+	echo "Daxis browser-matrix package scripts must expose a Vite-only dev server command" >&2
+	exit 1
 fi
 if ! grep -Fq "command: 'npm run dev:server'" "$browser_matrix_config"; then
-  echo "Daxis browser-matrix Playwright webServer must start the Vite-only dev server after release evidence builds artifacts" >&2
-  exit 1
+	echo "Daxis browser-matrix Playwright webServer must start the Vite-only dev server after release evidence builds artifacts" >&2
+	exit 1
 fi
 if ! grep -Fq "timeout: 60_000" "$browser_matrix_config"; then
-  echo "Daxis browser-matrix Playwright timeout must leave enough headroom for real browser worker startup" >&2
-  exit 1
+	echo "Daxis browser-matrix Playwright timeout must leave enough headroom for real browser worker startup" >&2
+	exit 1
 fi
 
 public_gcs_live_config="apps/axon-web/playwright.public-gcs-live.config.ts"
 if ! grep -Fq "timeout: 60_000" "$public_gcs_live_config"; then
-  echo "Daxis public GCS live Playwright webServer timeout must leave enough headroom for release-candidate startup" >&2
-  exit 1
+	echo "Daxis public GCS live Playwright webServer timeout must leave enough headroom for release-candidate startup" >&2
+	exit 1
 fi
 
 stub_bin="$(mktemp -d)"
 trap 'rm -rf "$stub_bin"' EXIT
-for executable in cargo npm bash; do
-  cat >"$stub_bin/$executable" <<'SH'
+for executable in cargo bash; do
+	cat >"$stub_bin/$executable" <<'SH'
 #!/bin/bash
 exit 0
 SH
-  chmod +x "$stub_bin/$executable"
+	chmod +x "$stub_bin/$executable"
 done
+cat >"$stub_bin/npm" <<'SH'
+#!/bin/bash
+if [[ "${1:-}" == "run" && "${2:-}" == "test:browser:public-gcs-live" ]]; then
+  (sleep 0.2; printf 'late async npm writer\n') &
+fi
+exit 0
+SH
+chmod +x "$stub_bin/npm"
 
 runner_output="$(PATH="$stub_bin:$PATH" /bin/bash tests/conformance/verify_daxis_release_evidence.sh)"
 unsafe_logged_daxis_browser_matrix_command='+ npm exec -- playwright test --config=playwright.config.ts --grep Daxis descriptor-resolver|preserves cancellation errors|surfaces unsupported feature errors'
 safe_logged_daxis_browser_matrix_command='+ npm exec -- playwright test --config=playwright.config.ts --grep Daxis\ descriptor-resolver\|preserves\ cancellation\ errors\|surfaces\ unsupported\ feature\ errors'
 if [[ "$runner_output" == *"$unsafe_logged_daxis_browser_matrix_command"* ]]; then
-  echo "Daxis release evidence runner logs an unsafe unquoted browser-matrix grep command" >&2
-  exit 1
+	echo "Daxis release evidence runner logs an unsafe unquoted browser-matrix grep command" >&2
+	exit 1
 fi
 if [[ "$runner_output" != *"$safe_logged_daxis_browser_matrix_command"* ]]; then
-  echo "Daxis release evidence runner did not log a shell-safe browser-matrix grep command" >&2
-  exit 1
+	echo "Daxis release evidence runner did not log a shell-safe browser-matrix grep command" >&2
+	exit 1
+fi
+
+release_log="$(mktemp)"
+rm -f "$release_log"
+write_output="$(PATH="$stub_bin:$PATH" /bin/bash tests/conformance/verify_daxis_release_evidence.sh --write-log "$release_log")"
+if [[ ! -f "$release_log" ]]; then
+	echo "expected Daxis release evidence runner to write an attachment-ready log" >&2
+	exit 1
+fi
+release_log_sha256="$(shasum -a 256 "$release_log" | awk '{print $1}')"
+if [[ "$write_output" != *"daxis_release_evidence_log_path=$release_log"* ]]; then
+	echo "expected Daxis release evidence runner to print release evidence log path" >&2
+	exit 1
+fi
+if [[ "$write_output" != *"daxis_release_evidence_log_sha256=$release_log_sha256"* ]]; then
+	echo "expected Daxis release evidence runner to print release evidence log SHA-256" >&2
+	exit 1
+fi
+if ! grep -Fq "$safe_logged_daxis_browser_matrix_command" "$release_log"; then
+	echo "expected Daxis release evidence log to contain shell-safe browser-matrix command output" >&2
+	exit 1
+fi
+sleep 0.4
+stable_release_log_sha256="$(shasum -a 256 "$release_log" | awk '{print $1}')"
+if [[ "$write_output" != *"daxis_release_evidence_log_sha256=$stable_release_log_sha256"* ]]; then
+	echo "expected Daxis release evidence runner to print stable release evidence log SHA-256 after async child output" >&2
+	exit 1
+fi
+if grep -Fq "late async npm writer" "$release_log"; then
+	echo "expected Daxis release evidence log artifact to be immutable after digest publication" >&2
+	exit 1
 fi
 
 if bash tests/conformance/verify_daxis_release_evidence.sh --unknown >/dev/null 2>&1; then
-  echo "expected unknown release evidence option to be rejected" >&2
-  exit 1
+	echo "expected unknown release evidence option to be rejected" >&2
+	exit 1
 fi
 
 echo "Daxis release evidence runner regression coverage passed"

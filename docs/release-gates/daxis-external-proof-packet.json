@@ -11,12 +11,14 @@
     "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
     "docs/program/daxis-external-proof-handoff.md",
     "docs/release-gates/daxis-external-proof-attachment-template.md",
+    "docs/release-gates/daxis-dirty-worktree-review-template.json",
     "docs/program/daxis-first-class-integration-strategy.md"
   ],
   "daxisVerificationPlan": {
     "purpose": "Current-state checks Daxis owners can run before attaching Daxis proof artifacts. These commands make the Daxis-side evidence reviewable, but they do not replace production endpoint, dashboard, rollout-control, or oncall proof.",
     "axonHelperCommand": "bash tests/conformance/verify_daxis_external_state.sh",
     "jsonSummaryCommand": "bash tests/conformance/verify_daxis_external_state.sh --json",
+    "jsonArtifactCommand": "bash tests/conformance/verify_daxis_external_state.sh --write-json path/to/external-state.json",
     "activeArchitecturePaths": [
       "README.md",
       "CLAUDE.md",
@@ -36,12 +38,17 @@
   "proofAttachmentSchema": {
     "purpose": "Minimum metadata every Daxis proof attachment carries during rollout review so proof is attributable, repeatable, scoped to a rollout segment, and tied to rollback evidence.",
     "templatePath": "docs/release-gates/daxis-external-proof-attachment-template.md",
+    "dirtyWorktreeReviewTemplatePath": "docs/release-gates/daxis-dirty-worktree-review-template.json",
     "requiredMetadata": [
       "item_id",
       "milestone",
       "owner",
       "captured_at",
       "environment",
+      "environment_class",
+      "release_channel",
+      "axon_release_commit_sha",
+      "axon_release_ref",
       "rollout_segment",
       "artifact_uri",
       "verification_command_or_url",
@@ -53,9 +60,53 @@
       "daxis_worktree_status",
       "daxis_worktree_review",
       "daxis_external_state_schema_version",
-      "daxis_external_state_json_uri"
+      "daxis_external_state_json_uri",
+      "daxis_external_state_json_sha256",
+      "daxis_worktree_review_json_uri",
+      "daxis_worktree_review_json_sha256"
     ],
-    "requiredReviewStates": ["attached", "reviewed", "accepted", "rejected"]
+    "requiredEnvironmentClass": "production",
+    "allowedReleaseChannels": [
+      "experimental",
+      "integration",
+      "candidate",
+      "stable"
+    ],
+    "allowedDaxisWorktreeStatuses": ["clean", "dirty"],
+    "allowedDaxisWorktreeReviews": [
+      "clean",
+      "dirty_reviewed",
+      "dirty_rejected"
+    ],
+    "acceptedDaxisWorktreeReviews": ["clean", "dirty_reviewed"],
+    "checksumFormat": {
+      "field": "daxis_external_state_json_sha256",
+      "algorithm": "sha256",
+      "encoding": "lowercase_hex",
+      "length": 64,
+      "sourceBytes": "exact_helper_json_bytes"
+    },
+    "dirtyWorktreeReviewChecksumFormat": {
+      "field": "daxis_worktree_review_json_sha256",
+      "algorithm": "sha256",
+      "encoding": "lowercase_hex",
+      "length": 64,
+      "sourceBytes": "exact_dirty_worktree_review_json_bytes"
+    },
+    "stableDefaultValidationCommand": "bash tests/conformance/verify_daxis_external_proof_attachment.sh --stable-default path/to/completed-proof-attachment.md",
+    "stableDefaultDirectoryValidationCommand": "bash tests/conformance/verify_daxis_external_proof_attachment.sh --stable-default-dir path/to/completed-proof-attachments",
+    "stableDefaultArtifactValidationCommand": "bash tests/conformance/verify_daxis_external_proof_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default path/to/completed-proof-attachment.md",
+    "stableDefaultArtifactDirectoryValidationCommand": "bash tests/conformance/verify_daxis_external_proof_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default-dir path/to/completed-proof-attachments",
+    "requiredReviewStates": ["attached", "reviewed", "accepted", "rejected"],
+    "requiredReviewerRoles": [
+      "Daxis product owner",
+      "Daxis platform owner",
+      "Daxis catalog/storage owner",
+      "Daxis web platform owner",
+      "Daxis security owner",
+      "Daxis SRE owner",
+      "Axon runtime / engine owner"
+    ]
   },
   "externalItems": [
     {
@@ -317,7 +368,45 @@
     ],
     "requiredReviewState": "accepted",
     "requiredReleaseEvidenceCommand": "bash tests/conformance/verify_daxis_release_evidence.sh",
+    "requiredReleaseEvidenceArtifactCommand": "bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log",
+    "stableDefaultPromotionPacketValidationCommand": "bash tests/conformance/verify_daxis_stable_default_promotion_packet.sh --artifact-root path/to/artifacts --release-attachments path/to/completed-release-attachments --proof-attachments path/to/completed-proof-attachments --release-evidence-log path/to/release-evidence.log --release-evidence-sha256 <sha256> --release-evidence-exit-status 0",
+    "requiredReleaseChannel": "stable",
     "requiredRollbackState": "server_fallback",
+    "requiredReleaseAttachmentSchemaFields": [
+      "artifact_sha256",
+      "release_channel",
+      "rollout_segment",
+      "releaseAttachmentSchema.allowedReleaseChannels",
+      "releaseAttachmentSchema.checksumFormat",
+      "releaseAttachmentSchema.requiredReviewerRoles",
+      "releaseAttachmentSchema.stableDefaultValidationCommand",
+      "releaseAttachmentSchema.stableDefaultDirectoryValidationCommand",
+      "releaseAttachmentSchema.stableDefaultArtifactValidationCommand",
+      "releaseAttachmentSchema.stableDefaultArtifactDirectoryValidationCommand"
+    ],
+    "requiredProofAttachmentSchemaFields": [
+      "release_channel",
+      "environment_class",
+      "axon_release_commit_sha",
+      "axon_release_ref",
+      "daxis_worktree_status",
+      "daxis_worktree_review",
+      "daxis_external_state_json_sha256",
+      "daxis_worktree_review_json_sha256",
+      "proofAttachmentSchema.allowedReleaseChannels",
+      "proofAttachmentSchema.allowedDaxisWorktreeStatuses",
+      "proofAttachmentSchema.allowedDaxisWorktreeReviews",
+      "proofAttachmentSchema.acceptedDaxisWorktreeReviews",
+      "proofAttachmentSchema.requiredEnvironmentClass",
+      "proofAttachmentSchema.checksumFormat",
+      "proofAttachmentSchema.dirtyWorktreeReviewChecksumFormat",
+      "proofAttachmentSchema.dirtyWorktreeReviewTemplatePath",
+      "proofAttachmentSchema.requiredReviewerRoles",
+      "proofAttachmentSchema.stableDefaultValidationCommand",
+      "proofAttachmentSchema.stableDefaultDirectoryValidationCommand",
+      "proofAttachmentSchema.stableDefaultArtifactValidationCommand",
+      "proofAttachmentSchema.stableDefaultArtifactDirectoryValidationCommand"
+    ],
     "blockerRegister": "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md"
   },
   "handoffChecklist": [

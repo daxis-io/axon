@@ -238,11 +238,12 @@
   "releaseEvidenceAutomation": {
     "owner": "Runtime / engine team",
     "runner": "tests/conformance/verify_daxis_release_evidence.sh",
+    "artifactCommand": "bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log",
     "verificationCommands": [
       "cargo check --workspace --locked",
       "cargo fmt --check",
+      "cargo test -p wasm-datafusion-poc -- --test-threads=1",
       "cargo test -p query-contract",
-      "cargo test -p wasm-datafusion-poc",
       "cargo test -p wasm-datafusion-poc --test daxis_query_corpus",
       "bash tests/conformance/verify_daxis_query_corpus_coverage_test.sh",
       "bash tests/conformance/verify_daxis_query_corpus_coverage.sh",
@@ -264,10 +265,13 @@
       "bash tests/conformance/verify_daxis_strategy_traceability_test.sh",
       "bash tests/conformance/verify_daxis_strategy_traceability.sh",
       "bash tests/conformance/verify_daxis_external_state_test.sh",
+      "bash tests/conformance/verify_daxis_external_proof_attachment_test.sh",
       "bash tests/conformance/verify_daxis_external_proof_packet_test.sh",
       "bash tests/conformance/verify_daxis_external_proof_packet.sh",
       "bash tests/conformance/verify_daxis_architecture_adr_test.sh",
       "bash tests/conformance/verify_daxis_architecture_adr.sh",
+      "bash tests/conformance/verify_daxis_release_attachment_test.sh",
+      "bash tests/conformance/verify_daxis_stable_default_promotion_packet_test.sh",
       "bash tests/conformance/verify_daxis_release_bundle_manifest_test.sh",
       "bash tests/conformance/verify_daxis_release_bundle_manifest.sh",
       "bash tests/conformance/verify_daxis_pr_checklist_test.sh",
@@ -290,5 +294,25 @@
     "Tenant and workspace rollout controls are Daxis service work outside this repository.",
     "Production table compatibility inventory is Daxis catalog and QA work outside this repository.",
     "External proof artifacts listed in docs/release-gates/daxis-external-proof-packet.json are Daxis-owned and absent from this repository."
-  ]
+  ],
+  "stableDefaultBlockerProofItems": {
+    "Production dashboard URLs and alert ownership are absent from this repository.": [
+      "production_dashboards"
+    ],
+    "Production oncall schedules and service incident playbooks are absent from this repository.": [
+      "production_runbooks"
+    ],
+    "Tenant and workspace rollout controls are Daxis service work outside this repository.": [
+      "rollout_controls"
+    ],
+    "Production table compatibility inventory is Daxis catalog and QA work outside this repository.": [
+      "production_table_compatibility_dashboard"
+    ],
+    "External proof artifacts listed in docs/release-gates/daxis-external-proof-packet.json are Daxis-owned and absent from this repository.": [
+      "production_dashboards",
+      "production_runbooks",
+      "rollout_controls",
+      "production_table_compatibility_dashboard"
+    ]
+  }
 }

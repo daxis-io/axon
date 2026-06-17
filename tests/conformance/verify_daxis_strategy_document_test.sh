@@ -11,47 +11,47 @@ engine_strategy="$repo_root/docs/program/browser-lakehouse-engine-strategy.md"
 sprint_board="$repo_root/docs/program/browser-lakehouse-sprint-board.md"
 
 mkdir -p \
-  "$repo_root/.github" \
-  "$repo_root/apps/axon-web/examples" \
-  "$repo_root/docs/adr" \
-  "$repo_root/docs/program/daxis-first-class-integration-examples" \
-  "$repo_root/docs/release-gates" \
-  "$repo_root/tests/conformance"
+	"$repo_root/.github" \
+	"$repo_root/apps/axon-web/examples" \
+	"$repo_root/docs/adr" \
+	"$repo_root/docs/program/daxis-first-class-integration-examples" \
+	"$repo_root/docs/release-gates" \
+	"$repo_root/tests/conformance"
 
 for doc in \
-  .github/pull_request_template.md \
-  apps/axon-web/examples/daxis-descriptor-resolver.ts \
-  apps/axon-web/examples/daxis-headless-query.ts \
-  apps/axon-web/examples/daxis-object-grant-adapter.ts \
-  apps/axon-web/examples/daxis-read-access-plan.ts \
-  docs/adr/ADR-0008-daxis-browser-read-compute-contract.md \
-  docs/program/browser-lakehouse-engine-strategy.md \
-  docs/program/browser-lakehouse-sprint-board.md \
-  docs/program/browser-delta-compatibility-matrix.md \
-  docs/program/browser-embedding-deployment.md \
-  docs/program/browser-uc-brokered-runtime-contract.md \
-  docs/program/browser-observability-contract.md \
-  docs/program/browser-datafusion-runtime-parity.md \
-  docs/program/daxis-operational-maturity.md \
-  docs/program/daxis-external-proof-handoff.md \
-  docs/program/daxis-first-class-integration-examples/approved-axon-read-descriptor.saved-query.json \
-  docs/program/daxis-first-class-integration-examples/object-grants.audit-event.range.json \
-  docs/release-gates/daxis-production-rollout-decisions.json \
-  docs/release-gates/daxis-strategy-traceability.json \
-  docs/release-gates/daxis-external-proof-packet.json \
-  docs/release-gates/daxis-operational-readiness.json \
-  docs/release-gates/daxis-external-proof-attachment-template.md \
-  docs/release-gates/daxis-release-bundle-manifest.json \
-  docs/release-gates/daxis-release-attachment-template.md \
-  docs/release-gates/daxis-release-notes-template.md \
-  docs/release-gates/daxis-release-migration-notes-template.md \
-  docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md \
-  docs/release-gates/browser-wasm-delta-gcs-external-blockers.md \
-  docs/release-gates/daxis-browser-datafusion-budget-profile.json \
-  docs/release-gates/daxis-browser-runtime-isolation-plan.json \
-  docs/release-gates/daxis-contract-artifacts.sha256; do
-  mkdir -p "$repo_root/$(dirname "$doc")"
-  printf '# test fixture\n' >"$repo_root/$doc"
+	.github/pull_request_template.md \
+	apps/axon-web/examples/daxis-descriptor-resolver.ts \
+	apps/axon-web/examples/daxis-headless-query.ts \
+	apps/axon-web/examples/daxis-object-grant-adapter.ts \
+	apps/axon-web/examples/daxis-read-access-plan.ts \
+	docs/adr/ADR-0008-daxis-browser-read-compute-contract.md \
+	docs/program/browser-lakehouse-engine-strategy.md \
+	docs/program/browser-lakehouse-sprint-board.md \
+	docs/program/browser-delta-compatibility-matrix.md \
+	docs/program/browser-embedding-deployment.md \
+	docs/program/browser-uc-brokered-runtime-contract.md \
+	docs/program/browser-observability-contract.md \
+	docs/program/browser-datafusion-runtime-parity.md \
+	docs/program/daxis-operational-maturity.md \
+	docs/program/daxis-external-proof-handoff.md \
+	docs/program/daxis-first-class-integration-examples/approved-axon-read-descriptor.saved-query.json \
+	docs/program/daxis-first-class-integration-examples/object-grants.audit-event.range.json \
+	docs/release-gates/daxis-production-rollout-decisions.json \
+	docs/release-gates/daxis-strategy-traceability.json \
+	docs/release-gates/daxis-external-proof-packet.json \
+	docs/release-gates/daxis-operational-readiness.json \
+	docs/release-gates/daxis-external-proof-attachment-template.md \
+	docs/release-gates/daxis-release-bundle-manifest.json \
+	docs/release-gates/daxis-release-attachment-template.md \
+	docs/release-gates/daxis-release-notes-template.md \
+	docs/release-gates/daxis-release-migration-notes-template.md \
+	docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md \
+	docs/release-gates/browser-wasm-delta-gcs-external-blockers.md \
+	docs/release-gates/daxis-browser-datafusion-budget-profile.json \
+	docs/release-gates/daxis-browser-runtime-isolation-plan.json \
+	docs/release-gates/daxis-contract-artifacts.sha256; do
+	mkdir -p "$repo_root/$(dirname "$doc")"
+	printf '# test fixture\n' >"$repo_root/$doc"
 done
 
 cat >"$repo_root/tests/conformance/verify_daxis_release_evidence.sh" <<'RUNNER'
@@ -82,7 +82,7 @@ RUNNER
 chmod +x "$repo_root/tests/conformance/verify_daxis_release_evidence.sh"
 
 write_valid_companion_docs() {
-  cat >"$engine_strategy" <<'ENGINE'
+	cat >"$engine_strategy" <<'ENGINE'
 # Browser Lakehouse Engine Strategy
 
 - Scope: make browser DataFusion the Daxis-facing default read engine while keeping legacy narrow execution isolated for compatibility
@@ -91,7 +91,7 @@ Daxis-facing app worker is browser DataFusion-backed.
 Legacy narrow runtime and session shell remain compatibility-only.
 ENGINE
 
-  cat >"$sprint_board" <<'SPRINT'
+	cat >"$sprint_board" <<'SPRINT'
 # Browser Lakehouse Sprint Board
 
 - Daxis-facing DataFusion runtime SKU
@@ -101,8 +101,8 @@ SPRINT
 }
 
 write_valid_strategy() {
-  write_valid_companion_docs
-  cat >"$strategy" <<'STRATEGY'
+	write_valid_companion_docs
+	cat >"$strategy" <<'STRATEGY'
 # Daxis First-Class Integration Strategy
 
 - Date: 2026-05-30
@@ -213,8 +213,14 @@ The strategy document itself is checked by `bash tests/conformance/verify_daxis_
 ## Release And Compatibility Policy
 
 The machine-readable bundle checklist is [`../release-gates/daxis-release-bundle-manifest.json`](../release-gates/daxis-release-bundle-manifest.json), checked by `bash tests/conformance/verify_daxis_release_bundle_manifest.sh`.
-It distinguishes repo-verified artifacts from release-process attachments such as the exact commit SHA, worker artifact size output, public GCS live-smoke output or skip-safe blocker record, and migration notes or a no-breaking-change statement.
-Its `releaseAttachmentSchema` names [`../release-gates/daxis-release-attachment-template.md`](../release-gates/daxis-release-attachment-template.md).
+It distinguishes repo-verified artifacts from release-process attachments such as the exact commit SHA, worker artifact size output, public GCS live-smoke output or skip-safe blocker record, Daxis-facing release notes, and migration notes or a no-breaking-change statement.
+Its `releaseAttachmentSchema` names [`../release-gates/daxis-release-attachment-template.md`](../release-gates/daxis-release-attachment-template.md) and the metadata each release-process attachment must carry, including item ID, release commit, release ref, Daxis release channel, rollout segment, owner, capture time, artifact URI, artifact SHA-256 digest, verification command or statement, exit or review status, and rollback or migration-note URI.
+The `releaseAttachmentSchema.allowedReleaseChannels` contract records the allowed `experimental`, `integration`, `candidate`, and `stable` channel values; stable default promotion requires `stable` through `stableDefaultPromotionGate.requiredReleaseChannel`.
+The `releaseAttachmentSchema.checksumFormat` contract records that SHA-256 attachment fields use 64-character lowercase hexadecimal digests generated from the exact attached artifact bytes.
+The `releaseAttachmentSchema.requiredReviewerRoles` contract records the release, runtime, product, query, catalog/storage, security, and SRE owner roles required for attachment review.
+The `releaseAttachmentSchema.stableDefaultValidationCommand` and `releaseAttachmentSchema.stableDefaultDirectoryValidationCommand` fields record the single-attachment and complete-set validators for accepted stable release-process evidence.
+The `releaseAttachmentSchema.stableDefaultArtifactValidationCommand` and `releaseAttachmentSchema.stableDefaultArtifactDirectoryValidationCommand` fields record the local-packet validators for accepted stable release-process evidence.
+The `stableDefaultPromotionPacketValidationCommand` field records `bash tests/conformance/verify_daxis_stable_default_promotion_packet.sh` as the combined stable-default promotion packet validator.
 Release owners should complete [`../release-gates/daxis-release-notes-template.md`](../release-gates/daxis-release-notes-template.md) for release notes that document query-result semantics, Daxis result metrics and observability fields, fallback behavior, supported SQL and Delta feature claims, descriptor validation, public error taxonomy, runtime budgets, worker artifact changes, security-boundary impact, external proof packet status, and `stableDefaultPromotionGate` `currentPromotionState`.
 Recommended release channels are `experimental`, `integration`, `candidate`, and `stable`.
 
@@ -227,6 +233,8 @@ Treat docs, tests, and release evidence as part of the change, not cleanup after
 The milestone deliverables and exit criteria below are mapped to current evidence in [`../release-gates/daxis-strategy-traceability.json`](../release-gates/daxis-strategy-traceability.json), checked by `bash tests/conformance/verify_daxis_strategy_traceability.sh`.
 The external proof handoff is recorded in [`daxis-external-proof-handoff.md`](./daxis-external-proof-handoff.md) and [`../release-gates/daxis-external-proof-packet.json`](../release-gates/daxis-external-proof-packet.json), checked by `bash tests/conformance/verify_daxis_external_proof_packet.sh`.
 It carries the `stableDefaultPromotionGate` and `currentPromotionState` `blocked_external_proof_required` value that ties accepted external proof to accepted release-process attachments, full release-evidence output, the external blocker register, and `server_fallback` rollback evidence.
+The stable-default gate also carries `requiredReleaseAttachmentSchemaFields` and `requiredProofAttachmentSchemaFields` so promotion depends on digest-pinned, channel-scoped, segment-scoped, production-environment-scoped, Axon-release-identity-pinned, owner-reviewed release attachments and Daxis proof attachments.
+Those field lists include `releaseAttachmentSchema.allowedReleaseChannels`, `releaseAttachmentSchema.stableDefaultValidationCommand`, `releaseAttachmentSchema.stableDefaultDirectoryValidationCommand`, `releaseAttachmentSchema.stableDefaultArtifactValidationCommand`, `releaseAttachmentSchema.stableDefaultArtifactDirectoryValidationCommand`, `proofAttachmentSchema.stableDefaultValidationCommand`, `proofAttachmentSchema.stableDefaultDirectoryValidationCommand`, `proofAttachmentSchema.stableDefaultArtifactValidationCommand`, `proofAttachmentSchema.stableDefaultArtifactDirectoryValidationCommand`, `requiredReleaseEvidenceArtifactCommand`, `stableDefaultPromotionPacketValidationCommand`, `verify_daxis_stable_default_promotion_packet.sh`, `proofAttachmentSchema.allowedReleaseChannels`, `proofAttachmentSchema.allowedDaxisWorktreeStatuses`, `proofAttachmentSchema.allowedDaxisWorktreeReviews`, `proofAttachmentSchema.acceptedDaxisWorktreeReviews`, `proofAttachmentSchema.dirtyWorktreeReviewChecksumFormat`, and `proofAttachmentSchema.dirtyWorktreeReviewTemplatePath`, so stable default promotion requires `stable`, rejects arbitrary release-channel strings, and stable default promotion accepts only `clean` or digest-pinned `dirty_reviewed` Daxis checkout evidence.
 
 ### M0: Daxis Alignment
 
@@ -261,9 +269,11 @@ External signoffs still required before production default routing include Daxis
 
 Before merging a Daxis-relevant Axon change, verify the checked-in pull request template at [`../../.github/pull_request_template.md`](../../.github/pull_request_template.md). The Daxis checklist is enforced by `bash tests/conformance/verify_daxis_pr_checklist.sh`.
 Promotion requires passing release evidence, no broadened browser trust boundary, and Daxis-owned rollout controls.
-Stable default routing is gated on `docs/release-gates/daxis-external-proof-packet.json` `stableDefaultPromotionGate` acceptance.
+Stable default routing is gated on `docs/release-gates/daxis-external-proof-packet.json` `stableDefaultPromotionGate` acceptance, `requiredReleaseChannel` `stable`, `requiredReleaseEvidenceArtifactCommand`, and `stableDefaultPromotionPacketValidationCommand`.
+Release-process evidence uses `docs/release-gates/daxis-release-attachment-template.md` for git SHA, worker size, public GCS live smoke, release notes, and migration notes, including `release_channel`, `rollout_segment`, and `releaseAttachmentSchema.allowedReleaseChannels`.
 Daxis-facing release notes use `docs/release-gates/daxis-release-notes-template.md` for semantic, Daxis result metrics and observability fields, fallback, compatibility, descriptor, error-taxonomy, runtime-budget, worker-artifact, and trust-boundary changes.
 Daxis-facing migration notes use `docs/release-gates/daxis-release-migration-notes-template.md` for breaking changes or explicit no-breaking-change statements.
+Daxis-owned production proof uses `docs/release-gates/daxis-external-proof-attachment-template.md` and `docs/release-gates/daxis-dirty-worktree-review-template.json` for dirty-checkout reviews, and attaches `release_channel`, production `environment_class`, `axon_release_commit_sha`, `axon_release_ref`, `proofAttachmentSchema.allowedReleaseChannels`, `proofAttachmentSchema.acceptedDaxisWorktreeReviews`, the `daxis.external_state.v1` JSON summary, its SHA-256 digest, and clean or digest-pinned dirty-reviewed Daxis worktree classification before stable default routing.
 
 ## Handoff Summary
 
@@ -272,20 +282,20 @@ STRATEGY
 }
 
 verify_fixture() {
-  AXON_DAXIS_STRATEGY_DOCUMENT_REPO_ROOT="$repo_root" \
-    bash tests/conformance/verify_daxis_strategy_document.sh >/dev/null 2>&1
+	AXON_DAXIS_STRATEGY_DOCUMENT_REPO_ROOT="$repo_root" \
+		bash tests/conformance/verify_daxis_strategy_document.sh >/dev/null 2>&1
 }
 
 write_valid_strategy
 verify_fixture
 
 expect_missing_text_rejected() {
-  local needle="$1"
-  local description="$2"
+	local needle="$1"
+	local description="$2"
 
-  write_valid_strategy
+	write_valid_strategy
 
-  python3 - "$strategy" "$needle" <<'PY'
+	python3 - "$strategy" "$needle" <<'PY'
 import sys
 from pathlib import Path
 
@@ -296,24 +306,44 @@ text = text.replace(needle, "")
 path.write_text(text, encoding="utf-8")
 PY
 
-  if verify_fixture; then
-    echo "expected missing Daxis strategy $description to be rejected" >&2
-    exit 1
-  fi
+	if verify_fixture; then
+		echo "expected missing Daxis strategy $description to be rejected" >&2
+		exit 1
+	fi
 }
 
 expect_missing_text_rejected "## Default Read-Compute Model" "default read-compute section"
 expect_missing_text_rejected "stableDefaultPromotionGate" "stable default gate"
+expect_missing_text_rejected "requiredReleaseAttachmentSchemaFields" "stable default release attachment schema fields"
+expect_missing_text_rejected "requiredProofAttachmentSchemaFields" "stable default proof attachment schema fields"
 expect_missing_text_rejected 'currentPromotionState` `blocked_external_proof_required' "stable default current promotion state"
 expect_missing_text_rejected "cargo fmt --check" "Rust formatting command"
 expect_missing_text_rejected "bash tests/conformance/verify_daxis_query_corpus_coverage.sh" "query corpus coverage verifier command"
 expect_missing_text_rejected "bash tests/conformance/verify_daxis_release_bundle_manifest.sh" "release bundle gate"
+expect_missing_text_rejected "artifact SHA-256 digest" "release attachment artifact checksum metadata"
+expect_missing_text_rejected "Daxis release channel" "release attachment release-channel metadata"
+expect_missing_text_rejected "allowedReleaseChannels" "allowed release-channel policy"
+expect_missing_text_rejected "requiredReleaseChannel" "stable default required release channel"
+expect_missing_text_rejected 'stable default promotion requires `stable`' "stable default stable-channel policy"
+expect_missing_text_rejected "allowedDaxisWorktreeStatuses" "allowed Daxis worktree status policy"
+expect_missing_text_rejected "allowedDaxisWorktreeReviews" "allowed Daxis worktree review policy"
+expect_missing_text_rejected "acceptedDaxisWorktreeReviews" "accepted Daxis worktree review policy"
+expect_missing_text_rejected 'stable default promotion accepts only `clean` or digest-pinned `dirty_reviewed`' "stable default accepted worktree review policy"
+expect_missing_text_rejected "rollout segment" "release attachment rollout-segment metadata"
+expect_missing_text_rejected "releaseAttachmentSchema.checksumFormat" "release attachment checksum format"
+expect_missing_text_rejected "releaseAttachmentSchema.requiredReviewerRoles" "release attachment reviewer-role schema"
+expect_missing_text_rejected "channel-scoped" "stable default channel-scoped release attachment guidance"
+expect_missing_text_rejected "segment-scoped" "stable default segment-scoped release attachment guidance"
+expect_missing_text_rejected "production-environment-scoped" "stable default production-environment-scoped proof guidance"
+expect_missing_text_rejected "Axon-release-identity-pinned" "stable default Axon release identity proof guidance"
 expect_missing_text_rejected "../release-gates/daxis-release-notes-template.md" "release notes artifact path"
 expect_missing_text_rejected "../release-gates/daxis-release-migration-notes-template.md" "release migration notes artifact path"
+expect_missing_text_rejected 'Release-process evidence uses `docs/release-gates/daxis-release-attachment-template.md` for git SHA, worker size, public GCS live smoke, release notes, and migration notes, including `release_channel`, `rollout_segment`, and `releaseAttachmentSchema.allowedReleaseChannels`.' "scoped release attachment checklist guidance"
 expect_missing_text_rejected "The M2 object-grant helper example lives in [\`../../apps/axon-web/examples/daxis-object-grant-adapter.ts\`](../../apps/axon-web/examples/daxis-object-grant-adapter.ts)." "M2 object-grant adapter strategy guidance"
 expect_missing_text_rejected 'query-result semantics, Daxis result metrics and observability fields, fallback behavior' "Daxis result metrics release-policy guidance"
 expect_missing_text_rejected 'Daxis-facing release notes use `docs/release-gates/daxis-release-notes-template.md` for semantic, Daxis result metrics and observability fields, fallback, compatibility, descriptor, error-taxonomy, runtime-budget, worker-artifact, and trust-boundary changes.' "Daxis-facing release notes checklist guidance"
 expect_missing_text_rejected 'Daxis-facing migration notes use `docs/release-gates/daxis-release-migration-notes-template.md` for breaking changes or explicit no-breaking-change statements.' "Daxis-facing migration notes checklist guidance"
+expect_missing_text_rejected 'Daxis-owned production proof uses `docs/release-gates/daxis-external-proof-attachment-template.md` and `docs/release-gates/daxis-dirty-worktree-review-template.json` for dirty-checkout reviews, and attaches `release_channel`, production `environment_class`, `axon_release_commit_sha`, `axon_release_ref`, `proofAttachmentSchema.allowedReleaseChannels`, `proofAttachmentSchema.acceptedDaxisWorktreeReviews`, the `daxis.external_state.v1` JSON summary, its SHA-256 digest, and clean or digest-pinned dirty-reviewed Daxis worktree classification before stable default routing.' "Daxis-owned external-state proof checklist guidance"
 expect_missing_text_rejected "### M3: Browser DataFusion As Primary Runtime" "M3 roadmap section"
 expect_missing_text_rejected "Daxis owner attachment of the proof artifacts listed in the external proof packet" "external proof signoff"
 
@@ -323,8 +353,8 @@ Stale scope: turn Axon's current browser preflight and narrow execution slice in
 ENGINE
 
 if verify_fixture; then
-  echo "expected stale linked browser lakehouse engine strategy scope to be rejected" >&2
-  exit 1
+	echo "expected stale linked browser lakehouse engine strategy scope to be rejected" >&2
+	exit 1
 fi
 
 write_valid_strategy
@@ -333,8 +363,8 @@ Signed URL issuance stays outside the repo-owned V1 success claims.
 ENGINE
 
 if verify_fixture; then
-  echo "expected stale linked browser lakehouse engine strategy V1 boundary to be rejected" >&2
-  exit 1
+	echo "expected stale linked browser lakehouse engine strategy V1 boundary to be rejected" >&2
+	exit 1
 fi
 
 write_valid_strategy
@@ -344,16 +374,16 @@ cat >>"$sprint_board" <<'SPRINT'
 SPRINT
 
 if verify_fixture; then
-  echo "expected stale browser lakehouse sprint-board SKU labels to be rejected" >&2
-  exit 1
+	echo "expected stale browser lakehouse sprint-board SKU labels to be rejected" >&2
+	exit 1
 fi
 
 write_valid_strategy
 rm -f "$repo_root/docs/release-gates/daxis-external-proof-packet.json"
 
 if verify_fixture; then
-  echo "expected missing linked external proof packet to be rejected" >&2
-  exit 1
+	echo "expected missing linked external proof packet to be rejected" >&2
+	exit 1
 fi
 
 write_valid_strategy
@@ -371,15 +401,15 @@ path.write_text(text, encoding="utf-8")
 PY
 
 if verify_fixture; then
-  echo "expected unsafe linked strategy path to be rejected" >&2
-  exit 1
+	echo "expected unsafe linked strategy path to be rejected" >&2
+	exit 1
 fi
 
 rm -f "$strategy"
 
 if verify_fixture; then
-  echo "expected missing Daxis strategy document to be rejected" >&2
-  exit 1
+	echo "expected missing Daxis strategy document to be rejected" >&2
+	exit 1
 fi
 
 echo "Daxis strategy document verifier regression coverage passed"

@@ -13,7 +13,7 @@ mkdir -p "$repo_root/docs/program" "$repo_root/docs/release-gates"
 mkdir -p "$repo_root/tests/conformance"
 
 write_release_evidence_runner() {
-  cat >"$repo_root/tests/conformance/verify_daxis_release_evidence.sh" <<'EOF'
+	cat >"$repo_root/tests/conformance/verify_daxis_release_evidence.sh" <<'EOF'
 #!/usr/bin/env bash
 
 set -euo pipefail
@@ -23,8 +23,8 @@ case "${1:-}" in
     cat <<'COMMANDS'
 cargo check --workspace --locked
 cargo fmt --check
+cargo test -p wasm-datafusion-poc -- --test-threads=1
 cargo test -p query-contract
-cargo test -p wasm-datafusion-poc
 cargo test -p wasm-datafusion-poc --test daxis_query_corpus
 bash tests/conformance/verify_daxis_query_corpus_coverage_test.sh
 bash tests/conformance/verify_daxis_query_corpus_coverage.sh
@@ -46,10 +46,13 @@ bash tests/conformance/verify_daxis_operational_readiness.sh
 bash tests/conformance/verify_daxis_strategy_traceability_test.sh
 bash tests/conformance/verify_daxis_strategy_traceability.sh
 bash tests/conformance/verify_daxis_external_state_test.sh
+bash tests/conformance/verify_daxis_external_proof_attachment_test.sh
 bash tests/conformance/verify_daxis_external_proof_packet_test.sh
 bash tests/conformance/verify_daxis_external_proof_packet.sh
 bash tests/conformance/verify_daxis_architecture_adr_test.sh
 bash tests/conformance/verify_daxis_architecture_adr.sh
+bash tests/conformance/verify_daxis_release_attachment_test.sh
+bash tests/conformance/verify_daxis_stable_default_promotion_packet_test.sh
 bash tests/conformance/verify_daxis_release_bundle_manifest_test.sh
 bash tests/conformance/verify_daxis_release_bundle_manifest.sh
 bash tests/conformance/verify_daxis_pr_checklist_test.sh
@@ -78,23 +81,23 @@ EOF
 
 write_release_evidence_runner
 for doc in \
-  docs/program/daxis-operational-maturity.md \
-  docs/adr/ADR-0008-daxis-browser-read-compute-contract.md \
-  docs/program/browser-observability-contract.md \
-  docs/program/browser-release-integration-runbook.md \
-  docs/program/daxis-first-class-integration-strategy.md \
-  docs/program/daxis-external-proof-handoff.md \
-  docs/release-gates/daxis-production-rollout-decisions.json \
-  docs/release-gates/daxis-external-proof-packet.json \
-  docs/release-gates/daxis-release-bundle-manifest.json \
-  docs/release-gates/browser-wasm-delta-gcs-release-evidence.md \
-  docs/release-gates/browser-wasm-delta-gcs-external-blockers.md; do
-  mkdir -p "$repo_root/$(dirname "$doc")"
-  printf '# test fixture\n' >"$repo_root/$doc"
+	docs/program/daxis-operational-maturity.md \
+	docs/adr/ADR-0008-daxis-browser-read-compute-contract.md \
+	docs/program/browser-observability-contract.md \
+	docs/program/browser-release-integration-runbook.md \
+	docs/program/daxis-first-class-integration-strategy.md \
+	docs/program/daxis-external-proof-handoff.md \
+	docs/release-gates/daxis-production-rollout-decisions.json \
+	docs/release-gates/daxis-external-proof-packet.json \
+	docs/release-gates/daxis-release-bundle-manifest.json \
+	docs/release-gates/browser-wasm-delta-gcs-release-evidence.md \
+	docs/release-gates/browser-wasm-delta-gcs-external-blockers.md; do
+	mkdir -p "$repo_root/$(dirname "$doc")"
+	printf '# test fixture\n' >"$repo_root/$doc"
 done
 
 write_external_proof_packet() {
-  cat >"$external_proof_packet" <<'JSON'
+	cat >"$external_proof_packet" <<'JSON'
 {
   "packet": "daxis_external_proof_packet",
   "externalItems": [
@@ -128,12 +131,13 @@ JSON
 }
 
 write_operational_maturity_doc() {
-  cat >"$repo_root/docs/program/daxis-operational-maturity.md" <<'EOF'
+	cat >"$repo_root/docs/program/daxis-operational-maturity.md" <<'EOF'
 # Daxis Operational Maturity Contract
 
 The machine-readable gate is `docs/release-gates/daxis-operational-readiness.json`,
 checked by `bash tests/conformance/verify_daxis_operational_readiness.sh`.
 The release evidence runner is `tests/conformance/verify_daxis_release_evidence.sh`.
+The release evidence artifact command is `bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log`.
 
 Dashboard contracts:
 
@@ -178,7 +182,7 @@ EOF
 }
 
 write_browser_release_runbook() {
-  cat >"$repo_root/docs/program/browser-release-integration-runbook.md" <<'EOF'
+	cat >"$repo_root/docs/program/browser-release-integration-runbook.md" <<'EOF'
 # Browser Release Integration Runbook
 
 Daxis-facing app worker is browser DataFusion-backed. The legacy narrow runtime plus streaming scan plus an in-memory session shell remains compatibility-only.
@@ -192,7 +196,7 @@ write_browser_release_runbook
 write_external_proof_packet
 
 write_valid_contract() {
-  cat >"$contract" <<'JSON'
+	cat >"$contract" <<'JSON'
 {
   "readiness": "daxis_m4_operational_maturity",
   "repoOwnedScope": "contract fixture",
@@ -293,11 +297,12 @@ write_valid_contract() {
   },
   "releaseEvidenceAutomation": {
     "runner": "tests/conformance/verify_daxis_release_evidence.sh",
+    "artifactCommand": "bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log",
     "verificationCommands": [
       "cargo check --workspace --locked",
       "cargo fmt --check",
+      "cargo test -p wasm-datafusion-poc -- --test-threads=1",
       "cargo test -p query-contract",
-      "cargo test -p wasm-datafusion-poc",
       "cargo test -p wasm-datafusion-poc --test daxis_query_corpus",
       "bash tests/conformance/verify_daxis_query_corpus_coverage_test.sh",
       "bash tests/conformance/verify_daxis_query_corpus_coverage.sh",
@@ -319,10 +324,13 @@ write_valid_contract() {
       "bash tests/conformance/verify_daxis_strategy_traceability_test.sh",
       "bash tests/conformance/verify_daxis_strategy_traceability.sh",
       "bash tests/conformance/verify_daxis_external_state_test.sh",
+      "bash tests/conformance/verify_daxis_external_proof_attachment_test.sh",
       "bash tests/conformance/verify_daxis_external_proof_packet_test.sh",
       "bash tests/conformance/verify_daxis_external_proof_packet.sh",
       "bash tests/conformance/verify_daxis_architecture_adr_test.sh",
       "bash tests/conformance/verify_daxis_architecture_adr.sh",
+      "bash tests/conformance/verify_daxis_release_attachment_test.sh",
+      "bash tests/conformance/verify_daxis_stable_default_promotion_packet_test.sh",
       "bash tests/conformance/verify_daxis_release_bundle_manifest_test.sh",
       "bash tests/conformance/verify_daxis_release_bundle_manifest.sh",
       "bash tests/conformance/verify_daxis_pr_checklist_test.sh",
@@ -345,15 +353,27 @@ write_valid_contract() {
     "Tenant and workspace rollout controls are Daxis service work outside this repository.",
     "Production table compatibility inventory is Daxis catalog and QA work outside this repository.",
     "External proof artifacts listed in docs/release-gates/daxis-external-proof-packet.json are Daxis-owned and absent from this repository."
-  ]
+  ],
+  "stableDefaultBlockerProofItems": {
+    "Production dashboard URLs and alert ownership are absent from this repository.": ["production_dashboards"],
+    "Production oncall schedules and service incident playbooks are absent from this repository.": ["production_runbooks"],
+    "Tenant and workspace rollout controls are Daxis service work outside this repository.": ["rollout_controls"],
+    "Production table compatibility inventory is Daxis catalog and QA work outside this repository.": ["production_table_compatibility_dashboard"],
+    "External proof artifacts listed in docs/release-gates/daxis-external-proof-packet.json are Daxis-owned and absent from this repository.": [
+      "production_dashboards",
+      "production_runbooks",
+      "rollout_controls",
+      "production_table_compatibility_dashboard"
+    ]
+  }
 }
 JSON
 }
 
 verify_fixture() {
-  AXON_DAXIS_OPERATIONAL_REPO_ROOT="$repo_root" \
-    AXON_DAXIS_OPERATIONAL_READINESS_FILE="$contract" \
-    bash tests/conformance/verify_daxis_operational_readiness.sh >/dev/null 2>&1
+	AXON_DAXIS_OPERATIONAL_REPO_ROOT="$repo_root" \
+		AXON_DAXIS_OPERATIONAL_READINESS_FILE="$contract" \
+		bash tests/conformance/verify_daxis_operational_readiness.sh >/dev/null 2>&1
 }
 
 write_valid_contract
@@ -373,8 +393,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected duplicate operational-readiness dashboard names to be rejected" >&2
-  exit 1
+	echo "expected duplicate operational-readiness dashboard names to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -392,8 +412,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected duplicate operational-readiness runbook names to be rejected" >&2
-  exit 1
+	echo "expected duplicate operational-readiness runbook names to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -410,8 +430,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected duplicate operational-readiness source docs to be rejected" >&2
-  exit 1
+	echo "expected duplicate operational-readiness source docs to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -428,8 +448,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing browser observability source doc to be rejected" >&2
-  exit 1
+	echo "expected missing browser observability source doc to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -446,8 +466,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected stale operational maturity doc to be rejected" >&2
-  exit 1
+	echo "expected stale operational maturity doc to be rejected" >&2
+	exit 1
 fi
 write_operational_maturity_doc
 
@@ -460,8 +480,8 @@ Browser V1 here is the narrow runtime plus streaming scan plus an in-memory sess
 EOF
 
 if verify_fixture; then
-  echo "expected stale browser release runbook runtime boundary to be rejected" >&2
-  exit 1
+	echo "expected stale browser release runbook runtime boundary to be rejected" >&2
+	exit 1
 fi
 write_browser_release_runbook
 
@@ -480,8 +500,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing CORS runbook to be rejected" >&2
-  exit 1
+	echo "expected missing CORS runbook to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -500,8 +520,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing server fallback dashboard signal to be rejected" >&2
-  exit 1
+	echo "expected missing server fallback dashboard signal to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -520,8 +540,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing object-grant dashboard breakdown to be rejected" >&2
-  exit 1
+	echo "expected missing object-grant dashboard breakdown to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -538,8 +558,28 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing source doc to be rejected" >&2
-  exit 1
+	echo "expected missing source doc to be rejected" >&2
+	exit 1
+fi
+
+write_valid_contract
+python3 - "$contract" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    contract = json.load(handle)
+contract["stableDefaultBlockerProofItems"].pop(
+    "Tenant and workspace rollout controls are Daxis service work outside this repository."
+)
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(contract, handle)
+PY
+
+if verify_fixture; then
+	echo "expected missing stable-default blocker proof item mapping to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -556,8 +596,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing runtimeSku rollout dimension to be rejected" >&2
-  exit 1
+	echo "expected missing runtimeSku rollout dimension to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -574,8 +614,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing browserFamily rollout dimension to be rejected" >&2
-  exit 1
+	echo "expected missing browserFamily rollout dimension to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -592,8 +632,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing browser_datafusion rollout state to be rejected" >&2
-  exit 1
+	echo "expected missing browser_datafusion rollout state to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -610,8 +650,26 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing unknown Delta feature compatibility segment to be rejected" >&2
-  exit 1
+	echo "expected missing unknown Delta feature compatibility segment to be rejected" >&2
+	exit 1
+fi
+
+write_valid_contract
+python3 - "$contract" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    contract = json.load(handle)
+contract["releaseEvidenceAutomation"].pop("artifactCommand")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(contract, handle)
+PY
+
+if verify_fixture; then
+	echo "expected missing release evidence artifact command to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -628,8 +686,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected duplicate release automation commands to be rejected" >&2
-  exit 1
+	echo "expected duplicate release automation commands to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -648,8 +706,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected unsupported release automation command to be rejected" >&2
-  exit 1
+	echo "expected unsupported release automation command to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -663,8 +721,8 @@ case "${1:-}" in
     cat <<'COMMANDS'
 cargo check --workspace --locked
 cargo fmt --check
+cargo test -p wasm-datafusion-poc -- --test-threads=1
 cargo test -p query-contract
-cargo test -p wasm-datafusion-poc
 cargo test -p wasm-datafusion-session
 cargo test -p axon-web-wasm
 cargo test -p query-router -p native-query-runtime -p delta-control-plane -p wasm-query-runtime -p wasm-query-session -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p browser-sdk -p browser-engine-worker
@@ -702,8 +760,8 @@ esac
 EOF
 
 if verify_fixture; then
-  echo "expected operational readiness automation to include every listed release evidence command" >&2
-  exit 1
+	echo "expected operational readiness automation to include every listed release evidence command" >&2
+	exit 1
 fi
 write_release_evidence_runner
 
@@ -723,8 +781,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing operational-readiness automation command to be rejected" >&2
-  exit 1
+	echo "expected missing operational-readiness automation command to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -743,8 +801,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing Daxis default-worker guardrail command to be rejected" >&2
-  exit 1
+	echo "expected missing Daxis default-worker guardrail command to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -763,8 +821,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing Daxis browser matrix command to be rejected" >&2
-  exit 1
+	echo "expected missing Daxis browser matrix command to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -783,8 +841,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected missing public GCS live smoke command to be rejected" >&2
-  exit 1
+	echo "expected missing public GCS live smoke command to be rejected" >&2
+	exit 1
 fi
 
 write_valid_contract
@@ -805,8 +863,8 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 
 if verify_fixture; then
-  echo "expected operational readiness to require production runbooks external proof" >&2
-  exit 1
+	echo "expected operational readiness to require production runbooks external proof" >&2
+	exit 1
 fi
 
 echo "Daxis operational readiness verifier regression coverage passed"

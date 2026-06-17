@@ -6,18 +6,18 @@ repo_root="${AXON_DAXIS_STRATEGY_REPO_ROOT:-$(pwd)}"
 matrix_file="${AXON_DAXIS_STRATEGY_TRACEABILITY_FILE:-docs/release-gates/daxis-strategy-traceability.json}"
 
 matrix_path() {
-  if [[ "$matrix_file" = /* ]]; then
-    printf "%s\n" "$matrix_file"
-    return
-  fi
+	if [[ "$matrix_file" = /* ]]; then
+		printf "%s\n" "$matrix_file"
+		return
+	fi
 
-  printf "%s/%s\n" "$repo_root" "$matrix_file"
+	printf "%s/%s\n" "$repo_root" "$matrix_file"
 }
 
 path="$(matrix_path)"
 if [[ ! -f "$path" ]]; then
-  echo "missing Daxis strategy traceability matrix: $matrix_file" >&2
-  exit 1
+	echo "missing Daxis strategy traceability matrix: $matrix_file" >&2
+	exit 1
 fi
 
 python3 - "$repo_root" "$path" <<'PY'
@@ -113,6 +113,7 @@ expected_release_gates = [
     "bash tests/conformance/verify_daxis_operational_readiness.sh",
     "bash tests/conformance/verify_daxis_strategy_document.sh",
     "bash tests/conformance/verify_daxis_strategy_traceability.sh",
+    "bash tests/conformance/verify_daxis_external_state_test.sh",
     "bash tests/conformance/verify_daxis_external_proof_packet.sh",
     "bash tests/conformance/verify_daxis_architecture_adr.sh",
     "bash tests/conformance/verify_daxis_release_bundle_manifest.sh",
@@ -285,6 +286,8 @@ require_repo_evidence(
         "tests/conformance/verify_daxis_release_evidence.sh",
         "tests/conformance/verify_daxis_release_evidence_test.sh",
         "tests/conformance/verify_daxis_release_bundle_manifest.sh",
+        "tests/conformance/verify_daxis_external_state.sh",
+        "tests/conformance/verify_daxis_external_state_test.sh",
         "tests/conformance/verify_daxis_external_proof_packet.sh",
         "tests/conformance/verify_daxis_pr_checklist.sh",
     ],
@@ -294,6 +297,8 @@ require_repo_evidence(
     [
         "tests/conformance/verify_daxis_release_evidence.sh",
         "tests/conformance/verify_daxis_release_bundle_manifest.sh",
+        "tests/conformance/verify_daxis_external_state.sh",
+        "tests/conformance/verify_daxis_external_state_test.sh",
         "tests/conformance/verify_daxis_external_proof_packet.sh",
         "tests/conformance/verify_daxis_pr_checklist.sh",
         "docs/release-gates/browser-wasm-delta-gcs-release-evidence.md",

@@ -6,11 +6,13 @@
   "sourceDocs": [
     "docs/program/daxis-first-class-integration-strategy.md",
     "docs/release-gates/browser-wasm-delta-gcs-release-evidence.md",
+    "docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md",
     "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
     "docs/release-gates/daxis-production-rollout-decisions.json",
     "docs/release-gates/daxis-operational-readiness.json",
     "docs/release-gates/daxis-strategy-traceability.json",
     "docs/release-gates/daxis-external-proof-packet.json",
+    "docs/release-gates/daxis-dirty-worktree-review-template.json",
     "docs/release-gates/daxis-release-attachment-template.md",
     "docs/release-gates/daxis-release-notes-template.md",
     "docs/release-gates/daxis-release-migration-notes-template.md",
@@ -32,14 +34,43 @@
       "item_id",
       "release_commit_sha",
       "release_ref",
+      "release_channel",
+      "rollout_segment",
       "owner",
       "captured_at",
       "artifact_uri",
+      "artifact_sha256",
       "verification_command_or_statement",
       "exit_status_or_review_status",
       "rollback_or_migration_note_uri"
     ],
-    "requiredReviewStates": ["attached", "reviewed", "accepted", "rejected"]
+    "allowedReleaseChannels": [
+      "experimental",
+      "integration",
+      "candidate",
+      "stable"
+    ],
+    "checksumFormat": {
+      "field": "artifact_sha256",
+      "algorithm": "sha256",
+      "encoding": "lowercase_hex",
+      "length": 64,
+      "sourceBytes": "exact_release_evidence_artifact_bytes"
+    },
+    "stableDefaultValidationCommand": "bash tests/conformance/verify_daxis_release_attachment.sh --stable-default path/to/completed-release-attachment.md",
+    "stableDefaultDirectoryValidationCommand": "bash tests/conformance/verify_daxis_release_attachment.sh --stable-default-dir path/to/completed-release-attachments",
+    "stableDefaultArtifactValidationCommand": "bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default path/to/completed-release-attachment.md",
+    "stableDefaultArtifactDirectoryValidationCommand": "bash tests/conformance/verify_daxis_release_attachment.sh --artifact-root path/to/artifacts --require-local-artifacts --stable-default-dir path/to/completed-release-attachments",
+    "requiredReviewStates": ["attached", "reviewed", "accepted", "rejected"],
+    "requiredReviewerRoles": [
+      "Release owner",
+      "Runtime / engine owner",
+      "Daxis product owner",
+      "Daxis query platform owner",
+      "Daxis catalog/storage owner",
+      "Daxis security owner",
+      "Daxis SRE owner"
+    ]
   },
   "bundleItems": [
     {
@@ -81,7 +112,7 @@
         "cargo check --workspace --locked",
         "cargo fmt --check",
         "cargo test -p query-contract",
-        "cargo test -p wasm-datafusion-poc",
+        "cargo test -p wasm-datafusion-poc -- --test-threads=1",
         "cargo test -p wasm-datafusion-session",
         "cargo test -p axon-web-wasm",
         "cargo test -p query-router -p native-query-runtime -p delta-control-plane -p wasm-query-runtime -p wasm-query-session -p wasm-http-object-store -p wasm-parquet-engine -p wasm-delta-snapshot -p browser-sdk -p browser-engine-worker"
@@ -234,7 +265,7 @@
       "status": "release_process_required",
       "owner": "Release owner with Daxis platform owners",
       "description": "Attach migration notes for any breaking Daxis contract, runtime, fallback, or compatibility change; attach a no-breaking-change statement otherwise.",
-      "releaseAttachment": "Use docs/release-gates/daxis-release-migration-notes-template.md to attach migration notes or an explicit no-breaking-change statement for this release, including the external proof packet status and stableDefaultPromotionGate currentPromotionState.",
+      "releaseAttachment": "Use docs/release-gates/daxis-release-migration-notes-template.md to attach migration notes or an explicit no-breaking-change statement for this release channel and rollout segment, including the external proof packet status and stableDefaultPromotionGate currentPromotionState.",
       "evidence": [
         "docs/program/daxis-first-class-integration-strategy.md",
         "docs/release-gates/daxis-release-migration-notes-template.md",
@@ -246,7 +277,7 @@
       "status": "release_process_required",
       "owner": "Release owner with Daxis product, query, catalog, storage, security, and SRE owners",
       "description": "Attach Daxis-facing release notes for runtime semantic changes, Daxis result metrics and observability fields, fallback behavior, supported SQL and Delta feature claims, descriptor validation, public error taxonomy, runtime budgets, worker artifact changes, security-boundary impact, external proof packet status, and stableDefaultPromotionGate currentPromotionState; attach an unchanged statement otherwise.",
-      "releaseAttachment": "Use docs/release-gates/daxis-release-notes-template.md to attach Daxis-facing release notes or an explicit unchanged statement for query results, Daxis result metrics and observability fields, fallback behavior, SQL and Delta support, descriptor validation, error taxonomy, external proof packet status, and currentPromotionState.",
+      "releaseAttachment": "Use docs/release-gates/daxis-release-notes-template.md to attach Daxis-facing release notes or an explicit unchanged statement for this release channel and rollout segment, including query results, Daxis result metrics and observability fields, fallback behavior, SQL and Delta support, descriptor validation, error taxonomy, external proof packet status, and currentPromotionState.",
       "evidence": [
         "docs/program/daxis-first-class-integration-strategy.md",
         "docs/release-gates/daxis-release-notes-template.md",
@@ -276,6 +307,11 @@
   "releaseEvidenceCommands": [
     "bash tests/conformance/verify_daxis_release_evidence.sh",
     "bash tests/conformance/verify_daxis_release_evidence.sh --list",
+    "bash tests/conformance/verify_daxis_external_proof_attachment_test.sh",
+    "bash tests/conformance/verify_daxis_release_attachment_test.sh",
+    "bash tests/conformance/verify_daxis_stable_default_promotion_packet_test.sh",
     "bash tests/conformance/verify_daxis_release_bundle_manifest.sh"
-  ]
+  ],
+  "releaseEvidenceArtifactCommand": "bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log",
+  "stableDefaultPromotionPacketValidationCommand": "bash tests/conformance/verify_daxis_stable_default_promotion_packet.sh --artifact-root path/to/artifacts --release-attachments path/to/completed-release-attachments --proof-attachments path/to/completed-proof-attachments --release-evidence-log path/to/release-evidence.log --release-evidence-sha256 <sha256> --release-evidence-exit-status 0"
 }

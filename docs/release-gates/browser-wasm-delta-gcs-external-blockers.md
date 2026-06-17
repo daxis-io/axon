@@ -22,18 +22,18 @@ The repository can prove the browser engine, control-plane descriptor seam, work
 
 The `stableDefaultPromotionGate` remains `blocked_external_proof_required` until every Daxis-owned item below is attached, reviewed, and accepted with `server_fallback` rollback evidence for the rollout segment:
 
-| Proof item                                      | Required external proof                                                                 |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `daxis_architecture_docs`                       | Daxis architecture docs name Axon as browser read compute and preserve Daxis ownership. |
-| `daxis_names_axon_default_browser_engine`       | Daxis product architecture names Axon as the default browser read engine.               |
-| `daxis_descriptor_endpoint`                     | Descriptor resolver endpoint is deployed and exercised end to end.                      |
-| `daxis_frontend_flow`                           | Daxis UI open/query/cancel flow is tested against the control plane.                    |
-| `daxis_read_access_plan_endpoint`               | Read-access-plan endpoint is deployed with policy-backed outcomes.                      |
-| `storage_cors_proxy_validation`                 | Production CORS and proxy-mode validation exists for the Daxis app origin.              |
-| `production_dashboards`                         | Live Daxis dashboards and alert ownership exist.                                        |
-| `production_runbooks`                           | Service-aware incident playbooks and oncall ownership exist.                            |
-| `rollout_controls`                              | Daxis can force server fallback by rollout segment.                                     |
-| `production_table_compatibility_dashboard`      | Production compatibility inventory is populated for the rollout segment.                |
+| Milestone | Proof item                                 | Required external proof                                                                 |
+| --------- | ------------------------------------------ | --------------------------------------------------------------------------------------- |
+| M0        | `daxis_architecture_docs`                  | Daxis architecture docs name Axon as browser read compute and preserve Daxis ownership. |
+| M0        | `daxis_names_axon_default_browser_engine`  | Daxis product architecture names Axon as the default browser read engine.               |
+| M1        | `daxis_descriptor_endpoint`                | Descriptor resolver endpoint is deployed and exercised end to end.                      |
+| M1        | `daxis_frontend_flow`                      | Daxis UI open/query/cancel flow is tested against the control plane.                    |
+| M2        | `daxis_read_access_plan_endpoint`          | Read-access-plan endpoint is deployed with policy-backed outcomes.                      |
+| M2        | `storage_cors_proxy_validation`            | Production CORS and proxy-mode validation exists for the Daxis app origin.              |
+| M4        | `production_dashboards`                    | Live Daxis dashboards and alert ownership exist.                                        |
+| M4        | `production_runbooks`                      | Service-aware incident playbooks and oncall ownership exist.                            |
+| M4        | `rollout_controls`                         | Daxis can force server fallback by rollout segment.                                     |
+| M4        | `production_table_compatibility_dashboard` | Production compatibility inventory is populated for the rollout segment.                |
 
 Explicit repo deferrals that must not be mistaken for shipped launch scope:
 

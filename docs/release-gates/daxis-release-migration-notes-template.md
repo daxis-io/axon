@@ -7,6 +7,7 @@ Use this template when assembling the Daxis release evidence bundle for an Axon 
 - Axon commit SHA:
 - Branch or tag:
 - Release channel: `experimental` | `integration` | `candidate` | `stable`
+- Rollout segment:
 - Release date:
 - Release owner:
 - Daxis platform owners reviewed:

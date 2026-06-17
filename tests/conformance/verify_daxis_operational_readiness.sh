@@ -6,18 +6,18 @@ repo_root="${AXON_DAXIS_OPERATIONAL_REPO_ROOT:-$(pwd)}"
 readiness_file="${AXON_DAXIS_OPERATIONAL_READINESS_FILE:-docs/release-gates/daxis-operational-readiness.json}"
 
 readiness_path() {
-  if [[ "$readiness_file" = /* ]]; then
-    printf "%s\n" "$readiness_file"
-    return
-  fi
+	if [[ "$readiness_file" = /* ]]; then
+		printf "%s\n" "$readiness_file"
+		return
+	fi
 
-  printf "%s/%s\n" "$repo_root" "$readiness_file"
+	printf "%s/%s\n" "$repo_root" "$readiness_file"
 }
 
 path="$(readiness_path)"
 if [[ ! -f "$path" ]]; then
-  echo "missing Daxis operational readiness contract: $readiness_file" >&2
-  exit 1
+	echo "missing Daxis operational readiness contract: $readiness_file" >&2
+	exit 1
 fi
 
 python3 - "$repo_root" "$path" <<'PY'
@@ -81,6 +81,7 @@ for required_text in [
     "docs/release-gates/daxis-operational-readiness.json",
     "bash tests/conformance/verify_daxis_operational_readiness.sh",
     "tests/conformance/verify_daxis_release_evidence.sh",
+    "bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log",
 ]:
     expect(
         required_text in operational_maturity_text,
@@ -230,6 +231,12 @@ expect(isinstance(automation_runner, str) and automation_runner, "release automa
 expect(not automation_runner.startswith("/") and ".." not in Path(automation_runner).parts, f"unsafe release automation runner path: {automation_runner}")
 automation_runner_path = repo_root / automation_runner
 expect(automation_runner_path.is_file(), f"missing release automation runner: {automation_runner}")
+artifact_command = contract.get("releaseEvidenceAutomation", {}).get("artifactCommand")
+expect(
+    artifact_command
+    == "bash tests/conformance/verify_daxis_release_evidence.sh --write-log path/to/release-evidence.log",
+    "release evidence automation artifactCommand must name the digest-pinned release evidence log writer",
+)
 try:
     listed_release_commands = subprocess.check_output(
         ["bash", str(automation_runner_path), "--list"],
@@ -286,8 +293,8 @@ for command in automation_commands:
 for command in [
     "cargo check --workspace --locked",
     "cargo fmt --check",
+    "cargo test -p wasm-datafusion-poc -- --test-threads=1",
     "cargo test -p query-contract",
-    "cargo test -p wasm-datafusion-poc",
     "cargo test -p wasm-datafusion-poc --test daxis_query_corpus",
     "bash tests/conformance/verify_daxis_query_corpus_coverage_test.sh",
     "bash tests/conformance/verify_daxis_query_corpus_coverage.sh",
@@ -342,6 +349,12 @@ for blocker in [
     expect(blocker in stable_default_blockers, f"stableDefaultBlockers missing: {blocker}")
     expect(blocker in operational_maturity_text, f"operational maturity document missing stable-default blocker: {blocker}")
 
+stable_default_blocker_proof_items = contract.get("stableDefaultBlockerProofItems", {})
+expect(
+    isinstance(stable_default_blocker_proof_items, dict) and stable_default_blocker_proof_items,
+    "stableDefaultBlockerProofItems must not be empty",
+)
+
 external_proof_packet_path = repo_root / "docs/release-gates/daxis-external-proof-packet.json"
 with open(external_proof_packet_path, encoding="utf-8") as handle:
     external_proof_packet = json.load(handle)
@@ -359,6 +372,22 @@ stable_default_external_ids = set(
         "requiredExternalProofItemIds", []
     )
 )
+expected_blocker_proof_items = {
+    "Production dashboard URLs and alert ownership are absent from this repository.": ["production_dashboards"],
+    "Production oncall schedules and service incident playbooks are absent from this repository.": ["production_runbooks"],
+    "Tenant and workspace rollout controls are Daxis service work outside this repository.": ["rollout_controls"],
+    "Production table compatibility inventory is Daxis catalog and QA work outside this repository.": ["production_table_compatibility_dashboard"],
+    "External proof artifacts listed in docs/release-gates/daxis-external-proof-packet.json are Daxis-owned and absent from this repository.": [
+        "production_dashboards",
+        "production_runbooks",
+        "rollout_controls",
+        "production_table_compatibility_dashboard",
+    ],
+}
+expect(
+    stable_default_blocker_proof_items == expected_blocker_proof_items,
+    "stableDefaultBlockerProofItems must map each blocker to its external proof item ids",
+)
 for item_id in [
     "production_dashboards",
     "production_runbooks",
@@ -373,6 +402,21 @@ for item_id in [
         item_id in stable_default_external_ids,
         f"stableDefaultPromotionGate missing M4 operational proof item: {item_id}",
     )
+
+for blocker, proof_item_ids in stable_default_blocker_proof_items.items():
+    expect(
+        blocker in stable_default_blockers,
+        f"stableDefaultBlockerProofItems key is not a stableDefaultBlocker: {blocker}",
+    )
+    for proof_item_id in proof_item_ids:
+        expect(
+            proof_item_id in external_m4_item_ids,
+            f"stableDefaultBlockerProofItems references non-M4 proof item: {proof_item_id}",
+        )
+        expect(
+            proof_item_id in stable_default_external_ids,
+            f"stableDefaultBlockerProofItems references proof item outside stable default gate: {proof_item_id}",
+        )
 
 print("Daxis operational readiness contract verified")
 PY

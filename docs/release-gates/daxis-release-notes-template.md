@@ -7,6 +7,7 @@ Use this template when assembling Daxis-facing release notes for an Axon release
 - Axon commit SHA:
 - Branch or tag:
 - Release channel: `experimental` | `integration` | `candidate` | `stable`
+- Rollout segment:
 - Release date:
 - Release owner:
 - Daxis rollout decision link:
