@@ -258,7 +258,7 @@
 - Milestone: `M4`
 - Depends on: `BL-11`
 - Scope:
-  - Daxis-facing DataFusion runtime SKU
+  - Axon DataFusion runtime SKU
   - legacy narrow compatibility SKU
   - worker artifact reports enabled feature set, SKU identity, and browser DataFusion availability
 - Exit evidence:

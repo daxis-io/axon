@@ -70,10 +70,10 @@ This ADR is implemented only when:
 
 ## References
 
-- `docs/program/daxis-first-class-integration-strategy.md`
+- `docs/integrations/daxis/daxis-first-class-integration-strategy.md`
 - `docs/release-gates/daxis-production-rollout-decisions.json`
 - `docs/release-gates/daxis-strategy-traceability.json`
 - `docs/release-gates/daxis-external-proof-packet.json`
-- `docs/program/daxis-external-proof-handoff.md`
+- `docs/integrations/daxis/daxis-external-proof-handoff.md`
 - `docs/release-gates/browser-wasm-delta-gcs-external-blockers.md`
 - `docs/adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md`

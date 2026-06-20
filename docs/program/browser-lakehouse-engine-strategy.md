@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Date: 2026-03-28
-- Scope: make browser DataFusion the Daxis-facing default read engine while keeping legacy narrow execution isolated for compatibility
+- Scope: make browser DataFusion the default Axon browser execution engine while keeping legacy narrow execution isolated for compatibility
 - Related:
   - [WASM + Delta Lake on GCS Program Bundle](./wasm-delta-gcs-program.md)
   - [EPIC-04: Browser DataFusion WASM Runtime And HTTP Object-Store Hardening](../epics/EPIC-04-browser-datafusion-wasm-runtime-and-http-object-store-hardening.md)
@@ -14,7 +14,7 @@
 ## Decision Summary
 
 The next browser-engine phase stays inside Axon as new workspace crates. Not a new repository, and not more logic crammed into the current crates.
-Daxis-facing app worker is browser DataFusion-backed.
+The Axon app worker is browser DataFusion-backed.
 Legacy narrow runtime and session shell remain compatibility-only.
 
 The shape:

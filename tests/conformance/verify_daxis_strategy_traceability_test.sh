@@ -12,7 +12,7 @@ release_evidence_runner="$repo_root/tests/conformance/verify_daxis_release_evide
 
 mkdir -p "$repo_root/docs/program" "$repo_root/docs/release-gates" "$repo_root/tests/conformance"
 for doc in \
-	docs/program/daxis-first-class-integration-strategy.md \
+	docs/integrations/daxis/daxis-first-class-integration-strategy.md \
 	docs/program/browser-lakehouse-release-handoff-examples/browser-worker-artifact-report.datafusion.json \
 	docs/release-gates/browser-wasm-delta-gcs-release-evidence.md \
 	docs/release-gates/daxis-external-proof-packet.json \
@@ -56,7 +56,7 @@ def external_entry(item_id):
         "id": item_id,
         "status": "external_required",
         "summary": f"{item_id} requires Daxis proof",
-        "evidence": ["docs/program/daxis-first-class-integration-strategy.md"],
+        "evidence": ["docs/integrations/daxis/daxis-first-class-integration-strategy.md"],
         "externalOwner": "Daxis owner",
         "externalProof": "Daxis proof artifact",
     }
@@ -67,7 +67,7 @@ def repo_entry(item_id, evidence=None):
         "id": item_id,
         "status": "repo_verified",
         "summary": f"{item_id} is repo verified",
-        "evidence": evidence or ["docs/program/daxis-first-class-integration-strategy.md"],
+        "evidence": evidence or ["docs/integrations/daxis/daxis-first-class-integration-strategy.md"],
     }
 
 
@@ -99,7 +99,7 @@ milestones = {
             repo_entry(
                 "datafusion_default_runtime",
                 [
-                    "docs/program/daxis-first-class-integration-strategy.md",
+                    "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
                     "tests/conformance/verify_axon_web_datafusion_runtime.sh",
                     "docs/program/browser-lakehouse-release-handoff-examples/browser-worker-artifact-report.datafusion.json",
                 ],
@@ -166,7 +166,7 @@ milestones = {
 
 matrix = {
     "matrix": "daxis_first_class_strategy_traceability",
-    "strategy": "docs/program/daxis-first-class-integration-strategy.md",
+    "strategy": "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
     "externalProofPacket": "docs/release-gates/daxis-external-proof-packet.json",
     "milestones": milestones,
     "releaseGates": [
@@ -198,7 +198,7 @@ packet = {
             "requiredProofArtifacts": ["proof"],
             "acceptanceChecks": ["check"],
             "rollbackEvidence": "server_fallback",
-            "axonReferences": ["docs/program/daxis-first-class-integration-strategy.md"],
+            "axonReferences": ["docs/integrations/daxis/daxis-first-class-integration-strategy.md"],
         }
         for milestone, item_id in external_items
     ],
@@ -515,7 +515,7 @@ matrix["milestones"]["M0"]["exitCriteria"].append(
         "id": "m0_repo_gate",
         "status": "repo_verified",
         "summary": "M0 still has a repo-verified exit criterion.",
-        "evidence": ["docs/program/daxis-first-class-integration-strategy.md"],
+        "evidence": ["docs/integrations/daxis/daxis-first-class-integration-strategy.md"],
     }
 )
 with open(matrix_path, "w", encoding="utf-8") as handle:

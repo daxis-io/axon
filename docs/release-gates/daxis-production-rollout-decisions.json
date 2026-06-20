@@ -4,8 +4,8 @@
   "scope": "Decisions required before the first Daxis production rollout of Axon browser read compute.",
   "sourceDocs": [
     "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md",
-    "docs/program/daxis-first-class-integration-strategy.md",
-    "docs/program/daxis-operational-maturity.md",
+    "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
+    "docs/integrations/daxis/daxis-operational-maturity.md",
     "docs/release-gates/daxis-browser-datafusion-budget-profile.json",
     "docs/release-gates/daxis-contract-artifacts.sha256",
     "docs/release-gates/daxis-external-proof-packet.json",
@@ -25,8 +25,8 @@
         "GET /object-grants/{grantId}/range"
       ],
       "evidence": [
-        "docs/program/daxis-first-class-integration-strategy.md",
-        "docs/program/daxis-first-class-integration-examples/",
+        "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
+        "docs/integrations/daxis/daxis-first-class-integration-examples/",
         "apps/axon-web/examples/daxis-descriptor-resolver.ts",
         "apps/axon-web/examples/daxis-read-access-plan.ts",
         "apps/axon-web/examples/daxis-object-grant-adapter.ts"
@@ -41,9 +41,9 @@
       "evidence": [
         "apps/axon-web/examples/daxis-descriptor-resolver.ts",
         "apps/axon-web/examples/daxis-read-access-plan.ts",
-        "docs/program/daxis-first-class-integration-examples/read-access-plan.brokered-delta.json",
-        "docs/program/daxis-first-class-integration-examples/read-access-plan.sql-fallback-required.json",
-        "docs/program/daxis-first-class-integration-examples/read-access-plan.blocked.json"
+        "docs/integrations/daxis/daxis-first-class-integration-examples/read-access-plan.brokered-delta.json",
+        "docs/integrations/daxis/daxis-first-class-integration-examples/read-access-plan.sql-fallback-required.json",
+        "docs/integrations/daxis/daxis-first-class-integration-examples/read-access-plan.blocked.json"
       ]
     },
     "signedUrlTtlAndRefresh": {
@@ -56,7 +56,7 @@
       "evidence": [
         "crates/query-contract/src/lib.rs",
         "apps/axon-web/tests/axon-browser-sdk.spec.ts",
-        "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-response.expired.json"
+        "docs/integrations/daxis/daxis-first-class-integration-examples/snapshot-descriptor-response.expired.json"
       ]
     },
     "descriptorRefreshSnapshotPolicy": {
@@ -67,7 +67,7 @@
       "evidence": [
         "crates/query-contract/src/lib.rs",
         "crates/query-contract/tests/query_contract.rs",
-        "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-response.snapshot-version-mismatch.json"
+        "docs/integrations/daxis/daxis-first-class-integration-examples/snapshot-descriptor-response.snapshot-version-mismatch.json"
       ]
     },
     "browserBudgets": {
@@ -170,7 +170,7 @@
         "blockerRegister": "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md"
       },
       "evidence": [
-        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
         "docs/release-gates/daxis-operational-readiness.json",
         "tests/conformance/verify_daxis_release_evidence.sh"
       ]
@@ -195,7 +195,7 @@
         "unsupported_sql_shape"
       ],
       "evidence": [
-        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
         "tests/conformance/daxis-browser-datafusion-query-corpus.json",
         "tests/conformance/verify_daxis_query_corpus_coverage.sh",
         "docs/program/browser-datafusion-runtime-parity.md"
@@ -210,7 +210,7 @@
       "decision": "Use conservative candidate thresholds until Daxis SRE replaces them with production baselines per rollout segment.",
       "externalOwner": "Daxis SRE / production engineering",
       "evidence": [
-        "docs/program/daxis-operational-maturity.md",
+        "docs/integrations/daxis/daxis-operational-maturity.md",
         "docs/release-gates/daxis-operational-readiness.json"
       ]
     }

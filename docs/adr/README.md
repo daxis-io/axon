@@ -8,3 +8,4 @@
 - [ADR-0006: Upstream-First Fork Policy With Explicit Version Cadence](./ADR-0006-upstream-first-fork-policy-and-version-cadence.md)
 - [ADR-0007: Release Gates Prioritize Range Reads, Conformance, Observability, And Constrained Browser Mode](./ADR-0007-release-gates-range-reads-conformance-observability-browser-mode.md)
 - [ADR-0008: Daxis Browser Read Compute Uses Axon Contracts And Daxis Control Plane](./ADR-0008-daxis-browser-read-compute-contract.md)
+- [ADR-0009: Axon Is The Lakehouse Workbench](./ADR-0009-axon-is-the-lakehouse-workbench.md)

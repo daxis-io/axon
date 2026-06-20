@@ -26,7 +26,7 @@ fn read_example(file_name: &str) -> String {
 
 fn daxis_example_path(file_name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/program/daxis-first-class-integration-examples")
+        .join("../../docs/integrations/daxis/daxis-first-class-integration-examples")
         .join(file_name)
 }
 

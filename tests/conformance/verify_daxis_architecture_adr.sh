@@ -91,11 +91,11 @@ for required_text in [
     expect(required_text in adr_lower, f"ADR missing required decision text: {required_text}")
 
 for path_text in [
-    "docs/program/daxis-first-class-integration-strategy.md",
+    "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
     "docs/release-gates/daxis-production-rollout-decisions.json",
     "docs/release-gates/daxis-strategy-traceability.json",
     "docs/release-gates/daxis-external-proof-packet.json",
-    "docs/program/daxis-external-proof-handoff.md",
+    "docs/integrations/daxis/daxis-external-proof-handoff.md",
 ]:
     expect(path_text in adr, f"ADR missing reference to {path_text}")
     check_repo_path(path_text)

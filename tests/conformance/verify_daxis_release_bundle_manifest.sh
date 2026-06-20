@@ -63,14 +63,14 @@ def check_relative_path(path_text: str, label: str) -> None:
 
 
 expect(manifest.get("manifest") == "daxis_release_bundle_manifest", "invalid Daxis release bundle manifest id")
-expect(manifest.get("strategy") == "docs/program/daxis-first-class-integration-strategy.md", "unexpected strategy path")
+expect(manifest.get("strategy") == "docs/integrations/daxis/daxis-first-class-integration-strategy.md", "unexpected strategy path")
 check_relative_path(manifest["strategy"], "strategy document")
 
 source_docs = manifest.get("sourceDocs", [])
 expect(source_docs, "sourceDocs must not be empty")
 expect_unique_text_list(source_docs, "sourceDocs")
 for required_source in [
-    "docs/program/daxis-first-class-integration-strategy.md",
+    "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
     "docs/program/browser-datafusion-runtime-parity.md",
     "docs/program/browser-delta-compatibility-matrix.md",
     "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md",

@@ -12,7 +12,7 @@ external_proof_packet="$repo_root/docs/release-gates/daxis-external-proof-packet
 mkdir -p "$repo_root/docs/program" "$repo_root/docs/release-gates" "$repo_root/tests/conformance"
 for doc in \
 	docs/adr/ADR-0008-daxis-browser-read-compute-contract.md \
-	docs/program/daxis-first-class-integration-strategy.md \
+	docs/integrations/daxis/daxis-first-class-integration-strategy.md \
 	docs/release-gates/daxis-release-attachment-template.md \
 	docs/release-gates/daxis-release-notes-template.md \
 	docs/release-gates/daxis-release-migration-notes-template.md \
@@ -24,7 +24,7 @@ for doc in \
 	docs/release-gates/daxis-strategy-traceability.json \
 	docs/release-gates/daxis-external-proof-packet.json \
 	docs/release-gates/daxis-dirty-worktree-review-template.json \
-	docs/program/daxis-external-proof-handoff.md \
+	docs/integrations/daxis/daxis-external-proof-handoff.md \
 	docs/program/browser-observability-contract.md \
 	docs/program/browser-datafusion-runtime-parity.md \
 	docs/program/browser-delta-compatibility-matrix.md \
@@ -425,7 +425,7 @@ for item_id in item_ids:
         "status": status,
         "owner": "Runtime / engine team",
         "description": f"{item_id} release bundle fixture",
-        "evidence": ["docs/program/daxis-first-class-integration-strategy.md"],
+        "evidence": ["docs/integrations/daxis/daxis-first-class-integration-strategy.md"],
         "verificationCommands": ["cargo test -p wasm-datafusion-session"],
     }
     if item_id == "git_sha":
@@ -471,7 +471,7 @@ for item_id in item_ids:
         ]
     if item_id == "known_fallback_reasons":
         item["evidence"] = [
-            "docs/program/daxis-first-class-integration-strategy.md",
+            "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
             "docs/program/browser-observability-contract.md",
             "docs/program/browser-datafusion-runtime-parity.md",
             "crates/query-contract/tests/query_contract.rs",
@@ -494,7 +494,7 @@ for item_id in item_ids:
         item.pop("verificationCommands")
         item["releaseAttachment"] = "Use docs/release-gates/daxis-release-migration-notes-template.md to attach migration notes or an explicit no-breaking-change statement for this release channel and rollout segment, including the external proof packet status and stableDefaultPromotionGate currentPromotionState."
         item["evidence"] = [
-            "docs/program/daxis-first-class-integration-strategy.md",
+            "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
             "docs/release-gates/daxis-release-migration-notes-template.md",
         ]
     if item_id == "release_notes":
@@ -502,14 +502,14 @@ for item_id in item_ids:
         item.pop("verificationCommands")
         item["releaseAttachment"] = "Use docs/release-gates/daxis-release-notes-template.md to attach Daxis-facing release notes or an explicit unchanged statement for this release channel and rollout segment, including query results, Daxis result metrics and observability fields, fallback behavior, SQL and Delta support, descriptor validation, error taxonomy, external proof packet status, and currentPromotionState."
         item["evidence"] = [
-            "docs/program/daxis-first-class-integration-strategy.md",
+            "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
             "docs/release-gates/daxis-release-notes-template.md",
         ]
     if item_id == "external_blockers":
         item["evidence"] = [
             "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
             "docs/release-gates/daxis-external-proof-packet.json",
-            "docs/program/daxis-external-proof-handoff.md",
+            "docs/integrations/daxis/daxis-external-proof-handoff.md",
             "tests/conformance/verify_daxis_external_state.sh",
             "tests/conformance/verify_daxis_external_state_test.sh",
         ]
@@ -521,9 +521,9 @@ for item_id in item_ids:
 
 manifest = {
     "manifest": "daxis_release_bundle_manifest",
-    "strategy": "docs/program/daxis-first-class-integration-strategy.md",
+    "strategy": "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
     "sourceDocs": [
-        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
         "docs/release-gates/daxis-release-attachment-template.md",
         "docs/release-gates/daxis-release-notes-template.md",
         "docs/release-gates/daxis-release-migration-notes-template.md",
@@ -718,7 +718,7 @@ import sys
 path = sys.argv[1]
 with open(path, encoding="utf-8") as handle:
     manifest = json.load(handle)
-manifest["sourceDocs"].append("docs/program/daxis-first-class-integration-strategy.md")
+manifest["sourceDocs"].append("docs/integrations/daxis/daxis-first-class-integration-strategy.md")
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(manifest, handle)
 PY

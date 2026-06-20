@@ -1,10 +1,10 @@
 {
   "manifest": "daxis_release_bundle_manifest",
-  "strategy": "docs/program/daxis-first-class-integration-strategy.md",
+  "strategy": "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
   "owner": "Runtime / engine team with Daxis release, product, security, storage, catalog, query, and SRE owners",
   "scope": "Machine-readable checklist for the release evidence bundle Axon must provide before Daxis rollout review.",
   "sourceDocs": [
-    "docs/program/daxis-first-class-integration-strategy.md",
+    "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
     "docs/release-gates/browser-wasm-delta-gcs-release-evidence.md",
     "docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md",
     "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
@@ -214,7 +214,7 @@
       "owner": "Runtime / engine team and Daxis query platform",
       "description": "Attach the fallback, block, unsupported-feature, and runtime-error vocabulary Daxis should preserve when routing away from browser execution.",
       "evidence": [
-        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
         "docs/program/browser-observability-contract.md",
         "docs/program/browser-datafusion-runtime-parity.md",
         "crates/query-contract/tests/query_contract.rs"
@@ -247,7 +247,7 @@
       "owner": "Runtime / engine team with Daxis platform owners",
       "description": "Attach Daxis-specific compatibility notes for endpoint names, access modes, release channels, table eligibility, and external proof requirements.",
       "evidence": [
-        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
         "docs/release-gates/daxis-production-rollout-decisions.json",
         "docs/release-gates/daxis-strategy-traceability.json",
         "docs/release-gates/daxis-external-proof-packet.json"
@@ -267,7 +267,7 @@
       "description": "Attach migration notes for any breaking Daxis contract, runtime, fallback, or compatibility change; attach a no-breaking-change statement otherwise.",
       "releaseAttachment": "Use docs/release-gates/daxis-release-migration-notes-template.md to attach migration notes or an explicit no-breaking-change statement for this release channel and rollout segment, including the external proof packet status and stableDefaultPromotionGate currentPromotionState.",
       "evidence": [
-        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
         "docs/release-gates/daxis-release-migration-notes-template.md",
         "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md"
       ]
@@ -279,7 +279,7 @@
       "description": "Attach Daxis-facing release notes for runtime semantic changes, Daxis result metrics and observability fields, fallback behavior, supported SQL and Delta feature claims, descriptor validation, public error taxonomy, runtime budgets, worker artifact changes, security-boundary impact, external proof packet status, and stableDefaultPromotionGate currentPromotionState; attach an unchanged statement otherwise.",
       "releaseAttachment": "Use docs/release-gates/daxis-release-notes-template.md to attach Daxis-facing release notes or an explicit unchanged statement for this release channel and rollout segment, including query results, Daxis result metrics and observability fields, fallback behavior, SQL and Delta support, descriptor validation, error taxonomy, external proof packet status, and currentPromotionState.",
       "evidence": [
-        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
         "docs/release-gates/daxis-release-notes-template.md",
         "docs/program/browser-datafusion-runtime-parity.md",
         "docs/program/browser-delta-compatibility-matrix.md",
@@ -294,7 +294,7 @@
       "evidence": [
         "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
         "docs/release-gates/daxis-external-proof-packet.json",
-        "docs/program/daxis-external-proof-handoff.md",
+        "docs/integrations/daxis/daxis-external-proof-handoff.md",
         "tests/conformance/verify_daxis_external_state.sh",
         "tests/conformance/verify_daxis_external_state_test.sh"
       ],

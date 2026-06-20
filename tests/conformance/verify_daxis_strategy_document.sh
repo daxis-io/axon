@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo_root="${AXON_DAXIS_STRATEGY_DOCUMENT_REPO_ROOT:-$(pwd)}"
-strategy_file="${AXON_DAXIS_STRATEGY_DOCUMENT_FILE:-docs/program/daxis-first-class-integration-strategy.md}"
+strategy_file="${AXON_DAXIS_STRATEGY_DOCUMENT_FILE:-docs/integrations/daxis/daxis-first-class-integration-strategy.md}"
 
 resolve_path() {
 	local path="$1"
@@ -64,14 +64,14 @@ def check_strategy_link(link: str) -> None:
     expect(resolved.exists(), f"{strategy_file} links missing artifact: {link}")
 
 
-def read_required_program_doc(filename: str, description: str) -> str:
-    path = (strategy_path.parent / filename).resolve()
+def read_required_companion_doc(path_text: str, description: str) -> str:
+    path = (strategy_path.parent / path_text).resolve()
     repo_resolved = repo_root.resolve()
     expect(
         path == repo_resolved or repo_resolved in path.parents,
-        f"{strategy_file} has unsafe companion artifact path: {filename}",
+        f"{strategy_file} has unsafe companion artifact path: {path_text}",
     )
-    expect(path.is_file(), f"missing {description}: {filename}")
+    expect(path.is_file(), f"missing {description}: {path_text}")
     return path.read_text(encoding="utf-8")
 
 
@@ -126,33 +126,33 @@ for section in [
     expect_text(section, "strategy section")
 
 for required_path in [
-    "./browser-lakehouse-engine-strategy.md",
-    "./browser-delta-compatibility-matrix.md",
-    "./browser-embedding-deployment.md",
-    "./browser-uc-brokered-runtime-contract.md",
-    "./browser-observability-contract.md",
-    "./browser-datafusion-runtime-parity.md",
-    "../adr/ADR-0008-daxis-browser-read-compute-contract.md",
+    "../../program/browser-lakehouse-engine-strategy.md",
+    "../../program/browser-delta-compatibility-matrix.md",
+    "../../program/browser-embedding-deployment.md",
+    "../../program/browser-uc-brokered-runtime-contract.md",
+    "../../program/browser-observability-contract.md",
+    "../../program/browser-datafusion-runtime-parity.md",
+    "../../adr/ADR-0008-daxis-browser-read-compute-contract.md",
     "./daxis-operational-maturity.md",
     "./daxis-external-proof-handoff.md",
-    "../release-gates/daxis-production-rollout-decisions.json",
-    "../release-gates/daxis-strategy-traceability.json",
-    "../release-gates/daxis-external-proof-packet.json",
-    "../release-gates/daxis-external-proof-attachment-template.md",
-    "../release-gates/daxis-release-bundle-manifest.json",
-    "../release-gates/daxis-release-attachment-template.md",
-    "../release-gates/daxis-release-notes-template.md",
-    "../release-gates/daxis-release-migration-notes-template.md",
-    "../release-gates/browser-wasm-delta-gcs-launch-checklist.md",
-    "../release-gates/browser-wasm-delta-gcs-external-blockers.md",
+    "../../release-gates/daxis-production-rollout-decisions.json",
+    "../../release-gates/daxis-strategy-traceability.json",
+    "../../release-gates/daxis-external-proof-packet.json",
+    "../../release-gates/daxis-external-proof-attachment-template.md",
+    "../../release-gates/daxis-release-bundle-manifest.json",
+    "../../release-gates/daxis-release-attachment-template.md",
+    "../../release-gates/daxis-release-notes-template.md",
+    "../../release-gates/daxis-release-migration-notes-template.md",
+    "../../release-gates/browser-wasm-delta-gcs-launch-checklist.md",
+    "../../release-gates/browser-wasm-delta-gcs-external-blockers.md",
 ]:
     expect(required_path in text, f"{strategy_file} missing required related artifact link: {required_path}")
 
 for link in re.findall(r"\[[^\]]+\]\(([^)]+)\)", text):
     check_strategy_link(link)
 
-engine_strategy = read_required_program_doc(
-    "browser-lakehouse-engine-strategy.md",
+engine_strategy = read_required_companion_doc(
+    "../../program/browser-lakehouse-engine-strategy.md",
     "browser lakehouse engine strategy",
 )
 engine_strategy_doc = "docs/program/browser-lakehouse-engine-strategy.md"
@@ -169,12 +169,12 @@ for forbidden_text, description in [
     reject_companion_text(engine_strategy, engine_strategy_doc, forbidden_text, description)
 for required_text, description in [
     (
-        "- Scope: make browser DataFusion the Daxis-facing default read engine while keeping legacy narrow execution isolated for compatibility",
+        "- Scope: make browser DataFusion the default Axon browser execution engine while keeping legacy narrow execution isolated for compatibility",
         "DataFusion-default scope",
     ),
     (
-        "Daxis-facing app worker is browser DataFusion-backed.",
-        "Daxis-facing DataFusion worker default",
+        "The Axon app worker is browser DataFusion-backed.",
+        "Axon DataFusion worker default",
     ),
     (
         "Legacy narrow runtime and session shell remain compatibility-only.",
@@ -183,8 +183,8 @@ for required_text, description in [
 ]:
     expect_companion_text(engine_strategy, engine_strategy_doc, required_text, description)
 
-sprint_board = read_required_program_doc(
-    "browser-lakehouse-sprint-board.md",
+sprint_board = read_required_companion_doc(
+    "../../program/browser-lakehouse-sprint-board.md",
     "browser lakehouse sprint board",
 )
 sprint_board_doc = "docs/program/browser-lakehouse-sprint-board.md"
@@ -194,7 +194,7 @@ for forbidden_text, description in [
 ]:
     reject_companion_text(sprint_board, sprint_board_doc, forbidden_text, description)
 for required_text, description in [
-    ("Daxis-facing DataFusion runtime SKU", "Daxis-facing DataFusion SKU label"),
+    ("Axon DataFusion runtime SKU", "Daxis-facing DataFusion SKU label"),
     ("legacy narrow compatibility SKU", "legacy narrow compatibility SKU label"),
     (
         "worker artifact reports enabled feature set, SKU identity, and browser DataFusion availability",
@@ -219,7 +219,7 @@ for required_text in [
     "`BrowserWorkerEventEnvelope`",
     "POST /v1/query/delta/snapshot-descriptor",
     "POST /v1/catalog/read-access-plan",
-    "The M2 object-grant helper example lives in [`../../apps/axon-web/examples/daxis-object-grant-adapter.ts`](../../apps/axon-web/examples/daxis-object-grant-adapter.ts).",
+    "The M2 object-grant helper example lives in [`../../../apps/axon-web/examples/daxis-object-grant-adapter.ts`](../../../apps/axon-web/examples/daxis-object-grant-adapter.ts).",
     "keeps grant identifiers out of worker command payloads",
     "Daxis product platform, gateway, catalog, storage broker, and query service own policy, auth, audit, routing, and fallback",
     "DataFusion-backed SQL execution",

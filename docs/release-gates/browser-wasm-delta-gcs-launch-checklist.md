@@ -82,7 +82,7 @@
 
 - Repo-owned release evidence: `docs/release-gates/browser-wasm-delta-gcs-release-evidence.md`
 - External blocker register: `docs/release-gates/browser-wasm-delta-gcs-external-blockers.md`
-- Daxis external proof handoff: `docs/program/daxis-external-proof-handoff.md`
+- Daxis external proof handoff: `docs/integrations/daxis/daxis-external-proof-handoff.md`
 - Daxis external proof attachment template: `docs/release-gates/daxis-external-proof-attachment-template.md`
 - Daxis browser read-compute ADR: `docs/adr/ADR-0008-daxis-browser-read-compute-contract.md`
 - Daxis release bundle manifest: `docs/release-gates/daxis-release-bundle-manifest.json`

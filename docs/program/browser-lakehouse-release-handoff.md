@@ -37,7 +37,7 @@ All examples below are checked into [`docs/program/browser-lakehouse-release-han
 - `browser-worker-artifact-report.narrow.json`: legacy narrow worker artifact report showing the compatibility runtime SKU, session-shell capability, Arrow IPC worker boundary, and artifact identity.
 - `browser-worker-artifact-report.datafusion.json`: Daxis-facing app worker artifact report showing `browser_datafusion` as the default runtime SKU for descriptor-backed browser reads.
 
-Daxis-specific handoff fixtures live in [`docs/program/daxis-first-class-integration-examples/`](./daxis-first-class-integration-examples). They cover `POST /v1/query/delta/snapshot-descriptor`, descriptor fail-closed cases, `POST /v1/catalog/read-access-plan`, grant-scoped object route payloads, the object-grant OpenAPI schema, audit event evidence shape, and the browser-safe `brokered_delta`, `delta_sharing`, `sql_fallback_required`, and `blocked` plan outcomes. The release-facing hash manifest lives at [`docs/release-gates/daxis-contract-artifacts.sha256`](../release-gates/daxis-contract-artifacts.sha256).
+Daxis-specific handoff fixtures live in [`docs/integrations/daxis/daxis-first-class-integration-examples/`](../integrations/daxis/daxis-first-class-integration-examples/). They cover `POST /v1/query/delta/snapshot-descriptor`, descriptor fail-closed cases, `POST /v1/catalog/read-access-plan`, grant-scoped object route payloads, the object-grant OpenAPI schema, audit event evidence shape, and the browser-safe `brokered_delta`, `delta_sharing`, `sql_fallback_required`, and `blocked` plan outcomes. The release-facing hash manifest lives at [`docs/release-gates/daxis-contract-artifacts.sha256`](../release-gates/daxis-contract-artifacts.sha256).
 
 ## Field Semantics
 

@@ -63,7 +63,7 @@ def check_relative_path(path_text: str, label: str) -> None:
 
 
 expect(matrix.get("matrix") == "daxis_first_class_strategy_traceability", "invalid traceability matrix id")
-expect(matrix.get("strategy") == "docs/program/daxis-first-class-integration-strategy.md", "unexpected strategy path")
+expect(matrix.get("strategy") == "docs/integrations/daxis/daxis-first-class-integration-strategy.md", "unexpected strategy path")
 check_relative_path(matrix["strategy"], "strategy document")
 
 expected_milestones = ["M0", "M1", "M2", "M3", "M4"]

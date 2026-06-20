@@ -6,10 +6,10 @@
 - Related:
   - [Daxis first-class integration strategy](./daxis-first-class-integration-strategy.md)
   - [Daxis external proof handoff](./daxis-external-proof-handoff.md)
-  - [Browser observability contract](./browser-observability-contract.md)
-  - [Browser release integration runbook](./browser-release-integration-runbook.md)
-  - [Daxis operational readiness gate](../release-gates/daxis-operational-readiness.json)
-  - [Daxis external proof packet](../release-gates/daxis-external-proof-packet.json)
+  - [Browser observability contract](../../program/browser-observability-contract.md)
+  - [Browser release integration runbook](../../program/browser-release-integration-runbook.md)
+  - [Daxis operational readiness gate](../../release-gates/daxis-operational-readiness.json)
+  - [Daxis external proof packet](../../release-gates/daxis-external-proof-packet.json)
 
 This document defines the operational evidence Daxis needs before Axon can be treated as stable default browser read compute. It is a contract and template for Daxis production systems. It does not claim that this repository contains live dashboards, alert routing, rollout configuration services, oncall schedules, or production table inventories.
 
@@ -102,7 +102,7 @@ Daxis should not treat Axon as stable default read compute until these are true:
 - Axon release evidence is repeatable and includes query-contract, Browser SDK, DataFusion runtime, browser matrix, Daxis default-worker dependency-boundary, skip-safe public GCS live-smoke, contract-artifact, and operational-readiness gates.
 
 The machine-readable gate is
-[`docs/release-gates/daxis-operational-readiness.json`](../release-gates/daxis-operational-readiness.json),
+[`docs/release-gates/daxis-operational-readiness.json`](../../release-gates/daxis-operational-readiness.json),
 checked by `bash tests/conformance/verify_daxis_operational_readiness.sh`.
 The repo-owned release evidence runner is
 `bash tests/conformance/verify_daxis_release_evidence.sh`; use `--list` to

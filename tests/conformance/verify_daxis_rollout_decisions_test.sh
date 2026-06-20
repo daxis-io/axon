@@ -10,8 +10,8 @@ register="$repo_root/docs/release-gates/daxis-production-rollout-decisions.json"
 
 for doc in \
 	docs/adr/ADR-0008-daxis-browser-read-compute-contract.md \
-	docs/program/daxis-first-class-integration-strategy.md \
-	docs/program/daxis-operational-maturity.md \
+	docs/integrations/daxis/daxis-first-class-integration-strategy.md \
+	docs/integrations/daxis/daxis-operational-maturity.md \
 	docs/release-gates/daxis-browser-datafusion-budget-profile.json \
 	docs/release-gates/daxis-contract-artifacts.sha256 \
 	docs/release-gates/daxis-external-proof-packet.json \
@@ -170,8 +170,8 @@ write_valid_register() {
   "register": "daxis_production_rollout_decisions",
   "sourceDocs": [
     "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md",
-    "docs/program/daxis-first-class-integration-strategy.md",
-    "docs/program/daxis-operational-maturity.md",
+    "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
+    "docs/integrations/daxis/daxis-operational-maturity.md",
     "docs/release-gates/daxis-browser-datafusion-budget-profile.json",
     "docs/release-gates/daxis-contract-artifacts.sha256",
     "docs/release-gates/daxis-external-proof-packet.json",
@@ -190,7 +190,7 @@ write_valid_register() {
         "POST /object-grants/{grantId}/batch-sign",
         "GET /object-grants/{grantId}/range"
       ],
-      "evidence": ["docs/program/daxis-first-class-integration-strategy.md"]
+      "evidence": ["docs/integrations/daxis/daxis-first-class-integration-strategy.md"]
     },
     "initialAccessMode": {
       "status": "decided",
@@ -198,7 +198,7 @@ write_valid_register() {
       "allowedModes": ["signed_url", "proxy"],
       "fallbackModes": ["sql_fallback_required", "server_fallback", "blocked"],
       "decision": "Preserve explicit fallback/block states when browser access is not allowed.",
-      "evidence": ["docs/program/daxis-first-class-integration-strategy.md"]
+      "evidence": ["docs/integrations/daxis/daxis-first-class-integration-strategy.md"]
     },
     "signedUrlTtlAndRefresh": {
       "status": "external_signoff_required",
@@ -206,12 +206,12 @@ write_valid_register() {
       "refreshLeadTimeSeconds": 60,
       "sameSnapshotRequired": true,
       "externalOwner": "Daxis security engineering and storage platform",
-      "evidence": ["docs/program/daxis-first-class-integration-strategy.md"]
+      "evidence": ["docs/integrations/daxis/daxis-first-class-integration-strategy.md"]
     },
     "descriptorRefreshSnapshotPolicy": {
       "status": "decided",
       "sameSnapshotRequired": true,
-      "evidence": ["docs/program/daxis-first-class-integration-strategy.md"]
+      "evidence": ["docs/integrations/daxis/daxis-first-class-integration-strategy.md"]
     },
     "browserBudgets": {
       "status": "decided",
@@ -296,7 +296,7 @@ write_valid_register() {
         "currentPromotionState": "blocked_external_proof_required",
         "blockerRegister": "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md"
       },
-      "evidence": ["docs/program/daxis-first-class-integration-strategy.md"]
+      "evidence": ["docs/integrations/daxis/daxis-first-class-integration-strategy.md"]
     },
     "initialTableEligibility": {
       "status": "decided",
@@ -307,7 +307,7 @@ write_valid_register() {
         "no_governed_views",
         "browser_supported_delta_features"
       ],
-      "evidence": ["docs/program/daxis-first-class-integration-strategy.md"]
+      "evidence": ["docs/integrations/daxis/daxis-first-class-integration-strategy.md"]
     },
     "dashboardAlertThresholds": {
       "status": "external_signoff_required",
@@ -316,7 +316,7 @@ write_valid_register() {
       "workerStartupFailurePageCount": 5,
       "corsFailurePageCount": 3,
       "externalOwner": "Daxis SRE / production engineering",
-      "evidence": ["docs/program/daxis-operational-maturity.md"]
+      "evidence": ["docs/integrations/daxis/daxis-operational-maturity.md"]
     }
   }
 }
@@ -339,7 +339,7 @@ import sys
 path = sys.argv[1]
 with open(path, encoding="utf-8") as handle:
     register = json.load(handle)
-register["sourceDocs"].append("docs/program/daxis-first-class-integration-strategy.md")
+register["sourceDocs"].append("docs/integrations/daxis/daxis-first-class-integration-strategy.md")
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(register, handle)
 PY

@@ -64,8 +64,8 @@ for source_doc in source_docs:
     resolve_repo_path(source_doc, "source doc")
 for required_source in [
     "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md",
-    "docs/program/daxis-first-class-integration-strategy.md",
-    "docs/program/daxis-operational-maturity.md",
+    "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
+    "docs/integrations/daxis/daxis-operational-maturity.md",
     "docs/release-gates/daxis-browser-datafusion-budget-profile.json",
     "docs/release-gates/daxis-contract-artifacts.sha256",
     "docs/release-gates/daxis-external-proof-packet.json",

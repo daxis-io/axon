@@ -1,14 +1,14 @@
 # Axon
 
-A query engine for Delta Lake that runs in the browser. When the browser can't handle a query, the same request falls back to a native DataFusion runtime.
+Axon is a standalone lakehouse workbench and browser/native runtime for inspecting and querying open lakehouse data. It opens Delta and Parquet data through explicit provider contracts, runs supported reads in the browser, and falls back to a native DataFusion runtime when the browser cannot make a safe correctness claim.
 
-> Axon is early. The browser path is narrow on purpose — the native side is what we test browser results against. Expect things to change.
+> Axon is early. Browser support is intentionally bounded, and the native side is what we test browser results against. Expect things to change.
 
 ## What is Axon?
 
-Querying a Delta lake usually means running something. A warehouse, a query service, a serverless worker — whatever it is, you pay for it while it's up and you wait on it when it isn't. The data is sitting in open formats on object storage, but you can't just go read it.
+Querying lakehouse data usually means running something. A warehouse, a query service, a serverless worker — whatever it is, you pay for it while it's up and you wait on it when it isn't. The data is sitting in open formats on local disk or object storage, but direct inspection is still awkward.
 
-Axon lets the browser read it. For queries the browser can handle, it pulls Parquet byte ranges directly from object storage over signed URLs and runs the query in the tab. No query service sits in the middle of the scan.
+Axon gives that data a workbench. For queries the browser can handle, it pulls Parquet byte ranges from browser-safe local files, public objects, signed URLs, proxy URLs, or brokered object routes and runs the query in the tab. No query service sits in the middle of supported browser scans.
 
 For queries the browser can't handle, the same request runs on a native DataFusion runtime instead. That side is a Rust crate, so you run it wherever you already have compute. Laptop, container, VM, whatever.
 
@@ -16,38 +16,40 @@ What that buys you:
 
 - Lower cost. Browser queries are about as cheap as the byte-range reads they make. No always-on compute.
 - Portable. Native side is a crate, not a vendor-locked service. Browser side is signed URLs and a frontend.
-- Lakehouse queries without managed query compute. For supported reads, once the data is exposed through a browser-safe descriptor or public/brokered object access, Axon can query Delta object storage directly in the tab.
+- Lakehouse queries without managed query compute. For supported reads, once the data is exposed through a browser-safe descriptor or provider-backed access plan, Axon can query Delta and Parquet data directly in the tab.
 
 ## How it fits together
 
 ```text
-            Caller (browser)
-            QueryRequest → axon_table
-                    │
+            Workbench / SDK
+                  │
+                  ▼
+        Lakehouse provider model
+   LocalDelta | ObjectStorage | UnityCatalog | DeltaSharing
+                  │
+                  ▼
+           query-router: browser?
+                  │
+      yes ────────┴──────── no / fallback
+       │                         │
+       ▼                         ▼
+ Browser runtime           Native runtime
+ DataFusion WASM           DataFusion + delta-rs
+ Browser-safe reads        Correctness oracle
+       │                         │
+       └────────────┬────────────┘
                     ▼
-            query-router: browser?
-                    │
-        yes  ───────┴───────  no / fallback
-         │                         │
-         ▼                         ▼
-   Browser runtime          Native runtime
-   (WASM)                   (DataFusion + delta-rs)
-   HTTP range reads         Full SQL
-   Parquet planning         Correctness oracle
-   Narrow executor
-         │                         │
-         └────────────┬────────────┘
-                      ▼
-              delta-control-plane
-              (snapshot resolution,
-               table policy)
+       Result, metrics, fallback contract
 ```
 
-Three rules keep the two tiers honest:
+Three rules keep the providers and execution targets honest:
 
-1. **One contract.** Both runtimes use the same request and response types from `query-contract`, including the reasons for any fallback.
-2. **Native is the oracle.** Every SQL case the browser claims to support has a matching native test. If they disagree, the browser stops and the native runtime takes the query.
-3. **The browser tells you when it can't help.** Unsupported aggregates, unknown partition types, multi-partition execution, missing footer stats, identity drift — all come back as a fallback reason instead of a guess.
+1. **Providers are not execution engines.** `LocalDelta`, `ObjectStorage`, `UnityCatalog`, and `DeltaSharing` describe how Axon opens lakehouse data; execution targets decide where a query runs.
+2. **One contract.** Browser and native runtimes use the same request and response types from `query-contract`, including the reasons for fallback.
+3. **Native is the oracle.** Every SQL case the browser claims to support has a matching native test. If they disagree, the browser stops and the native runtime takes the query.
+4. **The browser tells you when it can't help.** Unsupported aggregates, unknown partition types, multi-partition execution, missing footer stats, identity drift — all come back as a fallback reason instead of a guess.
+
+Control-plane integrations can provide governed descriptors, approved read plans, release evidence, or deployment policy. They do not become lakehouse providers unless they expose a provider contract that Axon can use independently of that integration policy.
 
 ## Get Started
 
@@ -75,9 +77,11 @@ cargo check \
 
 If you want the architecture context first:
 
+- [Axon workbench architecture](docs/program/axon-workbench-architecture.md)
+- [Provider model](docs/program/provider-model.md)
 - [Browser lakehouse engine strategy](docs/program/browser-lakehouse-engine-strategy.md)
 - [Browser Delta compatibility matrix](docs/program/browser-delta-compatibility-matrix.md)
-- [Browser embedding and deployment](docs/program/browser-embedding-deployment.md)
+- [Daxis integration strategy](docs/integrations/daxis/daxis-first-class-integration-strategy.md)
 
 ## Repo tour
 
@@ -111,8 +115,9 @@ udf-abi, udf-host-wasi      Placeholders for hosted UDF execution
 ## What works today
 
 - Native SQL over Delta tables, with snapshot pinning, partition pruning, and execution-derived metrics.
+- Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`.
 - A browser runtime that bootstraps a snapshot, plans a candidate file set, prunes partitions and integer footer stats, and runs a known SQL subset (filter, project, group, common aggregates, aligned `ORDER BY` / `LIMIT`).
-- Browser-side DataFusion through `wasm-datafusion-session` for the sandbox UI runtime and the Daxis-facing `axon-web-wasm` browser DataFusion default worker.
+- Browser-side DataFusion through `wasm-datafusion-session` for the sandbox UI runtime and the `axon-web-wasm` browser DataFusion app worker.
 - Standard Parquet datasets through browser-safe file descriptors, using the same Parquet range-read and DataFusion query path without requiring Delta log metadata.
 - An OPFS persistent extent cache in `wasm-http-object-store`, bounded per object identity. If persistence fails, it's a cache miss, not an error.
 - A TypeScript SDK with a manifest-based bundle selector. The default bundle is single-threaded; SIMD and threaded tiers exist but aren't assumed.
@@ -121,11 +126,17 @@ udf-abi, udf-host-wasi      Placeholders for hosted UDF execution
 
 ## What's not here yet
 
-- A `services/query-api` HTTP service. Signed URL issuance, proxy-mode requests, audit logging, request correlation, and CORS validation are all external for now.
-- Session-level persistent caches in `wasm-query-session`. The lower-level OPFS adapter exists; the session itself is still in-memory only.
-- A standalone npm package asset pipeline that copies the Daxis-facing `axon-web-worker.js` and `axon_web_wasm_bg.wasm` artifacts into `dist/worker/`; app deployments package those assets today. The legacy `browser-engine-worker` artifact remains compatibility evidence, not the Daxis default worker.
+- A `services/query-api` HTTP service. Signed URL issuance, proxy-mode request issuance, audit logging, request correlation, and CORS/origin validation are all external for now.
+- Session-level persistent caches in `wasm-query-session`. The lower-level OPFS adapter exists; OPFS / IndexedDB session-level persistence is deferred, and the session itself is still in-memory only.
+- A standalone npm package asset pipeline that copies `axon-web-worker.js` and `axon_web_wasm_bg.wasm` artifacts into `dist/worker/`; app deployments package those assets today. The legacy `browser-engine-worker` artifact remains compatibility evidence, not the default app worker.
 
 The full launch checklist lives in [`docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md`](docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md). External blockers are in [`docs/release-gates/browser-wasm-delta-gcs-external-blockers.md`](docs/release-gates/browser-wasm-delta-gcs-external-blockers.md).
+
+## Integrations And Governed Deployments
+
+Axon integrations should use generic boundaries such as `ControlPlaneIntegration`, `ApprovedReadPlanSource`, and `GovernedDescriptorSource`. These boundaries let external products approve reads, provide descriptors, attach rollout policy, or package deployments without changing Axon's provider taxonomy.
+
+Daxis remains a supported governed deployment integration. In that integration, the Daxis-facing `axon-web-wasm` browser DataFusion default worker is the app worker path, while the legacy `browser-engine-worker` remains compatibility evidence. Its strategy, operational maturity contract, external proof handoff, and compatibility examples live under [`docs/integrations/daxis/`](docs/integrations/daxis/). Release-gate artifacts for that integration remain under [`docs/release-gates/`](docs/release-gates/).
 
 ## Development
 
@@ -170,8 +181,11 @@ CI runs the same commands behind `google-github-actions/auth` when `AXON_GCP_CRE
 
 ## Going deeper
 
+- [Axon workbench architecture](docs/program/axon-workbench-architecture.md)
+- [Provider model](docs/program/provider-model.md)
 - [Browser lakehouse engine strategy](docs/program/browser-lakehouse-engine-strategy.md)
 - [Browser Delta compatibility matrix](docs/program/browser-delta-compatibility-matrix.md)
+- [Daxis integration strategy](docs/integrations/daxis/daxis-first-class-integration-strategy.md)
 - [Browser embedding and deployment](docs/program/browser-embedding-deployment.md)
 - [Release handoff](docs/program/browser-lakehouse-release-handoff.md) and [integration runbook](docs/program/browser-release-integration-runbook.md)
 - [Browser dependency review](docs/program/browser-dependency-compatibility-review-checklist.md)

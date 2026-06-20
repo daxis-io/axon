@@ -17,9 +17,9 @@ compute_hash() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
 
-mkdir -p "$repo_root/docs/program/daxis-first-class-integration-examples"
+mkdir -p "$repo_root/docs/integrations/daxis/daxis-first-class-integration-examples"
 
-artifact_path="docs/program/daxis-first-class-integration-examples/example.json"
+artifact_path="docs/integrations/daxis/daxis-first-class-integration-examples/example.json"
 artifact_file="$repo_root/$artifact_path"
 
 printf '{"contract":"stable"}\n' >"$artifact_file"

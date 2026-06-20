@@ -11,11 +11,11 @@ index="$repo_root/docs/adr/README.md"
 
 mkdir -p "$repo_root/docs/adr" "$repo_root/docs/program" "$repo_root/docs/release-gates"
 for doc in \
-  docs/program/daxis-first-class-integration-strategy.md \
+  docs/integrations/daxis/daxis-first-class-integration-strategy.md \
   docs/release-gates/daxis-production-rollout-decisions.json \
   docs/release-gates/daxis-strategy-traceability.json \
   docs/release-gates/daxis-external-proof-packet.json \
-  docs/program/daxis-external-proof-handoff.md; do
+  docs/integrations/daxis/daxis-external-proof-handoff.md; do
   mkdir -p "$repo_root/$(dirname "$doc")"
   printf '# test fixture\n' >"$repo_root/$doc"
 done
@@ -58,11 +58,11 @@ The ADR is implemented only when release evidence and external proof gates pass.
 
 ## References
 
-- `docs/program/daxis-first-class-integration-strategy.md`
+- `docs/integrations/daxis/daxis-first-class-integration-strategy.md`
 - `docs/release-gates/daxis-production-rollout-decisions.json`
 - `docs/release-gates/daxis-strategy-traceability.json`
 - `docs/release-gates/daxis-external-proof-packet.json`
-- `docs/program/daxis-external-proof-handoff.md`
+- `docs/integrations/daxis/daxis-external-proof-handoff.md`
 MD
 }
 

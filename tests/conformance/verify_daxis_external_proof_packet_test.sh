@@ -15,9 +15,9 @@ mkdir -p "$repo_root/docs/program" "$repo_root/docs/release-gates" "$repo_root/t
 
 for doc in \
 	docs/adr/ADR-0008-daxis-browser-read-compute-contract.md \
-	docs/program/daxis-first-class-integration-strategy.md \
-	docs/program/daxis-operational-maturity.md \
-	docs/program/daxis-external-proof-handoff.md \
+	docs/integrations/daxis/daxis-first-class-integration-strategy.md \
+	docs/integrations/daxis/daxis-operational-maturity.md \
+	docs/integrations/daxis/daxis-external-proof-handoff.md \
 	docs/release-gates/daxis-external-proof-attachment-template.md \
 	docs/release-gates/daxis-dirty-worktree-review-template.json \
 	docs/release-gates/daxis-strategy-traceability.json \
@@ -176,7 +176,7 @@ EOF
 }
 
 write_external_proof_handoff() {
-	cat >"$repo_root/docs/program/daxis-external-proof-handoff.md" <<'EOF'
+	cat >"$repo_root/docs/integrations/daxis/daxis-external-proof-handoff.md" <<'EOF'
 # Daxis External Proof Handoff
 
 The machine-readable packet is `docs/release-gates/daxis-external-proof-packet.json`, checked by
@@ -382,8 +382,8 @@ packet = {
         "docs/release-gates/daxis-production-rollout-decisions.json",
         "docs/release-gates/daxis-operational-readiness.json",
         "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
-        "docs/program/daxis-external-proof-handoff.md",
-        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/integrations/daxis/daxis-external-proof-handoff.md",
+        "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
         "docs/release-gates/daxis-external-proof-attachment-template.md",
         "docs/release-gates/daxis-dirty-worktree-review-template.json",
     ],
@@ -481,7 +481,7 @@ packet = {
             "acceptanceChecks": ["acceptance check"],
             "rollbackEvidence": "server_fallback proof",
             "axonReferences": [
-                "docs/program/daxis-first-class-integration-strategy.md",
+                "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
                 "docs/release-gates/daxis-strategy-traceability.json",
             ],
         }
@@ -568,7 +568,7 @@ for item_id, milestone in items:
             "id": item_id,
             "status": "external_required",
             "summary": "external proof required",
-            "evidence": ["docs/program/daxis-first-class-integration-strategy.md"],
+            "evidence": ["docs/integrations/daxis/daxis-first-class-integration-strategy.md"],
             "externalOwner": "Daxis owner",
             "externalProof": "Daxis proof",
         }
@@ -576,7 +576,7 @@ for item_id, milestone in items:
 
 matrix = {
     "matrix": "daxis_first_class_strategy_traceability",
-    "strategy": "docs/program/daxis-first-class-integration-strategy.md",
+    "strategy": "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
     "milestones": milestones,
 }
 with open(traceability_path, "w", encoding="utf-8") as handle:
@@ -809,7 +809,7 @@ import sys
 path = sys.argv[1]
 with open(path, encoding="utf-8") as handle:
     packet = json.load(handle)
-packet["sourceDocs"].append("docs/program/daxis-first-class-integration-strategy.md")
+packet["sourceDocs"].append("docs/integrations/daxis/daxis-first-class-integration-strategy.md")
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(packet, handle)
 PY
@@ -821,7 +821,7 @@ fi
 write_valid_packet
 
 write_external_proof_handoff
-python3 - "$repo_root/docs/program/daxis-external-proof-handoff.md" <<'PY'
+python3 - "$repo_root/docs/integrations/daxis/daxis-external-proof-handoff.md" <<'PY'
 import sys
 
 path = sys.argv[1]
@@ -2050,7 +2050,7 @@ matrix["milestones"]["M0"]["exitCriteria"].append(
         "id": "daxis_architecture_default_named",
         "status": "external_required",
         "summary": "Daxis architecture names Axon as the default browser engine.",
-        "evidence": ["docs/program/daxis-first-class-integration-strategy.md"],
+        "evidence": ["docs/integrations/daxis/daxis-first-class-integration-strategy.md"],
         "externalOwner": "Daxis owner",
         "externalProof": "Daxis proof",
     }

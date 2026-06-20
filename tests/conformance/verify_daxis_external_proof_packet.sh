@@ -77,7 +77,7 @@ required_source_docs = [
         "Daxis architecture ADR",
     ),
     (
-        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
         "Daxis first-class integration strategy",
     ),
     (
@@ -101,7 +101,7 @@ required_source_docs = [
         "external blocker register",
     ),
     (
-        "docs/program/daxis-external-proof-handoff.md",
+        "docs/integrations/daxis/daxis-external-proof-handoff.md",
         "Daxis external proof handoff",
     ),
     (
@@ -119,7 +119,7 @@ for required_source_doc, label in required_source_docs:
         f"sourceDocs must include {label}",
     )
 
-external_proof_handoff = "docs/program/daxis-external-proof-handoff.md"
+external_proof_handoff = "docs/integrations/daxis/daxis-external-proof-handoff.md"
 handoff_text = (repo_root / external_proof_handoff).read_text(encoding="utf-8")
 for required_text in [
     "docs/release-gates/daxis-external-proof-packet.json",

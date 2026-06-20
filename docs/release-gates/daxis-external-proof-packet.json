@@ -9,10 +9,10 @@
     "docs/release-gates/daxis-production-rollout-decisions.json",
     "docs/release-gates/daxis-operational-readiness.json",
     "docs/release-gates/browser-wasm-delta-gcs-external-blockers.md",
-    "docs/program/daxis-external-proof-handoff.md",
+    "docs/integrations/daxis/daxis-external-proof-handoff.md",
     "docs/release-gates/daxis-external-proof-attachment-template.md",
     "docs/release-gates/daxis-dirty-worktree-review-template.json",
-    "docs/program/daxis-first-class-integration-strategy.md"
+    "docs/integrations/daxis/daxis-first-class-integration-strategy.md"
   ],
   "daxisVerificationPlan": {
     "purpose": "Current-state checks Daxis owners can run before attaching Daxis proof artifacts. These commands make the Daxis-side evidence reviewable, but they do not replace production endpoint, dashboard, rollout-control, or oncall proof.",
@@ -126,7 +126,7 @@
       ],
       "rollbackEvidence": "Docs include server fallback as the default rollback path for unsupported browser execution.",
       "axonReferences": [
-        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
         "docs/release-gates/daxis-strategy-traceability.json"
       ]
     },
@@ -147,7 +147,7 @@
       ],
       "rollbackEvidence": "Daxis architecture and rollout docs describe how a segment returns to server_fallback if Axon cannot remain the default browser path.",
       "axonReferences": [
-        "docs/program/daxis-first-class-integration-strategy.md",
+        "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
         "docs/release-gates/daxis-strategy-traceability.json",
         "docs/release-gates/daxis-production-rollout-decisions.json"
       ]
@@ -172,8 +172,8 @@
       "rollbackEvidence": "Daxis can route affected tenants or table classes to server_fallback while preserving the resolver failure reason.",
       "axonReferences": [
         "apps/axon-web/examples/daxis-descriptor-resolver.ts",
-        "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-response.signed-url.json",
-        "docs/program/daxis-first-class-integration-examples/snapshot-descriptor-response.snapshot-version-mismatch.json"
+        "docs/integrations/daxis/daxis-first-class-integration-examples/snapshot-descriptor-response.signed-url.json",
+        "docs/integrations/daxis/daxis-first-class-integration-examples/snapshot-descriptor-response.snapshot-version-mismatch.json"
       ]
     },
     {
@@ -219,7 +219,7 @@
       "rollbackEvidence": "Daxis can return sql_fallback_required for affected table classes or tenants.",
       "axonReferences": [
         "apps/axon-web/examples/daxis-read-access-plan.ts",
-        "docs/program/daxis-first-class-integration-examples/read-access-plan.brokered-delta.json",
+        "docs/integrations/daxis/daxis-first-class-integration-examples/read-access-plan.brokered-delta.json",
         "crates/query-contract/schemas/read-access-plan.schema.json"
       ]
     },
@@ -266,7 +266,7 @@
       ],
       "rollbackEvidence": "Dashboard includes a segment-level view showing server_fallback after rollback.",
       "axonReferences": [
-        "docs/program/daxis-operational-maturity.md",
+        "docs/integrations/daxis/daxis-operational-maturity.md",
         "docs/release-gates/daxis-operational-readiness.json",
         "docs/program/browser-observability-contract.md"
       ]
@@ -290,7 +290,7 @@
       ],
       "rollbackEvidence": "Runbook drill proves Daxis can force server_fallback without a new Axon release.",
       "axonReferences": [
-        "docs/program/daxis-operational-maturity.md",
+        "docs/integrations/daxis/daxis-operational-maturity.md",
         "docs/release-gates/daxis-operational-readiness.json",
         "docs/program/browser-release-integration-runbook.md"
       ]
@@ -316,7 +316,7 @@
       "axonReferences": [
         "docs/release-gates/daxis-operational-readiness.json",
         "docs/release-gates/daxis-production-rollout-decisions.json",
-        "docs/program/daxis-operational-maturity.md"
+        "docs/integrations/daxis/daxis-operational-maturity.md"
       ]
     },
     {
@@ -340,7 +340,7 @@
       "axonReferences": [
         "docs/release-gates/daxis-operational-readiness.json",
         "docs/release-gates/daxis-production-rollout-decisions.json",
-        "docs/program/daxis-operational-maturity.md"
+        "docs/integrations/daxis/daxis-operational-maturity.md"
       ]
     }
   ],

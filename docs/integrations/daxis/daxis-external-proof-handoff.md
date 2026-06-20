@@ -6,16 +6,16 @@
 - Related:
   - [Daxis first-class integration strategy](./daxis-first-class-integration-strategy.md)
   - [Daxis operational maturity contract](./daxis-operational-maturity.md)
-  - [Daxis external proof packet](../release-gates/daxis-external-proof-packet.json)
-  - [Daxis external proof attachment template](../release-gates/daxis-external-proof-attachment-template.md)
-  - [Daxis strategy traceability matrix](../release-gates/daxis-strategy-traceability.json)
+  - [Daxis external proof packet](../../release-gates/daxis-external-proof-packet.json)
+  - [Daxis external proof attachment template](../../release-gates/daxis-external-proof-attachment-template.md)
+  - [Daxis strategy traceability matrix](../../release-gates/daxis-strategy-traceability.json)
 
 This handoff turns the Axon-side strategy, traceability, rollout, and operational-readiness contracts into the proof packet Daxis must attach during rollout review. It does not claim the external Daxis production systems exist in this repository.
 
 ## Required Packet
 
 The machine-readable packet is
-[`docs/release-gates/daxis-external-proof-packet.json`](../release-gates/daxis-external-proof-packet.json),
+[`docs/release-gates/daxis-external-proof-packet.json`](../../release-gates/daxis-external-proof-packet.json),
 checked by `bash tests/conformance/verify_daxis_external_proof_packet.sh`.
 
 Each packet item names:
@@ -69,7 +69,7 @@ that ties every modified or untracked path to the rollout segment. Clean
 checkouts should use `clean`.
 
 Every Daxis proof attachment should use
-[`docs/release-gates/daxis-external-proof-attachment-template.md`](../release-gates/daxis-external-proof-attachment-template.md)
+[`docs/release-gates/daxis-external-proof-attachment-template.md`](../../release-gates/daxis-external-proof-attachment-template.md)
 and carry the metadata named in `proofAttachmentSchema`: item ID, milestone,
 owner, capture time, environment, rollout segment, artifact URI, verification
 command or dashboard URL, exit or review status, rollback evidence URI, Axon
@@ -96,7 +96,7 @@ must also attach `daxis_worktree_review_json_uri` and
 `daxis_worktree_review_json_sha256`, where the `daxis.dirty_worktree_review.v1`
 artifact uses `review_state` `accepted`, matches the helper JSON Daxis identity
 and status lines, and lists each dirty path in `reviewed_paths`. Use
-[`docs/release-gates/daxis-dirty-worktree-review-template.json`](../release-gates/daxis-dirty-worktree-review-template.json)
+[`docs/release-gates/daxis-dirty-worktree-review-template.json`](../../release-gates/daxis-dirty-worktree-review-template.json)
 as the starting artifact shape; the packet records that path as
 `proofAttachmentSchema.dirtyWorktreeReviewTemplatePath` and records the digest
 rule as

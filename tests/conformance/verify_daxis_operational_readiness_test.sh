@@ -81,12 +81,12 @@ EOF
 
 write_release_evidence_runner
 for doc in \
-	docs/program/daxis-operational-maturity.md \
+	docs/integrations/daxis/daxis-operational-maturity.md \
 	docs/adr/ADR-0008-daxis-browser-read-compute-contract.md \
 	docs/program/browser-observability-contract.md \
 	docs/program/browser-release-integration-runbook.md \
-	docs/program/daxis-first-class-integration-strategy.md \
-	docs/program/daxis-external-proof-handoff.md \
+	docs/integrations/daxis/daxis-first-class-integration-strategy.md \
+	docs/integrations/daxis/daxis-external-proof-handoff.md \
 	docs/release-gates/daxis-production-rollout-decisions.json \
 	docs/release-gates/daxis-external-proof-packet.json \
 	docs/release-gates/daxis-release-bundle-manifest.json \
@@ -131,7 +131,7 @@ JSON
 }
 
 write_operational_maturity_doc() {
-	cat >"$repo_root/docs/program/daxis-operational-maturity.md" <<'EOF'
+	cat >"$repo_root/docs/integrations/daxis/daxis-operational-maturity.md" <<'EOF'
 # Daxis Operational Maturity Contract
 
 The machine-readable gate is `docs/release-gates/daxis-operational-readiness.json`,
@@ -202,12 +202,12 @@ write_valid_contract() {
   "repoOwnedScope": "contract fixture",
   "externalProductionScope": "production systems are external",
   "sourceDocs": [
-    "docs/program/daxis-operational-maturity.md",
+    "docs/integrations/daxis/daxis-operational-maturity.md",
     "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md",
     "docs/program/browser-observability-contract.md",
     "docs/program/browser-release-integration-runbook.md",
-    "docs/program/daxis-first-class-integration-strategy.md",
-    "docs/program/daxis-external-proof-handoff.md",
+    "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
+    "docs/integrations/daxis/daxis-external-proof-handoff.md",
     "docs/release-gates/daxis-production-rollout-decisions.json",
     "docs/release-gates/daxis-external-proof-packet.json",
     "docs/release-gates/daxis-release-bundle-manifest.json",
@@ -424,7 +424,7 @@ import sys
 path = sys.argv[1]
 with open(path, encoding="utf-8") as handle:
     contract = json.load(handle)
-contract["sourceDocs"].append("docs/program/daxis-operational-maturity.md")
+contract["sourceDocs"].append("docs/integrations/daxis/daxis-operational-maturity.md")
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(contract, handle)
 PY
@@ -454,7 +454,7 @@ fi
 
 write_valid_contract
 write_operational_maturity_doc
-python3 - "$repo_root/docs/program/daxis-operational-maturity.md" <<'PY'
+python3 - "$repo_root/docs/integrations/daxis/daxis-operational-maturity.md" <<'PY'
 import sys
 
 path = sys.argv[1]

@@ -59,15 +59,15 @@ for source_doc in source_docs:
     expect(not source_doc.startswith("/") and ".." not in Path(source_doc).parts, f"unsafe source doc path: {source_doc}")
     expect((repo_root / source_doc).is_file(), f"missing source doc: {source_doc}")
 
-operational_maturity_doc = "docs/program/daxis-operational-maturity.md"
+operational_maturity_doc = "docs/integrations/daxis/daxis-operational-maturity.md"
 release_runbook_doc = "docs/program/browser-release-integration-runbook.md"
 for required_source in [
     "docs/adr/ADR-0008-daxis-browser-read-compute-contract.md",
     operational_maturity_doc,
     "docs/program/browser-observability-contract.md",
     release_runbook_doc,
-    "docs/program/daxis-first-class-integration-strategy.md",
-    "docs/program/daxis-external-proof-handoff.md",
+    "docs/integrations/daxis/daxis-first-class-integration-strategy.md",
+    "docs/integrations/daxis/daxis-external-proof-handoff.md",
     "docs/release-gates/daxis-production-rollout-decisions.json",
     "docs/release-gates/daxis-external-proof-packet.json",
     "docs/release-gates/daxis-release-bundle-manifest.json",
