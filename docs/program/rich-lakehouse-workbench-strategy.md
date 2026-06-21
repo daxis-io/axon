@@ -81,6 +81,20 @@ Define the **discovery-only** `CatalogProvider` interface and ship the `DirectUn
 - **Typed contracts come from E3A.** E1's node/metadata shapes are the E3A-generated proto messages (DirectUC maps UC's OpenAPI types into the normalized messages), not hand-written TS sketches.
 - **Open question:** where UC credential exchange / CORS lives given [ADR-0002](../adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md) — likely the Envoy session seam from E6 (a thin token/proxy boundary), reconciled with the pluggable model.
 
+> **Update (2026-06-21).** The seam is now defined by [ADR-0010 "Pluggable
+> Catalog Providers"](../adr/ADR-0010-pluggable-catalog-providers.md) and adopts
+> the E3A **generated** `axon/catalog/v1` + `axon/dataaccess/v1` contracts as the
+> canonical node/resolution model (not hand-written types). Two clarifications
+> resolve the open question above: (1) navigation node shapes come from the
+> generated proto and providers expose plain paginators (`Page<T>`), with the
+> TanStack Query options layered on top; (2) **Envoy is deployment-only** — dev
+> and integration tests run a real OSS UC server reached same-origin through the
+> Vite proxy (`/api/uc`), keeping `SessionHttp`'s contract unchanged. E1 keeps
+> `resolveTableRead` on the provider as the bounded entry point into the E9
+> DataAccessResolver/ExecutionProvider seams: external Delta on browser-reachable
+> storage resolves to a `descriptor`; governed/brokered shapes fail closed to
+> `fallback`/`blocked`.
+
 Dependency: needs E0, E3A (contract messages), and E6 (auth for remote APIs); feeds E2, E4, E7, E8, and E9 (table refs).
 
 ### E2 — Editor Modernization: Monaco + Catalog-Aware SQL IntelliSense

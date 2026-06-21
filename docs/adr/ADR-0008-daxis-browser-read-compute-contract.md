@@ -18,6 +18,16 @@ Production proof remains external for Daxis service endpoints, signed URL policy
 
 ## Context
 
+> **Forward note (ADR-0010, 2026-06-21).** [ADR-0010 "Pluggable Catalog
+> Providers"](ADR-0010-pluggable-catalog-providers.md) generalizes the read seam
+> described here into a provider-agnostic `CatalogProvider` interface whose
+> `resolveTableRead` returns a `TableReadResolution` union (`descriptor |
+> read_access_plan | fallback | blocked`). This ADR is now the **Daxis / brokered
+> profile** of that seam: the `read_access_plan` arm is the reserved Daxis
+> outcome, and everything below (control-plane authority, fail-closed reasons,
+> no-secrets boundary) is unchanged and remains binding for the Daxis provider.
+> No rewrite is implied.
+
 The Daxis integration strategy needs a durable architectural decision, not only strategy text. The key risk is turning browser execution into an implicit control plane by letting runtime code accept secrets, infer authorization, silently reroute, or broaden table access. The safe architecture keeps Daxis authoritative for trust and production operations while making Axon authoritative for browser read execution within an explicit compatibility envelope.
 
 The first integration contract is intentionally narrow: server-resolved descriptors are easier to audit than browser-side discovery because Daxis can make policy, snapshot, access-mode, and object-scope decisions before the browser worker opens the table. Brokered object grants widen the read path only after Daxis can prove grant-scoped routes, expiry, audit correlation, and fallback behavior.

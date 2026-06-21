@@ -108,6 +108,27 @@ Conflating them (as the E0 plan's single `['catalog', connectionId, 'table-deriv
 
 ### 3.2 Types (sketch)
 
+> **Amendment (E3A contract adoption, 2026-06-21).** The node shapes below are
+> now **generated**, not hand-written. `CatalogNode/SchemaNode/TableNode/`
+> `ColumnNode/ViewNode/VolumeNode/FunctionNode/ModelNode/TableMetadata/`
+> `ProviderCapabilities/TableRef/VolumeRef` and the `ProviderKind/ReadAuthority/`
+> `TableType/VolumeType` enums come from `axon/catalog/v1`
+> ([catalog_pb.ts](../../apps/axon-web/src/generated/proto/axon/catalog/v1/catalog_pb.ts));
+> `ReadAccessPlan`, `BrowserHttpSnapshotDescriptor`, and `ReadAccessPlanReason`
+> come from `axon/dataaccess/v1`
+> ([dataaccess_pb.ts](../../apps/axon-web/src/generated/proto/axon/dataaccess/v1/dataaccess_pb.ts)).
+> Only seam/infra types stay hand-written and live in
+> [`query/providers/types.ts`](../../apps/axon-web/src/query/providers/types.ts):
+> `CatalogConnection`/`ProviderLocator`/`ConnectionId`, the `Page<T>` cursor
+> wrapper, the `ProviderKindToken` ⇄ proto-enum mapping, and the
+> `CatalogProvider` interface itself. The `TableReadResolution` `{kind}` sketch
+> below is kept as the **in-process seam** type: the `descriptor` arm carries the
+> live `BrowserHttpSnapshotDescriptor` directly to avoid a lossy bigint/null
+> round-trip at the `openDeltaTable()` boundary, while the proto
+> `dataaccess/v1.TableReadResolution` `oneof` (`outcome.case`) remains the wire
+> contract. `isDescriptorResolution`/`isOpenableResolution` type-guards provide
+> ergonomics over the union.
+
 ```ts
 // query/providers/types.ts
 export type ProviderKind = 'direct_uc' | 'daxis' | 'local_delta' | 'object_store';
@@ -167,6 +188,18 @@ export type VolumeRef = { connectionId: ConnectionId; catalog: string; schema: s
 
 ### 3.3 The provider interface
 
+> **Amendment (E3A contract adoption, 2026-06-21).** The shipped interface in
+> [`types.ts`](../../apps/axon-web/src/query/providers/types.ts) exposes the
+> navigation methods as plain async paginators returning `Page<T>`
+> (`listCatalogs/listSchemas/listTables/getTableMetadata/listVolumes/`
+> `getVolumeMetadata/listFunctions/listModels`) rather than returning
+> `queryOptions` directly; the TanStack `queryOptions`/`infiniteQueryOptions`
+> that wrap them (cursor paging, list→detail seeding, prefetch-on-intent,
+> predicate invalidation) live one layer up in
+> [`query/providers/queries.ts`](../../apps/axon-web/src/query/providers/queries.ts).
+> This keeps the provider seam free of React-Query types and lets non-UI callers
+> (run lifecycle, tests) consume it directly. `resolveTableRead` is unchanged.
+
 ```ts
 export interface CatalogProvider {
   readonly connection: CatalogConnection;
@@ -222,6 +255,22 @@ A pure factory keyed by `conn.kind`. The explorer and run lifecycle never branch
 ADR-0002: the browser may read cloud data only via (1) short-lived object-scoped signed HTTPS URLs or (2) a narrow read-proxy. It must never hold service-account JSON, refresh/broad tokens, or bucket-traversal config. **E1 owns only the metadata plane (UC REST, §4.2).** The data plane (table bytes for query execution) is **[E9](../program/rich-lakehouse-workbench-strategy.md)**'s DataAccessResolver/ExecutionProvider concern, and volume *file* bytes are **E8**; both reuse the same rule and the same object-grant path. §4.3 below is retained as a cross-reference to E9.
 
 ### 4.2 Metadata plane — UC REST through Envoy
+
+> **Amendment (local UC via Vite proxy; Envoy is deployment-only, 2026-06-21).**
+> Envoy is a **deployment** concern, not a dev/test prerequisite. For development
+> and integration tests we run a real OSS Unity Catalog server (docker/binary —
+> see [`dev/unity-catalog/`](../../apps/axon-web/dev/unity-catalog/) and the
+> `uc-up`/`uc-down` `just` recipes) and reach it **same-origin** through Vite
+> `server.proxy` (`/api/uc/* → http://localhost:8080/api/2.1/unity-catalog/*` in
+> [vite.config.ts](../../apps/axon-web/vite.config.ts)). `SessionHttp` keeps its
+> `credentials:'include'` + correlation-id + 401/403/404 contract unchanged; the
+> dev proxy stands in for Envoy. OSS UC injects no secrets, so ADR-0002 holds
+> trivially on the metadata plane. The UC *wire* types are generated from a
+> vendored [`openapi/unity-catalog.yaml`](../../apps/axon-web/openapi/unity-catalog.yaml)
+> via `openapi-typescript` (`npm run codegen:uc` + `codegen:uc:check` drift gate)
+> and mapped to `axon/catalog/v1` by
+> [`uc-adapters.ts`](../../apps/axon-web/src/query/providers/uc-adapters.ts).
+> This supersedes the "Envoy required" framing below for dev/test only.
 
 "DirectUnityCatalog" is **not** "browser → Databricks with a PAT." It is:
 
@@ -305,6 +354,17 @@ E1 treats volumes exactly like tables/views in the catalog: they are **listed an
 ---
 
 ## 7. ADR strategy (Decision 5)
+
+> **Numbering update (2026-06-21).** Upstream `main` landed
+> [ADR-0009 "Axon Is The Lakehouse Workbench"](../adr/ADR-0009-axon-is-the-lakehouse-workbench.md)
+> while this work was in flight, so the provider-seam ADR shipped as
+> [**ADR-0010 "Pluggable Catalog Providers And A Unified Table Read Resolution
+> Seam"**](../adr/ADR-0010-pluggable-catalog-providers.md). Note ADR-0010 as
+> landed covers *both* the discovery seam and the read-resolution union (rather
+> than the discovery-only ADR + separate execution ADR sketched below); the
+> future E9 execution/read-resolution ADR therefore takes the next free number.
+> Read "ADR-0009 (discovery)" → ADR-0010 and "ADR-0010 (execution)" → a later E9
+> ADR throughout the rest of this section.
 
 **Add ADR-0009 "Pluggable Catalog Providers (discovery)"** (new file) that:
 - Establishes the **discovery-only** `CatalogProvider` seam (navigation queryOptions over the E3A node/metadata messages) as the contract.
