@@ -2,11 +2,11 @@
 
 - Status: Draft
 - Date: 2026-06-20
-- Scope: Self-contained prompts to seed a dedicated planning session for each effort (E0–E7) in the [Rich Lakehouse Workbench Strategy](./rich-lakehouse-workbench-strategy.md). Each prompt can be pasted into a fresh planning chat.
+- Scope: Self-contained prompts to seed a dedicated planning session for each effort (E0–E8) in the [Rich Lakehouse Workbench Strategy](./rich-lakehouse-workbench-strategy.md). Each prompt can be pasted into a fresh planning chat.
 - Related:
   - [Rich Lakehouse Workbench Strategy](./rich-lakehouse-workbench-strategy.md)
 
-> How to use this file: open a new planning-mode chat for one effort, paste its prompt verbatim, and let the session read the referenced files and produce a detailed execution plan (milestones, risks, test/gate strategy). The prompts are intentionally self-contained — they restate the framing so the session does not need prior context. Each assumes the "pluggable provider model" described in the strategy doc: CatalogProvider, Identity/SessionProvider, AuthorizationProvider (PDP), and ExecutionProvider seams, with Daxis/contract-first as one profile and "direct UC + in-app Cedar + local/remote execution" as another.
+> How to use this file: open a new planning-mode chat for one effort, paste its prompt verbatim, and let the session read the referenced files and produce a detailed execution plan (milestones, risks, test/gate strategy). The prompts are intentionally self-contained — they restate the framing so the session does not need prior context. Each assumes the "pluggable provider model" described in the strategy doc: CatalogProvider, Identity/SessionProvider, AuthorizationProvider (PDP), ExecutionProvider, and FileSystemProvider/Workspace seams, with Daxis/contract-first as one profile and "direct UC + in-app Cedar + local/remote execution" as another.
 
 ---
 
@@ -41,11 +41,11 @@ Context: the connect flow today models four source types but only LocalDelta and
 
 Read these first: apps/axon-web/src/editor/connect/ConnectModal.tsx, data.ts, types.ts, store.ts, ConnectedCatalogs.tsx; apps/axon-web/src/services/query-source.ts, catalog.ts, object-storage.ts, connector-features.ts, types.ts; crates/query-contract/src/lib.rs (ReadAccessPlan family, descriptors); docs/program/browser-uc-brokered-runtime-contract.md; docs/program/browser-owned-descriptor-materialization.md; docs/adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md.
 
-Goal: define the CatalogProvider interface and ship a DirectUnityCatalog provider (list catalogs/schemas/tables/views/volumes + table metadata via UC REST) alongside the existing Daxis/local/object-store paths. Each provider exposes its reads as TanStack Query options (queryKey factory + fetcher) so caching/refresh/dedup/pagination apply uniformly. Deliver: multi-catalog connection registry + catalog/schema/table selectors in sidebar and editor; lazy/paginated catalog tree navigation; volumes browsing and file reading (parquet/csv/json/image preview); a catalog metadata cache feeding E2 and E4.
+Goal: define the CatalogProvider interface and ship a DirectUnityCatalog provider (list catalogs/schemas/tables/views/volumes + table metadata via UC REST) alongside the existing Daxis/local/object-store paths. Each provider exposes its reads as TanStack Query options (queryKey factory + fetcher) so caching/refresh/dedup/pagination apply uniformly. Deliver: multi-catalog connection registry + catalog/schema/table selectors in sidebar and editor; lazy/paginated catalog tree navigation; volumes surfaced as catalog objects (list + metadata via UC /volumes and /volumes/{name}); a catalog metadata cache feeding E2 and E4. Note: browsing the files inside a volume, file preview, and file editing are OUT OF SCOPE for E1 — they belong to E8 (Workspace Files & Volumes). E1 only references a volume as an object; it never opens it.
 
-Key decisions to resolve: (1) the CatalogProvider TypeScript interface and how Daxis's ReadAccessPlan model maps onto the same interface as direct UC REST; (2) where UC credential exchange / CORS lives given ADR-0002 (no cloud secrets in browser) — coordinate with E6's Envoy session seam; (3) the multi-catalog data model and how selectors flow into query execution and the editor; (4) volumes/file-reading scope and how it reuses the existing object-store range-read path; (5) how this generalizes ADR-0008 / the UC brokered contract (Daxis as one profile) — decide whether to amend ADR-0008 or add a new ADR.
+Key decisions to resolve: (1) the CatalogProvider TypeScript interface and how Daxis's ReadAccessPlan model maps onto the same interface as direct UC REST; (2) where UC credential exchange / CORS lives given ADR-0002 (no cloud secrets in browser) — coordinate with E6's Envoy session seam; (3) the multi-catalog data model and how selectors flow into query execution and the editor; (4) the volume-as-object model (list + metadata) and the seam where a volume hands off to E8 for file browsing (do NOT design the Volumes Files API here); (5) how this generalizes ADR-0008 / the UC brokered contract (Daxis as one profile) — decide whether to amend ADR-0008 or add a new ADR.
 
-Constraint: never place cloud or catalog secrets in browser code (ADR-0002). Preserve the Daxis contract-first profile as a first-class provider.
+Constraint: never place cloud or catalog secrets in browser code (ADR-0002). Preserve the Daxis contract-first profile as a first-class provider. Keep file-level volume access out of E1 (it is E8).
 
 Deliverable: a detailed execution plan with milestones, the provider interface sketch, risks (esp. CORS/auth and large-catalog performance), and a test strategy.
 ```
@@ -164,4 +164,24 @@ Key decisions to resolve: (1) which stats/features are extractable from the exis
 Constraint: keep it mostly read-only over metadata Axon already reconstructs; avoid full data scans.
 
 Deliverable: a detailed execution plan with milestones, the data-extraction map (source -> signal -> plot), risks (large logs, missing stats), and a test strategy.
+```
+
+---
+
+## E8 — Workspace Files and Volumes
+
+```text
+You are planning the workspace/file-handling effort (E8) for the Axon web app. This is a dedicated file experience and the FileSystemProvider/Workspace seam behind it — deliberately separate from the SQL editor. Depends on E0 (state/tabs/persistence) and E6 (auth for remote reads); reuses E1's volume references and the existing object-store range-read path; shares the rich text-editing engine with E2 (Monaco).
+
+Context: today there is no file-browsing experience. The catalog (E1) surfaces volumes only as objects (list + metadata); it does NOT open them. Object-store reads exist in apps/axon-web/src/services/object-storage.ts (anonymous GCS XML-API listing + range-read preflight via the WASM surface); local files use OPFS / File System Access in apps/axon-web/src/services/local-delta.ts. The tab model in apps/axon-web/src/state/slices/tabs.ts is entirely SQL-shaped (Tab.sql, updateActiveSql), so there is no concept of a non-SQL tab yet. Brokered object access (short-lived signed URLs / narrow range proxy) is contracted in crates/query-contract/src/lib.rs via the ObjectGrant List/Head/BatchSign/Range routes.
+
+Read these first: apps/axon-web/src/services/object-storage.ts, local-delta.ts; apps/axon-web/src/state/slices/tabs.ts; apps/axon-web/src/lib.rs (inspect_parquet, preflight_parquet_metadata_for_targets, range reads); crates/query-contract/src/lib.rs (ObjectGrant routes, BrowserAccessMode signed_url vs proxy, validate_browser_object_url); docs/plans/2026-06-20-e1-catalog-providers-execution-plan.md (volume-as-object model + the E8 handoff seam); docs/adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md.
+
+Goal: design a uniform FileSystemProvider seam (list / stat / read, with write/upload as a later phase) over file-like backends — UnityCatalogVolume (UC Volumes Files API), ObjectStorePrefix (bucket prefixes), LocalFolder (OPFS / File System Access), and Document (saved queries/files) — and a Files experience: a file browser (directory tree + lazy/infinite listing) plus non-SQL tab kinds (a file preview/viewer tab distinct from the SQL editor tab). First release is read-only preview (parquet via the existing WASM inspect path, csv/json bounded parse + truncation, image via object URL), with size caps and URL-policy validation. Bytes are fetched only via short-lived signed URLs or a narrow proxy (ADR-0002).
+
+Key decisions to resolve: (1) the FileSystemProvider TypeScript interface and how the four backends implement it uniformly (esp. cursor/lazy listing for large volumes and the volume-file read key shape, e.g. ['volume-files', connectionId, catalog, schema, volume, ...path]); (2) generalizing the tab model to a tagged kind (sql | file | ...) in the E0 client store so SQL and file tabs coexist, and how the Files experience routes/deep-links; (3) the preview parser set, size caps, truncation affordance, and lazy-loading of preview chunks (bundle-size); (4) reconciling the Workspace Files API with E0's persistence abstraction (E0 persistence = app/session state; Workspace = user file content) and modeling editor buffers / saved queries as Document files; (5) the write/edit boundary — what E8 owns (file lifecycle, dirty/save, upload) vs what is shared with E2 (the Monaco editing engine for file contents, including SQL-as-a-document); (6) whether the Workspace/FileSystem seam warrants its own ADR.
+
+Constraint: never place cloud or catalog secrets in browser code (ADR-0002); reads go through signed URLs / narrow proxy only, and never persist signed URLs. Do not reimplement the rich text editor — share it with E2. Respect existing WASM bundle/size gates for any new preview helper.
+
+Deliverable: a detailed execution plan with milestones, the FileSystemProvider interface sketch, the tab-kind/Files-experience design, risks (large listings, preview size/perf, bundle growth, secret boundary), and a test strategy.
 ```

@@ -17,7 +17,7 @@
 
 Axon today is a narrow but real browser query engine for Delta Lake, with a native correctness oracle and a contract-first integration posture toward an external control plane (Daxis). The goal of this strategy is to grow that foundation into a **rich environment for working with and exploring lakehouses**: connect to remote catalogs, browse them efficiently, write SQL with first-class editor support, visualize results and table health directly from Arrow, and make policy decisions in-app — across multiple deployment targets (browser, desktop, and a future service).
 
-This document frames that ambition as a **core architectural reframe** plus **eight separable efforts** (E0–E7). The efforts are intentionally decoupled so they can be planned, staffed, and shipped independently, with explicit dependencies called out.
+This document frames that ambition as a **core architectural reframe** plus **nine separable efforts** (E0–E8). The efforts are intentionally decoupled so they can be planned, staffed, and shipped independently, with explicit dependencies called out.
 
 ## Core reframe: a pluggable provider model
 
@@ -25,14 +25,15 @@ Today the architecture hard-wires a single posture: "Daxis owns catalog and poli
 
 The reframe: Axon becomes a standalone rich lakehouse client where the catalog source, the authentication/session authority, the authorization authority, and the execution backend are all **pluggable providers**. The Daxis/contract-first integration becomes one provider profile. A second profile — "direct Unity Catalog REST + in-app Cedar authorization + local or remote execution" — becomes a first-class peer.
 
-Four provider seams anchor every effort:
+Five provider seams anchor every effort:
 
 - **CatalogProvider** — where table/metadata structure comes from: `DirectUnityCatalog` (UC REST), `Daxis` (`ReadAccessPlan`), `LocalDelta`, `ObjectStore`.
 - **Identity/SessionProvider** — who the user is and whether the session is valid: an ambient browser session terminated by an Envoy proxy (login/session, no cloud secrets in the browser), vs `LocalDelta` (no auth) vs Tauri/native (OS/native credentials).
 - **AuthorizationProvider (PDP)** — whether an action is allowed: `Cedar` (in-app, authoritative in standalone mode; advisory in Daxis mode) or `Daxis` (authoritative).
 - **ExecutionProvider** — where the query runs: `BrowserWasm` (Web Worker, today), `Tauri` (native runtime via IPC), `RemoteService` (Connect/gRPC).
+- **FileSystemProvider / Workspace** — where file-like bytes and directory listings come from: `UnityCatalogVolume` (UC Volumes Files API), `ObjectStorePrefix` (bucket prefixes), `LocalFolder` (OPFS / File System Access), and `Document` (saved queries/files). Distinct from CatalogProvider: the catalog answers "what tables/volumes/metadata exist," the FileSystemProvider answers "what files are inside a volume/folder and how do I read or write their bytes." Anchors E8.
 
-Identity/Session and Authorization are deliberately separate seams: Envoy answers "who is this and is the session valid," Cedar answers "may they do this."
+Identity/Session and Authorization are deliberately separate seams: Envoy answers "who is this and is the session valid," Cedar answers "may they do this." Catalog and FileSystem are likewise separate: the catalog references a volume as an object; the FileSystemProvider browses and reads the files inside it.
 
 ### Relationship to existing decisions (extends vs supersedes)
 
@@ -52,7 +53,7 @@ Brief, so the efforts below are concrete rather than abstract:
 - **Frontend↔WASM boundary** is `BrowserWorkerCommand`/response envelopes over `postMessage` plus an Arrow IPC byte side-channel ([browser-sdk](../../crates/browser-sdk/src/lib.rs), [sandbox-query-worker.ts](../../apps/axon-web/src/sandbox-query-worker.ts)).
 - **Arrow IPC already crosses the worker boundary as bytes**, but the UI converts to JS cells for preview — the opposite of native Arrow visualization.
 
-## The eight separable efforts
+## The nine separable efforts
 
 ### E0 — Frontend Foundation: State, Routing, Persistence
 
@@ -71,11 +72,11 @@ Define the `CatalogProvider` interface and ship the `DirectUnityCatalog` provide
 
 - **Multi-catalog connection registry + selectors** in both the sidebar and the editor, each backed by provider-scoped query keys so switching catalogs reuses cached metadata and refreshes stale entries in the background.
 - **Lazy catalog tree navigation** (infinite/paginated queries for large catalogs).
-- **Volumes browsing and file reading** (parquet/csv/json/image preview), extending [object-storage.ts](../../apps/axon-web/src/services/object-storage.ts).
+- **Volumes as catalog objects (discovery only)** — list volumes and show volume metadata (type, storage location, comment) alongside tables/views in the explorer. Browsing the files *inside* a volume, previewing, and editing them is **out of scope for E1** and lives in **E8 (Workspace Files & Volumes)**; the catalog only references a volume, it does not open it.
 - **A catalog metadata cache** that feeds editor IntelliSense (E2) and policy entities (E4).
 - **Open question:** where UC credential exchange / CORS lives given [ADR-0002](../adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md) — likely the Envoy session seam from E6 (a thin token/proxy boundary), reconciled with the pluggable model.
 
-Dependency: needs E0 and E6 (auth for remote APIs); feeds E2, E4, E7.
+Dependency: needs E0 and E6 (auth for remote APIs); feeds E2, E4, E7, E8.
 
 ### E2 — Editor Modernization: Monaco + Catalog-Aware SQL IntelliSense
 
@@ -142,6 +143,17 @@ Mostly read-only over data Axon already reconstructs — high insight value for 
 
 Dependency: needs E5 (plots) and E1 (table selection/metadata); reuses the existing snapshot/log reconstruction.
 
+### E8 — Workspace Files and Volumes
+
+A dedicated **file-handling experience** and the **FileSystemProvider / Workspace** seam behind it. E1 makes the catalog *reference* a volume as an object; E8 is where users actually **browse the files inside** a volume (or a bucket prefix, or a local folder), **preview** them, and — later — **edit/write** them. This is intentionally separate from the SQL editor: it is a different surface with different (non-SQL) tab kinds.
+
+- **FileSystemProvider seam** — a uniform `list / stat / read / (later) write` contract over file-like backends: `UnityCatalogVolume` (UC Volumes Files API), `ObjectStorePrefix` (bucket prefixes, extending [object-storage.ts](../../apps/axon-web/src/services/object-storage.ts)), `LocalFolder` (OPFS / File System Access, extending [local-delta.ts](../../apps/axon-web/src/services/local-delta.ts)), and `Document` (saved queries/files as a backend). Reads reuse the existing object-store range-read path; bytes are fetched only via short-lived signed URLs or a narrow proxy ([ADR-0002](../adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md)).
+- **Files experience** — a file-browser surface (directory tree + listing) plus **non-SQL tab kinds**: a file preview/viewer tab distinct from the SQL editor tab. The current tab model ([tabs.ts](../../apps/axon-web/src/state/slices/tabs.ts)) is SQL-shaped (`Tab.sql`) and must be generalized to a tagged tab `kind` so SQL tabs and file tabs coexist.
+- **Preview now, edit later** — first release is read-only preview (parquet/csv/json/image) using primitives Axon already ships. Write/upload and rich in-place editing come later; the *rich text-editing engine* for file contents (including SQL-as-a-document) is **shared with E2 (Monaco)** rather than reimplemented here.
+- **SQL-editor-content-as-files** — editor buffers and saved queries are themselves `Document` files in the Workspace model; this is the framing that unifies "open a file" and "open a saved query." Reconcile with E0's persistence abstraction: E0 persistence is *app/session state*; the Workspace API is *user file content*.
+
+Dependency: needs E0 (state/tabs/persistence) and E6 (auth for remote volume/object reads); reuses E1's volume references and the object-store read path; shares the editing engine with E2. Whether the Workspace/FileSystem seam warrants its own ADR is an E8 planning-session decision.
+
 ## Dependency and sequencing view
 
 ```mermaid
@@ -154,10 +166,12 @@ flowchart TD
   E5[E5 Arrow-native visualization]
   E6[E6 Auth and session: Envoy plus WASM creds]
   E7[E7 Delta table insight and health surface]
+  E8[E8 Workspace files and volumes]
 
   E0 --> E1
   E0 --> E2
   E0 --> E5
+  E0 --> E8
   E1 --> E2
   E1 --> E4
   E3 --> E4
@@ -165,11 +179,14 @@ flowchart TD
   E6 --> E1
   E6 --> E3
   E6 --> E4
+  E6 --> E8
   E5 --> E7
   E1 --> E7
+  E1 -->|"volume refs, object-store read path"| E8
+  E2 -.shared editing engine.-> E8
 ```
 
-Recommended order: E0 first; E6 (auth/session) and E3 (Buf contracts) start early in parallel since E1 and E4 depend on them; then E1; E2 after E1; E4 after E1+E3+E6; E5 after E0 (anytime); E7 after E5+E1.
+Recommended order: E0 first; E6 (auth/session) and E3 (Buf contracts) start early in parallel since E1 and E4 depend on them; then E1; E2 after E1; E4 after E1+E3+E6; E5 after E0 (anytime); E7 after E5+E1; E8 after E1+E6 (and pairs with E2 for the shared editing engine).
 
 ## UX ideas to carry into planning
 
@@ -179,7 +196,7 @@ Recommended order: E0 first; E6 (auth/session) and E3 (Buf contracts) start earl
 - Inline mini-charts in results plus a dedicated viz panel with auto-detected encodings.
 - Pre-run diagnostics: show fallback/unsupported reasons as squiggles before execution.
 - Local-first: open a folder, everything persists via OPFS / File System Access with a clear re-grant UX.
-- Volume file preview (parquet/csv/json/image) without leaving the workbench.
+- Files experience (E8): browse the files inside a volume / bucket prefix / local folder and preview them (parquet/csv/json/image) in non-SQL tabs without leaving the workbench.
 - Delta table insight/health surface (E7): a dedicated view that visualizes Delta-log metadata, enabled protocol features, per-column stats-boundary plots, and table-health signals (file-size/skew/commit-growth) so users can explore a table's health from what the log reveals.
 
 ## Risks and cross-cutting constraints
