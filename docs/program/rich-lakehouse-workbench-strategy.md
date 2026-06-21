@@ -17,7 +17,7 @@
 
 Axon today is a narrow but real browser query engine for Delta Lake, with a native correctness oracle and a contract-first integration posture toward an external control plane (Daxis). The goal of this strategy is to grow that foundation into a **rich environment for working with and exploring lakehouses**: connect to remote catalogs, browse them efficiently, write SQL with first-class editor support, visualize results and table health directly from Arrow, and make policy decisions in-app — across multiple deployment targets (browser, desktop, and a future service).
 
-This document frames that ambition as a **core architectural reframe** plus **nine separable efforts** (E0–E8). The efforts are intentionally decoupled so they can be planned, staffed, and shipped independently, with explicit dependencies called out.
+This document frames that ambition as a **core architectural reframe** plus **ten separable efforts** (E0–E9). The efforts are intentionally decoupled so they can be planned, staffed, and shipped independently, with explicit dependencies called out. (E3 is delivered in two phases — **E3A** provider contract surfaces, then **E3B** contract migration + multi-target runtime — see below.)
 
 ## Core reframe: a pluggable provider model
 
@@ -25,20 +25,21 @@ Today the architecture hard-wires a single posture: "Daxis owns catalog and poli
 
 The reframe: Axon becomes a standalone rich lakehouse client where the catalog source, the authentication/session authority, the authorization authority, and the execution backend are all **pluggable providers**. The Daxis/contract-first integration becomes one provider profile. A second profile — "direct Unity Catalog REST + in-app Cedar authorization + local or remote execution" — becomes a first-class peer.
 
-Five provider seams anchor every effort:
+Six provider seams anchor every effort:
 
-- **CatalogProvider** — where table/metadata structure comes from: `DirectUnityCatalog` (UC REST), `Daxis` (`ReadAccessPlan`), `LocalDelta`, `ObjectStore`.
+- **CatalogProvider** — **discovery only**: where table/metadata *structure* comes from (list catalogs/schemas/tables/views/volumes/functions/models + metadata): `DirectUnityCatalog` (UC REST), `Daxis` (catalog listing), `LocalDelta`, `ObjectStore`. It answers "what exists," not "how do I read it." Anchors E1.
 - **Identity/SessionProvider** — who the user is and whether the session is valid: an ambient browser session terminated by an Envoy proxy (login/session, no cloud secrets in the browser), vs `LocalDelta` (no auth) vs Tauri/native (OS/native credentials).
 - **AuthorizationProvider (PDP)** — whether an action is allowed: `Cedar` (in-app, authoritative in standalone mode; advisory in Daxis mode) or `Daxis` (authoritative).
-- **ExecutionProvider** — where the query runs: `BrowserWasm` (Web Worker, today), `Tauri` (native runtime via IPC), `RemoteService` (Connect/gRPC).
+- **DataAccessResolver** — *read resolution*: "may this client read this specific table's bytes right now, and from where?" Returns the `ReadAccessPlan` / `BrowserHttpSnapshotDescriptor` / `fallback` / `blocked` family. Profiles: brokered UC (object-grant / credential-vending), `Daxis` (`ReadAccessPlan`), `LocalDelta`, `ObjectStore`. Policy-gated, short-lived, fail-closed — never cached like discovery. Consumed by the `BrowserWasm` execution backend; a `RemoteService` backend resolves reads server-side and bypasses it. Anchors E9.
+- **ExecutionProvider** — where the query runs and where sample/preview data comes from: `BrowserWasm` (Web Worker, today), `Tauri` (native runtime via IPC), `RemoteService` (Connect/gRPC). Anchors E9.
 - **FileSystemProvider / Workspace** — where file-like bytes and directory listings come from: `UnityCatalogVolume` (UC Volumes Files API), `ObjectStorePrefix` (bucket prefixes), `LocalFolder` (OPFS / File System Access), and `Document` (saved queries/files). Distinct from CatalogProvider: the catalog answers "what tables/volumes/metadata exist," the FileSystemProvider answers "what files are inside a volume/folder and how do I read or write their bytes." Anchors E8.
 
-Identity/Session and Authorization are deliberately separate seams: Envoy answers "who is this and is the session valid," Cedar answers "may they do this." Catalog and FileSystem are likewise separate: the catalog references a volume as an object; the FileSystemProvider browses and reads the files inside it.
+These seams are deliberately separate because they answer different questions with different lifecycles and trust properties: Identity/Session answers "who is this and is the session valid," Authorization answers "may they do this," CatalogProvider answers "what exists" (cacheable for minutes), DataAccessResolver answers "how, if at all, may I read these bytes right now" (short-lived, fail-closed), ExecutionProvider answers "run it / sample it" (backend-pluggable), and FileSystemProvider answers "what files are inside, and read/write their bytes." A single backend may implement several seams (a Daxis client backs both catalog listing and read resolution; the catalog references a volume as an object while the FileSystemProvider reads the files inside it), but the consumer-facing contracts stay distinct — so the Catalog Explorer never reaches into execution, and a future `RemoteService` executor needs no browser-side read resolution.
 
 ### Relationship to existing decisions (extends vs supersedes)
 
 - **Extends** [ADR-0002](../adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md) (no cloud secrets in the browser). The Envoy session model and the "direct UC" profile must still never place cloud or catalog secrets in browser code; the proxy and signed-URL/narrow-proxy patterns remain the rule. ADR-0002 is a hard constraint on every effort here.
-- **Generalizes** [ADR-0008](../adr/ADR-0008-daxis-browser-read-compute-contract.md) and the [Browser UC Brokered Runtime Contract](./browser-uc-brokered-runtime-contract.md). Those documents are currently written as "Daxis owns catalog and policy, Axon consumes outcomes." Under the provider model they describe the **Daxis profile** specifically; a new "standalone/direct" profile sits alongside them. The reframe does not invalidate the Daxis contracts — it scopes them as one provider implementation. Whether ADR-0008 should be amended or a new ADR added is a decision for the E1/E4 planning sessions.
+- **Generalizes** [ADR-0008](../adr/ADR-0008-daxis-browser-read-compute-contract.md) and the [Browser UC Brokered Runtime Contract](./browser-uc-brokered-runtime-contract.md). Those documents are currently written as "Daxis owns catalog and policy, Axon consumes outcomes." Under the provider model they describe the **Daxis profile** specifically; a new "standalone/direct" profile sits alongside them. The reframe does not invalidate the Daxis contracts — it scopes them as one provider implementation (Daxis backs the CatalogProvider discovery listing and the DataAccessResolver `ReadAccessPlan` profile). Whether ADR-0008 should be amended or a new ADR added is a decision for the E1/E9/E4 planning sessions.
 - **Preserves** [ADR-0004](../adr/ADR-0004-native-runtime-is-correctness-oracle-and-mandatory-fallback.md). The native runtime stays the correctness oracle regardless of which ExecutionProvider is active.
 
 ## Current state (grounding)
@@ -53,7 +54,9 @@ Brief, so the efforts below are concrete rather than abstract:
 - **Frontend↔WASM boundary** is `BrowserWorkerCommand`/response envelopes over `postMessage` plus an Arrow IPC byte side-channel ([browser-sdk](../../crates/browser-sdk/src/lib.rs), [sandbox-query-worker.ts](../../apps/axon-web/src/sandbox-query-worker.ts)).
 - **Arrow IPC already crosses the worker boundary as bytes**, but the UI converts to JS cells for preview — the opposite of native Arrow visualization.
 
-## The nine separable efforts
+## The ten separable efforts
+
+> E3 is delivered in two phases: **E3A** (provider contract surfaces — proto messages for every seam, pulled forward right after E0) and **E3B** (contract migration + multi-target runtime). They are listed together under E3 below.
 
 ### E0 — Frontend Foundation: State, Routing, Persistence
 
@@ -66,17 +69,19 @@ The substrate for everything else. Replace the hand-rolled singletons and `useSt
 
 Dependency: blocks E1, E2, E5, E7. The TanStack Query layer is the seam E1 providers plug into.
 
-### E1 — Pluggable Catalog Providers and Catalog Explorer
+### E1 — Pluggable Catalog Providers and Catalog Explorer (discovery)
 
-Define the `CatalogProvider` interface and ship the `DirectUnityCatalog` provider (UC REST: list catalogs/schemas/tables/views/volumes, table metadata) alongside the existing Daxis/local/object-store paths in [query-source.ts](../../apps/axon-web/src/services/query-source.ts) and [ConnectModal.tsx](../../apps/axon-web/src/editor/connect/ConnectModal.tsx). Providers expose their reads as TanStack Query options (a `queryKey` factory + fetcher per provider) so caching, background refresh, dedup, and pagination from E0 apply uniformly across UC/Daxis/local/object-store.
+Define the **discovery-only** `CatalogProvider` interface and ship the `DirectUnityCatalog` provider (UC REST: list catalogs/schemas/tables/views/volumes/functions/models + table metadata) alongside the existing Daxis/local/object-store paths in [query-source.ts](../../apps/axon-web/src/services/query-source.ts) and [ConnectModal.tsx](../../apps/axon-web/src/editor/connect/ConnectModal.tsx). Providers expose their **navigation** reads as TanStack Query options (a `queryKey` factory + fetcher per provider) so caching, background refresh, dedup, and pagination from E0 apply uniformly across UC/Daxis/local/object-store. E1 is the Catalog Explorer surface: browse, search, drill into metadata.
 
+- **Discovery only.** E1 answers "what catalogs/schemas/tables/volumes exist and what is their metadata." It does **not** resolve how to read a table's bytes or run a query — *read resolution* (the `ReadAccessPlan`/descriptor/`fallback`/`blocked` family) is the **DataAccessResolver** seam and *execution* (run/sample) is the **ExecutionProvider** seam, both owned by **E9**. The Explorer's "Sample data" and "Open in SQL editor" actions hand a table *ref* to E9; they do not live in the catalog provider.
 - **Multi-catalog connection registry + selectors** in both the sidebar and the editor, each backed by provider-scoped query keys so switching catalogs reuses cached metadata and refreshes stale entries in the background.
 - **Lazy catalog tree navigation** (infinite/paginated queries for large catalogs).
 - **Volumes as catalog objects (discovery only)** — list volumes and show volume metadata (type, storage location, comment) alongside tables/views in the explorer. Browsing the files *inside* a volume, previewing, and editing them is **out of scope for E1** and lives in **E8 (Workspace Files & Volumes)**; the catalog only references a volume, it does not open it.
 - **A catalog metadata cache** that feeds editor IntelliSense (E2) and policy entities (E4).
+- **Typed contracts come from E3A.** E1's node/metadata shapes are the E3A-generated proto messages (DirectUC maps UC's OpenAPI types into the normalized messages), not hand-written TS sketches.
 - **Open question:** where UC credential exchange / CORS lives given [ADR-0002](../adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md) — likely the Envoy session seam from E6 (a thin token/proxy boundary), reconciled with the pluggable model.
 
-Dependency: needs E0 and E6 (auth for remote APIs); feeds E2, E4, E7, E8.
+Dependency: needs E0, E3A (contract messages), and E6 (auth for remote APIs); feeds E2, E4, E7, E8, and E9 (table refs).
 
 ### E2 — Editor Modernization: Monaco + Catalog-Aware SQL IntelliSense
 
@@ -90,15 +95,31 @@ Replace the custom textarea editor ([Editor.tsx](../../apps/axon-web/src/editor/
 
 Dependency: needs E0 and E1 metadata.
 
-### E3 — Contract IDL and Multi-Target Runtime (Buf-managed protobuf)
+### E3 — Contract IDL and Multi-Target Runtime (Buf-managed protobuf), in two phases
 
-Move the control/contract plane in [query-contract](../../crates/query-contract/src/lib.rs) and the worker envelopes in [browser-sdk](../../crates/browser-sdk/src/lib.rs) to protobuf as the single source of truth, retiring the hand-maintained TS mirror in [axon-browser-sdk.ts](../../apps/axon-web/src/axon-browser-sdk.ts). Standardize on the **Buf toolchain** (not a hand-rolled `prost-build`/`build.rs`): `buf` CLI, `buf.yaml`/`buf.gen.yaml`, BSR for module + dependency management, and `buf lint` + breaking-change detection wired into CI as a contract gate.
+So much of E1/E9/E8/E4 hinges on getting the seam contracts right that the **message layer is pulled forward** and defined once, in proto, before the seam efforts hand-write TypeScript interfaces. E3 therefore splits into an early **E3A** (the contract surfaces) and a later **E3B** (the rest of the migration + runtime).
 
-- **Codegen targets:** TypeScript via `@bufbuild/protobuf` (protobuf-es) and Connect-ES; Rust generated through Buf-managed plugins. Decision for the E3 planning session: Buf is the build/lint/dependency toolchain, but the Rust *runtime* is still produced by a codegen backend — most likely a prost-based plugin run via `buf generate`. "Buf vs Prost" is a toolchain-vs-backend distinction, not strictly either/or. The session should confirm whether to keep prost as the generated Rust runtime under Buf or evaluate alternatives, and how that interacts with `wasm32-unknown-unknown` builds.
-- **Transport-agnostic QueryEngine RPC surface** (Connect) with ExecutionProviders: `BrowserWasm` (today), `Tauri` (native via IPC, reusing [native-query-runtime](../../crates/native-query-runtime/src/lib.rs)), `RemoteService`. Use Buf on any future server side too (Connect server), but **no servers are implemented in this effort** — contracts plus client/runtime bindings only.
+#### E3A — Provider contract surfaces (early, right after E0)
+
+One reviewable proto tree that is the canonical picture of every pluggable surface. It **reuses the `axon/config/v1` Buf module already stood up in E0** ([buf.yaml](../../apps/axon-web/buf.yaml) notes the layout is kept stable so E3 adopts it unchanged) and its codegen ([buf.gen.yaml](../../apps/axon-web/buf.gen.yaml): protobuf-es TS today; add the prost Rust backend).
+
+- **Messages-first.** Define the message contracts for all seams: catalog **discovery** nodes/metadata (`CatalogNode`/`SchemaNode`/`TableNode`/`TableMetadata`/`VolumeNode`/`FunctionNode`/`ModelNode`), **data-access resolution** + descriptors (port the existing serde/JSON-schema [read-access-plan.schema.json](../../crates/query-contract/schemas/read-access-plan.schema.json) + [object-grants.openapi.json](../../crates/query-contract/schemas/object-grants.openapi.json)), **execution** request/response + worker IPC envelopes (from [browser-sdk](../../crates/browser-sdk/src/lib.rs)), and **filesystem** entries (E8).
+- **Services only at transport boundaries.** The execution surface (worker IPC + future `RemoteService`) gets proto *services*; the local provider seams (discovery via TanStack `queryOptions`) stay TS interfaces that *consume* generated messages.
+- **UC REST stays OpenAPI-vendored** (per E1): proto defines the *normalized* nodes; the DirectUC provider maps UC's OpenAPI types into them. We do not re-proto the UC wire format.
+- **Living draft.** `breaking: FILE` stays relaxed during E3A (the contract is expected to churn) until E1/E9/E8 clients adopt the generated types; the gate tightens at adoption.
+
+Dependency: needs E0 (the Buf seam); feeds E1, E9, E8, E4 (and E3B builds on it). This is the contract substrate the seam efforts build on.
+
+#### E3B — Contract migration and multi-target runtime (later, parallel track)
+
+The remainder of the original E3: complete the migration of the control/contract plane in [query-contract](../../crates/query-contract/src/lib.rs) to protobuf, retire the hand-maintained TS mirror in [axon-browser-sdk.ts](../../apps/axon-web/src/axon-browser-sdk.ts), and stand up the transport-agnostic runtime.
+
+- **Buf toolchain hardening:** `buf lint` + breaking-change detection wired into CI as a contract gate; BSR for module/dependency management; confirm prost as the generated Rust runtime under Buf and that it builds for `wasm32-unknown-unknown` ("Buf vs Prost" is a toolchain-vs-backend distinction, not either/or).
+- **Transport-agnostic QueryEngine RPC surface** (Connect) implemented by the E9 ExecutionProviders: `BrowserWasm` (today), `Tauri` (native via IPC, reusing [native-query-runtime](../../crates/native-query-runtime/src/lib.rs)), `RemoteService`. No servers are implemented here — contracts plus client/runtime bindings only.
+- **Migration safety:** round-trip parity tests against the current JSON contracts before the hand-written TS mirror is retired.
 - **Hard constraint:** Arrow IPC stays the data plane; protobuf is the control plane only. Honor the documented no-go on DataFusion/Substrait proto as the hot-path IR ([Browser DataFusion Size Audit](./browser-datafusion-size-audit.md)).
 
-Dependency: largely parallelizable track; coordinates with E4 (decision types) and E6 (auth metadata on RPCs).
+Dependency: needs E3A; largely parallelizable thereafter; coordinates with E9 (runtime surface), E4 (decision types), and E6 (auth metadata on RPCs).
 
 ### E4 — In-App Authorization: Cedar Policy Engine
 
@@ -154,39 +175,59 @@ A dedicated **file-handling experience** and the **FileSystemProvider / Workspac
 
 Dependency: needs E0 (state/tabs/persistence) and E6 (auth for remote volume/object reads); reuses E1's volume references and the object-store read path; shares the editing engine with E2. Whether the Workspace/FileSystem seam warrants its own ADR is an E8 planning-session decision.
 
+### E9 — Execution Provider and Data Access Resolution
+
+The execution counterpart to E1's discovery. Today [query.ts](../../apps/axon-web/src/services/query.ts) fuses two concerns and hard-wires them to the WASM worker: it builds a read descriptor per source kind (`buildSession()`) and then runs SQL (`openDeltaTable()` + `client.query()`). E9 pulls these apart into two pluggable seams so the SQL editor's run lifecycle and the Explorer's "Sample data" both go through one backend-agnostic path.
+
+- **ExecutionProvider seam** — `execute(sql, ref)` (streaming, cancellable) and `preview(ref)` (sample data), backend-pluggable: `BrowserWasm` (refactor today's `query.ts`/`AxonBrowserClient` behind the interface, no behavior change for local/object-store), with `Tauri` and `RemoteService` reserved. The E0 `run` slice dispatches through this seam; the BrowserWasm backend owns the long-lived WASM session handle.
+- **DataAccessResolver seam** — `resolveRead(ref)` returning `descriptor | read_access_plan | fallback | blocked` (the `ReadAccessPlan` family from [query-contract](../../crates/query-contract/src/lib.rs)). Profiles: brokered UC (object-grant / credential-vending → `BrowserHttpSnapshotDescriptor`), **Daxis** (`DaxisApprovedAxonReadDescriptor`, a first-class but deferred profile), `LocalDelta`, `ObjectStore`. The `BrowserWasm` executor consumes it; a `RemoteService` executor resolves reads server-side and bypasses it. Fail-closed (unknown policy → fallback/blocked); the single execution handoff stays `descriptor → openDeltaTable()`; bytes flow only via signed URLs / narrow proxy ([ADR-0002](../adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md)).
+- **AuthorizationProvider feeds resolution.** E4 (Cedar) decisions flow into the resolver (authoritative in standalone mode; advisory under Daxis, where Daxis remains authoritative).
+- **ADR:** E9 introduces an ADR owning the execution + read-resolution invariants (fail-closed, single handoff, signed-url/proxy data plane), and scopes ADR-0008 as the Daxis profile of the resolver.
+
+Dependency: needs E0 (run lifecycle/state), E3A (execution + data-access messages), and E6 (worker credential propagation); consumes E1 table refs and E4 decisions; reuses the existing object-store range-read path. Feeds E8 (shared object-grant/read primitives).
+
 ## Dependency and sequencing view
 
 ```mermaid
 flowchart TD
   E0[E0 Foundation: state, routing, persistence]
-  E1[E1 Catalog providers and explorer]
+  E3A[E3A Provider contract surfaces - proto messages]
+  E1[E1 Catalog providers and explorer - discovery]
   E2[E2 Monaco SQL IntelliSense]
-  E3[E3 Buf protobuf IDL and multi-target runtime]
+  E3B[E3B Contract migration and multi-target runtime]
   E4[E4 Cedar policy engine]
   E5[E5 Arrow-native visualization]
   E6[E6 Auth and session: Envoy plus WASM creds]
   E7[E7 Delta table insight and health surface]
   E8[E8 Workspace files and volumes]
+  E9[E9 Execution provider and data access resolution]
 
-  E0 --> E1
+  E0 --> E3A
   E0 --> E2
   E0 --> E5
   E0 --> E8
+  E3A --> E1
+  E3A --> E9
+  E3A --> E8
+  E3A --> E4
+  E3A --> E3B
   E1 --> E2
   E1 --> E4
-  E3 --> E4
-  E3 -.parallel track.-> E0
+  E1 --> E7
+  E1 -->|"table refs"| E9
+  E3B -.parallel track.-> E9
+  E4 -->|"decisions"| E9
   E6 --> E1
-  E6 --> E3
+  E6 --> E9
   E6 --> E4
   E6 --> E8
   E5 --> E7
-  E1 --> E7
   E1 -->|"volume refs, object-store read path"| E8
+  E9 -->|"object-grant / read primitives"| E8
   E2 -.shared editing engine.-> E8
 ```
 
-Recommended order: E0 first; E6 (auth/session) and E3 (Buf contracts) start early in parallel since E1 and E4 depend on them; then E1; E2 after E1; E4 after E1+E3+E6; E5 after E0 (anytime); E7 after E5+E1; E8 after E1+E6 (and pairs with E2 for the shared editing engine).
+Recommended order: E0 first; then **E3A** (provider contract surfaces) so every seam's messages are codegen'd once before clients are written; E6 (auth/session) starts early in parallel; then **E1** (catalog discovery) and **E9** (execution + read resolution); E2 after E1; E4 after E1+E3A+E6; **E3B** proceeds as a parallel contract-migration/runtime track (pairs with E9); E5 after E0 (anytime); E7 after E5+E1; E8 after E1+E6+E9 (and pairs with E2 for the shared editing engine).
 
 ## UX ideas to carry into planning
 
