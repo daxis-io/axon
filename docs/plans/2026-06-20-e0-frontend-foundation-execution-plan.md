@@ -21,6 +21,7 @@
 | 3 | queryKey conventions | A single typed `queryKeys` factory. Hierarchy `[domain, connectionId, resource, ...ids]`, e.g. `['catalog', connectionId, 'schemas', schemaId, 'tables', tableId, 'metadata']`. `connectionId` encodes provider kind + locator, so Daxis vs DirectUC vs local naturally separate caches and prefix-invalidation drops subtrees. Providers contribute TanStack v5 `queryOptions()`; per-resource `staleTime`/`gcTime`/retry-predicate; infinite queries for large trees. |
 | 4 | Persistence abstraction | One `persistence/` module exposing namespaced `KeyValueStore` (IndexedDB via `idb`, with a synchronous `localStorage` backend for FOUC-critical config), and a `HandleStore` for File System Access directory/file handles that encapsulates the re-grant lifecycle. Migrate `metadata.ts`, `connect/store.ts`, and the `local-delta` registry onto it behind unchanged public APIs. OPFS stays worker-owned (engine cache). `persistQueryClient`: persist only cheap, successful, non-sensitive `['catalog', …]` structure + `['local', …]`; everything else memory-only. |
 | 5 | Routing | **Adopt TanStack Router.** Route loaders `ensureQueryData` for route-driven prefetch, typed params + typed/validated search params, and natural pairing with TanStack Query. Wire the dead `/catalogs` route; add deep links to catalog/schema/table, saved queries, and the E7 insight surface. Keep the History-API router working during migration behind a `navigate()` shim. React Router is the documented fallback if we want fewer new concepts. |
+| 6 | Configuration | **Proto-first, schema-driven config.** All preferences/tunables are defined in `axon/config/v1` protos (+ protovalidate), generated to **JSON Schema (json-strict)** + protobuf-es types, stored as **layered sparse JSON** (`defaults < user < workspace`) and rendered into one discoverable **Settings** surface (JSON Forms GUI + raw-JSON editor, same schema). Validation is hybrid: **AJV** against the generated schema (structure + standard constraints) with a **protovalidate-es** seam reserved for custom/cross-field CEL. The **Buf toolchain is pulled forward** as a scoped config module (revises "do not block on E3" for config only). Mirrors how VS Code/Zed/Cursor centralize config (schema is canonical, JSON is the runtime store). |
 
 Cross-cutting: stand up a **codegen seam** (typed fetchers + `queryOptions` as the provider boundary) so OpenAPI-/protobuf-generated types and TanStack integrations can drop in incrementally (E1/E3) without reworking the query layer. Add **Vitest** (+ `fake-indexeddb`) for state/persistence unit tests; keep Playwright for E2E.
 
@@ -41,7 +42,7 @@ Non-goals for E0: implementing UC/Daxis providers (E1), Monaco (E2), Arrow-nativ
 | `services/engine.ts` — `subscribeEngineStatus` | Bundle selection (compile-time) + runtime `cache_metrics` events | **Client store** `engine` slice, fed by a worker-event→store bridge. Push, not pull → not TanStack. |
 | `services/history.ts`, `saved.ts` (+ `metadata.ts`) | User CRUD data in IndexedDB | **TanStack Query over IDB** (`['local','history']`, `['local','saved']`) + mutations that invalidate. IDB is source of truth; cache mirrors. |
 | `editor/connect/store.ts` (localStorage) | Connection **registry** (which catalogs are connected) | **Client store** `connections` slice (persisted). It parameterizes server queries; it is not itself server data. |
-| `App.tsx` ~40 `useState` | tabs/active, runState/result/metrics/events/plan, capMatrix, commits, engineStatus, catalog/history/saved, connect-workflow, layout (`sidebarW`,`resultsH`), tweaks, toast/modals | Split across **client store** slices (`tabs`, `layout`, `ui`, `connections`, `run`, `engine`) and **TanStack Query** (`catalog`, `commits`, `history`, `saved`). |
+| `App.tsx` ~40 `useState` | tabs/active, runState/result/metrics/events/plan, capMatrix, commits, engineStatus, catalog/history/saved, connect-workflow, layout (`sidebarW`,`resultsH`), tweaks, toast/modals | Split across **client store** slices (`tabs`, `layout`, `ui`, `connections`, `run`, `engine`, **`settings`**) and **TanStack Query** (`catalog`, `commits`, `history`, `saved`). **Appearance/typography/default-target `tweaks` retarget from `layout` to the schema-driven `settings` slice** (generated types); `layout` keeps panel geometry only. |
 | `editor/router.ts` | History-API helper; `/catalogs` declared, never rendered | **TanStack Router**; `navigate()` shim during migration. |
 | `local-delta.ts` registry + handles | IDB registry + File System Access handles + OPFS object URLs + re-grant | **Persistence** `HandleStore`; re-grant status surfaced via a `localAccess` client-store slice. |
 
@@ -68,6 +69,7 @@ Non-goals for E0: implementing UC/Daxis providers (E1), Monaco (E2), Arrow-nativ
         |   TanStack Query      |  |              |   Zustand store (vanilla)     |
         |   QueryClient + cache |  |              |   slices:                     |
         |                       |  |              |   - layout (persist)          |
+        |                       |  |              |   - settings (layered JSON)   |
         |  queryKeys factory    |  |              |   - tabs (persist)            |
         |  queryOptions/providers|<-+- params --- |   - connections (persist)     |
         |   - catalog (derived) |  selectors      |   - ui (modals/toast)         |
@@ -128,19 +130,22 @@ A single typed factory module (`query/keys.ts`); **never inline key arrays**.
 
 ```text
 ['catalog', connectionId]                                              // provider/connection root
-['catalog', connectionId, 'schemas']                                   // (E1) lazy/infinite
-['catalog', connectionId, 'schemas', schemaId, 'tables']               // (E1) lazy/infinite
-['catalog', connectionId, 'schemas', schemaId, 'tables', tableId, 'metadata']
-['catalog', connectionId, 'schemas', schemaId, 'tables', tableId, 'commits']
-['catalog', connectionId, 'table-derived']                             // E0 single-table Phase 1
-['volumes', connectionId, ...path]                                     // (E1) file listings
+['catalog', connectionId, 'catalogs']                                  // (E1) UC catalog namespace — lazy/infinite
+['catalog', connectionId, catalogName, 'schemas']                      // (E1) lazy/infinite
+['catalog', connectionId, catalogName, 'schemas', schemaId, 'tables']  // (E1) lazy/infinite
+['catalog', connectionId, catalogName, 'schemas', schemaId, 'tables', tableId, 'metadata']
+['catalog', connectionId, catalogName, 'schemas', schemaId, 'tables', tableId, 'commits']
+['catalog', connectionId, 'table-derived']                             // E0 single-table Phase 1 (session-derived reference path)
+['volumes', connectionId, catalogName, schemaId, volumeId, ...path]    // (E1) file listings — addresses a specific UC volume
 ['local', 'history']
 ['local', 'saved']
 ```
 
+> **E1-informed amendment (2026-06-20):** the key hierarchy now carries a `catalogName` segment because a single UC/Daxis connection contains *many* catalogs; the original `connection → schemas` shape could not cache per-catalog. The `volumes` key carries full volume identity (`catalog/schema/volume`) rather than just `connectionId + path`. `table-derived` is reserved for the Phase-1 session-derived reference path; E1 providers contribute **navigation** queries (provider REST, main-thread, *not* session-derived) that are distinct from **read resolution** (session/`openDeltaTable`). See [E1 plan §3.1, §5.1](./2026-06-20-e1-catalog-providers-execution-plan.md).
+
 Conventions:
 - **Element 0 = stable domain literal** (`'catalog' | 'volumes' | 'local'`), typed as a union.
-- **`connectionId` encodes provider kind + locator** (derived deterministically from `QueryTableSource`/connection registry, reusing the existing canonical-key logic in `query-source.ts` / `connect/store.ts` `tableSourceKeyFromParts`). Daxis, DirectUC, local, object-store are distinct `connectionId`s → cache isolation per profile; prefix-invalidating `['catalog', connectionId]` drops the whole tree on disconnect/refresh.
+- **`connectionId` encodes provider kind + locator** (derived deterministically from the connection registry). Daxis, DirectUC, local, object-store are distinct `connectionId`s → cache isolation per profile; prefix-invalidating `['catalog', connectionId]` drops the whole tree on disconnect/refresh. **E1-informed amendment:** `connectionId` is **connection-root-scoped** (a UC workspace / Daxis tenant / bucket / local folder), which is *not* the same as `query-source.ts` / `connect/store.ts` `tableSourceKeyFromParts` — that key is *table-scoped* (it includes schema + table). Use a dedicated `connectionId = stableHash(kind, normalizedLocator)` for the cache root and keep `tableSourceKeyFromParts` for table identity within a connection (deepest key segment + run dedup). See [E1 plan §5.1](./2026-06-20-e1-catalog-providers-execution-plan.md).
 - **Providers contribute `queryOptions()`** (TanStack v5) — a `{ queryKey, queryFn, staleTime, … }` bundle per resource. E1 plugs UC/Daxis providers in by implementing the same `queryOptions` factory shape; E2/E4 read the same cache via the same keys.
 - **Per-resource policy:** structural catalog metadata `staleTime` long (~5 min) + `gcTime` longer; commits short; volume listings medium. Background refetch-on-focus off for big trees.
 - **Retry predicate:** exponential backoff by default, but **no retry on 401/403/404** (auth/permission/not-found) — surfaced to UI for re-login (E6) or re-grant (local). A shared `shouldRetry` lives next to the factory.
@@ -153,6 +158,7 @@ Conventions:
 - **`KeyValueStore(namespace, version)`** — async, IndexedDB-backed (`idb`), with `get/getAll/put/replaceAll/delete/clear`. A synchronous `localStorage` backend variant for FOUC-critical tiny config (e.g. `theme` read before first paint). Each namespace carries a schema `version` to drive migrations. `metadata.ts`’s three stores (`history`, `saved`, `workspace`) and `connect/store.ts`’s localStorage blob migrate onto this — **behind unchanged exported signatures** so callers don’t change in the same PR.
 - **`HandleStore(namespace)`** — persists File System Access directory/file handles (structured-cloneable into IDB) and the metadata records that validate them. It owns the **read-files-from-disk lifecycle and re-grant flow** currently spread across `local-delta.ts`: persistence modes (`session_handles` | `persisted_directory_handle` | `metadata_only_reselect`), `queryPermission`/`requestPermission`, and size-match validation (`validateLocalDeltaTableAgainstRecord`).
 - **OPFS stays worker-owned.** The engine’s session cache lives inside the worker; the abstraction documents it but does not manage it. Budget/usage continue to surface via `cache_metrics` events into the `engine` slice.
+- **Settings namespace (`axon.settings.v1`).** The `settings` slice stores only **sparse overrides** (merged over schema-derived defaults at read time) via the synchronous `LocalConfigStore` so the appearance subset stays FOUC-safe (larger non-FOUC settings can later move to workspace IDB behind the same API). No migration of pre-existing config is retained. Remaining ad-hoc keys are normalized under the shared `axon.<domain>.<key>.v<n>` convention (`axon.connect.catalogs.v1` already conforms; the local-delta pointer is `axon.local-delta.active-id.v1`). These registries stay **domain-owned** but are **surfaced** (not re-homed) in Settings → Data Sources.
 
 **Re-grant state machine** (lifted out of `App.tsx`’s `localAccessNeedsReselect` into a `localAccess` slice + `HandleStore`):
 
@@ -197,9 +203,10 @@ E0 establishes the **boundary**, not the full pipeline (remote providers + proto
 
 - The provider boundary is a **`queryOptions` factory + typed fetcher** per resource. Whether those types/fetchers are hand-written (today, from `axon-browser-sdk.ts`) or generated later, they implement the same shape behind our `queryKeys` factory.
 - For remote REST (UC, Daxis HTTP) in E1: generate with **`openapi-typescript` + `openapi-fetch`**, or a hooks generator (**Orval/Kubb**) that emits `queryOptions` + keys directly — wrapped so generated keys conform to our hierarchy.
+- **E1-informed amendment — `SessionHttp` seam:** all remote fetchers go through one **session-aware fetch wrapper** (`credentials:'include'`, correlation id, `401→session-expired` / `403→blocked` / `404→not-found`, **never attaches Authorization from browser state**). E0's "purge cache on 401" hooks into this wrapper. E1 *defines* the `SessionHttp` contract and E6 *implements* the real session behind it; reserve the shape here so generated fetchers and the persistQueryClient 401-purge align. See [E1 plan §4.4](./2026-06-20-e1-catalog-providers-execution-plan.md).
 - For protobuf (E3): **protobuf-es + Connect-ES**, with **Connect-Query** emitting TanStack Query integration. Our seam must accept Connect-Query `queryOptions` too.
 - E0 deliverable: scaffold the generation config + an `npm run codegen` script and a **drift check** (generated output matches schema) mirroring the repo’s existing `verify_*` conformance scripts; implement the **local/fixture provider by hand** as the reference. Generated output lands in `src/generated/` (checked-in for review + offline builds; CI regenerates and diffs).
-- **Do not block E0 on E3.** E0 uses existing `axon-browser-sdk.ts` types; it only structures the query layer so generated types/options replace hand-written ones incrementally.
+- **Do not block E0 on E3 (except config).** E0 uses existing `axon-browser-sdk.ts` types for the query layer. **Revision:** the **`axon/config/v1` proto module is the first consumer of the Buf seam, pulled forward ahead of E3.** It introduces scoped `buf.yaml`/`buf.gen.yaml` with a pinned plugin set — `protoc-gen-es` (protobuf-es types + JSON types) and `buf.build/bufbuild/protoschema-jsonschema` (`json-strict`, which already maps standard protovalidate rules to JSON Schema keywords) — emitting into `src/generated/config/`. Output is guarded by the existing `npm run codegen:check` drift gate (`codegen:config` is the deterministic offline mirror used where the BSR is unreachable; `codegen:config:buf` is the canonical `buf generate`). The package layout is stable so E3 adopts the same module unchanged for `query-contract` / `browser-sdk`.
 
 ---
 
@@ -217,10 +224,15 @@ Each milestone is independently shippable and gated on: `tsc --noEmit`, ESLint (
 - Implement `KeyValueStore`/`HandleStore`. Migrate `metadata.ts` (history/saved/workspace) and `connect/store.ts` localStorage onto KV **behind identical public signatures**. Wrap the `local-delta` IDB registry + handles in `HandleStore`, preserving persistence modes + re-grant + size validation. Surface re-grant via a typed status (still consumed the same way by `App` for now).
 - **Gate:** `local-delta` + `editor-smoke` Playwright pass (they exercise re-grant + persistence); new Vitest for KV/Handle (incl. legacy→IDB migration, handle permission stub, size-mismatch invalidation).
 
+### M1.5 — Config codegen (pulls the Buf seam forward)
+- Stand up the scoped Buf module: `buf.yaml`/`buf.gen.yaml` + `proto/axon/config/v1/settings.proto` (protovalidate). `buf generate` → protobuf-es types + JSON Schema (`json-strict`) checked into `src/generated/config/`; wire `codegen:config`/`codegen:config:buf` into `npm run codegen` + the drift check. Add the sibling JSON Forms **UI-schema** (keyed by field path).
+- **Gate:** `codegen:check` (no drift) + `tsc`; dependency guardrail re-run for `ajv`/`ajv-formats`/`@jsonforms/*`.
+
 ### M2 — Client store; migrate UI-only state out of `App.tsx`
-- Stand up Zustand slices: `layout` (sidebarW/resultsH/tweaks — persisted), `tabs` (tabs/activeTab/per-tab preferred+pin — persisted), `connections` (registry + `selectedTableRef` — persisted; replaces `loadConnectedCatalogs`/`saveConnectedCatalogs` effect and the upsert/remove logic), `ui` (toast + modals: save/connect/connected-panel/caps), `engine` (event-fed), `run` (status/result/metrics/events/plan/resultPageRun/loadingMore), `session` (WASM handle reference), `localAccess`.
+- Stand up Zustand slices: `layout` (sidebarW/resultsH — persisted), **`settings`** (layered JSON over `axon.settings.v1`: sparse overrides merged over schema-derived defaults; subsumes the old `layout.tweaks`, no legacy migration), `tabs` (tabs/activeTab/per-tab preferred+pin — persisted), `connections` (registry + `selectedTableRef` — persisted; replaces `loadConnectedCatalogs`/`saveConnectedCatalogs` effect and the upsert/remove logic), `ui` (toast + modals: save/connect/connected-panel/caps), `engine` (event-fed), `run` (status/result/metrics/events/plan/resultPageRun/loadingMore), `session` (WASM handle reference), `localAccess`.
 - Migrate `App.tsx` in PR-sized steps: **layout → connections → tabs → run last**. `services/query.ts` session singleton stays as-is; the `run` slice still calls `runQuery()`.
 - **Critical perf fix:** route the 80 ms run-timer to a narrowly-selected `run.elapsed`; ensure only `Results` re-renders.
+- **Wire orphaned config to the `settings` slice:** the theme/density/accent effect in `App.tsx` reads `settings.appearance`; `addTab` reads `settings.execution.defaultTarget` (replaces the hardcoded `browser_wasm`); `createQueryClient` reads `settings.engine` (staleTime/gcTime/maxRetries). Hybrid validation (AJV + protovalidate-es seam) with field-path error mapping ships with the slice but is lazy-loaded behind the Settings surface.
 - **Gate:** Vitest for slice actions/selectors (tab-close active fallback; connected-catalog upsert/remove + selection reconciliation ported from `App`/`connect/store.ts`; run transitions); persist round-trip (rehydrate on reload); `editor-smoke` green.
 
 ### M3 — Server state → TanStack Query (catalog, commits, history, saved)
@@ -234,7 +246,8 @@ Each milestone is independently shippable and gated on: `tsc --noEmit`, ESLint (
 ### M4 — Routing (TanStack Router) + `/catalogs` + deep links
 - Port `main.tsx` Router to TanStack Router (`/`, `/connect`, `/catalogs`) with the `navigate()` shim. Add nested `/catalog/$connectionId/$schema/$table` (selection source of truth) with loader prefetch; `/saved/$savedId`; `/catalog/.../insight` placeholder. Typed search params for active tab + snapshot pin.
 - Build a **minimal `/catalogs` explorer** so the dead route renders (registry + Phase-1 derived tree); E1 expands it.
-- **Gate:** Playwright deep-link tests (table URL → correct active table; reload preserves; back/forward; `/catalogs` renders; `/connect` still works).
+- **Settings surface:** a discoverable Settings dialog auto-rendered via JSON Forms (lazy chunk) into grouped sections (Appearance / Editor / Execution / Data Sources / Advanced), reachable from a top-bar gear + `⌘,` + a deep-linkable `/settings` route, with a raw-JSON editor bound to the same schema (Monaco upgrade deferred to E2). Folds in the old floating `TweaksPanel`; routes/removes the dead `Resync` / `Edit session` / `Run options` stub buttons.
+- **Gate:** Playwright deep-link tests (table URL → correct active table; reload preserves; back/forward; `/catalogs` renders; `/connect` still works) + Settings discoverability and appearance-persists-across-reload specs.
 
 ### M5 — persistQueryClient + cache tuning + cleanup
 - Add `persistQueryClient` (IDB persister) with the filtered `dehydrate` (persist only cheap successful `['catalog',…]` structure + `['local',…]`; exclude results/volumes/auth/`local_delta`). `maxAge` + version buster; purge hook for 401 (E6-ready). No-op when IDB unavailable.
@@ -267,6 +280,7 @@ Each milestone is independently shippable and gated on: `tsc --noEmit`, ESLint (
 - **Persistence:** KV migrations (legacy localStorage→IDB for history/saved), namespace versioning; `HandleStore` re-grant state machine with mocked `FileSystemDirectoryHandle` (`queryPermission`/`requestPermission` stubs) and size-mismatch/missing-file invalidation; IDB-unavailable no-op.
 - **Client store:** slice actions/selectors as pure units — tab-close active fallback, connected-catalog upsert/remove + selection reconciliation (port the assertions implicit in `App`/`connect/store.ts`), run-lifecycle transitions (idle→running→done/error/cancel, load-more batch identity via `sameQueryResultPageRun`). Persist round-trip rehydration.
 - **TanStack layer:** queryKeys factory (stability, hierarchy, prefix-invalidation); queryFn adapters over a mocked `sessionManager`; `shouldRetry` (no retry on 401/403/404); invalidation on source change/session discard; `persistQueryClient` `dehydrate` filter (results/volumes/auth/`local_delta` excluded), `maxAge`/version buster.
+- **Configuration:** Vitest for schema-derived defaults, JSON↔override round-trip (`mergeSettings`/`diffToOverride`), AJV validation against the generated schema (enum/pattern/range/`additionalProperties`, field-path mapping) and the protovalidate-es CEL seam, and the `settings.execution.defaultTarget`→`addTab` wiring. Playwright for Settings discoverability (top-bar gear + `/settings`), appearance persistence across reload, and raw-JSON schema rejection.
 - **Routing:** unit tests for typed search-param parsing; Playwright E2E for deep links (table URL → active table; reload persists; back/forward; `/catalogs` renders; `/connect` unaffected) and persistence-across-reload (run a query → reload → history present, layout persisted).
 - **E2E (existing, extended):** keep `editor-smoke`, `local-delta` (re-grant), `public-gcs-live`. Add deep-link + reload-persistence + local re-grant-drives-status specs.
 - **CI gates:** keep the WASM artifact budget + dependency guardrails. Add an ESLint `no-restricted-imports` rule enforcing the no-server-state-in-store boundary, and a **codegen drift check** (stubbed in E0, enforced when generation lands) mirroring `verify_*` conformance scripts.
@@ -277,11 +291,13 @@ Each milestone is independently shippable and gated on: `tsc --noEmit`, ESLint (
 
 Frontend-only effort. Net new JS ≈ 25–30 KB gz (`@tanstack/react-query` ~13, `@tanstack/react-router` ~12, `zustand` ~1, `idb` ~2); devtools are dev-only. **No impact on the gated `browser_engine_worker.wasm` (≤ 750 KB) budget.** Every dependency addition is re-checked against `verify_browser_dependency_guardrails.sh` (cloud-SDK denylist + secret-marker scan).
 
+**Configuration libs are lazy-loaded.** `@jsonforms/*` + `ajv`/`ajv-formats` (and any future `protovalidate-es`) ship only in the Settings chunk via `lazy(() => import('./settings/SettingsDialog.tsx'))`, keeping them out of the main/FOUC bundle; protobuf-es types are emitted as `import type` where possible. The config libs pass the dependency guardrail npm-package denylist. (Record the exact settings-chunk byte delta from a full `npm run build`, which requires the wasm toolchain.) Note: `@jsonforms/*` is currently pinned to a prerelease available through the internal registry mirror; bump to the stable 3.x line once mirrored.
+
 ---
 
 ## 8. Open questions to confirm before/at kickoff
 
-1. **`connectionId` derivation** — reuse `tableSourceKeyFromParts` (canonical key) directly, or introduce a dedicated stable connection id in the `connections` slice? (Affects cache isolation + deep-link URLs.)
+1. **`connectionId` derivation** — reuse `tableSourceKeyFromParts` (canonical key) directly, or introduce a dedicated stable connection id in the `connections` slice? (Affects cache isolation + deep-link URLs.) **E1 recommendation:** introduce a dedicated connection-root id; `tableSourceKeyFromParts` is table-scoped and unsuitable as the cache root (see [E1 plan §5.1](./2026-06-20-e1-catalog-providers-execution-plan.md)). **Config interplay (D7):** the same connection-root id is the natural key for a future per-connection scoped settings layer (`defaults < user < workspace < connection`); the `settings` slice reserves the layered seam now and implements the `user` layer only.
 2. **History/Saved as TanStack-over-IDB vs a persisted store slice** — recommended TanStack-over-IDB for mutation/invalidation ergonomics; confirm given they’re local-only.
 3. **Run lifecycle: plain slice vs XState** — start as a plain slice; adopt XState only if transitions/cancellation/load-more get unwieldy.
 4. **Router: TanStack Router vs React Router** — recommended TanStack Router; confirm appetite for the new concepts vs React Router familiarity.
