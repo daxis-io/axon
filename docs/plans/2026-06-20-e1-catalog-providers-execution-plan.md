@@ -2,7 +2,7 @@
 
 - Status: Draft (planning deliverable)
 - Date: 2026-06-20
-- Scope: Define the `CatalogProvider` seam and ship a `DirectUnityCatalog` provider (UC REST navigation + table metadata) alongside the existing Daxis (`ReadAccessPlan`), `LocalDelta`, and `ObjectStore` paths. Each provider exposes its reads as TanStack Query options so caching/refresh/dedup/pagination apply uniformly. Deliver a multi-catalog connection registry, catalog/schema/table selectors in sidebar + editor, lazy/paginated tree navigation, volumes browsing + file preview, and a catalog metadata cache that feeds E2 (IntelliSense) and E4 (Cedar entities).
+- Scope: Define the `CatalogProvider` seam and ship a `DirectUnityCatalog` provider (UC REST navigation + table metadata) alongside the existing `LocalDelta` and `ObjectStore` paths. The seam stays Daxis-compatible by design, but a Daxis provider is **deferred** for now (see the Daxis deferral note below) and is not an E1 integration target. Each provider exposes its reads as TanStack Query options so caching/refresh/dedup/pagination apply uniformly. Deliver a multi-catalog connection registry, catalog/schema/table selectors in sidebar + editor, lazy/paginated tree navigation, volumes browsing + file preview, and a catalog metadata cache that feeds E2 (IntelliSense) and E4 (Cedar entities).
 - Depends on: **E0** (state/TanStack Query, routing, persistence) and **E6** (Envoy session + WASM credential propagation) for remote API access.
 - Feeds: **E2** (catalog-aware SQL), **E4** (policy entities), **E7** (table insight).
 - Related:
@@ -14,6 +14,8 @@
   - [ADR-0008: Daxis Browser Read Compute Contract](../adr/ADR-0008-daxis-browser-read-compute-contract.md)
 
 > E1 turns today's single posture ("Daxis owns catalog and policy; Axon is contract-first") into one profile of a pluggable `CatalogProvider` seam, and adds a peer "direct UC REST" profile. It builds directly on the E0 TanStack Query layer (`queryOptions` provider boundary, `queryKeys` factory, infinite queries, `connectionId` cache isolation) and depends on the E6 Envoy session for any authenticated remote read. ADR-0002 is a hard constraint at every milestone: **no cloud or catalog secrets ever reach browser code.**
+
+> **Daxis deferral (2026-06-20):** the Daxis provider is **parked** for E1. The `CatalogProvider` seam, the `TableReadResolution` union (incl. `read_access_plan`), and the ADR strategy below intentionally keep Daxis as a *first-class future profile* — that design is **not** removed — but E1 does **not** build, ship, or depend on a Daxis integration. The integrated providers for E1 are **DirectUnityCatalog**, **LocalDelta**, and **ObjectStore**. All Daxis-specific work (notably milestone **M4** and its fixtures/tests) is retained below, marked _Deferred_, and can be reactivated without reworking the seam.
 
 > **Buf toolchain note (pulled forward by E0):** the Buf seam that E1/E3 rely on is already standing in E0 via the scoped `axon/config/v1` config module (`buf.yaml`/`buf.gen.yaml` → protobuf-es + `protoschema-jsonschema`, checked into `src/generated/config/` behind the codegen drift check; see [E0 plan §3.6](./2026-06-20-e0-frontend-foundation-execution-plan.md)). E1 should reuse that module/`buf.gen.yaml` rather than re-bootstrapping Buf, and **provider options / connection config should be modeled as `axon/config/v1` messages** so they flow into the same schema-driven, layered Settings surface (per-connection scope is the reserved D7 layer).
 
@@ -178,11 +180,11 @@ All fetchers go through one **session-aware fetch wrapper** (`query/providers/ht
 | Provider | `browsable` | Navigation source | `resolveTableRead` returns |
 |---|---|---|---|
 | **DirectUnityCatalog** | yes | UC REST via Envoy proxy: `/catalogs`, `/schemas`, `/tables`, `/tables/{full_name}` (columns/props), `/volumes`, `/volumes/{name}` + Files API for entries | For external-read-eligible tables: a `BrokeredDeltaReadPlan` (via the brokered object-grant/credential-vending route) → `read_access_plan`; governed shapes (row filter/column mask/view) → `fallback`/`blocked`. |
-| **Daxis** | partial | Daxis catalog/list surfaces (thin; may be navigation-light — list approved/recent tables). Tree nodes can be lazily backed by Daxis list APIs where available. | `DaxisApprovedAxonReadDescriptor.tables[*].descriptor` → `descriptor`; non-approved → `fallback`/`blocked` preserving Daxis reason. |
+| **Daxis** _(deferred — see deferral note)_ | partial | Daxis catalog/list surfaces (thin; may be navigation-light — list approved/recent tables). Tree nodes can be lazily backed by Daxis list APIs where available. | `DaxisApprovedAxonReadDescriptor.tables[*].descriptor` → `descriptor`; non-approved → `fallback`/`blocked` preserving Daxis reason. |
 | **ObjectStore** (GCS) | flat (one table root = one table) | Synthesizes a single-catalog/single-schema/single-table tree from the table URI (today's `objectStorageRuntimeFromDescriptor`). `volumesQuery` lists bucket prefixes (optional later). | Reconstructs via `resolvePublicObjectStorageDescriptor` → `descriptor`. |
 | **LocalDelta** | flat | Single table from the File System Access handle + reconstructed snapshot. | Local snapshot → `descriptor` (re-grant flow from E0 surfaces as a typed error). |
 
-This table is the heart of Decision 1: **Daxis's `ReadAccessPlan` model and direct UC REST land on the same interface because read resolution is a separate method whose return type is the union of both worlds' outcomes.** Navigation differences (UC is richly browsable; Daxis/object-store/local are flatter) are expressed through `capabilities()` and degrade gracefully in the explorer UI.
+This table is the heart of Decision 1: **Daxis's `ReadAccessPlan` model and direct UC REST land on the same interface because read resolution is a separate method whose return type is the union of both worlds' outcomes.** That generality is why Daxis can be **deferred without redesign** — the `read_access_plan` resolution variant stays in the union as the reserved Daxis seam even though no Daxis provider ships in E1. Navigation differences (UC is richly browsable; object-store/local are flatter) are expressed through `capabilities()` and degrade gracefully in the explorer UI.
 
 ### 3.5 Provider registry + dispatch
 
@@ -264,9 +266,14 @@ route /catalog/$connectionId/$catalog/$schema/$table   (E0 deep link; source of 
 
 `QueryTableSource` (the `getSession` input) is **extended** with a fourth variant that carries a pre-resolved descriptor/plan handoff (`{ kind: 'resolved_descriptor', ref, descriptor }`) so the session layer accepts provider output without re-deriving locators. The existing three variants (`manifest`/`local_delta`/`object_store_table_root`) remain for the reference providers, keeping current behavior byte-identical.
 
-### 5.4 Editor integration
+### 5.4 Navigation shell + Catalog Explorer
 
-- **Sidebar**: a lazy catalog tree (connections → catalogs → schemas → tables/views/volumes) backed by infinite queries; the existing `ConnectedCatalogsPanel` graduates into this tree (its `onActivate` already produces an `ActiveConnectedTableRef`).
+E1 introduces a **top-level navigation layer** so the app stops being a single query editor and becomes a multi-area workbench, mirroring the Databricks Catalog Explorer. The decisions below are load-bearing for M1 and are consumed by M2/M3/M5.
+
+- **Top-level nav = a global left icon rail (Databricks-style).** A new full-height outermost column (`.app-rail`) switches between top-level *areas*: `Editor` (today's workspace) and `Catalog Explorer`. The rail is extensible (future: Settings, E7 Insights). Chosen over topbar tabs because it matches Databricks and scales to more areas. The brand mark moves into the rail head; the topbar starts at the connection pill.
+- **Route-driven, not view-state.** Active area derives from the URL (consistent with E0's "route is source of truth"): `/` = Editor, `/explore` = Catalog Explorer, deep link `/explore/$connectionId/$catalog/$schema/$table` for a selected object. The existing `/catalog/...` deep link (which selects a table *in the editor*) is unchanged; the explorer owns the separate `/explore/...` namespace. `/catalogs` redirects to `/explore`. No new client state for "which area".
+- **Shared shell chrome via a pathless layout route.** A `ShellLayout` (rail + topbar + statusbar + global modals/toast) renders an `<Outlet/>`; the Editor workspace and the Explorer are sibling area-routes that each fill only the middle region. Today's monolithic `App.tsx` is split into a chrome-free `EditorArea` and the shared `ShellLayout`. Topbar/statusbar read global state directly (connections slice + `useCatalogQuery`), so no prop drilling; the capability matrix is lifted from `App` local state into the `run` slice so both the topbar popover and the Results pane consume one source.
+- **Explorer surface mirrors Databricks Catalog Explorer**: a left **object tree** (connections → catalogs → schemas → tables/views/volumes; flat providers degrade via `capabilities().browsable`) backed by the provider navigation queries (lazy/infinite in M2; the existing connected-catalog registry in M1), plus a main **detail surface** with a header (breadcrumb, full name, object type, primary actions) and tabs: **Overview/Columns**, **Sample data**, **Details** (properties / storage / snapshot / protocol features), and reserved placeholders for History/Lineage/Permissions (E7/E4). The `ConnectedCatalogsPanel` graduates into this tree (its `onActivate` already produces an `ActiveConnectedTableRef`). Primary action **"Open in SQL editor"** creates a tab, sets the active selection, and navigates to `/`.
 - **Editor**: per-tab connection/catalog context (E2 will consume this for completion scoping; E1 stores it on the tab in the E0 `tabs` slice). The catalog/schema/table selectors are a header control bound to the active route.
 - **Catalog metadata cache for E2/E4**: `tableMetadataQuery`/`tablesQuery`/`schemasQuery` results under stable keys ARE the cache E2 reads for completion and E4 reads for entity shapes — no separate store. E1 guarantees the node shapes in §3.2 are stable and serializable.
 
@@ -324,34 +331,40 @@ Each milestone is independently shippable behind flags and gated on: `tsc --noEm
 - Add the `resolved_descriptor` `QueryTableSource` variant; `getSession` accepts it.
 - **Gate:** `public-gcs-live` + `local-delta` + `editor-smoke` green (proving no regression); Vitest for the reference providers + registry dispatch.
 
-### M1 — Multi-catalog registry + selectors + deep links
+### M1 — Multi-catalog registry + selectors + deep links + navigation shell
 - Promote `ConnectedCatalog` into the E0 `connections` slice with connection-scoped `connectionId` (§5.1); generalize selection to catalog level. Migrate `connect/store.ts` localStorage onto the E0 persistence KV behind unchanged signatures (coordinate with E0 M1/M2).
-- Lazy catalog tree in the sidebar (infinite queries) + route-driven selection (`/catalog/$connectionId/$catalog/$schema/$table`) consuming E0's router. `ConnectedCatalogsPanel` graduates into the tree.
+- **Top-level navigation shell (§5.4):** add the global left rail; split `App.tsx` into a chrome-free `EditorArea` + a shared `ShellLayout` (rail + topbar + statusbar + global modals) rendered by a pathless layout route; lift the capability matrix into the `run` slice. Restructure `.shell` CSS into a rail column + content column.
+- **Catalog Explorer surface (§5.4):** add `/explore` (+ `/explore/$connectionId/$catalog/$schema/$table`) area routes (and redirect `/catalogs` → `/explore`); build the object tree + the Databricks-style detail surface (Overview/Columns, Details) on the existing connected-catalog registry, with an "Open in SQL editor" round-trip. `ConnectedCatalogsPanel` graduates into the tree.
+- Lazy catalog tree in the sidebar (infinite queries) + route-driven selection consuming E0's router.
 - Per-tab connection/catalog context on the `tabs` slice.
-- **Gate:** Playwright deep-link + selection tests; Vitest for registry upsert/remove/dedupe (port `connect/store.ts` assertions) + selection reconciliation; existing suites green.
+- **Gate:** Playwright deep-link + selection tests + rail area-switch + `/explore` deep-link + "Open in SQL editor" round-trip; Vitest for registry upsert/remove/dedupe (port `connect/store.ts` assertions) + selection reconciliation; existing suites green.
 
 ### M2 — DirectUnityCatalog navigation
 - Implement `catalogsQuery`/`schemasQuery`/`tablesQuery`/`tableMetadataQuery`/`volumesQuery` against UC REST through `bffBaseUrl` (Envoy proxy), with cursor pagination and `staleTime`/retry policy from E0. Build the **mock UC** fixture server for tests/dev.
+- Switch the M1 explorer tree + Overview/Columns/Details from the connected-catalog registry to live provider navigation queries (lazy/paginated), degrading gracefully via `capabilities()` for flat providers (local/object-store).
 - Replace the UC config stub in `ConnectModal.tsx` with a real `Test connection` (calls `catalogsQuery`) and real discovery; keep behind `bffAuthServiceConnectors`.
 - **Gate:** Vitest against mock UC (listing, pagination cursors, metadata shape, 401→session-expired, 403→blocked); Playwright UC-connect-and-browse against mock; secret-marker assertion on persisted nodes.
 
 ### M3 — DirectUnityCatalog read resolution → execution
 - Implement `resolveTableRead`: external-read-eligible UC tables → brokered object-grant path → `BrokeredDeltaReadPlan` → reuse `to_browser_http_snapshot_descriptor` → `descriptor` → `openDeltaTable()`; governed shapes (row filter/column mask/view/unknown) → `fallback`/`blocked` with structured reason in the UI. Fail closed on unknown policy.
-- Wire the run lifecycle (E0 `run` slice) to dispatch through `resolveTableRead`.
+- Wire the run lifecycle (E0 `run` slice) to dispatch through `resolveTableRead`. The explorer **"Sample data"** tab and **"Open in SQL editor"** action route through the same `resolveTableRead` path.
 - **Gate:** Vitest for the resolution matrix (eligible→descriptor; each `ReadAccessPlanReason`→fallback/blocked; expired grant; missing capability); Playwright run-against-mock-UC table; verify `openDeltaTable()` is never called for fallback/blocked.
 
-### M4 — Daxis provider as a first-class peer
+### M4 — Daxis provider as a first-class peer *(Deferred — not in E1 scope)*
+
+> **Deferred.** Parked per the Daxis deferral note at the top of this plan. This milestone is retained verbatim as the reactivation spec — the seam (`read_access_plan`/`descriptor` resolution variants, ADR-0009) already accommodates it — but it is **not built, gated, or depended on** in E1. Reactivating it requires no changes to the M0–M3/M5–M6 deliverables.
+
 - Implement the Daxis `CatalogProvider`: navigation thin (list approved/recent tables where Daxis exposes them), read resolution rich (`DaxisApprovedAxonReadDescriptor.tables[*].descriptor` → `descriptor`; validate via `validate_daxis_approved_axon_read_descriptor`; preserve `limits`/`access_proof`/Daxis reasons on fallback/block).
 - Reuse the existing `daxis-first-class-integration-examples` fixtures as the provider's golden tests.
 - **Gate:** contract-parity Vitest over the Daxis example fixtures (executed/fallback/blocked/expired/mismatch); ensure Daxis profile honors `runtime_preference.allow_remote_fallback`.
 
 ### M5 — Volumes browsing + file preview
-- `volumesQuery`/`volumeEntriesQuery` for UC volumes; `resolveVolumeFileRead` via object-grant batch-sign/range. Preview surfaces for parquet/csv/json/image (§6) reusing the range-read path. Size caps + truncation affordance.
+- `volumesQuery`/`volumeEntriesQuery` for UC volumes; `resolveVolumeFileRead` via object-grant batch-sign/range. Preview surfaces for parquet/csv/json/image (§6) reusing the range-read path. Size caps + truncation affordance. Volumes appear as tree nodes in the explorer (§5.4); selecting a file renders its preview in the explorer detail surface.
 - **Gate:** Vitest for entry pagination + each preview parser (parquet via WASM, csv/json bounded, image URL); URL-policy validation; Playwright volume-browse-and-preview against mock.
 
 ### M6 — Cache hardening for E2/E4 + ADR + cleanup
 - Finalize stable node shapes; prefetch via route loaders; prefix-invalidation on disconnect/resync; persistence filter (persist structural catalog nodes, never grants/signed URLs). Document the E2/E4 read contract over the cache.
-- Land **ADR-0009** + the ADR-0008 forward note; remove the decorative UC/DS stub text; update `browser-uc-brokered-runtime-contract.md` cross-reference.
+- Land **ADR-0009** (the provider seam, valid independent of Daxis); the ADR-0008 Daxis forward note **defers with M4**. Remove the decorative UC/DS stub text; update `browser-uc-brokered-runtime-contract.md` cross-reference.
 - **Gate:** full regression; dependency guardrail + bundle delta; "no secrets in browser" assertion across persisted state + bundle.
 
 ---
@@ -368,7 +381,7 @@ Each milestone is independently shippable behind flags and gated on: `tsc --noEm
 | **Cache-key explosion** across many connections/catalogs | Med / Med | Connection-scoped `connectionId` prefix-invalidation; bounded `gcTime`; persist only recently-used connections' structure. |
 | **Grant/descriptor expiry mid-session** | Med / Med | Read resolution is never cached; `expiresAtEpochMs` checked before handoff; expired → typed re-resolve, not a stale descriptor; 401 → E6 re-login. |
 | **`QueryTableSource` extension regresses local/object-store** | Med / High | New `resolved_descriptor` variant is additive; existing three variants untouched; M0 gate is existing suites byte-identical. |
-| **Daxis contract drift vs. generalization** | Low / Med | Daxis provider tested against the shipped example fixtures; ADR-0008 left intact (forward note only). |
+| **Daxis contract drift vs. generalization** _(deferred with M4)_ | Low / Med | Daxis provider tested against the shipped example fixtures; ADR-0008 left intact (forward note only). While Daxis is parked, drift is bounded by leaving ADR-0008 + fixtures untouched and re-validating at reactivation. |
 | **Bundle growth** (preview parsers) | Low / Low | csv/json parsers tiny; parquet reuses WASM (size-gated separately); image is native; lazy-load preview chunks. |
 
 ---
@@ -378,10 +391,10 @@ Each milestone is independently shippable behind flags and gated on: `tsc --noEm
 **Runner:** Vitest (jsdom) + `@testing-library/react renderHook` for queries; `fake-indexeddb` for persisted registry; mock UC server + mock broker (fetch-level) reusing repo fixtures.
 
 - **Provider unit/contract:** queryOptions/keys per provider (stable, hierarchical, prefix-invalidatable); fetchers vs. mock UC (listing, pagination cursors, metadata shape, view vs table, volumes); `SessionHttp` mapping (401/403/404 → session-expired/blocked/not-found).
-- **Read-resolution matrix:** DirectUC eligible→`descriptor`; each `ReadAccessPlanReason`→`fallback`/`blocked`; expired grant; missing `batch_sign`/`range_get`/`Confirmed`; **assert `openDeltaTable()` is never invoked for fallback/blocked**. Daxis: parity over `daxis-first-class-integration-examples/*` (executed/fallback/blocked/expired/mismatch).
+- **Read-resolution matrix:** DirectUC eligible→`descriptor`; each `ReadAccessPlanReason`→`fallback`/`blocked`; expired grant; missing `batch_sign`/`range_get`/`Confirmed`; **assert `openDeltaTable()` is never invoked for fallback/blocked**. Daxis parity over `daxis-first-class-integration-examples/*` (executed/fallback/blocked/expired/mismatch) is **deferred with M4**.
 - **Volumes/preview:** entry pagination; parquet preview via WASM `inspect_parquet`; csv/json bounded parse + truncation; image URL; URL-policy rejection of non-HTTPS/secret-bearing URLs.
 - **Security:** "no secrets in browser" — assert no Authorization header sourced from browser state, no signed URL/grant persisted, secret-marker scan over persisted registry; keep `verify_browser_dependency_guardrails.sh` green (no cloud SDK added).
-- **E2E (Playwright):** connect UC (mock) → browse lazy tree → activate table → run query; volume browse + preview; deep-link selection + reload; **keep `local-delta` (re-grant) and `public-gcs-live` green** as the no-regression anchor.
+- **E2E (Playwright):** rail switches Editor ↔ Catalog Explorer; `/explore` deep link selects the right object; explorer "Open in SQL editor" round-trips into a new editor tab; connect UC (mock) → browse lazy tree → activate table → run query; volume browse + preview; deep-link selection + reload; **keep `local-delta` (re-grant) and `public-gcs-live` green** as the no-regression anchor.
 - **CI gates:** WASM artifact budget (unaffected); dependency guardrail; contract-parity over fixtures; ESLint boundary rule (providers may not import the run/session singletons except through the defined seam).
 
 ---
@@ -404,7 +417,7 @@ These do not change E0's milestones; they refine the seams E0 already commits to
 
 1. **UC REST surface via Envoy** — confirm the proxy path shape (`/api/uc/2.1/unity-catalog/...`) and whether the BFF passes UC pagination cursors through verbatim.
 2. **DirectUC read eligibility** — for the first DirectUC release, do we ship only credential-vended external-read-eligible tables (governed shapes → fallback), matching the brokered contract, or also a server-snapshot-resolver mode?
-3. **Daxis navigation depth** — how browsable is Daxis catalog listing in practice (full tree vs. approved/recent tables only)? Determines M4 navigation richness.
+3. **Daxis navigation depth** _(deferred with M4)_ — how browsable is Daxis catalog listing in practice (full tree vs. approved/recent tables only)? Determines M4 navigation richness when Daxis is reactivated.
 4. **Volumes write/upload** — confirmed out of scope for E1 (read-only preview only)?
 5. **ADR-0009 ownership** — confirm new ADR + ADR-0008 forward note (vs. amending ADR-0008) with the Daxis release-gate owners.
 6. **Object-store prefix browsing** — defer the generic bucket browser to a later release, or include a minimal version in M5?
