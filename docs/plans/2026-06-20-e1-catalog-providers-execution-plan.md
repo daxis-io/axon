@@ -2,7 +2,7 @@
 
 - Status: Draft (planning deliverable)
 - Date: 2026-06-20
-- Scope: Define the `CatalogProvider` seam and ship a `DirectUnityCatalog` provider (UC REST navigation + table metadata) alongside the existing `LocalDelta` and `ObjectStore` paths. The seam stays Daxis-compatible by design, but a Daxis provider is **deferred** for now (see the Daxis deferral note below) and is not an E1 integration target. Each provider exposes its reads as TanStack Query options so caching/refresh/dedup/pagination apply uniformly. Deliver a multi-catalog connection registry, catalog/schema/table selectors in sidebar + editor, lazy/paginated tree navigation, **volumes surfaced as catalog objects (list + metadata only)**, and a catalog metadata cache that feeds E2 (IntelliSense) and E4 (Cedar entities). **Browsing the files inside a volume, file preview, and file editing are out of scope for E1 and belong to [E8 — Workspace Files & Volumes](../program/rich-lakehouse-workbench-strategy.md); E1 only references a volume as an object, it never opens it.**
+- Scope: Define the **discovery-only** `CatalogProvider` seam and ship a `DirectUnityCatalog` provider (UC REST navigation + table metadata) alongside the existing `LocalDelta` and `ObjectStore` paths. The seam stays Daxis-compatible by design, but a Daxis provider is **deferred** for now (see the Daxis deferral note below) and is not an E1 integration target. Each provider exposes its **navigation** reads as TanStack Query options so caching/refresh/dedup/pagination apply uniformly. Deliver a multi-catalog connection registry, catalog/schema/table selectors in sidebar + editor, lazy/paginated tree navigation, **volumes surfaced as catalog objects (list + metadata only)**, and a catalog metadata cache that feeds E2 (IntelliSense) and E4 (Cedar entities). **Read resolution (the `ReadAccessPlan`/descriptor/`fallback`/`blocked` family) and query execution / sample-preview are out of scope for E1 and belong to [E9 — Execution Provider and Data Access Resolution](../program/rich-lakehouse-workbench-strategy.md); the Catalog Explorer hands a table *ref* to E9, it does not resolve or execute reads.** **Browsing the files inside a volume, file preview, and file editing are out of scope for E1 and belong to [E8 — Workspace Files & Volumes](../program/rich-lakehouse-workbench-strategy.md); E1 only references a volume as an object, it never opens it.**
 - Depends on: **E0** (state/TanStack Query, routing, persistence) and **E6** (Envoy session + WASM credential propagation) for remote API access.
 - Feeds: **E2** (catalog-aware SQL), **E4** (policy entities), **E7** (table insight).
 - Related:
@@ -15,7 +15,9 @@
 
 > E1 turns today's single posture ("Daxis owns catalog and policy; Axon is contract-first") into one profile of a pluggable `CatalogProvider` seam, and adds a peer "direct UC REST" profile. It builds directly on the E0 TanStack Query layer (`queryOptions` provider boundary, `queryKeys` factory, infinite queries, `connectionId` cache isolation) and depends on the E6 Envoy session for any authenticated remote read. ADR-0002 is a hard constraint at every milestone: **no cloud or catalog secrets ever reach browser code.**
 
-> **Daxis deferral (2026-06-20):** the Daxis provider is **parked** for E1. The `CatalogProvider` seam, the `TableReadResolution` union (incl. `read_access_plan`), and the ADR strategy below intentionally keep Daxis as a *first-class future profile* — that design is **not** removed — but E1 does **not** build, ship, or depend on a Daxis integration. The integrated providers for E1 are **DirectUnityCatalog**, **LocalDelta**, and **ObjectStore**. All Daxis-specific work (notably milestone **M4** and its fixtures/tests) is retained below, marked _Deferred_, and can be reactivated without reworking the seam.
+> **Scope realignment (2026-06-21) — E1 is discovery-only; read resolution + execution moved to [E9](../program/rich-lakehouse-workbench-strategy.md).** The original plan put `resolveTableRead()` on the `CatalogProvider`, extended `QueryTableSource`, and wired the run lifecycle through the catalog seam. That conflated three concerns — *discovery* (what exists), *read resolution* (the `ReadAccessPlan`/descriptor/`fallback`/`blocked` family), and *execution* (run/sample). E1 now owns **discovery + the Catalog Explorer only**; the **DataAccessResolver** seam (read resolution) and the **ExecutionProvider** seam (run/preview) are owned by **E9**. Where sections below still describe `resolveTableRead`/`TableReadResolution`/the `resolved_descriptor` source variant/the read-resolution matrix, that material is **relocated to E9** and is retained here only as a cross-reference; the heading is annotated where this applies. The CatalogProvider's node/metadata types are the **[E3A](../program/rich-lakehouse-workbench-strategy.md)-generated proto messages**, not hand-written TS. Milestone **M3** (read resolution → execution) and the deferred Daxis **M4** move to E9.
+
+> **Daxis deferral (2026-06-20):** the Daxis provider is **parked** for E1. The `CatalogProvider` discovery seam, the E9 read-resolution seam (incl. the Daxis `read_access_plan` profile), and the ADR strategy below intentionally keep Daxis as a *first-class future profile* — that design is **not** removed — but E1 does **not** build, ship, or depend on a Daxis integration. The integrated providers for E1 are **DirectUnityCatalog**, **LocalDelta**, and **ObjectStore**. All Daxis-specific work (notably milestone **M4** and its fixtures/tests) is retained below, marked _Deferred_, and can be reactivated without reworking the seam.
 
 > **Buf toolchain note (pulled forward by E0):** the Buf seam that E1/E3 rely on is already standing in E0 via the scoped `axon/config/v1` config module (`buf.yaml`/`buf.gen.yaml` → protobuf-es + `protoschema-jsonschema`, checked into `src/generated/config/` behind the codegen drift check; see [E0 plan §3.6](./2026-06-20-e0-frontend-foundation-execution-plan.md)). E1 should reuse that module/`buf.gen.yaml` rather than re-bootstrapping Buf, and **provider options / connection config should be modeled as `axon/config/v1` messages** so they flow into the same schema-driven, layered Settings surface (per-connection scope is the reserved D7 layer).
 
@@ -25,9 +27,9 @@
 
 | # | Decision | Recommendation |
 |---|----------|----------------|
-| 1 | `CatalogProvider` interface shape | **Split each provider into two concerns behind one interface: _navigation_ (browse catalogs/schemas/tables/views/volumes/columns, each surfaced as a TanStack `queryOptions`/`infiniteQueryOptions` factory) and _read resolution_ (`resolveTableRead(ref)` → a discriminated `TableReadResolution`).** Daxis and DirectUC implement the same interface; they differ mostly in read resolution. Read resolution returns one of `descriptor` (an openable `BrowserHttpSnapshotDescriptor`), `read_access_plan` (the `ReadAccessPlan` family, processed to a descriptor by the runtime), `fallback`, or `blocked`. This keeps the descriptor-materialization invariant (browser never infers policy) and lets Daxis's `ReadAccessPlan`/`DaxisApprovedAxonReadDescriptor` map onto the same seam as direct UC. |
+| 1 | `CatalogProvider` interface shape | **Discovery-only: each provider exposes _navigation_ (browse catalogs/schemas/tables/views/volumes/functions/models/columns, each surfaced as a TanStack `queryOptions`/`infiniteQueryOptions` factory) over the [E3A](../program/rich-lakehouse-workbench-strategy.md)-generated message types.** No `resolveTableRead`/read-resolution on this seam — that is the **DataAccessResolver** seam in [E9](../program/rich-lakehouse-workbench-strategy.md). Daxis and DirectUC implement the same discovery interface and differ only in navigation richness (expressed via `capabilities()`). Selecting an object yields a `TableRef` that the Explorer hands to E9 for "Sample data" / "Open in SQL editor"; the descriptor-materialization invariant and the `descriptor`/`read_access_plan`/`fallback`/`blocked` union live with E9. |
 | 2 | Where UC credential exchange / CORS lives | **Never in the browser.** "DirectUnityCatalog" means "UC REST _shape_," reached **same-origin through the E6 Envoy proxy** (e.g. `GET /api/uc/2.1/unity-catalog/catalogs`) with `credentials: 'include'`. Envoy terminates login and injects the UC/cloud credential server-side. This sidesteps CORS (single origin) and satisfies ADR-0002. Object/volume bytes are read via short-lived signed URLs or a narrow range proxy (the existing object-store/object-grant path), never cloud creds. E1 defines the fetcher contract; E6 owns the session/refresh/401 mechanics. |
-| 3 | Multi-catalog data model | **A `CatalogConnection` registry (E0 client store, persisted) keyed by a stable `connectionId`.** A connection is provider-root-scoped (a UC workspace, a Daxis tenant, a bucket, a local folder), distinct from the *table-scoped* canonical key in `connect/store.ts`. Hierarchy: `connection → catalog → schema → {table|view|volume}`. Active selection `{connectionId, catalog, schema, table}` is **route-owned** (E0 deep link), mirrored into the store. Selection resolves to `provider.resolveTableRead` → descriptor → the existing `getSession`/`openDeltaTable` runtime. |
+| 3 | Multi-catalog data model | **A `CatalogConnection` registry (E0 client store, persisted) keyed by a stable `connectionId`.** A connection is provider-root-scoped (a UC workspace, a Daxis tenant, a bucket, a local folder), distinct from the *table-scoped* canonical key in `connect/store.ts`. Hierarchy: `connection → catalog → schema → {table|view|volume}`. Active selection `{connectionId, catalog, schema, table}` is **route-owned** (E0 deep link), mirrored into the store. Selection yields a `TableRef` handed to the [E9](../program/rich-lakehouse-workbench-strategy.md) ExecutionProvider (which calls the DataAccessResolver → descriptor → the existing `getSession`/`openDeltaTable` runtime). |
 | 4 | Volumes scope | **Discovery only.** E1 lists volumes and shows volume metadata (type, storage location, comment) as catalog objects in the tree (UC `/volumes`, `/volumes/{name}`), exactly like tables/views. **Browsing the files inside a volume, file preview, and file editing are deferred to [E8 — Workspace Files & Volumes](../program/rich-lakehouse-workbench-strategy.md)** (the `FileSystemProvider`/Workspace seam). E1 exposes a volume only as a reference + a handoff point ("Browse files" routes to E8 when present); it ships no Volumes Files API and no preview parsers. |
 | 5 | ADR strategy | **Add a new ADR-0009 "Pluggable Catalog Providers"** that defines the seam and explicitly scopes ADR-0008 + the UC brokered contract as the **Daxis/brokered profile**, with a peer **direct-UC profile**. Add a short forward-reference amendment note to ADR-0008 (do not rewrite it — its content is load-bearing for the Daxis release-gate traceability). ADR-0002 is unchanged and remains a hard constraint cited by ADR-0009. |
 | 6 | UC contract + navigation patterns (prior art) | **Reuse the OSS Unity Catalog OpenAPI spec and `openapi-typescript`-generated types as the typed UC contract**, and **port the navigation-plane conventions** proven in the sibling `open-lakehouse/node` console (see §2.5) — *not* its access model or styling. Generate UC `components` types from the vendored spec; keep axon's **hand-written `queryOptions`/provider seam + BFF `SessionHttp`** (do **not** adopt `openapi-fetch`/`openapi-react-query`, since axon's metadata plane is governed and same-origin-brokered, unlike OSS UC). Treat **Tables, Volumes, Functions, and Models** as first-class explorer object kinds. |
@@ -49,17 +51,17 @@ Non-goals for E1: Monaco/IntelliSense (E2), Cedar authorization (E4 — E1 only 
 | Multi-catalog model (cosmetic) | `connect/types.ts` `ConnectedCatalog`/`ConnectedCatalogSchema`/`ConnectedTableSourceBinding`; `connect/store.ts` | A real multi-catalog/multi-schema/multi-table structure **already exists** and is persisted in `localStorage` (`axon.connect.catalogs.v1`), with upsert/merge/dedupe and a table-scoped `canonicalKey` (`tableSourceKeyFromParts`). But discovery is faked for UC/DS, so it's mostly populated for local/object-store. |
 | Runtime collapse | `services/query-source.ts` `querySourceFromConnectedCatalogs`, `QueryTableSource` | The rich `ConnectedCatalog` tree is **collapsed to a single `QueryTableSource`** (`manifest \| local_delta \| object_store_table_root`) for execution. This is the "single-table Phase 1" runtime catalog. |
 | Runtime catalog | `services/catalog.ts` `loadCatalog`/`subscribeCatalog`/`snapshotCatalog`; `services/query.ts` `getSession`/`deriveCatalogTable` | A `Catalog` is **derived from the resolved Delta snapshot** of the *one* active table (`tables: [table]`). This is session-bound, not a provider listing. |
-| Object-store read path (reusable) | `services/object-storage.ts` | Anonymous GCS XML-API `_delta_log/` listing → `resolve_delta_snapshot_from_manifest` (WASM) → `BrowserHttpSnapshotDescriptor` → `preflight_parquet_metadata_for_targets` range-read preflight. **This is the table-bytes read primitive E1's read resolution reuses (and the same primitive E8 reuses for volume files).** |
+| Object-store read path (reusable) | `services/object-storage.ts` | Anonymous GCS XML-API `_delta_log/` listing → `resolve_delta_snapshot_from_manifest` (WASM) → `BrowserHttpSnapshotDescriptor` → `preflight_parquet_metadata_for_targets` range-read preflight. **This is the table-bytes read primitive [E9](../program/rich-lakehouse-workbench-strategy.md)'s read resolution reuses (and the same primitive E8 reuses for volume files); E1 does not touch it.** |
 | WASM surface | `apps/axon-web/src/lib.rs` | `resolve_delta_snapshot_from_manifest`, `preflight_parquet_metadata_for_targets`, `SandboxQuerySession::inspect_parquet`, `open`/`dispose_table`. Range reads happen inside the worker via `wasm-http-object-store`. |
 | Feature flag | `services/connector-features.ts` | `bffAuthServiceConnectors` from `VITE_AXON_BFF_AUTH_SERVICE_CONNECTORS`. Gates UC/DS. |
 
 ### 2.2 The contract surface E1 builds on (`crates/query-contract/src/lib.rs`)
 
-- **`ReadAccessPlan`** (tagged `plan_type`): `BrokeredDelta(BrokeredDeltaReadPlan)` · `DeltaSharing(DeltaSharingReadPlan)` · `SqlFallbackRequired(SqlFallbackRequiredPlan)` · `Blocked(BlockedReadPlan)`. This is the catalog→browser read-authorization vocabulary and the natural target of `resolveTableRead`.
+- **`ReadAccessPlan`** (tagged `plan_type`): `BrokeredDelta(BrokeredDeltaReadPlan)` · `DeltaSharing(DeltaSharingReadPlan)` · `SqlFallbackRequired(SqlFallbackRequiredPlan)` · `Blocked(BlockedReadPlan)`. This is the catalog→browser read-authorization vocabulary and the natural target of [E9](../program/rich-lakehouse-workbench-strategy.md)'s DataAccessResolver (not an E1 surface).
 - **`BrokeredDeltaReadPlan::to_browser_http_snapshot_descriptor(resolved_snapshot, object_urls_by_path)`** already converts a brokered plan + signed URLs into an openable descriptor, failing closed unless `direct_external_engine_read == Confirmed`, `batch_sign`, and `range_get` hold.
 - **Descriptors**: `BrowserHttpSnapshotDescriptor` (the single execution handoff), `BrowserHttpParquetDatasetDescriptor`, `ResolvedSnapshotDescriptor`.
 - **Resolver contract**: `DeltaLocationResolve{Request,Response}` + `validate_delta_location_resolve_exchange` — the explicit server-snapshot-resolver mode.
-- **Object-grant routes**: `ObjectGrant{List,Head,BatchSign,Range}*` — list/head/batch-sign/range for `BrokeredObjectAccess` capabilities. **E1 uses these for table-bytes read resolution; they are also the primitives E8 will reuse for volume file access.**
+- **Object-grant routes**: `ObjectGrant{List,Head,BatchSign,Range}*` — list/head/batch-sign/range for `BrokeredObjectAccess` capabilities. **[E9](../program/rich-lakehouse-workbench-strategy.md) uses these for table-bytes read resolution; they are also the primitives E8 will reuse for volume file access. E1 uses none of them.**
 - **Daxis**: `DaxisApprovedAxonReadDescriptor` (carries `tables: Vec<DaxisApprovedTableDescriptor>` each with an embedded `BrowserHttpSnapshotDescriptor`, plus `access_proof`, `limits`, `runtime_preference`) and `validate_daxis_approved_axon_read_descriptor`.
 - **Reason taxonomy**: `ReadAccessPlanReason` (`row_filter`, `column_mask`, `view`, `unknown_policy_state`, `no_direct_external_engine_read_support`, `unsupported_table_type`, `grant_expired`, `storage_cors_blocked`, `broker_unavailable`) and `FallbackReason` — the structured outcomes the UI surfaces (and E4 maps onto).
 
@@ -95,14 +97,14 @@ A sibling repo (`open-lakehouse/node`) ships a small, mature Databricks-parallel
 
 ## 3. The `CatalogProvider` interface (Decision 1)
 
-### 3.1 Design principle: navigation vs. read resolution
+### 3.1 Design principle: navigation (E1) vs. read resolution (E9)
 
-Two concerns that have different lifecycles, caches, and trust properties:
+Two concerns with different lifecycles, caches, and trust properties — **split across two seams/efforts:**
 
-- **Navigation** — "what tables/schemas/volumes/columns exist, and what is their metadata?" Cheap, listable, paginated, cacheable for minutes, refetchable in the background. Surfaced as TanStack `queryOptions`.
-- **Read resolution** — "how, if at all, may this browser read this specific table _right now_?" Policy-gated, short-lived, expiring, fail-closed. Returns the `ReadAccessPlan`/descriptor family. **Never cached like navigation** (grants expire; persisting them would violate ADR-0002 posture).
+- **Navigation (E1, this plan)** — "what catalogs/schemas/tables/volumes/columns exist, and what is their metadata?" Cheap, listable, paginated, cacheable for minutes, refetchable in the background. Surfaced as TanStack `queryOptions`. Feeds E2/E4 and the Catalog Explorer.
+- **Read resolution ([E9](../program/rich-lakehouse-workbench-strategy.md), DataAccessResolver seam)** — "how, if at all, may this client read this specific table's bytes _right now_?" Policy-gated, short-lived, expiring, fail-closed. Returns the `ReadAccessPlan`/descriptor family. **Never cached like navigation** (grants expire; persisting them would violate ADR-0002 posture). Feeds the E9 ExecutionProvider's run lifecycle.
 
-Conflating them (as the E0 plan's single `['catalog', connectionId, 'table-derived']` key does) is the central thing E1 fixes: navigation feeds E2/E4 and the explorer; read resolution feeds the run lifecycle.
+Conflating them (as the E0 plan's single `['catalog', connectionId, 'table-derived']` key did, and as the original E1 plan did by hanging `resolveTableRead` off the catalog seam) is the central thing this realignment fixes: E1 ships navigation only; E9 owns read resolution + execution.
 
 ### 3.2 Types (sketch)
 
@@ -155,16 +157,12 @@ export interface VolumeNode   { catalog: string; schema: string; name: string;
 export type TableRef  = { connectionId: ConnectionId; catalog: string; schema: string; table: string };
 export type VolumeRef = { connectionId: ConnectionId; catalog: string; schema: string; volume: string };
 
-// ── Read resolution: the policy-gated handoff ──────────────────────────────
-export type TableReadResolution =
-  | { kind: 'descriptor';        descriptor: BrowserHttpSnapshotDescriptor }     // ready to openDeltaTable()
-  | { kind: 'read_access_plan';  plan: ReadAccessPlan }                          // runtime processes → descriptor
-  | { kind: 'fallback';          reason: ReadAccessPlanReason; message: string;  // sql_fallback_required
-                                 statementEndpoint?: string }
-  | { kind: 'blocked';           reason: ReadAccessPlanReason; message: string };
-
-// NOTE: the volume-file read resolution (`ObjectReadResolution`: signed_url /
-// proxy_range / denied) lives in E8, not E1 — E1 resolves table bytes only.
+// ── Read resolution moved to E9 (DataAccessResolver seam) ──────────────────
+// The `TableReadResolution` union (descriptor / read_access_plan / fallback /
+// blocked) and `resolveTableRead()` are NOT part of the E1 CatalogProvider.
+// They are defined as E3A proto messages and owned by E9. The Explorer hands a
+// `TableRef` (above) to E9; it never resolves reads itself. (Volume-file read
+// resolution is E8.)
 ```
 
 ### 3.3 The provider interface
@@ -181,10 +179,13 @@ export interface CatalogProvider {
   tableMetadataQuery(ref: TableRef): UseQueryOptions<TableMetadata>;
   volumesQuery(catalog: string, schema: string): UseQueryOptions<VolumeNode[]>;     // discovery only
   volumeMetadataQuery(ref: VolumeRef): UseQueryOptions<VolumeNode>;                  // discovery only
+  functionsQuery(catalog: string, schema: string): UseQueryOptions<FunctionNode[]>; // discovery only
+  modelsQuery(catalog: string, schema: string): UseQueryOptions<ModelNode[]>;       // discovery only
 
-  // ── Read resolution (imperative; expiring; fail-closed; never persisted) ──
-  resolveTableRead(ref: TableRef, opts?: { snapshotVersion?: number }): Promise<TableReadResolution>;
-  // Volume-file listing/reading (volumeEntriesQuery / resolveVolumeFileRead) is E8, not E1.
+  // ── No read resolution here ──
+  // resolveTableRead() / TableReadResolution belong to E9's DataAccessResolver
+  // seam, not the CatalogProvider. The Explorer hands a TableRef to E9.
+  // Volume-file listing/reading is E8.
 }
 
 export interface Page<T> { items: T[]; nextCursor?: string; }
@@ -194,14 +195,14 @@ All fetchers go through one **session-aware fetch wrapper** (`query/providers/ht
 
 ### 3.4 How each provider maps onto the interface
 
-| Provider | `browsable` | Navigation source | `resolveTableRead` returns |
+| Provider | `browsable` | Navigation source (E1 discovery) | Read resolution (→ E9) |
 |---|---|---|---|
-| **DirectUnityCatalog** | yes | UC REST via Envoy proxy: `/catalogs`, `/schemas`, `/tables`, `/tables/{full_name}` (columns/props), `/volumes`, `/volumes/{name}` (volume list + metadata only; the Volumes **Files** API is E8) | For external-read-eligible tables: a `BrokeredDeltaReadPlan` (via the brokered object-grant/credential-vending route) → `read_access_plan`; governed shapes (row filter/column mask/view) → `fallback`/`blocked`. |
-| **Daxis** _(deferred — see deferral note)_ | partial | Daxis catalog/list surfaces (thin; may be navigation-light — list approved/recent tables). Tree nodes can be lazily backed by Daxis list APIs where available. | `DaxisApprovedAxonReadDescriptor.tables[*].descriptor` → `descriptor`; non-approved → `fallback`/`blocked` preserving Daxis reason. |
-| **ObjectStore** (GCS) | flat (one table root = one table) | Synthesizes a single-catalog/single-schema/single-table tree from the table URI (today's `objectStorageRuntimeFromDescriptor`). Bucket-prefix browsing is an E8 `ObjectStorePrefix` FileSystemProvider concern, not E1. | Reconstructs via `resolvePublicObjectStorageDescriptor` → `descriptor`. |
-| **LocalDelta** | flat | Single table from the File System Access handle + reconstructed snapshot. | Local snapshot → `descriptor` (re-grant flow from E0 surfaces as a typed error). |
+| **DirectUnityCatalog** | yes | UC REST via Envoy proxy: `/catalogs`, `/schemas`, `/tables`, `/tables/{full_name}` (columns/props), `/volumes`, `/volumes/{name}` (volume list + metadata only; the Volumes **Files** API is E8), `/functions`, `/models` | brokered UC profile of the E9 DataAccessResolver |
+| **Daxis** _(deferred — see deferral note)_ | partial | Daxis catalog/list surfaces (thin; may be navigation-light — list approved/recent tables). Tree nodes can be lazily backed by Daxis list APIs where available. | Daxis profile of the E9 DataAccessResolver |
+| **ObjectStore** (GCS) | flat (one table root = one table) | Synthesizes a single-catalog/single-schema/single-table tree from the table URI (today's `objectStorageRuntimeFromDescriptor`). Bucket-prefix browsing is an E8 `ObjectStorePrefix` FileSystemProvider concern, not E1. | ObjectStore profile of the E9 DataAccessResolver |
+| **LocalDelta** | flat | Single table from the File System Access handle + reconstructed snapshot. | LocalDelta profile of the E9 DataAccessResolver |
 
-This table is the heart of Decision 1: **Daxis's `ReadAccessPlan` model and direct UC REST land on the same interface because read resolution is a separate method whose return type is the union of both worlds' outcomes.** That generality is why Daxis can be **deferred without redesign** — the `read_access_plan` resolution variant stays in the union as the reserved Daxis seam even though no Daxis provider ships in E1. Navigation differences (UC is richly browsable; object-store/local are flatter) are expressed through `capabilities()` and degrade gracefully in the explorer UI.
+The "Read resolution" column is shown only to locate each provider's E9 counterpart; **none of it ships in E1.** Navigation differences (UC is richly browsable; object-store/local are flatter) are expressed through `capabilities()` and degrade gracefully in the explorer UI. The DataAccessResolver's generality — `descriptor` for local/object-store/Daxis-approved, `read_access_plan` for brokered UC, `fallback`/`blocked` for governed shapes — is why Daxis can be **deferred without redesign**; see [E9](../program/rich-lakehouse-workbench-strategy.md).
 
 ### 3.5 Provider registry + dispatch
 
@@ -218,7 +219,7 @@ A pure factory keyed by `conn.kind`. The explorer and run lifecycle never branch
 
 ### 4.1 The rule
 
-ADR-0002: the browser may read cloud data only via (1) short-lived object-scoped signed HTTPS URLs or (2) a narrow read-proxy. It must never hold service-account JSON, refresh/broad tokens, or bucket-traversal config. E1 honors this for **both** the metadata plane (UC REST) and the data plane (table bytes for query execution). Volume *file* bytes are an E8 concern (E8 reuses the same rule and the same object-grant path).
+ADR-0002: the browser may read cloud data only via (1) short-lived object-scoped signed HTTPS URLs or (2) a narrow read-proxy. It must never hold service-account JSON, refresh/broad tokens, or bucket-traversal config. **E1 owns only the metadata plane (UC REST, §4.2).** The data plane (table bytes for query execution) is **[E9](../program/rich-lakehouse-workbench-strategy.md)**'s DataAccessResolver/ExecutionProvider concern, and volume *file* bytes are **E8**; both reuse the same rule and the same object-grant path. §4.3 below is retained as a cross-reference to E9.
 
 ### 4.2 Metadata plane — UC REST through Envoy
 
@@ -235,12 +236,9 @@ Consequences:
 - **No secret in browser**: the session cookie is opaque/`HttpOnly`; the UC token lives behind Envoy.
 - E1 fetchers target a configurable `bffBaseUrl` (per connection locator, default `/api/uc`). The `uc_bff_url` field already in `ConnectForm` becomes this base.
 
-### 4.3 Data plane — table bytes (for query execution)
+### 4.3 Data plane — table bytes (moved to [E9](../program/rich-lakehouse-workbench-strategy.md))
 
-Identical to today's object-store path and the object-grant routes. This is the **table-read** path that backs `resolveTableRead` → `openDeltaTable()`; volume *file* bytes are out of scope (E8 reuses this same path):
-- **Public** (object-store GCS): anonymous signed-less HTTPS + CORS on the bucket (already shipped).
-- **Governed** (UC external tables): provider calls the brokered route (`/object-grants/{grantId}/batch-sign` or `/range`) → short-lived signed URLs or proxy-range base → wrapped as `BrowserHttpFileDescriptor` for the worker's existing range-read path.
-- The worker's `wasm-http-object-store` range reads carry the **ambient same-origin session** for proxy-range mode, or hit the signed URL directly for signed mode. **The worker-credential mechanics are owned by E6**; E1 consumes whichever of `signed_url` / `proxy` the resolver returns (`ResolverActualAccessMode`).
+The table-bytes read path (object-grant routes → signed URLs / proxy-range → `BrowserHttpFileDescriptor` → the worker's range-read path → `openDeltaTable()`) is the **DataAccessResolver + ExecutionProvider** concern owned by E9, not E1. It is summarized here only to show the boundary; E1 ships none of it. (Public object-store GCS reads already work today via the existing object-store path; E9 wraps that path behind the resolver/executor seams. Worker-credential mechanics remain owned by E6.)
 
 ### 4.4 What E1 owns vs. what E6 owns
 
@@ -249,10 +247,11 @@ Identical to today's object-store path and the object-grant routes. This is the 
 | `SessionHttp` wrapper contract (`credentials:'include'`, correlation id, 401/403/404 mapping) | **E1 defines, E6 implements the session/refresh behind it** |
 | Login, cookie issuance, token storage, UC credential injection, Envoy config, COOP/COEP headers | **E6** |
 | Worker `fetch` credential propagation for range reads | **E6** |
-| Provider fetchers, queryOptions, read-resolution dispatch, descriptor validation | **E1** |
-| Mock UC + mock broker fixtures for tests/local dev | **E1** |
+| Provider **navigation** fetchers + queryOptions | **E1** |
+| Read-resolution dispatch + descriptor validation | **E9** |
+| Mock UC (navigation) fixtures | **E1**; mock broker (read resolution) is **E9** |
 
-**Sequencing**: E1 can build navigation + read-resolution against a **mock UC/broker** (no real session) while E6 lands in parallel. The `SessionHttp` contract is the integration point; E1 ships the interface + mock, E6 fills the real session. The feature flag (`bffAuthServiceConnectors`) keeps DirectUC/Daxis dark in production until E6 is ready.
+**Sequencing**: E1 builds navigation against a **mock UC** (no real session) while E6 lands in parallel; E9 builds read resolution against a mock broker on the same `SessionHttp` seam. The `SessionHttp` contract is the integration point; E1 ships the interface + navigation mock, E6 fills the real session. The feature flag (`bffAuthServiceConnectors`) keeps DirectUC/Daxis dark in production until E6 is ready.
 
 ---
 
@@ -270,18 +269,18 @@ The existing `ConnectedCatalog`/`connect/store.ts` model is **kept and promoted*
 - A connection carries `kind`, `label`, `locator`, `capabilities` (cached from `provider.capabilities()`), and a **scope** (selected catalogs/schemas filters — the existing `SchemaSelection` selection model extends to a catalog level).
 - The **persisted** part is non-sensitive structure only (locators, labels, selection). Live navigation nodes come from TanStack Query (persisted per the E0 filter rules); read resolutions are never persisted.
 
-### 5.3 Selection → query execution
+### 5.3 Selection → a table ref handed to E9
+
+E1's responsibility ends at producing a `TableRef`; resolution + execution are [E9](../program/rich-lakehouse-workbench-strategy.md):
 
 ```
 route /catalog/$connectionId/$catalog/$schema/$table   (E0 deep link; source of truth)
   → connections slice mirrors active TableRef
-  → run lifecycle: provider.resolveTableRead(ref)
-      → 'descriptor'        → getSession(descriptor) → openDeltaTable() → run SQL
-      → 'read_access_plan'  → runtime materializes descriptor (existing BrokeredDelta path) → openDeltaTable()
-      → 'fallback'/'blocked'→ surface structured reason; DO NOT open table
+  → Explorer "Sample data" / "Open in SQL editor"  ─hands TableRef→  E9 ExecutionProvider
+                                                                       (E9 calls DataAccessResolver, runs/samples)
 ```
 
-`QueryTableSource` (the `getSession` input) is **extended** with a fourth variant that carries a pre-resolved descriptor/plan handoff (`{ kind: 'resolved_descriptor', ref, descriptor }`) so the session layer accepts provider output without re-deriving locators. The existing three variants (`manifest`/`local_delta`/`object_store_table_root`) remain for the reference providers, keeping current behavior byte-identical.
+The `resolveTableRead` dispatch, the `QueryTableSource` `resolved_descriptor` variant, and the `descriptor → openDeltaTable()` handoff are **E9** concerns (E9 extends `getSession`/`QueryTableSource` and keeps the existing `manifest`/`local_delta`/`object_store_table_root` variants byte-identical). E1 does not touch the run lifecycle.
 
 ### 5.4 Navigation shell + Catalog Explorer
 
@@ -290,7 +289,7 @@ E1 introduces a **top-level navigation layer** so the app stops being a single q
 - **Top-level nav = a global left icon rail (Databricks-style).** A new full-height outermost column (`.app-rail`) switches between top-level *areas*: `Editor` (today's workspace) and `Catalog Explorer`. The rail is extensible (future: Settings, E7 Insights). Chosen over topbar tabs because it matches Databricks and scales to more areas. The brand mark moves into the rail head; the topbar starts at the connection pill.
 - **Route-driven, not view-state.** Active area derives from the URL (consistent with E0's "route is source of truth"): `/` = Editor, `/explore` = Catalog Explorer, deep link `/explore/$connectionId/$catalog/$schema/$table` for a selected object. The existing `/catalog/...` deep link (which selects a table *in the editor*) is unchanged; the explorer owns the separate `/explore/...` namespace. `/catalogs` redirects to `/explore`. No new client state for "which area".
 - **Shared shell chrome via a pathless layout route.** A `ShellLayout` (rail + topbar + statusbar + global modals/toast) renders an `<Outlet/>`; the Editor workspace and the Explorer are sibling area-routes that each fill only the middle region. Today's monolithic `App.tsx` is split into a chrome-free `EditorArea` and the shared `ShellLayout`. Topbar/statusbar read global state directly (connections slice + `useCatalogQuery`), so no prop drilling; the capability matrix is lifted from `App` local state into the `run` slice so both the topbar popover and the Results pane consume one source.
-- **Explorer surface mirrors Databricks Catalog Explorer**: a left **object tree** (connections → catalogs → schemas → grouped **Tables / Volumes / Functions / Models** (per §2.5 prior art); flat providers degrade via `capabilities().browsable`) backed by the provider navigation queries with cursor-paged "load more" and list→detail cache seeding (lazy/infinite in M2; the existing connected-catalog registry in M1), plus a main **detail surface** with a header (breadcrumb, full name, object type, primary actions) and tabs: **Overview/Columns**, **Sample data**, **Details** (properties / storage / snapshot / protocol features), and reserved placeholders for History/Lineage/Permissions (E7/E4). The `ConnectedCatalogsPanel` graduates into this tree (its `onActivate` already produces an `ActiveConnectedTableRef`). Primary action **"Open in SQL editor"** creates a tab, sets the active selection, and navigates to `/`. **Volumes (and Functions/Models) are reference objects in E1**: selecting a volume shows its metadata (type, storage location, comment) only — there is no inline file listing or preview. When E8 is present, the volume detail surface offers a **"Browse files"** action that hands off to the E8 Files experience; until then it is metadata-only.
+- **Explorer surface mirrors Databricks Catalog Explorer**: a left **object tree** (connections → catalogs → schemas → grouped **Tables / Volumes / Functions / Models** (per §2.5 prior art); flat providers degrade via `capabilities().browsable`) backed by the provider navigation queries with cursor-paged "load more" and list→detail cache seeding (lazy/infinite in M2; the existing connected-catalog registry in M1), plus a main **detail surface** with a header (breadcrumb, full name, object type, primary actions) and tabs: **Overview/Columns**, **Sample data**, **Details** (properties / storage / snapshot / protocol features), and reserved placeholders for History/Lineage/Permissions (E7/E4). The `ConnectedCatalogsPanel` graduates into this tree (its `onActivate` already produces an `ActiveConnectedTableRef`). Primary action **"Open in SQL editor"** creates a tab, sets the active selection, and navigates to `/`. Both the **Sample data** tab and **"Open in SQL editor"** hand the selected `TableRef` to the **[E9](../program/rich-lakehouse-workbench-strategy.md) ExecutionProvider** (Sample data → `preview(ref)`; the editor run → `execute(sql, ref)`); E1 renders the surface and produces the ref but performs no read resolution or execution. Until E9 lands, these actions degrade to the existing single-table run path. **Volumes (and Functions/Models) are reference objects in E1**: selecting a volume shows its metadata (type, storage location, comment) only — there is no inline file listing or preview. When E8 is present, the volume detail surface offers a **"Browse files"** action that hands off to the E8 Files experience; until then it is metadata-only.
 - **Editor**: per-tab connection/catalog context (E2 will consume this for completion scoping; E1 stores it on the tab in the E0 `tabs` slice). The catalog/schema/table selectors are a header control bound to the active route.
 - **Catalog metadata cache for E2/E4**: `tableMetadataQuery`/`tablesQuery`/`schemasQuery` results under stable keys ARE the cache E2 reads for completion and E4 reads for entity shapes — no separate store. E1 guarantees the node shapes in §3.2 are stable and serializable.
 
@@ -307,15 +306,17 @@ E1 treats volumes exactly like tables/views in the catalog: they are **listed an
 
 ## 7. ADR strategy (Decision 5)
 
-**Add ADR-0009 "Pluggable Catalog Providers"** (new file) that:
-- Establishes the `CatalogProvider` seam (navigation + read resolution) and the `TableReadResolution` union as the contract.
-- Declares the **Daxis/brokered profile** (ADR-0008 + UC brokered runtime contract) and the **direct-UC profile** as peer implementations of the seam.
-- Restates ADR-0002 as a hard constraint binding every provider (no secrets; signed-URL/proxy data plane; same-origin metadata plane).
-- States the fail-closed rule (unknown policy → fallback/blocked) and the single-handoff rule (`descriptor → openDeltaTable()`).
+**Add ADR-0009 "Pluggable Catalog Providers (discovery)"** (new file) that:
+- Establishes the **discovery-only** `CatalogProvider` seam (navigation queryOptions over the E3A node/metadata messages) as the contract.
+- Declares the **Daxis** and **direct-UC** catalog-listing profiles as peer implementations of the discovery seam.
+- Restates ADR-0002 as a hard constraint binding every provider's metadata plane (no secrets; same-origin metadata plane).
+- Defines the **discovery → E9 handoff** (the Explorer produces a `TableRef`; read resolution and execution are the E9 seams).
 
-**Amend ADR-0008** with a one-paragraph forward note: "Under the pluggable provider model (ADR-0009), this ADR describes the Daxis profile specifically; it remains authoritative for that profile." Do **not** rewrite ADR-0008 — its text is referenced by the Daxis release-gate traceability/proof packets, and broad edits would churn those gates.
+> Read resolution and execution invariants (the `TableReadResolution` union, the fail-closed rule, the single-handoff `descriptor → openDeltaTable()` rule, and the signed-URL/proxy data plane) move to **ADR-0010** owned by [E9](../program/rich-lakehouse-workbench-strategy.md). ADR-0009 is scoped to discovery only.
 
-Rationale for new-ADR-over-amend: ADR-0008 is narrowly Daxis-scoped and tied to external proof artifacts; a new ADR cleanly owns the generalization without destabilizing the Daxis evidence chain, and gives E4 (which also reconciles ADR-0008) a single seam doc to reference.
+**Amend ADR-0008** with a one-paragraph forward note: "Under the pluggable provider model, this ADR describes the Daxis profile specifically (catalog listing under ADR-0009; read resolution under ADR-0010); it remains authoritative for that profile." Do **not** rewrite ADR-0008 — its text is referenced by the Daxis release-gate traceability/proof packets, and broad edits would churn those gates.
+
+Rationale for new-ADR-over-amend: ADR-0008 is narrowly Daxis-scoped and tied to external proof artifacts; new ADRs cleanly own the generalization (ADR-0009 discovery, ADR-0010 execution/read resolution) without destabilizing the Daxis evidence chain, and give E4 (which also reconciles ADR-0008) clear seam docs to reference.
 
 ---
 
@@ -323,11 +324,10 @@ Rationale for new-ADR-over-amend: ADR-0008 is narrowly Daxis-scoped and tied to 
 
 Each milestone is independently shippable behind flags and gated on: `tsc --noEmit`, ESLint (`--max-warnings=0`), existing Playwright suites (`editor-smoke`, `local-delta`, `public-gcs-live`) green, plus new Vitest. The local/object-store paths must stay byte-identical until explicitly migrated.
 
-### M0 — Provider seam + reference providers (no behavior change)
-- Add `query/providers/{types,registry,http}.ts` (interface §3, `SessionHttp` contract §4.4 with a passthrough impl for public/local).
-- Re-express **LocalDelta**, **ObjectStore**, and **manifest/fixture** as `CatalogProvider`s whose `resolveTableRead` returns today's descriptors, and whose navigation synthesizes the current flat tree. `query-source.ts`'s `querySourceFromConnectedCatalogs` is reimplemented on top of `resolveTableRead` but produces identical `QueryTableSource` output.
-- Add the `resolved_descriptor` `QueryTableSource` variant; `getSession` accepts it.
-- **Gate:** `public-gcs-live` + `local-delta` + `editor-smoke` green (proving no regression); Vitest for the reference providers + registry dispatch.
+### M0 — Discovery seam + reference providers (no behavior change)
+- Add `query/providers/{types,registry,http}.ts` (the discovery interface §3, `SessionHttp` contract §4.4 with a passthrough impl for public/local).
+- Re-express **LocalDelta**, **ObjectStore**, and **manifest/fixture** as discovery-only `CatalogProvider`s whose navigation synthesizes the current flat tree over the E3A node messages. The existing run path (`query-source.ts`'s `querySourceFromConnectedCatalogs` → `getSession`) is **left untouched** in E1 — wiring it behind the E9 ExecutionProvider/DataAccessResolver (and the `resolved_descriptor` `QueryTableSource` variant) is an E9 milestone, not E1.
+- **Gate:** `public-gcs-live` + `local-delta` + `editor-smoke` green (proving no regression); Vitest for the reference providers' navigation + registry dispatch.
 
 ### M1 — Multi-catalog registry + selectors + deep links + navigation shell
 - Promote `ConnectedCatalog` into the E0 `connections` slice with connection-scoped `connectionId` (§5.1); generalize selection to catalog level. Migrate `connect/store.ts` localStorage onto the E0 persistence KV behind unchanged signatures (coordinate with E0 M1/M2).
@@ -344,18 +344,13 @@ Each milestone is independently shippable behind flags and gated on: `tsc --noEm
 - Replace the UC config stub in `ConnectModal.tsx` with a real `Test connection` (calls `catalogsQuery`) and real discovery; keep behind `bffAuthServiceConnectors`.
 - **Gate:** Vitest against mock UC (listing, pagination cursors, metadata shape, list→detail seeding, predicate invalidation, 401→session-expired, 403→blocked); `openapi-typescript` codegen-check green; Playwright UC-connect-and-browse against mock; secret-marker assertion on persisted nodes.
 
-### M3 — DirectUnityCatalog read resolution → execution
-- Implement `resolveTableRead`: external-read-eligible UC tables → brokered object-grant path → `BrokeredDeltaReadPlan` → reuse `to_browser_http_snapshot_descriptor` → `descriptor` → `openDeltaTable()`; governed shapes (row filter/column mask/view/unknown) → `fallback`/`blocked` with structured reason in the UI. Fail closed on unknown policy.
-- Wire the run lifecycle (E0 `run` slice) to dispatch through `resolveTableRead`. The explorer **"Sample data"** tab and **"Open in SQL editor"** action route through the same `resolveTableRead` path.
-- **Gate:** Vitest for the resolution matrix (eligible→descriptor; each `ReadAccessPlanReason`→fallback/blocked; expired grant; missing capability); Playwright run-against-mock-UC table; verify `openDeltaTable()` is never called for fallback/blocked.
+### M3 — DirectUnityCatalog read resolution → execution *(Moved out of E1 → [E9](../program/rich-lakehouse-workbench-strategy.md))*
 
-### M4 — Daxis provider as a first-class peer *(Deferred — not in E1 scope)*
+> **Removed from E1 scope.** `resolveTableRead` (brokered object-grant → `BrokeredDeltaReadPlan` → `to_browser_http_snapshot_descriptor` → `descriptor` → `openDeltaTable()`; governed shapes → `fallback`/`blocked`; fail-closed), wiring the run lifecycle through it, and the "Sample data"/"Open in SQL editor" execution path are the **DataAccessResolver + ExecutionProvider** seams owned by E9. E1 produces the `TableRef` and the Explorer surface; E9 resolves and executes. Retained here only as a pointer.
 
-> **Deferred.** Parked per the Daxis deferral note at the top of this plan. This milestone is retained verbatim as the reactivation spec — the seam (`read_access_plan`/`descriptor` resolution variants, ADR-0009) already accommodates it — but it is **not built, gated, or depended on** in E1. Reactivating it requires no changes to the M0–M3/M5–M6 deliverables.
+### M4 — Daxis provider as a first-class peer *(Deferred → [E9](../program/rich-lakehouse-workbench-strategy.md))*
 
-- Implement the Daxis `CatalogProvider`: navigation thin (list approved/recent tables where Daxis exposes them), read resolution rich (`DaxisApprovedAxonReadDescriptor.tables[*].descriptor` → `descriptor`; validate via `validate_daxis_approved_axon_read_descriptor`; preserve `limits`/`access_proof`/Daxis reasons on fallback/block).
-- Reuse the existing `daxis-first-class-integration-examples` fixtures as the provider's golden tests.
-- **Gate:** contract-parity Vitest over the Daxis example fixtures (executed/fallback/blocked/expired/mismatch); ensure Daxis profile honors `runtime_preference.allow_remote_fallback`.
+> **Deferred and relocated.** The Daxis *discovery* listing is a deferred profile of the E1 catalog seam; the Daxis *read resolution* (`DaxisApprovedAxonReadDescriptor.tables[*].descriptor` → `descriptor`, `validate_daxis_approved_axon_read_descriptor`, `limits`/`access_proof`/reason preservation) is a deferred profile of the **E9 DataAccessResolver**. Either way it is **not built, gated, or depended on** in E1. The reactivation spec (incl. the `daxis-first-class-integration-examples` golden fixtures and `runtime_preference.allow_remote_fallback`) lives with E9.
 
 ### M5 — Volumes browsing + file preview *(Moved out of E1 → [E8 — Workspace Files & Volumes](../program/rich-lakehouse-workbench-strategy.md))*
 
@@ -375,11 +370,11 @@ Each milestone is independently shippable behind flags and gated on: `tsc --noEm
 | **CORS / cross-origin** on UC REST or governed object reads | High / High | Single-origin Envoy proxy for the metadata plane (§4.2); signed-URL/proxy data plane validated against the exact endpoint shape (ADR-0002). Mock UC/broker proves the same-origin shape in CI. |
 | **Auth not ready (E6 in flight)** | High / Med | `SessionHttp` contract + mock UC/broker decouple E1 from E6; DirectUC/Daxis stay flag-gated until E6 lands. |
 | **Secret leakage into browser** (token/SA JSON in a fetcher, signed URL persisted) | Med / High | Fetchers never attach Authorization from browser state; descriptor/URL validators (`contains_secret_material`, `validate_browser_object_url`); never persist grants/signed URLs; guardrail + secret-marker assertions in M2/M6. |
-| **Inferring policy / opening a governed table** | Med / High | Fail-closed `resolveTableRead`; reuse `to_browser_http_snapshot_descriptor` guards (requires `Confirmed` + `batch_sign` + `range_get`); explicit no-`openDeltaTable()` test for fallback/blocked. |
+| **Inferring policy / opening a governed table** _(→ [E9](../program/rich-lakehouse-workbench-strategy.md))_ | Med / High | Owned by E9's DataAccessResolver: fail-closed resolution, `to_browser_http_snapshot_descriptor` guards, no-`openDeltaTable()` test for fallback/blocked. Out of E1. |
 | **Large-catalog performance** (thousands of schemas/tables) | High / Med | Infinite/cursor queries; virtualized tree; debounced server-side name filter (reuse `uc_schema_filter`); long `staleTime`, focus-refetch off for big trees; per-node `gcTime` tuning; lazy `tableMetadataQuery` only on expand/hover. |
 | **Cache-key explosion** across many connections/catalogs | Med / Med | Connection-scoped `connectionId` prefix-invalidation; bounded `gcTime`; persist only recently-used connections' structure. |
-| **Grant/descriptor expiry mid-session** | Med / Med | Read resolution is never cached; `expiresAtEpochMs` checked before handoff; expired → typed re-resolve, not a stale descriptor; 401 → E6 re-login. |
-| **`QueryTableSource` extension regresses local/object-store** | Med / High | New `resolved_descriptor` variant is additive; existing three variants untouched; M0 gate is existing suites byte-identical. |
+| **Grant/descriptor expiry mid-session** _(→ [E9](../program/rich-lakehouse-workbench-strategy.md))_ | Med / Med | Owned by E9: read resolution never cached; `expiresAtEpochMs` checked before handoff; expired → typed re-resolve; 401 → E6 re-login. Out of E1. |
+| **`QueryTableSource` extension regresses local/object-store** _(→ [E9](../program/rich-lakehouse-workbench-strategy.md))_ | Med / High | E1 leaves the run path untouched; E9 adds the additive `resolved_descriptor` variant with the existing three variants byte-identical. |
 | **Daxis contract drift vs. generalization** _(deferred with M4)_ | Low / Med | Daxis provider tested against the shipped example fixtures; ADR-0008 left intact (forward note only). While Daxis is parked, drift is bounded by leaving ADR-0008 + fixtures untouched and re-validating at reactivation. |
 
 ---
@@ -389,7 +384,7 @@ Each milestone is independently shippable behind flags and gated on: `tsc --noEm
 **Runner:** Vitest (jsdom) + `@testing-library/react renderHook` for queries; `fake-indexeddb` for persisted registry; mock UC server + mock broker (fetch-level) reusing repo fixtures.
 
 - **Provider unit/contract:** queryOptions/keys per provider (stable, hierarchical, prefix-invalidatable); fetchers vs. mock UC (listing, pagination cursors, metadata shape, view vs table, volumes, functions, models); **navigation conventions (§2.5): list→detail seeding makes a drill-in a cache hit (no refetch); prefetch-on-intent warms the exact key the hook reads; predicate invalidation drops all pages/params of a list**; `SessionHttp` mapping (401/403/404 → session-expired/blocked/not-found). The vendored UC OpenAPI spec stays in sync via an `openapi-typescript` codegen-check in CI.
-- **Read-resolution matrix:** DirectUC eligible→`descriptor`; each `ReadAccessPlanReason`→`fallback`/`blocked`; expired grant; missing `batch_sign`/`range_get`/`Confirmed`; **assert `openDeltaTable()` is never invoked for fallback/blocked**. Daxis parity over `daxis-first-class-integration-examples/*` (executed/fallback/blocked/expired/mismatch) is **deferred with M4**.
+- **Read-resolution matrix → [E9](../program/rich-lakehouse-workbench-strategy.md).** The DirectUC eligible→`descriptor` / reason→`fallback`/`blocked` matrix, the `openDeltaTable()`-never-for-blocked assertion, and the Daxis fixture parity are E9's test surface, not E1's.
 - **Volumes (discovery):** `volumesQuery`/`volumeMetadataQuery` listing + metadata shape against mock UC; volumes render as tree objects with a metadata detail pane. (Volume *file* listing/preview tests live in E8.)
 - **Security:** "no secrets in browser" — assert no Authorization header sourced from browser state, no signed URL/grant persisted, secret-marker scan over persisted registry; keep `verify_browser_dependency_guardrails.sh` green (no cloud SDK added).
 - **E2E (Playwright):** rail switches Editor ↔ Catalog Explorer; `/explore` deep link selects the right object; explorer "Open in SQL editor" round-trips into a new editor tab; connect UC (mock) → browse lazy tree → activate table → run query; select a volume → metadata detail renders (no file listing in E1); deep-link selection + reload; **keep `local-delta` (re-grant) and `public-gcs-live` green** as the no-regression anchor.
@@ -402,7 +397,7 @@ Each milestone is independently shippable behind flags and gated on: `tsc --noEm
 E1 surfaced gaps in [E0](./2026-06-20-e0-frontend-foundation-execution-plan.md). These are applied to E0 as additive, E1-informed amendments (E0 is still Draft):
 
 1. **Add a `catalog` segment to the queryKey hierarchy.** E0 §3.3 jumps `connection → schemas`, omitting the UC `catalog` namespace (a UC connection contains *many* catalogs). Insert `['catalog', connectionId, 'catalogs']` and `['catalog', connectionId, catalogName, 'schemas', …]`. Without this, DirectUC cannot cache per-catalog.
-2. **Distinguish navigation metadata from the runtime-derived single-table catalog.** E0 models the catalog query as `['catalog', connectionId, 'table-derived']` with `queryFn = getSession + deriveCatalogTable`. E1 needs *navigation* (provider REST, main-thread, not session-bound) separate from *read resolution* (session/`openDeltaTable`). Recommend E0 reserve `table-derived` for the Phase-1 reference path and document that E1 providers contribute navigation queries that are **not** session-derived.
+2. **Distinguish navigation metadata from the runtime-derived single-table catalog.** E0 models the catalog query as `['catalog', connectionId, 'table-derived']` with `queryFn = getSession + deriveCatalogTable`. E1 needs *navigation* (provider REST, main-thread, not session-bound), kept separate from *read resolution* (session/`openDeltaTable`, owned by [E9](../program/rich-lakehouse-workbench-strategy.md)). Recommend E0 reserve `table-derived` for the Phase-1 reference path and document that E1 providers contribute navigation queries that are **not** session-derived.
 3. **Connection id ≠ table-source key (resolve E0 open question #1).** Adopt a dedicated connection-scoped `connectionId` in the `connections` slice; keep `tableSourceKeyFromParts` for table identity within a connection. (E1 §5.1.)
 4. **Volumes key (discovery scope only).** E1 needs only a volume-*object* key, e.g. `['catalog', connectionId, catalog, schema, 'volumes']` and `['catalog', connectionId, catalog, schema, volume]` for list + metadata. The deeper volume-*file* key (`['volume-files', connectionId, catalog, schema, volume, ...path]`) is an **E8** concern; E0 should reserve the namespace but E1 does not use it.
 5. **`SessionHttp` is a shared seam.** E0's "purge cache on 401" belongs to a shared session-aware fetch wrapper whose contract E1 defines and E6 implements; note it in E0's codegen/provider-boundary section so the fetcher shape is reserved.
@@ -415,7 +410,7 @@ These do not change E0's milestones; they refine the seams E0 already commits to
 ## 12. Open questions to confirm at kickoff
 
 1. **UC REST surface via Envoy** — confirm the proxy path shape (`/api/uc/2.1/unity-catalog/...`) and whether the BFF passes UC pagination cursors through verbatim.
-2. **DirectUC read eligibility** — for the first DirectUC release, do we ship only credential-vended external-read-eligible tables (governed shapes → fallback), matching the brokered contract, or also a server-snapshot-resolver mode?
+2. **DirectUC read eligibility → [E9](../program/rich-lakehouse-workbench-strategy.md).** Whether the first DirectUC release ships only credential-vended external-read-eligible tables (governed shapes → fallback) or also a server-snapshot-resolver mode is an E9 (DataAccessResolver) question, since read resolution moved there. E1 only confirms the discovery surface.
 3. **Daxis navigation depth** _(deferred with M4)_ — how browsable is Daxis catalog listing in practice (full tree vs. approved/recent tables only)? Determines M4 navigation richness when Daxis is reactivated.
 4. **Volume file access scoped to E8 (confirmed).** Volume *discovery* (list + metadata) is E1; the Volumes Files API, file preview, file write/edit, and object-store prefix browsing are all **E8 (Workspace Files & Volumes)**. Confirm the E1→E8 handoff seam (a "Browse files" action on the volume detail surface) is sufficient for E1.
 5. **ADR-0009 ownership** — confirm new ADR + ADR-0008 forward note (vs. amending ADR-0008) with the Daxis release-gate owners.
