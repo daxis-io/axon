@@ -2879,7 +2879,7 @@ fn validate_select_sources(select: &Select, scope: &BTreeSet<String>) -> Result<
         || !select.sort_by.is_empty()
         || !select.named_window.is_empty()
         || select.qualify.is_some()
-        || select.connect_by.is_some()
+        || !select.connect_by.is_empty()
         || !matches!(select.flavor, sqlparser::ast::SelectFlavor::Standard)
         || select.from.len() != 1
     {

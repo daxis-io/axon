@@ -7,7 +7,8 @@ use std::time::Instant;
 
 use delta_runtime_support::{
     map_datafusion_error as map_shared_datafusion_error, map_delta_error, normalize_table_uri,
-    run_on_runtime, table_uses_unknown_protocol_features, validate_snapshot_version,
+    run_on_runtime, snapshot_version_for_delta, snapshot_version_from_delta,
+    table_uses_unknown_protocol_features, validate_snapshot_version,
 };
 use deltalake::arrow::record_batch::RecordBatch;
 use deltalake::datafusion::common::tree_node::TreeNodeRecursion;
@@ -453,6 +454,7 @@ struct PreparedTable {
 impl PreparedTable {
     async fn load(table_uri: &str, snapshot_version: Option<i64>) -> Result<Self, QueryError> {
         let normalized_uri = normalize_table_uri(table_uri, runtime_target())?;
+        let snapshot_version = snapshot_version_for_delta(snapshot_version, runtime_target())?;
         let table = match snapshot_version {
             Some(version) => open_table_with_version(normalized_uri.clone(), version)
                 .await
@@ -483,7 +485,7 @@ impl PreparedTable {
             active_files,
             session,
             table_uri: normalized_uri.to_string(),
-            version: snapshot.version(),
+            version: snapshot_version_from_delta(snapshot.version(), runtime_target())?,
         })
     }
 }

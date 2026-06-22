@@ -20,9 +20,9 @@ path = "src/bin/generate_prod_fixture.rs"
 required-features = ["fixture-generator"]
 
 [dependencies]
-arrow-array = "=57.3.0"
-arrow-ipc = "=57.3.0"
-arrow-schema = "=57.3.0"
+arrow-array = "=58.3.0"
+arrow-ipc = "=58.3.0"
+arrow-schema = "=58.3.0"
 js-sys = "=0.3.91"
 query-contract = { path = "../../crates/query-contract" }
 serde = { workspace = true }
@@ -36,5 +36,5 @@ wasm-parquet-engine = { path = "../../crates/wasm-parquet-engine" }
 wasm-query-runtime = { path = "../../crates/wasm-query-runtime" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-deltalake = { version = "=0.31.1", features = ["datafusion"], optional = true }
-tokio = { version = "=1.50.0", features = ["macros", "rt-multi-thread"], optional = true }
+deltalake = { version = "=0.32.4", features = ["datafusion"], optional = true }
+tokio = { version = "=1.52.3", features = ["macros", "rt-multi-thread"], optional = true }

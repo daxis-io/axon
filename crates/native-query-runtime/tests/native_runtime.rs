@@ -6,7 +6,7 @@ use deltalake::arrow::array::{Int32Array, StringArray};
 use deltalake::arrow::datatypes::{DataType as ArrowDataType, Field, Schema as ArrowSchema};
 use deltalake::arrow::record_batch::RecordBatch;
 use deltalake::arrow::util::pretty::pretty_format_batches;
-use deltalake::kernel::{Action, DataType, MetadataValue, PrimitiveType, Protocol, StructField};
+use deltalake::kernel::{Action, DataType, PrimitiveType, Protocol, StructField};
 use deltalake::{DeltaTable, TableProperty};
 use native_query_runtime::{bootstrap_table, execute_query, DEFAULT_TABLE_NAME};
 use query_contract::{
@@ -237,6 +237,63 @@ impl TestTableFixture {
         assert!(
             saw_protocol,
             "initial delta log commit should contain a protocol"
+        );
+        fs::write(commit_path, format!("{rewritten}\n"))
+            .expect("rewritten delta log commit should be written");
+    }
+
+    fn overwrite_initial_metadata_configuration_and_schema(
+        &self,
+        configuration: Vec<(String, Option<String>)>,
+        schema: JsonValue,
+    ) {
+        let commit_path = self
+            ._tempdir
+            .path()
+            .join("_delta_log")
+            .join("00000000000000000000.json");
+        let contents =
+            fs::read_to_string(&commit_path).expect("initial delta log commit should be readable");
+        let mut saw_metadata = false;
+        let rewritten = contents
+            .lines()
+            .map(|line| {
+                let mut action: JsonValue =
+                    serde_json::from_str(line).expect("delta log action should parse");
+                let metadata = if let Some(metadata) = action.get_mut("metaData") {
+                    metadata.as_object_mut()
+                } else if let Some(metadata) = action.get_mut("metadata") {
+                    metadata.as_object_mut()
+                } else {
+                    None
+                };
+
+                if let Some(metadata) = metadata {
+                    let mut rewritten_configuration = serde_json::Map::new();
+                    for (key, value) in &configuration {
+                        if let Some(value) = value {
+                            rewritten_configuration
+                                .insert(key.clone(), JsonValue::String(value.clone()));
+                        }
+                    }
+                    metadata.insert(
+                        "configuration".to_string(),
+                        JsonValue::Object(rewritten_configuration),
+                    );
+                    metadata.insert(
+                        "schemaString".to_string(),
+                        JsonValue::String(schema.to_string()),
+                    );
+                    saw_metadata = true;
+                }
+                serde_json::to_string(&action).expect("delta log action should serialize")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            saw_metadata,
+            "initial delta log commit should contain metadata"
         );
         fs::write(commit_path, format!("{rewritten}\n"))
             .expect("rewritten delta log commit should be written");
@@ -566,33 +623,13 @@ fn bootstrap_table_rejects_timestamp_ntz_tables() {
 
 #[test]
 fn bootstrap_table_rejects_column_mapping_tables() {
-    let fixture = TestTableFixture::create_with_columns_and_configuration(
-        vec![
-            (StructField::new(
-                "id".to_string(),
-                DataType::Primitive(PrimitiveType::Integer),
-                false,
-            )
-            .with_metadata([
-                ("delta.columnMapping.id", MetadataValue::Number(1.into())),
-                (
-                    "delta.columnMapping.physicalName",
-                    MetadataValue::String("col-physical-id".to_string()),
-                ),
-            ])),
-            (StructField::new(
-                "category".to_string(),
-                DataType::Primitive(PrimitiveType::String),
-                false,
-            )
-            .with_metadata([
-                ("delta.columnMapping.id", MetadataValue::Number(2.into())),
-                (
-                    "delta.columnMapping.physicalName",
-                    MetadataValue::String("col-physical-category".to_string()),
-                ),
-            ])),
-        ],
+    let fixture =
+        TestTableFixture::create_with_columns_and_configuration(default_table_columns(), vec![]);
+    fixture.overwrite_initial_protocol(json!({
+        "minReaderVersion": 2,
+        "minWriterVersion": 5,
+    }));
+    fixture.overwrite_initial_metadata_configuration_and_schema(
         vec![
             (
                 TableProperty::ColumnMappingMode.as_ref().to_string(),
@@ -607,6 +644,29 @@ fn bootstrap_table_rejects_column_mapping_tables() {
                 Some("5".to_string()),
             ),
         ],
+        json!({
+            "type": "struct",
+            "fields": [
+                {
+                    "name": "id",
+                    "type": "integer",
+                    "nullable": false,
+                    "metadata": {
+                        "delta.columnMapping.id": 1,
+                        "delta.columnMapping.physicalName": "col-physical-id"
+                    }
+                },
+                {
+                    "name": "category",
+                    "type": "string",
+                    "nullable": false,
+                    "metadata": {
+                        "delta.columnMapping.id": 2,
+                        "delta.columnMapping.physicalName": "col-physical-category"
+                    }
+                }
+            ]
+        }),
     );
 
     let error = bootstrap_table(&fixture.table_uri)

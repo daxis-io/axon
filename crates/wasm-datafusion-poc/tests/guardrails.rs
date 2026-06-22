@@ -14,5 +14,5 @@ fn poc_reports_browser_wasm_target_and_experimental_status() {
 fn datafusion_session_context_constructs_on_host() {
     let marker = wasm_datafusion_poc::datafusion_compile_marker();
     assert_eq!(marker.table_name, "t");
-    assert!(marker.datafusion_version.starts_with("52."));
+    assert!(marker.datafusion_version.starts_with("53."));
 }

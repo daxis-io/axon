@@ -369,7 +369,10 @@ impl TestTableFixture {
 
                 if let Some(version) = snapshot_version {
                     table
-                        .load_version(version)
+                        .load_version(
+                            u64::try_from(version)
+                                .expect("historical snapshot version should be non-negative"),
+                        )
                         .await
                         .expect("historical snapshot should load");
                 }

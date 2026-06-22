@@ -17,8 +17,8 @@ wasm-bindgen-futures = "=0.4.64"
 web-sys = { version = "=0.3.91", features = ["Blob"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-tokio = { version = "=1.50.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "=1.52.3", features = ["macros", "rt-multi-thread"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-tokio = { version = "=1.50.0", features = ["macros", "rt"] }
+tokio = { version = "=1.52.3", features = ["macros", "rt"] }
 wasm-bindgen-test = "=0.3.64"

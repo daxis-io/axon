@@ -7,22 +7,22 @@ version.workspace = true
 [dependencies]
 async-trait = "=0.1.89"
 bytes = "=1.11.1"
-parquet = { version = "=57.3.0", default-features = false, features = ["snap"] }
+parquet = { version = "=58.3.0", default-features = false, features = ["snap"] }
 query-contract = { path = "../query-contract" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 wasm-http-object-store = { path = "../wasm-http-object-store" }
 
 [target.'cfg(unix)'.dependencies]
-libc = "=0.2.183"
+libc = "=0.2.186"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-arrow-array = "=57.3.0"
-arrow-schema = "=57.3.0"
+arrow-array = "=58.3.0"
+arrow-schema = "=58.3.0"
 delta-control-plane = { path = "../delta-control-plane" }
-deltalake = { version = "=0.31.1", features = ["datafusion", "gcs"] }
+deltalake = { version = "=0.32.4", features = ["datafusion", "gcs"] }
 tempfile = "=3.27.0"
-tokio = { version = "=1.50.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "=1.52.3", features = ["macros", "rt-multi-thread"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.64"

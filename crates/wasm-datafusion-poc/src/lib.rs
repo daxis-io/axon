@@ -476,7 +476,7 @@ pub struct AxonParquetScanExec {
     planned_partition_indices: Vec<usize>,
     row_group_predicate: Option<ParquetRowGroupPruningPredicate>,
     partitions: Vec<Vec<RecordBatch>>,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
     trace: Arc<Mutex<AxonParquetScanTrace>>,
     limit_remaining: Arc<Mutex<Option<usize>>>,
     query_budget: BrowserQueryBudget,
@@ -500,7 +500,10 @@ impl AxonParquetScanExec {
         } else {
             plan.planned_partition_indices.len().max(1)
         };
-        let properties = Self::compute_properties(Arc::clone(&projected_schema), partition_count);
+        let properties = Arc::new(Self::compute_properties(
+            Arc::clone(&projected_schema),
+            partition_count,
+        ));
 
         Self {
             descriptor,
@@ -1393,7 +1396,7 @@ impl ExecutionPlan for AxonParquetScanExec {
         self
     }
 
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 

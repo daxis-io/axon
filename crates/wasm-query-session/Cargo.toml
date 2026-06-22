@@ -13,6 +13,6 @@ serde_json.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 delta-control-plane = { path = "../delta-control-plane" }
-deltalake = { version = "=0.31.1", features = ["datafusion", "gcs"] }
+deltalake = { version = "=0.32.4", features = ["datafusion", "gcs"] }
 tempfile = "=3.27.0"
-tokio = { version = "=1.50.0", features = ["rt-multi-thread"] }
+tokio = { version = "=1.52.3", features = ["rt-multi-thread"] }

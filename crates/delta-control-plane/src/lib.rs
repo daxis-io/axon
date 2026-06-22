@@ -4,8 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use delta_runtime_support::{
     canonical_table_policy_key_from_url, map_delta_error, normalize_table_uri,
-    required_table_capabilities, run_on_runtime, terminally_unsupported_table_features,
-    unknown_table_protocol_features, validate_snapshot_version,
+    required_table_capabilities, run_on_runtime, snapshot_version_for_delta,
+    snapshot_version_from_delta, terminally_unsupported_table_features,
+    unknown_table_protocol_features,
 };
 use deltalake::kernel::scalars::ScalarExt;
 use deltalake::kernel::{DataType, PrimitiveType, StructField};
@@ -84,12 +85,11 @@ pub fn resolve_snapshot_with_policy(
     request: SnapshotResolutionRequest,
     policy: &SnapshotAccessPolicy,
 ) -> Result<ResolvedSnapshotDescriptor, QueryError> {
-    validate_snapshot_version(request.snapshot_version, control_plane_target())?;
-
     let normalized_uri = normalize_table_uri(&request.table_uri, control_plane_target())?;
     let table_key = canonical_table_policy_key_from_url(&normalized_uri);
     policy.enforce(&table_key)?;
-    let snapshot_version = request.snapshot_version;
+    let snapshot_version =
+        snapshot_version_for_delta(request.snapshot_version, control_plane_target())?;
 
     run_on_runtime(
         async move {
@@ -131,10 +131,12 @@ pub fn resolve_snapshot_with_policy(
             let active_files = collect_active_files(snapshot)?;
             let partition_column_types = resolve_partition_column_types(snapshot)?;
             let browser_compatibility = required_table_capabilities(snapshot);
+            let snapshot_version =
+                snapshot_version_from_delta(snapshot.version(), control_plane_target())?;
 
             Ok(ResolvedSnapshotDescriptor {
                 table_uri: normalized_uri.to_string(),
-                snapshot_version: snapshot.version(),
+                snapshot_version,
                 partition_column_types,
                 browser_compatibility: browser_compatibility.clone(),
                 required_capabilities: browser_compatibility,

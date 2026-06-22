@@ -5,7 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
-deltalake = { version = "=0.31.1", features = ["gcs"] }
+deltalake = { version = "=0.32.4", features = ["gcs"] }
 delta-runtime-support = { path = "../delta-runtime-support", default-features = false }
 query-contract = { path = "../query-contract" }
 
@@ -14,5 +14,5 @@ browser-sdk = { path = "../browser-sdk" }
 native-query-runtime = { path = "../native-query-runtime" }
 serde_json.workspace = true
 tempfile = "=3.27.0"
-tokio = { version = "=1.50.0", features = ["rt-multi-thread"] }
+tokio = { version = "=1.52.3", features = ["rt-multi-thread"] }
 wasm-query-runtime = { path = "../wasm-query-runtime" }

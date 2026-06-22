@@ -15,13 +15,13 @@ physical-expr-floor = ["dep:datafusion-physical-expr"]
 physical-plan-floor = ["dep:datafusion-physical-plan", "dep:uuid"]
 
 [dependencies]
-arrow-schema = "=57.3.0"
-datafusion-common = { version = "=52.4.0", default-features = false, features = ["sql"] }
-datafusion-expr = { version = "=52.4.0", default-features = false, features = ["sql"] }
-datafusion-optimizer = { version = "=52.4.0", default-features = false, optional = true }
-datafusion-physical-expr = { version = "=52.4.0", default-features = false, optional = true }
-datafusion-physical-plan = { version = "=52.4.0", default-features = false, optional = true }
-datafusion-sql = { version = "=52.4.0", default-features = false }
+arrow-schema = "=58.3.0"
+datafusion-common = { version = "=53.1.0", default-features = false, features = ["sql"] }
+datafusion-expr = { version = "=53.1.0", default-features = false, features = ["sql"] }
+datafusion-optimizer = { version = "=53.1.0", default-features = false, optional = true }
+datafusion-physical-expr = { version = "=53.1.0", default-features = false, optional = true }
+datafusion-physical-plan = { version = "=53.1.0", default-features = false, optional = true }
+datafusion-sql = { version = "=53.1.0", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "=0.3.4", features = ["wasm_js"] }

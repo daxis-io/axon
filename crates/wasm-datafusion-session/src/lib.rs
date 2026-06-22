@@ -859,7 +859,7 @@ fn validate_datafusion_select_scope(table_name: &str, select: &Select) -> Result
         || !select.named_window.is_empty()
         || select.qualify.is_some()
         || select.value_table_mode.is_some()
-        || select.connect_by.is_some()
+        || !select.connect_by.is_empty()
         || select.flavor != SelectFlavor::Standard
     {
         return Err(invalid_datafusion_sql(

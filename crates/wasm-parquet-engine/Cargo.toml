@@ -5,11 +5,11 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
-arrow-array = "=57.3.0"
-arrow-schema = "=57.3.0"
+arrow-array = "=58.3.0"
+arrow-schema = "=58.3.0"
 bytes = "=1.11.1"
 futures-util = "=0.3.32"
-parquet = { version = "=57.3.0", default-features = false, features = ["arrow", "async"] }
+parquet = { version = "=58.3.0", default-features = false, features = ["arrow", "async"] }
 query-contract = { path = "../query-contract" }
 wasm-http-object-store = { path = "../wasm-http-object-store" }
 
@@ -20,4 +20,4 @@ wasm-bindgen-futures = "=0.4.64"
 wasm-bindgen-test = "=0.3.64"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-tokio = { version = "=1.50.0", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "=1.52.3", features = ["macros", "rt-multi-thread", "time"] }

@@ -62,6 +62,29 @@ pub fn validate_snapshot_version(
     Ok(())
 }
 
+pub fn snapshot_version_for_delta(
+    snapshot_version: Option<i64>,
+    target: ExecutionTarget,
+) -> Result<Option<u64>, QueryError> {
+    validate_snapshot_version(snapshot_version, target)?;
+    Ok(snapshot_version.map(|snapshot_version| snapshot_version as u64))
+}
+
+pub fn snapshot_version_from_delta(
+    snapshot_version: u64,
+    target: ExecutionTarget,
+) -> Result<i64, QueryError> {
+    i64::try_from(snapshot_version).map_err(|_| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedFeature,
+            format!(
+                "Delta snapshot version {snapshot_version} exceeds Axon's supported version range"
+            ),
+            target,
+        )
+    })
+}
+
 pub fn normalize_table_uri(table_uri: &str, target: ExecutionTarget) -> Result<Url, QueryError> {
     let table_uri = table_uri.trim();
     if table_uri.is_empty() {
@@ -233,7 +256,7 @@ pub fn query_error_from_object_store_error(
         ObjectStoreError::InvalidPath { .. } | ObjectStoreError::UnknownConfigurationKey { .. } => {
             QueryError::new(QueryErrorCode::InvalidRequest, error.to_string(), target)
         }
-        ObjectStoreError::NotSupported { .. } | ObjectStoreError::NotImplemented => {
+        ObjectStoreError::NotSupported { .. } | ObjectStoreError::NotImplemented { .. } => {
             QueryError::new(
                 QueryErrorCode::UnsupportedFeature,
                 error.to_string(),
@@ -302,13 +325,21 @@ fn query_error_from_unsupported_protocol_feature_message(
     let unsupported_protocol_feature = normalized.contains("unknown feature")
         || normalized.contains("unsupported feature")
         || (normalized.contains("feature '") && normalized.contains("is not supported"))
+        || normalized.contains("catalog-managed table requires max_catalog_version")
         || normalized.contains("unsupported minimum reader version")
         || normalized.contains("unsupported minimum writer version");
 
     unsupported_protocol_feature.then(|| {
+        let message = if normalized.contains("catalog-managed table requires max_catalog_version") {
+            format!(
+                "Delta protocol feature is not supported safely: catalogManaged requires catalog version support: {message}"
+            )
+        } else {
+            format!("Delta protocol feature is not supported safely: {message}")
+        };
         QueryError::new(
             QueryErrorCode::UnsupportedFeature,
-            format!("Delta protocol feature is not supported safely: {message}"),
+            message,
             target,
         )
     })
@@ -786,6 +817,30 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_version_for_delta_converts_valid_signed_versions() {
+        assert_eq!(
+            snapshot_version_for_delta(Some(42), ExecutionTarget::Native)
+                .expect("valid version should convert"),
+            Some(42)
+        );
+        assert_eq!(
+            snapshot_version_for_delta(None, ExecutionTarget::Native)
+                .expect("missing version should pass through"),
+            None
+        );
+    }
+
+    #[test]
+    fn snapshot_version_from_delta_rejects_versions_outside_contract_range() {
+        let error = snapshot_version_from_delta(i64::MAX as u64 + 1, ExecutionTarget::Native)
+            .expect_err("overflowing versions should be rejected");
+
+        assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+        assert_eq!(error.target, ExecutionTarget::Native);
+        assert!(error.message.contains("Delta snapshot version"));
+    }
+
+    #[test]
     fn invalid_snapshot_versions_map_to_invalid_request() {
         let error = map_delta_error(DeltaTableError::InvalidVersion(42), ExecutionTarget::Native);
 
@@ -974,6 +1029,19 @@ mod tests {
         assert_eq!(error.code, QueryErrorCode::InvalidRequest);
         assert_eq!(error.target, ExecutionTarget::Native);
         assert!(error.message.contains("requested snapshot version"));
+    }
+
+    #[test]
+    fn catalog_managed_kernel_messages_map_to_unsupported_feature() {
+        let error = query_error_from_unsupported_protocol_feature_message(
+            "Generic delta kernel error: Catalog-managed table requires max_catalog_version to be set. Use with_max_catalog_version() when loading a catalog-managed table.",
+            ExecutionTarget::Native,
+        )
+        .expect("catalog-managed kernel errors should be recognized");
+
+        assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+        assert_eq!(error.target, ExecutionTarget::Native);
+        assert!(error.message.contains("catalogManaged"));
     }
 
     #[test]
