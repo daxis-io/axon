@@ -262,6 +262,20 @@ impl DeltaTableDescriptor {
         snapshot: &BrowserHttpSnapshotDescriptor,
         schema: DeltaTableSchema,
     ) -> Result<Self, QueryError> {
+        Self::from_browser_http_snapshot_with_object_etags(
+            table_name,
+            snapshot,
+            schema,
+            &BTreeMap::new(),
+        )
+    }
+
+    pub fn from_browser_http_snapshot_with_object_etags(
+        table_name: impl Into<String>,
+        snapshot: &BrowserHttpSnapshotDescriptor,
+        schema: DeltaTableSchema,
+        object_etags_by_path: &BTreeMap<String, String>,
+    ) -> Result<Self, QueryError> {
         let table_name = table_name.into();
         if table_name.trim().is_empty() {
             return Err(QueryError::new(
@@ -285,7 +299,7 @@ impl DeltaTableDescriptor {
                     url: file.url.clone(),
                     size_bytes: file.size_bytes,
                     partition_values: file.partition_values.clone(),
-                    object_etag: None,
+                    object_etag: object_etags_by_path.get(&file.path).cloned(),
                     stats_json: file.stats.clone(),
                     deletion_vector: None,
                 })

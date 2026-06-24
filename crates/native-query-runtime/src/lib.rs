@@ -743,6 +743,8 @@ fn collect_query_metrics(
         scan_footer_range_reads: None,
         scan_data_range_reads: None,
         duplicate_range_reads: None,
+        identity_present_range_reads: None,
+        identity_missing_range_reads: None,
         descriptor_resolution_count: None,
         delta_log_manifest_list_count: None,
         delta_log_manifest_list_duration_ms: None,

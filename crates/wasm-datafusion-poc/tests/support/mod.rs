@@ -60,11 +60,19 @@ fn write_response(stream: &mut std::net::TcpStream, response: TestResponse) {
     stream.flush().expect("response should flush");
 }
 
-fn full_or_ranged_response(request: &CapturedRequest, body: &[u8]) -> TestResponse {
+fn full_or_ranged_response(
+    request: &CapturedRequest,
+    body: &[u8],
+    etag: Option<&str>,
+) -> TestResponse {
     let Some(range_header) = request.headers.get("range") else {
+        let mut headers = vec![("Content-Length".to_string(), body.len().to_string())];
+        if let Some(etag) = etag {
+            headers.push(("ETag".to_string(), etag.to_string()));
+        }
         return TestResponse {
             status_line: "200 OK",
-            headers: vec![("Content-Length".to_string(), body.len().to_string())],
+            headers,
             body: body.to_vec(),
         };
     };
@@ -85,15 +93,19 @@ fn full_or_ranged_response(request: &CapturedRequest, body: &[u8]) -> TestRespon
     }
 
     let ranged = body[start..=end].to_vec();
+    let mut headers = vec![
+        ("Content-Length".to_string(), ranged.len().to_string()),
+        (
+            "Content-Range".to_string(),
+            format!("bytes {start}-{end}/{}", body.len()),
+        ),
+    ];
+    if let Some(etag) = etag {
+        headers.push(("ETag".to_string(), etag.to_string()));
+    }
     TestResponse {
         status_line: "206 Partial Content",
-        headers: vec![
-            ("Content-Length".to_string(), ranged.len().to_string()),
-            (
-                "Content-Range".to_string(),
-                format!("bytes {start}-{end}/{}", body.len()),
-            ),
-        ],
+        headers,
         body: ranged,
     }
 }
@@ -127,6 +139,10 @@ pub struct RequestCapturingServer {
 
 impl RequestCapturingServer {
     pub fn new(body: Vec<u8>) -> Self {
+        Self::new_with_etag(body, None)
+    }
+
+    pub fn new_with_etag(body: Vec<u8>, etag: Option<String>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
         listener
             .set_nonblocking(true)
@@ -137,6 +153,7 @@ impl RequestCapturingServer {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let requests_for_thread = Arc::clone(&requests);
         let body = Arc::new(body);
+        let etag = Arc::new(etag);
 
         let thread = thread::spawn(move || {
             while !stop_for_thread.load(Ordering::SeqCst) {
@@ -149,6 +166,7 @@ impl RequestCapturingServer {
                             .set_nonblocking(false)
                             .expect("accepted streams should allow blocking reads");
                         let body = Arc::clone(&body);
+                        let etag = Arc::clone(&etag);
                         let requests = Arc::clone(&requests_for_thread);
                         thread::spawn(move || {
                             let request = read_request(&mut stream);
@@ -156,7 +174,10 @@ impl RequestCapturingServer {
                                 .lock()
                                 .expect("recorded requests should be writable")
                                 .push(request.clone());
-                            write_response(&mut stream, full_or_ranged_response(&request, &body));
+                            write_response(
+                                &mut stream,
+                                full_or_ranged_response(&request, &body, etag.as_ref().as_deref()),
+                            );
                         });
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {

@@ -513,6 +513,8 @@ export async function runQuery(
               scan_footer_range_reads: m.scan_footer_range_reads,
               scan_data_range_reads: m.scan_data_range_reads,
               duplicate_range_reads: m.duplicate_range_reads,
+              identity_present_range_reads: m.identity_present_range_reads,
+              identity_missing_range_reads: m.identity_missing_range_reads,
               rows_emitted: m.rows_emitted,
               snapshot_bootstrap_duration_ms: m.snapshot_bootstrap_duration_ms,
               access_mode: m.access_mode,

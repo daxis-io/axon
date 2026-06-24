@@ -136,12 +136,172 @@ fn session_queries_standard_parquet_dataset_over_loopback_range_reads() {
                 >= 2,
             "open plus SQL should expose repeated trailer/footer ranges before caching exists"
         );
+        assert_eq!(
+            result.response.metrics.identity_present_range_reads,
+            Some(0),
+            "missing ETag metadata should be counted as the degraded identity path"
+        );
+        assert!(
+            result
+                .response
+                .metrics
+                .identity_missing_range_reads
+                .unwrap_or_default()
+                > 0,
+            "range metrics should expose identity-missing reads"
+        );
         assert!(
             server
                 .recorded_requests()
                 .iter()
                 .all(|request| request.headers.contains_key("range")),
             "standard Parquet scans should use browser range I/O"
+        );
+    });
+}
+
+#[test]
+fn session_preserves_bootstrapped_etag_for_datafusion_scan_if_range() {
+    let _guard = PARQUET_DATASET_TEST_LOCK
+        .lock()
+        .expect("Parquet dataset tests should serialize local HTTP servers");
+
+    runtime().block_on(async {
+        let object = parquet_bytes_with_i64_columns(&[(3, 25), (1, 5), (2, 12)]);
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let object_etag = "\"part-000-v1\"".to_string();
+        let server = RequestCapturingServer::new_with_etag(object, Some(object_etag.clone()));
+        let dataset = BrowserHttpParquetDatasetDescriptor {
+            table_uri: "https://example.invalid/datasets/events".to_string(),
+            partition_column_types: BTreeMap::new(),
+            browser_compatibility: CapabilityReport::default(),
+            required_capabilities: CapabilityReport::default(),
+            files: vec![BrowserHttpFileDescriptor {
+                path: "part-000.parquet".to_string(),
+                url: server.url(),
+                size_bytes: object_size,
+                partition_values: BTreeMap::new(),
+                stats: None,
+            }],
+        };
+        let mut session = BrowserDataFusionSession::new(browser_safe_http_config(), u64::MAX)
+            .expect("browser DataFusion session should construct");
+
+        session
+            .open_parquet_dataset("events", dataset)
+            .await
+            .expect("standard Parquet dataset should open");
+
+        let request = QueryRequest::new(
+            "https://example.invalid/datasets/events",
+            "SELECT id FROM events WHERE value > 10 ORDER BY id",
+            ExecutionTarget::BrowserWasm,
+        );
+        let result = session
+            .sql("events", &request)
+            .await
+            .expect("SQL should execute against the standard Parquet dataset");
+
+        assert_eq!(result.runtime_result.row_count, 2);
+        assert!(
+            server
+                .recorded_requests()
+                .iter()
+                .any(|request| request.headers.get("if-range") == Some(&object_etag)),
+            "scan range requests should carry If-Range once bootstrap captured an ETag"
+        );
+        assert!(
+            result
+                .response
+                .metrics
+                .identity_present_range_reads
+                .unwrap_or_default()
+                > 0,
+            "range metrics should expose identity-present reads"
+        );
+        assert!(
+            result
+                .response
+                .metrics
+                .identity_missing_range_reads
+                .unwrap_or_default()
+                > 0,
+            "bootstrap ranges should remain visible as identity-missing reads"
+        );
+        assert!(
+            result
+                .response
+                .metrics
+                .duplicate_range_reads
+                .unwrap_or_default()
+                >= 2,
+            "preserving identity must not hide repeated trailer/footer ranges before caching exists"
+        );
+    });
+}
+
+#[test]
+fn session_treats_weak_etag_as_missing_if_range_identity() {
+    let _guard = PARQUET_DATASET_TEST_LOCK
+        .lock()
+        .expect("Parquet dataset tests should serialize local HTTP servers");
+
+    runtime().block_on(async {
+        let object = parquet_bytes_with_i64_columns(&[(3, 25), (1, 5), (2, 12)]);
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let server =
+            RequestCapturingServer::new_with_etag(object, Some("W/\"part-000-v1\"".to_string()));
+        let dataset = BrowserHttpParquetDatasetDescriptor {
+            table_uri: "https://example.invalid/datasets/events".to_string(),
+            partition_column_types: BTreeMap::new(),
+            browser_compatibility: CapabilityReport::default(),
+            required_capabilities: CapabilityReport::default(),
+            files: vec![BrowserHttpFileDescriptor {
+                path: "part-000.parquet".to_string(),
+                url: server.url(),
+                size_bytes: object_size,
+                partition_values: BTreeMap::new(),
+                stats: None,
+            }],
+        };
+        let mut session = BrowserDataFusionSession::new(browser_safe_http_config(), u64::MAX)
+            .expect("browser DataFusion session should construct");
+
+        session
+            .open_parquet_dataset("events", dataset)
+            .await
+            .expect("standard Parquet dataset should open");
+
+        let request = QueryRequest::new(
+            "https://example.invalid/datasets/events",
+            "SELECT id FROM events WHERE value > 10 ORDER BY id",
+            ExecutionTarget::BrowserWasm,
+        );
+        let result = session
+            .sql("events", &request)
+            .await
+            .expect("SQL should still execute when only weak ETag metadata is available");
+
+        assert_eq!(result.runtime_result.row_count, 2);
+        assert!(
+            server
+                .recorded_requests()
+                .iter()
+                .all(|request| !request.headers.contains_key("if-range")),
+            "weak ETags must not be sent as If-Range validators"
+        );
+        assert_eq!(
+            result.response.metrics.identity_present_range_reads,
+            Some(0),
+            "weak ETags are not strong object identity for range validation"
+        );
+        assert!(
+            result
+                .response
+                .metrics
+                .identity_missing_range_reads
+                .unwrap_or_default()
+                > 0
         );
     });
 }

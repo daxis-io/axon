@@ -594,6 +594,12 @@ fn emit_open_bootstrap_metrics<F>(
             scan_footer_range_reads: None,
             scan_data_range_reads: None,
             duplicate_range_reads: None,
+            identity_present_range_reads: Some(
+                snapshot.range_read_metrics().identity_present_range_reads,
+            ),
+            identity_missing_range_reads: Some(
+                snapshot.range_read_metrics().identity_missing_range_reads,
+            ),
             descriptor_resolution_count: None,
             delta_log_manifest_list_count: None,
             delta_log_manifest_list_duration_ms: None,

@@ -727,6 +727,8 @@ fn execution_metrics(
         scan_footer_range_reads: Some(range_read_metrics.scan_footer_range_reads),
         scan_data_range_reads: Some(range_read_metrics.scan_data_range_reads),
         duplicate_range_reads: Some(range_read_metrics.duplicate_range_reads),
+        identity_present_range_reads: Some(range_read_metrics.identity_present_range_reads),
+        identity_missing_range_reads: Some(range_read_metrics.identity_missing_range_reads),
         descriptor_resolution_count: None,
         delta_log_manifest_list_count: None,
         delta_log_manifest_list_duration_ms: None,

@@ -189,8 +189,13 @@ impl BrowserDataFusionSession {
             )
         };
         let schema = datafusion_delta_schema(&descriptor, bootstrapped.as_ref())?;
-        let delta_descriptor =
-            DeltaTableDescriptor::from_browser_http_snapshot(name.clone(), &descriptor, schema)?;
+        let object_etags = bootstrapped_object_etags_by_path(bootstrapped.as_ref());
+        let delta_descriptor = DeltaTableDescriptor::from_browser_http_snapshot_with_object_etags(
+            name.clone(),
+            &descriptor,
+            schema,
+            &object_etags,
+        )?;
         let cached_bytes = cached_table_bytes(&materialized, bootstrapped.as_ref())?;
         let last_used_millis = self.bump_access_clock();
 
@@ -308,6 +313,8 @@ impl BrowserDataFusionSession {
             scan_footer_range_reads: merged_range_read_metrics.scan_footer_range_reads,
             scan_data_range_reads: merged_range_read_metrics.scan_data_range_reads,
             duplicate_range_reads: merged_range_read_metrics.duplicate_range_reads,
+            identity_present_range_reads: merged_range_read_metrics.identity_present_range_reads,
+            identity_missing_range_reads: merged_range_read_metrics.identity_missing_range_reads,
         };
         let runtime_result = runtime_result_from_datafusion(datafusion_result);
 
@@ -358,10 +365,12 @@ impl BrowserDataFusionSession {
             (table.descriptor.clone(), table.bootstrapped.clone())
         };
         let schema = datafusion_delta_schema(&descriptor, bootstrapped.as_ref())?;
-        let delta_descriptor = DeltaTableDescriptor::from_browser_http_snapshot(
+        let object_etags = bootstrapped_object_etags_by_path(bootstrapped.as_ref());
+        let delta_descriptor = DeltaTableDescriptor::from_browser_http_snapshot_with_object_etags(
             name.to_string(),
             &descriptor,
             schema,
+            &object_etags,
         )?;
         self.datafusion.set_query_budget(query_budget.into());
         self.datafusion.deregister_table(name)?;
@@ -514,6 +523,19 @@ fn descriptor_partition_columns(descriptor: &BrowserHttpSnapshotDescriptor) -> V
         partition_columns.extend(file.partition_values.keys().cloned());
     }
     partition_columns.into_iter().collect()
+}
+
+fn bootstrapped_object_etags_by_path(
+    bootstrapped: Option<&BootstrappedBrowserSnapshot>,
+) -> BTreeMap<String, String> {
+    bootstrapped
+        .into_iter()
+        .flat_map(BootstrappedBrowserSnapshot::active_files)
+        .filter_map(|file| {
+            file.object_etag()
+                .map(|object_etag| (file.path().to_string(), object_etag.to_string()))
+        })
+        .collect()
 }
 
 fn datafusion_partition_column_type(
@@ -789,6 +811,8 @@ fn datafusion_query_metrics(
         scan_footer_range_reads: Some(range_read_metrics.scan_footer_range_reads),
         scan_data_range_reads: Some(range_read_metrics.scan_data_range_reads),
         duplicate_range_reads: Some(range_read_metrics.duplicate_range_reads),
+        identity_present_range_reads: Some(range_read_metrics.identity_present_range_reads),
+        identity_missing_range_reads: Some(range_read_metrics.identity_missing_range_reads),
         descriptor_resolution_count: None,
         delta_log_manifest_list_count: None,
         delta_log_manifest_list_duration_ms: None,
@@ -806,6 +830,8 @@ struct DataFusionSessionRangeReadMetrics {
     scan_footer_range_reads: u64,
     scan_data_range_reads: u64,
     duplicate_range_reads: u64,
+    identity_present_range_reads: u64,
+    identity_missing_range_reads: u64,
 }
 
 fn validate_datafusion_request_match(

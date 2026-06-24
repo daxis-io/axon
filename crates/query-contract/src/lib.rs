@@ -1435,6 +1435,12 @@ pub struct QueryMetricsSummary {
     /// Exact duplicate HTTP range reads observed across the measured browser query path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicate_range_reads: Option<u64>,
+    /// Exact HTTP range reads that had stable object identity such as ETag plus size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_present_range_reads: Option<u64>,
+    /// Exact HTTP range reads that ran without stable object identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_missing_range_reads: Option<u64>,
     /// Snapshot or descriptor resolution attempts performed before query execution when tracked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub descriptor_resolution_count: Option<u64>,
@@ -1586,6 +1592,10 @@ pub struct DaxisQueryMetrics {
     pub scan_data_range_reads: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicate_range_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_present_range_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_missing_range_reads: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub descriptor_resolution_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

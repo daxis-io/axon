@@ -2,7 +2,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use query_contract::{PartitionColumnType, QueryErrorCode};
+use query_contract::{
+    BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityReport,
+    PartitionColumnType, QueryErrorCode,
+};
+use wasm_datafusion_poc::{DeltaTableSchema, DeltaTableSchemaField};
 
 #[test]
 fn descriptor_preserves_table_schema_version_and_active_file_facts() {
@@ -90,6 +94,54 @@ fn descriptor_preserves_optional_deletion_vector_facts() {
     assert_eq!(deletion_vector.offset, Some(12));
     assert_eq!(deletion_vector.size_in_bytes, Some(256));
     assert_eq!(deletion_vector.cardinality, Some(3));
+}
+
+#[test]
+fn browser_http_snapshot_conversion_preserves_bootstrapped_object_identity() {
+    let snapshot = BrowserHttpSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/events".to_string(),
+        snapshot_version: 11,
+        partition_column_types: BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
+        required_capabilities: CapabilityReport::default(),
+        active_files: vec![BrowserHttpFileDescriptor {
+            path: "part-000.parquet".to_string(),
+            url: "https://storage.googleapis.com/fixtures/events/part-000.parquet?X-Goog-Signature=abc".to_string(),
+            size_bytes: 4096,
+            partition_values: BTreeMap::new(),
+            stats: None,
+        }],
+    };
+    let object_etags = BTreeMap::from([(
+        "part-000.parquet".to_string(),
+        "\"bootstrap-etag-v1\"".to_string(),
+    )]);
+
+    let descriptor =
+        wasm_datafusion_poc::DeltaTableDescriptor::from_browser_http_snapshot_with_object_etags(
+            "events",
+            &snapshot,
+            DeltaTableSchema::new(vec![DeltaTableSchemaField::new(
+                "id",
+                DataType::Int32,
+                false,
+            )]),
+            &object_etags,
+        )
+        .expect("descriptor conversion should preserve bootstrapped object identity");
+
+    let file = &descriptor.active_files[0];
+    assert_eq!(file.path, "part-000.parquet");
+    assert_eq!(file.size_bytes, 4096);
+    assert_eq!(file.object_etag.as_deref(), Some("\"bootstrap-etag-v1\""));
+    assert!(
+        !file
+            .object_etag
+            .as_deref()
+            .unwrap_or_default()
+            .contains("X-Goog-Signature"),
+        "stable object identity must not be derived from signed URL text"
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]

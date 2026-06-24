@@ -624,6 +624,8 @@ export type QueryMetricsSummary = {
   scan_footer_range_reads?: number;
   scan_data_range_reads?: number;
   duplicate_range_reads?: number;
+  identity_present_range_reads?: number;
+  identity_missing_range_reads?: number;
   descriptor_resolution_count?: number;
   delta_log_manifest_list_count?: number;
   delta_log_manifest_list_duration_ms?: number;
@@ -865,6 +867,8 @@ export type BrowserWorkerRangeReadMetricsEvent = {
   scan_footer_range_reads?: number;
   scan_data_range_reads?: number;
   duplicate_range_reads?: number;
+  identity_present_range_reads?: number;
+  identity_missing_range_reads?: number;
   descriptor_resolution_count?: number;
   delta_log_manifest_list_count?: number;
   delta_log_manifest_list_duration_ms?: number;
@@ -4031,6 +4035,14 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
           duplicate_range_reads: optionalNumber(
             payload.duplicate_range_reads,
             'range_read_metrics.duplicate_range_reads',
+          ),
+          identity_present_range_reads: optionalNumber(
+            payload.identity_present_range_reads,
+            'range_read_metrics.identity_present_range_reads',
+          ),
+          identity_missing_range_reads: optionalNumber(
+            payload.identity_missing_range_reads,
+            'range_read_metrics.identity_missing_range_reads',
           ),
           descriptor_resolution_count: optionalNumber(
             payload.descriptor_resolution_count,

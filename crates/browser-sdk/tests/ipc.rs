@@ -362,6 +362,8 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
                 scan_footer_range_reads: Some(2),
                 scan_data_range_reads: Some(6),
                 duplicate_range_reads: Some(2),
+                identity_present_range_reads: Some(5),
+                identity_missing_range_reads: Some(7),
                 descriptor_resolution_count: Some(1),
                 delta_log_manifest_list_count: Some(1),
                 delta_log_manifest_list_duration_ms: Some(3),
@@ -424,6 +426,8 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             scan_footer_range_reads: Some(2),
             scan_data_range_reads: Some(6),
             duplicate_range_reads: Some(2),
+            identity_present_range_reads: Some(5),
+            identity_missing_range_reads: Some(7),
             descriptor_resolution_count: Some(1),
             delta_log_manifest_list_count: Some(1),
             delta_log_manifest_list_duration_ms: Some(3),
@@ -485,6 +489,8 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             assert_eq!(event.scan_footer_range_reads, Some(2));
             assert_eq!(event.scan_data_range_reads, Some(6));
             assert_eq!(event.duplicate_range_reads, Some(2));
+            assert_eq!(event.identity_present_range_reads, Some(5));
+            assert_eq!(event.identity_missing_range_reads, Some(7));
             assert_eq!(event.descriptor_resolution_count, Some(1));
             assert_eq!(event.delta_log_manifest_list_count, Some(1));
             assert_eq!(event.snapshot_resolve_count, Some(1));
@@ -750,6 +756,8 @@ fn sample_query_response(
             scan_footer_range_reads: None,
             scan_data_range_reads: None,
             duplicate_range_reads: None,
+            identity_present_range_reads: None,
+            identity_missing_range_reads: None,
             descriptor_resolution_count: None,
             delta_log_manifest_list_count: None,
             delta_log_manifest_list_duration_ms: None,
