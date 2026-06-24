@@ -279,6 +279,129 @@ pub struct ScanTargetMetricsSnapshot {
     pub bytes_fetched: u64,
     pub footer_reads: u64,
     pub metadata_probe_round_trips: u64,
+    pub range_read_metrics: ParquetRangeReadMetrics,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParquetRangeReadPhase {
+    BootstrapFooter,
+    ScanFooter,
+    ScanData,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ParquetRangeReadKey {
+    pub resource: String,
+    pub offset: u64,
+    pub length: u64,
+}
+
+impl ParquetRangeReadKey {
+    pub fn new(resource: impl Into<String>, offset: u64, length: u64) -> Self {
+        Self {
+            resource: resource.into(),
+            offset,
+            length,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ParquetRangeReadMetrics {
+    pub bootstrap_footer_range_reads: u64,
+    pub scan_footer_range_reads: u64,
+    pub scan_data_range_reads: u64,
+    pub duplicate_range_reads: u64,
+    pub exact_range_read_keys: BTreeSet<ParquetRangeReadKey>,
+}
+
+impl ParquetRangeReadMetrics {
+    pub fn record(&mut self, phase: ParquetRangeReadPhase, key: ParquetRangeReadKey) {
+        if !self.exact_range_read_keys.insert(key) {
+            self.duplicate_range_reads = self.duplicate_range_reads.saturating_add(1);
+        }
+        match phase {
+            ParquetRangeReadPhase::BootstrapFooter => {
+                self.bootstrap_footer_range_reads =
+                    self.bootstrap_footer_range_reads.saturating_add(1);
+            }
+            ParquetRangeReadPhase::ScanFooter => {
+                self.scan_footer_range_reads = self.scan_footer_range_reads.saturating_add(1);
+            }
+            ParquetRangeReadPhase::ScanData => {
+                self.scan_data_range_reads = self.scan_data_range_reads.saturating_add(1);
+            }
+        }
+    }
+
+    pub fn merge(&self, right: &Self) -> Self {
+        merge_parquet_range_read_metrics(self, right)
+    }
+}
+
+pub fn merge_parquet_range_read_metrics(
+    left: &ParquetRangeReadMetrics,
+    right: &ParquetRangeReadMetrics,
+) -> ParquetRangeReadMetrics {
+    let mut merged = ParquetRangeReadMetrics {
+        bootstrap_footer_range_reads: left
+            .bootstrap_footer_range_reads
+            .saturating_add(right.bootstrap_footer_range_reads),
+        scan_footer_range_reads: left
+            .scan_footer_range_reads
+            .saturating_add(right.scan_footer_range_reads),
+        scan_data_range_reads: left
+            .scan_data_range_reads
+            .saturating_add(right.scan_data_range_reads),
+        duplicate_range_reads: left
+            .duplicate_range_reads
+            .saturating_add(right.duplicate_range_reads),
+        exact_range_read_keys: left.exact_range_read_keys.clone(),
+    };
+    for key in &right.exact_range_read_keys {
+        if !merged.exact_range_read_keys.insert(key.clone()) {
+            merged.duplicate_range_reads = merged.duplicate_range_reads.saturating_add(1);
+        }
+    }
+    merged
+}
+
+pub fn bootstrap_footer_range_read_metrics_for_target(
+    target: &ScanTarget,
+    footer_length_bytes: u32,
+) -> Result<ParquetRangeReadMetrics, QueryError> {
+    let footer_length_bytes = u64::from(footer_length_bytes);
+    let trailer_offset = target
+        .size_bytes
+        .checked_sub(PARQUET_TRAILER_SIZE_BYTES)
+        .ok_or_else(|| {
+            parquet_protocol_error(format!(
+                "parquet footer bootstrap for file '{}' requires at least {} bytes, but the descriptor declared {} bytes",
+                target.path, PARQUET_TRAILER_SIZE_BYTES, target.size_bytes
+            ))
+        })?;
+    let footer_offset = trailer_offset
+        .checked_sub(footer_length_bytes)
+        .ok_or_else(|| {
+            parquet_protocol_error(format!(
+                "parquet footer bootstrap for file '{}' declared a footer length of {} bytes, which exceeds the object size of {} bytes",
+                target.path, footer_length_bytes, target.size_bytes
+            ))
+        })?;
+    let mut metrics = ParquetRangeReadMetrics::default();
+    metrics.record(
+        ParquetRangeReadPhase::BootstrapFooter,
+        ParquetRangeReadKey::new(
+            target.path.clone(),
+            trailer_offset,
+            PARQUET_TRAILER_SIZE_BYTES,
+        ),
+    );
+    metrics.record(
+        ParquetRangeReadPhase::BootstrapFooter,
+        ParquetRangeReadKey::new(target.path.clone(), footer_offset, footer_length_bytes),
+    );
+    Ok(metrics)
 }
 
 pub trait ScanTargetMetricsHandle {
@@ -329,6 +452,22 @@ impl SharedScanTargetMetricsHandle {
             execution_runtime_error("scan target metrics handle was poisoned during execution")
         })?;
         snapshot.metadata_probe_round_trips = round_trips;
+        Ok(())
+    }
+
+    fn record_range_read(
+        &self,
+        phase: ParquetRangeReadPhase,
+        resource: String,
+        offset: u64,
+        length: u64,
+    ) -> Result<(), QueryError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| {
+            execution_runtime_error("scan target metrics handle was poisoned during execution")
+        })?;
+        snapshot
+            .range_read_metrics
+            .record(phase, ParquetRangeReadKey::new(resource, offset, length));
         Ok(())
     }
 }
@@ -392,6 +531,10 @@ impl ScanTargetMetricsHandle for AggregateScanTargetMetricsHandle {
                     aggregate.metadata_probe_round_trips = aggregate
                         .metadata_probe_round_trips
                         .saturating_add(snapshot.metadata_probe_round_trips);
+                    aggregate.range_read_metrics = merge_parquet_range_read_metrics(
+                        &aggregate.range_read_metrics,
+                        &snapshot.range_read_metrics,
+                    );
                     aggregate
                 },
             )
@@ -466,6 +609,8 @@ impl HttpRangeAsyncFileReader {
         validation: Option<HttpRangeValidation>,
         request_timeout: Option<Duration>,
         metrics: SharedScanTargetMetricsHandle,
+        phase: ParquetRangeReadPhase,
+        metric_resource: String,
         range: Range<u64>,
     ) -> Result<Bytes, QueryError> {
         let length = range
@@ -491,20 +636,8 @@ impl HttpRangeAsyncFileReader {
             u64::try_from(read.bytes.len())
                 .map_err(|_| execution_runtime_error("scan byte totals overflowed u64"))?,
         )?;
+        metrics.record_range_read(phase, metric_resource, range.start, length)?;
         Ok(read.bytes)
-    }
-
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    async fn fetch_range(&mut self, range: Range<u64>) -> Result<Bytes, QueryError> {
-        Self::fetch_range_owned(
-            self.reader.clone(),
-            self.target.object_source.url.clone(),
-            self.validation(),
-            self.request_timeout,
-            self.metrics.clone(),
-            range,
-        )
-        .await
     }
 }
 
@@ -520,9 +653,15 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
             }
             let reader = self.reader.clone();
             let object_url = self.target.object_source.url.clone();
+            let metric_resource = self.target.path.clone();
             let validation = self.validation();
             let request_timeout = self.request_timeout;
             let metrics = self.metrics.clone();
+            let phase = if self.count_metadata_fetches {
+                ParquetRangeReadPhase::ScanFooter
+            } else {
+                ParquetRangeReadPhase::ScanData
+            };
             let (future, handle) = async move {
                 Self::fetch_range_owned(
                     reader,
@@ -530,6 +669,8 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
                     validation,
                     request_timeout,
                     metrics,
+                    phase,
+                    metric_resource,
                     range,
                 )
                 .await
@@ -548,9 +689,23 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
                     .checked_add(1)
                     .expect("metadata probe round trips should not overflow");
             }
-            self.fetch_range(range)
-                .await
-                .map_err(parquet_error_from_query_error)
+            let phase = if self.count_metadata_fetches {
+                ParquetRangeReadPhase::ScanFooter
+            } else {
+                ParquetRangeReadPhase::ScanData
+            };
+            Self::fetch_range_owned(
+                self.reader.clone(),
+                self.target.object_source.url.clone(),
+                self.validation(),
+                self.request_timeout,
+                self.metrics.clone(),
+                phase,
+                self.target.path.clone(),
+                range,
+            )
+            .await
+            .map_err(parquet_error_from_query_error)
         }
         .boxed()
     }
@@ -707,6 +862,7 @@ pub async fn stream_scan_target_batches_with_row_group_pruning(
         bytes_fetched: 0,
         footer_reads: 1,
         metadata_probe_round_trips: 0,
+        range_read_metrics: ParquetRangeReadMetrics::default(),
     });
     let metrics: Arc<dyn ScanTargetMetricsHandle + Send + Sync> = Arc::new(metrics_handle.clone());
     let builder = ParquetRecordBatchStreamBuilder::new(HttpRangeAsyncFileReader::new(
@@ -2112,4 +2268,56 @@ fn parquet_protocol_error(message: impl Into<String>) -> QueryError {
 
 fn execution_runtime_error(message: impl Into<String>) -> QueryError {
     QueryError::new(QueryErrorCode::ExecutionFailed, message, runtime_target())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        merge_parquet_range_read_metrics, ParquetRangeReadKey, ParquetRangeReadMetrics,
+        ParquetRangeReadPhase,
+    };
+
+    #[test]
+    fn range_read_metrics_store_compact_keys_without_signed_url_material() {
+        let mut metrics = ParquetRangeReadMetrics::default();
+
+        metrics.record(
+            ParquetRangeReadPhase::BootstrapFooter,
+            ParquetRangeReadKey::new("part-000.parquet", 96, 8),
+        );
+        metrics.record(
+            ParquetRangeReadPhase::ScanFooter,
+            ParquetRangeReadKey::new("part-000.parquet", 96, 8),
+        );
+
+        assert_eq!(metrics.bootstrap_footer_range_reads, 1);
+        assert_eq!(metrics.scan_footer_range_reads, 1);
+        assert_eq!(metrics.duplicate_range_reads, 1);
+        assert_eq!(metrics.exact_range_read_keys.len(), 1);
+        assert!(metrics
+            .exact_range_read_keys
+            .iter()
+            .all(|key| !key.resource.contains("X-Goog-Signature")));
+    }
+
+    #[test]
+    fn range_read_metric_merge_counts_cross_snapshot_duplicates_once() {
+        let mut left = ParquetRangeReadMetrics::default();
+        left.record(
+            ParquetRangeReadPhase::BootstrapFooter,
+            ParquetRangeReadKey::new("part-000.parquet", 96, 8),
+        );
+        let mut right = ParquetRangeReadMetrics::default();
+        right.record(
+            ParquetRangeReadPhase::ScanFooter,
+            ParquetRangeReadKey::new("part-000.parquet", 96, 8),
+        );
+
+        let merged = merge_parquet_range_read_metrics(&left, &right);
+
+        assert_eq!(merged.bootstrap_footer_range_reads, 1);
+        assert_eq!(merged.scan_footer_range_reads, 1);
+        assert_eq!(merged.duplicate_range_reads, 1);
+        assert_eq!(merged.exact_range_read_keys.len(), 1);
+    }
 }

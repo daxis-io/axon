@@ -289,6 +289,24 @@ pub struct BrowserWorkerRangeReadMetricsEvent {
     pub row_groups_skipped: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footer_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_footer_range_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_footer_range_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_data_range_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_range_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor_resolution_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_log_manifest_list_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_log_manifest_list_duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_resolve_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_resolve_duration_ms: Option<u64>,
     pub rows_emitted: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_bootstrap_duration_ms: Option<u64>,
@@ -377,6 +395,15 @@ impl BrowserWorkerEventEnvelope {
             row_groups_touched: metrics.row_groups_touched,
             row_groups_skipped: metrics.row_groups_skipped,
             footer_reads: metrics.footer_reads,
+            bootstrap_footer_range_reads: metrics.bootstrap_footer_range_reads,
+            scan_footer_range_reads: metrics.scan_footer_range_reads,
+            scan_data_range_reads: metrics.scan_data_range_reads,
+            duplicate_range_reads: metrics.duplicate_range_reads,
+            descriptor_resolution_count: metrics.descriptor_resolution_count,
+            delta_log_manifest_list_count: metrics.delta_log_manifest_list_count,
+            delta_log_manifest_list_duration_ms: metrics.delta_log_manifest_list_duration_ms,
+            snapshot_resolve_count: metrics.snapshot_resolve_count,
+            snapshot_resolve_duration_ms: metrics.snapshot_resolve_duration_ms,
             rows_emitted: metrics.rows_emitted,
             snapshot_bootstrap_duration_ms: metrics.snapshot_bootstrap_duration_ms,
             access_mode: metrics.access_mode,

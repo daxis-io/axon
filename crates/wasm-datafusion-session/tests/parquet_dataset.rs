@@ -103,6 +103,39 @@ fn session_queries_standard_parquet_dataset_over_loopback_range_reads() {
 
         assert_eq!(result.runtime_result.row_count, 2);
         assert_eq!(result.response.metrics.files_touched, 1);
+        assert_eq!(result.response.metrics.footer_reads, Some(1));
+        assert_eq!(
+            result.response.metrics.bootstrap_footer_range_reads,
+            Some(2),
+            "open should report the trailer and footer payload ranges fetched during bootstrap"
+        );
+        assert!(
+            result
+                .response
+                .metrics
+                .scan_footer_range_reads
+                .unwrap_or_default()
+                >= 2,
+            "SQL should report Parquet metadata ranges fetched by the scan"
+        );
+        assert!(
+            result
+                .response
+                .metrics
+                .scan_data_range_reads
+                .unwrap_or_default()
+                > 0,
+            "SQL should report data-page ranges separately from scan footer ranges"
+        );
+        assert!(
+            result
+                .response
+                .metrics
+                .duplicate_range_reads
+                .unwrap_or_default()
+                >= 2,
+            "open plus SQL should expose repeated trailer/footer ranges before caching exists"
+        );
         assert!(
             server
                 .recorded_requests()

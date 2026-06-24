@@ -620,6 +620,15 @@ export type QueryMetricsSummary = {
   row_groups_touched?: number;
   row_groups_skipped?: number;
   footer_reads?: number;
+  bootstrap_footer_range_reads?: number;
+  scan_footer_range_reads?: number;
+  scan_data_range_reads?: number;
+  duplicate_range_reads?: number;
+  descriptor_resolution_count?: number;
+  delta_log_manifest_list_count?: number;
+  delta_log_manifest_list_duration_ms?: number;
+  snapshot_resolve_count?: number;
+  snapshot_resolve_duration_ms?: number;
   rows_emitted?: number;
   snapshot_bootstrap_duration_ms?: number;
   access_mode?: BrowserAccessMode;
@@ -852,6 +861,15 @@ export type BrowserWorkerRangeReadMetricsEvent = {
   row_groups_touched: number;
   row_groups_skipped: number;
   footer_reads?: number;
+  bootstrap_footer_range_reads?: number;
+  scan_footer_range_reads?: number;
+  scan_data_range_reads?: number;
+  duplicate_range_reads?: number;
+  descriptor_resolution_count?: number;
+  delta_log_manifest_list_count?: number;
+  delta_log_manifest_list_duration_ms?: number;
+  snapshot_resolve_count?: number;
+  snapshot_resolve_duration_ms?: number;
   rows_emitted: number;
   snapshot_bootstrap_duration_ms?: number;
   access_mode?: BrowserAccessMode;
@@ -3998,6 +4016,42 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
             'range_read_metrics.row_groups_skipped',
           ),
           footer_reads: optionalNumber(payload.footer_reads, 'range_read_metrics.footer_reads'),
+          bootstrap_footer_range_reads: optionalNumber(
+            payload.bootstrap_footer_range_reads,
+            'range_read_metrics.bootstrap_footer_range_reads',
+          ),
+          scan_footer_range_reads: optionalNumber(
+            payload.scan_footer_range_reads,
+            'range_read_metrics.scan_footer_range_reads',
+          ),
+          scan_data_range_reads: optionalNumber(
+            payload.scan_data_range_reads,
+            'range_read_metrics.scan_data_range_reads',
+          ),
+          duplicate_range_reads: optionalNumber(
+            payload.duplicate_range_reads,
+            'range_read_metrics.duplicate_range_reads',
+          ),
+          descriptor_resolution_count: optionalNumber(
+            payload.descriptor_resolution_count,
+            'range_read_metrics.descriptor_resolution_count',
+          ),
+          delta_log_manifest_list_count: optionalNumber(
+            payload.delta_log_manifest_list_count,
+            'range_read_metrics.delta_log_manifest_list_count',
+          ),
+          delta_log_manifest_list_duration_ms: optionalNumber(
+            payload.delta_log_manifest_list_duration_ms,
+            'range_read_metrics.delta_log_manifest_list_duration_ms',
+          ),
+          snapshot_resolve_count: optionalNumber(
+            payload.snapshot_resolve_count,
+            'range_read_metrics.snapshot_resolve_count',
+          ),
+          snapshot_resolve_duration_ms: optionalNumber(
+            payload.snapshot_resolve_duration_ms,
+            'range_read_metrics.snapshot_resolve_duration_ms',
+          ),
           rows_emitted: requiredNumber(payload.rows_emitted, 'range_read_metrics.rows_emitted'),
           snapshot_bootstrap_duration_ms: optionalNumber(
             payload.snapshot_bootstrap_duration_ms,

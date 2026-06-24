@@ -43,6 +43,7 @@ import {
 import {
   preflightPublicObjectStorageDescriptorRangeRead,
   resolvePublicObjectStorageDescriptor,
+  type PublicObjectStorageDescriptorResolutionMetrics,
 } from '../../services/object-storage.ts';
 
 type Props = {
@@ -166,10 +167,14 @@ export function ConnectModal({
           throw new Error('Public object storage currently supports GCS table roots.');
         }
         await ensureConnectWasm();
+        let descriptorResolutionMetrics: PublicObjectStorageDescriptorResolutionMetrics | undefined;
         const descriptor = await resolvePublicObjectStorageDescriptor({
           provider: 'gcs',
           tableUri: form.uri,
           resolveDeltaSnapshotFromManifest: resolve_delta_snapshot_from_manifest,
+          onMetrics: (metrics) => {
+            descriptorResolutionMetrics = metrics;
+          },
         });
         await preflightPublicObjectStorageDescriptorRangeRead({
           descriptor,
@@ -177,7 +182,10 @@ export function ConnectModal({
         });
         setForm({
           ...form,
-          objectStorage: objectStorageRuntimeFromDescriptor(descriptor),
+          objectStorage: objectStorageRuntimeFromDescriptor(
+            descriptor,
+            descriptorResolutionMetrics,
+          ),
         });
         setTestState('ok');
       } catch (err) {
@@ -738,13 +746,17 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
-function objectStorageRuntimeFromDescriptor(descriptor: BrowserHttpSnapshotDescriptor) {
+function objectStorageRuntimeFromDescriptor(
+  descriptor: BrowserHttpSnapshotDescriptor,
+  descriptorResolutionMetrics?: PublicObjectStorageDescriptorResolutionMetrics,
+) {
   const tableName = descriptor.table_uri.split('/').filter(Boolean).at(-1) ?? 'table';
   const rows = descriptor.active_files.reduce((sum, file) => sum + rowsFromStats(file.stats), 0);
   const sizeBytes = descriptor.active_files.reduce((sum, file) => sum + file.size_bytes, 0);
   return {
     tableUri: descriptor.table_uri,
     tableName,
+    descriptorResolutionMetrics,
     discovery: {
       summary: 'Detected 1 public Delta table',
       schemas: [
@@ -761,6 +773,7 @@ function objectStorageRuntimeFromDescriptor(descriptor: BrowserHttpSnapshotDescr
               size: formatBytes(sizeBytes),
               protocol: 'r1/w2',
               uri: descriptor.table_uri,
+              descriptorResolutionMetrics,
             },
           ],
         },

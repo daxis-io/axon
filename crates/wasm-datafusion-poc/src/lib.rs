@@ -49,7 +49,8 @@ use query_contract::{
 use wasm_bindgen::prelude::*;
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{
-    stream_scan_target_batches_with_row_group_pruning, ObjectSource, ParquetIntegerComparison,
+    merge_parquet_range_read_metrics, stream_scan_target_batches_with_row_group_pruning,
+    ObjectSource, ParquetIntegerComparison, ParquetRangeReadMetrics,
     ParquetRowGroupPruningPredicate, ScanTarget, ScanTargetMetricsHandle,
     ScanTargetMetricsSnapshot,
 };
@@ -201,6 +202,7 @@ pub struct DataFusionScanMetricsSummary {
     pub row_groups_skipped: u64,
     pub rows_emitted: u64,
     pub bytes_fetched: u64,
+    pub range_read_metrics: ParquetRangeReadMetrics,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -340,6 +342,7 @@ pub struct AxonParquetScanTrace {
     pub row_groups_skipped: u64,
     pub bytes_fetched: u64,
     pub rows_emitted: u64,
+    pub range_read_metrics: ParquetRangeReadMetrics,
 }
 
 #[derive(Clone, Debug)]
@@ -727,6 +730,7 @@ impl AxonScanPlan {
             row_groups_skipped: 0,
             bytes_fetched: 0,
             rows_emitted: 0,
+            range_read_metrics: ParquetRangeReadMetrics::default(),
         };
 
         Self {
@@ -1176,6 +1180,7 @@ fn record_trace_parquet_metrics(
     trace.row_groups_touched = metrics.row_groups_touched;
     trace.row_groups_skipped = metrics.row_groups_skipped;
     trace.bytes_fetched = metrics.bytes_fetched;
+    trace.range_read_metrics = metrics.range_read_metrics;
 }
 
 fn add_scan_metrics(
@@ -1197,6 +1202,10 @@ fn add_scan_metrics(
         metadata_probe_round_trips: left
             .metadata_probe_round_trips
             .saturating_add(right.metadata_probe_round_trips),
+        range_read_metrics: merge_parquet_range_read_metrics(
+            &left.range_read_metrics,
+            &right.range_read_metrics,
+        ),
     }
 }
 
@@ -2352,6 +2361,8 @@ fn add_scan_trace_to_datafusion_metrics(
         checked_datafusion_metric_add(metrics.rows_emitted, trace.rows_emitted, "rows emitted")?;
     metrics.bytes_fetched =
         checked_datafusion_metric_add(metrics.bytes_fetched, trace.bytes_fetched, "bytes fetched")?;
+    metrics.range_read_metrics =
+        merge_parquet_range_read_metrics(&metrics.range_read_metrics, &trace.range_read_metrics);
 
     Ok(())
 }
@@ -2479,6 +2490,7 @@ mod tests {
                     row_groups_skipped: 0,
                     rows_emitted: 1,
                     bytes_fetched: 0,
+                    range_read_metrics: ParquetRangeReadMetrics::default(),
                 }
             );
         });

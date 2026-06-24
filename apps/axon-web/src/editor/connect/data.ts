@@ -2,6 +2,7 @@
 // Models the source picker and browser-local discovery payload.
 
 import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
+import type { PublicObjectStorageDescriptorResolutionMetrics } from '../../services/object-storage.ts';
 
 export type SourceId = 'local' | 'object_store' | 'unity_catalog' | 'delta_share';
 
@@ -157,6 +158,7 @@ export type DiscoveredTable = {
   features?: string[];
   uri?: string;
   manifestUrl?: string;
+  descriptorResolutionMetrics?: PublicObjectStorageDescriptorResolutionMetrics;
   governed?: boolean;
   shared?: boolean;
   perm?: string;

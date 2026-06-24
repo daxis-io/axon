@@ -234,7 +234,14 @@ impl BrowserDataFusionSession {
         request: &QueryRequest,
     ) -> Result<BrowserDataFusionSessionQueryResult, QueryError> {
         let execution_budget = self.runtime.config().execution_budget;
-        let (capabilities, file_count, footer_reads, snapshot_bootstrap_duration_ms, access_mode) = {
+        let (
+            capabilities,
+            file_count,
+            footer_reads,
+            bootstrap_range_read_metrics,
+            snapshot_bootstrap_duration_ms,
+            access_mode,
+        ) = {
             let table = self.touch_table(name)?;
             validate_datafusion_request_match(table, request)?;
             validate_datafusion_sql_scope(name, &request.sql)?;
@@ -252,6 +259,12 @@ impl BrowserDataFusionSession {
                     .bootstrapped
                     .as_ref()
                     .and_then(BootstrappedBrowserSnapshot::footer_reads),
+                table
+                    .bootstrapped
+                    .as_ref()
+                    .map(BootstrappedBrowserSnapshot::range_read_metrics)
+                    .cloned()
+                    .unwrap_or_default(),
                 table
                     .bootstrapped
                     .as_ref()
@@ -288,6 +301,14 @@ impl BrowserDataFusionSession {
         };
         let explain = datafusion_result.physical_plan.clone();
         let scan_metrics = datafusion_result.scan_metrics.clone();
+        let merged_range_read_metrics =
+            bootstrap_range_read_metrics.merge(&scan_metrics.range_read_metrics);
+        let range_read_metrics = DataFusionSessionRangeReadMetrics {
+            bootstrap_footer_range_reads: merged_range_read_metrics.bootstrap_footer_range_reads,
+            scan_footer_range_reads: merged_range_read_metrics.scan_footer_range_reads,
+            scan_data_range_reads: merged_range_read_metrics.scan_data_range_reads,
+            duplicate_range_reads: merged_range_read_metrics.duplicate_range_reads,
+        };
         let runtime_result = runtime_result_from_datafusion(datafusion_result);
 
         Ok(BrowserDataFusionSessionQueryResult {
@@ -299,6 +320,7 @@ impl BrowserDataFusionSession {
                     scan_metrics,
                     file_count,
                     footer_reads,
+                    range_read_metrics,
                     snapshot_bootstrap_duration_ms,
                     access_mode,
                     started_at,
@@ -746,6 +768,7 @@ fn datafusion_query_metrics(
     scan_metrics: DataFusionScanMetricsSummary,
     fallback_file_count: u64,
     footer_reads: Option<u64>,
+    range_read_metrics: DataFusionSessionRangeReadMetrics,
     snapshot_bootstrap_duration_ms: Option<u64>,
     access_mode: Option<query_contract::BrowserAccessMode>,
     started_at: BrowserRuntimeInstant,
@@ -762,10 +785,27 @@ fn datafusion_query_metrics(
         row_groups_touched: scan_metrics.row_groups_touched,
         row_groups_skipped: scan_metrics.row_groups_skipped,
         footer_reads,
+        bootstrap_footer_range_reads: Some(range_read_metrics.bootstrap_footer_range_reads),
+        scan_footer_range_reads: Some(range_read_metrics.scan_footer_range_reads),
+        scan_data_range_reads: Some(range_read_metrics.scan_data_range_reads),
+        duplicate_range_reads: Some(range_read_metrics.duplicate_range_reads),
+        descriptor_resolution_count: None,
+        delta_log_manifest_list_count: None,
+        delta_log_manifest_list_duration_ms: None,
+        snapshot_resolve_count: None,
+        snapshot_resolve_duration_ms: None,
         rows_emitted: scan_metrics.rows_emitted,
         snapshot_bootstrap_duration_ms,
         access_mode,
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct DataFusionSessionRangeReadMetrics {
+    bootstrap_footer_range_reads: u64,
+    scan_footer_range_reads: u64,
+    scan_data_range_reads: u64,
+    duplicate_range_reads: u64,
 }
 
 fn validate_datafusion_request_match(

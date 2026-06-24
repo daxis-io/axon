@@ -750,6 +750,7 @@ pub struct BootstrappedBrowserSnapshot {
     partition_column_types: BTreeMap<String, PartitionColumnType>,
     required_capabilities: CapabilityReport,
     footer_reads: Option<u64>,
+    range_read_metrics: wasm_parquet_engine::ParquetRangeReadMetrics,
     snapshot_bootstrap_duration_ms: Option<u64>,
     access_mode: Option<BrowserAccessMode>,
 }
@@ -1043,6 +1044,7 @@ pub struct BrowserExecutionPlan {
     limit: Option<u64>,
     pruning: BrowserPruningSummary,
     footer_reads: Option<u64>,
+    range_read_metrics: wasm_parquet_engine::ParquetRangeReadMetrics,
     snapshot_bootstrap_duration_ms: Option<u64>,
     access_mode: Option<BrowserAccessMode>,
 }
@@ -1084,6 +1086,10 @@ impl BrowserExecutionPlan {
         self.footer_reads
     }
 
+    pub fn range_read_metrics(&self) -> &wasm_parquet_engine::ParquetRangeReadMetrics {
+        &self.range_read_metrics
+    }
+
     pub fn snapshot_bootstrap_duration_ms(&self) -> Option<u64> {
         self.snapshot_bootstrap_duration_ms
     }
@@ -1095,6 +1101,20 @@ impl BrowserExecutionPlan {
     pub fn pruning(&self) -> &BrowserPruningSummary {
         &self.pruning
     }
+}
+
+pub fn execution_range_read_metrics(
+    plan: &BrowserExecutionPlan,
+    scan_metrics: &[wasm_parquet_engine::ScanTargetMetricsSnapshot],
+) -> wasm_parquet_engine::ParquetRangeReadMetrics {
+    scan_metrics
+        .iter()
+        .fold(plan.range_read_metrics().clone(), |aggregate, metrics| {
+            wasm_parquet_engine::merge_parquet_range_read_metrics(
+                &aggregate,
+                &metrics.range_read_metrics,
+            )
+        })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1244,6 +1264,30 @@ impl BootstrappedBrowserSnapshot {
         snapshot_bootstrap_duration_ms: Option<u64>,
         access_mode: Option<BrowserAccessMode>,
     ) -> Result<Self, QueryError> {
+        Self::new_with_partition_metadata_and_range_telemetry(
+            table_uri,
+            snapshot_version,
+            active_files,
+            partition_column_types,
+            required_capabilities,
+            footer_reads,
+            wasm_parquet_engine::ParquetRangeReadMetrics::default(),
+            snapshot_bootstrap_duration_ms,
+            access_mode,
+        )
+    }
+
+    pub fn new_with_partition_metadata_and_range_telemetry(
+        table_uri: impl Into<String>,
+        snapshot_version: i64,
+        active_files: Vec<BootstrappedBrowserFile>,
+        partition_column_types: BTreeMap<String, PartitionColumnType>,
+        required_capabilities: CapabilityReport,
+        footer_reads: Option<u64>,
+        range_read_metrics: wasm_parquet_engine::ParquetRangeReadMetrics,
+        snapshot_bootstrap_duration_ms: Option<u64>,
+        access_mode: Option<BrowserAccessMode>,
+    ) -> Result<Self, QueryError> {
         validate_unique_bootstrapped_paths(&active_files)?;
 
         Ok(Self {
@@ -1253,6 +1297,7 @@ impl BootstrappedBrowserSnapshot {
             partition_column_types,
             required_capabilities,
             footer_reads,
+            range_read_metrics,
             snapshot_bootstrap_duration_ms,
             access_mode,
         })
@@ -1280,6 +1325,10 @@ impl BootstrappedBrowserSnapshot {
 
     pub fn footer_reads(&self) -> Option<u64> {
         self.footer_reads
+    }
+
+    pub fn range_read_metrics(&self) -> &wasm_parquet_engine::ParquetRangeReadMetrics {
+        &self.range_read_metrics
     }
 
     pub fn snapshot_bootstrap_duration_ms(&self) -> Option<u64> {
@@ -1848,7 +1897,7 @@ impl BrowserRuntimeSession {
         pin_mut!(fetches);
         pin_mut!(timeout);
 
-        let active_files = match select(fetches, timeout).await {
+        let bootstrap_results = match select(fetches, timeout).await {
             Either::Left((result, _)) => result?,
             Either::Right((_, _)) => {
                 return Err(snapshot_preflight_timeout_error(
@@ -1859,18 +1908,28 @@ impl BrowserRuntimeSession {
                 ))
             }
         };
+        let mut range_read_metrics = wasm_parquet_engine::ParquetRangeReadMetrics::default();
+        let mut active_files = Vec::with_capacity(bootstrap_results.len());
+        for (file, metrics) in bootstrap_results {
+            range_read_metrics = wasm_parquet_engine::merge_parquet_range_read_metrics(
+                &range_read_metrics,
+                &metrics,
+            );
+            active_files.push(file);
+        }
 
         let footer_reads = u64::try_from(active_files.len()).map_err(|_| {
             invalid_query_request("footer read counts overflowed u64 during browser bootstrap")
         })?;
 
-        BootstrappedBrowserSnapshot::new_with_partition_metadata_and_telemetry(
+        BootstrappedBrowserSnapshot::new_with_partition_metadata_and_range_telemetry(
             snapshot.table_uri(),
             snapshot.snapshot_version(),
             active_files,
             snapshot.partition_column_types().clone(),
             snapshot.required_capabilities().clone(),
             Some(footer_reads),
+            range_read_metrics,
             Some(wall_clock_duration_ms(bootstrap_started_at)),
             Some(browser_access_mode_from_config(
                 self.config.object_access_mode,
@@ -1994,20 +2053,32 @@ impl BrowserRuntimeSession {
     async fn bootstrap_file_metadata(
         &self,
         file: &MaterializedBrowserFile,
-    ) -> Result<BootstrappedBrowserFile, QueryError> {
+    ) -> Result<
+        (
+            BootstrappedBrowserFile,
+            wasm_parquet_engine::ParquetRangeReadMetrics,
+        ),
+        QueryError,
+    > {
         let target = engine_scan_target(file);
         let footer = self.read_engine_parquet_footer_for_file(file).await?;
+        let range_read_metrics =
+            wasm_parquet_engine::bootstrap_footer_range_read_metrics_for_target(
+                &target,
+                footer.footer_length_bytes(),
+            )?;
         let metadata = browser_metadata_from_engine(wasm_parquet_engine::parse_parquet_metadata(
             &target, &footer,
         )?);
 
-        BootstrappedBrowserFile::new_with_object_etag(
+        let file = BootstrappedBrowserFile::new_with_object_etag(
             file.path(),
             file.size_bytes(),
             file.partition_values().clone(),
             metadata,
             footer.object_etag().map(str::to_string),
-        )
+        )?;
+        Ok((file, range_read_metrics))
     }
 
     async fn execute_plan_inner(
@@ -2329,6 +2400,7 @@ fn execution_metrics(
             execution_runtime_error("browser execution emitted-row totals overflowed u64")
         })
     })?;
+    let range_read_metrics = execution_range_read_metrics(plan, scan_metrics);
 
     Ok(QueryMetricsSummary {
         bytes_fetched,
@@ -2338,6 +2410,15 @@ fn execution_metrics(
         row_groups_touched,
         row_groups_skipped,
         footer_reads: plan.footer_reads(),
+        bootstrap_footer_range_reads: Some(range_read_metrics.bootstrap_footer_range_reads),
+        scan_footer_range_reads: Some(range_read_metrics.scan_footer_range_reads),
+        scan_data_range_reads: Some(range_read_metrics.scan_data_range_reads),
+        duplicate_range_reads: Some(range_read_metrics.duplicate_range_reads),
+        descriptor_resolution_count: None,
+        delta_log_manifest_list_count: None,
+        delta_log_manifest_list_duration_ms: None,
+        snapshot_resolve_count: None,
+        snapshot_resolve_duration_ms: None,
         rows_emitted,
         snapshot_bootstrap_duration_ms: plan.snapshot_bootstrap_duration_ms(),
         access_mode: plan.access_mode(),
@@ -4658,6 +4739,7 @@ mod tests {
             limit,
             pruning: BrowserPruningSummary::default(),
             footer_reads: None,
+            range_read_metrics: wasm_parquet_engine::ParquetRangeReadMetrics::default(),
             snapshot_bootstrap_duration_ms: None,
             access_mode: None,
         }
@@ -4712,6 +4794,7 @@ mod tests {
             limit: None,
             pruning: BrowserPruningSummary::default(),
             footer_reads: None,
+            range_read_metrics: wasm_parquet_engine::ParquetRangeReadMetrics::default(),
             snapshot_bootstrap_duration_ms: None,
             access_mode: None,
         }

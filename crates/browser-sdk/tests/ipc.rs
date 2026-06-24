@@ -358,6 +358,15 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
                 row_groups_touched: 2,
                 row_groups_skipped: 1,
                 footer_reads: Some(2),
+                bootstrap_footer_range_reads: Some(4),
+                scan_footer_range_reads: Some(2),
+                scan_data_range_reads: Some(6),
+                duplicate_range_reads: Some(2),
+                descriptor_resolution_count: Some(1),
+                delta_log_manifest_list_count: Some(1),
+                delta_log_manifest_list_duration_ms: Some(3),
+                snapshot_resolve_count: Some(1),
+                snapshot_resolve_duration_ms: Some(6),
                 rows_emitted: 3,
                 snapshot_bootstrap_duration_ms: Some(6),
                 access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
@@ -377,6 +386,13 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
         .metrics;
 
     assert_eq!(metrics.footer_reads, Some(2));
+    assert_eq!(metrics.bootstrap_footer_range_reads, Some(4));
+    assert_eq!(metrics.scan_footer_range_reads, Some(2));
+    assert_eq!(metrics.scan_data_range_reads, Some(6));
+    assert_eq!(metrics.duplicate_range_reads, Some(2));
+    assert_eq!(metrics.descriptor_resolution_count, Some(1));
+    assert_eq!(metrics.delta_log_manifest_list_count, Some(1));
+    assert_eq!(metrics.snapshot_resolve_count, Some(1));
     assert_eq!(metrics.snapshot_bootstrap_duration_ms, Some(6));
     assert_eq!(
         metrics.access_mode,
@@ -404,6 +420,15 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             row_groups_touched: 4,
             row_groups_skipped: 3,
             footer_reads: Some(2),
+            bootstrap_footer_range_reads: Some(4),
+            scan_footer_range_reads: Some(2),
+            scan_data_range_reads: Some(6),
+            duplicate_range_reads: Some(2),
+            descriptor_resolution_count: Some(1),
+            delta_log_manifest_list_count: Some(1),
+            delta_log_manifest_list_duration_ms: Some(3),
+            snapshot_resolve_count: Some(1),
+            snapshot_resolve_duration_ms: Some(6),
             rows_emitted: 25,
             snapshot_bootstrap_duration_ms: Some(7),
             access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
@@ -456,6 +481,13 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             assert_eq!(event.row_groups_touched, 4);
             assert_eq!(event.row_groups_skipped, 3);
             assert_eq!(event.footer_reads, Some(2));
+            assert_eq!(event.bootstrap_footer_range_reads, Some(4));
+            assert_eq!(event.scan_footer_range_reads, Some(2));
+            assert_eq!(event.scan_data_range_reads, Some(6));
+            assert_eq!(event.duplicate_range_reads, Some(2));
+            assert_eq!(event.descriptor_resolution_count, Some(1));
+            assert_eq!(event.delta_log_manifest_list_count, Some(1));
+            assert_eq!(event.snapshot_resolve_count, Some(1));
             assert_eq!(event.rows_emitted, 25);
             assert_eq!(event.snapshot_bootstrap_duration_ms, Some(7));
             assert_eq!(event.access_mode, Some(BrowserAccessMode::BrowserSafeHttp));
@@ -714,6 +746,15 @@ fn sample_query_response(
             row_groups_touched: 1,
             row_groups_skipped: 0,
             footer_reads: None,
+            bootstrap_footer_range_reads: None,
+            scan_footer_range_reads: None,
+            scan_data_range_reads: None,
+            duplicate_range_reads: None,
+            descriptor_resolution_count: None,
+            delta_log_manifest_list_count: None,
+            delta_log_manifest_list_duration_ms: None,
+            snapshot_resolve_count: None,
+            snapshot_resolve_duration_ms: None,
             rows_emitted: 1,
             snapshot_bootstrap_duration_ms: None,
             access_mode: None,

@@ -1,3 +1,5 @@
+import type { PublicObjectStorageDescriptorResolutionMetrics } from './object-storage.ts';
+
 export type ManifestQueryTableSource = {
   kind: 'manifest';
   catalogName: string;
@@ -37,6 +39,7 @@ export type ObjectStoreTableRootQueryTableSource = {
   files?: number;
   size?: string;
   protocol?: string;
+  descriptorResolutionMetrics?: PublicObjectStorageDescriptorResolutionMetrics;
 };
 
 export type QueryTableSource =
@@ -67,6 +70,7 @@ export type QueryCatalogCandidate = {
         region: string;
       };
       uri?: string;
+      descriptorResolutionMetrics?: PublicObjectStorageDescriptorResolutionMetrics;
     }>;
   }>;
 };
@@ -216,6 +220,7 @@ function querySourceForTable(
       files: table.files,
       size: table.size,
       protocol: table.protocol,
+      descriptorResolutionMetrics: table.descriptorResolutionMetrics,
     };
   }
 

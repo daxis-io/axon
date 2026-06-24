@@ -652,6 +652,7 @@ mod tests {
             limit: None,
             pruning: BrowserPruningSummary::default(),
             footer_reads: None,
+            range_read_metrics: wasm_parquet_engine::ParquetRangeReadMetrics::default(),
             snapshot_bootstrap_duration_ms: None,
             access_mode: None,
         };
@@ -699,6 +700,7 @@ mod tests {
             limit: None,
             pruning: BrowserPruningSummary::default(),
             footer_reads: None,
+            range_read_metrics: wasm_parquet_engine::ParquetRangeReadMetrics::default(),
             snapshot_bootstrap_duration_ms: None,
             access_mode: None,
         };

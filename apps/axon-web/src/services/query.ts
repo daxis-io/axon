@@ -15,10 +15,14 @@ import {
   type ExecutionTarget,
   type PartitionColumnType,
   type QueryError,
+  type QueryMetricsSummary,
 } from '../axon-browser-sdk.ts';
 import type { CatalogTable, QueryEvent, QueryExecRequest, QueryRunOutcome } from './types.ts';
 import { loadLocalDeltaRuntime, releaseLocalDeltaObjectUrls } from './local-delta.ts';
-import { resolvePublicObjectStorageDescriptor } from './object-storage.ts';
+import {
+  resolvePublicObjectStorageDescriptor,
+  type PublicObjectStorageDescriptorResolutionMetrics,
+} from './object-storage.ts';
 import {
   defaultQueryPage,
   queryResultPageRequest,
@@ -68,9 +72,25 @@ type SessionState = {
   client: AxonBrowserClient;
   descriptor: BrowserHttpSnapshotDescriptor;
   manifest?: FixtureManifest;
+  setupMetrics?: SessionSetupMetrics;
+  setupMetricsEmitted: boolean;
   snapshot: ResolvedSnapshot;
   tableOpened: boolean;
   source: QueryTableSource;
+};
+
+export type SessionSetupMetrics = Pick<
+  QueryMetricsSummary,
+  | 'descriptor_resolution_count'
+  | 'delta_log_manifest_list_count'
+  | 'delta_log_manifest_list_duration_ms'
+  | 'snapshot_resolve_count'
+  | 'snapshot_resolve_duration_ms'
+>;
+
+export type SessionSetupMetricsState = {
+  setupMetrics?: SessionSetupMetrics;
+  setupMetricsEmitted: boolean;
 };
 
 let wasmReady: Promise<unknown> | undefined;
@@ -148,6 +168,7 @@ async function buildSession(source: QueryTableSource): Promise<SessionState> {
     return {
       client: createQueryClient(),
       descriptor: runtime.descriptor,
+      setupMetricsEmitted: true,
       snapshot: snapshotFromBrowserDescriptor(runtime.descriptor),
       tableOpened: false,
       source: {
@@ -161,15 +182,26 @@ async function buildSession(source: QueryTableSource): Promise<SessionState> {
 
   if (source.kind === 'object_store_table_root') {
     await ensureWasm();
+    let setupMetrics = source.descriptorResolutionMetrics
+      ? sessionSetupMetricsFromPublicObjectStorage(source.descriptorResolutionMetrics)
+      : undefined;
     const descriptor = await resolvePublicObjectStorageDescriptor({
       provider: source.provider,
       tableUri: source.tableUri,
       resolveDeltaSnapshotFromManifest: resolve_delta_snapshot_from_manifest,
+      onMetrics: (metrics) => {
+        setupMetrics = mergeSessionSetupMetrics(
+          setupMetrics,
+          sessionSetupMetricsFromPublicObjectStorage(metrics),
+        );
+      },
     });
 
     return {
       client: createQueryClient(),
       descriptor,
+      setupMetrics,
+      setupMetricsEmitted: false,
       snapshot: snapshotFromBrowserDescriptor(descriptor),
       tableOpened: false,
       source,
@@ -186,6 +218,7 @@ async function buildSession(source: QueryTableSource): Promise<SessionState> {
       etag: object.etag,
     })),
   };
+  const snapshotResolveStartedAt = performance.now();
   const snapshotJson = await resolve_delta_snapshot_from_manifest(
     JSON.stringify(wasmManifest),
     manifest.table_uri,
@@ -199,6 +232,12 @@ async function buildSession(source: QueryTableSource): Promise<SessionState> {
     client,
     descriptor,
     manifest,
+    setupMetrics: {
+      descriptor_resolution_count: 1,
+      snapshot_resolve_count: 1,
+      snapshot_resolve_duration_ms: Math.round(performance.now() - snapshotResolveStartedAt),
+    },
+    setupMetricsEmitted: false,
     snapshot,
     tableOpened: false,
     source,
@@ -232,6 +271,98 @@ function snapshotFromBrowserDescriptor(
       partition_values: file.partition_values,
       stats: file.stats,
     })),
+  };
+}
+
+function sessionSetupMetricsFromPublicObjectStorage(
+  metrics: PublicObjectStorageDescriptorResolutionMetrics,
+): SessionSetupMetrics {
+  return {
+    descriptor_resolution_count: metrics.descriptor_resolution_count,
+    delta_log_manifest_list_count: metrics.delta_log_manifest_list_count,
+    delta_log_manifest_list_duration_ms: metrics.delta_log_manifest_list_duration_ms,
+    snapshot_resolve_count: metrics.snapshot_resolve_count,
+    snapshot_resolve_duration_ms: metrics.snapshot_resolve_duration_ms,
+  };
+}
+
+export function pendingSessionSetupMetrics(
+  state: SessionSetupMetricsState,
+): SessionSetupMetrics | undefined {
+  if (state.setupMetricsEmitted) return undefined;
+  return state.setupMetrics;
+}
+
+export function markSessionSetupMetricsEmitted(state: SessionSetupMetricsState): void {
+  state.setupMetricsEmitted = true;
+}
+
+function addMetric(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return left + right;
+}
+
+function sessionSetupMetricsFromQueryMetrics(
+  metrics: QueryMetricsSummary,
+): SessionSetupMetrics | undefined {
+  if (
+    metrics.descriptor_resolution_count === undefined &&
+    metrics.delta_log_manifest_list_count === undefined &&
+    metrics.delta_log_manifest_list_duration_ms === undefined &&
+    metrics.snapshot_resolve_count === undefined &&
+    metrics.snapshot_resolve_duration_ms === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    descriptor_resolution_count: metrics.descriptor_resolution_count,
+    delta_log_manifest_list_count: metrics.delta_log_manifest_list_count,
+    delta_log_manifest_list_duration_ms: metrics.delta_log_manifest_list_duration_ms,
+    snapshot_resolve_count: metrics.snapshot_resolve_count,
+    snapshot_resolve_duration_ms: metrics.snapshot_resolve_duration_ms,
+  };
+}
+
+export function mergeSessionSetupMetrics(
+  left: SessionSetupMetrics | undefined,
+  right: SessionSetupMetrics | undefined,
+): SessionSetupMetrics | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  return {
+    descriptor_resolution_count: addMetric(
+      left.descriptor_resolution_count,
+      right.descriptor_resolution_count,
+    ),
+    delta_log_manifest_list_count: addMetric(
+      left.delta_log_manifest_list_count,
+      right.delta_log_manifest_list_count,
+    ),
+    delta_log_manifest_list_duration_ms: addMetric(
+      left.delta_log_manifest_list_duration_ms,
+      right.delta_log_manifest_list_duration_ms,
+    ),
+    snapshot_resolve_count: addMetric(left.snapshot_resolve_count, right.snapshot_resolve_count),
+    snapshot_resolve_duration_ms: addMetric(
+      left.snapshot_resolve_duration_ms,
+      right.snapshot_resolve_duration_ms,
+    ),
+  };
+}
+
+function mergeQueryMetrics(
+  metrics: QueryMetricsSummary,
+  setupMetrics: SessionSetupMetrics | undefined,
+): QueryMetricsSummary {
+  const mergedSetupMetrics = mergeSessionSetupMetrics(
+    sessionSetupMetricsFromQueryMetrics(metrics),
+    setupMetrics,
+  );
+  if (!mergedSetupMetrics) return metrics;
+  return {
+    ...metrics,
+    ...mergedSetupMetrics,
   };
 }
 
@@ -339,12 +470,19 @@ export async function runQuery(
 
   try {
     const state = await getSession(source);
+    const setupMetrics = pendingSessionSetupMetrics(state);
     if (signal.aborted) throw new DOMException('cancelled', 'AbortError');
 
     await ensureTable(state, signal);
     if (signal.aborted) throw new DOMException('cancelled', 'AbortError');
 
     const requestId = `editor-query-${++requestCounter}`;
+    let emittedSetupMetricsEvent = false;
+    const setupMetricsForEvent = () => {
+      if (emittedSetupMetricsEvent) return undefined;
+      emittedSetupMetricsEvent = true;
+      return setupMetrics;
+    };
     const handler: EventHandler = (envelope) => {
       if ('progress' in envelope) {
         if (envelope.progress.context.request_id !== requestId) return;
@@ -362,18 +500,25 @@ export async function runQuery(
         const m = envelope.range_read_metrics;
         onEvent({
           kind: 'metrics',
-          metrics: {
-            bytes_fetched: m.bytes_fetched,
-            duration_ms: since(),
-            files_touched: m.files_touched,
-            files_skipped: m.files_skipped,
-            row_groups_touched: m.row_groups_touched,
-            row_groups_skipped: m.row_groups_skipped,
-            footer_reads: m.footer_reads,
-            rows_emitted: m.rows_emitted,
-            snapshot_bootstrap_duration_ms: m.snapshot_bootstrap_duration_ms,
-            access_mode: m.access_mode,
-          },
+          metrics: mergeQueryMetrics(
+            {
+              bytes_fetched: m.bytes_fetched,
+              duration_ms: since(),
+              files_touched: m.files_touched,
+              files_skipped: m.files_skipped,
+              row_groups_touched: m.row_groups_touched,
+              row_groups_skipped: m.row_groups_skipped,
+              footer_reads: m.footer_reads,
+              bootstrap_footer_range_reads: m.bootstrap_footer_range_reads,
+              scan_footer_range_reads: m.scan_footer_range_reads,
+              scan_data_range_reads: m.scan_data_range_reads,
+              duplicate_range_reads: m.duplicate_range_reads,
+              rows_emitted: m.rows_emitted,
+              snapshot_bootstrap_duration_ms: m.snapshot_bootstrap_duration_ms,
+              access_mode: m.access_mode,
+            },
+            setupMetricsForEvent(),
+          ),
           elapsed_ms: since(),
         });
       } else if ('fallback' in envelope) {
@@ -401,16 +546,18 @@ export async function runQuery(
       );
       if (signal.aborted) throw new DOMException('cancelled', 'AbortError');
 
-      return {
+      const outcome = {
         status: 'done',
         result: resultPageFromPreview(result.preview, page),
-        metrics: result.response.metrics,
+        metrics: mergeQueryMetrics(result.response.metrics, setupMetrics),
         executed_on: result.response.executed_on,
         capabilities: result.response.capabilities,
         fallback_reason: result.fallbackReason ?? result.response.fallback_reason,
         explain: result.response.explain,
         elapsed_ms: since(),
-      };
+      } satisfies QueryRunOutcome;
+      markSessionSetupMetricsEmitted(state);
+      return outcome;
     } finally {
       eventListeners.delete(handler);
     }

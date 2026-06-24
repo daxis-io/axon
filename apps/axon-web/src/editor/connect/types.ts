@@ -1,11 +1,13 @@
 import type { DiscoveryPayload, ObjectStoreProviderId, SourceId } from './data.ts';
 import type { LocalDeltaPersistenceMode, LocalDeltaRuntime } from '../../services/local-delta.ts';
+import type { PublicObjectStorageDescriptorResolutionMetrics } from '../../services/object-storage.ts';
 
 export type SchemaSelection = 'all' | 'none' | { only: string[] } | { except: string[] };
 
 export type ObjectStorageRuntime = {
   tableUri: string;
   tableName: string;
+  descriptorResolutionMetrics?: PublicObjectStorageDescriptorResolutionMetrics;
   discovery: DiscoveryPayload;
 };
 
@@ -69,6 +71,7 @@ export type ConnectedCatalogSchema = {
     manifestUrl?: string;
     localRegistryId?: string;
     localPersistence?: LocalDeltaPersistenceMode;
+    descriptorResolutionMetrics?: PublicObjectStorageDescriptorResolutionMetrics;
     source?: ConnectedTableSourceBinding;
   }[];
 };

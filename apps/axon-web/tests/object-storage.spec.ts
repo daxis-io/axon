@@ -97,6 +97,8 @@ test.describe('public object storage', () => {
     expect(listUrl.searchParams.get('prefix')).toBe('axon-smoke-delta/_delta_log/');
     expect(manifest).toEqual({
       tableUri: 'gs://axon-public-delta-fixture-20260522-6cf5c6/axon-smoke-delta',
+      list_request_count: 1,
+      list_duration_ms: expect.any(Number),
       objects: [
         {
           relative_path: '_delta_log/00000000000000000000.json',
@@ -125,9 +127,11 @@ test.describe('public object storage', () => {
 
   test('builds a browser descriptor from a public table root', async () => {
     const requests: string[] = [];
+    const metricEvents: unknown[] = [];
     const descriptor = await resolvePublicObjectStorageDescriptor({
       provider: 'gcs',
       tableUri: 'gs://bucket/table',
+      onMetrics: (metrics) => metricEvents.push(metrics),
       fetch: async (input) => {
         requests.push(String(input));
         return new Response(
@@ -180,6 +184,15 @@ test.describe('public object storage', () => {
     });
 
     expect(requests).toHaveLength(1);
+    expect(metricEvents).toEqual([
+      {
+        descriptor_resolution_count: 1,
+        delta_log_manifest_list_count: 1,
+        delta_log_manifest_list_duration_ms: expect.any(Number),
+        snapshot_resolve_count: 1,
+        snapshot_resolve_duration_ms: expect.any(Number),
+      },
+    ]);
     expect(descriptor).toEqual({
       table_uri: 'gs://bucket/table',
       snapshot_version: 0,
@@ -204,6 +217,65 @@ test.describe('public object storage', () => {
         },
       ],
     });
+  });
+
+  test('measures repeated public descriptor resolution across connect and first query setup', async () => {
+    const metricEvents: Array<{
+      descriptor_resolution_count: number;
+      snapshot_resolve_count: number;
+      delta_log_manifest_list_count: number;
+    }> = [];
+    let listCalls = 0;
+    let snapshotResolves = 0;
+
+    const resolve = () =>
+      resolvePublicObjectStorageDescriptor({
+        provider: 'gcs',
+        tableUri: 'gs://bucket/table',
+        onMetrics: (metrics) => metricEvents.push(metrics),
+        fetch: async () => {
+          listCalls += 1;
+          return new Response(
+            `<?xml version="1.0" encoding="UTF-8"?>
+            <ListBucketResult>
+              <IsTruncated>false</IsTruncated>
+              <Contents>
+                <Key>table/_delta_log/00000000000000000000.json</Key>
+                <Size>512</Size>
+              </Contents>
+            </ListBucketResult>`,
+            { status: 200, headers: { 'content-type': 'application/xml' } },
+          );
+        },
+        resolveDeltaSnapshotFromManifest: async (_manifestJson, tableUri) => {
+          snapshotResolves += 1;
+          return JSON.stringify({
+            table_uri: tableUri,
+            snapshot_version: 0,
+            active_files: [
+              {
+                path: 'part-000.parquet',
+                size_bytes: 128,
+                partition_values: {},
+              },
+            ],
+          });
+        },
+      });
+
+    await resolve();
+    await resolve();
+
+    expect(listCalls).toBe(2);
+    expect(snapshotResolves).toBe(2);
+    expect(metricEvents).toHaveLength(2);
+    expect(
+      metricEvents.reduce((sum, metrics) => sum + metrics.descriptor_resolution_count, 0),
+    ).toBe(2);
+    expect(metricEvents.reduce((sum, metrics) => sum + metrics.snapshot_resolve_count, 0)).toBe(2);
+    expect(
+      metricEvents.reduce((sum, metrics) => sum + metrics.delta_log_manifest_list_count, 0),
+    ).toBe(2);
   });
 
   test('preflights an active data file range-read before accepting a public table root', async () => {

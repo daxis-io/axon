@@ -13,9 +13,10 @@ use query_contract::{
     QueryRequest, QueryResponse, QueryRuntimeLimits,
 };
 use wasm_query_runtime::{
-    runtime_target, BootstrappedBrowserFile, BootstrappedBrowserSnapshot, BrowserExecutionPlan,
-    BrowserPlannedQuery, BrowserRuntimeConfig, BrowserRuntimeInstant, BrowserRuntimeSession,
-    MaterializedBrowserSnapshot, RuntimeArrowIpcResult,
+    execution_range_read_metrics, runtime_target, BootstrappedBrowserFile,
+    BootstrappedBrowserSnapshot, BrowserExecutionPlan, BrowserPlannedQuery, BrowserRuntimeConfig,
+    BrowserRuntimeInstant, BrowserRuntimeSession, MaterializedBrowserSnapshot,
+    RuntimeArrowIpcResult,
 };
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -712,6 +713,7 @@ fn execution_metrics(
                 )
             })
         })?;
+    let range_read_metrics = execution_range_read_metrics(plan, &runtime_result.scan_metrics);
 
     Ok(QueryMetricsSummary {
         bytes_fetched,
@@ -721,6 +723,15 @@ fn execution_metrics(
         row_groups_touched,
         row_groups_skipped,
         footer_reads: plan.footer_reads(),
+        bootstrap_footer_range_reads: Some(range_read_metrics.bootstrap_footer_range_reads),
+        scan_footer_range_reads: Some(range_read_metrics.scan_footer_range_reads),
+        scan_data_range_reads: Some(range_read_metrics.scan_data_range_reads),
+        duplicate_range_reads: Some(range_read_metrics.duplicate_range_reads),
+        descriptor_resolution_count: None,
+        delta_log_manifest_list_count: None,
+        delta_log_manifest_list_duration_ms: None,
+        snapshot_resolve_count: None,
+        snapshot_resolve_duration_ms: None,
         rows_emitted,
         snapshot_bootstrap_duration_ms: plan.snapshot_bootstrap_duration_ms(),
         access_mode: plan.access_mode(),

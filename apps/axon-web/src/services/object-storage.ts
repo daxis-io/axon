@@ -40,9 +40,19 @@ export type PublicDeltaLogManifestObject = {
 export type PublicDeltaLogManifest = {
   tableUri: string;
   objects: PublicDeltaLogManifestObject[];
+  list_request_count: number;
+  list_duration_ms: number;
 };
 
 export type PublicObjectStorageFetch = typeof fetch;
+
+export type PublicObjectStorageDescriptorResolutionMetrics = {
+  descriptor_resolution_count: number;
+  delta_log_manifest_list_count: number;
+  delta_log_manifest_list_duration_ms: number;
+  snapshot_resolve_count: number;
+  snapshot_resolve_duration_ms: number;
+};
 
 type PublicObjectStorageFetchOptions = {
   fetch?: PublicObjectStorageFetch;
@@ -135,8 +145,11 @@ export async function buildPublicDeltaLogManifest(
 
   const objects: PublicDeltaLogManifestObject[] = [];
   let continuationToken: string | undefined;
+  let listRequestCount = 0;
+  const listStartedAt = nowMs();
 
   do {
+    listRequestCount += 1;
     const response = await fetcher(gcsListUrl(root, continuationToken), {
       credentials: 'omit',
     });
@@ -158,6 +171,8 @@ export async function buildPublicDeltaLogManifest(
   return {
     tableUri: root.tableUri,
     objects,
+    list_request_count: listRequestCount,
+    list_duration_ms: Math.round(nowMs() - listStartedAt),
   };
 }
 
@@ -166,18 +181,27 @@ export async function resolvePublicObjectStorageDescriptor(input: {
   tableUri: string;
   resolveDeltaSnapshotFromManifest: (manifestJson: string, tableUri: string) => Promise<string>;
   fetch?: PublicObjectStorageFetch;
+  onMetrics?: (metrics: PublicObjectStorageDescriptorResolutionMetrics) => void;
 }): Promise<BrowserHttpSnapshotDescriptor> {
   const root = parsePublicObjectStorageTableRoot({
     provider: input.provider,
     tableUri: input.tableUri,
   });
   const manifest = await buildPublicDeltaLogManifest(root, { fetch: input.fetch });
+  const snapshotResolveStartedAt = nowMs();
   const snapshot = JSON.parse(
     await input.resolveDeltaSnapshotFromManifest(
       JSON.stringify({ objects: manifest.objects }),
       root.tableUri,
     ),
   ) as ResolvedPublicSnapshot;
+  input.onMetrics?.({
+    descriptor_resolution_count: 1,
+    delta_log_manifest_list_count: manifest.list_request_count,
+    delta_log_manifest_list_duration_ms: manifest.list_duration_ms,
+    snapshot_resolve_count: 1,
+    snapshot_resolve_duration_ms: Math.round(nowMs() - snapshotResolveStartedAt),
+  });
 
   if (snapshot.table_uri !== root.tableUri) {
     throw accessFailed('public object storage snapshot resolver returned a different table URI');
@@ -379,6 +403,10 @@ function containsSecretMaterial(value: string): boolean {
     lower.includes('access_token') ||
     lower.includes('bearer')
   );
+}
+
+function nowMs(): number {
+  return globalThis.performance?.now() ?? Date.now();
 }
 
 function invalidUri(message: string): PublicObjectStorageError {

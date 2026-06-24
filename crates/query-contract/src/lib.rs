@@ -1423,6 +1423,33 @@ pub struct QueryMetricsSummary {
     /// Footer-range reads performed during browser snapshot bootstrap when tracked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footer_reads: Option<u64>,
+    /// Exact HTTP range reads used for Parquet trailer/footer bootstrap when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_footer_range_reads: Option<u64>,
+    /// Exact HTTP range reads used by scan-time Parquet metadata loading when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_footer_range_reads: Option<u64>,
+    /// Exact HTTP range reads used by scan-time Parquet data page loading when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_data_range_reads: Option<u64>,
+    /// Exact duplicate HTTP range reads observed across the measured browser query path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_range_reads: Option<u64>,
+    /// Snapshot or descriptor resolution attempts performed before query execution when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor_resolution_count: Option<u64>,
+    /// Delta log manifest/list requests performed before query execution when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_log_manifest_list_count: Option<u64>,
+    /// Wall-clock duration of Delta log manifest/list work when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_log_manifest_list_duration_ms: Option<u64>,
+    /// Snapshot resolver invocations performed before query execution when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_resolve_count: Option<u64>,
+    /// Wall-clock duration of snapshot resolver work when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_resolve_duration_ms: Option<u64>,
     /// Rows emitted by the scan layer when the runtime can report them; otherwise `0`.
     #[serde(default)]
     pub rows_emitted: u64,
@@ -1551,6 +1578,24 @@ pub struct DaxisQueryMetrics {
     pub row_groups_skipped: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footer_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_footer_range_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_footer_range_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_data_range_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_range_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor_resolution_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_log_manifest_list_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_log_manifest_list_duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_resolve_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_resolve_duration_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_bootstrap_duration_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
