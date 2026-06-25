@@ -16,8 +16,11 @@ use parquet::schema::parser::parse_message_type;
 use query_contract::PartitionColumnType;
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{
-    read_parquet_metadata_for_target, scan_target_input_rows, ObjectSource, ParquetScalarValue,
-    ScanTarget,
+    read_parquet_metadata_for_target, read_parquet_metadata_for_target_with_cache,
+    scan_target_input_rows, scan_target_input_rows_with_cache,
+    stream_scan_target_batches_with_row_group_pruning_and_cache, ObjectSource,
+    ParquetIntegerComparison, ParquetMetadataCache, ParquetRowGroupPruningPredicate,
+    ParquetScalarValue, ScanTarget,
 };
 
 #[tokio::test]
@@ -99,6 +102,128 @@ async fn scan_target_reads_footer_and_row_groups_from_object_source() {
                 Some(ParquetScalarValue::String("A".to_string())),
             ),
         ]
+    );
+}
+
+#[tokio::test]
+async fn metadata_read_then_scan_reuses_cached_footer_ranges_with_object_identity() {
+    let object = parquet_bytes_with_single_i64_column(&[7_i64, 11, 13]);
+    let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+    let footer_length = parquet_footer_length(&object);
+    let footer_offset = object_size
+        .checked_sub(8)
+        .and_then(|value| value.checked_sub(u64::from(footer_length)))
+        .expect("footer should fit in object");
+    let expected_trailer_range = format!("bytes={}-{}", object_size - 8, object_size - 1);
+    let expected_footer_range = format!(
+        "bytes={footer_offset}-{}",
+        footer_offset + u64::from(footer_length) - 1
+    );
+
+    let server = RequestCapturingServer::new_with_etag(object, Some("\"part-000-v1\"".to_string()));
+    let reader = HttpRangeReader::new();
+    let cache = ParquetMetadataCache::default();
+    let scan_target = ScanTarget {
+        object_source: ObjectSource::new(server.url()),
+        object_etag: Some("\"part-000-v1\"".to_string()),
+        path: "part-000.parquet".to_string(),
+        size_bytes: object_size,
+        partition_values: BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
+    };
+
+    let metadata = read_parquet_metadata_for_target_with_cache(
+        &reader,
+        &scan_target,
+        None,
+        Some(&cache),
+        None,
+    )
+    .await
+    .expect("metadata reads should succeed");
+    let rows = scan_target_input_rows_with_cache(
+        &reader,
+        &scan_target,
+        &["id".to_string(), "category".to_string()],
+        &BTreeMap::from([("category".to_string(), PartitionColumnType::String)]),
+        None,
+        Some(&cache),
+    )
+    .await
+    .expect("scan reads should succeed");
+
+    let requests = server.recorded_requests();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.headers.get("range") == Some(&expected_trailer_range))
+            .count(),
+        1,
+        "cached scan should not refetch the Parquet trailer"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.headers.get("range") == Some(&expected_footer_range))
+            .count(),
+        1,
+        "cached scan should not refetch the Parquet footer payload"
+    );
+    assert_eq!(metadata.row_group_count, 1);
+    assert_eq!(metadata.row_count, 3);
+    assert_eq!(rows.len(), 3);
+}
+
+#[tokio::test]
+async fn cached_scan_validates_identity_before_pruning_from_reused_metadata() {
+    let original_object = parquet_bytes_with_single_i64_column(&[1_i64, 2, 3]);
+    let changed_object = parquet_bytes_with_single_i64_column(&[101_i64, 102, 103]);
+    assert_eq!(
+        original_object.len(),
+        changed_object.len(),
+        "test fixture keeps object size stable so ETag drift is the validating signal"
+    );
+    let object_size = u64::try_from(original_object.len()).expect("object size should fit in u64");
+    let server =
+        MutableRequestCapturingServer::new(original_object, Some("\"part-000-v1\"".to_string()));
+    let reader = HttpRangeReader::new();
+    let cache = ParquetMetadataCache::default();
+    let scan_target = ScanTarget {
+        object_source: ObjectSource::new(server.url()),
+        object_etag: Some("\"part-000-v1\"".to_string()),
+        path: "part-000.parquet".to_string(),
+        size_bytes: object_size,
+        partition_values: BTreeMap::new(),
+    };
+
+    read_parquet_metadata_for_target_with_cache(&reader, &scan_target, None, Some(&cache), None)
+        .await
+        .expect("initial metadata read should seed the cache");
+    server.replace(changed_object, Some("\"part-000-v2\"".to_string()));
+
+    let scan = stream_scan_target_batches_with_row_group_pruning_and_cache(
+        &reader,
+        &scan_target,
+        &["id".to_string()],
+        &BTreeMap::new(),
+        None,
+        Some(&ParquetRowGroupPruningPredicate {
+            column: "id".to_string(),
+            comparison: ParquetIntegerComparison::Gt(100),
+        }),
+        Some(&cache),
+    )
+    .await;
+    let error = match scan {
+        Err(error) => error,
+        Ok(_) => {
+            panic!("cached scan metadata should be identity-validated before row-group pruning")
+        }
+    };
+
+    assert!(
+        error.message.contains("ETag") || error.message.contains("identity"),
+        "identity drift should be reported explicitly, got: {}",
+        error.message
     );
 }
 
@@ -256,8 +381,97 @@ struct RequestCapturingServer {
     thread: Option<JoinHandle<()>>,
 }
 
+#[derive(Clone)]
+struct MutableServerObject {
+    body: Vec<u8>,
+    etag: Option<String>,
+}
+
+struct MutableRequestCapturingServer {
+    address: std::net::SocketAddr,
+    stop: Arc<AtomicBool>,
+    object: Arc<Mutex<MutableServerObject>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl MutableRequestCapturingServer {
+    fn new(body: Vec<u8>, etag: Option<String>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("listener should allow nonblocking accept");
+        let address = listener.local_addr().expect("listener addr should resolve");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = Arc::clone(&stop);
+        let object = Arc::new(Mutex::new(MutableServerObject { body, etag }));
+        let object_for_thread = Arc::clone(&object);
+
+        let thread = thread::spawn(move || {
+            while !stop_for_thread.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        if stop_for_thread.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        stream
+                            .set_nonblocking(false)
+                            .expect("accepted streams should allow blocking reads");
+                        let request = read_request(&mut stream);
+                        let object = object_for_thread
+                            .lock()
+                            .expect("test object should be readable")
+                            .clone();
+                        write_response(
+                            &mut stream,
+                            full_or_ranged_response_with_etag(
+                                &request,
+                                &object.body,
+                                object.etag.as_deref(),
+                            ),
+                        );
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("test server accept should succeed: {error}"),
+                }
+            }
+        });
+
+        Self {
+            address,
+            stop,
+            object,
+            thread: Some(thread),
+        }
+    }
+
+    fn replace(&self, body: Vec<u8>, etag: Option<String>) {
+        *self.object.lock().expect("test object should be writable") =
+            MutableServerObject { body, etag };
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}/object", self.address)
+    }
+}
+
+impl Drop for MutableRequestCapturingServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(self.address);
+        if let Some(thread) = self.thread.take() {
+            thread.join().expect("test server should shut down cleanly");
+        }
+    }
+}
+
 impl RequestCapturingServer {
     fn new(body: Vec<u8>) -> Self {
+        Self::new_with_etag(body, None)
+    }
+
+    fn new_with_etag(body: Vec<u8>, etag: Option<String>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
         listener
             .set_nonblocking(true)
@@ -268,6 +482,7 @@ impl RequestCapturingServer {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let requests_for_thread = Arc::clone(&requests);
 
+        let etag = Arc::new(etag);
         let thread = thread::spawn(move || {
             while !stop_for_thread.load(Ordering::SeqCst) {
                 match listener.accept() {
@@ -283,7 +498,14 @@ impl RequestCapturingServer {
                             .lock()
                             .expect("recorded requests should be writable")
                             .push(request.clone());
-                        write_response(&mut stream, full_or_ranged_response(&request, &body));
+                        write_response(
+                            &mut stream,
+                            full_or_ranged_response_with_etag(
+                                &request,
+                                &body,
+                                etag.as_ref().as_deref(),
+                            ),
+                        );
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(5));
@@ -311,6 +533,20 @@ impl RequestCapturingServer {
             .expect("recorded requests should be readable")
             .clone()
     }
+}
+
+fn full_or_ranged_response_with_etag(
+    request: &CapturedRequest,
+    body: &[u8],
+    etag: Option<&str>,
+) -> TestResponse {
+    let mut response = full_or_ranged_response(request, body);
+    if let Some(etag) = etag {
+        response
+            .headers
+            .push(("ETag".to_string(), etag.to_string()));
+    }
+    response
 }
 
 impl Drop for RequestCapturingServer {

@@ -14,7 +14,8 @@ use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{
-    inspect_parquet_target, read_parquet_metadata_for_target, ObjectSource, ScanTarget,
+    inspect_parquet_target, read_parquet_metadata_for_target,
+    read_parquet_metadata_for_target_with_cache, ObjectSource, ParquetMetadataCache, ScanTarget,
 };
 
 #[tokio::test]
@@ -133,6 +134,157 @@ async fn inspect_parquet_target_returns_file_column_and_index_diagnostics() {
         .encodings
         .iter()
         .any(|encoding| encoding == "PLAIN"));
+}
+
+#[tokio::test]
+async fn metadata_cache_reuses_footer_across_signed_url_rotation_with_same_identity() {
+    let object = parquet_bytes_with_single_i64_column(&[1_i64, 2, 3]);
+    let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+    let object_for_server = object.clone();
+    let (url, requests, server) = spawn_multi_request_server(3, move |request, _| {
+        full_or_ranged_response_with_etag(request, &object_for_server, Some("\"part-000-v1\""))
+    });
+    let cache = ParquetMetadataCache::default();
+    let first_target = ScanTarget {
+        object_source: ObjectSource::new(format!("{url}?X-Goog-Signature=first")),
+        object_etag: Some("\"part-000-v1\"".to_string()),
+        path: "part-000.parquet".to_string(),
+        size_bytes: object_size,
+        partition_values: BTreeMap::new(),
+    };
+    let rotated_target = ScanTarget {
+        object_source: ObjectSource::new(format!("{url}?X-Goog-Signature=rotated")),
+        object_etag: Some("\"part-000-v1\"".to_string()),
+        path: "part-000.parquet".to_string(),
+        size_bytes: object_size,
+        partition_values: BTreeMap::new(),
+    };
+
+    let first = read_parquet_metadata_for_target_with_cache(
+        &HttpRangeReader::new(),
+        &first_target,
+        None,
+        Some(&cache),
+        None,
+    )
+    .await
+    .expect("first metadata read should fetch and cache the footer");
+    let second = read_parquet_metadata_for_target_with_cache(
+        &HttpRangeReader::new(),
+        &rotated_target,
+        None,
+        Some(&cache),
+        None,
+    )
+    .await
+    .expect("rotated signed URL should reuse the footer for the same object identity");
+
+    let requests = finish_requests(server, requests, 3);
+    let cache_metrics = cache.snapshot();
+    assert_eq!(first.row_count, second.row_count);
+    assert_eq!(requests.len(), 3);
+    assert_eq!(cache_metrics.footer_cache_misses, 1);
+    assert_eq!(cache_metrics.footer_cache_hits, 1);
+    assert_eq!(cache_metrics.footer_range_reads_avoided, 2);
+}
+
+#[tokio::test]
+async fn metadata_cache_does_not_reuse_without_strong_etag_identity() {
+    let object = parquet_bytes_with_single_i64_column(&[1_i64, 2, 3]);
+    let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+    let object_for_server = object.clone();
+    let (url, requests, server) = spawn_multi_request_server(4, move |request, _| {
+        full_or_ranged_response(request, &object_for_server)
+    });
+    let cache = ParquetMetadataCache::default();
+    let target = ScanTarget {
+        object_source: ObjectSource::new(url),
+        object_etag: None,
+        path: "part-000.parquet".to_string(),
+        size_bytes: object_size,
+        partition_values: BTreeMap::new(),
+    };
+
+    read_parquet_metadata_for_target_with_cache(
+        &HttpRangeReader::new(),
+        &target,
+        None,
+        Some(&cache),
+        None,
+    )
+    .await
+    .expect("first metadata read should succeed");
+    read_parquet_metadata_for_target_with_cache(
+        &HttpRangeReader::new(),
+        &target,
+        None,
+        Some(&cache),
+        None,
+    )
+    .await
+    .expect("second metadata read should succeed without identity reuse");
+
+    let requests = finish_requests(server, requests, 4);
+    let cache_metrics = cache.snapshot();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(cache_metrics.footer_cache_hits, 0);
+    assert_eq!(cache_metrics.footer_cache_misses, 2);
+    assert_eq!(cache_metrics.footer_cache_degraded_identity_reads, 2);
+}
+
+#[tokio::test]
+async fn metadata_cache_bypasses_cached_footer_when_etag_changes() {
+    let object = parquet_bytes_with_single_i64_column(&[1_i64, 2, 3]);
+    let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+    let object_for_server = object.clone();
+    let (url, requests, server) = spawn_multi_request_server(4, move |request, index| {
+        let etag = if index < 2 {
+            "\"part-000-v1\""
+        } else {
+            "\"part-000-v2\""
+        };
+        full_or_ranged_response_with_etag(request, &object_for_server, Some(etag))
+    });
+    let cache = ParquetMetadataCache::default();
+    let first_target = ScanTarget {
+        object_source: ObjectSource::new(url.clone()),
+        object_etag: Some("\"part-000-v1\"".to_string()),
+        path: "part-000.parquet".to_string(),
+        size_bytes: object_size,
+        partition_values: BTreeMap::new(),
+    };
+    let changed_target = ScanTarget {
+        object_source: ObjectSource::new(url),
+        object_etag: Some("\"part-000-v2\"".to_string()),
+        path: "part-000.parquet".to_string(),
+        size_bytes: object_size,
+        partition_values: BTreeMap::new(),
+    };
+
+    read_parquet_metadata_for_target_with_cache(
+        &HttpRangeReader::new(),
+        &first_target,
+        None,
+        Some(&cache),
+        None,
+    )
+    .await
+    .expect("first metadata read should cache ETag v1");
+    read_parquet_metadata_for_target_with_cache(
+        &HttpRangeReader::new(),
+        &changed_target,
+        None,
+        Some(&cache),
+        None,
+    )
+    .await
+    .expect("changed ETag should fetch and cache a separate footer");
+
+    let requests = finish_requests(server, requests, 4);
+    let cache_metrics = cache.snapshot();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(cache_metrics.footer_cache_hits, 0);
+    assert_eq!(cache_metrics.footer_cache_misses, 2);
 }
 
 fn parquet_bytes_with_single_i64_column(values: &[i64]) -> Vec<u8> {
@@ -343,6 +495,20 @@ fn full_or_ranged_response(request: &CapturedRequest, body: &[u8]) -> TestRespon
         ],
         body: ranged,
     }
+}
+
+fn full_or_ranged_response_with_etag(
+    request: &CapturedRequest,
+    body: &[u8],
+    etag: Option<&str>,
+) -> TestResponse {
+    let mut response = full_or_ranged_response(request, body);
+    if let Some(etag) = etag {
+        response
+            .headers
+            .push(("ETag".to_string(), etag.to_string()));
+    }
+    response
 }
 
 fn resolve_range(range_header: &str, object_len: usize) -> (usize, usize) {

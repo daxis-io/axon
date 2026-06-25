@@ -298,6 +298,14 @@ pub struct BrowserWorkerRangeReadMetricsEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicate_range_reads: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_cache_hits: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_cache_misses: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_range_reads_avoided: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_cache_degraded_identity_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_present_range_reads: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_missing_range_reads: Option<u64>,
@@ -403,6 +411,10 @@ impl BrowserWorkerEventEnvelope {
             scan_footer_range_reads: metrics.scan_footer_range_reads,
             scan_data_range_reads: metrics.scan_data_range_reads,
             duplicate_range_reads: metrics.duplicate_range_reads,
+            footer_cache_hits: metrics.footer_cache_hits,
+            footer_cache_misses: metrics.footer_cache_misses,
+            footer_range_reads_avoided: metrics.footer_range_reads_avoided,
+            footer_cache_degraded_identity_reads: metrics.footer_cache_degraded_identity_reads,
             identity_present_range_reads: metrics.identity_present_range_reads,
             identity_missing_range_reads: metrics.identity_missing_range_reads,
             descriptor_resolution_count: metrics.descriptor_resolution_count,

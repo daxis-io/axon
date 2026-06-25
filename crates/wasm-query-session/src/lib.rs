@@ -727,6 +727,12 @@ fn execution_metrics(
         scan_footer_range_reads: Some(range_read_metrics.scan_footer_range_reads),
         scan_data_range_reads: Some(range_read_metrics.scan_data_range_reads),
         duplicate_range_reads: Some(range_read_metrics.duplicate_range_reads),
+        footer_cache_hits: Some(range_read_metrics.footer_cache_hits),
+        footer_cache_misses: Some(range_read_metrics.footer_cache_misses),
+        footer_range_reads_avoided: Some(range_read_metrics.footer_range_reads_avoided),
+        footer_cache_degraded_identity_reads: Some(
+            range_read_metrics.footer_cache_degraded_identity_reads,
+        ),
         identity_present_range_reads: Some(range_read_metrics.identity_present_range_reads),
         identity_missing_range_reads: Some(range_read_metrics.identity_missing_range_reads),
         descriptor_resolution_count: None,

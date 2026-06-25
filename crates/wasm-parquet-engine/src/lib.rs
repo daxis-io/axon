@@ -41,7 +41,8 @@ use query_contract::{
     PartitionColumnType, QueryError, QueryErrorCode,
 };
 use wasm_http_object_store::{
-    HttpByteRange, HttpRangeReadResult, HttpRangeReader, HttpRangeValidation,
+    HttpByteRange, HttpMetadataProbeRequirements, HttpRangeReadResult, HttpRangeReader,
+    HttpRangeValidation,
 };
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -378,6 +379,10 @@ pub struct ParquetRangeReadMetrics {
     pub duplicate_range_reads: u64,
     pub identity_present_range_reads: u64,
     pub identity_missing_range_reads: u64,
+    pub footer_cache_hits: u64,
+    pub footer_cache_misses: u64,
+    pub footer_range_reads_avoided: u64,
+    pub footer_cache_degraded_identity_reads: u64,
     pub exact_range_read_keys: BTreeSet<ParquetRangeReadKey>,
 }
 
@@ -403,6 +408,22 @@ impl ParquetRangeReadMetrics {
                 self.scan_data_range_reads = self.scan_data_range_reads.saturating_add(1);
             }
         }
+    }
+
+    pub fn record_footer_cache_hit(&mut self, range_reads_avoided: u64) {
+        self.footer_cache_hits = self.footer_cache_hits.saturating_add(1);
+        self.footer_range_reads_avoided = self
+            .footer_range_reads_avoided
+            .saturating_add(range_reads_avoided);
+    }
+
+    pub fn record_footer_cache_miss(&mut self) {
+        self.footer_cache_misses = self.footer_cache_misses.saturating_add(1);
+    }
+
+    pub fn record_footer_cache_degraded_identity_read(&mut self) {
+        self.footer_cache_degraded_identity_reads =
+            self.footer_cache_degraded_identity_reads.saturating_add(1);
     }
 
     pub fn merge(&self, right: &Self) -> Self {
@@ -433,6 +454,18 @@ pub fn merge_parquet_range_read_metrics(
         identity_missing_range_reads: left
             .identity_missing_range_reads
             .saturating_add(right.identity_missing_range_reads),
+        footer_cache_hits: left
+            .footer_cache_hits
+            .saturating_add(right.footer_cache_hits),
+        footer_cache_misses: left
+            .footer_cache_misses
+            .saturating_add(right.footer_cache_misses),
+        footer_range_reads_avoided: left
+            .footer_range_reads_avoided
+            .saturating_add(right.footer_range_reads_avoided),
+        footer_cache_degraded_identity_reads: left
+            .footer_cache_degraded_identity_reads
+            .saturating_add(right.footer_cache_degraded_identity_reads),
         exact_range_read_keys: left.exact_range_read_keys.clone(),
     };
     for key in &right.exact_range_read_keys {
@@ -441,6 +474,231 @@ pub fn merge_parquet_range_read_metrics(
         }
     }
     merged
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ParquetMetadataCacheMetrics {
+    pub footer_cache_hits: u64,
+    pub footer_cache_misses: u64,
+    pub footer_range_reads_avoided: u64,
+    pub footer_cache_degraded_identity_reads: u64,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ParquetMetadataCacheKey {
+    pub resource: String,
+    pub object_identity: ParquetObjectIdentity,
+}
+
+impl ParquetMetadataCacheKey {
+    pub fn new(resource: impl Into<String>, object_identity: ParquetObjectIdentity) -> Self {
+        Self {
+            resource: resource.into(),
+            object_identity,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ParquetCachedMetadata {
+    footer: ParquetFooter,
+    metadata: Option<Arc<ParquetMetaData>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ParquetMetadataCache {
+    entries: Arc<Mutex<BTreeMap<ParquetMetadataCacheKey, ParquetCachedMetadata>>>,
+    metrics: Arc<Mutex<ParquetMetadataCacheMetrics>>,
+}
+
+impl ParquetMetadataCache {
+    fn get(
+        &self,
+        key: &ParquetMetadataCacheKey,
+    ) -> Result<Option<ParquetCachedMetadata>, QueryError> {
+        Ok(self
+            .entries
+            .lock()
+            .map_err(|_| execution_runtime_error("parquet metadata cache was poisoned"))?
+            .get(key)
+            .cloned())
+    }
+
+    fn insert(
+        &self,
+        key: ParquetMetadataCacheKey,
+        cached: ParquetCachedMetadata,
+    ) -> Result<(), QueryError> {
+        self.entries
+            .lock()
+            .map_err(|_| execution_runtime_error("parquet metadata cache was poisoned"))?
+            .insert(key, cached);
+        Ok(())
+    }
+
+    fn record_hit(&self, range_reads_avoided: u64) -> Result<(), QueryError> {
+        let mut metrics = self
+            .metrics
+            .lock()
+            .map_err(|_| execution_runtime_error("parquet metadata cache metrics were poisoned"))?;
+        metrics.footer_cache_hits = metrics.footer_cache_hits.saturating_add(1);
+        metrics.footer_range_reads_avoided = metrics
+            .footer_range_reads_avoided
+            .saturating_add(range_reads_avoided);
+        Ok(())
+    }
+
+    fn record_miss(&self) -> Result<(), QueryError> {
+        let mut metrics = self
+            .metrics
+            .lock()
+            .map_err(|_| execution_runtime_error("parquet metadata cache metrics were poisoned"))?;
+        metrics.footer_cache_misses = metrics.footer_cache_misses.saturating_add(1);
+        Ok(())
+    }
+
+    fn record_degraded_identity_read(&self) -> Result<(), QueryError> {
+        let mut metrics = self
+            .metrics
+            .lock()
+            .map_err(|_| execution_runtime_error("parquet metadata cache metrics were poisoned"))?;
+        metrics.footer_cache_degraded_identity_reads = metrics
+            .footer_cache_degraded_identity_reads
+            .saturating_add(1);
+        Ok(())
+    }
+
+    pub fn snapshot(&self) -> ParquetMetadataCacheMetrics {
+        self.metrics
+            .lock()
+            .expect("parquet metadata cache metrics should not be poisoned")
+            .clone()
+    }
+}
+
+fn cache_key_for_target_identity(target: &ScanTarget) -> Option<ParquetMetadataCacheKey> {
+    target.object_identity().map(|identity| {
+        ParquetMetadataCacheKey::new(canonical_parquet_cache_resource(target), identity)
+    })
+}
+
+fn cache_key_for_target_footer(
+    target: &ScanTarget,
+    footer: &ParquetFooter,
+) -> Option<ParquetMetadataCacheKey> {
+    if footer.object_size_bytes() != target.size_bytes {
+        return None;
+    }
+    footer
+        .object_etag()
+        .and_then(strong_object_etag)
+        .map(|etag| {
+            ParquetMetadataCacheKey::new(
+                canonical_parquet_cache_resource(target),
+                ParquetObjectIdentity::new(etag, footer.object_size_bytes()),
+            )
+        })
+}
+
+fn canonical_parquet_cache_resource(target: &ScanTarget) -> String {
+    let redacted_url_end = target
+        .object_source
+        .url
+        .find(['?', '#'])
+        .unwrap_or(target.object_source.url.len());
+    format!(
+        "{}|{}",
+        &target.object_source.url[..redacted_url_end],
+        target.path
+    )
+}
+
+async fn validate_cached_metadata_identity(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    request_timeout: Option<Duration>,
+) -> Result<(), QueryError> {
+    let expected = target.object_identity().ok_or_else(|| {
+        parquet_protocol_error(format!(
+            "cached parquet metadata for '{}' requires strong object identity",
+            target.path
+        ))
+    })?;
+    let observed = reader
+        .probe_metadata_with_timeout(
+            &target.object_source.url,
+            HttpMetadataProbeRequirements {
+                require_size: true,
+                require_etag: true,
+            },
+            request_timeout,
+        )
+        .await?;
+    let observed_size = observed.size_bytes.ok_or_else(|| {
+        parquet_protocol_error(format!(
+            "cached parquet metadata identity validation for '{}' required object size metadata",
+            target.path
+        ))
+    })?;
+    if observed_size != expected.size_bytes {
+        return Err(parquet_protocol_error(format!(
+            "cached parquet metadata identity validation for '{}' expected object size {} bytes, but the current object reported {} bytes",
+            target.path, expected.size_bytes, observed_size
+        )));
+    }
+    let observed_etag = observed.etag.as_deref().and_then(strong_object_etag).ok_or_else(|| {
+        parquet_protocol_error(format!(
+            "cached parquet metadata identity validation for '{}' required a strong ETag, but the current object did not expose one",
+            target.path
+        ))
+    })?;
+    if observed_etag != expected.object_etag {
+        return Err(parquet_protocol_error(format!(
+            "cached parquet metadata identity validation for '{}' expected ETag {}, but the current object reported {}",
+            target.path, expected.object_etag, observed_etag
+        )));
+    }
+    Ok(())
+}
+
+fn record_footer_cache_hit(
+    cache: Option<&ParquetMetadataCache>,
+    metrics: Option<&mut ParquetRangeReadMetrics>,
+    range_reads_avoided: u64,
+) -> Result<(), QueryError> {
+    if let Some(cache) = cache {
+        cache.record_hit(range_reads_avoided)?;
+    }
+    if let Some(metrics) = metrics {
+        metrics.record_footer_cache_hit(range_reads_avoided);
+    }
+    Ok(())
+}
+
+fn record_footer_cache_miss(
+    cache: Option<&ParquetMetadataCache>,
+    metrics: Option<&mut ParquetRangeReadMetrics>,
+) -> Result<(), QueryError> {
+    if let Some(cache) = cache {
+        cache.record_miss()?;
+    }
+    if let Some(metrics) = metrics {
+        metrics.record_footer_cache_miss();
+    }
+    Ok(())
+}
+
+fn record_footer_cache_degraded_identity_read(
+    cache: Option<&ParquetMetadataCache>,
+    metrics: Option<&mut ParquetRangeReadMetrics>,
+) -> Result<(), QueryError> {
+    if let Some(cache) = cache {
+        cache.record_degraded_identity_read()?;
+    }
+    if let Some(metrics) = metrics {
+        metrics.record_footer_cache_degraded_identity_read();
+    }
+    Ok(())
 }
 
 pub fn bootstrap_footer_range_read_metrics_for_target(
@@ -555,6 +813,34 @@ impl SharedScanTargetMetricsHandle {
         );
         Ok(())
     }
+
+    fn record_footer_cache_hit(&self, range_reads_avoided: u64) -> Result<(), QueryError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| {
+            execution_runtime_error("scan target metrics handle was poisoned during execution")
+        })?;
+        snapshot
+            .range_read_metrics
+            .record_footer_cache_hit(range_reads_avoided);
+        Ok(())
+    }
+
+    fn record_footer_cache_miss(&self) -> Result<(), QueryError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| {
+            execution_runtime_error("scan target metrics handle was poisoned during execution")
+        })?;
+        snapshot.range_read_metrics.record_footer_cache_miss();
+        Ok(())
+    }
+
+    fn record_footer_cache_degraded_identity_read(&self) -> Result<(), QueryError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| {
+            execution_runtime_error("scan target metrics handle was poisoned during execution")
+        })?;
+        snapshot
+            .range_read_metrics
+            .record_footer_cache_degraded_identity_read();
+        Ok(())
+    }
 }
 
 impl ScanTargetMetricsHandle for SharedScanTargetMetricsHandle {
@@ -659,6 +945,7 @@ struct HttpRangeAsyncFileReader {
     reader: HttpRangeReader,
     target: ScanTarget,
     request_timeout: Option<Duration>,
+    metadata_cache: Option<ParquetMetadataCache>,
     metrics: SharedScanTargetMetricsHandle,
     count_metadata_fetches: bool,
     metadata_probe_round_trips: u64,
@@ -669,12 +956,14 @@ impl HttpRangeAsyncFileReader {
         reader: HttpRangeReader,
         target: ScanTarget,
         request_timeout: Option<Duration>,
+        metadata_cache: Option<ParquetMetadataCache>,
         metrics: SharedScanTargetMetricsHandle,
     ) -> Self {
         Self {
             reader,
             target,
             request_timeout,
+            metadata_cache,
             metrics,
             count_metadata_fetches: false,
             metadata_probe_round_trips: 0,
@@ -805,6 +1094,76 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
         options: Option<&'a ArrowReaderOptions>,
     ) -> BoxFuture<'a, parquet::errors::Result<Arc<ParquetMetaData>>> {
         async move {
+            if let Some(cache) = &self.metadata_cache {
+                match cache_key_for_target_identity(&self.target) {
+                    Some(key) => {
+                        if let Some(cached) =
+                            cache.get(&key).map_err(parquet_error_from_query_error)?
+                        {
+                            validate_cached_metadata_identity(
+                                &self.reader,
+                                &self.target,
+                                self.request_timeout,
+                            )
+                            .await
+                            .map_err(parquet_error_from_query_error)?;
+                            cache
+                                .record_hit(2)
+                                .map_err(parquet_error_from_query_error)?;
+                            self.metrics
+                                .record_footer_cache_hit(2)
+                                .map_err(parquet_error_from_query_error)?;
+                            self.metrics
+                                .set_metadata_probe_round_trips(1)
+                                .map_err(parquet_error_from_query_error)?;
+                            let metadata = match cached.metadata {
+                                Some(metadata) => metadata,
+                                None => {
+                                    let metadata = Arc::new(
+                                        decode_parquet_metadata(
+                                            &self.target,
+                                            &cached.footer,
+                                            "parquet metadata decode",
+                                        )
+                                        .map_err(parquet_error_from_query_error)?,
+                                    );
+                                    cache
+                                        .insert(
+                                            key,
+                                            ParquetCachedMetadata {
+                                                footer: cached.footer,
+                                                metadata: Some(Arc::clone(&metadata)),
+                                            },
+                                        )
+                                        .map_err(parquet_error_from_query_error)?;
+                                    metadata
+                                }
+                            };
+                            return Ok(metadata);
+                        }
+                        cache
+                            .record_miss()
+                            .map_err(parquet_error_from_query_error)?;
+                        self.metrics
+                            .record_footer_cache_miss()
+                            .map_err(parquet_error_from_query_error)?;
+                    }
+                    None => {
+                        cache
+                            .record_miss()
+                            .map_err(parquet_error_from_query_error)?;
+                        cache
+                            .record_degraded_identity_read()
+                            .map_err(parquet_error_from_query_error)?;
+                        self.metrics
+                            .record_footer_cache_miss()
+                            .map_err(parquet_error_from_query_error)?;
+                        self.metrics
+                            .record_footer_cache_degraded_identity_read()
+                            .map_err(parquet_error_from_query_error)?;
+                    }
+                }
+            }
             self.count_metadata_fetches = true;
             self.metadata_probe_round_trips = 0;
             let file_size = self.target.size_bytes;
@@ -897,13 +1256,39 @@ pub async fn read_parquet_footer_for_target(
     .await
 }
 
+pub async fn read_parquet_footer_for_target_with_cache(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    request_timeout: Option<Duration>,
+    cache: Option<&ParquetMetadataCache>,
+    metrics: Option<&mut ParquetRangeReadMetrics>,
+) -> Result<ParquetFooter, QueryError> {
+    read_parquet_cached_footer_for_target(reader, target, request_timeout, cache, metrics).await
+}
+
 pub async fn read_parquet_metadata_for_target(
     reader: &HttpRangeReader,
     target: &ScanTarget,
     request_timeout: Option<Duration>,
 ) -> Result<ParquetFileMetadata, QueryError> {
-    let footer = read_parquet_footer_for_target(reader, target, request_timeout).await?;
-    parse_parquet_metadata(target, &footer)
+    read_parquet_metadata_for_target_with_cache(reader, target, request_timeout, None, None).await
+}
+
+pub async fn read_parquet_metadata_for_target_with_cache(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    request_timeout: Option<Duration>,
+    cache: Option<&ParquetMetadataCache>,
+    metrics: Option<&mut ParquetRangeReadMetrics>,
+) -> Result<ParquetFileMetadata, QueryError> {
+    let cached =
+        read_parquet_cached_metadata_for_target(reader, target, request_timeout, cache, metrics)
+            .await?;
+    let metadata = cached
+        .metadata
+        .as_ref()
+        .expect("metadata cache helper should return decoded parquet metadata");
+    parquet_file_metadata_from_decoded(target, &cached.footer, metadata.as_ref())
 }
 
 pub async fn inspect_parquet_target(
@@ -911,8 +1296,24 @@ pub async fn inspect_parquet_target(
     target: &ScanTarget,
     request_timeout: Option<Duration>,
 ) -> Result<ParquetInspectionSummary, QueryError> {
-    let footer = read_parquet_footer_for_target(reader, target, request_timeout).await?;
-    inspect_parquet_footer(target, &footer)
+    inspect_parquet_target_with_cache(reader, target, request_timeout, None, None).await
+}
+
+pub async fn inspect_parquet_target_with_cache(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    request_timeout: Option<Duration>,
+    cache: Option<&ParquetMetadataCache>,
+    metrics: Option<&mut ParquetRangeReadMetrics>,
+) -> Result<ParquetInspectionSummary, QueryError> {
+    let cached =
+        read_parquet_cached_metadata_for_target(reader, target, request_timeout, cache, metrics)
+            .await?;
+    let metadata = cached
+        .metadata
+        .as_ref()
+        .expect("metadata cache helper should return decoded parquet metadata");
+    parquet_inspection_from_metadata(target, &cached.footer, metadata.as_ref())
 }
 
 pub async fn stream_scan_target_batches(
@@ -943,6 +1344,28 @@ pub async fn stream_scan_target_batches_with_row_group_pruning(
     row_group_predicate: Option<&ParquetRowGroupPruningPredicate>,
 ) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
 {
+    stream_scan_target_batches_with_row_group_pruning_and_cache(
+        reader,
+        target,
+        required_columns,
+        partition_column_types,
+        request_timeout,
+        row_group_predicate,
+        None,
+    )
+    .await
+}
+
+pub async fn stream_scan_target_batches_with_row_group_pruning_and_cache(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    required_columns: &[String],
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    request_timeout: Option<Duration>,
+    row_group_predicate: Option<&ParquetRowGroupPruningPredicate>,
+    cache: Option<&ParquetMetadataCache>,
+) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
+{
     let metrics_handle = SharedScanTargetMetricsHandle::new(ScanTargetMetricsSnapshot {
         files_touched: 1,
         files_skipped: 0,
@@ -959,6 +1382,7 @@ pub async fn stream_scan_target_batches_with_row_group_pruning(
         reader.clone(),
         target.clone(),
         request_timeout,
+        cache.cloned(),
         metrics_handle.clone(),
     ))
     .await
@@ -1103,12 +1527,33 @@ pub async fn scan_target_input_rows(
     partition_column_types: &BTreeMap<String, PartitionColumnType>,
     request_timeout: Option<Duration>,
 ) -> Result<Vec<ParquetInputRow>, QueryError> {
-    let stream = stream_scan_target_batches(
+    scan_target_input_rows_with_cache(
         reader,
         target,
         required_columns,
         partition_column_types,
         request_timeout,
+        None,
+    )
+    .await
+}
+
+pub async fn scan_target_input_rows_with_cache(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    required_columns: &[String],
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    request_timeout: Option<Duration>,
+    cache: Option<&ParquetMetadataCache>,
+) -> Result<Vec<ParquetInputRow>, QueryError> {
+    let stream = stream_scan_target_batches_with_row_group_pruning_and_cache(
+        reader,
+        target,
+        required_columns,
+        partition_column_types,
+        request_timeout,
+        None,
+        cache,
     )
     .await?;
     stream
@@ -1471,13 +1916,28 @@ pub fn parse_parquet_metadata(
     target: &ScanTarget,
     footer: &ParquetFooter,
 ) -> Result<ParquetFileMetadata, QueryError> {
-    let metadata =
-        ParquetMetaDataReader::decode_metadata(footer.footer_bytes()).map_err(|error| {
-            parquet_protocol_error(format!(
-                "parquet metadata decode for file '{}' failed: {error}",
-                target.path
-            ))
-        })?;
+    let metadata = decode_parquet_metadata(target, footer, "parquet metadata decode")?;
+    parquet_file_metadata_from_decoded(target, footer, &metadata)
+}
+
+fn decode_parquet_metadata(
+    target: &ScanTarget,
+    footer: &ParquetFooter,
+    context: &str,
+) -> Result<ParquetMetaData, QueryError> {
+    ParquetMetaDataReader::decode_metadata(footer.footer_bytes()).map_err(|error| {
+        parquet_protocol_error(format!(
+            "{context} for file '{}' failed: {error}",
+            target.path
+        ))
+    })
+}
+
+fn parquet_file_metadata_from_decoded(
+    target: &ScanTarget,
+    footer: &ParquetFooter,
+    metadata: &ParquetMetaData,
+) -> Result<ParquetFileMetadata, QueryError> {
     let file_metadata = metadata.file_metadata();
     let row_count = u64::try_from(file_metadata.num_rows()).map_err(|_| {
         parquet_protocol_error(format!(
@@ -1513,13 +1973,7 @@ pub fn inspect_parquet_footer(
     target: &ScanTarget,
     footer: &ParquetFooter,
 ) -> Result<ParquetInspectionSummary, QueryError> {
-    let metadata =
-        ParquetMetaDataReader::decode_metadata(footer.footer_bytes()).map_err(|error| {
-            parquet_protocol_error(format!(
-                "parquet inspection metadata decode for file '{}' failed: {error}",
-                target.path
-            ))
-        })?;
+    let metadata = decode_parquet_metadata(target, footer, "parquet inspection metadata decode")?;
     parquet_inspection_from_metadata(target, footer, &metadata)
 }
 
@@ -1822,6 +2276,108 @@ async fn read_footer_payload(
         footer_length_bytes,
         footer_bytes: footer.bytes,
     })
+}
+
+async fn read_parquet_cached_footer_for_target(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    request_timeout: Option<Duration>,
+    cache: Option<&ParquetMetadataCache>,
+    metrics: Option<&mut ParquetRangeReadMetrics>,
+) -> Result<ParquetFooter, QueryError> {
+    let mut metrics = metrics;
+    if let Some(cache) = cache {
+        match cache_key_for_target_identity(target) {
+            Some(key) => {
+                if let Some(cached) = cache.get(&key)? {
+                    validate_cached_metadata_identity(reader, target, request_timeout).await?;
+                    record_footer_cache_hit(Some(cache), metrics.as_deref_mut(), 2)?;
+                    return Ok(cached.footer);
+                }
+                record_footer_cache_miss(Some(cache), metrics.as_deref_mut())?;
+            }
+            None => {
+                record_footer_cache_miss(Some(cache), metrics.as_deref_mut())?;
+                record_footer_cache_degraded_identity_read(Some(cache), metrics.as_deref_mut())?;
+            }
+        }
+    }
+
+    let footer = read_parquet_footer_for_target(reader, target, request_timeout).await?;
+    if let Some(cache) = cache {
+        if let Some(key) = cache_key_for_target_footer(target, &footer) {
+            cache.insert(
+                key,
+                ParquetCachedMetadata {
+                    footer: footer.clone(),
+                    metadata: None,
+                },
+            )?;
+        }
+    }
+
+    Ok(footer)
+}
+
+async fn read_parquet_cached_metadata_for_target(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    request_timeout: Option<Duration>,
+    cache: Option<&ParquetMetadataCache>,
+    metrics: Option<&mut ParquetRangeReadMetrics>,
+) -> Result<ParquetCachedMetadata, QueryError> {
+    let mut metrics = metrics;
+    if let Some(cache) = cache {
+        match cache_key_for_target_identity(target) {
+            Some(key) => {
+                if let Some(cached) = cache.get(&key)? {
+                    validate_cached_metadata_identity(reader, target, request_timeout).await?;
+                    let cached = match cached.metadata {
+                        Some(_) => cached,
+                        None => {
+                            let metadata = Arc::new(decode_parquet_metadata(
+                                target,
+                                &cached.footer,
+                                "parquet metadata decode",
+                            )?);
+                            let cached = ParquetCachedMetadata {
+                                footer: cached.footer,
+                                metadata: Some(metadata),
+                            };
+                            cache.insert(key, cached.clone())?;
+                            cached
+                        }
+                    };
+                    record_footer_cache_hit(Some(cache), metrics.as_deref_mut(), 2)?;
+                    return Ok(cached);
+                }
+                record_footer_cache_miss(Some(cache), metrics.as_deref_mut())?;
+            }
+            None => {
+                record_footer_cache_miss(Some(cache), metrics.as_deref_mut())?;
+                record_footer_cache_degraded_identity_read(Some(cache), metrics.as_deref_mut())?;
+            }
+        }
+    }
+
+    let footer = read_parquet_footer_for_target(reader, target, request_timeout).await?;
+    let metadata = Arc::new(decode_parquet_metadata(
+        target,
+        &footer,
+        "parquet metadata decode",
+    )?);
+    let cached = ParquetCachedMetadata {
+        footer,
+        metadata: Some(metadata),
+    };
+
+    if let Some(cache) = cache {
+        if let Some(key) = cache_key_for_target_footer(target, &cached.footer) {
+            cache.insert(key, cached.clone())?;
+        }
+    }
+
+    Ok(cached)
 }
 
 fn parse_parquet_footer_trailer(

@@ -106,10 +106,16 @@ impl BrowserDataFusionSession {
         max_cached_bytes: u64,
         query_budget: BrowserDataFusionQueryBudget,
     ) -> Result<Self, QueryError> {
+        let runtime = BrowserRuntimeSession::new(config)?;
+        let metadata_cache = runtime.metadata_cache().clone();
         Ok(Self {
-            runtime: BrowserRuntimeSession::new(config)?,
+            runtime,
             query_budget,
-            datafusion: WasmDataFusionEngine::with_budget(query_budget.into()),
+            datafusion: WasmDataFusionEngine::with_budget_cancellation_and_metadata_cache(
+                query_budget.into(),
+                BrowserQueryCancellation::default(),
+                metadata_cache,
+            ),
             tables: BTreeMap::new(),
             max_cached_bytes,
             next_access_millis: 0,
@@ -313,6 +319,11 @@ impl BrowserDataFusionSession {
             scan_footer_range_reads: merged_range_read_metrics.scan_footer_range_reads,
             scan_data_range_reads: merged_range_read_metrics.scan_data_range_reads,
             duplicate_range_reads: merged_range_read_metrics.duplicate_range_reads,
+            footer_cache_hits: merged_range_read_metrics.footer_cache_hits,
+            footer_cache_misses: merged_range_read_metrics.footer_cache_misses,
+            footer_range_reads_avoided: merged_range_read_metrics.footer_range_reads_avoided,
+            footer_cache_degraded_identity_reads: merged_range_read_metrics
+                .footer_cache_degraded_identity_reads,
             identity_present_range_reads: merged_range_read_metrics.identity_present_range_reads,
             identity_missing_range_reads: merged_range_read_metrics.identity_missing_range_reads,
         };
@@ -811,6 +822,12 @@ fn datafusion_query_metrics(
         scan_footer_range_reads: Some(range_read_metrics.scan_footer_range_reads),
         scan_data_range_reads: Some(range_read_metrics.scan_data_range_reads),
         duplicate_range_reads: Some(range_read_metrics.duplicate_range_reads),
+        footer_cache_hits: Some(range_read_metrics.footer_cache_hits),
+        footer_cache_misses: Some(range_read_metrics.footer_cache_misses),
+        footer_range_reads_avoided: Some(range_read_metrics.footer_range_reads_avoided),
+        footer_cache_degraded_identity_reads: Some(
+            range_read_metrics.footer_cache_degraded_identity_reads,
+        ),
         identity_present_range_reads: Some(range_read_metrics.identity_present_range_reads),
         identity_missing_range_reads: Some(range_read_metrics.identity_missing_range_reads),
         descriptor_resolution_count: None,
@@ -830,6 +847,10 @@ struct DataFusionSessionRangeReadMetrics {
     scan_footer_range_reads: u64,
     scan_data_range_reads: u64,
     duplicate_range_reads: u64,
+    footer_cache_hits: u64,
+    footer_cache_misses: u64,
+    footer_range_reads_avoided: u64,
+    footer_cache_degraded_identity_reads: u64,
     identity_present_range_reads: u64,
     identity_missing_range_reads: u64,
 }

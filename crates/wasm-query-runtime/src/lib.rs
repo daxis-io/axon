@@ -430,6 +430,7 @@ impl MaterializedBrowserSnapshot {
 pub struct BrowserRuntimeSession {
     config: BrowserRuntimeConfig,
     reader: HttpRangeReader,
+    metadata_cache: wasm_parquet_engine::ParquetMetadataCache,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1437,13 +1438,33 @@ impl BrowserRuntimeSession {
         config: BrowserRuntimeConfig,
         reader: HttpRangeReader,
     ) -> Result<Self, QueryError> {
+        Self::with_reader_and_metadata_cache(
+            config,
+            reader,
+            wasm_parquet_engine::ParquetMetadataCache::default(),
+        )
+    }
+
+    pub fn with_reader_and_metadata_cache(
+        config: BrowserRuntimeConfig,
+        reader: HttpRangeReader,
+        metadata_cache: wasm_parquet_engine::ParquetMetadataCache,
+    ) -> Result<Self, QueryError> {
         config.validate()?;
 
-        Ok(Self { config, reader })
+        Ok(Self {
+            config,
+            reader,
+            metadata_cache,
+        })
     }
 
     pub fn config(&self) -> &BrowserRuntimeConfig {
         &self.config
+    }
+
+    pub fn metadata_cache(&self) -> &wasm_parquet_engine::ParquetMetadataCache {
+        &self.metadata_cache
     }
 
     pub fn analyze_query_shape(&self, sql: &str) -> Result<BrowserQueryShape, QueryError> {
@@ -1839,7 +1860,7 @@ impl BrowserRuntimeSession {
         &self,
         file: &MaterializedBrowserFile,
     ) -> Result<BrowserParquetFooter, QueryError> {
-        let footer = self.read_parquet_footer(file.object_source()).await?;
+        let footer = self.read_engine_parquet_footer_for_file(file).await?;
         if footer.object_size_bytes() != file.size_bytes() {
             return Err(parquet_protocol_error(format!(
                 "parquet footer bootstrap for file '{}' observed object size {} bytes, but the descriptor declared {} bytes",
@@ -1849,7 +1870,7 @@ impl BrowserRuntimeSession {
             )));
         }
 
-        Ok(footer)
+        Ok(browser_footer_from_engine(footer))
     }
 
     pub async fn read_parquet_metadata_for_file(
@@ -1857,8 +1878,14 @@ impl BrowserRuntimeSession {
         file: &MaterializedBrowserFile,
     ) -> Result<BrowserParquetFileMetadata, QueryError> {
         let target = engine_scan_target(file);
-        let footer = self.read_engine_parquet_footer_for_file(file).await?;
-        let metadata = wasm_parquet_engine::parse_parquet_metadata(&target, &footer)?;
+        let metadata = wasm_parquet_engine::read_parquet_metadata_for_target_with_cache(
+            &self.reader,
+            &target,
+            Some(Duration::from_millis(self.config.request_timeout_ms)),
+            Some(&self.metadata_cache),
+            None,
+        )
+        .await?;
         Ok(browser_metadata_from_engine(metadata))
     }
 
@@ -1867,8 +1894,14 @@ impl BrowserRuntimeSession {
         file: &MaterializedBrowserFile,
     ) -> Result<ParquetInspectionSummary, QueryError> {
         let target = engine_scan_target(file);
-        let footer = self.read_engine_parquet_footer_for_file(file).await?;
-        wasm_parquet_engine::inspect_parquet_footer(&target, &footer)
+        wasm_parquet_engine::inspect_parquet_target_with_cache(
+            &self.reader,
+            &target,
+            Some(Duration::from_millis(self.config.request_timeout_ms)),
+            Some(&self.metadata_cache),
+            None,
+        )
+        .await
     }
 
     pub async fn bootstrap_snapshot_metadata(
@@ -1960,10 +1993,12 @@ impl BrowserRuntimeSession {
         &self,
         file: &MaterializedBrowserFile,
     ) -> Result<wasm_parquet_engine::ParquetFooter, QueryError> {
-        wasm_parquet_engine::read_parquet_footer_for_target(
+        wasm_parquet_engine::read_parquet_footer_for_target_with_cache(
             &self.reader,
             &engine_scan_target(file),
             Some(Duration::from_millis(self.config.request_timeout_ms)),
+            Some(&self.metadata_cache),
+            None,
         )
         .await
     }
@@ -2011,6 +2046,7 @@ impl BrowserRuntimeSession {
                 snapshot.partition_column_types(),
                 Some(Duration::from_millis(self.config.request_timeout_ms)),
                 row_group_predicate.as_ref(),
+                Some(&self.metadata_cache),
             )
             .await?;
             let metrics = scanned.metrics;
@@ -2061,12 +2097,24 @@ impl BrowserRuntimeSession {
         QueryError,
     > {
         let target = engine_scan_target(file);
-        let footer = self.read_engine_parquet_footer_for_file(file).await?;
-        let range_read_metrics =
-            wasm_parquet_engine::bootstrap_footer_range_read_metrics_for_target(
-                &target,
-                footer.footer_length_bytes(),
-            )?;
+        let mut range_read_metrics = wasm_parquet_engine::ParquetRangeReadMetrics::default();
+        let footer = wasm_parquet_engine::read_parquet_footer_for_target_with_cache(
+            &self.reader,
+            &target,
+            Some(Duration::from_millis(self.config.request_timeout_ms)),
+            Some(&self.metadata_cache),
+            Some(&mut range_read_metrics),
+        )
+        .await?;
+        if range_read_metrics.footer_cache_hits == 0 {
+            range_read_metrics = wasm_parquet_engine::merge_parquet_range_read_metrics(
+                &range_read_metrics,
+                &wasm_parquet_engine::bootstrap_footer_range_read_metrics_for_target(
+                    &target,
+                    footer.footer_length_bytes(),
+                )?,
+            );
+        }
         let metadata = browser_metadata_from_engine(wasm_parquet_engine::parse_parquet_metadata(
             &target, &footer,
         )?);
@@ -2414,6 +2462,12 @@ fn execution_metrics(
         scan_footer_range_reads: Some(range_read_metrics.scan_footer_range_reads),
         scan_data_range_reads: Some(range_read_metrics.scan_data_range_reads),
         duplicate_range_reads: Some(range_read_metrics.duplicate_range_reads),
+        footer_cache_hits: Some(range_read_metrics.footer_cache_hits),
+        footer_cache_misses: Some(range_read_metrics.footer_cache_misses),
+        footer_range_reads_avoided: Some(range_read_metrics.footer_range_reads_avoided),
+        footer_cache_degraded_identity_reads: Some(
+            range_read_metrics.footer_cache_degraded_identity_reads,
+        ),
         identity_present_range_reads: Some(range_read_metrics.identity_present_range_reads),
         identity_missing_range_reads: Some(range_read_metrics.identity_missing_range_reads),
         descriptor_resolution_count: None,

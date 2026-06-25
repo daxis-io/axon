@@ -49,8 +49,8 @@ use query_contract::{
 use wasm_bindgen::prelude::*;
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{
-    merge_parquet_range_read_metrics, stream_scan_target_batches_with_row_group_pruning,
-    ObjectSource, ParquetIntegerComparison, ParquetRangeReadMetrics,
+    merge_parquet_range_read_metrics, stream_scan_target_batches_with_row_group_pruning_and_cache,
+    ObjectSource, ParquetIntegerComparison, ParquetMetadataCache, ParquetRangeReadMetrics,
     ParquetRowGroupPruningPredicate, ScanTarget, ScanTargetMetricsHandle,
     ScanTargetMetricsSnapshot,
 };
@@ -365,6 +365,7 @@ pub struct AxonDeltaTableProvider {
     in_memory_partitions: Vec<Vec<RecordBatch>>,
     query_budget: BrowserQueryBudget,
     cancellation: BrowserQueryCancellation,
+    metadata_cache: ParquetMetadataCache,
 }
 
 impl AxonDeltaTableProvider {
@@ -374,6 +375,7 @@ impl AxonDeltaTableProvider {
             Vec::new(),
             BrowserQueryBudget::default(),
             BrowserQueryCancellation::default(),
+            ParquetMetadataCache::default(),
         )
     }
 
@@ -382,12 +384,14 @@ impl AxonDeltaTableProvider {
         in_memory_partitions: Vec<Vec<RecordBatch>>,
         query_budget: BrowserQueryBudget,
         cancellation: BrowserQueryCancellation,
+        metadata_cache: ParquetMetadataCache,
     ) -> Self {
         Self {
             descriptor,
             in_memory_partitions,
             query_budget,
             cancellation,
+            metadata_cache,
         }
     }
 
@@ -400,6 +404,7 @@ impl AxonDeltaTableProvider {
             partitions,
             BrowserQueryBudget::default(),
             BrowserQueryCancellation::default(),
+            ParquetMetadataCache::default(),
         )
     }
 
@@ -459,6 +464,7 @@ impl TableProvider for AxonDeltaTableProvider {
                 self.in_memory_partitions.clone(),
                 self.query_budget,
                 self.cancellation.clone(),
+                self.metadata_cache.clone(),
             )) as Arc<dyn ExecutionPlan>)
         })
     }
@@ -498,6 +504,7 @@ pub struct AxonParquetScanExec {
     limit_remaining: Arc<Mutex<Option<usize>>>,
     query_budget: BrowserQueryBudget,
     cancellation: BrowserQueryCancellation,
+    metadata_cache: ParquetMetadataCache,
 }
 
 impl AxonParquetScanExec {
@@ -510,6 +517,7 @@ impl AxonParquetScanExec {
         partitions: Vec<Vec<RecordBatch>>,
         query_budget: BrowserQueryBudget,
         cancellation: BrowserQueryCancellation,
+        metadata_cache: ParquetMetadataCache,
     ) -> Self {
         let plan = AxonScanPlan::new(&descriptor, &projected_schema, &filters, limit, &partitions);
         let partition_count = if partitions.is_empty() {
@@ -536,6 +544,7 @@ impl AxonParquetScanExec {
             limit_remaining: Arc::new(Mutex::new(plan.limit)),
             query_budget,
             cancellation,
+            metadata_cache,
         }
     }
 
@@ -630,6 +639,7 @@ impl AxonParquetScanExec {
         let limit_remaining = Arc::clone(&self.limit_remaining);
         let query_budget = self.query_budget;
         let cancellation = self.cancellation.clone();
+        let metadata_cache = self.metadata_cache.clone();
         let stream_schema = Arc::clone(&self.projected_schema);
         let projected_schema = Arc::clone(&self.projected_schema);
         let parquet_batches = stream::once(async move {
@@ -643,6 +653,7 @@ impl AxonParquetScanExec {
                 limit_remaining,
                 query_budget,
                 cancellation,
+                metadata_cache,
             )
             .await
             .map(|scan| {
@@ -1280,6 +1291,7 @@ struct PlannedScanTargetsState {
     limit_remaining: Arc<Mutex<Option<usize>>>,
     query_budget: BrowserQueryBudget,
     cancellation: BrowserQueryCancellation,
+    metadata_cache: ParquetMetadataCache,
 }
 
 async fn stream_planned_scan_targets(
@@ -1292,6 +1304,7 @@ async fn stream_planned_scan_targets(
     limit_remaining: Arc<Mutex<Option<usize>>>,
     query_budget: BrowserQueryBudget,
     cancellation: BrowserQueryCancellation,
+    metadata_cache: ParquetMetadataCache,
 ) -> Result<PlannedScanTargetBatchStream, QueryError> {
     let state = PlannedScanTargetsState {
         reader,
@@ -1307,6 +1320,7 @@ async fn stream_planned_scan_targets(
         limit_remaining,
         query_budget,
         cancellation,
+        metadata_cache,
     };
     let batches = stream::try_unfold(state, |mut state| async move {
         loop {
@@ -1361,13 +1375,14 @@ async fn stream_planned_scan_targets(
             state.next_target_index += 1;
             state.cancellation.check_cancelled_at("scan stream")?;
 
-            let scan = stream_scan_target_batches_with_row_group_pruning(
+            let scan = stream_scan_target_batches_with_row_group_pruning_and_cache(
                 &state.reader,
                 &target,
                 &state.required_columns,
                 &state.partition_column_types,
                 None,
                 state.row_group_predicate.as_ref(),
+                Some(&state.metadata_cache),
             )
             .await?;
             state.cancellation.check_cancelled_at("scan stream")?;
@@ -1862,6 +1877,7 @@ pub struct WasmDataFusionEngine {
     ctx: SessionContext,
     query_budget: BrowserQueryBudget,
     cancellation: BrowserQueryCancellation,
+    metadata_cache: ParquetMetadataCache,
 }
 
 impl fmt::Debug for WasmDataFusionEngine {
@@ -1884,10 +1900,23 @@ impl WasmDataFusionEngine {
         query_budget: BrowserQueryBudget,
         cancellation: BrowserQueryCancellation,
     ) -> Self {
+        Self::with_budget_cancellation_and_metadata_cache(
+            query_budget,
+            cancellation,
+            ParquetMetadataCache::default(),
+        )
+    }
+
+    pub fn with_budget_cancellation_and_metadata_cache(
+        query_budget: BrowserQueryBudget,
+        cancellation: BrowserQueryCancellation,
+        metadata_cache: ParquetMetadataCache,
+    ) -> Self {
         Self {
             ctx: SessionContext::new(),
             query_budget,
             cancellation,
+            metadata_cache,
         }
     }
 
@@ -1922,6 +1951,7 @@ impl WasmDataFusionEngine {
                     Vec::new(),
                     self.query_budget,
                     self.cancellation.clone(),
+                    self.metadata_cache.clone(),
                 )),
             )
             .map_err(map_datafusion_error)?;
@@ -1954,6 +1984,7 @@ impl WasmDataFusionEngine {
                     partitions,
                     self.query_budget,
                     self.cancellation.clone(),
+                    self.metadata_cache.clone(),
                 )),
             )
             .map_err(map_datafusion_error)?;
@@ -2644,6 +2675,7 @@ mod tests {
                     ..BrowserQueryBudget::default()
                 },
                 BrowserQueryCancellation::default(),
+                ParquetMetadataCache::default(),
             )
             .await;
             let error = match stream {

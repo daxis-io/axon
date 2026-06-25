@@ -1435,6 +1435,18 @@ pub struct QueryMetricsSummary {
     /// Exact duplicate HTTP range reads observed across the measured browser query path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicate_range_reads: Option<u64>,
+    /// Parquet footer metadata cache hits observed across bootstrap, inspect, or scan paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_cache_hits: Option<u64>,
+    /// Parquet footer metadata cache misses observed across bootstrap, inspect, or scan paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_cache_misses: Option<u64>,
+    /// Trailer/footer range reads avoided by Parquet footer metadata cache hits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_range_reads_avoided: Option<u64>,
+    /// Footer cache lookups that had to use the conservative missing-identity path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_cache_degraded_identity_reads: Option<u64>,
     /// Exact HTTP range reads that had stable object identity such as ETag plus size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_present_range_reads: Option<u64>,
@@ -1592,6 +1604,14 @@ pub struct DaxisQueryMetrics {
     pub scan_data_range_reads: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicate_range_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_cache_hits: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_cache_misses: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_range_reads_avoided: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_cache_degraded_identity_reads: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_present_range_reads: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

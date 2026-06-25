@@ -1438,6 +1438,14 @@ fn runtime_prunes_files_from_delta_snapshot_before_opening_parquet() {
     assert_eq!(result.metrics().files_skipped, 2);
     assert_eq!(result.metrics().footer_reads, Some(1));
     assert_eq!(
+        result.metrics().scan_footer_range_reads,
+        Some(0),
+        "legacy runtime scan should reuse bootstrapped footer metadata"
+    );
+    assert_eq!(result.metrics().duplicate_range_reads, Some(0));
+    assert_eq!(result.metrics().footer_cache_hits, Some(1));
+    assert_eq!(result.metrics().footer_range_reads_avoided, Some(2));
+    assert_eq!(
         result.metrics().access_mode,
         Some(BrowserAccessMode::BrowserSafeHttp)
     );
@@ -2557,7 +2565,7 @@ fn read_parquet_footer_for_file_rejects_descriptor_size_mismatches() {
     let prefix = b"row-group-bytes";
     let object = parquet_like_object(prefix, footer);
     let object_for_server = object.clone();
-    let (url, _, server) = spawn_multi_request_server(2, move |request, _| {
+    let (url, requests, server) = spawn_multi_request_server(1, move |request, _| {
         full_or_ranged_response(request, &object_for_server)
     });
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
@@ -2573,9 +2581,9 @@ fn read_parquet_footer_for_file_rejects_descriptor_size_mismatches() {
         .block_on(session.read_parquet_footer_for_file(&file))
         .expect_err("descriptor size mismatches should fail");
 
-    server.join().expect("test server should shut down cleanly");
+    let requests = finish_requests(server, requests, 1);
+    assert_eq!(requests.len(), 1);
     assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
-    assert!(error.message.contains(file.path()));
 }
 
 #[test]

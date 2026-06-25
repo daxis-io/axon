@@ -25,7 +25,7 @@ use wasm_delta_snapshot::{
     DefaultJsonHandler, DefaultParquetHandler, SnapshotResolver,
 };
 use wasm_http_object_store::HttpRangeReader;
-use wasm_parquet_engine::{ObjectSource, ScanTarget};
+use wasm_parquet_engine::{ObjectSource, ParquetMetadataCache, ScanTarget};
 use wasm_query_runtime::{BrowserObjectAccessMode, BrowserRuntimeConfig};
 
 const DEFAULT_QUERY_SESSION_CACHE_BYTES: u64 = 64 * 1024 * 1024;
@@ -405,6 +405,7 @@ pub async fn preflight_parquet_metadata_for_targets(
         |error| JsValue::from_str(&format!("invalid Parquet preflight targets: {error}")),
     )?;
     let reader = HttpRangeReader::new();
+    let metadata_cache = ParquetMetadataCache::default();
     let mut outputs = Vec::with_capacity(targets.len());
 
     for target in targets {
@@ -415,10 +416,15 @@ pub async fn preflight_parquet_metadata_for_targets(
             size_bytes: target.size_bytes,
             partition_values: target.partition_values.clone(),
         };
-        let metadata =
-            wasm_parquet_engine::read_parquet_metadata_for_target(&reader, &scan_target, None)
-                .await
-                .map_err(query_error_to_js_value)?;
+        let metadata = wasm_parquet_engine::read_parquet_metadata_for_target_with_cache(
+            &reader,
+            &scan_target,
+            None,
+            Some(&metadata_cache),
+            None,
+        )
+        .await
+        .map_err(query_error_to_js_value)?;
         outputs.push(ParquetPreflightOutput {
             path: target.path,
             url: target.url,

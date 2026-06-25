@@ -362,6 +362,10 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
                 scan_footer_range_reads: Some(2),
                 scan_data_range_reads: Some(6),
                 duplicate_range_reads: Some(2),
+                footer_cache_hits: Some(1),
+                footer_cache_misses: Some(3),
+                footer_range_reads_avoided: Some(2),
+                footer_cache_degraded_identity_reads: Some(1),
                 identity_present_range_reads: Some(5),
                 identity_missing_range_reads: Some(7),
                 descriptor_resolution_count: Some(1),
@@ -392,6 +396,10 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
     assert_eq!(metrics.scan_footer_range_reads, Some(2));
     assert_eq!(metrics.scan_data_range_reads, Some(6));
     assert_eq!(metrics.duplicate_range_reads, Some(2));
+    assert_eq!(metrics.footer_cache_hits, Some(1));
+    assert_eq!(metrics.footer_cache_misses, Some(3));
+    assert_eq!(metrics.footer_range_reads_avoided, Some(2));
+    assert_eq!(metrics.footer_cache_degraded_identity_reads, Some(1));
     assert_eq!(metrics.descriptor_resolution_count, Some(1));
     assert_eq!(metrics.delta_log_manifest_list_count, Some(1));
     assert_eq!(metrics.snapshot_resolve_count, Some(1));
@@ -426,6 +434,10 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             scan_footer_range_reads: Some(2),
             scan_data_range_reads: Some(6),
             duplicate_range_reads: Some(2),
+            footer_cache_hits: Some(1),
+            footer_cache_misses: Some(3),
+            footer_range_reads_avoided: Some(2),
+            footer_cache_degraded_identity_reads: Some(1),
             identity_present_range_reads: Some(5),
             identity_missing_range_reads: Some(7),
             descriptor_resolution_count: Some(1),
@@ -489,6 +501,10 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             assert_eq!(event.scan_footer_range_reads, Some(2));
             assert_eq!(event.scan_data_range_reads, Some(6));
             assert_eq!(event.duplicate_range_reads, Some(2));
+            assert_eq!(event.footer_cache_hits, Some(1));
+            assert_eq!(event.footer_cache_misses, Some(3));
+            assert_eq!(event.footer_range_reads_avoided, Some(2));
+            assert_eq!(event.footer_cache_degraded_identity_reads, Some(1));
             assert_eq!(event.identity_present_range_reads, Some(5));
             assert_eq!(event.identity_missing_range_reads, Some(7));
             assert_eq!(event.descriptor_resolution_count, Some(1));
@@ -756,6 +772,10 @@ fn sample_query_response(
             scan_footer_range_reads: None,
             scan_data_range_reads: None,
             duplicate_range_reads: None,
+            footer_cache_hits: None,
+            footer_cache_misses: None,
+            footer_range_reads_avoided: None,
+            footer_cache_degraded_identity_reads: None,
             identity_present_range_reads: None,
             identity_missing_range_reads: None,
             descriptor_resolution_count: None,

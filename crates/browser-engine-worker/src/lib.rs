@@ -594,6 +594,16 @@ fn emit_open_bootstrap_metrics<F>(
             scan_footer_range_reads: None,
             scan_data_range_reads: None,
             duplicate_range_reads: None,
+            footer_cache_hits: Some(snapshot.range_read_metrics().footer_cache_hits),
+            footer_cache_misses: Some(snapshot.range_read_metrics().footer_cache_misses),
+            footer_range_reads_avoided: Some(
+                snapshot.range_read_metrics().footer_range_reads_avoided,
+            ),
+            footer_cache_degraded_identity_reads: Some(
+                snapshot
+                    .range_read_metrics()
+                    .footer_cache_degraded_identity_reads,
+            ),
             identity_present_range_reads: Some(
                 snapshot.range_read_metrics().identity_present_range_reads,
             ),

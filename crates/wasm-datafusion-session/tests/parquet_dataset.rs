@@ -232,10 +232,26 @@ fn session_preserves_bootstrapped_etag_for_datafusion_scan_if_range() {
             result
                 .response
                 .metrics
-                .duplicate_range_reads
+                .scan_footer_range_reads
                 .unwrap_or_default()
-                >= 2,
-            "preserving identity must not hide repeated trailer/footer ranges before caching exists"
+                == 0,
+            "scan metadata should reuse the bootstrapped Parquet footer once object identity is available"
+        );
+        assert_eq!(
+            result.response.metrics.duplicate_range_reads,
+            Some(0),
+            "open plus SQL should avoid repeating exact trailer/footer ranges once object identity is available"
+        );
+        assert_eq!(result.response.metrics.footer_cache_hits, Some(1));
+        assert_eq!(result.response.metrics.footer_cache_misses, Some(1));
+        assert_eq!(result.response.metrics.footer_range_reads_avoided, Some(2));
+        assert_eq!(
+            result
+                .response
+                .metrics
+                .footer_cache_degraded_identity_reads,
+            Some(1),
+            "bootstrap discovers identity after starting in the conservative missing-identity path"
         );
     });
 }
@@ -302,6 +318,13 @@ fn session_treats_weak_etag_as_missing_if_range_identity() {
                 .identity_missing_range_reads
                 .unwrap_or_default()
                 > 0
+        );
+        assert_eq!(result.response.metrics.footer_cache_hits, Some(0));
+        assert_eq!(result.response.metrics.footer_cache_misses, Some(2));
+        assert_eq!(
+            result.response.metrics.footer_cache_degraded_identity_reads,
+            Some(2),
+            "weak ETags should keep both bootstrap and scan metadata reads on the degraded path"
         );
     });
 }

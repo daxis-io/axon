@@ -624,6 +624,10 @@ export type QueryMetricsSummary = {
   scan_footer_range_reads?: number;
   scan_data_range_reads?: number;
   duplicate_range_reads?: number;
+  footer_cache_hits?: number;
+  footer_cache_misses?: number;
+  footer_range_reads_avoided?: number;
+  footer_cache_degraded_identity_reads?: number;
   identity_present_range_reads?: number;
   identity_missing_range_reads?: number;
   descriptor_resolution_count?: number;
@@ -867,6 +871,10 @@ export type BrowserWorkerRangeReadMetricsEvent = {
   scan_footer_range_reads?: number;
   scan_data_range_reads?: number;
   duplicate_range_reads?: number;
+  footer_cache_hits?: number;
+  footer_cache_misses?: number;
+  footer_range_reads_avoided?: number;
+  footer_cache_degraded_identity_reads?: number;
   identity_present_range_reads?: number;
   identity_missing_range_reads?: number;
   descriptor_resolution_count?: number;
@@ -4035,6 +4043,22 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
           duplicate_range_reads: optionalNumber(
             payload.duplicate_range_reads,
             'range_read_metrics.duplicate_range_reads',
+          ),
+          footer_cache_hits: optionalNumber(
+            payload.footer_cache_hits,
+            'range_read_metrics.footer_cache_hits',
+          ),
+          footer_cache_misses: optionalNumber(
+            payload.footer_cache_misses,
+            'range_read_metrics.footer_cache_misses',
+          ),
+          footer_range_reads_avoided: optionalNumber(
+            payload.footer_range_reads_avoided,
+            'range_read_metrics.footer_range_reads_avoided',
+          ),
+          footer_cache_degraded_identity_reads: optionalNumber(
+            payload.footer_cache_degraded_identity_reads,
+            'range_read_metrics.footer_cache_degraded_identity_reads',
           ),
           identity_present_range_reads: optionalNumber(
             payload.identity_present_range_reads,
