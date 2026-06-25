@@ -31,8 +31,8 @@ E9's `DataAccessResolver` returns a `TableReadResolution` union with four arms:
 - `descriptor` - a ready-to-open `BrowserHttpSnapshotDescriptor`; the only arm
   that may directly reach `openDeltaTable()`.
 - `read_access_plan` - a brokered `ReadAccessPlan` that must be processed into an
-  openable descriptor before execution. This is the reserved Daxis/brokered
-  outcome; see ADR-0008.
+  openable descriptor before execution. This is the reserved governed-host /
+  brokered outcome.
 - `fallback` - not directly readable; carries a structured
   `ReadAccessPlanReason` and a human message, for example views, managed tables,
   or non-reachable storage.
@@ -57,8 +57,8 @@ a single `['catalog', connectionId, 'table-derived']` shape and, at times, place
 `resolveTableRead` on `CatalogProvider`. That would make a catalog browser partly
 responsible for access grants and execution, which is the wrong trust boundary.
 
-E1 needs DirectUnityCatalog, LocalDelta, ObjectStore, and the deferred Daxis
-catalog-listing profile to coexist without UI branching on source kind. E9 needs
+E1 needs DirectUnityCatalog, LocalDelta, ObjectStore, and deferred governed-host
+catalog-listing profiles to coexist without UI branching on source kind. E9 needs
 the read-resolution and execution path to fail closed and preserve the single
 descriptor-to-engine handoff. Keeping discovery, read resolution, and execution
 separate lets both happen without redesign.
@@ -101,12 +101,12 @@ messages land.
 
 ## Consequences
 
-- The explorer is provider-agnostic for discovery; DirectUC, Daxis catalog
-  listing, and the reference sources share one navigation path.
+- The explorer is provider-agnostic for discovery; DirectUC, governed-host
+  catalog listing, and the reference sources share one navigation path.
 - The run lifecycle remains provider-agnostic through E9, not through the E1
   catalog seam.
-- The `read_access_plan` arm reserves the Daxis/brokered seam, so Daxis can be
-  **deferred without redesign** (ADR-0008 is its profile).
+- The `read_access_plan` arm reserves the governed-host/brokered seam, so
+  downstream consumers can be **deferred without redesign**.
 - Navigation node shapes are generated, so contract drift is caught by codegen
   checks rather than at runtime.
 - The descriptor-on-the-E9-seam choice trades a small wire/in-process type
@@ -131,7 +131,6 @@ This ADR is implemented when:
 ## References
 
 - [ADR-0002: Browser access uses signed HTTPS or proxy, never cloud secrets](ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md)
-- [ADR-0008: Daxis browser read compute contract](ADR-0008-daxis-browser-read-compute-contract.md)
 - [E1 — Pluggable Catalog Providers execution plan](../plans/2026-06-20-e1-catalog-providers-execution-plan.md)
 - [E3A provider contract mappings](../program/e3a-provider-contract-mappings.md)
 - planned `apps/axon-web/src/query/providers/` (discovery seam, registry,

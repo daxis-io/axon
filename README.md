@@ -1,6 +1,6 @@
 # Axon
 
-Axon is a standalone lakehouse workbench and browser/native runtime for inspecting and querying open lakehouse data. It opens Delta and Parquet data through explicit provider contracts, runs supported reads in the browser, and falls back to a native DataFusion runtime when the browser cannot make a safe correctness claim.
+Axon is an embeddable lakehouse query engine and workbench runtime for inspecting and querying open lakehouse data. It owns the browser/native execution path for Delta and Parquet reads: provider contracts, descriptor validation, byte-range I/O, scan planning, pruning, caching, Arrow IPC, runtime budgets, metrics, and deterministic fallback to a native DataFusion runtime when the browser cannot make a safe correctness claim.
 
 > Axon is early. Browser support is intentionally bounded, and the native side is what we test browser results against. Expect things to change.
 
@@ -11,6 +11,8 @@ Querying lakehouse data usually means running something. A warehouse, a query se
 Axon gives that data a workbench. For queries the browser can handle, it pulls Parquet byte ranges from browser-safe local files, public objects, signed URLs, proxy URLs, or brokered object routes and runs the query in the tab. No query service sits in the middle of supported browser scans.
 
 For queries the browser can't handle, the same request runs on a native DataFusion runtime instead. That side is a Rust crate, so you run it wherever you already have compute. Laptop, container, VM, whatever.
+
+Axon is the engine layer, not the business analytics platform around it. Host products provide identity, tenancy, policy, catalog governance, billing, audit, workflow, dashboards, agents, and rollout. Axon integrates with those hosts through browser-safe session, descriptor, read-plan, and execution contracts while keeping secrets and product authority outside the engine.
 
 What that buys you:
 
@@ -81,7 +83,6 @@ If you want the architecture context first:
 - [Provider model](docs/program/provider-model.md)
 - [Browser lakehouse engine strategy](docs/program/browser-lakehouse-engine-strategy.md)
 - [Browser Delta compatibility matrix](docs/program/browser-delta-compatibility-matrix.md)
-- [Daxis integration strategy](docs/integrations/daxis/daxis-first-class-integration-strategy.md)
 
 ## Repo tour
 
@@ -134,9 +135,9 @@ The full launch checklist lives in [`docs/release-gates/browser-wasm-delta-gcs-l
 
 ## Integrations And Governed Deployments
 
-Axon integrations should use generic boundaries such as `ControlPlaneIntegration`, `ApprovedReadPlanSource`, and `GovernedDescriptorSource`. These boundaries let external products approve reads, provide descriptors, attach rollout policy, or package deployments without changing Axon's provider taxonomy.
+Axon integrations should use generic boundaries such as `HostProductIntegration`, `ControlPlaneIntegration`, `ApprovedReadPlanSource`, `GovernedDescriptorSource`, and `SessionAccessSource`. These boundaries let external products approve reads, provide descriptors, attach rollout policy, connect session-aware access, or package deployments without changing Axon's provider taxonomy.
 
-Daxis remains a supported governed deployment integration. In that integration, the Daxis-facing `axon-web-wasm` browser DataFusion default worker is the app worker path, while the legacy `browser-engine-worker` remains compatibility evidence. Its strategy, operational maturity contract, external proof handoff, and compatibility examples live under [`docs/integrations/daxis/`](docs/integrations/daxis/). Release-gate artifacts for that integration remain under [`docs/release-gates/`](docs/release-gates/).
+Consumer-specific governed deployment strategies, operational maturity contracts, external proof handoffs, and compatibility examples live under [`docs/integrations/`](docs/integrations/). Release-gate artifacts for those integrations remain under [`docs/release-gates/`](docs/release-gates/).
 
 ## Development
 
@@ -185,7 +186,6 @@ CI runs the same commands behind `google-github-actions/auth` when `AXON_GCP_CRE
 - [Provider model](docs/program/provider-model.md)
 - [Browser lakehouse engine strategy](docs/program/browser-lakehouse-engine-strategy.md)
 - [Browser Delta compatibility matrix](docs/program/browser-delta-compatibility-matrix.md)
-- [Daxis integration strategy](docs/integrations/daxis/daxis-first-class-integration-strategy.md)
 - [Browser embedding and deployment](docs/program/browser-embedding-deployment.md)
 - [Release handoff](docs/program/browser-lakehouse-release-handoff.md) and [integration runbook](docs/program/browser-release-integration-runbook.md)
 - [Browser dependency review](docs/program/browser-dependency-compatibility-review-checklist.md)
