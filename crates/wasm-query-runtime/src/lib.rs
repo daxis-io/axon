@@ -75,6 +75,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_EXECUTION_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_SNAPSHOT_PREFLIGHT_TIMEOUT_MS: u64 = 120_000;
 const DEFAULT_SNAPSHOT_PREFLIGHT_MAX_CONCURRENCY: usize = 4;
+const SUPPORTED_BROWSER_PARQUET_COMPRESSION_CODECS: &[&str] = &["UNCOMPRESSED", "SNAPPY"];
 
 #[derive(Clone, Copy, Debug)]
 pub struct BrowserRuntimeInstant {
@@ -793,6 +794,10 @@ pub struct BrowserPruningSummary {
     pub used_file_stats_pruning: bool,
     pub files_retained: u64,
     pub files_pruned: u64,
+    pub prebootstrap_fail_open_count: Option<u64>,
+    pub prebootstrap_files_pruned: Option<u64>,
+    pub footer_reads_avoided: Option<u64>,
+    pub prebootstrap_candidate_files: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1566,7 +1571,7 @@ impl BrowserRuntimeSession {
         let bootstrapped_snapshot = self
             .bootstrap_selected_snapshot_metadata(snapshot, &bootstrap_selection.files)
             .await?;
-        let planned = if bootstrap_selection.files.is_empty()
+        let mut planned = if bootstrap_selection.files.is_empty()
             && bootstrap_selection.files_pruned_before_bootstrap > 0
         {
             planned_query_for_empty_bootstrap(snapshot, &analyzed, &bootstrap_selection)?
@@ -1590,6 +1595,7 @@ impl BrowserRuntimeSession {
             }
             planned
         };
+        apply_prebootstrap_pruning_metrics(&mut planned, &bootstrap_selection)?;
         let execution_plan = lower_browser_execution_plan_with_applied_partition_constraints(
             analyzed.query.as_ref(),
             &bootstrapped_snapshot,
@@ -1645,20 +1651,29 @@ impl BrowserRuntimeSession {
             .as_ref()
             .map(|constraints| &constraints.partition)
             .filter(|constraints| !constraints.by_column.is_empty());
+        let mut used_partition_pruning = false;
         if let Some(partition_constraints) = partition_constraints {
+            let original_candidate_count = candidate_files.len();
             candidate_files.retain(|file| partition_constraints_match(file, partition_constraints));
+            used_partition_pruning = candidate_files.len() < original_candidate_count;
         }
 
         let file_stats_constraint = pruning_constraints
             .as_ref()
             .and_then(|constraints| constraints.file_stats.as_ref());
-        let used_file_stats_pruning = file_stats_constraint
+        let mut used_file_stats_pruning = file_stats_constraint
             .is_some_and(|constraint| can_apply_file_stats_pruning(&candidate_files, constraint));
         if let Some(file_stats_constraint) =
             file_stats_constraint.filter(|_| used_file_stats_pruning)
         {
             candidate_files
                 .retain(|file| file_stats_constraint_matches(file, file_stats_constraint));
+        }
+
+        if candidate_files.is_empty() && !snapshot.active_files().is_empty() {
+            candidate_files = snapshot.active_files().iter().collect::<Vec<_>>();
+            used_partition_pruning = false;
+            used_file_stats_pruning = false;
         }
 
         let (candidate_paths, candidate_bytes, candidate_rows) =
@@ -1687,7 +1702,7 @@ impl BrowserRuntimeSession {
             candidate_rows,
             partition_columns,
             pruning: BrowserPruningSummary {
-                used_partition_pruning: partition_constraints.is_some(),
+                used_partition_pruning,
                 used_file_stats_pruning,
                 files_retained: candidate_file_count,
                 files_pruned,
@@ -2115,9 +2130,9 @@ impl BrowserRuntimeSession {
                 )?,
             );
         }
-        let metadata = browser_metadata_from_engine(wasm_parquet_engine::parse_parquet_metadata(
-            &target, &footer,
-        )?);
+        let metadata = wasm_parquet_engine::parse_parquet_metadata(&target, &footer)?;
+        validate_browser_supported_parquet_compression(file.path(), &metadata.compression_codecs)?;
+        let metadata = browser_metadata_from_engine(metadata);
 
         let file = BootstrappedBrowserFile::new_with_object_etag(
             file.path(),
@@ -2174,6 +2189,33 @@ impl BrowserRuntimeSession {
             )),
         }
     }
+}
+
+fn validate_browser_supported_parquet_compression(
+    file_path: &str,
+    compression_codecs: &[String],
+) -> Result<(), QueryError> {
+    let unsupported = compression_codecs
+        .iter()
+        .find(|codec| {
+            !SUPPORTED_BROWSER_PARQUET_COMPRESSION_CODECS
+                .iter()
+                .any(|supported| codec == supported)
+        })
+        .map(String::as_str);
+
+    let Some(codec) = unsupported else {
+        return Ok(());
+    };
+
+    Err(QueryError::new(
+        QueryErrorCode::UnsupportedFeature,
+        format!(
+            "browser runtime does not support Parquet compression codec {codec} in file '{file_path}'; supported codecs are {}",
+            SUPPORTED_BROWSER_PARQUET_COMPRESSION_CODECS.join(", ")
+        ),
+        runtime_target(),
+    ))
 }
 
 fn validate_snapshot_request_match(
@@ -2339,6 +2381,7 @@ fn candidate_materialized_files<'a>(
 struct MaterializedBootstrapSelection<'a> {
     files: Vec<&'a MaterializedBrowserFile>,
     files_pruned_before_bootstrap: u64,
+    prebootstrap_fail_open_count: u64,
     partition_columns: Vec<String>,
     applied_partition_constraints: Option<PartitionPruningConstraints>,
     used_partition_pruning: bool,
@@ -2455,6 +2498,10 @@ fn execution_metrics(
         duration_ms: wall_clock_duration_ms(operation_started_at),
         files_touched: plan.scan().candidate_file_count(),
         files_skipped: plan.pruning().files_pruned,
+        prebootstrap_fail_open_count: plan.pruning().prebootstrap_fail_open_count,
+        prebootstrap_files_pruned: plan.pruning().prebootstrap_files_pruned,
+        footer_reads_avoided: plan.pruning().footer_reads_avoided,
+        prebootstrap_candidate_files: plan.pruning().prebootstrap_candidate_files,
         row_groups_touched,
         row_groups_skipped,
         footer_reads: plan.footer_reads(),
@@ -2580,10 +2627,23 @@ fn select_materialized_files_for_bootstrap<'a>(
             .retain(|file| materialized_file_stats_constraint_matches(file, file_stats_constraint));
     }
 
+    if candidate_files.is_empty() && !all_files.is_empty() {
+        return Ok(MaterializedBootstrapSelection {
+            files: all_files,
+            files_pruned_before_bootstrap: 0,
+            prebootstrap_fail_open_count: 1,
+            partition_columns,
+            applied_partition_constraints: None,
+            used_partition_pruning: false,
+            used_file_stats_pruning: false,
+        });
+    }
+
     if candidate_files.len() == all_files.len() {
         return Ok(MaterializedBootstrapSelection {
             files: all_files,
             files_pruned_before_bootstrap: 0,
+            prebootstrap_fail_open_count: 0,
             partition_columns,
             applied_partition_constraints: None,
             used_partition_pruning: false,
@@ -2601,6 +2661,7 @@ fn select_materialized_files_for_bootstrap<'a>(
     Ok(MaterializedBootstrapSelection {
         files: candidate_files,
         files_pruned_before_bootstrap,
+        prebootstrap_fail_open_count: 0,
         partition_columns,
         applied_partition_constraints,
         used_partition_pruning,
@@ -2633,8 +2694,28 @@ fn planned_query_for_empty_bootstrap(
             used_file_stats_pruning: bootstrap_selection.used_file_stats_pruning,
             files_retained: 0,
             files_pruned: total_file_count,
+            ..BrowserPruningSummary::default()
         },
     })
+}
+
+fn apply_prebootstrap_pruning_metrics(
+    planned: &mut BrowserPlannedQuery,
+    bootstrap_selection: &MaterializedBootstrapSelection<'_>,
+) -> Result<(), QueryError> {
+    planned.pruning.prebootstrap_candidate_files = Some(
+        u64::try_from(bootstrap_selection.files.len()).map_err(|_| {
+            invalid_query_request(
+                "browser prebootstrap candidate file counts overflowed u64 during execution preparation",
+            )
+        })?,
+    );
+    planned.pruning.prebootstrap_fail_open_count =
+        Some(bootstrap_selection.prebootstrap_fail_open_count);
+    planned.pruning.prebootstrap_files_pruned =
+        Some(bootstrap_selection.files_pruned_before_bootstrap);
+    planned.pruning.footer_reads_avoided = Some(bootstrap_selection.files_pruned_before_bootstrap);
+    Ok(())
 }
 
 fn browser_scan_plan(

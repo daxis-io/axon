@@ -355,6 +355,10 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
                 duration_ms: 15,
                 files_touched: 2,
                 files_skipped: 1,
+                prebootstrap_fail_open_count: Some(1),
+                prebootstrap_files_pruned: Some(0),
+                footer_reads_avoided: Some(0),
+                prebootstrap_candidate_files: Some(2),
                 row_groups_touched: 2,
                 row_groups_skipped: 1,
                 footer_reads: Some(2),
@@ -427,6 +431,10 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             duration_ms: 11,
             files_touched: 2,
             files_skipped: 1,
+            prebootstrap_fail_open_count: Some(1),
+            prebootstrap_files_pruned: Some(0),
+            footer_reads_avoided: Some(0),
+            prebootstrap_candidate_files: Some(2),
             row_groups_touched: 4,
             row_groups_skipped: 3,
             footer_reads: Some(2),
@@ -494,6 +502,10 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             assert_eq!(event.bytes_fetched, 4096);
             assert_eq!(event.files_touched, 2);
             assert_eq!(event.files_skipped, 1);
+            assert_eq!(event.prebootstrap_fail_open_count, Some(1));
+            assert_eq!(event.prebootstrap_files_pruned, Some(0));
+            assert_eq!(event.footer_reads_avoided, Some(0));
+            assert_eq!(event.prebootstrap_candidate_files, Some(2));
             assert_eq!(event.row_groups_touched, 4);
             assert_eq!(event.row_groups_skipped, 3);
             assert_eq!(event.footer_reads, Some(2));
@@ -765,6 +777,10 @@ fn sample_query_response(
             duration_ms: 4,
             files_touched: 1,
             files_skipped: 0,
+            prebootstrap_fail_open_count: None,
+            prebootstrap_files_pruned: None,
+            footer_reads_avoided: None,
+            prebootstrap_candidate_files: None,
             row_groups_touched: 1,
             row_groups_skipped: 0,
             footer_reads: None,

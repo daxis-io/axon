@@ -617,6 +617,10 @@ export type QueryMetricsSummary = {
   duration_ms: number;
   files_touched: number;
   files_skipped: number;
+  prebootstrap_fail_open_count?: number;
+  prebootstrap_files_pruned?: number;
+  footer_reads_avoided?: number;
+  prebootstrap_candidate_files?: number;
   row_groups_touched?: number;
   row_groups_skipped?: number;
   footer_reads?: number;
@@ -864,6 +868,10 @@ export type BrowserWorkerRangeReadMetricsEvent = {
   bytes_fetched: number;
   files_touched: number;
   files_skipped: number;
+  prebootstrap_fail_open_count?: number;
+  prebootstrap_files_pruned?: number;
+  footer_reads_avoided?: number;
+  prebootstrap_candidate_files?: number;
   row_groups_touched: number;
   row_groups_skipped: number;
   footer_reads?: number;
@@ -4019,6 +4027,22 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
           bytes_fetched: requiredNumber(payload.bytes_fetched, 'range_read_metrics.bytes_fetched'),
           files_touched: requiredNumber(payload.files_touched, 'range_read_metrics.files_touched'),
           files_skipped: requiredNumber(payload.files_skipped, 'range_read_metrics.files_skipped'),
+          prebootstrap_fail_open_count: optionalNumber(
+            payload.prebootstrap_fail_open_count,
+            'range_read_metrics.prebootstrap_fail_open_count',
+          ),
+          prebootstrap_files_pruned: optionalNumber(
+            payload.prebootstrap_files_pruned,
+            'range_read_metrics.prebootstrap_files_pruned',
+          ),
+          footer_reads_avoided: optionalNumber(
+            payload.footer_reads_avoided,
+            'range_read_metrics.footer_reads_avoided',
+          ),
+          prebootstrap_candidate_files: optionalNumber(
+            payload.prebootstrap_candidate_files,
+            'range_read_metrics.prebootstrap_candidate_files',
+          ),
           row_groups_touched: requiredNumber(
             payload.row_groups_touched,
             'range_read_metrics.row_groups_touched',

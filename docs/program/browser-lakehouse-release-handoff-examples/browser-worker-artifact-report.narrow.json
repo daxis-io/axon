@@ -28,12 +28,12 @@
     }
   },
   "memory": {
-    "runtime_session_bytes": 80,
-    "query_session_bytes": 184,
+    "runtime_session_bytes": 96,
+    "query_session_bytes": 200,
     "runtime_config_bytes": 72,
     "command_struct_bytes": 200,
-    "response_envelope_struct_bytes": 232,
-    "query_metrics_struct_bytes": 96,
+    "response_envelope_struct_bytes": 536,
+    "query_metrics_struct_bytes": 400,
     "command_envelope_json_bytes": 303,
     "error_envelope_json_bytes": 231
   }

@@ -3,7 +3,7 @@
 #[path = "../../delta-control-plane/tests/support/mod.rs"]
 mod support;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -1045,7 +1045,7 @@ fn plan_query_prunes_candidate_files_from_partition_in_lists() {
 }
 
 #[test]
-fn plan_query_can_prune_all_files_when_partition_values_do_not_match() {
+fn plan_query_fails_open_when_partition_values_match_zero_files() {
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
         .expect("default config should be supported");
     let snapshot = sample_bootstrapped_snapshot();
@@ -1061,13 +1061,20 @@ fn plan_query_can_prune_all_files_when_partition_values_do_not_match() {
         )
         .expect("supported partition equality predicates should plan");
 
-    assert!(planned.candidate_paths.is_empty());
-    assert_eq!(planned.candidate_file_count, 0);
-    assert_eq!(planned.candidate_bytes, 0);
-    assert_eq!(planned.candidate_rows, 0);
-    assert!(planned.pruning.used_partition_pruning);
-    assert_eq!(planned.pruning.files_retained, 0);
-    assert_eq!(planned.pruning.files_pruned, 3);
+    assert_eq!(
+        planned.candidate_paths,
+        vec![
+            "category=A/part-000.parquet".to_string(),
+            "category=B/part-001.parquet".to_string(),
+            "category=C/part-002.parquet".to_string(),
+        ]
+    );
+    assert_eq!(planned.candidate_file_count, 3);
+    assert_eq!(planned.candidate_bytes, 360);
+    assert_eq!(planned.candidate_rows, 9);
+    assert!(!planned.pruning.used_partition_pruning);
+    assert_eq!(planned.pruning.files_retained, 3);
+    assert_eq!(planned.pruning.files_pruned, 0);
 }
 
 #[test]
@@ -1531,7 +1538,7 @@ fn runtime_prunes_files_from_delta_stats_before_opening_parquet() {
 }
 
 #[test]
-fn runtime_prunes_all_files_from_delta_snapshot_before_opening_parquet() {
+fn runtime_fails_open_when_prebootstrap_partition_pruning_finds_zero_candidates() {
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
         .expect("default config should be supported");
     let fixture = TestTableFixture::create_partitioned();
@@ -1566,17 +1573,112 @@ fn runtime_prunes_all_files_from_delta_snapshot_before_opening_parquet() {
 
     let prepared = runtime()
         .block_on(session.prepare_execution(&materialized, &request))
-        .expect("runtime should prepare zero-candidate partition-pruned execution");
+        .expect("runtime should fail open for zero-candidate partition-pruned execution");
     let result = runtime()
         .block_on(session.execute_plan(&materialized, prepared.execution_plan()))
-        .expect("zero-candidate partition-pruned execution should succeed");
+        .expect("fail-open zero-candidate execution should succeed");
+    let fetched_paths = server.recorded_paths().into_iter().collect::<BTreeSet<_>>();
+    let active_paths = resolved
+        .active_files
+        .iter()
+        .map(|file| format!("/{}", file.path))
+        .collect::<BTreeSet<_>>();
 
-    assert!(server.recorded_paths().is_empty());
-    assert!(prepared.bootstrapped_snapshot().active_files().is_empty());
-    assert_eq!(prepared.planned_query().candidate_file_count, 0);
-    assert_eq!(prepared.planned_query().pruning.files_pruned, 3);
-    assert_eq!(result.metrics().files_touched, 0);
-    assert_eq!(result.metrics().files_skipped, 3);
+    assert_eq!(prepared.bootstrapped_snapshot().active_files().len(), 3);
+    assert_eq!(prepared.planned_query().candidate_file_count, 3);
+    assert_eq!(prepared.planned_query().pruning.files_pruned, 0);
+    assert_eq!(result.metrics().files_touched, 3);
+    assert_eq!(result.metrics().files_skipped, 0);
+    assert_eq!(result.metrics().footer_reads, Some(3));
+    assert_eq!(result.metrics().prebootstrap_fail_open_count, Some(1));
+    assert_eq!(result.metrics().prebootstrap_files_pruned, Some(0));
+    assert_eq!(result.metrics().footer_reads_avoided, Some(0));
+    assert_eq!(result.metrics().prebootstrap_candidate_files, Some(3));
+    for active_path in active_paths {
+        assert!(
+            fetched_paths.contains(&active_path),
+            "fail-open bootstrap should fetch footer metadata for {active_path}"
+        );
+    }
+    assert!(result.rows().is_empty());
+}
+
+#[test]
+fn runtime_fails_open_when_prebootstrap_delta_stats_pruning_finds_zero_candidates() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let fixture = TestTableFixture::create_partitioned();
+    let resolver = SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    );
+    let mut resolved = runtime()
+        .block_on(session.resolve_delta_snapshot(
+            &resolver,
+            SnapshotResolutionRequest {
+                table_uri: fixture.raw_table_path(),
+                snapshot_version: None,
+            },
+        ))
+        .expect("delta snapshot should resolve");
+    for file in &mut resolved.active_files {
+        let category = file
+            .partition_values
+            .get("category")
+            .and_then(Option::as_deref)
+            .expect("partitioned fixture files should have category values");
+        file.stats = Some(match category {
+            "A" => delta_i64_stats(2, "value", 10, 30),
+            "B" => delta_i64_stats(3, "value", 20, 50),
+            "C" => delta_i64_stats(4, "value", 60, 60),
+            other => panic!("unexpected fixture category {other}"),
+        });
+    }
+    let server = RequestCapturingObjectServer::from_fixture_paths(
+        &fixture,
+        resolved.active_files.iter().map(|file| file.path.clone()),
+    );
+    let materialized = session
+        .materialize_resolved_snapshot(&resolved, |file| {
+            BrowserObjectSource::from_url(server.url_for_path(&file.path))
+        })
+        .expect("resolved snapshot should materialize into browser object sources");
+    let request = QueryRequest::new(
+        materialized.table_uri(),
+        "SELECT id FROM axon_table WHERE value > 100 ORDER BY id",
+        ExecutionTarget::BrowserWasm,
+    );
+
+    let prepared = runtime()
+        .block_on(session.prepare_execution(&materialized, &request))
+        .expect("runtime should fail open for zero-candidate Delta-stats-pruned execution");
+    let result = runtime()
+        .block_on(session.execute_plan(&materialized, prepared.execution_plan()))
+        .expect("fail-open zero-candidate Delta stats execution should succeed");
+    let fetched_paths = server.recorded_paths().into_iter().collect::<BTreeSet<_>>();
+    let active_paths = resolved
+        .active_files
+        .iter()
+        .map(|file| format!("/{}", file.path))
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(prepared.bootstrapped_snapshot().active_files().len(), 3);
+    assert_eq!(prepared.planned_query().candidate_file_count, 3);
+    assert_eq!(prepared.planned_query().pruning.files_pruned, 0);
+    assert_eq!(result.metrics().files_touched, 3);
+    assert_eq!(result.metrics().files_skipped, 0);
+    assert_eq!(result.metrics().footer_reads, Some(3));
+    assert_eq!(result.metrics().prebootstrap_fail_open_count, Some(1));
+    assert_eq!(result.metrics().prebootstrap_files_pruned, Some(0));
+    assert_eq!(result.metrics().footer_reads_avoided, Some(0));
+    assert_eq!(result.metrics().prebootstrap_candidate_files, Some(3));
+    for active_path in active_paths {
+        assert!(
+            fetched_paths.contains(&active_path),
+            "fail-open bootstrap should fetch footer metadata for {active_path}"
+        );
+    }
     assert!(result.rows().is_empty());
 }
 

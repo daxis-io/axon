@@ -3,13 +3,14 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use parquet::basic::Compression;
 use parquet::data_type::Int64Type;
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
 use query_contract::{
     BrowserHttpFileDescriptor, BrowserHttpParquetDatasetDescriptor, CapabilityReport,
-    ExecutionTarget, QueryRequest,
+    ExecutionTarget, QueryErrorCode, QueryRequest,
 };
 use wasm_datafusion_session::BrowserDataFusionSession;
 use wasm_query_runtime::{BrowserObjectAccessMode, BrowserRuntimeConfig};
@@ -329,6 +330,56 @@ fn session_treats_weak_etag_as_missing_if_range_identity() {
     });
 }
 
+#[test]
+fn session_rejects_zstd_parquet_dataset_before_query_execution() {
+    let _guard = PARQUET_DATASET_TEST_LOCK
+        .lock()
+        .expect("Parquet dataset tests should serialize local HTTP servers");
+
+    runtime().block_on(async {
+        let object = parquet_bytes_with_i64_columns_and_compression(
+            &[(3, 25), (1, 5), (2, 12)],
+            Compression::ZSTD(Default::default()),
+        );
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let server = RequestCapturingServer::new(object);
+        let dataset = BrowserHttpParquetDatasetDescriptor {
+            table_uri: "https://example.invalid/datasets/events".to_string(),
+            partition_column_types: BTreeMap::new(),
+            browser_compatibility: CapabilityReport::default(),
+            required_capabilities: CapabilityReport::default(),
+            files: vec![BrowserHttpFileDescriptor {
+                path: "region=ap-south/part-00000.zstd.parquet".to_string(),
+                url: server.url(),
+                size_bytes: object_size,
+                partition_values: BTreeMap::new(),
+                stats: None,
+            }],
+        };
+        let mut session = BrowserDataFusionSession::new(browser_safe_http_config(), u64::MAX)
+            .expect("browser DataFusion session should construct");
+
+        let error = session
+            .open_parquet_dataset("events", dataset)
+            .await
+            .expect_err("ZSTD Parquet datasets should be rejected before query execution");
+
+        assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+        assert!(
+            error.message.contains("ZSTD"),
+            "error should identify the unsupported compression codec: {}",
+            error.message
+        );
+        assert!(
+            error
+                .message
+                .contains("region=ap-south/part-00000.zstd.parquet"),
+            "error should identify the incompatible file: {}",
+            error.message
+        );
+    });
+}
+
 fn browser_safe_http_config() -> BrowserRuntimeConfig {
     BrowserRuntimeConfig {
         object_access_mode: BrowserObjectAccessMode::BrowserSafeHttp,
@@ -338,6 +389,13 @@ fn browser_safe_http_config() -> BrowserRuntimeConfig {
 }
 
 fn parquet_bytes_with_i64_columns(rows: &[(i64, i64)]) -> Vec<u8> {
+    parquet_bytes_with_i64_columns_and_compression(rows, Compression::UNCOMPRESSED)
+}
+
+fn parquet_bytes_with_i64_columns_and_compression(
+    rows: &[(i64, i64)],
+    compression: Compression,
+) -> Vec<u8> {
     let schema = Arc::new(
         parse_message_type("message schema { REQUIRED INT64 id; REQUIRED INT64 value; }")
             .expect("parquet schema should parse"),
@@ -346,7 +404,11 @@ fn parquet_bytes_with_i64_columns(rows: &[(i64, i64)]) -> Vec<u8> {
     let mut writer = SerializedFileWriter::new(
         &mut bytes,
         schema,
-        Arc::new(WriterProperties::builder().build()),
+        Arc::new(
+            WriterProperties::builder()
+                .set_compression(compression)
+                .build(),
+        ),
     )
     .expect("parquet writer should construct");
     let ids = rows.iter().map(|(id, _)| *id).collect::<Vec<_>>();

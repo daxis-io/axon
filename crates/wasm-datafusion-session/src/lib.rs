@@ -815,6 +815,10 @@ fn datafusion_query_metrics(
             fallback_file_count
         },
         files_skipped: scan_metrics.files_skipped,
+        prebootstrap_fail_open_count: None,
+        prebootstrap_files_pruned: None,
+        footer_reads_avoided: None,
+        prebootstrap_candidate_files: None,
         row_groups_touched: scan_metrics.row_groups_touched,
         row_groups_skipped: scan_metrics.row_groups_skipped,
         footer_reads,

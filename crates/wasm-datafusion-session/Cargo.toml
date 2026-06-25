@@ -12,5 +12,5 @@ wasm-datafusion-poc = { path = "../wasm-datafusion-poc" }
 wasm-query-runtime = { path = "../wasm-query-runtime" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-parquet = { version = "=58.3.0", default-features = false }
+parquet = { version = "=58.3.0", default-features = false, features = ["zstd"] }
 tokio = { version = "=1.52.3", features = ["rt-multi-thread"] }

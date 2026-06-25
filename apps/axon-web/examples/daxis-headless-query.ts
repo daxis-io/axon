@@ -232,6 +232,10 @@ export type DaxisResultMetrics = {
   duration_ms?: number;
   files_touched?: number;
   files_skipped?: number;
+  prebootstrap_fail_open_count?: number;
+  prebootstrap_files_pruned?: number;
+  footer_reads_avoided?: number;
+  prebootstrap_candidate_files?: number;
   row_groups_touched?: number;
   row_groups_skipped?: number;
   footer_reads?: number;
@@ -596,6 +600,18 @@ function daxisMetricsFromQueryResult(
     duration_ms: metrics.duration_ms,
     files_touched: metrics.files_touched,
     files_skipped: metrics.files_skipped,
+    ...(metrics.prebootstrap_fail_open_count !== undefined
+      ? { prebootstrap_fail_open_count: metrics.prebootstrap_fail_open_count }
+      : {}),
+    ...(metrics.prebootstrap_files_pruned !== undefined
+      ? { prebootstrap_files_pruned: metrics.prebootstrap_files_pruned }
+      : {}),
+    ...(metrics.footer_reads_avoided !== undefined
+      ? { footer_reads_avoided: metrics.footer_reads_avoided }
+      : {}),
+    ...(metrics.prebootstrap_candidate_files !== undefined
+      ? { prebootstrap_candidate_files: metrics.prebootstrap_candidate_files }
+      : {}),
     ...(metrics.row_groups_touched !== undefined
       ? { row_groups_touched: metrics.row_groups_touched }
       : {}),

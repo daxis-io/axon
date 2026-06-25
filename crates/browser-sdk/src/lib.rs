@@ -285,6 +285,14 @@ pub struct BrowserWorkerRangeReadMetricsEvent {
     pub bytes_fetched: u64,
     pub files_touched: u64,
     pub files_skipped: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prebootstrap_fail_open_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prebootstrap_files_pruned: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_reads_avoided: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prebootstrap_candidate_files: Option<u64>,
     pub row_groups_touched: u64,
     pub row_groups_skipped: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -404,6 +412,10 @@ impl BrowserWorkerEventEnvelope {
             bytes_fetched: metrics.bytes_fetched,
             files_touched: metrics.files_touched,
             files_skipped: metrics.files_skipped,
+            prebootstrap_fail_open_count: metrics.prebootstrap_fail_open_count,
+            prebootstrap_files_pruned: metrics.prebootstrap_files_pruned,
+            footer_reads_avoided: metrics.footer_reads_avoided,
+            prebootstrap_candidate_files: metrics.prebootstrap_candidate_files,
             row_groups_touched: metrics.row_groups_touched,
             row_groups_skipped: metrics.row_groups_skipped,
             footer_reads: metrics.footer_reads,

@@ -13,6 +13,10 @@ This is the list of metrics and routing signals the repo emits today. There are 
 - `duration_ms`: wall-clock query duration
 - `files_touched`: files opened for execution
 - `files_skipped`: files skipped by pruning
+- `prebootstrap_fail_open_count`: conservative fail-open events observed before Parquet footer reads when zero-candidate prebootstrap pruning cannot safely provide a schema
+- `prebootstrap_files_pruned`: data files pruned before Parquet footer reads when tracked; zero when prebootstrap pruning fails open
+- `footer_reads_avoided`: Parquet footer reads avoided by prebootstrap file pruning when tracked; this is distinct from footer-cache range-read avoidance
+- `prebootstrap_candidate_files`: data files retained as prebootstrap candidates when tracked
 - `row_groups_touched`: Parquet row groups decoded by the browser scan layer when tracked; native responses currently report `0`
 - `row_groups_skipped`: Parquet row groups skipped by browser row-group pruning when tracked; native responses currently report `0`
 - `footer_reads`: browser snapshot-bootstrap footer reads when tracked
@@ -40,6 +44,10 @@ Executed `daxis.query_result.v1` envelopes map Axon runtime facts into Daxis-fac
 - `duration_ms`: maps from `QueryMetricsSummary.duration_ms`
 - `files_touched`: maps from `QueryMetricsSummary.files_touched`
 - `files_skipped`: maps from `QueryMetricsSummary.files_skipped`
+- `prebootstrap_fail_open_count`: maps from `QueryMetricsSummary.prebootstrap_fail_open_count` when tracked
+- `prebootstrap_files_pruned`: maps from `QueryMetricsSummary.prebootstrap_files_pruned` when tracked
+- `footer_reads_avoided`: maps from `QueryMetricsSummary.footer_reads_avoided` when tracked
+- `prebootstrap_candidate_files`: maps from `QueryMetricsSummary.prebootstrap_candidate_files` when tracked
 - `row_groups_touched`: maps from `QueryMetricsSummary.row_groups_touched` when tracked
 - `row_groups_skipped`: maps from `QueryMetricsSummary.row_groups_skipped` when tracked
 - `footer_reads`: maps from `QueryMetricsSummary.footer_reads` when tracked

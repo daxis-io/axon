@@ -11,6 +11,7 @@ import {
   type AxonQueryResult,
   type BrowserHttpFileDescriptor,
   type BrowserHttpSnapshotDescriptor,
+  type BrowserWorkerRangeReadMetricsEvent,
   type BrowserWorkerEventEnvelope,
   type ExecutionTarget,
   type PartitionColumnType,
@@ -366,6 +367,42 @@ function mergeQueryMetrics(
   };
 }
 
+export function queryMetricsFromRangeReadMetricsEvent(
+  metrics: BrowserWorkerRangeReadMetricsEvent,
+  durationMs: number,
+  setupMetrics: SessionSetupMetrics | undefined,
+): QueryMetricsSummary {
+  return mergeQueryMetrics(
+    {
+      bytes_fetched: metrics.bytes_fetched,
+      duration_ms: durationMs,
+      files_touched: metrics.files_touched,
+      files_skipped: metrics.files_skipped,
+      prebootstrap_fail_open_count: metrics.prebootstrap_fail_open_count,
+      prebootstrap_files_pruned: metrics.prebootstrap_files_pruned,
+      footer_reads_avoided: metrics.footer_reads_avoided,
+      prebootstrap_candidate_files: metrics.prebootstrap_candidate_files,
+      row_groups_touched: metrics.row_groups_touched,
+      row_groups_skipped: metrics.row_groups_skipped,
+      footer_reads: metrics.footer_reads,
+      bootstrap_footer_range_reads: metrics.bootstrap_footer_range_reads,
+      scan_footer_range_reads: metrics.scan_footer_range_reads,
+      scan_data_range_reads: metrics.scan_data_range_reads,
+      duplicate_range_reads: metrics.duplicate_range_reads,
+      footer_cache_hits: metrics.footer_cache_hits,
+      footer_cache_misses: metrics.footer_cache_misses,
+      footer_range_reads_avoided: metrics.footer_range_reads_avoided,
+      footer_cache_degraded_identity_reads: metrics.footer_cache_degraded_identity_reads,
+      identity_present_range_reads: metrics.identity_present_range_reads,
+      identity_missing_range_reads: metrics.identity_missing_range_reads,
+      rows_emitted: metrics.rows_emitted,
+      snapshot_bootstrap_duration_ms: metrics.snapshot_bootstrap_duration_ms,
+      access_mode: metrics.access_mode,
+    },
+    setupMetrics,
+  );
+}
+
 export async function getSession(
   source: QueryTableSource = SAMPLE_QUERY_SOURCE,
 ): Promise<SessionState> {
@@ -500,31 +537,7 @@ export async function runQuery(
         const m = envelope.range_read_metrics;
         onEvent({
           kind: 'metrics',
-          metrics: mergeQueryMetrics(
-            {
-              bytes_fetched: m.bytes_fetched,
-              duration_ms: since(),
-              files_touched: m.files_touched,
-              files_skipped: m.files_skipped,
-              row_groups_touched: m.row_groups_touched,
-              row_groups_skipped: m.row_groups_skipped,
-              footer_reads: m.footer_reads,
-              bootstrap_footer_range_reads: m.bootstrap_footer_range_reads,
-              scan_footer_range_reads: m.scan_footer_range_reads,
-              scan_data_range_reads: m.scan_data_range_reads,
-              duplicate_range_reads: m.duplicate_range_reads,
-              footer_cache_hits: m.footer_cache_hits,
-              footer_cache_misses: m.footer_cache_misses,
-              footer_range_reads_avoided: m.footer_range_reads_avoided,
-              footer_cache_degraded_identity_reads: m.footer_cache_degraded_identity_reads,
-              identity_present_range_reads: m.identity_present_range_reads,
-              identity_missing_range_reads: m.identity_missing_range_reads,
-              rows_emitted: m.rows_emitted,
-              snapshot_bootstrap_duration_ms: m.snapshot_bootstrap_duration_ms,
-              access_mode: m.access_mode,
-            },
-            setupMetricsForEvent(),
-          ),
+          metrics: queryMetricsFromRangeReadMetricsEvent(m, since(), setupMetricsForEvent()),
           elapsed_ms: since(),
         });
       } else if ('fallback' in envelope) {

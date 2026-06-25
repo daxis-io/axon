@@ -1414,6 +1414,18 @@ pub struct QueryMetricsSummary {
     pub files_touched: u64,
     /// Data files skipped by partition or file pruning when the runtime can report them; otherwise `0`.
     pub files_skipped: u64,
+    /// Prebootstrap pruning fail-open events observed before Parquet footer reads when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prebootstrap_fail_open_count: Option<u64>,
+    /// Data files pruned before Parquet footer reads when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prebootstrap_files_pruned: Option<u64>,
+    /// Parquet footer reads avoided by prebootstrap file pruning when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_reads_avoided: Option<u64>,
+    /// Data files retained as prebootstrap candidates when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prebootstrap_candidate_files: Option<u64>,
     /// Parquet row groups decoded by the executed query plan when the runtime can report them.
     #[serde(default)]
     pub row_groups_touched: u64,
@@ -1590,6 +1602,14 @@ pub struct DaxisQueryMetrics {
     pub files_touched: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files_skipped: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prebootstrap_fail_open_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prebootstrap_files_pruned: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer_reads_avoided: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prebootstrap_candidate_files: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_groups_touched: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

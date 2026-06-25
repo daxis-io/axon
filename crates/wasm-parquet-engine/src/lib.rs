@@ -23,7 +23,7 @@ use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::ProjectionMask;
 use parquet::basic::{
-    ConvertedType as RawParquetConvertedType,
+    Compression as RawParquetCompression, ConvertedType as RawParquetConvertedType,
     EdgeInterpolationAlgorithm as RawParquetEdgeInterpolationAlgorithm,
     LogicalType as RawParquetLogicalType, Repetition as RawParquetRepetition,
     TimeUnit as RawParquetTimeUnit, Type as RawParquetPhysicalType,
@@ -244,6 +244,7 @@ pub struct ParquetFileMetadata {
     pub footer_length_bytes: u32,
     pub row_group_count: u64,
     pub row_count: u64,
+    pub compression_codecs: Vec<String>,
     pub fields: Vec<ParquetColumnField>,
     pub field_stats: BTreeMap<String, ParquetFieldStats>,
 }
@@ -1957,6 +1958,7 @@ fn parquet_file_metadata_from_decoded(
         .iter()
         .map(|column| parquet_field_from_descriptor(column.as_ref()))
         .collect::<Vec<_>>();
+    let compression_codecs = parquet_compression_codecs(&metadata);
     let field_stats = parquet_field_stats_from_metadata(&metadata);
 
     Ok(ParquetFileMetadata {
@@ -1964,6 +1966,7 @@ fn parquet_file_metadata_from_decoded(
         footer_length_bytes: footer.footer_length_bytes(),
         row_group_count,
         row_count,
+        compression_codecs,
         fields,
         field_stats,
     })
@@ -2197,6 +2200,25 @@ fn parquet_inspection_column_chunk(
         has_bloom_filter: column.bloom_filter_offset().is_some()
             || column.bloom_filter_length().is_some(),
     })
+}
+
+fn parquet_compression_codecs(metadata: &ParquetMetaData) -> Vec<String> {
+    metadata
+        .row_groups()
+        .iter()
+        .flat_map(|row_group| row_group.columns())
+        .map(|column| parquet_compression_codec_name(column.compression()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn parquet_compression_codec_name(compression: RawParquetCompression) -> String {
+    format!("{compression:?}")
+        .split('(')
+        .next()
+        .unwrap_or("UNKNOWN")
+        .to_string()
 }
 
 fn compression_summary(
