@@ -2,6 +2,7 @@ import { Analytics } from '@vercel/analytics/react';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.tsx';
+import { AppProviders } from './AppProviders.tsx';
 import { ConnectPage } from './ConnectPage.tsx';
 import { useRoute } from './router.ts';
 import './styles/design-tokens.css';
@@ -20,7 +21,9 @@ if (!rootEl) {
 
 createRoot(rootEl).render(
   <StrictMode>
-    <Router />
-    <Analytics />
+    <AppProviders>
+      <Router />
+      <Analytics />
+    </AppProviders>
   </StrictMode>,
 );

@@ -13,6 +13,7 @@
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix",
+    "test": "vitest run",
     "test:sdk": "playwright test --config=playwright.sdk.config.ts",
     "test:browser": "npm run test:e2e",
     "test:browser:editor-smoke": "playwright test --config=playwright.editor-smoke.config.ts",
@@ -32,10 +33,12 @@
     "prettier": "^3.8.3",
     "typescript": "5.9.3",
     "typescript-eslint": "^8.59.3",
-    "vite": "^7.3.2"
+    "vite": "^7.3.2",
+    "vitest": "^4.1.9"
   },
   "dependencies": {
     "@codemirror/lang-sql": "6.10.0",
+    "@tanstack/react-query": "^5.101.1",
     "@vercel/analytics": "^2.0.1",
     "codemirror": "6.0.2",
     "react": "^18.3.1",
