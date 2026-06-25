@@ -27,10 +27,10 @@ The reframe: Axon becomes a standalone rich lakehouse client where the catalog s
 
 Six provider seams anchor every effort:
 
-- **CatalogProvider** — **discovery only**: where table/metadata *structure* comes from (list catalogs/schemas/tables/views/volumes/functions/models + metadata): `DirectUnityCatalog` (UC REST), `Daxis` (catalog listing), `LocalDelta`, `ObjectStore`. It answers "what exists," not "how do I read it." Anchors E1.
+- **CatalogProvider** — **discovery only**: where table/metadata _structure_ comes from (list catalogs/schemas/tables/views/volumes/functions/models + metadata): `DirectUnityCatalog` (UC REST), `Daxis` (catalog listing), `LocalDelta`, `ObjectStore`. It answers "what exists," not "how do I read it." Anchors E1.
 - **Identity/SessionProvider** — who the user is and whether the session is valid: an ambient browser session terminated by an Envoy proxy (login/session, no cloud secrets in the browser), vs `LocalDelta` (no auth) vs Tauri/native (OS/native credentials).
 - **AuthorizationProvider (PDP)** — whether an action is allowed: `Cedar` (in-app, authoritative in standalone mode; advisory in Daxis mode) or `Daxis` (authoritative).
-- **DataAccessResolver** — *read resolution*: "may this client read this specific table's bytes right now, and from where?" Returns the `ReadAccessPlan` / `BrowserHttpSnapshotDescriptor` / `fallback` / `blocked` family. Profiles: brokered UC (object-grant / credential-vending), `Daxis` (`ReadAccessPlan`), `LocalDelta`, `ObjectStore`. Policy-gated, short-lived, fail-closed — never cached like discovery. Consumed by the `BrowserWasm` execution backend; a `RemoteService` backend resolves reads server-side and bypasses it. Anchors E9.
+- **DataAccessResolver** — _read resolution_: "may this client read this specific table's bytes right now, and from where?" Returns the `ReadAccessPlan` / `BrowserHttpSnapshotDescriptor` / `fallback` / `blocked` family. Profiles: brokered UC (object-grant / credential-vending), `Daxis` (`ReadAccessPlan`), `LocalDelta`, `ObjectStore`. Policy-gated, short-lived, fail-closed — never cached like discovery. Consumed by the `BrowserWasm` execution backend; a `RemoteService` backend resolves reads server-side and bypasses it. Anchors E9.
 - **ExecutionProvider** — where the query runs and where sample/preview data comes from: `BrowserWasm` (Web Worker, today), `Tauri` (native runtime via IPC), `RemoteService` (Connect/gRPC). Anchors E9.
 - **FileSystemProvider / Workspace** — where file-like bytes and directory listings come from: `UnityCatalogVolume` (UC Volumes Files API), `ObjectStorePrefix` (bucket prefixes), `LocalFolder` (OPFS / File System Access), and `Document` (saved queries/files). Distinct from CatalogProvider: the catalog answers "what tables/volumes/metadata exist," the FileSystemProvider answers "what files are inside a volume/folder and how do I read or write their bytes." Anchors E8.
 
@@ -71,29 +71,27 @@ Dependency: blocks E1, E2, E5, E7. The TanStack Query layer is the seam E1 provi
 
 ### E1 — Pluggable Catalog Providers and Catalog Explorer (discovery)
 
-Define the **discovery-only** `CatalogProvider` interface and ship the `DirectUnityCatalog` provider (UC REST: list catalogs/schemas/tables/views/volumes/functions/models + table metadata) alongside the existing Daxis/local/object-store paths in [query-source.ts](../../apps/axon-web/src/services/query-source.ts) and [ConnectModal.tsx](../../apps/axon-web/src/editor/connect/ConnectModal.tsx). Providers expose their **navigation** reads as TanStack Query options (a `queryKey` factory + fetcher per provider) so caching, background refresh, dedup, and pagination from E0 apply uniformly across UC/Daxis/local/object-store. E1 is the Catalog Explorer surface: browse, search, drill into metadata.
+Define the **discovery-only** `CatalogProvider` interface and ship the `DirectUnityCatalog` provider (UC REST: list catalogs/schemas/tables/views/volumes/functions/models + table metadata) alongside the existing Daxis/local/object-store paths in [query-source.ts](../../apps/axon-web/src/services/query-source.ts) and [ConnectModal.tsx](../../apps/axon-web/src/editor/connect/ConnectModal.tsx). Providers expose plain navigation methods that a TanStack Query layer wraps with query keys, caching, background refresh, dedup, and pagination from E0. E1 is the Catalog Explorer surface: browse, search, drill into metadata.
 
-- **Discovery only.** E1 answers "what catalogs/schemas/tables/volumes exist and what is their metadata." It does **not** resolve how to read a table's bytes or run a query — *read resolution* (the `ReadAccessPlan`/descriptor/`fallback`/`blocked` family) is the **DataAccessResolver** seam and *execution* (run/sample) is the **ExecutionProvider** seam, both owned by **E9**. The Explorer's "Sample data" and "Open in SQL editor" actions hand a table *ref* to E9; they do not live in the catalog provider.
+- **Discovery only.** E1 answers "what catalogs/schemas/tables/volumes exist and what is their metadata." It does **not** resolve how to read a table's bytes or run a query — _read resolution_ (the `ReadAccessPlan`/descriptor/`fallback`/`blocked` family) is the **DataAccessResolver** seam and _execution_ (run/sample) is the **ExecutionProvider** seam, both owned by **E9**. The Explorer's "Sample data" and "Open in SQL editor" actions hand a table _ref_ to E9; they do not live in the catalog provider.
 - **Multi-catalog connection registry + selectors** in both the sidebar and the editor, each backed by provider-scoped query keys so switching catalogs reuses cached metadata and refreshes stale entries in the background.
 - **Lazy catalog tree navigation** (infinite/paginated queries for large catalogs).
-- **Volumes as catalog objects (discovery only)** — list volumes and show volume metadata (type, storage location, comment) alongside tables/views in the explorer. Browsing the files *inside* a volume, previewing, and editing them is **out of scope for E1** and lives in **E8 (Workspace Files & Volumes)**; the catalog only references a volume, it does not open it.
+- **Volumes as catalog objects (discovery only)** — list volumes and show volume metadata (type, storage location, comment) alongside tables/views in the explorer. Browsing the files _inside_ a volume, previewing, and editing them is **out of scope for E1** and lives in **E8 (Workspace Files & Volumes)**; the catalog only references a volume, it does not open it.
 - **A catalog metadata cache** that feeds editor IntelliSense (E2) and policy entities (E4).
 - **Typed contracts come from E3A.** E1's node/metadata shapes are the E3A-generated proto messages (DirectUC maps UC's OpenAPI types into the normalized messages), not hand-written TS sketches.
 - **Open question:** where UC credential exchange / CORS lives given [ADR-0002](../adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md) — likely the Envoy session seam from E6 (a thin token/proxy boundary), reconciled with the pluggable model.
 
-> **Update (2026-06-21).** The seam is now defined by [ADR-0010 "Pluggable
-> Catalog Providers"](../adr/ADR-0010-pluggable-catalog-providers.md) and adopts
-> the E3A **generated** `axon/catalog/v1` + `axon/dataaccess/v1` contracts as the
-> canonical node/resolution model (not hand-written types). Two clarifications
-> resolve the open question above: (1) navigation node shapes come from the
-> generated proto and providers expose plain paginators (`Page<T>`), with the
-> TanStack Query options layered on top; (2) **Envoy is deployment-only** — dev
-> and integration tests run a real OSS UC server reached same-origin through the
-> Vite proxy (`/api/uc`), keeping `SessionHttp`'s contract unchanged. E1 keeps
-> `resolveTableRead` on the provider as the bounded entry point into the E9
-> DataAccessResolver/ExecutionProvider seams: external Delta on browser-reachable
-> storage resolves to a `descriptor`; governed/brokered shapes fail closed to
-> `fallback`/`blocked`.
+> **Update (2026-06-21).** [ADR-0010 "Pluggable Catalog
+> Providers"](../adr/ADR-0010-pluggable-catalog-providers.md) now defines the
+> provider boundary. ADR-0010
+> makes the boundary explicit: **CatalogProvider discovers**, **DataAccessResolver
+> resolves**, and **ExecutionProvider runs/previews**. E1 owns generated
+> `axon/catalog/v1` navigation nodes when E3A lands, plus provider paginators
+> (`Page<T>`) with TanStack Query options layered on top. E9 owns
+> `axon/dataaccess/v1` resolution outcomes, including `descriptor`,
+> `read_access_plan`, `fallback`, and `blocked`. **Envoy is deployment-only**:
+> dev and integration tests should run a real OSS UC server reached same-origin
+> through the Vite proxy (`/api/uc`), keeping `SessionHttp`'s contract unchanged.
 
 Dependency: needs E0, E3A (contract messages), and E6 (auth for remote APIs); feeds E2, E4, E7, E8, and E9 (table refs).
 
@@ -115,11 +113,11 @@ So much of E1/E9/E8/E4 hinges on getting the seam contracts right that the **mes
 
 #### E3A — Provider contract surfaces (early, right after E0)
 
-One reviewable proto tree that is the canonical picture of every pluggable surface. It **reuses the `axon/config/v1` Buf module already stood up in E0** ([buf.yaml](../../apps/axon-web/buf.yaml) notes the layout is kept stable so E3 adopts it unchanged) and its codegen ([buf.gen.yaml](../../apps/axon-web/buf.gen.yaml): protobuf-es TS today; add a Rust backend — **preferring [buffa](https://github.com/anthropics/buffa)** (pure-Rust, `no_std`, buf remote plugin) over prost, contingent on verifying `wasm32-unknown-unknown`).
+One reviewable proto tree that is the canonical picture of every pluggable surface. It **extends the `axon/config/v1` Buf module planned in E0** (`buf.yaml`, `buf.gen.yaml`, and `proto/axon/config/v1/settings.proto`) once that milestone lands, and adds a Rust backend — **preferring [buffa](https://github.com/anthropics/buffa)** (pure-Rust, `no_std`, buf remote plugin) over prost, contingent on verifying `wasm32-unknown-unknown`.
 
 - **Messages-first.** Define the message contracts for all seams: catalog **discovery** nodes/metadata (`CatalogNode`/`SchemaNode`/`TableNode`/`TableMetadata`/`VolumeNode`/`FunctionNode`/`ModelNode`), **data-access resolution** + descriptors (port the existing serde/JSON-schema [read-access-plan.schema.json](../../crates/query-contract/schemas/read-access-plan.schema.json) + [object-grants.openapi.json](../../crates/query-contract/schemas/object-grants.openapi.json)), **execution** request/response + worker IPC envelopes (from [browser-sdk](../../crates/browser-sdk/src/lib.rs)), and **filesystem** entries (E8).
-- **Services only at transport boundaries.** The execution surface (worker IPC + future `RemoteService`) gets proto *services*; the local provider seams (discovery via TanStack `queryOptions`) stay TS interfaces that *consume* generated messages.
-- **UC REST stays OpenAPI-vendored** (per E1): proto defines the *normalized* nodes; the DirectUC provider maps UC's OpenAPI types into them. We do not re-proto the UC wire format.
+- **Services only at transport boundaries.** The execution surface (worker IPC + future `RemoteService`) gets proto _services_; the local provider seams (discovery via TanStack `queryOptions`) stay TS interfaces that _consume_ generated messages.
+- **UC REST stays OpenAPI-vendored** (per E1): proto defines the _normalized_ nodes; the DirectUC provider maps UC's OpenAPI types into them. We do not re-proto the UC wire format.
 - **Living draft.** `breaking: FILE` stays relaxed during E3A (the contract is expected to churn) until E1/E9/E8 clients adopt the generated types; the gate tightens at adoption.
 
 Dependency: needs E0 (the Buf seam); feeds E1, E9, E8, E4 (and E3B builds on it). This is the contract substrate the seam efforts build on.
@@ -180,12 +178,12 @@ Dependency: needs E5 (plots) and E1 (table selection/metadata); reuses the exist
 
 ### E8 — Workspace Files and Volumes
 
-A dedicated **file-handling experience** and the **FileSystemProvider / Workspace** seam behind it. E1 makes the catalog *reference* a volume as an object; E8 is where users actually **browse the files inside** a volume (or a bucket prefix, or a local folder), **preview** them, and — later — **edit/write** them. This is intentionally separate from the SQL editor: it is a different surface with different (non-SQL) tab kinds.
+A dedicated **file-handling experience** and the **FileSystemProvider / Workspace** seam behind it. E1 makes the catalog _reference_ a volume as an object; E8 is where users actually **browse the files inside** a volume (or a bucket prefix, or a local folder), **preview** them, and — later — **edit/write** them. This is intentionally separate from the SQL editor: it is a different surface with different (non-SQL) tab kinds.
 
 - **FileSystemProvider seam** — a uniform `list / stat / read / (later) write` contract over file-like backends: `UnityCatalogVolume` (UC Volumes Files API), `ObjectStorePrefix` (bucket prefixes, extending [object-storage.ts](../../apps/axon-web/src/services/object-storage.ts)), `LocalFolder` (OPFS / File System Access, extending [local-delta.ts](../../apps/axon-web/src/services/local-delta.ts)), and `Document` (saved queries/files as a backend). Reads reuse the existing object-store range-read path; bytes are fetched only via short-lived signed URLs or a narrow proxy ([ADR-0002](../adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md)).
 - **Files experience** — a file-browser surface (directory tree + listing) plus **non-SQL tab kinds**: a file preview/viewer tab distinct from the SQL editor tab. The current tab model ([tabs.ts](../../apps/axon-web/src/state/slices/tabs.ts)) is SQL-shaped (`Tab.sql`) and must be generalized to a tagged tab `kind` so SQL tabs and file tabs coexist.
-- **Preview now, edit later** — first release is read-only preview (parquet/csv/json/image) using primitives Axon already ships. Write/upload and rich in-place editing come later; the *rich text-editing engine* for file contents (including SQL-as-a-document) is **shared with E2 (Monaco)** rather than reimplemented here.
-- **SQL-editor-content-as-files** — editor buffers and saved queries are themselves `Document` files in the Workspace model; this is the framing that unifies "open a file" and "open a saved query." Reconcile with E0's persistence abstraction: E0 persistence is *app/session state*; the Workspace API is *user file content*.
+- **Preview now, edit later** — first release is read-only preview (parquet/csv/json/image) using primitives Axon already ships. Write/upload and rich in-place editing come later; the _rich text-editing engine_ for file contents (including SQL-as-a-document) is **shared with E2 (Monaco)** rather than reimplemented here.
+- **SQL-editor-content-as-files** — editor buffers and saved queries are themselves `Document` files in the Workspace model; this is the framing that unifies "open a file" and "open a saved query." Reconcile with E0's persistence abstraction: E0 persistence is _app/session state_; the Workspace API is _user file content_.
 
 Dependency: needs E0 (state/tabs/persistence) and E6 (auth for remote volume/object reads); reuses E1's volume references and the object-store read path; shares the editing engine with E2. Whether the Workspace/FileSystem seam warrants its own ADR is an E8 planning-session decision.
 
