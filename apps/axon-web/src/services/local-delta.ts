@@ -1,5 +1,11 @@
 import init, { resolve_delta_snapshot_from_manifest } from '../wasm/axon_web_wasm.js';
 import type { BrowserHttpSnapshotDescriptor, PartitionColumnType } from '../axon-browser-sdk.ts';
+import {
+  HandleStore,
+  ensureDirectoryReadPermission,
+  type LocalDeltaHandleFileRecord,
+  type LocalDeltaHandleStoreRecord,
+} from '../persistence/handle-store.ts';
 
 export type LocalFileSystemFileHandle = {
   readonly kind: 'file';
@@ -100,23 +106,9 @@ type LocalDeltaTableFiles = {
   dataEntries: LocalDeltaFileEntry[];
 };
 
-type LocalDeltaRegistryBackend = 'metadata_only' | 'directory_handle';
+type LocalDeltaRegistryFileRecord = LocalDeltaHandleFileRecord;
 
-type LocalDeltaRegistryFileRecord = {
-  relativePath: string;
-  sizeBytes: number;
-  lastModified?: number;
-  mimeType?: string;
-};
-
-type LocalDeltaRegistryRecord = {
-  id: string;
-  tableRootName: string;
-  importedAtEpochMs: number;
-  backend: LocalDeltaRegistryBackend;
-  files: LocalDeltaRegistryFileRecord[];
-  directoryHandle?: LocalFileSystemDirectoryHandle;
-};
+type LocalDeltaRegistryRecord = LocalDeltaHandleStoreRecord<LocalFileSystemDirectoryHandle>;
 
 type ResolvedSnapshot = {
   table_uri: string;
@@ -146,6 +138,11 @@ const LOCAL_DELTA_ACTIVE_ID_KEY = 'axon-local-delta-active-id';
 let wasmReady: Promise<unknown> | undefined;
 const sessionLocalDeltaTables = new Map<string, LocalDeltaTableFiles>();
 const localObjectUrlsByRegistryId = new Map<string, Set<string>>();
+const localDeltaHandleStore = new HandleStore<LocalFileSystemDirectoryHandle>({
+  databaseName: LOCAL_DELTA_DB_NAME,
+  version: LOCAL_DELTA_DB_VERSION,
+  storeName: LOCAL_DELTA_STORE,
+});
 
 export async function openLocalDeltaTableFromFileList(
   files: FileList | File[] | null,
@@ -509,8 +506,7 @@ function durableLocalDeltaTableForRuntime(
 }
 
 async function loadLocalDeltaTable(registryId: string): Promise<LocalDeltaTableFiles | undefined> {
-  const records = await getLocalDeltaRegistryRecords();
-  const record = records.find((candidate) => candidate.id === registryId);
+  const record = await localDeltaHandleStore.get(registryId);
   if (!record) return undefined;
 
   if (record.backend === 'metadata_only') {
@@ -551,7 +547,7 @@ async function loadDirectoryHandleLocalDeltaTable(
     );
   }
 
-  const granted = await ensureDirectoryHandleReadPermission(handle);
+  const granted = await ensureDirectoryReadPermission(handle);
   if (!granted) {
     throw new LocalDeltaError(
       'registry_unavailable',
@@ -566,20 +562,6 @@ async function loadDirectoryHandleLocalDeltaTable(
   });
   validateLocalDeltaTableAgainstRecord(table, record);
   return table;
-}
-
-async function ensureDirectoryHandleReadPermission(
-  handle: LocalFileSystemDirectoryHandle,
-): Promise<boolean> {
-  if (!handle.queryPermission) return true;
-  const current = await handle.queryPermission({ mode: 'read' });
-  if (current === 'granted') return true;
-  if (!handle.requestPermission) return false;
-  try {
-    return (await handle.requestPermission({ mode: 'read' })) === 'granted';
-  } catch {
-    return false;
-  }
 }
 
 function validateLocalDeltaTableAgainstRecord(
@@ -831,50 +813,12 @@ function validateLocalRelativePath(path: string): void {
   }
 }
 
-async function openLocalDeltaRegistryDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(LOCAL_DELTA_DB_NAME, LOCAL_DELTA_DB_VERSION);
-    request.onerror = () => reject(request.error ?? new Error('local Delta registry open failed'));
-    request.onsuccess = () => resolve(request.result);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(LOCAL_DELTA_STORE)) {
-        db.createObjectStore(LOCAL_DELTA_STORE, { keyPath: 'id' });
-      }
-    };
-  });
-}
-
 async function putLocalDeltaRegistryRecord(record: LocalDeltaRegistryRecord): Promise<void> {
-  const db = await openLocalDeltaRegistryDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(LOCAL_DELTA_STORE, 'readwrite');
-    tx.objectStore(LOCAL_DELTA_STORE).put(record);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('local Delta registry write failed'));
-    tx.onabort = () => reject(tx.error ?? new Error('local Delta registry write aborted'));
-  });
-}
-
-async function getLocalDeltaRegistryRecords(): Promise<LocalDeltaRegistryRecord[]> {
-  const db = await openLocalDeltaRegistryDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(LOCAL_DELTA_STORE, 'readonly');
-    const request = tx.objectStore(LOCAL_DELTA_STORE).getAll();
-    request.onerror = () => reject(request.error ?? new Error('local Delta registry read failed'));
-    request.onsuccess = () => resolve(request.result as LocalDeltaRegistryRecord[]);
-  });
+  return localDeltaHandleStore.put(record);
 }
 
 async function deleteLocalDeltaRegistryRecord(registryId: string): Promise<void> {
-  const db = await openLocalDeltaRegistryDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(LOCAL_DELTA_STORE, 'readwrite');
-    tx.objectStore(LOCAL_DELTA_STORE).delete(registryId);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('local Delta registry delete failed'));
-    tx.onabort = () => reject(tx.error ?? new Error('local Delta registry delete aborted'));
-  });
+  return localDeltaHandleStore.delete(registryId);
 }
 
 function fileBrowserPath(file: File): string {
