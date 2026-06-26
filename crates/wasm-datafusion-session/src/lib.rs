@@ -31,8 +31,9 @@ use wasm_query_runtime::{
     runtime_target, BootstrappedBrowserSnapshot, BrowserExecutionBudget,
     BrowserParquetConvertedType, BrowserParquetField, BrowserParquetLogicalType,
     BrowserParquetPhysicalType, BrowserParquetRepetition, BrowserParquetTimeUnit,
-    BrowserRuntimeConfig, BrowserRuntimeInstant, BrowserRuntimeSession,
-    MaterializedBrowserSnapshot, RuntimeArrowIpcResult,
+    BrowserPrebootstrapPruningSummary, BrowserRuntimeConfig, BrowserRuntimeInstant,
+    BrowserRuntimeSession, MaterializedBrowserSnapshot, PrebootstrappedBrowserSnapshot,
+    RuntimeArrowIpcResult,
 };
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -90,9 +91,16 @@ impl BrowserDataFusionCancellation {
 pub struct CachedDataFusionTable {
     descriptor: BrowserHttpSnapshotDescriptor,
     materialized: MaterializedBrowserSnapshot,
-    bootstrapped: Option<BootstrappedBrowserSnapshot>,
+    last_prepared_snapshot: Option<BootstrappedBrowserSnapshot>,
     cached_bytes: u64,
     last_used_millis: u64,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedDataFusionTable {
+    descriptor: BrowserHttpSnapshotDescriptor,
+    bootstrapped: BootstrappedBrowserSnapshot,
+    pruning: BrowserPrebootstrapPruningSummary,
 }
 
 impl BrowserDataFusionSession {
@@ -185,36 +193,22 @@ impl BrowserDataFusionSession {
         descriptor: BrowserHttpSnapshotDescriptor,
         materialized: MaterializedBrowserSnapshot,
     ) -> Result<(), QueryError> {
-        let bootstrapped = if materialized.active_files().is_empty() {
-            None
-        } else {
-            Some(
-                self.runtime
-                    .bootstrap_snapshot_metadata(&materialized)
-                    .await?,
-            )
-        };
-        let schema = datafusion_delta_schema(&descriptor, bootstrapped.as_ref())?;
-        let object_etags = bootstrapped_object_etags_by_path(bootstrapped.as_ref());
-        let delta_descriptor = DeltaTableDescriptor::from_browser_http_snapshot_with_object_etags(
-            name.clone(),
-            &descriptor,
-            schema,
-            &object_etags,
-        )?;
-        let cached_bytes = cached_table_bytes(&materialized, bootstrapped.as_ref())?;
+        let cached_bytes = cached_table_bytes(&materialized, None)?;
         let last_used_millis = self.bump_access_clock();
 
         if self.tables.contains_key(&name) {
             self.datafusion.deregister_table(&name)?;
             self.tables.remove(&name);
         }
-        self.datafusion.open_delta_table(delta_descriptor).await?;
+        if materialized.active_files().is_empty() {
+            self.register_datafusion_table_descriptor(&name, &descriptor, None, self.query_budget)
+                .await?;
+        }
         self.insert_table(
             name,
             descriptor,
             materialized,
-            bootstrapped,
+            None,
             cached_bytes,
             last_used_millis,
         )
@@ -245,60 +239,33 @@ impl BrowserDataFusionSession {
         request: &QueryRequest,
     ) -> Result<BrowserDataFusionSessionQueryResult, QueryError> {
         let execution_budget = self.runtime.config().execution_budget;
-        let (
-            capabilities,
-            file_count,
-            footer_reads,
-            bootstrap_range_read_metrics,
-            snapshot_bootstrap_duration_ms,
-            access_mode,
-        ) = {
+        let capabilities = {
             let table = self.touch_table(name)?;
             validate_datafusion_request_match(table, request)?;
             validate_datafusion_sql_scope(name, &request.sql)?;
-            validate_datafusion_execution_budget(table, execution_budget)?;
-            (
-                table.materialized.required_capabilities().clone(),
-                u64::try_from(table.materialized.active_files().len()).map_err(|_| {
-                    QueryError::new(
-                        QueryErrorCode::ExecutionFailed,
-                        "browser DataFusion session file counts overflowed u64",
-                        runtime_target(),
-                    )
-                })?,
-                table
-                    .bootstrapped
-                    .as_ref()
-                    .and_then(BootstrappedBrowserSnapshot::footer_reads),
-                table
-                    .bootstrapped
-                    .as_ref()
-                    .map(BootstrappedBrowserSnapshot::range_read_metrics)
-                    .cloned()
-                    .unwrap_or_default(),
-                table
-                    .bootstrapped
-                    .as_ref()
-                    .and_then(BootstrappedBrowserSnapshot::snapshot_bootstrap_duration_ms),
-                table
-                    .bootstrapped
-                    .as_ref()
-                    .and_then(BootstrappedBrowserSnapshot::access_mode),
-            )
+            table.materialized.required_capabilities().clone()
         };
         let started_at = BrowserRuntimeInstant::now();
         let sql = datafusion_sql_with_result_page(&request.sql, request.options.result_page)?;
         let query_budget =
             datafusion_query_budget_for_request(self.query_budget, request.options.runtime_limits);
         let has_request_budget = query_budget != self.query_budget;
+        let prepared = self
+            .bootstrap_datafusion_table_for_sql(name, &request.sql)
+            .await?;
+        validate_datafusion_bootstrapped_execution_budget(
+            &prepared.bootstrapped,
+            execution_budget,
+        )?;
+        self.register_prepared_datafusion_table(name, &prepared, query_budget)
+            .await?;
+
         let datafusion_result = if has_request_budget {
-            self.reregister_datafusion_table_with_budget(name, query_budget)
-                .await?;
             let result = self
                 .execute_datafusion_sql(sql.as_ref(), request.options.include_explain)
                 .await;
             let restore_result = self
-                .reregister_datafusion_table_with_budget(name, self.query_budget)
+                .register_prepared_datafusion_table(name, &prepared, self.query_budget)
                 .await;
             match (result, restore_result) {
                 (Ok(datafusion_result), Ok(())) => datafusion_result,
@@ -312,6 +279,10 @@ impl BrowserDataFusionSession {
         };
         let explain = datafusion_result.physical_plan.clone();
         let scan_metrics = datafusion_result.scan_metrics.clone();
+        let footer_reads = prepared.bootstrapped.footer_reads();
+        let bootstrap_range_read_metrics = prepared.bootstrapped.range_read_metrics().clone();
+        let snapshot_bootstrap_duration_ms = prepared.bootstrapped.snapshot_bootstrap_duration_ms();
+        let access_mode = prepared.bootstrapped.access_mode();
         let merged_range_read_metrics =
             bootstrap_range_read_metrics.merge(&scan_metrics.range_read_metrics);
         let range_read_metrics = DataFusionSessionRangeReadMetrics {
@@ -336,11 +307,12 @@ impl BrowserDataFusionSession {
                 fallback_reason: None,
                 metrics: datafusion_query_metrics(
                     scan_metrics,
-                    file_count,
+                    prepared.pruning.candidate_files,
                     footer_reads,
                     range_read_metrics,
                     snapshot_bootstrap_duration_ms,
                     access_mode,
+                    prepared.pruning,
                     started_at,
                 ),
                 explain,
@@ -363,28 +335,75 @@ impl BrowserDataFusionSession {
         }
     }
 
-    async fn reregister_datafusion_table_with_budget(
+    async fn bootstrap_datafusion_table_for_sql(
         &mut self,
         name: &str,
-        query_budget: BrowserDataFusionQueryBudget,
-    ) -> Result<(), QueryError> {
-        let (descriptor, bootstrapped) = {
+        sql: &str,
+    ) -> Result<PreparedDataFusionTable, QueryError> {
+        let (descriptor, materialized) = {
             let table = self
                 .tables
                 .get(name)
                 .ok_or_else(|| missing_table_error(name))?;
-            (table.descriptor.clone(), table.bootstrapped.clone())
+            (table.descriptor.clone(), table.materialized.clone())
         };
-        let schema = datafusion_delta_schema(&descriptor, bootstrapped.as_ref())?;
-        let object_etags = bootstrapped_object_etags_by_path(bootstrapped.as_ref());
+
+        let PrebootstrappedBrowserSnapshot {
+            bootstrapped_snapshot,
+            pruning,
+        } = self
+            .runtime
+            .bootstrap_datafusion_sql_candidates(&materialized, name, sql)
+            .await?;
+        let filtered_descriptor =
+            datafusion_descriptor_for_bootstrapped_snapshot(&descriptor, &bootstrapped_snapshot);
+        let cached_bytes = cached_table_bytes(&materialized, Some(&bootstrapped_snapshot))?;
+
+        if let Some(table) = self.tables.get_mut(name) {
+            table.last_prepared_snapshot = Some(bootstrapped_snapshot.clone());
+            table.cached_bytes = cached_bytes;
+        }
+        self.evict_to_budget(name)?;
+
+        Ok(PreparedDataFusionTable {
+            descriptor: filtered_descriptor,
+            bootstrapped: bootstrapped_snapshot,
+            pruning,
+        })
+    }
+
+    async fn register_prepared_datafusion_table(
+        &mut self,
+        name: &str,
+        prepared: &PreparedDataFusionTable,
+        query_budget: BrowserDataFusionQueryBudget,
+    ) -> Result<(), QueryError> {
+        self.register_datafusion_table_descriptor(
+            name,
+            &prepared.descriptor,
+            Some(&prepared.bootstrapped),
+            query_budget,
+        )
+        .await
+    }
+
+    async fn register_datafusion_table_descriptor(
+        &mut self,
+        name: &str,
+        descriptor: &BrowserHttpSnapshotDescriptor,
+        bootstrapped: Option<&BootstrappedBrowserSnapshot>,
+        query_budget: BrowserDataFusionQueryBudget,
+    ) -> Result<(), QueryError> {
+        let schema = datafusion_delta_schema(descriptor, bootstrapped)?;
+        let object_etags = bootstrapped_object_etags_by_path(bootstrapped);
         let delta_descriptor = DeltaTableDescriptor::from_browser_http_snapshot_with_object_etags(
             name.to_string(),
-            &descriptor,
+            descriptor,
             schema,
             &object_etags,
         )?;
         self.datafusion.set_query_budget(query_budget.into());
-        self.datafusion.deregister_table(name)?;
+        let _ = self.datafusion.deregister_table(name)?;
         self.datafusion.open_delta_table(delta_descriptor).await
     }
 
@@ -405,7 +424,7 @@ impl BrowserDataFusionSession {
         name: String,
         descriptor: BrowserHttpSnapshotDescriptor,
         materialized: MaterializedBrowserSnapshot,
-        bootstrapped: Option<BootstrappedBrowserSnapshot>,
+        last_prepared_snapshot: Option<BootstrappedBrowserSnapshot>,
         cached_bytes: u64,
         last_used_millis: u64,
     ) -> Result<(), QueryError> {
@@ -414,7 +433,7 @@ impl BrowserDataFusionSession {
             CachedDataFusionTable {
                 descriptor,
                 materialized,
-                bootstrapped,
+                last_prepared_snapshot,
                 cached_bytes,
                 last_used_millis,
             },
@@ -470,8 +489,8 @@ impl CachedDataFusionTable {
         &self.materialized
     }
 
-    pub fn bootstrapped_snapshot(&self) -> Option<&BootstrappedBrowserSnapshot> {
-        self.bootstrapped.as_ref()
+    pub fn last_prepared_snapshot(&self) -> Option<&BootstrappedBrowserSnapshot> {
+        self.last_prepared_snapshot.as_ref()
     }
 
     pub fn cached_bytes(&self) -> u64 {
@@ -547,6 +566,22 @@ fn bootstrapped_object_etags_by_path(
                 .map(|object_etag| (file.path().to_string(), object_etag.to_string()))
         })
         .collect()
+}
+
+fn datafusion_descriptor_for_bootstrapped_snapshot(
+    descriptor: &BrowserHttpSnapshotDescriptor,
+    bootstrapped: &BootstrappedBrowserSnapshot,
+) -> BrowserHttpSnapshotDescriptor {
+    let candidate_paths = bootstrapped
+        .active_files()
+        .iter()
+        .map(|file| file.path().to_string())
+        .collect::<BTreeSet<_>>();
+    let mut descriptor = descriptor.clone();
+    descriptor
+        .active_files
+        .retain(|file| candidate_paths.contains(&file.path));
+    descriptor
 }
 
 fn datafusion_partition_column_type(
@@ -804,6 +839,7 @@ fn datafusion_query_metrics(
     range_read_metrics: DataFusionSessionRangeReadMetrics,
     snapshot_bootstrap_duration_ms: Option<u64>,
     access_mode: Option<query_contract::BrowserAccessMode>,
+    prebootstrap_pruning: BrowserPrebootstrapPruningSummary,
     started_at: BrowserRuntimeInstant,
 ) -> QueryMetricsSummary {
     QueryMetricsSummary {
@@ -814,11 +850,13 @@ fn datafusion_query_metrics(
         } else {
             fallback_file_count
         },
-        files_skipped: scan_metrics.files_skipped,
-        prebootstrap_fail_open_count: None,
-        prebootstrap_files_pruned: None,
-        footer_reads_avoided: None,
-        prebootstrap_candidate_files: None,
+        files_skipped: scan_metrics
+            .files_skipped
+            .saturating_add(prebootstrap_pruning.files_pruned),
+        prebootstrap_fail_open_count: Some(prebootstrap_pruning.fail_open_count),
+        prebootstrap_files_pruned: Some(prebootstrap_pruning.files_pruned),
+        footer_reads_avoided: Some(prebootstrap_pruning.footer_reads_avoided),
+        prebootstrap_candidate_files: Some(prebootstrap_pruning.candidate_files),
         row_groups_touched: scan_metrics.row_groups_touched,
         row_groups_skipped: scan_metrics.row_groups_skipped,
         footer_reads,
@@ -1171,24 +1209,22 @@ fn datafusion_query_budget_for_request(
     }
 }
 
-fn min_optional_budget(session_limit: Option<u64>, request_limit: Option<u64>) -> Option<u64> {
-    match (session_limit, request_limit) {
-        (Some(session_limit), Some(request_limit)) => Some(session_limit.min(request_limit)),
-        (Some(session_limit), None) => Some(session_limit),
-        (None, Some(request_limit)) => Some(request_limit),
-        (None, None) => None,
-    }
-}
-
-fn validate_datafusion_execution_budget(
-    table: &CachedDataFusionTable,
+fn validate_datafusion_bootstrapped_execution_budget(
+    bootstrapped: &BootstrappedBrowserSnapshot,
     execution_budget: Option<BrowserExecutionBudget>,
 ) -> Result<(), QueryError> {
     let Some(execution_budget) = execution_budget else {
         return Ok(());
     };
 
-    let estimated_rows = datafusion_table_estimated_rows(table)?;
+    let estimated_rows = bootstrapped
+        .active_files()
+        .iter()
+        .try_fold(0_u64, |total, file| {
+            total
+                .checked_add(file.metadata().row_count)
+                .ok_or_else(|| datafusion_budget_total_overflow_error("row"))
+        })?;
     if estimated_rows > execution_budget.max_rows {
         return Err(datafusion_budget_exceeded_error(
             "row estimate",
@@ -1197,7 +1233,14 @@ fn validate_datafusion_execution_budget(
         ));
     }
 
-    let estimated_bytes = datafusion_table_estimated_bytes(table)?;
+    let estimated_bytes = bootstrapped
+        .active_files()
+        .iter()
+        .try_fold(0_u64, |total, file| {
+            total
+                .checked_add(file.size_bytes())
+                .ok_or_else(|| datafusion_budget_total_overflow_error("byte"))
+        })?;
     if estimated_bytes > execution_budget.max_bytes {
         return Err(datafusion_budget_exceeded_error(
             "byte estimate",
@@ -1209,33 +1252,13 @@ fn validate_datafusion_execution_budget(
     Ok(())
 }
 
-fn datafusion_table_estimated_rows(table: &CachedDataFusionTable) -> Result<u64, QueryError> {
-    table
-        .bootstrapped
-        .as_ref()
-        .map(|snapshot| {
-            snapshot
-                .active_files()
-                .iter()
-                .try_fold(0_u64, |total, file| {
-                    total
-                        .checked_add(file.metadata().row_count)
-                        .ok_or_else(|| datafusion_budget_total_overflow_error("row"))
-                })
-        })
-        .unwrap_or(Ok(0))
-}
-
-fn datafusion_table_estimated_bytes(table: &CachedDataFusionTable) -> Result<u64, QueryError> {
-    table
-        .materialized
-        .active_files()
-        .iter()
-        .try_fold(0_u64, |total, file| {
-            total
-                .checked_add(file.size_bytes())
-                .ok_or_else(|| datafusion_budget_total_overflow_error("byte"))
-        })
+fn min_optional_budget(session_limit: Option<u64>, request_limit: Option<u64>) -> Option<u64> {
+    match (session_limit, request_limit) {
+        (Some(session_limit), Some(request_limit)) => Some(session_limit.min(request_limit)),
+        (Some(session_limit), None) => Some(session_limit),
+        (None, Some(request_limit)) => Some(request_limit),
+        (None, None) => None,
+    }
 }
 
 fn datafusion_budget_total_overflow_error(total_kind: &str) -> QueryError {
@@ -1343,10 +1366,6 @@ mod tests {
     use super::*;
 
     use query_contract::{BrowserHttpFileDescriptor, CapabilityReport};
-    use wasm_query_runtime::{
-        BrowserObjectSource, MaterializedBrowserFile, MaterializedBrowserSnapshot,
-    };
-
     #[test]
     fn open_delta_table_registers_descriptor_and_sql_returns_arrow_ipc() {
         let mut session = BrowserDataFusionSession::new(BrowserRuntimeConfig::default(), u64::MAX)
@@ -1695,20 +1714,14 @@ mod tests {
     }
 
     #[test]
-    fn datafusion_sql_rejects_tables_over_configured_byte_budget() {
-        let table = CachedDataFusionTable {
-            descriptor: empty_delta_descriptor(),
-            materialized: large_materialized_snapshot(),
-            bootstrapped: None,
-            cached_bytes: 128,
-            last_used_millis: 1,
-        };
+    fn datafusion_sql_rejects_bootstrapped_tables_over_configured_byte_budget() {
+        let snapshot = large_bootstrapped_snapshot();
         let budget = BrowserExecutionBudget {
             max_rows: u64::MAX,
             max_bytes: 1,
         };
 
-        let error = validate_datafusion_execution_budget(&table, Some(budget))
+        let error = validate_datafusion_bootstrapped_execution_budget(&snapshot, Some(budget))
             .expect_err("DataFusion SQL should reject tables over the byte budget");
 
         assert_eq!(error.code, QueryErrorCode::FallbackRequired);
@@ -2199,16 +2212,25 @@ mod tests {
         }
     }
 
-    fn large_materialized_snapshot() -> MaterializedBrowserSnapshot {
-        let file = MaterializedBrowserFile::new(
+    fn large_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
+        let metadata = wasm_query_runtime::BrowserParquetFileMetadata {
+            object_size_bytes: 128,
+            footer_length_bytes: 8,
+            row_group_count: 1,
+            row_count: 1,
+            fields: vec![byte_array_field("payload", None, None)],
+            field_stats: BTreeMap::new(),
+        };
+        let file = wasm_query_runtime::BootstrappedBrowserFile::new(
             "part-000.parquet",
             128,
             BTreeMap::new(),
-            BrowserObjectSource::from_url("https://example.invalid/part-000.parquet")
-                .expect("fixture URL should be browser-safe"),
-        );
-        MaterializedBrowserSnapshot::new("gs://axon-fixtures/large", 1, vec![file])
-            .expect("large snapshot should construct")
+            metadata,
+        )
+        .expect("bootstrapped file should construct");
+
+        BootstrappedBrowserSnapshot::new("gs://axon-fixtures/large", 1, vec![file])
+            .expect("large bootstrapped snapshot should construct")
     }
 
     fn test_runtime() -> tokio::runtime::Runtime {

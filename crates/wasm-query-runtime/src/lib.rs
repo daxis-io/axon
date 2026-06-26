@@ -30,7 +30,7 @@ use query_contract::{
 use reqwest::Url;
 use sqlparser::ast::{
     BinaryOperator as SqlBinaryOperator, Expr as SqlExpr, FunctionArg, FunctionArgExpr,
-    FunctionArguments, GroupByExpr, LimitClause, ObjectName, ObjectNamePart, OrderByKind,
+    FunctionArguments, GroupByExpr, Ident, LimitClause, ObjectName, ObjectNamePart, OrderByKind,
     Query as SqlQuery, Select, SelectItem, SetExpr as SqlSetExpr, Statement as SqlStatement,
     TableAlias, TableFactor as SqlTableFactor, TableWithJoins as SqlTableWithJoins,
     UnaryOperator as SqlUnaryOperator, Value as SqlValue,
@@ -798,6 +798,22 @@ pub struct BrowserPruningSummary {
     pub prebootstrap_files_pruned: Option<u64>,
     pub footer_reads_avoided: Option<u64>,
     pub prebootstrap_candidate_files: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BrowserPrebootstrapPruningSummary {
+    pub used_partition_pruning: bool,
+    pub used_file_stats_pruning: bool,
+    pub candidate_files: u64,
+    pub files_pruned: u64,
+    pub footer_reads_avoided: u64,
+    pub fail_open_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrebootstrappedBrowserSnapshot {
+    pub bootstrapped_snapshot: BootstrappedBrowserSnapshot,
+    pub pruning: BrowserPrebootstrapPruningSummary,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1610,6 +1626,34 @@ impl BrowserRuntimeSession {
         })
     }
 
+    pub async fn bootstrap_datafusion_sql_candidates(
+        &self,
+        snapshot: &MaterializedBrowserSnapshot,
+        table_name: &str,
+        sql: &str,
+    ) -> Result<PrebootstrappedBrowserSnapshot, QueryError> {
+        let analyzed = match analyze_datafusion_prebootstrap_query(sql, table_name) {
+            Ok(analyzed) => analyzed,
+            Err(_) => return self.bootstrap_datafusion_full_selection(snapshot).await,
+        };
+        let selection = match select_materialized_files_for_bootstrap(snapshot, &analyzed) {
+            Ok(selection) => selection,
+            Err(_) => return self.bootstrap_datafusion_full_selection(snapshot).await,
+        };
+
+        self.bootstrap_datafusion_selection(snapshot, selection)
+            .await
+    }
+
+    async fn bootstrap_datafusion_full_selection(
+        &self,
+        snapshot: &MaterializedBrowserSnapshot,
+    ) -> Result<PrebootstrappedBrowserSnapshot, QueryError> {
+        let selection = full_materialized_bootstrap_selection(snapshot);
+        self.bootstrap_datafusion_selection(snapshot, selection)
+            .await
+    }
+
     fn plan_query_from_analyzed(
         &self,
         snapshot: &BootstrappedBrowserSnapshot,
@@ -1926,6 +1970,22 @@ impl BrowserRuntimeSession {
         let active_files = snapshot.active_files().iter().collect::<Vec<_>>();
         self.bootstrap_selected_snapshot_metadata(snapshot, &active_files)
             .await
+    }
+
+    async fn bootstrap_datafusion_selection<'a>(
+        &self,
+        snapshot: &'a MaterializedBrowserSnapshot,
+        selection: MaterializedBootstrapSelection<'a>,
+    ) -> Result<PrebootstrappedBrowserSnapshot, QueryError> {
+        let pruning = prebootstrap_pruning_summary_from_selection(&selection)?;
+        let bootstrapped_snapshot = self
+            .bootstrap_selected_snapshot_metadata(snapshot, &selection.files)
+            .await?;
+
+        Ok(PrebootstrappedBrowserSnapshot {
+            bootstrapped_snapshot,
+            pruning,
+        })
     }
 
     async fn bootstrap_selected_snapshot_metadata(
@@ -2388,6 +2448,20 @@ struct MaterializedBootstrapSelection<'a> {
     used_file_stats_pruning: bool,
 }
 
+fn full_materialized_bootstrap_selection(
+    snapshot: &MaterializedBrowserSnapshot,
+) -> MaterializedBootstrapSelection<'_> {
+    MaterializedBootstrapSelection {
+        files: snapshot.active_files().iter().collect(),
+        files_pruned_before_bootstrap: 0,
+        prebootstrap_fail_open_count: 0,
+        partition_columns: materialized_partition_columns(snapshot),
+        applied_partition_constraints: None,
+        used_partition_pruning: false,
+        used_file_stats_pruning: false,
+    }
+}
+
 fn execution_plan_error(message: impl Into<String>) -> QueryError {
     invalid_query_request(message)
 }
@@ -2718,6 +2792,23 @@ fn apply_prebootstrap_pruning_metrics(
     Ok(())
 }
 
+fn prebootstrap_pruning_summary_from_selection(
+    bootstrap_selection: &MaterializedBootstrapSelection<'_>,
+) -> Result<BrowserPrebootstrapPruningSummary, QueryError> {
+    Ok(BrowserPrebootstrapPruningSummary {
+        used_partition_pruning: bootstrap_selection.used_partition_pruning,
+        used_file_stats_pruning: bootstrap_selection.used_file_stats_pruning,
+        candidate_files: u64::try_from(bootstrap_selection.files.len()).map_err(|_| {
+            invalid_query_request(
+                "browser prebootstrap candidate file counts overflowed u64 during DataFusion preparation",
+            )
+        })?,
+        files_pruned: bootstrap_selection.files_pruned_before_bootstrap,
+        footer_reads_avoided: bootstrap_selection.files_pruned_before_bootstrap,
+        fail_open_count: bootstrap_selection.prebootstrap_fail_open_count,
+    })
+}
+
 fn browser_scan_plan(
     snapshot: &BootstrappedBrowserSnapshot,
     planned: &BrowserPlannedQuery,
@@ -3001,6 +3092,107 @@ fn analyze_browser_query(sql: &str) -> Result<AnalyzedBrowserQuery, QueryError> 
     let shape = collect_browser_query_shape(query.as_ref())?;
 
     Ok(AnalyzedBrowserQuery { shape, query })
+}
+
+fn analyze_datafusion_prebootstrap_query(
+    sql: &str,
+    table_name: &str,
+) -> Result<AnalyzedBrowserQuery, QueryError> {
+    let statements = Parser::parse_sql(&GenericDialect {}, sql)
+        .map_err(|error| invalid_query_request(error.to_string()))?;
+    if statements.len() != 1 {
+        return Err(invalid_query_request(format!(
+            "sql must contain exactly one read-only query over {DEFAULT_TABLE_NAME}"
+        )));
+    }
+
+    let statement = statements
+        .into_iter()
+        .next()
+        .expect("statement length already checked");
+    let SqlStatement::Query(mut query) = statement else {
+        return Err(invalid_query_request(format!(
+            "only read-only SELECT queries over {DEFAULT_TABLE_NAME} are supported"
+        )));
+    };
+
+    rewrite_datafusion_query_table_references(query.as_mut(), table_name)?;
+    validate_browser_query(query.as_ref(), &BTreeSet::new())?;
+    let shape = collect_browser_query_shape(query.as_ref())?;
+
+    Ok(AnalyzedBrowserQuery { shape, query })
+}
+
+fn rewrite_datafusion_query_table_references(
+    query: &mut SqlQuery,
+    table_name: &str,
+) -> Result<(), QueryError> {
+    if let Some(with) = &mut query.with {
+        for cte in &mut with.cte_tables {
+            rewrite_datafusion_query_table_references(cte.query.as_mut(), table_name)?;
+        }
+    }
+
+    rewrite_datafusion_set_expr_table_references(query.body.as_mut(), table_name)
+}
+
+fn rewrite_datafusion_set_expr_table_references(
+    set_expr: &mut SqlSetExpr,
+    table_name: &str,
+) -> Result<(), QueryError> {
+    match set_expr {
+        SqlSetExpr::Select(select) => {
+            for source in &mut select.from {
+                rewrite_datafusion_table_with_joins(source, table_name)?;
+            }
+            Ok(())
+        }
+        SqlSetExpr::Query(query) => {
+            rewrite_datafusion_query_table_references(query.as_mut(), table_name)
+        }
+        _ => Err(invalid_query_request(format!(
+            "only read-only SELECT queries over {DEFAULT_TABLE_NAME} are supported"
+        ))),
+    }
+}
+
+fn rewrite_datafusion_table_with_joins(
+    table_with_joins: &mut SqlTableWithJoins,
+    table_name: &str,
+) -> Result<(), QueryError> {
+    rewrite_datafusion_table_factor(&mut table_with_joins.relation, table_name)?;
+    for join in &mut table_with_joins.joins {
+        rewrite_datafusion_table_factor(&mut join.relation, table_name)?;
+    }
+    Ok(())
+}
+
+fn rewrite_datafusion_table_factor(
+    table_factor: &mut SqlTableFactor,
+    table_name: &str,
+) -> Result<(), QueryError> {
+    match table_factor {
+        SqlTableFactor::Table { name, .. } => {
+            let relation_name = object_name_to_relation_name(name).ok_or_else(|| {
+                invalid_query_request(format!("query must read only from {DEFAULT_TABLE_NAME}"))
+            })?;
+            if relation_name != normalize_name(table_name) {
+                return Err(invalid_query_request(format!(
+                    "query must read only from {DEFAULT_TABLE_NAME}"
+                )));
+            }
+            *name = ObjectName(vec![ObjectNamePart::Identifier(Ident::new(
+                DEFAULT_TABLE_NAME,
+            ))]);
+            Ok(())
+        }
+        SqlTableFactor::Derived { subquery, .. } => {
+            rewrite_datafusion_query_table_references(subquery.as_mut(), table_name)
+        }
+        _ => Err(invalid_query_request(format!(
+            "query must read only from {DEFAULT_TABLE_NAME}"
+        ))),
+    }
 }
 
 fn validate_browser_query(
