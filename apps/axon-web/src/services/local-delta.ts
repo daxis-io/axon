@@ -236,7 +236,9 @@ export async function unregisterLocalDeltaRuntime(registryId: string): Promise<v
 }
 
 async function ensureWasm(): Promise<unknown> {
-  wasmReady ??= init();
+  if (!wasmReady) {
+    wasmReady = init();
+  }
   return wasmReady;
 }
 

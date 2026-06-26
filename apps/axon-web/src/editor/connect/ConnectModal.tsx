@@ -79,7 +79,9 @@ const DEFAULT_FORM: ConnectForm = {
 let connectWasmReady: Promise<unknown> | undefined;
 
 function ensureConnectWasm(): Promise<unknown> {
-  connectWasmReady ??= init();
+  if (!connectWasmReady) {
+    connectWasmReady = init();
+  }
   return connectWasmReady;
 }
 export function ConnectModal({

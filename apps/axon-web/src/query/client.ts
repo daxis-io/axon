@@ -33,7 +33,8 @@ function getErrorStatus(error: unknown, seen = new Set<unknown>()): number | und
   }
 
   if (isRecord(error.response)) {
-    const responseStatus = toStatusCode(error.response.status) ?? toStatusCode(error.response.statusCode);
+    const responseStatus =
+      toStatusCode(error.response.status) ?? toStatusCode(error.response.statusCode);
     if (responseStatus !== undefined) {
       return responseStatus;
     }

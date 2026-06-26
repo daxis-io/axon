@@ -1016,6 +1016,97 @@ impl HttpRangeAsyncFileReader {
         metrics.record_range_read(phase, metric_resource, object_identity, range.start, length)?;
         Ok(read.bytes)
     }
+
+    async fn load_metadata(
+        &mut self,
+        options: Option<&ArrowReaderOptions>,
+    ) -> parquet::errors::Result<Arc<ParquetMetaData>> {
+        if let Some(cache) = &self.metadata_cache {
+            match cache_key_for_target_identity(&self.target) {
+                Some(key) => {
+                    if let Some(cached) = cache.get(&key).map_err(parquet_error_from_query_error)? {
+                        validate_cached_metadata_identity(
+                            &self.reader,
+                            &self.target,
+                            self.request_timeout,
+                        )
+                        .await
+                        .map_err(parquet_error_from_query_error)?;
+                        cache
+                            .record_hit(2)
+                            .map_err(parquet_error_from_query_error)?;
+                        self.metrics
+                            .record_footer_cache_hit(2)
+                            .map_err(parquet_error_from_query_error)?;
+                        self.metrics
+                            .set_metadata_probe_round_trips(1)
+                            .map_err(parquet_error_from_query_error)?;
+                        let metadata = match cached.metadata {
+                            Some(metadata) => metadata,
+                            None => {
+                                let metadata = Arc::new(
+                                    decode_parquet_metadata(
+                                        &self.target,
+                                        &cached.footer,
+                                        "parquet metadata decode",
+                                    )
+                                    .map_err(parquet_error_from_query_error)?,
+                                );
+                                cache
+                                    .insert(
+                                        key,
+                                        ParquetCachedMetadata {
+                                            footer: cached.footer,
+                                            metadata: Some(Arc::clone(&metadata)),
+                                        },
+                                    )
+                                    .map_err(parquet_error_from_query_error)?;
+                                metadata
+                            }
+                        };
+                        return Ok(metadata);
+                    }
+                    cache
+                        .record_miss()
+                        .map_err(parquet_error_from_query_error)?;
+                    self.metrics
+                        .record_footer_cache_miss()
+                        .map_err(parquet_error_from_query_error)?;
+                }
+                None => {
+                    cache
+                        .record_miss()
+                        .map_err(parquet_error_from_query_error)?;
+                    cache
+                        .record_degraded_identity_read()
+                        .map_err(parquet_error_from_query_error)?;
+                    self.metrics
+                        .record_footer_cache_miss()
+                        .map_err(parquet_error_from_query_error)?;
+                    self.metrics
+                        .record_footer_cache_degraded_identity_read()
+                        .map_err(parquet_error_from_query_error)?;
+                }
+            }
+        }
+        self.count_metadata_fetches = true;
+        self.metadata_probe_round_trips = 0;
+        let file_size = self.target.size_bytes;
+        let metadata_options = options.map(|option| option.metadata_options().clone());
+        let metadata = ParquetMetaDataReader::new()
+            .with_page_index_policy(PageIndexPolicy::from(
+                options.is_some_and(|option| option.page_index()),
+            ))
+            .with_metadata_options(metadata_options)
+            .load_and_finish(&mut *self, file_size)
+            .await;
+        self.count_metadata_fetches = false;
+        let metadata = metadata?;
+        self.metrics
+            .set_metadata_probe_round_trips(self.metadata_probe_round_trips)
+            .map_err(parquet_error_from_query_error)?;
+        Ok(Arc::new(metadata))
+    }
 }
 
 impl AsyncFileReader for HttpRangeAsyncFileReader {
@@ -1094,96 +1185,18 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
         &'a mut self,
         options: Option<&'a ArrowReaderOptions>,
     ) -> BoxFuture<'a, parquet::errors::Result<Arc<ParquetMetaData>>> {
-        async move {
-            if let Some(cache) = &self.metadata_cache {
-                match cache_key_for_target_identity(&self.target) {
-                    Some(key) => {
-                        if let Some(cached) =
-                            cache.get(&key).map_err(parquet_error_from_query_error)?
-                        {
-                            validate_cached_metadata_identity(
-                                &self.reader,
-                                &self.target,
-                                self.request_timeout,
-                            )
-                            .await
-                            .map_err(parquet_error_from_query_error)?;
-                            cache
-                                .record_hit(2)
-                                .map_err(parquet_error_from_query_error)?;
-                            self.metrics
-                                .record_footer_cache_hit(2)
-                                .map_err(parquet_error_from_query_error)?;
-                            self.metrics
-                                .set_metadata_probe_round_trips(1)
-                                .map_err(parquet_error_from_query_error)?;
-                            let metadata = match cached.metadata {
-                                Some(metadata) => metadata,
-                                None => {
-                                    let metadata = Arc::new(
-                                        decode_parquet_metadata(
-                                            &self.target,
-                                            &cached.footer,
-                                            "parquet metadata decode",
-                                        )
-                                        .map_err(parquet_error_from_query_error)?,
-                                    );
-                                    cache
-                                        .insert(
-                                            key,
-                                            ParquetCachedMetadata {
-                                                footer: cached.footer,
-                                                metadata: Some(Arc::clone(&metadata)),
-                                            },
-                                        )
-                                        .map_err(parquet_error_from_query_error)?;
-                                    metadata
-                                }
-                            };
-                            return Ok(metadata);
-                        }
-                        cache
-                            .record_miss()
-                            .map_err(parquet_error_from_query_error)?;
-                        self.metrics
-                            .record_footer_cache_miss()
-                            .map_err(parquet_error_from_query_error)?;
-                    }
-                    None => {
-                        cache
-                            .record_miss()
-                            .map_err(parquet_error_from_query_error)?;
-                        cache
-                            .record_degraded_identity_read()
-                            .map_err(parquet_error_from_query_error)?;
-                        self.metrics
-                            .record_footer_cache_miss()
-                            .map_err(parquet_error_from_query_error)?;
-                        self.metrics
-                            .record_footer_cache_degraded_identity_read()
-                            .map_err(parquet_error_from_query_error)?;
-                    }
-                }
-            }
-            self.count_metadata_fetches = true;
-            self.metadata_probe_round_trips = 0;
-            let file_size = self.target.size_bytes;
-            let metadata_options = options.map(|option| option.metadata_options().clone());
-            let metadata = ParquetMetaDataReader::new()
-                .with_page_index_policy(PageIndexPolicy::from(
-                    options.is_some_and(|option| option.page_index()),
-                ))
-                .with_metadata_options(metadata_options)
-                .load_and_finish(&mut *self, file_size)
-                .await;
-            self.count_metadata_fetches = false;
-            let metadata = metadata?;
-            self.metrics
-                .set_metadata_probe_round_trips(self.metadata_probe_round_trips)
-                .map_err(parquet_error_from_query_error)?;
-            Ok(Arc::new(metadata))
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut reader = self.clone();
+            let options = options.cloned();
+            let (future, handle) =
+                async move { reader.load_metadata(options.as_ref()).await }.remote_handle();
+            wasm_bindgen_futures::spawn_local(future);
+            return async move { handle.await }.boxed();
         }
-        .boxed()
+
+        #[cfg(not(target_arch = "wasm32"))]
+        async move { self.load_metadata(options).await }.boxed()
     }
 }
 

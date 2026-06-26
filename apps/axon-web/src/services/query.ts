@@ -120,7 +120,9 @@ export function subscribeWorkerEvents(handler: EventHandler): () => void {
 }
 
 function ensureWasm(): Promise<unknown> {
-  wasmReady ??= init();
+  if (!wasmReady) {
+    wasmReady = init();
+  }
   return wasmReady;
 }
 

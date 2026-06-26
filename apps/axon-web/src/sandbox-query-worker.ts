@@ -262,22 +262,24 @@ async function handleCancel(command: BrowserWorkerCancelCommand): Promise<void> 
 }
 
 function ensureSession(commandContext: BrowserWorkerEventContext): Promise<SandboxQuerySession> {
-  if (!sessionPromise) {
-    const context: BrowserWorkerEventContext = {
-      ...commandContext,
-      phase: 'instantiate',
-    };
-    emitProgress(context, 'started');
-    emitLog(context, 'info', 'sandbox worker instantiating query bridge');
-    sessionPromise = init().then(() => {
-      const session = new SandboxQuerySession();
-      cancellationToken = session.cancellation();
-      emitProgress(context, 'finished');
-      return session;
-    });
+  if (sessionPromise) {
+    return sessionPromise;
   }
 
-  return sessionPromise;
+  const context: BrowserWorkerEventContext = {
+    ...commandContext,
+    phase: 'instantiate',
+  };
+  emitProgress(context, 'started');
+  emitLog(context, 'info', 'sandbox worker instantiating query bridge');
+  const nextSession = init().then(() => {
+    const session = new SandboxQuerySession();
+    cancellationToken = session.cancellation();
+    emitProgress(context, 'finished');
+    return session;
+  });
+  sessionPromise = nextSession;
+  return nextSession;
 }
 
 async function ensureCancellationToken(
