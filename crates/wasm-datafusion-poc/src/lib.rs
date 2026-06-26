@@ -43,7 +43,7 @@ use futures_util::{
 };
 use query_contract::{
     BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, PartitionColumnType,
-    QueryError, QueryErrorCode,
+    PartitionLiteralValue, QueryError, QueryErrorCode,
 };
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -773,7 +773,13 @@ impl AxonScanPlan {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PartitionConstraint {
     column: String,
-    values: Vec<Option<String>>,
+    kind: PartitionConstraintKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PartitionConstraintKind {
+    AllowedValues(Vec<Option<String>>),
+    NotNull,
 }
 
 fn projected_column_names(schema: &SchemaRef) -> Vec<String> {
@@ -794,7 +800,8 @@ fn planned_file_indices(
         .iter()
         .enumerate()
         .filter(|(_index, file)| {
-            partition_values_match(file, constraints) && file_stats_match(file, stats_constraints)
+            partition_values_match(descriptor, file, constraints)
+                && file_stats_match(file, stats_constraints)
         })
         .map(|(index, _file)| index)
         .collect()
@@ -819,16 +826,26 @@ fn planned_partition_indices(
 }
 
 fn partition_values_match(
+    descriptor: &DeltaTableDescriptor,
     active_file: &DeltaActiveFile,
     constraints: &[PartitionConstraint],
 ) -> bool {
     constraints.iter().all(|constraint| {
-        let value = active_file
-            .partition_values
-            .get(&constraint.column)
-            .cloned()
-            .unwrap_or(None);
-        constraint.values.iter().any(|expected| expected == &value)
+        let Some(partition_type) = partition_column_type(&constraint.column, descriptor) else {
+            return false;
+        };
+        let Some(value) =
+            normalized_active_file_partition_value(active_file, &constraint.column, partition_type)
+        else {
+            return false;
+        };
+
+        match &constraint.kind {
+            PartitionConstraintKind::AllowedValues(values) => {
+                values.iter().any(|expected| expected == &value)
+            }
+            PartitionConstraintKind::NotNull => value.is_some(),
+        }
     })
 }
 
@@ -956,29 +973,62 @@ fn exact_partition_constraints(
                 .or_else(|| partition_equality_constraint(&binary.right, &binary.left, descriptor))
                 .map(|constraint| vec![constraint])
         }
+        Expr::Column(column) => boolean_partition_constraint(&column.name, true, descriptor)
+            .map(|constraint| vec![constraint]),
+        Expr::Not(expr) => expr.try_as_col().and_then(|column| {
+            boolean_partition_constraint(&column.name, false, descriptor)
+                .map(|constraint| vec![constraint])
+        }),
+        Expr::IsTrue(expr) => expr.try_as_col().and_then(|column| {
+            boolean_partition_constraint(&column.name, true, descriptor)
+                .map(|constraint| vec![constraint])
+        }),
+        Expr::IsFalse(expr) => expr.try_as_col().and_then(|column| {
+            boolean_partition_constraint(&column.name, false, descriptor)
+                .map(|constraint| vec![constraint])
+        }),
         Expr::IsNull(expr) => expr
             .try_as_col()
             .and_then(|column| partition_column_name(&column.name, descriptor))
-            .map(|column| {
-                vec![PartitionConstraint {
+            .and_then(|column| {
+                let constraint = PartitionConstraint {
                     column,
-                    values: vec![None],
-                }]
+                    kind: PartitionConstraintKind::AllowedValues(vec![None]),
+                };
+                partition_constraint_safe_for_descriptor(&constraint, descriptor)
+                    .then_some(vec![constraint])
+            }),
+        Expr::IsNotNull(expr) => expr
+            .try_as_col()
+            .and_then(|column| partition_column_name(&column.name, descriptor))
+            .and_then(|column| {
+                let constraint = PartitionConstraint {
+                    column,
+                    kind: PartitionConstraintKind::NotNull,
+                };
+                partition_constraint_safe_for_descriptor(&constraint, descriptor)
+                    .then_some(vec![constraint])
             }),
         Expr::InList(in_list) if !in_list.negated => {
             let column = in_list
                 .expr
                 .try_as_col()
                 .and_then(|column| partition_column_name(&column.name, descriptor))?;
+            let partition_type = partition_column_type(&column, descriptor)?;
             let values = in_list
                 .list
                 .iter()
-                .map(scalar_partition_value_from_expr)
+                .map(|expr| scalar_partition_value_from_expr(expr, partition_type))
                 .collect::<Option<Vec<_>>>()?;
             if values.iter().any(Option::is_none) {
                 return None;
             }
-            Some(vec![PartitionConstraint { column, values }])
+            let constraint = PartitionConstraint {
+                column,
+                kind: PartitionConstraintKind::AllowedValues(values),
+            };
+            partition_constraint_safe_for_descriptor(&constraint, descriptor)
+                .then_some(vec![constraint])
         }
         _ => None,
     }
@@ -998,15 +1048,23 @@ fn merge_partition_constraint_disjunction(
         return None;
     }
 
-    let mut values = left.values.clone();
-    for value in &right.values {
+    let (
+        PartitionConstraintKind::AllowedValues(left_values),
+        PartitionConstraintKind::AllowedValues(right_values),
+    ) = (&left.kind, &right.kind)
+    else {
+        return None;
+    };
+
+    let mut values = left_values.clone();
+    for value in right_values {
         if !values.contains(value) {
             values.push(value.clone());
         }
     }
     Some(vec![PartitionConstraint {
         column: left.column.clone(),
-        values,
+        kind: PartitionConstraintKind::AllowedValues(values),
     }])
 }
 
@@ -1018,12 +1076,33 @@ fn partition_equality_constraint(
     let column = left
         .try_as_col()
         .and_then(|column| partition_column_name(&column.name, descriptor))?;
-    let value = scalar_partition_value_from_expr(right)?;
+    let partition_type = partition_column_type(&column, descriptor)?;
+    let value = scalar_partition_value_from_expr(right, partition_type)?;
     value.as_ref()?;
-    Some(PartitionConstraint {
+    let constraint = PartitionConstraint {
         column,
-        values: vec![value],
-    })
+        kind: PartitionConstraintKind::AllowedValues(vec![value]),
+    };
+    partition_constraint_safe_for_descriptor(&constraint, descriptor).then_some(constraint)
+}
+
+fn boolean_partition_constraint(
+    column_name: &str,
+    value: bool,
+    descriptor: &DeltaTableDescriptor,
+) -> Option<PartitionConstraint> {
+    let column = partition_column_name(column_name, descriptor)?;
+    let partition_type = partition_column_type(&column, descriptor)?;
+    if partition_type != PartitionColumnType::Boolean {
+        return None;
+    }
+    let value =
+        partition_type.normalize_partition_literal(&PartitionLiteralValue::Boolean(value))?;
+    let constraint = PartitionConstraint {
+        column,
+        kind: PartitionConstraintKind::AllowedValues(vec![value]),
+    };
+    partition_constraint_safe_for_descriptor(&constraint, descriptor).then_some(constraint)
 }
 
 fn partition_column_name(column_name: &str, descriptor: &DeltaTableDescriptor) -> Option<String> {
@@ -1034,28 +1113,110 @@ fn partition_column_name(column_name: &str, descriptor: &DeltaTableDescriptor) -
         .cloned()
 }
 
-fn scalar_partition_value_from_expr(expr: &Expr) -> Option<Option<String>> {
+fn partition_column_type(
+    column_name: &str,
+    descriptor: &DeltaTableDescriptor,
+) -> Option<PartitionColumnType> {
+    let normalized_column = normalize_partition_column_key(column_name);
+    let mut matches = descriptor
+        .partition_column_types
+        .iter()
+        .filter(|(name, _partition_type)| normalize_partition_column_key(name) == normalized_column)
+        .map(|(_name, partition_type)| *partition_type);
+    let partition_type = matches.next()?;
+    matches.next().is_none().then_some(partition_type)
+}
+
+fn partition_constraint_safe_for_descriptor(
+    constraint: &PartitionConstraint,
+    descriptor: &DeltaTableDescriptor,
+) -> bool {
+    let Some(partition_type) = partition_column_type(&constraint.column, descriptor) else {
+        return false;
+    };
+
+    descriptor.active_files.iter().all(|file| {
+        normalized_active_file_partition_value(file, &constraint.column, partition_type).is_some()
+    })
+}
+
+fn normalized_active_file_partition_value(
+    active_file: &DeltaActiveFile,
+    column: &str,
+    partition_type: PartitionColumnType,
+) -> Option<Option<String>> {
+    let normalized_column = normalize_partition_column_key(column);
+    let mut values = active_file
+        .partition_values
+        .iter()
+        .filter(|(key, _value)| normalize_partition_column_key(key) == normalized_column)
+        .map(|(_key, value)| value.as_deref());
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    partition_type.normalize_partition_value(value)
+}
+
+fn normalize_partition_column_key(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
+fn scalar_partition_value_from_expr(
+    expr: &Expr,
+    partition_type: PartitionColumnType,
+) -> Option<Option<String>> {
     match expr {
-        Expr::Literal(value, _) => scalar_partition_value(value),
+        Expr::Literal(value, _) => scalar_partition_value(value, partition_type),
         _ => None,
     }
 }
 
-fn scalar_partition_value(value: &ScalarValue) -> Option<Option<String>> {
+fn scalar_partition_value(
+    value: &ScalarValue,
+    partition_type: PartitionColumnType,
+) -> Option<Option<String>> {
+    let literal = scalar_partition_literal(value)?;
+    partition_type.normalize_partition_literal(&literal)
+}
+
+fn scalar_partition_literal(value: &ScalarValue) -> Option<PartitionLiteralValue> {
     match value {
-        ScalarValue::Null => Some(None),
-        ScalarValue::Utf8(value) | ScalarValue::Utf8View(value) | ScalarValue::LargeUtf8(value) => {
-            Some(value.clone())
+        ScalarValue::Null => Some(PartitionLiteralValue::Null),
+        ScalarValue::Utf8(None) | ScalarValue::Utf8View(None) | ScalarValue::LargeUtf8(None) => {
+            Some(PartitionLiteralValue::Null)
         }
-        ScalarValue::Boolean(value) => Some(value.map(|value| value.to_string())),
-        ScalarValue::Int8(value) => Some(value.map(|value| value.to_string())),
-        ScalarValue::Int16(value) => Some(value.map(|value| value.to_string())),
-        ScalarValue::Int32(value) => Some(value.map(|value| value.to_string())),
-        ScalarValue::Int64(value) => Some(value.map(|value| value.to_string())),
-        ScalarValue::UInt8(value) => Some(value.map(|value| value.to_string())),
-        ScalarValue::UInt16(value) => Some(value.map(|value| value.to_string())),
-        ScalarValue::UInt32(value) => Some(value.map(|value| value.to_string())),
-        ScalarValue::UInt64(value) => Some(value.map(|value| value.to_string())),
+        ScalarValue::Utf8(Some(value))
+        | ScalarValue::Utf8View(Some(value))
+        | ScalarValue::LargeUtf8(Some(value)) => Some(PartitionLiteralValue::String(value.clone())),
+        ScalarValue::Boolean(value) => {
+            Some(value.map_or(PartitionLiteralValue::Null, PartitionLiteralValue::Boolean))
+        }
+        ScalarValue::Int8(value) => Some(value.map_or(PartitionLiteralValue::Null, |value| {
+            PartitionLiteralValue::Int64(i64::from(value))
+        })),
+        ScalarValue::Int16(value) => Some(value.map_or(PartitionLiteralValue::Null, |value| {
+            PartitionLiteralValue::Int64(i64::from(value))
+        })),
+        ScalarValue::Int32(value) => Some(value.map_or(PartitionLiteralValue::Null, |value| {
+            PartitionLiteralValue::Int64(i64::from(value))
+        })),
+        ScalarValue::Int64(value) => {
+            Some(value.map_or(PartitionLiteralValue::Null, PartitionLiteralValue::Int64))
+        }
+        ScalarValue::UInt8(value) => Some(value.map_or(PartitionLiteralValue::Null, |value| {
+            PartitionLiteralValue::Int64(i64::from(value))
+        })),
+        ScalarValue::UInt16(value) => Some(value.map_or(PartitionLiteralValue::Null, |value| {
+            PartitionLiteralValue::Int64(i64::from(value))
+        })),
+        ScalarValue::UInt32(value) => Some(value.map_or(PartitionLiteralValue::Null, |value| {
+            PartitionLiteralValue::Int64(i64::from(value))
+        })),
+        ScalarValue::UInt64(value) => Some(match value {
+            Some(value) => PartitionLiteralValue::Int64(i64::try_from(*value).ok()?),
+            None => PartitionLiteralValue::Null,
+        }),
         _ => None,
     }
 }

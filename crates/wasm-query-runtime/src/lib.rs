@@ -24,8 +24,8 @@ use query_contract::{
     validate_browser_object_url, BrowserAccessMode, BrowserHttpParquetDatasetDescriptor,
     BrowserHttpSnapshotDescriptor, BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport,
     CapabilityState, ExecutionTarget, FallbackReason, ParquetInspectionSummary,
-    PartitionColumnType, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest,
-    ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
+    PartitionColumnType, PartitionLiteralValue, QueryError, QueryErrorCode, QueryMetricsSummary,
+    QueryRequest, ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 use reqwest::Url;
 use sqlparser::ast::{
@@ -1688,6 +1688,7 @@ impl BrowserRuntimeSession {
         let pruning_constraints = extract_browser_pruning_constraints(
             analyzed.query.as_ref(),
             &normalized_partition_columns,
+            snapshot.partition_column_types(),
             &stats_columns,
         );
         let mut candidate_files = snapshot.active_files().iter().collect::<Vec<_>>();
@@ -1698,8 +1699,20 @@ impl BrowserRuntimeSession {
         let mut used_partition_pruning = false;
         if let Some(partition_constraints) = partition_constraints {
             let original_candidate_count = candidate_files.len();
-            candidate_files.retain(|file| partition_constraints_match(file, partition_constraints));
-            used_partition_pruning = candidate_files.len() < original_candidate_count;
+            if can_apply_partition_pruning(
+                candidate_files.iter().map(|file| file.partition_values()),
+                partition_constraints,
+                snapshot.partition_column_types(),
+            ) {
+                candidate_files.retain(|file| {
+                    partition_constraints_match(
+                        file,
+                        partition_constraints,
+                        snapshot.partition_column_types(),
+                    )
+                });
+                used_partition_pruning = candidate_files.len() < original_candidate_count;
+            }
         }
 
         let file_stats_constraint = pruning_constraints
@@ -2665,6 +2678,7 @@ fn select_materialized_files_for_bootstrap<'a>(
     let pruning_constraints = extract_browser_pruning_constraints(
         analyzed.query.as_ref(),
         &normalized_partition_columns,
+        snapshot.partition_column_types(),
         &delta_stats_columns,
     );
 
@@ -2677,15 +2691,27 @@ fn select_materialized_files_for_bootstrap<'a>(
         .map(|constraints| &constraints.partition)
         .filter(|constraints| !constraints.by_column.is_empty())
     {
-        let partition_candidates = candidate_files
-            .iter()
-            .copied()
-            .filter(|file| materialized_partition_constraints_match(file, partition_constraints))
-            .collect::<Vec<_>>();
-        if partition_candidates.len() < candidate_files.len() {
-            used_partition_pruning = true;
-            applied_partition_constraints = Some(partition_constraints.clone());
-            candidate_files = partition_candidates;
+        if can_apply_partition_pruning(
+            candidate_files.iter().map(|file| file.partition_values()),
+            partition_constraints,
+            snapshot.partition_column_types(),
+        ) {
+            let partition_candidates = candidate_files
+                .iter()
+                .copied()
+                .filter(|file| {
+                    materialized_partition_constraints_match(
+                        file,
+                        partition_constraints,
+                        snapshot.partition_column_types(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if partition_candidates.len() < candidate_files.len() {
+                used_partition_pruning = true;
+                applied_partition_constraints = Some(partition_constraints.clone());
+                candidate_files = partition_candidates;
+            }
         }
     }
 
@@ -2918,10 +2944,10 @@ fn typed_partition_scalar(
 ) -> Result<BrowserScalarValue, QueryError> {
     match partition_type {
         PartitionColumnType::String => Ok(BrowserScalarValue::String(value.to_string())),
-        PartitionColumnType::Boolean => parse_canonical_partition_bool(value)
+        PartitionColumnType::Boolean => query_contract::parse_canonical_partition_bool(value)
             .map(BrowserScalarValue::Boolean)
             .ok_or_else(|| invalid_partition_value_error(column, value, partition_type)),
-        PartitionColumnType::Int64 => parse_canonical_partition_i64(value)
+        PartitionColumnType::Int64 => query_contract::parse_canonical_partition_i64(value)
             .map(BrowserScalarValue::Int64)
             .ok_or_else(|| invalid_partition_value_error(column, value, partition_type)),
         PartitionColumnType::Unsupported => Err(unsupported_partition_type_error(column)),
@@ -2933,11 +2959,13 @@ fn partition_column_type_for_name(
     column: &str,
 ) -> Option<PartitionColumnType> {
     let normalized_column = normalize_name(column);
-    partition_column_types
+    let mut matches = partition_column_types
         .iter()
-        .find_map(|(name, partition_type)| {
+        .filter_map(|(name, partition_type)| {
             (normalize_name(name) == normalized_column).then_some(*partition_type)
-        })
+        });
+    let partition_type = matches.next()?;
+    matches.next().is_none().then_some(partition_type)
 }
 
 fn validate_required_partition_execution_types(
@@ -3007,21 +3035,6 @@ fn invalid_partition_value_error(
         runtime_target(),
     )
     .with_fallback_reason(FallbackReason::NativeRequired)
-}
-
-#[cfg(test)]
-fn parse_canonical_partition_bool(value: &str) -> Option<bool> {
-    match value {
-        "true" => Some(true),
-        "false" => Some(false),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-fn parse_canonical_partition_i64(value: &str) -> Option<i64> {
-    let parsed = value.parse::<i64>().ok()?;
-    (parsed.to_string() == value).then_some(parsed)
 }
 
 #[derive(Clone)]
@@ -3926,6 +3939,7 @@ fn table_alias_columns(alias: &TableAlias) -> BTreeSet<String> {
 fn extract_browser_pruning_constraints(
     query: &SqlQuery,
     partition_columns: &BTreeSet<String>,
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
     file_stats_columns: &BTreeSet<String>,
 ) -> Option<BrowserPruningConstraints> {
     if partition_columns.is_empty() && file_stats_columns.is_empty() {
@@ -3945,26 +3959,47 @@ fn extract_browser_pruning_constraints(
     }
 
     let selection = select.selection.as_ref()?;
-    lower_browser_pruning_constraints(selection, partition_columns, file_stats_columns)
+    lower_browser_pruning_constraints(
+        selection,
+        partition_columns,
+        partition_column_types,
+        file_stats_columns,
+    )
 }
 
 fn lower_browser_pruning_constraints(
     expr: &SqlExpr,
     partition_columns: &BTreeSet<String>,
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
     file_stats_columns: &BTreeSet<String>,
 ) -> Option<BrowserPruningConstraints> {
     match expr {
-        SqlExpr::Nested(expr) => {
-            lower_browser_pruning_constraints(expr, partition_columns, file_stats_columns)
-        }
+        SqlExpr::Nested(expr) => lower_browser_pruning_constraints(
+            expr,
+            partition_columns,
+            partition_column_types,
+            file_stats_columns,
+        ),
         SqlExpr::BinaryOp { left, op, right } if *op == SqlBinaryOperator::And => {
             merge_optional_browser_pruning_constraints(
-                lower_browser_pruning_constraints(left, partition_columns, file_stats_columns),
-                lower_browser_pruning_constraints(right, partition_columns, file_stats_columns),
+                lower_browser_pruning_constraints(
+                    left,
+                    partition_columns,
+                    partition_column_types,
+                    file_stats_columns,
+                ),
+                lower_browser_pruning_constraints(
+                    right,
+                    partition_columns,
+                    partition_column_types,
+                    file_stats_columns,
+                ),
             )
         }
         _ => {
-            if let Some(partition) = lower_partition_pruning_constraint(expr, partition_columns) {
+            if let Some(partition) =
+                lower_partition_pruning_constraint(expr, partition_columns, partition_column_types)
+            {
                 return Some(BrowserPruningConstraints {
                     partition,
                     file_stats: None,
@@ -4013,6 +4048,7 @@ fn merge_browser_pruning_constraints(
 fn lower_partition_pruning_constraint(
     expr: &SqlExpr,
     partition_columns: &BTreeSet<String>,
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
 ) -> Option<PartitionPruningConstraints> {
     match expr {
         SqlExpr::InList {
@@ -4021,9 +4057,10 @@ fn lower_partition_pruning_constraint(
             negated,
         } if !negated => {
             let column = expr_partition_column_name(expr, partition_columns)?;
+            let partition_type = partition_column_type_for_name(partition_column_types, &column)?;
             let mut values = BTreeSet::new();
             for item in list {
-                values.insert(expr_literal_value(item)?);
+                values.insert(expr_partition_literal_value(item, partition_type)?);
             }
             Some(single_partition_values_constraint(column, values))
         }
@@ -4035,7 +4072,12 @@ fn lower_partition_pruning_constraint(
             expr_partition_column_name(expr, partition_columns)?,
         )),
         SqlExpr::BinaryOp { left, op, right } if *op == SqlBinaryOperator::Eq => {
-            let (column, value) = partition_column_literal_pair(left, right, partition_columns)?;
+            let (column, value) = partition_column_literal_pair(
+                left,
+                right,
+                partition_columns,
+                partition_column_types,
+            )?;
             Some(single_partition_value_constraint(column, value))
         }
         _ => None,
@@ -4143,15 +4185,16 @@ fn partition_column_literal_pair(
     left: &SqlExpr,
     right: &SqlExpr,
     partition_columns: &BTreeSet<String>,
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
 ) -> Option<(String, Option<String>)> {
     if let Some(column) = expr_partition_column_name(left, partition_columns) {
-        return Some((column, expr_literal_value(right)?));
+        let partition_type = partition_column_type_for_name(partition_column_types, &column)?;
+        return Some((column, expr_partition_literal_value(right, partition_type)?));
     }
 
-    Some((
-        expr_partition_column_name(right, partition_columns)?,
-        expr_literal_value(left)?,
-    ))
+    let column = expr_partition_column_name(right, partition_columns)?;
+    let partition_type = partition_column_type_for_name(partition_column_types, &column)?;
+    Some((column, expr_partition_literal_value(left, partition_type)?))
 }
 
 fn expr_partition_column_name(
@@ -4179,18 +4222,35 @@ fn expr_named_column(expr: &SqlExpr, supported_columns: &BTreeSet<String>) -> Op
     supported_columns.contains(&column).then_some(column)
 }
 
-fn expr_literal_value(expr: &SqlExpr) -> Option<Option<String>> {
+fn expr_partition_literal_value(
+    expr: &SqlExpr,
+    partition_type: PartitionColumnType,
+) -> Option<Option<String>> {
+    let literal = expr_partition_literal(expr)?;
+    partition_type.normalize_partition_literal(&literal)
+}
+
+fn expr_partition_literal(expr: &SqlExpr) -> Option<PartitionLiteralValue> {
     match expr {
-        SqlExpr::Nested(expr) => expr_literal_value(expr),
+        SqlExpr::Nested(expr) => expr_partition_literal(expr),
+        SqlExpr::UnaryOp { op, expr } => match op {
+            SqlUnaryOperator::Plus => expr_partition_literal(expr),
+            SqlUnaryOperator::Minus => Some(PartitionLiteralValue::Int64(
+                expr_i64_literal(expr)?.checked_neg()?,
+            )),
+            _ => None,
+        },
         SqlExpr::Value(value) => {
             if let Some(string) = value.value.clone().into_string() {
-                return Some(Some(string));
+                return Some(PartitionLiteralValue::String(string));
             }
 
             match &value.value {
-                SqlValue::Number(number, _) => Some(Some(number.clone())),
-                SqlValue::Boolean(value) => Some(Some(value.to_string())),
-                SqlValue::Null => Some(None),
+                SqlValue::Number(number, _) => {
+                    Some(PartitionLiteralValue::Int64(number.parse::<i64>().ok()?))
+                }
+                SqlValue::Boolean(value) => Some(PartitionLiteralValue::Boolean(*value)),
+                SqlValue::Null => Some(PartitionLiteralValue::Null),
                 _ => None,
             }
         }
@@ -4239,20 +4299,49 @@ fn single_partition_not_null_constraint(column: String) -> PartitionPruningConst
 fn materialized_partition_constraints_match(
     file: &MaterializedBrowserFile,
     constraints: &PartitionPruningConstraints,
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
 ) -> bool {
     constraints.by_column.iter().all(|(column, constraint)| {
-        let value = file
-            .partition_values()
-            .iter()
-            .find_map(|(key, value)| (normalize_name(key) == *column).then_some(value));
+        let value =
+            normalized_partition_value(file.partition_values(), column, partition_column_types);
 
         match constraint {
             PartitionValueConstraint::AllowedValues(values) => {
-                value.is_some_and(|value| values.contains(value))
+                value.is_some_and(|value| values.contains(&value))
             }
             PartitionValueConstraint::NotNull => value.is_some_and(|value| value.is_some()),
         }
     })
+}
+
+fn can_apply_partition_pruning<'a>(
+    partition_values: impl IntoIterator<Item = &'a BTreeMap<String, Option<String>>>,
+    constraints: &PartitionPruningConstraints,
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+) -> bool {
+    partition_values.into_iter().all(|partition_values| {
+        constraints.by_column.keys().all(|column| {
+            normalized_partition_value(partition_values, column, partition_column_types).is_some()
+        })
+    })
+}
+
+fn normalized_partition_value(
+    partition_values: &BTreeMap<String, Option<String>>,
+    column: &str,
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+) -> Option<Option<String>> {
+    let partition_type = partition_column_type_for_name(partition_column_types, column)?;
+    let normalized_column = normalize_name(column);
+    let mut values = partition_values
+        .iter()
+        .filter(|(key, _value)| normalize_name(key) == normalized_column)
+        .map(|(_key, value)| value.as_deref());
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    partition_type.normalize_partition_value(value)
 }
 
 fn materialized_delta_stats_columns(files: &[&MaterializedBrowserFile]) -> BTreeSet<String> {
@@ -4291,16 +4380,15 @@ fn materialized_file_stats_constraint_matches(
 fn partition_constraints_match(
     file: &BootstrappedBrowserFile,
     constraints: &PartitionPruningConstraints,
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
 ) -> bool {
     constraints.by_column.iter().all(|(column, constraint)| {
-        let value = file
-            .partition_values()
-            .iter()
-            .find_map(|(key, value)| (normalize_name(key) == *column).then_some(value));
+        let value =
+            normalized_partition_value(file.partition_values(), column, partition_column_types);
 
         match constraint {
             PartitionValueConstraint::AllowedValues(values) => {
-                value.is_some_and(|value| values.contains(value))
+                value.is_some_and(|value| values.contains(&value))
             }
             PartitionValueConstraint::NotNull => value.is_some_and(|value| value.is_some()),
         }

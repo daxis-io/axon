@@ -235,6 +235,63 @@ pub enum PartitionColumnType {
     Unsupported,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PartitionLiteralValue {
+    String(String),
+    Int64(i64),
+    Boolean(bool),
+    Null,
+}
+
+impl PartitionColumnType {
+    pub fn normalize_partition_value(&self, value: Option<&str>) -> Option<Option<String>> {
+        if matches!(self, Self::Unsupported) {
+            return None;
+        }
+
+        match value {
+            None => Some(None),
+            Some(value) => self.normalize_non_null_partition_value(value).map(Some),
+        }
+    }
+
+    pub fn normalize_partition_literal(
+        &self,
+        literal: &PartitionLiteralValue,
+    ) -> Option<Option<String>> {
+        match (self, literal) {
+            (Self::Unsupported, _) => None,
+            (_, PartitionLiteralValue::Null) => Some(None),
+            (Self::String, PartitionLiteralValue::String(value)) => Some(Some(value.clone())),
+            (Self::Int64, PartitionLiteralValue::Int64(value)) => Some(Some(value.to_string())),
+            (Self::Boolean, PartitionLiteralValue::Boolean(value)) => Some(Some(value.to_string())),
+            _ => None,
+        }
+    }
+
+    pub fn normalize_non_null_partition_value(&self, value: &str) -> Option<String> {
+        match self {
+            Self::String => Some(value.to_string()),
+            Self::Int64 => parse_canonical_partition_i64(value).map(|value| value.to_string()),
+            Self::Boolean => parse_canonical_partition_bool(value).map(|value| value.to_string()),
+            Self::Unsupported => None,
+        }
+    }
+}
+
+pub fn parse_canonical_partition_bool(value: &str) -> Option<bool> {
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+pub fn parse_canonical_partition_i64(value: &str) -> Option<i64> {
+    let parsed = value.parse::<i64>().ok()?;
+    (parsed.to_string() == value).then_some(parsed)
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct ResolvedSnapshotDescriptor {
     pub table_uri: String,
@@ -2034,6 +2091,24 @@ mod explain_field_tests {
         assert!(
             !wire.contains("\"explain\""),
             "expected explain to be omitted; wire: {wire}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod partition_column_type_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_partition_type_rejects_nulls() {
+        assert_eq!(
+            PartitionColumnType::Unsupported.normalize_partition_value(None),
+            None
+        );
+        assert_eq!(
+            PartitionColumnType::Unsupported
+                .normalize_partition_literal(&PartitionLiteralValue::Null),
+            None
         );
     }
 }

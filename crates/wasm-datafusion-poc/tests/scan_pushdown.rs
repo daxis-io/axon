@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use arrow_array::{cast::AsArray, Int32Array, RecordBatch, StringArray};
+use arrow_array::{cast::AsArray, BooleanArray, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::{ScanArgs, TableProvider};
 use datafusion::common::{Column, ScalarValue};
@@ -260,7 +260,7 @@ async fn supports_filters_pushdown_distinguishes_exact_inexact_and_unsupported()
         pushdown,
         vec![
             TableProviderFilterPushDown::Exact,
-            TableProviderFilterPushDown::Unsupported,
+            TableProviderFilterPushDown::Exact,
             TableProviderFilterPushDown::Unsupported,
             TableProviderFilterPushDown::Inexact,
         ]
@@ -329,8 +329,16 @@ async fn null_partition_comparisons_stay_conservative_and_correct() {
     let is_not_null_trace = is_not_null_scan.pushdown_trace();
 
     assert_eq!(int32_column_values(&is_not_null_batches, 0), vec![2]);
-    assert_eq!(is_not_null_trace.files_planned, 2);
-    assert_eq!(is_not_null_trace.files_skipped, 0);
+    assert_eq!(is_not_null_trace.files_planned, 1);
+    assert_eq!(is_not_null_trace.files_skipped, 1);
+    assert_eq!(
+        is_not_null_trace.planned_file_paths,
+        vec!["event_date=2026-01-02/part-001.parquet"]
+    );
+    assert_eq!(
+        is_not_null_trace.exact_filters,
+        vec!["event_date IS NOT NULL"]
+    );
     assert_eq!(is_not_null_trace.inexact_filters, Vec::<String>::new());
 
     let provider = AxonDeltaTableProvider::with_record_batch_partitions(
@@ -468,6 +476,168 @@ async fn inexact_residual_filter_stays_above_partition_pruned_scan() {
     assert_eq!(after.rows_emitted, 2);
     assert_eq!(after.bytes_fetched, 0);
     assert_eq!(after.row_groups_skipped, 0);
+}
+
+#[tokio::test]
+async fn typed_partition_filters_normalize_by_declared_type() {
+    let ctx = context_with_typed_partition_events();
+
+    let shard_plan = physical_plan(&ctx, "SELECT id FROM events WHERE shard = 2 ORDER BY id").await;
+    let shard_scan = axon_scan(&shard_plan);
+    let shard_batches = collect(Arc::clone(&shard_plan), ctx.task_ctx())
+        .await
+        .expect("Int64 partition query should execute");
+    let shard_trace = shard_scan.pushdown_trace();
+
+    assert_eq!(int32_column_values(&shard_batches, 0), vec![2]);
+    assert_eq!(shard_trace.files_planned, 1);
+    assert_eq!(shard_trace.files_skipped, 3);
+    assert_eq!(
+        shard_trace.planned_file_paths,
+        vec!["shard=2/part-001.parquet"]
+    );
+    assert_eq!(shard_trace.exact_filters, vec!["shard = Int64(2)"]);
+    assert_eq!(shard_trace.inexact_filters, Vec::<String>::new());
+
+    let active_plan = physical_plan(
+        &ctx,
+        "SELECT id FROM events WHERE active = true ORDER BY id",
+    )
+    .await;
+    let active_scan = axon_scan(&active_plan);
+    let active_batches = collect(Arc::clone(&active_plan), ctx.task_ctx())
+        .await
+        .expect("Boolean partition query should execute");
+    let active_trace = active_scan.pushdown_trace();
+
+    assert_eq!(int32_column_values(&active_batches, 0), vec![3]);
+    assert_eq!(active_trace.files_planned, 1);
+    assert_eq!(active_trace.files_skipped, 3);
+    assert_eq!(
+        active_trace.planned_file_paths,
+        vec!["active=true/part-002.parquet"]
+    );
+    assert_eq!(active_trace.exact_filters, vec!["active"]);
+    assert_eq!(active_trace.inexact_filters, Vec::<String>::new());
+
+    let code_plan = physical_plan(&ctx, "SELECT id FROM events WHERE code = '2' ORDER BY id").await;
+    let code_scan = axon_scan(&code_plan);
+    let code_batches = collect(Arc::clone(&code_plan), ctx.task_ctx())
+        .await
+        .expect("String partition query should execute");
+    let code_trace = code_scan.pushdown_trace();
+
+    assert_eq!(int32_column_values(&code_batches, 0), vec![4]);
+    assert_eq!(code_trace.files_planned, 1);
+    assert_eq!(code_trace.files_skipped, 3);
+    assert_eq!(
+        code_trace.planned_file_paths,
+        vec!["code=2/part-003.parquet"]
+    );
+    assert_eq!(code_trace.exact_filters, vec!["code = Utf8(\"2\")"]);
+    assert_eq!(code_trace.inexact_filters, Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn unsafe_typed_partition_values_fail_open_to_residual_filters() {
+    assert_partition_metadata_fail_open(
+        typed_partition_descriptor_with_values(vec![
+            ("missing-shard/part-000.parquet", BTreeMap::new()),
+            (
+                "shard=3/part-001.parquet",
+                BTreeMap::from([("shard".to_string(), Some("3".to_string()))]),
+            ),
+        ]),
+        "SELECT id FROM events WHERE shard = 2 ORDER BY id",
+        &[1],
+    )
+    .await;
+
+    assert_partition_metadata_fail_open(
+        typed_partition_descriptor_with_values(vec![
+            (
+                "shard=not-an-int/part-000.parquet",
+                BTreeMap::from([("shard".to_string(), Some("not-an-int".to_string()))]),
+            ),
+            (
+                "shard=3/part-001.parquet",
+                BTreeMap::from([("shard".to_string(), Some("3".to_string()))]),
+            ),
+        ]),
+        "SELECT id FROM events WHERE shard = 2 ORDER BY id",
+        &[1],
+    )
+    .await;
+
+    assert_partition_metadata_fail_open(
+        typed_partition_descriptor_with_values(vec![
+            (
+                "ambiguous-shard/part-000.parquet",
+                BTreeMap::from([
+                    ("SHARD".to_string(), Some("3".to_string())),
+                    ("shard".to_string(), Some("2".to_string())),
+                ]),
+            ),
+            (
+                "shard=3/part-001.parquet",
+                BTreeMap::from([("shard".to_string(), Some("3".to_string()))]),
+            ),
+        ]),
+        "SELECT id FROM events WHERE shard = 2 ORDER BY id",
+        &[1],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn type_incompatible_partition_literals_are_not_exact_pushdown() {
+    let schema = typed_partition_schema();
+    let provider = AxonDeltaTableProvider::with_record_batch_partitions(
+        typed_partition_descriptor(Arc::clone(&schema)),
+        typed_partition_partitions(schema),
+    );
+    let shard_string_literal = Expr::BinaryExpr(BinaryExpr::new(
+        Box::new(Expr::Column(Column::new_unqualified("shard"))),
+        Operator::Eq,
+        Box::new(Expr::Literal(
+            ScalarValue::Utf8(Some("2".to_string())),
+            None,
+        )),
+    ));
+    let code_int_literal = Expr::BinaryExpr(BinaryExpr::new(
+        Box::new(Expr::Column(Column::new_unqualified("code"))),
+        Operator::Eq,
+        Box::new(Expr::Literal(ScalarValue::Int64(Some(2)), None)),
+    ));
+
+    let pushdown = provider
+        .supports_filters_pushdown(&[&shard_string_literal, &code_int_literal])
+        .expect("pushdown support should classify type-incompatible literals");
+
+    assert_eq!(
+        pushdown,
+        vec![
+            TableProviderFilterPushDown::Unsupported,
+            TableProviderFilterPushDown::Unsupported,
+        ]
+    );
+
+    let ctx = SessionContext::new();
+    let shard_filters = [shard_string_literal];
+    let shard_scan_result = provider
+        .scan_with_args(
+            &ctx.state(),
+            ScanArgs::default().with_filters(Some(&shard_filters)),
+        )
+        .await
+        .expect("scan_with_args should build a scan plan");
+    let shard_scan = axon_scan(shard_scan_result.plan());
+    let shard_trace = shard_scan.pushdown_trace();
+
+    assert_eq!(shard_trace.files_planned, 4);
+    assert_eq!(shard_trace.files_skipped, 0);
+    assert_eq!(shard_trace.exact_filters, Vec::<String>::new());
+    assert_eq!(shard_trace.inexact_filters, vec!["shard = Utf8(\"2\")"]);
 }
 
 #[test]
@@ -627,6 +797,48 @@ fn context_with_value_stats_events() -> SessionContext {
     ctx
 }
 
+fn context_with_typed_partition_events() -> SessionContext {
+    let ctx = SessionContext::new();
+    let schema = typed_partition_schema();
+    ctx.register_table(
+        "events",
+        Arc::new(AxonDeltaTableProvider::with_record_batch_partitions(
+            typed_partition_descriptor(Arc::clone(&schema)),
+            typed_partition_partitions(schema),
+        )),
+    )
+    .expect("table should register");
+    ctx
+}
+
+async fn assert_partition_metadata_fail_open(
+    descriptor: DeltaTableDescriptor,
+    sql: &str,
+    expected_ids: &[i32],
+) {
+    let ctx = SessionContext::new();
+    ctx.register_table(
+        "events",
+        Arc::new(AxonDeltaTableProvider::with_record_batch_partitions(
+            descriptor,
+            fail_open_typed_partition_partitions(),
+        )),
+    )
+    .expect("table should register");
+
+    let plan = physical_plan(&ctx, sql).await;
+    let scan = axon_scan(&plan);
+    let batches = collect(Arc::clone(&plan), ctx.task_ctx())
+        .await
+        .expect("query should execute through residual filter");
+    let trace = scan.pushdown_trace();
+
+    assert_eq!(int32_column_values(&batches, 0), expected_ids);
+    assert_eq!(trace.files_planned, 2);
+    assert_eq!(trace.files_skipped, 0);
+    assert_eq!(trace.exact_filters, Vec::<String>::new());
+}
+
 fn axon_scan(plan: &Arc<dyn ExecutionPlan>) -> &AxonParquetScanExec {
     if let Some(scan) = plan.as_any().downcast_ref::<AxonParquetScanExec>() {
         return scan;
@@ -776,6 +988,59 @@ fn nullable_partitions(schema: SchemaRef) -> Vec<Vec<RecordBatch>> {
     ]
 }
 
+fn typed_partition_partitions(schema: SchemaRef) -> Vec<Vec<RecordBatch>> {
+    vec![
+        vec![typed_partition_record_batch(
+            Arc::clone(&schema),
+            &[1],
+            &[1],
+            &[false],
+            &["1"],
+        )],
+        vec![typed_partition_record_batch(
+            Arc::clone(&schema),
+            &[2],
+            &[2],
+            &[false],
+            &["x"],
+        )],
+        vec![typed_partition_record_batch(
+            Arc::clone(&schema),
+            &[3],
+            &[3],
+            &[true],
+            &["y"],
+        )],
+        vec![typed_partition_record_batch(
+            schema,
+            &[4],
+            &[4],
+            &[false],
+            &["2"],
+        )],
+    ]
+}
+
+fn fail_open_typed_partition_partitions() -> Vec<Vec<RecordBatch>> {
+    let schema = typed_partition_schema();
+    vec![
+        vec![typed_partition_record_batch(
+            Arc::clone(&schema),
+            &[1],
+            &[2],
+            &[false],
+            &["missing"],
+        )],
+        vec![typed_partition_record_batch(
+            schema,
+            &[2],
+            &[3],
+            &[false],
+            &["other"],
+        )],
+    ]
+}
+
 fn parquet_delta_descriptor(url: String, size_bytes: u64) -> DeltaTableDescriptor {
     DeltaTableDescriptor {
         table_name: "events".to_string(),
@@ -792,6 +1057,86 @@ fn parquet_delta_descriptor(url: String, size_bytes: u64) -> DeltaTableDescripto
             stats_json: Some(r#"{"numRecords":6}"#.to_string()),
             deletion_vector: None,
         }],
+    }
+}
+
+fn typed_partition_descriptor(schema: SchemaRef) -> DeltaTableDescriptor {
+    typed_partition_descriptor_with_schema(
+        schema,
+        vec![
+            (
+                "shard=1/part-000.parquet",
+                BTreeMap::from([
+                    ("active".to_string(), Some("false".to_string())),
+                    ("code".to_string(), Some("1".to_string())),
+                    ("shard".to_string(), Some("1".to_string())),
+                ]),
+            ),
+            (
+                "shard=2/part-001.parquet",
+                BTreeMap::from([
+                    ("active".to_string(), Some("false".to_string())),
+                    ("code".to_string(), Some("x".to_string())),
+                    ("shard".to_string(), Some("2".to_string())),
+                ]),
+            ),
+            (
+                "active=true/part-002.parquet",
+                BTreeMap::from([
+                    ("active".to_string(), Some("true".to_string())),
+                    ("code".to_string(), Some("y".to_string())),
+                    ("shard".to_string(), Some("3".to_string())),
+                ]),
+            ),
+            (
+                "code=2/part-003.parquet",
+                BTreeMap::from([
+                    ("active".to_string(), Some("false".to_string())),
+                    ("code".to_string(), Some("2".to_string())),
+                    ("shard".to_string(), Some("4".to_string())),
+                ]),
+            ),
+        ],
+    )
+}
+
+fn typed_partition_descriptor_with_values(
+    files: Vec<(&str, BTreeMap<String, Option<String>>)>,
+) -> DeltaTableDescriptor {
+    typed_partition_descriptor_with_schema(typed_partition_schema(), files)
+}
+
+fn typed_partition_descriptor_with_schema(
+    schema: SchemaRef,
+    files: Vec<(&str, BTreeMap<String, Option<String>>)>,
+) -> DeltaTableDescriptor {
+    DeltaTableDescriptor {
+        table_name: "events".to_string(),
+        table_version: 16,
+        schema,
+        partition_columns: vec![
+            "shard".to_string(),
+            "active".to_string(),
+            "code".to_string(),
+        ],
+        partition_column_types: BTreeMap::from([
+            ("active".to_string(), PartitionColumnType::Boolean),
+            ("code".to_string(), PartitionColumnType::String),
+            ("shard".to_string(), PartitionColumnType::Int64),
+        ]),
+        active_files: files
+            .into_iter()
+            .enumerate()
+            .map(|(index, (path, partition_values))| DeltaActiveFile {
+                path: path.to_string(),
+                url: format!("https://example.test/table/{path}"),
+                size_bytes: 1024,
+                partition_values,
+                object_etag: None,
+                stats_json: Some(format!(r#"{{"numRecords":{}}}"#, index + 1)),
+                deletion_vector: None,
+            })
+            .collect(),
     }
 }
 
@@ -848,11 +1193,39 @@ fn nullable_record_batch(
     .expect("record batch should construct")
 }
 
+fn typed_partition_record_batch(
+    schema: SchemaRef,
+    ids: &[i32],
+    shards: &[i64],
+    active: &[bool],
+    codes: &[&str],
+) -> RecordBatch {
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from(ids.to_vec())),
+            Arc::new(Int64Array::from(shards.to_vec())),
+            Arc::new(BooleanArray::from(active.to_vec())),
+            Arc::new(StringArray::from(codes.to_vec())),
+        ],
+    )
+    .expect("typed partition record batch should construct")
+}
+
 fn descriptor_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("value", DataType::Int32, false),
         Field::new("event_date", DataType::Utf8, true),
+    ]))
+}
+
+fn typed_partition_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("shard", DataType::Int64, true),
+        Field::new("active", DataType::Boolean, true),
+        Field::new("code", DataType::Utf8, true),
     ]))
 }
 

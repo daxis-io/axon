@@ -1180,6 +1180,248 @@ fn plan_query_supports_partition_null_filters() {
 }
 
 #[test]
+fn plan_query_normalizes_typed_partition_filters_by_declared_type() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = typed_partition_bootstrapped_snapshot();
+
+    let day = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE day = 7 ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("integer partition predicates should plan");
+    assert_eq!(day.candidate_paths, vec!["day=7/enabled=true/region=US"]);
+    assert_eq!(day.candidate_file_count, 1);
+    assert_eq!(day.candidate_bytes, 100);
+    assert_eq!(day.candidate_rows, 2);
+    assert!(day.pruning.used_partition_pruning);
+    assert_eq!(day.pruning.files_retained, 1);
+    assert_eq!(day.pruning.files_pruned, 2);
+
+    let enabled = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE enabled = true ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("boolean partition predicates should plan");
+    assert_eq!(
+        enabled.candidate_paths,
+        vec![
+            "day=7/enabled=true/region=US",
+            "day=-3/enabled=true/region=007"
+        ]
+    );
+    assert_eq!(enabled.candidate_file_count, 2);
+    assert_eq!(enabled.candidate_bytes, 240);
+    assert_eq!(enabled.candidate_rows, 6);
+    assert!(enabled.pruning.used_partition_pruning);
+    assert_eq!(enabled.pruning.files_retained, 2);
+    assert_eq!(enabled.pruning.files_pruned, 1);
+
+    let region = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE region = '007' ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("string partition predicates should plan");
+    assert_eq!(
+        region.candidate_paths,
+        vec!["day=-3/enabled=true/region=007"]
+    );
+    assert_eq!(region.candidate_file_count, 1);
+    assert_eq!(region.candidate_bytes, 140);
+    assert_eq!(region.candidate_rows, 4);
+    assert!(region.pruning.used_partition_pruning);
+    assert_eq!(region.pruning.files_retained, 1);
+    assert_eq!(region.pruning.files_pruned, 2);
+}
+
+#[test]
+fn plan_query_fails_open_for_unsafe_typed_partition_values() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+
+    for (name, snapshot, expected_paths) in [
+        (
+            "malformed",
+            unsafe_day_partition_snapshot(
+                "gs://axon-fixtures/malformed_day_partition",
+                [
+                    (
+                        "day=007/part-000.parquet",
+                        100,
+                        2,
+                        BTreeMap::from([("day".to_string(), Some("007".to_string()))]),
+                    ),
+                    (
+                        "day=8/part-001.parquet",
+                        120,
+                        3,
+                        BTreeMap::from([("day".to_string(), Some("8".to_string()))]),
+                    ),
+                ],
+                BTreeMap::from([("day".to_string(), PartitionColumnType::Int64)]),
+            ),
+            ["day=007/part-000.parquet", "day=8/part-001.parquet"],
+        ),
+        (
+            "ambiguous",
+            unsafe_day_partition_snapshot(
+                "gs://axon-fixtures/ambiguous_day_partition",
+                [
+                    (
+                        "day=7/part-000.parquet",
+                        100,
+                        2,
+                        BTreeMap::from([
+                            ("DAY".to_string(), Some("7".to_string())),
+                            ("day".to_string(), Some("7".to_string())),
+                        ]),
+                    ),
+                    (
+                        "day=8/part-001.parquet",
+                        120,
+                        3,
+                        BTreeMap::from([
+                            ("DAY".to_string(), Some("8".to_string())),
+                            ("day".to_string(), Some("8".to_string())),
+                        ]),
+                    ),
+                ],
+                BTreeMap::from([
+                    ("DAY".to_string(), PartitionColumnType::Int64),
+                    ("day".to_string(), PartitionColumnType::Int64),
+                ]),
+            ),
+            ["day=7/part-000.parquet", "day=8/part-001.parquet"],
+        ),
+    ] {
+        let planned = session
+            .plan_query(
+                &snapshot,
+                &QueryRequest::new(
+                    snapshot.table_uri(),
+                    "SELECT id FROM axon_table WHERE day = 7 ORDER BY id",
+                    ExecutionTarget::BrowserWasm,
+                ),
+            )
+            .unwrap_or_else(|error| {
+                panic!("{name}: typed partition predicate should plan: {error:?}")
+            });
+
+        assert_eq!(
+            planned.candidate_paths,
+            expected_paths.map(str::to_string).to_vec(),
+            "{name}: unsafe typed partition values should fail open"
+        );
+        assert_eq!(planned.candidate_file_count, 2, "{name}");
+        assert_eq!(planned.candidate_bytes, 220, "{name}");
+        assert_eq!(planned.candidate_rows, 5, "{name}");
+        assert!(
+            !planned.pruning.used_partition_pruning,
+            "{name}: unsafe typed partition values should not prune"
+        );
+        assert_eq!(planned.pruning.files_retained, 2, "{name}");
+        assert_eq!(planned.pruning.files_pruned, 0, "{name}");
+    }
+}
+
+#[test]
+fn plan_query_keeps_type_incompatible_partition_literals_conservative() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = typed_partition_bootstrapped_snapshot();
+
+    let planned = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE day = '7' ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("type-incompatible partition literals should still plan");
+
+    assert_eq!(
+        planned.candidate_paths,
+        vec![
+            "day=7/enabled=true/region=US".to_string(),
+            "day=8/enabled=false/region=us".to_string(),
+            "day=-3/enabled=true/region=007".to_string(),
+        ]
+    );
+    assert_eq!(planned.candidate_file_count, 3);
+    assert_eq!(planned.candidate_bytes, 360);
+    assert_eq!(planned.candidate_rows, 9);
+    assert!(!planned.pruning.used_partition_pruning);
+    assert_eq!(planned.pruning.files_retained, 3);
+    assert_eq!(planned.pruning.files_pruned, 0);
+}
+
+#[test]
+fn plan_query_fails_open_for_unsupported_null_partition_columns() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let snapshot = unsafe_day_partition_snapshot(
+        "gs://axon-fixtures/unsupported_null_partition",
+        [
+            (
+                "mystery=NULL/part-000.parquet",
+                100,
+                2,
+                BTreeMap::from([("mystery".to_string(), None)]),
+            ),
+            (
+                "mystery=NULL/part-001.parquet",
+                120,
+                3,
+                BTreeMap::from([("mystery".to_string(), None)]),
+            ),
+        ],
+        BTreeMap::from([("mystery".to_string(), PartitionColumnType::Unsupported)]),
+    );
+
+    let planned = session
+        .plan_query(
+            &snapshot,
+            &QueryRequest::new(
+                snapshot.table_uri(),
+                "SELECT id FROM axon_table WHERE mystery IS NULL ORDER BY id",
+                ExecutionTarget::BrowserWasm,
+            ),
+        )
+        .expect("unsupported null partition predicates should still plan");
+
+    assert_eq!(
+        planned.candidate_paths,
+        vec![
+            "mystery=NULL/part-000.parquet".to_string(),
+            "mystery=NULL/part-001.parquet".to_string(),
+        ]
+    );
+    assert_eq!(planned.candidate_file_count, 2);
+    assert_eq!(planned.candidate_bytes, 220);
+    assert_eq!(planned.candidate_rows, 5);
+    assert!(!planned.pruning.used_partition_pruning);
+    assert_eq!(planned.pruning.files_retained, 2);
+    assert_eq!(planned.pruning.files_pruned, 0);
+}
+
+#[test]
 fn plan_query_prunes_candidate_files_from_integer_footer_stats() {
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
         .expect("default config should be supported");
@@ -4035,6 +4277,86 @@ fn null_partition_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
         BTreeMap::from([("region".to_string(), PartitionColumnType::String)]),
     )
     .expect("null-partition bootstrapped snapshots should construct")
+}
+
+fn typed_partition_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
+    BootstrappedBrowserSnapshot::new_with_partition_column_types(
+        "gs://axon-fixtures/typed_partition_table",
+        12,
+        vec![
+            bootstrapped_file(
+                "day=7/enabled=true/region=US",
+                100,
+                BTreeMap::from([
+                    ("day".to_string(), Some("7".to_string())),
+                    ("enabled".to_string(), Some("true".to_string())),
+                    ("region".to_string(), Some("US".to_string())),
+                ]),
+                simple_partition_metadata(100, 2),
+            ),
+            bootstrapped_file(
+                "day=8/enabled=false/region=us",
+                120,
+                BTreeMap::from([
+                    ("day".to_string(), Some("8".to_string())),
+                    ("enabled".to_string(), Some("false".to_string())),
+                    ("region".to_string(), Some("us".to_string())),
+                ]),
+                simple_partition_metadata(120, 3),
+            ),
+            bootstrapped_file(
+                "day=-3/enabled=true/region=007",
+                140,
+                BTreeMap::from([
+                    ("day".to_string(), Some("-3".to_string())),
+                    ("enabled".to_string(), Some("true".to_string())),
+                    ("region".to_string(), Some("007".to_string())),
+                ]),
+                simple_partition_metadata(140, 4),
+            ),
+        ],
+        BTreeMap::from([
+            ("day".to_string(), PartitionColumnType::Int64),
+            ("enabled".to_string(), PartitionColumnType::Boolean),
+            ("region".to_string(), PartitionColumnType::String),
+        ]),
+    )
+    .expect("typed-partition bootstrapped snapshots should construct")
+}
+
+fn unsafe_day_partition_snapshot<const N: usize>(
+    table_uri: &str,
+    files: [(&str, u64, u64, BTreeMap<String, Option<String>>); N],
+    partition_column_types: BTreeMap<String, PartitionColumnType>,
+) -> BootstrappedBrowserSnapshot {
+    BootstrappedBrowserSnapshot::new_with_partition_column_types(
+        table_uri,
+        13,
+        files
+            .into_iter()
+            .map(|(path, size_bytes, row_count, partition_values)| {
+                bootstrapped_file(
+                    path,
+                    size_bytes,
+                    partition_values,
+                    simple_partition_metadata(size_bytes, row_count),
+                )
+            })
+            .collect(),
+        partition_column_types,
+    )
+    .expect("unsafe partition snapshots should construct")
+}
+
+fn simple_partition_metadata(size_bytes: u64, row_count: u64) -> BrowserParquetFileMetadata {
+    BrowserParquetFileMetadata {
+        object_size_bytes: size_bytes,
+        footer_length_bytes: 32,
+        row_group_count: 1,
+        row_count,
+        fields: vec![required_field("id", BrowserParquetPhysicalType::Int32)],
+        field_stats: BTreeMap::new(),
+    }
 }
 
 fn stats_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
