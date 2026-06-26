@@ -1,0 +1,98 @@
+{
+  "$id": "axon.config.v1.ExecutionDefaults.jsonschema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "patternProperties": {
+    "^(prefer_browser_runtime)$": {
+      "default": false,
+      "type": "boolean"
+    },
+    "^(preview_row_limit)$": {
+      "anyOf": [
+        {
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "pattern": "^[0-9]+$",
+          "type": "string"
+        }
+      ],
+      "default": 0
+    },
+    "^(query_timeout_ms)$": {
+      "anyOf": [
+        {
+          "maximum": 600000,
+          "minimum": 1000,
+          "type": "integer"
+        },
+        {
+          "pattern": "^[0-9]+$",
+          "type": "string"
+        }
+      ],
+      "default": 0
+    }
+  },
+  "properties": {
+    "preferBrowserRuntime": {
+      "default": false,
+      "type": "boolean"
+    },
+    "previewRowLimit": {
+      "anyOf": [
+        {
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "pattern": "^[0-9]+$",
+          "type": "string"
+        }
+      ],
+      "default": 0
+    },
+    "queryTimeoutMs": {
+      "anyOf": [
+        {
+          "maximum": 600000,
+          "minimum": 1000,
+          "type": "integer"
+        },
+        {
+          "pattern": "^[0-9]+$",
+          "type": "string"
+        }
+      ],
+      "default": 0
+    },
+    "target": {
+      "anyOf": [
+        {
+          "pattern": "^EXECUTION_TARGET_UNSPECIFIED$",
+          "type": "string"
+        },
+        {
+          "enum": [
+            "EXECUTION_TARGET_BROWSER",
+            "EXECUTION_TARGET_NATIVE",
+            "EXECUTION_TARGET_AUTO"
+          ],
+          "type": "string"
+        },
+        {
+          "maximum": 3,
+          "minimum": 0,
+          "type": "integer"
+        }
+      ],
+      "default": 0,
+      "title": "Execution Target"
+    }
+  },
+  "title": "Execution Defaults",
+  "type": "object"
+}

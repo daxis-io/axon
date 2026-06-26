@@ -1,0 +1,18 @@
+{
+  "$id": "axon.config.v1.Settings.jsonschema.strict.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "appearance": {
+      "$ref": "axon.config.v1.AppearanceDefaults.jsonschema.strict.json"
+    },
+    "editor": {
+      "$ref": "axon.config.v1.EditorDefaults.jsonschema.strict.json"
+    },
+    "execution": {
+      "$ref": "axon.config.v1.ExecutionDefaults.jsonschema.strict.json"
+    }
+  },
+  "title": "Settings",
+  "type": "object"
+}

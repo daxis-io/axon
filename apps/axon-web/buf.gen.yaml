@@ -1,0 +1,13 @@
+version: v2
+clean: true
+plugins:
+  - remote: buf.build/bufbuild/es:v2.12.1
+    revision: 1
+    out: src/generated/config/protobuf
+    opt:
+      - target=ts
+      - import_extension=ts
+    include_imports: true
+  - remote: buf.build/bufbuild/protoschema-jsonschema:v0.6.0
+    revision: 1
+    out: src/generated/config/jsonschema

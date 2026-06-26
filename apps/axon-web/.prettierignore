@@ -3,6 +3,7 @@ dist
 playwright-report
 test-results
 src/wasm
+src/generated
 public/fixtures/prod-like
 public/fixtures/**/_delta_log/*.json
 tests/fixtures/**/_delta_log/*.json

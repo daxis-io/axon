@@ -1,0 +1,87 @@
+{
+  "$id": "axon.config.v1.EditorDefaults.jsonschema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "patternProperties": {
+    "^(format_on_run)$": {
+      "default": false,
+      "type": "boolean"
+    },
+    "^(starter_sql)$": {
+      "default": "",
+      "maxLength": 20000,
+      "type": "string"
+    },
+    "^(tab_size)$": {
+      "anyOf": [
+        {
+          "maximum": 8,
+          "minimum": 2,
+          "type": "integer"
+        },
+        {
+          "pattern": "^[0-9]+$",
+          "type": "string"
+        }
+      ],
+      "default": 0
+    },
+    "^(word_wrap)$": {
+      "default": false,
+      "type": "boolean"
+    }
+  },
+  "properties": {
+    "formatOnRun": {
+      "default": false,
+      "type": "boolean"
+    },
+    "keymap": {
+      "anyOf": [
+        {
+          "pattern": "^EDITOR_KEYMAP_UNSPECIFIED$",
+          "type": "string"
+        },
+        {
+          "enum": [
+            "EDITOR_KEYMAP_DEFAULT",
+            "EDITOR_KEYMAP_VIM"
+          ],
+          "type": "string"
+        },
+        {
+          "maximum": 2,
+          "minimum": 0,
+          "type": "integer"
+        }
+      ],
+      "default": 0,
+      "title": "Editor Keymap"
+    },
+    "starterSql": {
+      "default": "",
+      "maxLength": 20000,
+      "type": "string"
+    },
+    "tabSize": {
+      "anyOf": [
+        {
+          "maximum": 8,
+          "minimum": 2,
+          "type": "integer"
+        },
+        {
+          "pattern": "^[0-9]+$",
+          "type": "string"
+        }
+      ],
+      "default": 0
+    },
+    "wordWrap": {
+      "default": false,
+      "type": "boolean"
+    }
+  },
+  "title": "Editor Defaults",
+  "type": "object"
+}

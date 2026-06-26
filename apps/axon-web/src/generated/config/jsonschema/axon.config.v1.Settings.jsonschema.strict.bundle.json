@@ -1,0 +1,152 @@
+{
+  "$defs": {
+    "axon.config.v1.AppearanceDefaults.jsonschema.strict.json": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "accentColor": {
+          "enum": [
+            "ACCENT_COLOR_UNSPECIFIED",
+            "ACCENT_COLOR_BLUE",
+            "ACCENT_COLOR_GREEN",
+            "ACCENT_COLOR_AMBER"
+          ],
+          "title": "Accent Color",
+          "type": "string"
+        },
+        "density": {
+          "enum": [
+            "APPEARANCE_DENSITY_UNSPECIFIED",
+            "APPEARANCE_DENSITY_COMPACT",
+            "APPEARANCE_DENSITY_COMFORTABLE"
+          ],
+          "title": "Appearance Density",
+          "type": "string"
+        },
+        "monospaceFont": {
+          "maxLength": 80,
+          "minLength": 1,
+          "type": "string"
+        },
+        "reduceMotion": {
+          "type": "boolean"
+        },
+        "theme": {
+          "enum": [
+            "APPEARANCE_THEME_UNSPECIFIED",
+            "APPEARANCE_THEME_SYSTEM",
+            "APPEARANCE_THEME_LIGHT",
+            "APPEARANCE_THEME_DARK"
+          ],
+          "title": "Appearance Theme",
+          "type": "string"
+        }
+      },
+      "required": [
+        "theme",
+        "density",
+        "accentColor",
+        "reduceMotion",
+        "monospaceFont"
+      ],
+      "title": "Appearance Defaults",
+      "type": "object"
+    },
+    "axon.config.v1.EditorDefaults.jsonschema.strict.json": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "formatOnRun": {
+          "type": "boolean"
+        },
+        "keymap": {
+          "enum": [
+            "EDITOR_KEYMAP_UNSPECIFIED",
+            "EDITOR_KEYMAP_DEFAULT",
+            "EDITOR_KEYMAP_VIM"
+          ],
+          "title": "Editor Keymap",
+          "type": "string"
+        },
+        "starterSql": {
+          "maxLength": 20000,
+          "type": "string"
+        },
+        "tabSize": {
+          "maximum": 8,
+          "minimum": 2,
+          "type": "integer"
+        },
+        "wordWrap": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "keymap",
+        "tabSize",
+        "wordWrap",
+        "formatOnRun",
+        "starterSql"
+      ],
+      "title": "Editor Defaults",
+      "type": "object"
+    },
+    "axon.config.v1.ExecutionDefaults.jsonschema.strict.json": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "preferBrowserRuntime": {
+          "type": "boolean"
+        },
+        "previewRowLimit": {
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "queryTimeoutMs": {
+          "maximum": 600000,
+          "minimum": 1000,
+          "type": "integer"
+        },
+        "target": {
+          "enum": [
+            "EXECUTION_TARGET_UNSPECIFIED",
+            "EXECUTION_TARGET_BROWSER",
+            "EXECUTION_TARGET_NATIVE",
+            "EXECUTION_TARGET_AUTO"
+          ],
+          "title": "Execution Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "previewRowLimit",
+        "queryTimeoutMs",
+        "preferBrowserRuntime"
+      ],
+      "title": "Execution Defaults",
+      "type": "object"
+    },
+    "axon.config.v1.Settings.jsonschema.strict.json": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "appearance": {
+          "$ref": "#/$defs/axon.config.v1.AppearanceDefaults.jsonschema.strict.json"
+        },
+        "editor": {
+          "$ref": "#/$defs/axon.config.v1.EditorDefaults.jsonschema.strict.json"
+        },
+        "execution": {
+          "$ref": "#/$defs/axon.config.v1.ExecutionDefaults.jsonschema.strict.json"
+        }
+      },
+      "title": "Settings",
+      "type": "object"
+    }
+  },
+  "$id": "axon.config.v1.Settings.jsonschema.strict.bundle.json",
+  "$ref": "#/$defs/axon.config.v1.Settings.jsonschema.strict.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

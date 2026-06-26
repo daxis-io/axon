@@ -9,6 +9,9 @@
     "dev:server": "vite --host 127.0.0.1",
     "dev": "npm run build:fixture && npm run build:wasm && vite --host 127.0.0.1",
     "build": "npm run build:fixture && npm run build:wasm && tsc --noEmit && vite build",
+    "codegen:config": "node scripts/generate-config.mjs",
+    "codegen:config:check": "node scripts/check-config-codegen.mjs",
+    "codegen:check": "npm run codegen:config:check",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings=0",
@@ -38,6 +41,7 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
+    "@bufbuild/protobuf": "^2.12.1",
     "@codemirror/lang-sql": "6.10.0",
     "@tanstack/react-query": "^5.101.1",
     "@vercel/analytics": "^2.0.1",

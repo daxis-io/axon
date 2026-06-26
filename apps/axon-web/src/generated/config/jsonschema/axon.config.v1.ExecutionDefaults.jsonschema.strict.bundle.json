@@ -1,0 +1,44 @@
+{
+  "$defs": {
+    "axon.config.v1.ExecutionDefaults.jsonschema.strict.json": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "preferBrowserRuntime": {
+          "type": "boolean"
+        },
+        "previewRowLimit": {
+          "maximum": 10000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "queryTimeoutMs": {
+          "maximum": 600000,
+          "minimum": 1000,
+          "type": "integer"
+        },
+        "target": {
+          "enum": [
+            "EXECUTION_TARGET_UNSPECIFIED",
+            "EXECUTION_TARGET_BROWSER",
+            "EXECUTION_TARGET_NATIVE",
+            "EXECUTION_TARGET_AUTO"
+          ],
+          "title": "Execution Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "previewRowLimit",
+        "queryTimeoutMs",
+        "preferBrowserRuntime"
+      ],
+      "title": "Execution Defaults",
+      "type": "object"
+    }
+  },
+  "$id": "axon.config.v1.ExecutionDefaults.jsonschema.strict.bundle.json",
+  "$ref": "#/$defs/axon.config.v1.ExecutionDefaults.jsonschema.strict.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

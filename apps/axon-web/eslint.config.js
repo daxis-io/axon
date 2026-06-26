@@ -9,6 +9,7 @@ export default [
       'playwright-report/**',
       'test-results/**',
       'src/wasm/**',
+      'src/generated/**',
       'public/fixtures/prod-like/**',
       'public/designs/**',
     ],
@@ -16,7 +17,7 @@ export default [
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['**/*.{js,ts,tsx}'],
+    files: ['**/*.{js,mjs,ts,tsx}'],
     rules: {
       // TypeScript already checks browser and Node globals from tsconfig libs/types.
       'no-undef': 'off',

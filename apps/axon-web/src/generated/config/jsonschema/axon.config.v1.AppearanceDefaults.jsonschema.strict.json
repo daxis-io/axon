@@ -1,0 +1,53 @@
+{
+  "$id": "axon.config.v1.AppearanceDefaults.jsonschema.strict.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "accentColor": {
+      "enum": [
+        "ACCENT_COLOR_UNSPECIFIED",
+        "ACCENT_COLOR_BLUE",
+        "ACCENT_COLOR_GREEN",
+        "ACCENT_COLOR_AMBER"
+      ],
+      "title": "Accent Color",
+      "type": "string"
+    },
+    "density": {
+      "enum": [
+        "APPEARANCE_DENSITY_UNSPECIFIED",
+        "APPEARANCE_DENSITY_COMPACT",
+        "APPEARANCE_DENSITY_COMFORTABLE"
+      ],
+      "title": "Appearance Density",
+      "type": "string"
+    },
+    "monospaceFont": {
+      "maxLength": 80,
+      "minLength": 1,
+      "type": "string"
+    },
+    "reduceMotion": {
+      "type": "boolean"
+    },
+    "theme": {
+      "enum": [
+        "APPEARANCE_THEME_UNSPECIFIED",
+        "APPEARANCE_THEME_SYSTEM",
+        "APPEARANCE_THEME_LIGHT",
+        "APPEARANCE_THEME_DARK"
+      ],
+      "title": "Appearance Theme",
+      "type": "string"
+    }
+  },
+  "required": [
+    "theme",
+    "density",
+    "accentColor",
+    "reduceMotion",
+    "monospaceFont"
+  ],
+  "title": "Appearance Defaults",
+  "type": "object"
+}

@@ -1,0 +1,38 @@
+{
+  "$id": "axon.config.v1.ExecutionDefaults.schema.strict.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "prefer_browser_runtime": {
+      "type": "boolean"
+    },
+    "preview_row_limit": {
+      "maximum": 10000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "query_timeout_ms": {
+      "maximum": 600000,
+      "minimum": 1000,
+      "type": "integer"
+    },
+    "target": {
+      "enum": [
+        "EXECUTION_TARGET_UNSPECIFIED",
+        "EXECUTION_TARGET_BROWSER",
+        "EXECUTION_TARGET_NATIVE",
+        "EXECUTION_TARGET_AUTO"
+      ],
+      "title": "Execution Target",
+      "type": "string"
+    }
+  },
+  "required": [
+    "target",
+    "preview_row_limit",
+    "query_timeout_ms",
+    "prefer_browser_runtime"
+  ],
+  "title": "Execution Defaults",
+  "type": "object"
+}
