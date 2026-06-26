@@ -3,7 +3,7 @@ import { queryKeys } from './keys';
 
 describe('queryKeys', () => {
   it('builds catalog root keys scoped by connection id', () => {
-    expect(queryKeys.catalog.root('connection-1')).toEqual(['catalog', 'root', 'connection-1']);
+    expect(queryKeys.catalog.root('connection-1')).toEqual(['catalog', 'connection-1']);
   });
 
   it('builds local workspace keys without product data fetch behavior', () => {

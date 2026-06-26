@@ -19,6 +19,7 @@ Unknown failures, network-style failures, and 5xx-style failures may retry up to
 `queryKeys` is the canonical key factory for this slice:
 
 - `queryKeys.catalog.root(connectionId)`
+  - returns `['catalog', connectionId]`
 - `queryKeys.local.history()`
 - `queryKeys.local.saved()`
 
