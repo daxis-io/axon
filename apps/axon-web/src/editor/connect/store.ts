@@ -3,6 +3,7 @@
 
 import { availabilityForSource, type ObjectStoreProviderId } from './data.ts';
 import type { ConnectResult, ConnectedCatalog, ConnectedCatalogSchema } from './types.ts';
+import { createLocalStorageKeyValueStore } from '../../persistence/key-value.ts';
 import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
 import { SAMPLE_QUERY_SOURCE } from '../../services/query-source.ts';
 
@@ -58,16 +59,15 @@ export const SAMPLE_CONNECTED_CATALOG: ConnectedCatalog = {
   ],
 };
 
+const connectedCatalogStore = createLocalStorageKeyValueStore<ConnectedCatalog>({
+  storageKey: STORAGE_KEY,
+  fallback: () => [SAMPLE_CONNECTED_CATALOG],
+  afterRead: dedupeConnectedCatalogs,
+  beforeWrite: (catalogs) => dedupeConnectedCatalogs(durableConnectedCatalogs(catalogs)),
+});
+
 export function loadConnectedCatalogs(): ConnectedCatalog[] {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [SAMPLE_CONNECTED_CATALOG];
-    const parsed = JSON.parse(raw) as ConnectedCatalog[];
-    if (!Array.isArray(parsed)) return [SAMPLE_CONNECTED_CATALOG];
-    return dedupeConnectedCatalogs(parsed);
-  } catch {
-    return [SAMPLE_CONNECTED_CATALOG];
-  }
+  return connectedCatalogStore.getAll();
 }
 
 export function catalogsAvailableForFeatures(
@@ -91,14 +91,7 @@ export function catalogsAvailableForFeatures(
 }
 
 export function saveConnectedCatalogs(catalogs: ConnectedCatalog[]): void {
-  try {
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify(dedupeConnectedCatalogs(durableConnectedCatalogs(catalogs))),
-    );
-  } catch {
-    // ignore quota / disabled storage
-  }
+  connectedCatalogStore.replaceAll(catalogs);
 }
 
 export function upsertConnectedCatalog(
