@@ -8,7 +8,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::{ScanArgs, TableProvider};
 use datafusion::common::{Column, ScalarValue};
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, TableProviderFilterPushDown};
-use datafusion::physical_plan::{collect, ExecutionPlan};
+use datafusion::physical_plan::{collect, displayable, ExecutionPlan};
 use datafusion::prelude::SessionContext;
 use parquet::data_type::Int64Type;
 use parquet::file::properties::WriterProperties;
@@ -118,6 +118,57 @@ async fn exact_partition_filter_prunes_files_in_scan_trace() {
 
     assert_eq!(trace.projected_columns, vec!["id"]);
     assert_eq!(trace.files_total, 3);
+    assert_eq!(trace.files_planned, 1);
+    assert_eq!(trace.files_skipped, 2);
+    assert_eq!(
+        trace.planned_file_paths,
+        vec!["event_date=2026-01-02/part-001.parquet"]
+    );
+}
+
+#[tokio::test]
+async fn exact_partition_filter_has_no_residual_filter_above_scan() {
+    let ctx = context_with_events();
+    let plan = physical_plan(
+        &ctx,
+        "SELECT id FROM events WHERE event_date = '2026-01-02'",
+    )
+    .await;
+    let scan = axon_scan(&plan);
+    let trace = scan.pushdown_trace();
+    let plan_text = physical_plan_text(&plan);
+
+    assert_eq!(trace.files_planned, 1);
+    assert_eq!(trace.files_skipped, 2);
+    assert!(
+        !plan_text.contains("FilterExec"),
+        "exact partition predicates should not leave a residual FilterExec above scan:\n{plan_text}"
+    );
+    assert!(
+        plan_text.contains("AxonParquetScanExec"),
+        "expected AxonParquetScanExec in plan:\n{plan_text}"
+    );
+}
+
+#[tokio::test]
+async fn mixed_partition_and_residual_filter_keeps_filter_above_pruned_scan() {
+    let ctx = context_with_events();
+    let plan = physical_plan(
+        &ctx,
+        "SELECT id \
+         FROM events \
+         WHERE event_date = '2026-01-02' AND value > 10 \
+         ORDER BY id",
+    )
+    .await;
+    let scan = axon_scan(&plan);
+    let trace = scan.pushdown_trace();
+    let plan_text = physical_plan_text(&plan);
+
+    // DataFusion currently keeps a residual FilterExec for the mixed predicate.
+    // It may re-evaluate the exact partition conjunct there, so the scan still
+    // has to report only proven partition pruning as exact pushdown.
+    assert_filter_above_scan(&plan_text);
     assert_eq!(trace.files_planned, 1);
     assert_eq!(trace.files_skipped, 2);
     assert_eq!(
@@ -858,6 +909,24 @@ fn axon_scan_optional(plan: &dyn ExecutionPlan) -> Option<&AxonParquetScanExec> 
     plan.children()
         .into_iter()
         .find_map(|child| axon_scan_optional(child.as_ref()))
+}
+
+fn physical_plan_text(plan: &Arc<dyn ExecutionPlan>) -> String {
+    displayable(plan.as_ref()).indent(false).to_string()
+}
+
+fn assert_filter_above_scan(plan_text: &str) {
+    let filter_index = plan_text
+        .find("FilterExec")
+        .unwrap_or_else(|| panic!("expected FilterExec in plan:\n{plan_text}"));
+    let scan_index = plan_text
+        .find("AxonParquetScanExec")
+        .unwrap_or_else(|| panic!("expected AxonParquetScanExec in plan:\n{plan_text}"));
+
+    assert!(
+        filter_index < scan_index,
+        "expected FilterExec above AxonParquetScanExec:\n{plan_text}"
+    );
 }
 
 fn controlled_partitions(schema: SchemaRef) -> Vec<Vec<RecordBatch>> {

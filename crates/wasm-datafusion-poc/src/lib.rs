@@ -359,9 +359,54 @@ pub struct AxonParquetScanTrace {
     pub range_read_metrics: ParquetRangeReadMetrics,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct AxonParquetScanDebug {
+    projected_columns: Vec<String>,
+    limit: Option<usize>,
+    filters: Vec<String>,
+    exact_filters: Vec<String>,
+    inexact_filters: Vec<String>,
+    files_total: usize,
+    files_planned: usize,
+    planned_scan_bytes: u64,
+    planned_file_paths: Vec<String>,
+    files_skipped: u64,
+}
+
+impl AxonParquetScanDebug {
+    fn to_trace(&self, metrics: AxonParquetScanMetrics) -> AxonParquetScanTrace {
+        AxonParquetScanTrace {
+            projected_columns: self.projected_columns.clone(),
+            limit: self.limit,
+            filters: self.filters.clone(),
+            exact_filters: self.exact_filters.clone(),
+            inexact_filters: self.inexact_filters.clone(),
+            files_total: self.files_total,
+            files_planned: self.files_planned,
+            planned_scan_bytes: self.planned_scan_bytes,
+            planned_file_paths: self.planned_file_paths.clone(),
+            files_skipped: self.files_skipped,
+            row_groups_touched: metrics.row_groups_touched,
+            row_groups_skipped: metrics.row_groups_skipped,
+            bytes_fetched: metrics.bytes_fetched,
+            rows_emitted: metrics.rows_emitted,
+            range_read_metrics: metrics.range_read_metrics,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct AxonParquetScanMetrics {
+    row_groups_touched: u64,
+    row_groups_skipped: u64,
+    bytes_fetched: u64,
+    rows_emitted: u64,
+    range_read_metrics: ParquetRangeReadMetrics,
+}
+
 #[derive(Clone, Debug)]
 pub struct AxonDeltaTableProvider {
-    descriptor: DeltaTableDescriptor,
+    descriptor: Arc<DeltaTableDescriptor>,
     in_memory_partitions: Vec<Vec<RecordBatch>>,
     query_budget: BrowserQueryBudget,
     cancellation: BrowserQueryCancellation,
@@ -387,7 +432,7 @@ impl AxonDeltaTableProvider {
         metadata_cache: ParquetMetadataCache,
     ) -> Self {
         Self {
-            descriptor,
+            descriptor: Arc::new(descriptor),
             in_memory_partitions,
             query_budget,
             cancellation,
@@ -456,7 +501,7 @@ impl TableProvider for AxonDeltaTableProvider {
         Box::pin(async move {
             let schema = self.projected_schema(projection)?;
             Ok(Arc::new(AxonParquetScanExec::new(
-                self.descriptor.clone(),
+                Arc::clone(&self.descriptor),
                 schema,
                 projection.cloned(),
                 filters.to_vec(),
@@ -480,7 +525,7 @@ impl TableProvider for AxonDeltaTableProvider {
             .map(|filter| {
                 classify_filter_pushdown(
                     filter,
-                    &self.descriptor,
+                    self.descriptor.as_ref(),
                     exact_partition_filters_enabled,
                     parquet_row_group_pruning_enabled,
                 )
@@ -491,7 +536,7 @@ impl TableProvider for AxonDeltaTableProvider {
 
 #[derive(Debug)]
 pub struct AxonParquetScanExec {
-    descriptor: DeltaTableDescriptor,
+    descriptor: Arc<DeltaTableDescriptor>,
     projected_schema: SchemaRef,
     projection: Option<Vec<usize>>,
     limit: Option<usize>,
@@ -500,7 +545,8 @@ pub struct AxonParquetScanExec {
     row_group_predicate: Option<ParquetRowGroupPruningPredicate>,
     partitions: Vec<Vec<RecordBatch>>,
     properties: Arc<PlanProperties>,
-    trace: Arc<Mutex<AxonParquetScanTrace>>,
+    debug: AxonParquetScanDebug,
+    metrics: Arc<Mutex<AxonParquetScanMetrics>>,
     limit_remaining: Arc<Mutex<Option<usize>>>,
     query_budget: BrowserQueryBudget,
     cancellation: BrowserQueryCancellation,
@@ -509,7 +555,7 @@ pub struct AxonParquetScanExec {
 
 impl AxonParquetScanExec {
     fn new(
-        descriptor: DeltaTableDescriptor,
+        descriptor: Arc<DeltaTableDescriptor>,
         projected_schema: SchemaRef,
         projection: Option<Vec<usize>>,
         filters: Vec<Expr>,
@@ -519,7 +565,13 @@ impl AxonParquetScanExec {
         cancellation: BrowserQueryCancellation,
         metadata_cache: ParquetMetadataCache,
     ) -> Self {
-        let plan = AxonScanPlan::new(&descriptor, &projected_schema, &filters, limit, &partitions);
+        let plan = AxonScanPlan::new(
+            descriptor.as_ref(),
+            &projected_schema,
+            &filters,
+            limit,
+            &partitions,
+        );
         let partition_count = if partitions.is_empty() {
             1
         } else {
@@ -540,7 +592,8 @@ impl AxonParquetScanExec {
             row_group_predicate: plan.row_group_predicate,
             partitions,
             properties,
-            trace: Arc::new(Mutex::new(plan.trace)),
+            debug: plan.debug,
+            metrics: Arc::new(Mutex::new(AxonParquetScanMetrics::default())),
             limit_remaining: Arc::new(Mutex::new(plan.limit)),
             query_budget,
             cancellation,
@@ -549,10 +602,16 @@ impl AxonParquetScanExec {
     }
 
     pub fn pushdown_trace(&self) -> AxonParquetScanTrace {
-        self.trace
+        let metrics = self
+            .metrics
             .lock()
-            .expect("AxonParquetScanExec trace should not be poisoned")
-            .clone()
+            .expect("AxonParquetScanExec metrics should not be poisoned")
+            .clone();
+        self.debug.to_trace(metrics)
+    }
+
+    fn planned_scan_bytes(&self) -> u64 {
+        self.debug.planned_scan_bytes
     }
 
     fn compute_properties(schema: SchemaRef, partition_count: usize) -> PlanProperties {
@@ -572,14 +631,6 @@ impl AxonParquetScanExec {
         }
     }
 
-    fn scan_targets(&self) -> DataFusionResult<Vec<ScanTarget>> {
-        self.planned_file_indices
-            .iter()
-            .filter_map(|file_index| self.descriptor.active_files.get(*file_index))
-            .map(delta_active_file_to_scan_target)
-            .collect()
-    }
-
     fn required_columns(&self) -> Vec<String> {
         self.projected_schema
             .fields()
@@ -596,7 +647,7 @@ impl AxonParquetScanExec {
             .cloned()
             .unwrap_or_default();
         let projection = self.projection.clone();
-        let trace = Arc::clone(&self.trace);
+        let metrics = Arc::clone(&self.metrics);
         let limit_remaining = Arc::clone(&self.limit_remaining);
         let cancellation = self.cancellation.clone();
         let projected_batches = batches.into_iter().filter_map(move |batch| {
@@ -619,7 +670,7 @@ impl AxonParquetScanExec {
                 return None;
             }
             let projected = slice_record_batch(projected, rows_to_emit);
-            record_trace_rows_emitted(&trace, projected.num_rows());
+            record_scan_rows_emitted(&metrics, projected.num_rows());
             Some(Ok(projected))
         });
 
@@ -631,11 +682,12 @@ impl AxonParquetScanExec {
 
     fn execute_parquet_scan(&self) -> DataFusionResult<SendableRecordBatchStream> {
         let reader = HttpRangeReader::new();
-        let targets = self.scan_targets()?;
+        let descriptor = Arc::clone(&self.descriptor);
+        let planned_file_indices = self.planned_file_indices.clone();
         let required_columns = self.required_columns();
         let partition_column_types = self.descriptor.partition_column_types.clone();
         let row_group_predicate = self.row_group_predicate.clone();
-        let trace = Arc::clone(&self.trace);
+        let metrics = Arc::clone(&self.metrics);
         let limit_remaining = Arc::clone(&self.limit_remaining);
         let query_budget = self.query_budget;
         let cancellation = self.cancellation.clone();
@@ -645,11 +697,12 @@ impl AxonParquetScanExec {
         let parquet_batches = stream::once(async move {
             stream_planned_scan_targets(
                 reader,
-                targets,
+                descriptor,
+                planned_file_indices,
                 required_columns,
                 partition_column_types,
                 row_group_predicate,
-                trace,
+                metrics,
                 limit_remaining,
                 query_budget,
                 cancellation,
@@ -681,7 +734,7 @@ struct AxonScanPlan {
     planned_file_indices: Vec<usize>,
     planned_partition_indices: Vec<usize>,
     row_group_predicate: Option<ParquetRowGroupPruningPredicate>,
-    trace: AxonParquetScanTrace,
+    debug: AxonParquetScanDebug,
 }
 
 impl AxonScanPlan {
@@ -740,7 +793,7 @@ impl AxonScanPlan {
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         let limit = inexact_filters.is_empty().then_some(limit).flatten();
-        let trace = AxonParquetScanTrace {
+        let debug = AxonParquetScanDebug {
             projected_columns: projected_column_names(projected_schema),
             limit,
             filters: filters.iter().map(ToString::to_string).collect(),
@@ -751,11 +804,6 @@ impl AxonScanPlan {
             planned_scan_bytes,
             planned_file_paths,
             files_skipped,
-            row_groups_touched: 0,
-            row_groups_skipped: 0,
-            bytes_fetched: 0,
-            rows_emitted: 0,
-            range_read_metrics: ParquetRangeReadMetrics::default(),
         };
 
         Self {
@@ -765,7 +813,7 @@ impl AxonScanPlan {
             row_group_predicate: filters
                 .iter()
                 .find_map(|filter| row_group_pruning_predicate(filter, descriptor)),
-            trace,
+            debug,
         }
     }
 }
@@ -1348,25 +1396,25 @@ fn scalar_i64_from_expr(expr: &Expr) -> Option<i64> {
     }
 }
 
-fn record_trace_rows_emitted(trace: &Arc<Mutex<AxonParquetScanTrace>>, rows: usize) {
+fn record_scan_rows_emitted(metrics: &Arc<Mutex<AxonParquetScanMetrics>>, rows: usize) {
     let rows = u64::try_from(rows).unwrap_or(u64::MAX);
-    let mut trace = trace
+    let mut metrics = metrics
         .lock()
-        .expect("AxonParquetScanExec trace should not be poisoned");
-    trace.rows_emitted = trace.rows_emitted.saturating_add(rows);
+        .expect("AxonParquetScanExec metrics should not be poisoned");
+    metrics.rows_emitted = metrics.rows_emitted.saturating_add(rows);
 }
 
-fn record_trace_parquet_metrics(
-    trace: &Arc<Mutex<AxonParquetScanTrace>>,
-    metrics: ScanTargetMetricsSnapshot,
+fn record_scan_parquet_metrics(
+    metrics: &Arc<Mutex<AxonParquetScanMetrics>>,
+    snapshot: ScanTargetMetricsSnapshot,
 ) {
-    let mut trace = trace
+    let mut scan_metrics = metrics
         .lock()
-        .expect("AxonParquetScanExec trace should not be poisoned");
-    trace.row_groups_touched = metrics.row_groups_touched;
-    trace.row_groups_skipped = metrics.row_groups_skipped;
-    trace.bytes_fetched = metrics.bytes_fetched;
-    trace.range_read_metrics = metrics.range_read_metrics;
+        .expect("AxonParquetScanExec metrics should not be poisoned");
+    scan_metrics.row_groups_touched = snapshot.row_groups_touched;
+    scan_metrics.row_groups_skipped = snapshot.row_groups_skipped;
+    scan_metrics.bytes_fetched = snapshot.bytes_fetched;
+    scan_metrics.range_read_metrics = snapshot.range_read_metrics;
 }
 
 fn add_scan_metrics(
@@ -1440,7 +1488,8 @@ struct PlannedScanTargetBatchStream {
 
 struct PlannedScanTargetsState {
     reader: HttpRangeReader,
-    targets: Vec<ScanTarget>,
+    descriptor: Arc<DeltaTableDescriptor>,
+    planned_file_indices: Vec<usize>,
     next_target_index: usize,
     current_batches: Option<BoxStream<'static, Result<RecordBatch, QueryError>>>,
     current_metrics: Option<Arc<dyn ScanTargetMetricsHandle + Send + Sync>>,
@@ -1448,7 +1497,7 @@ struct PlannedScanTargetsState {
     required_columns: Vec<String>,
     partition_column_types: BTreeMap<String, PartitionColumnType>,
     row_group_predicate: Option<ParquetRowGroupPruningPredicate>,
-    trace: Arc<Mutex<AxonParquetScanTrace>>,
+    metrics: Arc<Mutex<AxonParquetScanMetrics>>,
     limit_remaining: Arc<Mutex<Option<usize>>>,
     query_budget: BrowserQueryBudget,
     cancellation: BrowserQueryCancellation,
@@ -1457,11 +1506,12 @@ struct PlannedScanTargetsState {
 
 async fn stream_planned_scan_targets(
     reader: HttpRangeReader,
-    targets: Vec<ScanTarget>,
+    descriptor: Arc<DeltaTableDescriptor>,
+    planned_file_indices: Vec<usize>,
     required_columns: Vec<String>,
     partition_column_types: BTreeMap<String, PartitionColumnType>,
     row_group_predicate: Option<ParquetRowGroupPruningPredicate>,
-    trace: Arc<Mutex<AxonParquetScanTrace>>,
+    metrics: Arc<Mutex<AxonParquetScanMetrics>>,
     limit_remaining: Arc<Mutex<Option<usize>>>,
     query_budget: BrowserQueryBudget,
     cancellation: BrowserQueryCancellation,
@@ -1469,7 +1519,8 @@ async fn stream_planned_scan_targets(
 ) -> Result<PlannedScanTargetBatchStream, QueryError> {
     let state = PlannedScanTargetsState {
         reader,
-        targets,
+        descriptor,
+        planned_file_indices,
         next_target_index: 0,
         current_batches: None,
         current_metrics: None,
@@ -1477,7 +1528,7 @@ async fn stream_planned_scan_targets(
         required_columns,
         partition_column_types,
         row_group_predicate,
-        trace,
+        metrics,
         limit_remaining,
         query_budget,
         cancellation,
@@ -1497,7 +1548,7 @@ async fn stream_planned_scan_targets(
                         if let Some(metrics) = &state.current_metrics {
                             let metrics_snapshot =
                                 add_scan_metrics(&state.completed_metrics, &metrics.snapshot());
-                            record_trace_parquet_metrics(&state.trace, metrics_snapshot.clone());
+                            record_scan_parquet_metrics(&state.metrics, metrics_snapshot.clone());
                             validate_scan_budget_for_metrics(
                                 &metrics_snapshot,
                                 state.query_budget,
@@ -1508,15 +1559,15 @@ async fn stream_planned_scan_targets(
                             continue;
                         }
                         let batch = slice_record_batch(batch, rows_to_emit);
-                        record_trace_rows_emitted(&state.trace, batch.num_rows());
+                        record_scan_rows_emitted(&state.metrics, batch.num_rows());
                         return Ok(Some((batch, state)));
                     }
                     None => {
                         if let Some(metrics) = &state.current_metrics {
                             state.completed_metrics =
                                 add_scan_metrics(&state.completed_metrics, &metrics.snapshot());
-                            record_trace_parquet_metrics(
-                                &state.trace,
+                            record_scan_parquet_metrics(
+                                &state.metrics,
                                 state.completed_metrics.clone(),
                             );
                             validate_scan_budget_for_metrics(
@@ -1530,11 +1581,16 @@ async fn stream_planned_scan_targets(
                 }
             }
 
-            let Some(target) = state.targets.get(state.next_target_index).cloned() else {
+            let Some(file_index) = state
+                .planned_file_indices
+                .get(state.next_target_index)
+                .copied()
+            else {
                 return Ok(None);
             };
             state.next_target_index += 1;
             state.cancellation.check_cancelled_at("scan stream")?;
+            let target = scan_target_for_planned_index(state.descriptor.as_ref(), file_index)?;
 
             let scan = stream_scan_target_batches_with_row_group_pruning_and_cache(
                 &state.reader,
@@ -1549,7 +1605,7 @@ async fn stream_planned_scan_targets(
             state.cancellation.check_cancelled_at("scan stream")?;
             let metrics_snapshot =
                 add_scan_metrics(&state.completed_metrics, &scan.metrics.snapshot());
-            record_trace_parquet_metrics(&state.trace, metrics_snapshot.clone());
+            record_scan_parquet_metrics(&state.metrics, metrics_snapshot.clone());
             validate_scan_budget_for_metrics(&metrics_snapshot, state.query_budget)?;
             state.current_metrics = Some(scan.metrics);
             state.current_batches = Some(scan.batches);
@@ -1558,6 +1614,21 @@ async fn stream_planned_scan_targets(
     .boxed();
 
     Ok(PlannedScanTargetBatchStream { batches })
+}
+
+fn scan_target_for_planned_index(
+    descriptor: &DeltaTableDescriptor,
+    file_index: usize,
+) -> Result<ScanTarget, QueryError> {
+    let active_file = descriptor.active_files.get(file_index).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::ExecutionFailed,
+            format!("browser DataFusion planned file index {file_index} is out of range"),
+            runtime_target(),
+        )
+    })?;
+
+    delta_active_file_to_scan_target(active_file).map_err(map_datafusion_error)
 }
 
 impl DisplayAs for AxonParquetScanExec {
@@ -1627,7 +1698,7 @@ impl ExecutionPlan for AxonParquetScanExec {
         if let Some(max_scan_bytes) = self.query_budget.max_scan_bytes {
             validate_query_budget_value_at(
                 "max_scan_bytes",
-                self.pushdown_trace().planned_scan_bytes,
+                self.planned_scan_bytes(),
                 max_scan_bytes,
                 "planned scan",
             )
@@ -1869,7 +1940,7 @@ fn collect_datafusion_planned_scan_bytes(
     if let Some(scan) = plan.as_any().downcast_ref::<AxonParquetScanExec>() {
         *planned_scan_bytes = checked_datafusion_metric_add(
             *planned_scan_bytes,
-            scan.pushdown_trace().planned_scan_bytes,
+            scan.planned_scan_bytes(),
             "planned scan bytes",
         )?;
     }
@@ -2817,19 +2888,33 @@ mod tests {
             let parquet_object = parquet_bytes_with_i64_columns(&[(1, 10), (2, 20), (3, 30)]);
             let object_size = u64::try_from(parquet_object.len()).expect("object size should fit");
             let server = RequestCapturingServer::new(parquet_object);
-            let stream = stream_planned_scan_targets(
-                HttpRangeReader::new(),
-                vec![ScanTarget {
-                    object_source: ObjectSource::new(server.url()),
-                    object_etag: None,
+            let descriptor = Arc::new(DeltaTableDescriptor {
+                table_name: "events".to_string(),
+                table_version: 1,
+                schema: Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    Field::new("value", DataType::Int64, false),
+                ])),
+                partition_columns: Vec::new(),
+                partition_column_types: BTreeMap::new(),
+                active_files: vec![DeltaActiveFile {
                     path: "part-000.parquet".to_string(),
+                    url: server.url(),
                     size_bytes: object_size,
                     partition_values: BTreeMap::new(),
+                    object_etag: None,
+                    stats_json: None,
+                    deletion_vector: None,
                 }],
+            });
+            let stream = stream_planned_scan_targets(
+                HttpRangeReader::new(),
+                descriptor,
+                vec![0],
                 vec!["id".to_string(), "value".to_string()],
                 BTreeMap::new(),
                 None,
-                Arc::new(Mutex::new(AxonParquetScanTrace::default())),
+                Arc::new(Mutex::new(AxonParquetScanMetrics::default())),
                 Arc::new(Mutex::new(None)),
                 BrowserQueryBudget {
                     max_scan_bytes: Some(1),
@@ -2860,6 +2945,85 @@ mod tests {
             assert_eq!(error.target, runtime_target());
             assert!(error.message.contains("max_scan_bytes"));
             assert!(error.message.contains("scan stream"));
+        });
+    }
+
+    #[test]
+    fn scan_stream_reports_unsupported_later_planned_file_lazily() {
+        test_runtime().block_on(async {
+            let parquet_object = parquet_bytes_with_i64_columns(&[(1, 10), (2, 20), (3, 30)]);
+            let object_size = u64::try_from(parquet_object.len()).expect("object size should fit");
+            let server = RequestCapturingServer::new(parquet_object);
+            let descriptor = Arc::new(DeltaTableDescriptor {
+                table_name: "events".to_string(),
+                table_version: 1,
+                schema: Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    Field::new("value", DataType::Int64, false),
+                ])),
+                partition_columns: Vec::new(),
+                partition_column_types: BTreeMap::new(),
+                active_files: vec![
+                    DeltaActiveFile {
+                        path: "part-000.parquet".to_string(),
+                        url: server.url(),
+                        size_bytes: object_size,
+                        partition_values: BTreeMap::new(),
+                        object_etag: None,
+                        stats_json: None,
+                        deletion_vector: None,
+                    },
+                    DeltaActiveFile {
+                        path: "part-001.parquet".to_string(),
+                        url: "https://example.test/part-001.parquet".to_string(),
+                        size_bytes: 1024,
+                        partition_values: BTreeMap::new(),
+                        object_etag: None,
+                        stats_json: None,
+                        deletion_vector: Some(DeletionVectorDescriptor {
+                            storage_type: "u".to_string(),
+                            path_or_inline_dv: "dv/part-001.bin".to_string(),
+                            offset: Some(0),
+                            size_in_bytes: Some(128),
+                            cardinality: Some(1),
+                        }),
+                    },
+                ],
+            });
+            let mut stream = stream_planned_scan_targets(
+                HttpRangeReader::new(),
+                descriptor,
+                vec![0, 1],
+                vec!["id".to_string(), "value".to_string()],
+                BTreeMap::new(),
+                None,
+                Arc::new(Mutex::new(AxonParquetScanMetrics::default())),
+                Arc::new(Mutex::new(None)),
+                BrowserQueryBudget::default(),
+                BrowserQueryCancellation::default(),
+                ParquetMetadataCache::default(),
+            )
+            .await
+            .expect("stream construction should not validate later planned files eagerly");
+
+            let first_batch = stream
+                .batches
+                .next()
+                .await
+                .expect("first planned file should emit a batch")
+                .expect("first planned file should scan successfully");
+            assert_eq!(first_batch.num_rows(), 3);
+
+            let error = stream
+                .batches
+                .next()
+                .await
+                .expect("later unsupported file should fail while advancing the stream")
+                .expect_err("deletion-vector file should remain unsupported");
+
+            assert_eq!(error.code, QueryErrorCode::UnsupportedFeature);
+            assert_eq!(error.target, runtime_target());
+            assert!(error.message.contains("deletion vectors"));
         });
     }
 
