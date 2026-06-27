@@ -62,4 +62,18 @@ describe('layout slice', () => {
     expect(second.getState().layout).toEqual({ sidebarW: 380, resultsH: 760 });
     expect(second.getState().layoutActions.setSidebarW).toEqual(expect.any(Function));
   });
+
+  it('keeps layout updates working when persistence writes fail', () => {
+    const storage = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error('storage quota exceeded');
+      },
+      removeItem: () => undefined,
+    };
+    const store = createAxonClientStore({ storage });
+
+    expect(() => store.getState().layoutActions.setSidebarW(320)).not.toThrow();
+    expect(store.getState().layout.sidebarW).toBe(320);
+  });
 });

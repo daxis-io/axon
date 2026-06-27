@@ -539,7 +539,7 @@ test.describe('editor (Phase 1 smoke)', () => {
       const raw = localStorage.getItem('axon.client-state.v1');
       const parsed = raw ? (JSON.parse(raw) as { state?: Record<string, unknown> }) : null;
       return {
-        legacyTweaks: localStorage.getItem('axon-editor.tweaks'),
+        legacyTweaks: localStorage.getItem('axon-editor.tweaks.v1'),
         topLevelKeys: Object.keys(parsed?.state ?? {}).sort(),
         raw,
       };

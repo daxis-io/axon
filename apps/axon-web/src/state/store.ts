@@ -49,6 +49,32 @@ function noopStateStorage(): StateStorage<void> {
   };
 }
 
+function safeStateStorage(storage: StateStorage<void>): StateStorage<void> {
+  return {
+    getItem(name) {
+      try {
+        return storage.getItem(name);
+      } catch {
+        return null;
+      }
+    },
+    setItem(name, value) {
+      try {
+        storage.setItem(name, value);
+      } catch {
+        return undefined;
+      }
+    },
+    removeItem(name) {
+      try {
+        storage.removeItem(name);
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
+
 function browserLocalStorage(): StateStorage<void> {
   try {
     if (typeof window === 'undefined' || !window.localStorage) {
@@ -68,7 +94,7 @@ function createClientPersistStorage(
   storage: StateStorage<void>,
 ): PersistStorage<PersistedAxonClientState> {
   return (
-    createJSONStorage<PersistedAxonClientState>(() => storage) ?? {
+    createJSONStorage<PersistedAxonClientState>(() => safeStateStorage(storage)) ?? {
       getItem: () => null,
       setItem: () => undefined,
       removeItem: () => undefined,
