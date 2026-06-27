@@ -3494,6 +3494,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::ops::Range;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread::{self, JoinHandle};
@@ -3840,6 +3841,229 @@ mod tests {
                 .expect("physical size boundary ranges should read");
             assert_eq!(server.recorded_requests().len(), expected_requests);
         }
+    }
+
+    #[test]
+    fn small_gap_coalescing_threshold_sweep_records_request_and_amplification_tradeoffs() {
+        assert_eq!(super::MAX_COALESCED_INDIVIDUAL_GAP_BYTES, 16 * 1024);
+        assert_eq!(super::MAX_COALESCED_CUMULATIVE_GAP_BYTES, 64 * 1024);
+        assert_eq!(super::MAX_COALESCED_GAP_AMPLIFICATION_NUMERATOR, 1);
+        assert_eq!(super::MAX_COALESCED_GAP_AMPLIFICATION_DENOMINATOR, 4);
+        assert_eq!(super::MAX_COALESCED_PHYSICAL_RANGE_BYTES, 512 * 1024);
+
+        let observations = range_coalescing_threshold_sweep();
+
+        assert_eq!(
+            observations,
+            vec![
+                ThresholdSweepObservation {
+                    label: "nearby_page_ranges",
+                    logical_range_count: 2,
+                    exact_request_count: 2,
+                    physical_request_count: 1,
+                    logical_bytes: 65_536,
+                    planned_physical_bytes: 69_632,
+                    candidate_gap_bytes: 4_096,
+                    fetched_gap_bytes: 4_096,
+                    candidate_gap_amplification_basis_points: 625,
+                },
+                ThresholdSweepObservation {
+                    label: "cumulative_gap_at_limit",
+                    logical_range_count: 5,
+                    exact_request_count: 5,
+                    physical_request_count: 1,
+                    logical_bytes: 327_680,
+                    planned_physical_bytes: 393_216,
+                    candidate_gap_bytes: 65_536,
+                    fetched_gap_bytes: 65_536,
+                    candidate_gap_amplification_basis_points: 2_000,
+                },
+                ThresholdSweepObservation {
+                    label: "amplification_at_limit",
+                    logical_range_count: 2,
+                    exact_request_count: 2,
+                    physical_request_count: 1,
+                    logical_bytes: 2_048,
+                    planned_physical_bytes: 2_560,
+                    candidate_gap_bytes: 512,
+                    fetched_gap_bytes: 512,
+                    candidate_gap_amplification_basis_points: 2_500,
+                },
+                ThresholdSweepObservation {
+                    label: "individual_gap_just_over_limit",
+                    logical_range_count: 2,
+                    exact_request_count: 2,
+                    physical_request_count: 2,
+                    logical_bytes: 131_072,
+                    planned_physical_bytes: 131_072,
+                    candidate_gap_bytes: 16_385,
+                    fetched_gap_bytes: 0,
+                    candidate_gap_amplification_basis_points: 1_250,
+                },
+                ThresholdSweepObservation {
+                    label: "cumulative_gap_just_over_limit",
+                    logical_range_count: 6,
+                    exact_request_count: 6,
+                    physical_request_count: 2,
+                    logical_bytes: 393_216,
+                    planned_physical_bytes: 458_752,
+                    candidate_gap_bytes: 65_537,
+                    fetched_gap_bytes: 65_536,
+                    candidate_gap_amplification_basis_points: 1_666,
+                },
+                ThresholdSweepObservation {
+                    label: "amplification_just_over_limit",
+                    logical_range_count: 2,
+                    exact_request_count: 2,
+                    physical_request_count: 2,
+                    logical_bytes: 2_048,
+                    planned_physical_bytes: 2_048,
+                    candidate_gap_bytes: 513,
+                    fetched_gap_bytes: 0,
+                    candidate_gap_amplification_basis_points: 2_504,
+                },
+                ThresholdSweepObservation {
+                    label: "physical_range_just_over_limit",
+                    logical_range_count: 2,
+                    exact_request_count: 2,
+                    physical_request_count: 2,
+                    logical_bytes: 524_289,
+                    planned_physical_bytes: 524_289,
+                    candidate_gap_bytes: 0,
+                    fetched_gap_bytes: 0,
+                    candidate_gap_amplification_basis_points: 0,
+                },
+            ]
+        );
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct ThresholdSweepObservation {
+        label: &'static str,
+        logical_range_count: usize,
+        exact_request_count: usize,
+        physical_request_count: usize,
+        logical_bytes: u64,
+        planned_physical_bytes: u64,
+        candidate_gap_bytes: u64,
+        fetched_gap_bytes: u64,
+        candidate_gap_amplification_basis_points: u64,
+    }
+
+    fn range_coalescing_threshold_sweep() -> Vec<ThresholdSweepObservation> {
+        [
+            ("nearby_page_ranges", vec![1_024..33_792, 37_888..70_656]),
+            (
+                "cumulative_gap_at_limit",
+                vec![
+                    0..65_536,
+                    81_920..147_456,
+                    163_840..229_376,
+                    245_760..311_296,
+                    327_680..393_216,
+                ],
+            ),
+            ("amplification_at_limit", vec![0..1_024, 1_536..2_560]),
+            (
+                "individual_gap_just_over_limit",
+                vec![0..65_536, 81_921..147_457],
+            ),
+            (
+                "cumulative_gap_just_over_limit",
+                vec![
+                    0..65_536,
+                    81_920..147_456,
+                    163_840..229_376,
+                    245_760..311_296,
+                    327_680..393_216,
+                    393_217..458_753,
+                ],
+            ),
+            (
+                "amplification_just_over_limit",
+                vec![0..1_024, 1_537..2_561],
+            ),
+            (
+                "physical_range_just_over_limit",
+                vec![0..262_144, 262_144..524_289],
+            ),
+        ]
+        .into_iter()
+        .map(|(label, ranges)| observe_threshold_case(label, ranges))
+        .collect()
+    }
+
+    fn observe_threshold_case(
+        label: &'static str,
+        ranges: Vec<Range<u64>>,
+    ) -> ThresholdSweepObservation {
+        let object_size_bytes = ranges
+            .iter()
+            .map(|range| range.end)
+            .max()
+            .expect("sweep cases should include ranges");
+        let plan = super::plan_range_reads(ranges.clone(), true, object_size_bytes)
+            .expect("sweep ranges should plan successfully");
+        let logical_bytes = ranges.iter().map(test_range_len).sum::<u64>();
+        let planned_physical_bytes = plan
+            .iter()
+            .map(|read| test_range_len(&read.physical_range))
+            .sum::<u64>();
+        let candidate_gap_bytes = candidate_gap_bytes(&ranges);
+
+        ThresholdSweepObservation {
+            label,
+            logical_range_count: ranges.len(),
+            exact_request_count: ranges.len(),
+            physical_request_count: plan.len(),
+            logical_bytes,
+            planned_physical_bytes,
+            candidate_gap_bytes,
+            fetched_gap_bytes: plan.iter().map(|read| read.coalesced_gap_bytes).sum(),
+            candidate_gap_amplification_basis_points: candidate_gap_bytes.saturating_mul(10_000)
+                / logical_bytes,
+        }
+    }
+
+    fn candidate_gap_bytes(ranges: &[Range<u64>]) -> u64 {
+        let mut merged = Vec::<Range<u64>>::new();
+        let mut sorted = ranges.to_vec();
+        sorted.sort_by(|left, right| {
+            left.start
+                .cmp(&right.start)
+                .then_with(|| left.end.cmp(&right.end))
+        });
+
+        for range in sorted {
+            if let Some(current) = merged.last_mut() {
+                if range.start <= current.end {
+                    current.end = current.end.max(range.end);
+                    continue;
+                }
+            }
+            merged.push(range);
+        }
+
+        let physical_start = merged
+            .first()
+            .expect("sweep cases should include ranges")
+            .start;
+        let physical_end = merged
+            .last()
+            .expect("sweep cases should include ranges")
+            .end;
+        let requested_union_bytes = merged.iter().map(test_range_len).sum::<u64>();
+
+        physical_end
+            .saturating_sub(physical_start)
+            .saturating_sub(requested_union_bytes)
+    }
+
+    fn test_range_len(range: &Range<u64>) -> u64 {
+        range
+            .end
+            .checked_sub(range.start)
+            .expect("test range should be ascending")
     }
 
     fn test_async_reader(

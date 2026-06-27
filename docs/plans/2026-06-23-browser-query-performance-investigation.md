@@ -71,6 +71,37 @@ Prioritize these only when metrics show they are the next limiting factor:
 
 Keep future changes small enough that each workstream can prove a specific latency, memory, or byte-read improvement.
 
+### Range Coalescing Threshold Telemetry - 2026-06-27
+
+Live public-GCS browser telemetry was blocked in the implementation shell because
+`AXON_LIVE_PUBLIC_GCS_TABLE_URI` was not set. The follow-up evidence is therefore
+limited to the deterministic synthetic threshold sweep in
+`small_gap_coalescing_threshold_sweep_records_request_and_amplification_tradeoffs`.
+
+The sweep keeps logical range metrics distinct from physical HTTP requests:
+`scan_data_range_reads` remains logical range count, `coalesced_range_reads`
+remains physical coalesced request count, and `coalesced_gap_bytes_fetched`
+remains fetched gap overfetch.
+
+| Case | Logical ranges | Exact requests | Physical requests | Logical bytes | Physical bytes | Candidate gap bytes | Fetched gap bytes | Candidate gap amplification |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Nearby page ranges | 2 | 2 | 1 | 65,536 | 69,632 | 4,096 | 4,096 | 6.25% |
+| Cumulative gap at 64 KiB limit | 5 | 5 | 1 | 327,680 | 393,216 | 65,536 | 65,536 | 20.00% |
+| Amplification at 25% limit | 2 | 2 | 1 | 2,048 | 2,560 | 512 | 512 | 25.00% |
+| Individual gap just over 16 KiB | 2 | 2 | 2 | 131,072 | 131,072 | 16,385 | 0 | 12.50% |
+| Cumulative gap just over 64 KiB | 6 | 6 | 2 | 393,216 | 458,752 | 65,537 | 65,536 | 16.66% |
+| Amplification just over 25% | 2 | 2 | 2 | 2,048 | 2,048 | 513 | 0 | 25.04% |
+| Physical range just over 512 KiB | 2 | 2 | 2 | 524,289 | 524,289 | 0 | 0 | 0.00% |
+
+Threshold decision: keep the current policy unchanged until live browser UAT
+shows a narrower improvement. The current policy remains 16 KiB max individual
+gap, 64 KiB max cumulative gap, 512 KiB max physical range, and 25% max gap
+amplification.
+
+Next backlog recommendation: capture live public-GCS browser UAT evidence on a
+representative table before starting a shared Delta/Parquet range-cache and
+readahead substrate or scan-byte budget enforcement.
+
 ---
 
 ## Baseline Evidence
