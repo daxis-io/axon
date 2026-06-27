@@ -47,6 +47,23 @@ import type {
   QueryResultData,
   SavedQuery,
 } from '../services/types.ts';
+import {
+  selectAppearanceSettings,
+  selectDefaultTarget,
+  selectLayout,
+  selectLayoutActions,
+  selectSettingsActions,
+  useAxonClientStore,
+} from '../state/hooks.ts';
+import {
+  ACCENT_VALUES,
+  APPEARANCE_DENSITY_VALUES,
+  APPEARANCE_THEME_VALUES,
+  MONO_FONT_VALUES,
+  UI_FONT_VALUES,
+  availableExecutionTargetValues,
+  coerceDefaultTargetForAvailability,
+} from '../state/slices/settings.ts';
 import { CapabilityPopover } from './components/Capabilities.tsx';
 import { Editor } from './components/Editor.tsx';
 import { Results, type RunUiState } from './components/Results.tsx';
@@ -83,7 +100,6 @@ import {
   TweakSection,
   TweakSelect,
   TweaksPanel,
-  useTweaks,
 } from './tweaks/TweaksPanel.tsx';
 
 type Tab = {
@@ -101,15 +117,6 @@ const SAMPLE_QUERIES = {
     'SELECT category,\n       COUNT(*) AS rows,\n       SUM(value) AS total_value\nFROM events\nGROUP BY category\nORDER BY category',
   top: 'SELECT id, category, value\nFROM events\nWHERE value >= 90\nORDER BY value DESC\nLIMIT 20',
 } as const;
-
-const TWEAK_DEFAULTS = {
-  theme: 'light' as 'light' | 'dark',
-  accent: '#1F4FE0',
-  density: 'regular' as 'compact' | 'regular' | 'comfy',
-  uiFont: 'Geist' as 'Geist' | 'Inter Tight' | 'IBM Plex Sans',
-  monoFont: 'Geist Mono' as 'Geist Mono' | 'JetBrains Mono' | 'IBM Plex Mono' | 'Fira Code',
-  preferredTarget: 'auto' as 'auto' | 'browser_wasm' | 'native',
-};
 
 const TARGET_OPTIONS = SERVER_QUERY_FALLBACK_ENABLED
   ? [
@@ -143,7 +150,16 @@ function connectedTableForRef(
 }
 
 export function App() {
-  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const { sidebarW, resultsH } = useAxonClientStore(selectLayout);
+  const layoutActions = useAxonClientStore(selectLayoutActions);
+  const appearance = useAxonClientStore(selectAppearanceSettings);
+  const configuredDefaultTarget = useAxonClientStore(selectDefaultTarget);
+  const defaultTarget = coerceDefaultTargetForAvailability(
+    configuredDefaultTarget,
+    SERVER_QUERY_FALLBACK_ENABLED,
+  );
+  const defaultTargetOptions = availableExecutionTargetValues(SERVER_QUERY_FALLBACK_ENABLED);
+  const settingsActions = useAxonClientStore(selectSettingsActions);
 
   const [catalog, setCatalog] = useState<Catalog | undefined>(() => snapshotCatalog());
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -187,8 +203,6 @@ export function App() {
   const [engineStatus, setEngineStatus] = useState<EngineStatus | undefined>(undefined);
   const [capsOpen, setCapsOpen] = useState(false);
   const [toast, setToast] = useState<{ msg: string; kind: 'ok' | 'warn' } | null>(null);
-  const [sidebarW, setSidebarW] = useState(264);
-  const [resultsH, setResultsH] = useState(360);
 
   const cancelRef = useRef<AbortController | null>(null);
   const runTimer = useRef<number | null>(null);
@@ -331,13 +345,16 @@ export function App() {
   // ─── Apply theme + tokens ──────────────────────────────
   useEffect(() => {
     const root = document.documentElement;
-    root.setAttribute('data-theme', t.theme === 'dark' ? 'dark' : 'light');
-    root.setAttribute('data-density', t.density);
-    root.style.setProperty('--accent', t.accent);
-    root.style.setProperty('--accent-soft', hexToSoft(t.accent, t.theme === 'dark'));
-    root.style.setProperty('--ui', `"${t.uiFont}", ui-sans-serif, system-ui, sans-serif`);
-    root.style.setProperty('--mono', `"${t.monoFont}", ui-monospace, Menlo, monospace`);
-  }, [t]);
+    root.setAttribute('data-theme', appearance.theme === 'dark' ? 'dark' : 'light');
+    root.setAttribute('data-density', appearance.density);
+    root.style.setProperty('--accent', appearance.accent);
+    root.style.setProperty(
+      '--accent-soft',
+      hexToSoft(appearance.accent, appearance.theme === 'dark'),
+    );
+    root.style.setProperty('--ui', `"${appearance.uiFont}", ui-sans-serif, system-ui, sans-serif`);
+    root.style.setProperty('--mono', `"${appearance.monoFont}", ui-monospace, Menlo, monospace`);
+  }, [appearance]);
 
   // ─── Subscribe to catalog + kick off session bootstrap ──
   useEffect(() => {
@@ -660,11 +677,11 @@ export function App() {
         sql: 'SELECT ',
         dirty: true,
         pin: null,
-        preferred: 'browser_wasm',
+        preferred: defaultTarget,
       },
     ]);
     setActiveTab(id);
-  }, [tabs.length]);
+  }, [defaultTarget, tabs.length]);
 
   const closeTab = useCallback(
     (id: string, e: MouseEvent) => {
@@ -684,8 +701,7 @@ export function App() {
       e.preventDefault();
       const sx = e.clientX;
       const sw = sidebarW;
-      const move = (ev: globalThis.MouseEvent) =>
-        setSidebarW(Math.max(220, Math.min(480, sw + ev.clientX - sx)));
+      const move = (ev: globalThis.MouseEvent) => layoutActions.setSidebarW(sw + ev.clientX - sx);
       const up = () => {
         window.removeEventListener('mousemove', move);
         window.removeEventListener('mouseup', up);
@@ -693,7 +709,7 @@ export function App() {
       window.addEventListener('mousemove', move);
       window.addEventListener('mouseup', up);
     },
-    [sidebarW],
+    [layoutActions, sidebarW],
   );
 
   const startResizeResults = useCallback(
@@ -702,7 +718,7 @@ export function App() {
       const sy = e.clientY;
       const sh = resultsH;
       const move = (ev: globalThis.MouseEvent) =>
-        setResultsH(Math.max(80, Math.min(window.innerHeight - 240, sh - (ev.clientY - sy))));
+        layoutActions.setResultsH(sh - (ev.clientY - sy), { viewportHeight: window.innerHeight });
       const up = () => {
         window.removeEventListener('mousemove', move);
         window.removeEventListener('mouseup', up);
@@ -710,7 +726,7 @@ export function App() {
       window.addEventListener('mousemove', move);
       window.addEventListener('mouseup', up);
     },
-    [resultsH],
+    [layoutActions, resultsH],
   );
 
   // ─── Save handlers ─────────────────────────────────────
@@ -1108,41 +1124,41 @@ export function App() {
         <TweakSection label="Theme" />
         <TweakRadio
           label="Mode"
-          value={t.theme}
-          options={['light', 'dark']}
-          onChange={(v) => setTweak('theme', v)}
+          value={appearance.theme}
+          options={APPEARANCE_THEME_VALUES}
+          onChange={(v) => settingsActions.setAppearanceValue('theme', v)}
         />
         <TweakColor
           label="Accent"
-          value={t.accent}
-          options={['#1F4FE0', '#7A3CD7', '#0F9D74', '#C2410C']}
-          onChange={(v) => setTweak('accent', v)}
+          value={appearance.accent}
+          options={ACCENT_VALUES}
+          onChange={(v) => settingsActions.setAppearanceValue('accent', v)}
         />
         <TweakRadio
           label="Density"
-          value={t.density}
-          options={['compact', 'regular', 'comfy']}
-          onChange={(v) => setTweak('density', v)}
+          value={appearance.density}
+          options={APPEARANCE_DENSITY_VALUES}
+          onChange={(v) => settingsActions.setAppearanceValue('density', v)}
         />
         <TweakSection label="Typography" />
         <TweakSelect
           label="UI font"
-          value={t.uiFont}
-          options={['Geist', 'Inter Tight', 'IBM Plex Sans']}
-          onChange={(v) => setTweak('uiFont', v)}
+          value={appearance.uiFont}
+          options={UI_FONT_VALUES}
+          onChange={(v) => settingsActions.setAppearanceValue('uiFont', v)}
         />
         <TweakSelect
           label="Code font"
-          value={t.monoFont}
-          options={['Geist Mono', 'JetBrains Mono', 'IBM Plex Mono', 'Fira Code']}
-          onChange={(v) => setTweak('monoFont', v)}
+          value={appearance.monoFont}
+          options={MONO_FONT_VALUES}
+          onChange={(v) => settingsActions.setAppearanceValue('monoFont', v)}
         />
         <TweakSection label="Engine defaults" />
         <TweakRadio
           label="Default target"
-          value={t.preferredTarget}
-          options={['auto', 'browser_wasm', 'native']}
-          onChange={(v) => setTweak('preferredTarget', v)}
+          value={defaultTarget}
+          options={defaultTargetOptions}
+          onChange={settingsActions.setDefaultTarget}
         />
       </TweaksPanel>
     </div>

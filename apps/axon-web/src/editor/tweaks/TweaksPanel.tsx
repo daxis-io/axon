@@ -3,7 +3,6 @@
 // need them when running standalone.
 
 import {
-  useCallback,
   useMemo,
   useRef,
   useState,
@@ -67,35 +66,6 @@ const STYLE = `
 .twk-chip:hover{transform:translateY(-1px)}
 .twk-chip[data-on="1"]{box-shadow:0 0 0 1.5px rgba(0,0,0,.85),0 2px 6px rgba(0,0,0,.15)}
 `;
-
-type SetTweak<T> = <K extends keyof T>(key: K, value: T[K]) => void;
-
-export function useTweaks<T extends Record<string, unknown>>(defaults: T): [T, SetTweak<T>] {
-  const STORAGE_KEY = 'axon-editor.tweaks.v1';
-  const [values, setValues] = useState<T>(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) return { ...defaults, ...(JSON.parse(raw) as Partial<T>) };
-    } catch {
-      // ignore
-    }
-    return defaults;
-  });
-
-  const setTweak = useCallback<SetTweak<T>>((key, val) => {
-    setValues((prev) => {
-      const next = { ...prev, [key]: val };
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        // ignore
-      }
-      return next;
-    });
-  }, []);
-
-  return [values, setTweak];
-}
 
 export function TweaksPanel({
   title = 'Tweaks',
@@ -217,7 +187,7 @@ export function TweakRadio<T extends string>({
 }: {
   label: string;
   value: T;
-  options: T[];
+  options: readonly T[];
   onChange: (v: T) => void;
 }) {
   const idx = Math.max(0, options.indexOf(value));
@@ -231,7 +201,7 @@ export function TweakRadio<T extends string>({
   );
   return (
     <TweakRow label={label}>
-      <div className="twk-seg" role="radiogroup">
+      <div className="twk-seg" role="radiogroup" aria-label={label}>
         <div className="twk-seg-thumb" style={thumbStyle} />
         {options.map((o) => (
           <button
@@ -257,12 +227,17 @@ export function TweakSelect<T extends string>({
 }: {
   label: string;
   value: T;
-  options: T[];
+  options: readonly T[];
   onChange: (v: T) => void;
 }) {
   return (
     <TweakRow label={label}>
-      <select className="twk-field" value={value} onChange={(e) => onChange(e.target.value as T)}>
+      <select
+        className="twk-field"
+        value={value}
+        aria-label={label}
+        onChange={(e) => onChange(e.target.value as T)}
+      >
         {options.map((o) => (
           <option key={o} value={o}>
             {o}
@@ -273,20 +248,20 @@ export function TweakSelect<T extends string>({
   );
 }
 
-export function TweakColor({
+export function TweakColor<T extends string>({
   label,
   value,
   options,
   onChange,
 }: {
   label: string;
-  value: string;
-  options: string[];
-  onChange: (v: string) => void;
+  value: T;
+  options: readonly T[];
+  onChange: (v: T) => void;
 }) {
   return (
     <TweakRow label={label}>
-      <div className="twk-chips" role="radiogroup">
+      <div className="twk-chips" role="radiogroup" aria-label={label}>
         {options.map((c) => (
           <button
             key={c}

@@ -495,6 +495,92 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(consoleErrors, `console errors:\n${consoleErrors.join('\n')}`).toEqual([]);
   });
 
+  test('persists client appearance settings from the Tweaks panel across reloads', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await expect(page.locator('.shell .brand-name')).toContainText('axon');
+
+    await page.getByRole('button', { name: 'Open settings' }).click();
+    await page
+      .getByRole('radiogroup', { name: 'Mode' })
+      .getByRole('radio', { name: 'dark' })
+      .click();
+    await page
+      .getByRole('radiogroup', { name: 'Accent' })
+      .getByRole('radio', { name: '#0F9D74' })
+      .click();
+    await page
+      .getByRole('radiogroup', { name: 'Density' })
+      .getByRole('radio', { name: 'comfy' })
+      .click();
+    await page.getByRole('combobox', { name: 'UI font' }).selectOption('IBM Plex Sans');
+    await page.getByRole('combobox', { name: 'Code font' }).selectOption('Fira Code');
+
+    await expect
+      .poll(() =>
+        page.evaluate(() => ({
+          theme: document.documentElement.getAttribute('data-theme'),
+          density: document.documentElement.getAttribute('data-density'),
+          accent: document.documentElement.style.getPropertyValue('--accent').trim(),
+          uiFont: document.documentElement.style.getPropertyValue('--ui'),
+          monoFont: document.documentElement.style.getPropertyValue('--mono'),
+        })),
+      )
+      .toMatchObject({
+        theme: 'dark',
+        density: 'comfy',
+        accent: '#0F9D74',
+        uiFont: expect.stringContaining('IBM Plex Sans'),
+        monoFont: expect.stringContaining('Fira Code'),
+      });
+
+    const persistedBeforeReload = await page.evaluate(() => {
+      const raw = localStorage.getItem('axon.client-state.v1');
+      const parsed = raw ? (JSON.parse(raw) as { state?: Record<string, unknown> }) : null;
+      return {
+        legacyTweaks: localStorage.getItem('axon-editor.tweaks'),
+        topLevelKeys: Object.keys(parsed?.state ?? {}).sort(),
+        raw,
+      };
+    });
+    expect(persistedBeforeReload.legacyTweaks).toBeNull();
+    expect(persistedBeforeReload.topLevelKeys).toEqual(['layout', 'settings']);
+    expect(persistedBeforeReload.raw).toContain('"theme":"dark"');
+    expect(persistedBeforeReload.raw).toContain('"density":"comfy"');
+    expect(persistedBeforeReload.raw).toContain('"accent":"#0F9D74"');
+    expect(persistedBeforeReload.raw).toContain('"uiFont":"IBM Plex Sans"');
+    expect(persistedBeforeReload.raw).toContain('"monoFont":"Fira Code"');
+
+    await page.reload();
+    await expect(page.locator('.shell .brand-name')).toContainText('axon');
+
+    await expect
+      .poll(() =>
+        page.evaluate(() => ({
+          theme: document.documentElement.getAttribute('data-theme'),
+          density: document.documentElement.getAttribute('data-density'),
+          accent: document.documentElement.style.getPropertyValue('--accent').trim(),
+          uiFont: document.documentElement.style.getPropertyValue('--ui'),
+          monoFont: document.documentElement.style.getPropertyValue('--mono'),
+        })),
+      )
+      .toMatchObject({
+        theme: 'dark',
+        density: 'comfy',
+        accent: '#0F9D74',
+        uiFont: expect.stringContaining('IBM Plex Sans'),
+        monoFont: expect.stringContaining('Fira Code'),
+      });
+
+    await page.getByRole('button', { name: 'Open settings' }).click();
+    await expect(
+      page.getByRole('radiogroup', { name: 'Mode' }).getByRole('radio', { name: 'dark' }),
+    ).toHaveAttribute('aria-checked', 'true');
+    await expect(page.getByRole('combobox', { name: 'UI font' })).toHaveValue('IBM Plex Sans');
+    await expect(page.getByRole('combobox', { name: 'Code font' })).toHaveValue('Fira Code');
+  });
+
   test('connect source flows stay browser-owned without private credentials', async ({ page }) => {
     await page.goto('/connect');
 
