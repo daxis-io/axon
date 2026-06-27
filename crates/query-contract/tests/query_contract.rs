@@ -192,6 +192,13 @@ fn query_response_serializes_without_absent_fallback_reason() {
             rows_emitted: 7,
             snapshot_bootstrap_duration_ms: None,
             access_mode: None,
+            arrow_ipc_bytes: None,
+            arrow_ipc_chunk_count: None,
+            preview_rows: None,
+            preview_string_bytes: None,
+            planning_duration_ms: None,
+            arrow_ipc_encode_duration_ms: None,
+            preview_duration_ms: None,
         },
         explain: None,
     };
@@ -325,6 +332,13 @@ fn query_response_serializes_browser_telemetry_when_present() {
             rows_emitted: 7,
             snapshot_bootstrap_duration_ms: Some(8),
             access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
+            arrow_ipc_bytes: None,
+            arrow_ipc_chunk_count: None,
+            preview_rows: None,
+            preview_string_bytes: None,
+            planning_duration_ms: None,
+            arrow_ipc_encode_duration_ms: None,
+            preview_duration_ms: None,
         },
         explain: None,
     };
@@ -1095,6 +1109,7 @@ fn query_request_serializes_runtime_execution_limits() {
         runtime_limits: Some(query_contract::QueryRuntimeLimits {
             max_result_rows: Some(500),
             max_arrow_ipc_bytes: Some(1_048_576),
+            max_preview_string_bytes: Some(262_144),
             max_scan_bytes: Some(10_485_760),
         }),
     });
@@ -1106,9 +1121,73 @@ fn query_request_serializes_runtime_execution_limits() {
         json!({
             "max_result_rows": 500,
             "max_arrow_ipc_bytes": 1048576,
+            "max_preview_string_bytes": 262144,
             "max_scan_bytes": 10485760
         })
     );
+}
+
+#[test]
+fn query_response_serializes_arrow_ipc_preview_and_phase_metrics() {
+    let response = QueryResponse {
+        executed_on: ExecutionTarget::BrowserWasm,
+        capabilities: CapabilityReport::default(),
+        fallback_reason: None,
+        metrics: QueryMetricsSummary {
+            bytes_fetched: 4096,
+            duration_ms: 12,
+            files_touched: 1,
+            files_skipped: 0,
+            prebootstrap_fail_open_count: None,
+            prebootstrap_files_pruned: None,
+            footer_reads_avoided: None,
+            prebootstrap_candidate_files: None,
+            row_groups_touched: 1,
+            row_groups_skipped: 0,
+            footer_reads: None,
+            bootstrap_footer_range_reads: None,
+            scan_footer_range_reads: None,
+            scan_data_range_reads: None,
+            duplicate_range_reads: None,
+            footer_cache_hits: None,
+            footer_cache_misses: None,
+            footer_range_reads_avoided: None,
+            footer_cache_degraded_identity_reads: None,
+            identity_present_range_reads: None,
+            identity_missing_range_reads: None,
+            descriptor_resolution_count: None,
+            delta_log_manifest_list_count: None,
+            delta_log_manifest_list_duration_ms: None,
+            snapshot_resolve_count: None,
+            snapshot_resolve_duration_ms: None,
+            descriptor_cache_hit: None,
+            session_reuse_count: None,
+            opened_table_reuse_count: None,
+            identity_refresh_count: None,
+            access_envelope_refresh_count: None,
+            rows_emitted: 3,
+            snapshot_bootstrap_duration_ms: None,
+            access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
+            arrow_ipc_bytes: Some(1024),
+            arrow_ipc_chunk_count: Some(4),
+            preview_rows: Some(3),
+            preview_string_bytes: Some(32),
+            planning_duration_ms: Some(2),
+            arrow_ipc_encode_duration_ms: Some(5),
+            preview_duration_ms: Some(1),
+        },
+        explain: None,
+    };
+
+    let json = serde_json::to_value(&response).expect("query response should serialize");
+
+    assert_eq!(json["metrics"]["arrow_ipc_bytes"], json!(1024));
+    assert_eq!(json["metrics"]["arrow_ipc_chunk_count"], json!(4));
+    assert_eq!(json["metrics"]["preview_rows"], json!(3));
+    assert_eq!(json["metrics"]["preview_string_bytes"], json!(32));
+    assert_eq!(json["metrics"]["planning_duration_ms"], json!(2));
+    assert_eq!(json["metrics"]["arrow_ipc_encode_duration_ms"], json!(5));
+    assert_eq!(json["metrics"]["preview_duration_ms"], json!(1));
 }
 
 #[test]

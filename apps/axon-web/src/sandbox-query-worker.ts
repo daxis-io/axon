@@ -1,5 +1,8 @@
 import init, { SandboxQueryCancellation, SandboxQuerySession } from './wasm/axon_web_wasm';
 import {
+  BROWSER_SAFE_ARROW_IPC_BYTES,
+  BROWSER_SAFE_PREVIEW_STRING_BYTES,
+  BROWSER_SAFE_RESULT_ROW_LIMIT,
   ARROW_IPC_STREAM_CONTENT_TYPE,
   type BrowserWorkerCancelCommand,
   type BrowserWorkerCommand,
@@ -11,13 +14,16 @@ import {
   type BrowserWorkerOpenParquetDatasetCommand,
   type BrowserWorkerProgressStage,
   type BrowserWorkerResultPreview,
-  type BrowserWorkerResponseEnvelope,
+  type BrowserWorkerSqlDelivery,
   type BrowserWorkerSqlCommand,
   type FallbackReason,
   type ParquetInspectionSummary,
   type QueryError,
   type QueryMetricsSummary,
+  type QueryResultPageRequest,
   type QueryResponse,
+  type QueryRuntimeLimits,
+  type WireBrowserWorkerResponseEnvelope,
   redactUrlSecrets,
 } from './axon-browser-sdk';
 import { QUERY_RESULT_PAGE_SIZE } from './services/query-pagination.ts';
@@ -39,6 +45,8 @@ type SandboxSqlMetadata = {
   preview: SandboxWireResultPreview;
   arrow_ipc_byte_length: DecimalString;
   row_count: DecimalString;
+  preview_string_bytes: DecimalString;
+  preview_duration_ms: DecimalString;
   cache_metrics: SandboxCacheMetrics;
 };
 
@@ -57,12 +65,13 @@ type SandboxWorkerScope = {
     listener: (event: MessageEvent<BrowserWorkerCommand>) => void,
   ): void;
   postMessage(
-    message: BrowserWorkerResponseEnvelope | BrowserWorkerEventEnvelope,
+    message: WireBrowserWorkerResponseEnvelope | BrowserWorkerEventEnvelope,
     transfer?: Transferable[],
   ): void;
 };
 
 const QUERY_PREVIEW_LIMIT = QUERY_RESULT_PAGE_SIZE + 1;
+const DEFAULT_ARROW_IPC_CHUNK_BYTES = 1024 * 1024;
 const workerScope = self as unknown as SandboxWorkerScope;
 
 let sessionPromise: Promise<SandboxQuerySession> | undefined;
@@ -193,6 +202,11 @@ async function handleSql(
   if (command.output !== undefined && command.output !== 'arrow_ipc_stream') {
     throw queryError('invalid_request', 'sandbox worker only supports Arrow IPC stream output');
   }
+  const delivery = command.delivery ?? 'single_buffer';
+  if (delivery !== 'single_buffer' && delivery !== 'chunked_buffers') {
+    throw queryError('invalid_request', `unsupported Arrow IPC delivery '${String(delivery)}'`);
+  }
+  const query = queryWithBrowserSafeLimits(command);
 
   activeQueryId = command.request_id;
   try {
@@ -204,35 +218,76 @@ async function handleSql(
 
     const bridgeValue = (await session.sql(
       command.name,
-      JSON.stringify(command.query),
+      JSON.stringify(query),
       QUERY_PREVIEW_LIMIT,
     )) as SandboxSqlBridgeValue;
     const metadata = JSON.parse(bridgeValue.metadata_json) as SandboxSqlMetadata;
     const preview = normalizePreview(metadata.preview);
+    const arrowIpcByteLength = decimalNumber(metadata.arrow_ipc_byte_length);
+    const previewStringBytes = decimalNumber(metadata.preview_string_bytes);
+    const previewDurationMs = decimalNumber(metadata.preview_duration_ms);
+    const arrowIpcChunkCount = arrowIpcChunkCountForDelivery(
+      delivery,
+      bridgeValue.arrow_ipc_bytes.byteLength,
+    );
+    const response = {
+      ...metadata.response,
+      metrics: {
+        ...metadata.response.metrics,
+        arrow_ipc_bytes: arrowIpcByteLength,
+        arrow_ipc_chunk_count: arrowIpcChunkCount,
+        preview_rows: preview.rows.length,
+        preview_string_bytes: previewStringBytes,
+        preview_duration_ms: previewDurationMs,
+      },
+    };
 
-    emitRangeReadMetrics(context, metadata.response.metrics);
-    if (metadata.response.fallback_reason) {
-      emitFallback(context, metadata.response.fallback_reason);
+    emitRangeReadMetrics(context, response.metrics);
+    if (response.fallback_reason) {
+      emitFallback(context, response.fallback_reason);
     }
     emitCacheMetrics(context, metadata.cache_metrics);
     emitProgress(context, 'arrow_ipc_ready');
+    if (delivery === 'chunked_buffers') {
+      postArrowIpcChunks(context, command.request_id, bridgeValue.arrow_ipc_bytes);
+    }
     emitProgress(context, 'finished');
 
-    postResponse(
-      {
+    if (delivery === 'chunked_buffers') {
+      postResponse({
         success: {
           request_id: command.request_id,
-          response: metadata.response,
+          response,
           result: {
             format: 'stream',
             content_type: ARROW_IPC_STREAM_CONTENT_TYPE,
-            bytes: bridgeValue.arrow_ipc_bytes,
+            delivery: 'chunked_buffers',
+            byte_length: arrowIpcByteLength,
+            chunk_count: arrowIpcChunkCount,
           },
           preview,
         },
-      },
-      [bridgeValue.arrow_ipc_bytes.buffer],
-    );
+      });
+    } else {
+      postResponse(
+        {
+          success: {
+            request_id: command.request_id,
+            response,
+            result: {
+              format: 'stream',
+              content_type: ARROW_IPC_STREAM_CONTENT_TYPE,
+              delivery: 'single_buffer',
+              bytes: bridgeValue.arrow_ipc_bytes,
+              byte_length: arrowIpcByteLength,
+              chunk_count: arrowIpcChunkCount,
+            },
+            preview,
+          },
+        },
+        [bridgeValue.arrow_ipc_bytes.buffer],
+      );
+    }
   } finally {
     if (activeQueryId === command.request_id) {
       activeQueryId = undefined;
@@ -299,6 +354,145 @@ function normalizePreview(preview: SandboxWireResultPreview): BrowserWorkerResul
   };
 }
 
+function queryWithBrowserSafeLimits(
+  command: BrowserWorkerSqlCommand,
+): BrowserWorkerSqlCommand['query'] {
+  const options = {
+    include_explain: false,
+    collect_metrics: true,
+    ...(command.query.options ?? {}),
+  };
+
+  if (command.browser_safe_defaults === true) {
+    return {
+      ...command.query,
+      options: {
+        ...options,
+        result_page: resultPageWithBrowserSafeDefaults(options.result_page),
+        runtime_limits: runtimeLimitsWithBrowserSafeDefaults(options.runtime_limits),
+      },
+    };
+  }
+
+  if (!options.result_page || !options.runtime_limits) {
+    throw queryError(
+      'invalid_request',
+      'raw sandbox SQL commands must provide result_page plus runtime_limits or set browser_safe_defaults',
+    );
+  }
+  requirePositiveInteger(options.result_page.limit, 'result_page.limit');
+  requireNonNegativeInteger(options.result_page.offset, 'result_page.offset');
+  requirePositiveInteger(options.runtime_limits.max_result_rows, 'runtime_limits.max_result_rows');
+  requirePositiveInteger(
+    options.runtime_limits.max_arrow_ipc_bytes,
+    'runtime_limits.max_arrow_ipc_bytes',
+  );
+  requirePositiveInteger(
+    options.runtime_limits.max_preview_string_bytes,
+    'runtime_limits.max_preview_string_bytes',
+  );
+
+  return {
+    ...command.query,
+    options,
+  };
+}
+
+function resultPageWithBrowserSafeDefaults(
+  page: QueryResultPageRequest | undefined,
+): QueryResultPageRequest {
+  if (!page) {
+    return {
+      limit: BROWSER_SAFE_RESULT_ROW_LIMIT,
+      offset: 0,
+    };
+  }
+  return {
+    limit: Math.min(
+      requirePositiveInteger(page.limit, 'result_page.limit'),
+      BROWSER_SAFE_RESULT_ROW_LIMIT,
+    ),
+    offset: requireNonNegativeInteger(page.offset, 'result_page.offset'),
+  };
+}
+
+function runtimeLimitsWithBrowserSafeDefaults(
+  limits: QueryRuntimeLimits | undefined,
+): QueryRuntimeLimits {
+  return {
+    ...(limits ?? {}),
+    max_result_rows: Math.min(
+      optionalPositiveInteger(
+        limits?.max_result_rows,
+        BROWSER_SAFE_RESULT_ROW_LIMIT,
+        'runtime_limits.max_result_rows',
+      ),
+      BROWSER_SAFE_RESULT_ROW_LIMIT,
+    ),
+    max_arrow_ipc_bytes: Math.min(
+      optionalPositiveInteger(
+        limits?.max_arrow_ipc_bytes,
+        BROWSER_SAFE_ARROW_IPC_BYTES,
+        'runtime_limits.max_arrow_ipc_bytes',
+      ),
+      BROWSER_SAFE_ARROW_IPC_BYTES,
+    ),
+    max_preview_string_bytes: Math.min(
+      optionalPositiveInteger(
+        limits?.max_preview_string_bytes,
+        BROWSER_SAFE_PREVIEW_STRING_BYTES,
+        'runtime_limits.max_preview_string_bytes',
+      ),
+      BROWSER_SAFE_PREVIEW_STRING_BYTES,
+    ),
+  };
+}
+
+function arrowIpcChunkCountForDelivery(
+  delivery: BrowserWorkerSqlDelivery,
+  byteLength: number,
+): number {
+  if (delivery === 'single_buffer') {
+    return byteLength === 0 ? 0 : 1;
+  }
+  return byteLength === 0 ? 0 : Math.ceil(byteLength / DEFAULT_ARROW_IPC_CHUNK_BYTES);
+}
+
+function postArrowIpcChunks(
+  context: BrowserWorkerEventContext,
+  requestId: string,
+  bytes: Uint8Array,
+): void {
+  let sequence = 0;
+  for (let byteOffset = 0; byteOffset < bytes.byteLength; ) {
+    const chunkLength = Math.min(DEFAULT_ARROW_IPC_CHUNK_BYTES, bytes.byteLength - byteOffset);
+    const chunk = exactSizedChunk(bytes, byteOffset, chunkLength);
+    workerScope.postMessage(
+      {
+        arrow_ipc_chunk: {
+          context,
+          request_id: requestId,
+          sequence,
+          byte_offset: byteOffset,
+          byte_length: chunk.byteLength,
+          bytes: chunk,
+        },
+      },
+      [chunk.buffer],
+    );
+    sequence += 1;
+    byteOffset += chunkLength;
+  }
+}
+
+function exactSizedChunk(source: Uint8Array, byteOffset: number, byteLength: number): Uint8Array {
+  const chunk = source.slice(byteOffset, byteOffset + byteLength);
+  if (chunk.byteOffset !== 0 || chunk.byteLength !== chunk.buffer.byteLength) {
+    throw queryError('execution_failed', 'Arrow IPC chunk buffer was not exact-sized');
+  }
+  return chunk;
+}
+
 function emitProgress(context: BrowserWorkerEventContext, stage: BrowserWorkerProgressStage): void {
   postEvent({
     progress: {
@@ -362,6 +556,13 @@ function emitRangeReadMetrics(
       rows_emitted: metrics.rows_emitted ?? 0,
       snapshot_bootstrap_duration_ms: metrics.snapshot_bootstrap_duration_ms,
       access_mode: metrics.access_mode,
+      arrow_ipc_bytes: metrics.arrow_ipc_bytes,
+      arrow_ipc_chunk_count: metrics.arrow_ipc_chunk_count,
+      preview_rows: metrics.preview_rows,
+      preview_string_bytes: metrics.preview_string_bytes,
+      planning_duration_ms: metrics.planning_duration_ms,
+      arrow_ipc_encode_duration_ms: metrics.arrow_ipc_encode_duration_ms,
+      preview_duration_ms: metrics.preview_duration_ms,
     },
   });
 }
@@ -418,7 +619,10 @@ function postEvent(event: BrowserWorkerEventEnvelope): void {
   workerScope.postMessage(event);
 }
 
-function postResponse(response: BrowserWorkerResponseEnvelope, transfer?: Transferable[]): void {
+function postResponse(
+  response: WireBrowserWorkerResponseEnvelope,
+  transfer?: Transferable[],
+): void {
   workerScope.postMessage(response, transfer ?? []);
 }
 
@@ -555,4 +759,22 @@ function queryError(code: QueryError['code'], message: string): QueryError {
 
 function decimalNumber(value: DecimalString | number): number {
   return typeof value === 'number' ? value : Number.parseInt(value, 10);
+}
+
+function requirePositiveInteger(value: unknown, path: string): number {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+  throw queryError('invalid_request', `${path} must be a positive integer`);
+}
+
+function requireNonNegativeInteger(value: unknown, path: string): number {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
+    return value;
+  }
+  throw queryError('invalid_request', `${path} must be a non-negative integer`);
+}
+
+function optionalPositiveInteger(value: unknown, defaultValue: number, path: string): number {
+  return value === undefined ? defaultValue : requirePositiveInteger(value, path);
 }

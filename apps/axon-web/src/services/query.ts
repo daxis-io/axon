@@ -422,6 +422,13 @@ export function queryMetricsFromRangeReadMetricsEvent(
       rows_emitted: metrics.rows_emitted,
       snapshot_bootstrap_duration_ms: metrics.snapshot_bootstrap_duration_ms,
       access_mode: metrics.access_mode,
+      arrow_ipc_bytes: metrics.arrow_ipc_bytes,
+      arrow_ipc_chunk_count: metrics.arrow_ipc_chunk_count,
+      preview_rows: metrics.preview_rows,
+      preview_string_bytes: metrics.preview_string_bytes,
+      planning_duration_ms: metrics.planning_duration_ms,
+      arrow_ipc_encode_duration_ms: metrics.arrow_ipc_encode_duration_ms,
+      preview_duration_ms: metrics.preview_duration_ms,
     },
     setupMetrics,
   );

@@ -228,6 +228,12 @@ export type DaxisApprovedAxonReadDescriptor = {
 export type DaxisResultMetrics = {
   rows_returned?: number;
   arrow_ipc_bytes?: number;
+  arrow_ipc_chunk_count?: number;
+  preview_rows?: number;
+  preview_string_bytes?: number;
+  planning_duration_ms?: number;
+  arrow_ipc_encode_duration_ms?: number;
+  preview_duration_ms?: number;
   scan_bytes?: number;
   duration_ms?: number;
   files_touched?: number;
@@ -596,6 +602,22 @@ function daxisMetricsFromQueryResult(
   return {
     rows_returned: metrics.rows_emitted,
     arrow_ipc_bytes: arrowIpc.bytes.byteLength,
+    ...(metrics.arrow_ipc_chunk_count !== undefined
+      ? { arrow_ipc_chunk_count: metrics.arrow_ipc_chunk_count }
+      : {}),
+    ...(metrics.preview_rows !== undefined ? { preview_rows: metrics.preview_rows } : {}),
+    ...(metrics.preview_string_bytes !== undefined
+      ? { preview_string_bytes: metrics.preview_string_bytes }
+      : {}),
+    ...(metrics.planning_duration_ms !== undefined
+      ? { planning_duration_ms: metrics.planning_duration_ms }
+      : {}),
+    ...(metrics.arrow_ipc_encode_duration_ms !== undefined
+      ? { arrow_ipc_encode_duration_ms: metrics.arrow_ipc_encode_duration_ms }
+      : {}),
+    ...(metrics.preview_duration_ms !== undefined
+      ? { preview_duration_ms: metrics.preview_duration_ms }
+      : {}),
     scan_bytes: metrics.bytes_fetched,
     duration_ms: metrics.duration_ms,
     files_touched: metrics.files_touched,

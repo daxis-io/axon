@@ -7,11 +7,13 @@ use std::time::Instant;
 use browser_sdk::{
     preferred_target, ArrowIpcFormat, ArrowIpcResultEnvelope, BrowserWorkerCommand,
     BrowserWorkerEventContext, BrowserWorkerEventEnvelope, BrowserWorkerLogLevel,
-    BrowserWorkerProgressStage, BrowserWorkerResponseEnvelope,
+    BrowserWorkerProgressStage, BrowserWorkerResponseEnvelope, BrowserWorkerSqlCommand,
+    BrowserWorkerSqlDelivery,
 };
 use query_contract::{
     BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget,
-    FallbackReason, QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest,
+    FallbackReason, QueryError, QueryErrorCode, QueryExecutionOptions, QueryMetricsSummary,
+    QueryRequest, QueryResultPage, QueryRuntimeLimits, MAX_QUERY_RESULT_PAGE_LIMIT,
 };
 use serde::{Deserialize, Serialize};
 use wasm_query_runtime::{BrowserObjectAccessMode, BrowserRuntimeConfig, BrowserRuntimeSession};
@@ -22,6 +24,10 @@ pub const RESPONSIBILITY: &str =
     "Internal browser worker artifact used for session-backed command handling, size, startup, and footprint reporting.";
 pub const BROWSER_ENGINE_WORKER_WASM_ARTIFACT: &str = "browser_engine_worker.wasm";
 pub const DEFAULT_SESSION_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_ARROW_IPC_CHUNK_BYTES: usize = 1024 * 1024;
+const BROWSER_SAFE_RESULT_ROW_LIMIT: u64 = MAX_QUERY_RESULT_PAGE_LIMIT;
+const BROWSER_SAFE_ARROW_IPC_BYTES: u64 = 8 * 1024 * 1024;
+const BROWSER_SAFE_PREVIEW_STRING_BYTES: u64 = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -392,11 +398,18 @@ impl BrowserWorker {
                     BrowserWorkerLogLevel::Info,
                     "browser worker executing SQL query",
                 ));
+                let request = match query_with_browser_safe_limits(&command) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        emit_error_events(&mut emit_event, context, &error);
+                        return BrowserWorkerResponseEnvelope::error(command.request_id, error);
+                    }
+                };
                 emit_event(BrowserWorkerEventEnvelope::progress(
                     context.clone(),
                     BrowserWorkerProgressStage::Executing,
                 ));
-                match self.session.sql(&command.name, &command.request).await {
+                match self.session.sql(&command.name, &request).await {
                     Ok(result) => {
                         emit_event(BrowserWorkerEventEnvelope::range_read_metrics(
                             context.clone(),
@@ -413,11 +426,27 @@ impl BrowserWorker {
                             context.clone(),
                             BrowserWorkerProgressStage::ArrowIpcReady,
                         ));
+                        let arrow_ipc_chunk_count = match command.delivery {
+                            BrowserWorkerSqlDelivery::SingleBuffer => None,
+                            BrowserWorkerSqlDelivery::ChunkedBuffers => {
+                                Some(emit_arrow_ipc_chunks(
+                                    &mut emit_event,
+                                    &context,
+                                    &command.request_id,
+                                    &result.runtime_result.ipc_bytes,
+                                ))
+                            }
+                        };
                         emit_event(BrowserWorkerEventEnvelope::progress(
                             context,
                             BrowserWorkerProgressStage::Finished,
                         ));
-                        success_response(command.request_id, result)
+                        success_response(
+                            command.request_id,
+                            result,
+                            command.delivery,
+                            arrow_ipc_chunk_count,
+                        )
                     }
                     Err(error) => {
                         emit_error_events(&mut emit_event, context, &error);
@@ -448,6 +477,111 @@ impl BrowserWorker {
 
 pub fn worker_target() -> ExecutionTarget {
     preferred_target()
+}
+
+fn query_with_browser_safe_limits(
+    command: &BrowserWorkerSqlCommand,
+) -> Result<QueryRequest, QueryError> {
+    let mut request = command.request.clone();
+    if command.browser_safe_defaults {
+        request.options.result_page = Some(browser_safe_result_page(request.options.result_page)?);
+        request.options.runtime_limits =
+            Some(browser_safe_runtime_limits(request.options.runtime_limits)?);
+        return Ok(request);
+    }
+
+    validate_raw_browser_limits(&request.options)?;
+    Ok(request)
+}
+
+fn validate_raw_browser_limits(options: &QueryExecutionOptions) -> Result<(), QueryError> {
+    let page = options.result_page.ok_or_else(|| {
+        invalid_request(
+            "raw browser worker SQL commands must provide result_page plus runtime_limits or set browser_safe_defaults",
+        )
+    })?;
+    require_positive_limit(page.limit, "result_page.limit")?;
+
+    let limits = options.runtime_limits.ok_or_else(|| {
+        invalid_request(
+            "raw browser worker SQL commands must provide result_page plus runtime_limits or set browser_safe_defaults",
+        )
+    })?;
+    require_explicit_positive_limit(limits.max_result_rows, "runtime_limits.max_result_rows")?;
+    require_explicit_positive_limit(
+        limits.max_arrow_ipc_bytes,
+        "runtime_limits.max_arrow_ipc_bytes",
+    )?;
+    require_explicit_positive_limit(
+        limits.max_preview_string_bytes,
+        "runtime_limits.max_preview_string_bytes",
+    )?;
+    Ok(())
+}
+
+fn browser_safe_result_page(page: Option<QueryResultPage>) -> Result<QueryResultPage, QueryError> {
+    match page {
+        Some(page) => Ok(QueryResultPage {
+            limit: require_positive_limit(page.limit, "result_page.limit")?
+                .min(BROWSER_SAFE_RESULT_ROW_LIMIT),
+            offset: page.offset,
+        }),
+        None => Ok(QueryResultPage {
+            limit: BROWSER_SAFE_RESULT_ROW_LIMIT,
+            offset: 0,
+        }),
+    }
+}
+
+fn browser_safe_runtime_limits(
+    limits: Option<QueryRuntimeLimits>,
+) -> Result<QueryRuntimeLimits, QueryError> {
+    let limits = limits.unwrap_or_default();
+    Ok(QueryRuntimeLimits {
+        max_result_rows: Some(browser_safe_optional_limit(
+            limits.max_result_rows,
+            BROWSER_SAFE_RESULT_ROW_LIMIT,
+            "runtime_limits.max_result_rows",
+        )?),
+        max_arrow_ipc_bytes: Some(browser_safe_optional_limit(
+            limits.max_arrow_ipc_bytes,
+            BROWSER_SAFE_ARROW_IPC_BYTES,
+            "runtime_limits.max_arrow_ipc_bytes",
+        )?),
+        max_preview_string_bytes: Some(browser_safe_optional_limit(
+            limits.max_preview_string_bytes,
+            BROWSER_SAFE_PREVIEW_STRING_BYTES,
+            "runtime_limits.max_preview_string_bytes",
+        )?),
+        max_scan_bytes: limits.max_scan_bytes,
+    })
+}
+
+fn browser_safe_optional_limit(
+    value: Option<u64>,
+    default: u64,
+    path: &str,
+) -> Result<u64, QueryError> {
+    match value {
+        Some(value) => Ok(require_positive_limit(value, path)?.min(default)),
+        None => Ok(default),
+    }
+}
+
+fn require_explicit_positive_limit(value: Option<u64>, path: &str) -> Result<u64, QueryError> {
+    let value = value.ok_or_else(|| invalid_request(format!("{path} is required")))?;
+    require_positive_limit(value, path)
+}
+
+fn require_positive_limit(value: u64, path: &str) -> Result<u64, QueryError> {
+    if value == 0 {
+        return Err(invalid_request(format!("{path} must be greater than zero")));
+    }
+    Ok(value)
+}
+
+fn invalid_request(message: impl Into<String>) -> QueryError {
+    QueryError::new(QueryErrorCode::InvalidRequest, message, worker_target())
 }
 
 pub fn runtime_sku() -> BrowserRuntimeSku {
@@ -525,16 +659,61 @@ pub fn artifact_report() -> Result<BrowserWorkerArtifactReport, QueryError> {
 
 fn success_response(
     request_id: impl Into<String>,
-    result: BrowserSessionQueryResult,
+    mut result: BrowserSessionQueryResult,
+    delivery: BrowserWorkerSqlDelivery,
+    arrow_ipc_chunk_count: Option<u64>,
 ) -> BrowserWorkerResponseEnvelope {
-    BrowserWorkerResponseEnvelope::success(
-        request_id,
-        result.response,
-        ArrowIpcResultEnvelope::new(
-            ArrowIpcFormat::Stream,
-            result.runtime_result.ipc_bytes.to_vec(),
-        ),
-    )
+    let result_envelope = match delivery {
+        BrowserWorkerSqlDelivery::SingleBuffer => {
+            let chunk_count = if result.runtime_result.encoded_bytes == 0 {
+                0
+            } else {
+                1
+            };
+            result.response.metrics.arrow_ipc_chunk_count = Some(chunk_count);
+            ArrowIpcResultEnvelope::from_bytes(
+                ArrowIpcFormat::Stream,
+                result.runtime_result.ipc_bytes,
+            )
+        }
+        BrowserWorkerSqlDelivery::ChunkedBuffers => {
+            let chunk_count = arrow_ipc_chunk_count.unwrap_or(0);
+            result.response.metrics.arrow_ipc_chunk_count = Some(chunk_count);
+            ArrowIpcResultEnvelope::chunked(
+                ArrowIpcFormat::Stream,
+                result.runtime_result.encoded_bytes,
+                chunk_count,
+            )
+            .expect("worker-generated Arrow IPC chunk metadata should be valid")
+        }
+    };
+
+    BrowserWorkerResponseEnvelope::success(request_id, result.response, result_envelope)
+}
+
+fn emit_arrow_ipc_chunks<F>(
+    emit_event: &mut F,
+    context: &BrowserWorkerEventContext,
+    request_id: &str,
+    bytes: &[u8],
+) -> u64
+where
+    F: FnMut(BrowserWorkerEventEnvelope),
+{
+    let mut chunk_count = 0_u64;
+    let mut byte_offset = 0_u64;
+    for chunk in bytes.chunks(DEFAULT_ARROW_IPC_CHUNK_BYTES) {
+        emit_event(BrowserWorkerEventEnvelope::arrow_ipc_chunk(
+            context.clone(),
+            request_id,
+            chunk_count,
+            byte_offset,
+            chunk.to_vec(),
+        ));
+        chunk_count = chunk_count.saturating_add(1);
+        byte_offset = byte_offset.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+    }
+    chunk_count
 }
 
 fn emit_cache_metrics<F>(
@@ -627,6 +806,13 @@ fn emit_open_bootstrap_metrics<F>(
             rows_emitted,
             snapshot_bootstrap_duration_ms: snapshot.snapshot_bootstrap_duration_ms(),
             access_mode: snapshot.access_mode(),
+            arrow_ipc_bytes: None,
+            arrow_ipc_chunk_count: None,
+            preview_rows: None,
+            preview_string_bytes: None,
+            planning_duration_ms: None,
+            arrow_ipc_encode_duration_ms: None,
+            preview_duration_ms: None,
         },
     ));
 }

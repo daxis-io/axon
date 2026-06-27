@@ -1,6 +1,9 @@
 export const PREFERRED_TARGET: ExecutionTarget = 'browser_wasm';
 export const ARROW_IPC_STREAM_CONTENT_TYPE = 'application/vnd.apache.arrow.stream';
 export const ARROW_IPC_FILE_CONTENT_TYPE = 'application/vnd.apache.arrow.file';
+export const BROWSER_SAFE_RESULT_ROW_LIMIT = 501;
+export const BROWSER_SAFE_ARROW_IPC_BYTES = 8 * 1024 * 1024;
+export const BROWSER_SAFE_PREVIEW_STRING_BYTES = 256 * 1024;
 
 export function redactUrlSecrets(message: string): string {
   return redactCredentialSecrets(
@@ -86,6 +89,7 @@ export type QueryExecutionOptions = {
 export type QueryRuntimeLimits = {
   max_result_rows?: number;
   max_arrow_ipc_bytes?: number;
+  max_preview_string_bytes?: number;
   max_scan_bytes?: number;
 };
 
@@ -648,6 +652,13 @@ export type QueryMetricsSummary = {
   rows_emitted?: number;
   snapshot_bootstrap_duration_ms?: number;
   access_mode?: BrowserAccessMode;
+  arrow_ipc_bytes?: number;
+  arrow_ipc_chunk_count?: number;
+  preview_rows?: number;
+  preview_string_bytes?: number;
+  planning_duration_ms?: number;
+  arrow_ipc_encode_duration_ms?: number;
+  preview_duration_ms?: number;
 };
 
 export type QueryResponse = {
@@ -659,6 +670,7 @@ export type QueryResponse = {
 };
 
 export type BrowserWorkerSqlOutput = 'arrow_ipc_stream';
+export type BrowserWorkerSqlDelivery = 'single_buffer' | 'chunked_buffers';
 
 export type BrowserWorkerOpenTableCommand = {
   request_id: string;
@@ -689,6 +701,8 @@ export type BrowserWorkerSqlCommand = {
   name: string;
   query: QueryRequest;
   output?: BrowserWorkerSqlOutput;
+  delivery?: BrowserWorkerSqlDelivery;
+  browser_safe_defaults?: boolean;
 };
 
 // Internal worker control message only. It is fire-and-forget and has no response envelope.
@@ -712,17 +726,24 @@ export type BrowserWorkerCommand =
   | { dispose: BrowserWorkerDisposeCommand };
 
 export type ArrowIpcFormat = 'stream' | 'file';
+export type ArrowIpcDelivery = 'single_buffer' | 'chunked_buffers';
 
 export type WireArrowIpcResult = {
   format: ArrowIpcFormat;
   content_type: string;
-  bytes: number[] | ArrayBuffer | Uint8Array;
+  delivery?: ArrowIpcDelivery;
+  bytes?: number[] | ArrayBuffer | Uint8Array;
+  byte_length?: number;
+  chunk_count?: number;
 };
 
 export type ArrowIpcResult = {
   format: ArrowIpcFormat;
   content_type: string;
+  delivery: ArrowIpcDelivery;
   bytes: Uint8Array;
+  byte_length: number;
+  chunk_count: number;
 };
 
 export type BrowserWorkerOpenedEnvelope = {
@@ -904,6 +925,13 @@ export type BrowserWorkerRangeReadMetricsEvent = {
   rows_emitted: number;
   snapshot_bootstrap_duration_ms?: number;
   access_mode?: BrowserAccessMode;
+  arrow_ipc_bytes?: number;
+  arrow_ipc_chunk_count?: number;
+  preview_rows?: number;
+  preview_string_bytes?: number;
+  planning_duration_ms?: number;
+  arrow_ipc_encode_duration_ms?: number;
+  preview_duration_ms?: number;
 };
 
 export type BrowserWorkerTransportCacheMetrics = {
@@ -935,6 +963,15 @@ export type BrowserWorkerTerminalErrorEvent = {
   error: QueryError;
 };
 
+export type BrowserWorkerArrowIpcChunkEvent = {
+  context: BrowserWorkerEventContext;
+  request_id: string;
+  sequence: number;
+  byte_offset: number;
+  byte_length: number;
+  bytes: Uint8Array;
+};
+
 export type BrowserWorkerEventEnvelope =
   | { progress: BrowserWorkerProgressEvent }
   | { log: BrowserWorkerLogEvent }
@@ -942,7 +979,8 @@ export type BrowserWorkerEventEnvelope =
   | { cache_metrics: BrowserWorkerCacheMetricsEvent }
   | { fallback: BrowserWorkerFallbackEvent }
   | { cancellation: BrowserWorkerCancellationEvent }
-  | { terminal_error: BrowserWorkerTerminalErrorEvent };
+  | { terminal_error: BrowserWorkerTerminalErrorEvent }
+  | { arrow_ipc_chunk: BrowserWorkerArrowIpcChunkEvent };
 
 export type WireBrowserWorkerMessageEnvelope =
   | WireBrowserWorkerResponseEnvelope
@@ -1115,6 +1153,13 @@ type PendingRequest = {
   expected: 'opened' | 'success' | 'parquet_inspection' | 'disposed';
   resolve: (response: BrowserWorkerResponseEnvelope) => void;
   reject: (error: Error) => void;
+  arrowIpcChunks?: PendingArrowIpcChunks;
+};
+
+type PendingArrowIpcChunks = {
+  chunks: Uint8Array[];
+  nextSequence: number;
+  nextByteOffset: number;
 };
 
 type OpenedTableMetadata = {
@@ -1281,6 +1326,8 @@ export function queryCommand(
       name,
       query: request,
       output: 'arrow_ipc_stream',
+      delivery: 'chunked_buffers',
+      browser_safe_defaults: true,
     },
   };
 }
@@ -1338,6 +1385,82 @@ export function createQueryRequest(
   }
 
   return request;
+}
+
+function queryRequestWithBrowserSafeDefaults(request: QueryRequest): QueryRequest {
+  const options: QueryExecutionOptions = {
+    include_explain: false,
+    collect_metrics: true,
+    ...(request.options ?? {}),
+  };
+  const resultPage = browserSafeResultPage(options.result_page);
+  const runtimeLimits = browserSafeRuntimeLimits(options.runtime_limits);
+
+  return {
+    ...request,
+    options: {
+      ...options,
+      result_page: resultPage,
+      runtime_limits: runtimeLimits,
+    },
+  };
+}
+
+function browserSafeResultPage(page: QueryResultPageRequest | undefined): QueryResultPageRequest {
+  if (!page) {
+    return {
+      limit: BROWSER_SAFE_RESULT_ROW_LIMIT,
+      offset: 0,
+    };
+  }
+  const limit = requiredPositiveInteger(page.limit, 'result_page.limit');
+  if (limit > BROWSER_SAFE_RESULT_ROW_LIMIT) {
+    throw new AxonSdkError(
+      `result_page.limit ${limit} exceeds browser-safe maximum ${BROWSER_SAFE_RESULT_ROW_LIMIT}`,
+    );
+  }
+
+  return {
+    limit,
+    offset: requiredNonNegativeInteger(page.offset, 'result_page.offset'),
+  };
+}
+
+function browserSafeRuntimeLimits(limits: QueryRuntimeLimits | undefined): QueryRuntimeLimits {
+  const runtimeLimits = limits ?? {};
+  const maxResultRows = browserSafeOptionalLimit(
+    runtimeLimits.max_result_rows,
+    BROWSER_SAFE_RESULT_ROW_LIMIT,
+    'runtime_limits.max_result_rows',
+  );
+  const maxArrowIpcBytes = browserSafeOptionalLimit(
+    runtimeLimits.max_arrow_ipc_bytes,
+    BROWSER_SAFE_ARROW_IPC_BYTES,
+    'runtime_limits.max_arrow_ipc_bytes',
+  );
+  const maxPreviewStringBytes = browserSafeOptionalLimit(
+    runtimeLimits.max_preview_string_bytes,
+    BROWSER_SAFE_PREVIEW_STRING_BYTES,
+    'runtime_limits.max_preview_string_bytes',
+  );
+
+  return {
+    ...runtimeLimits,
+    max_result_rows: maxResultRows,
+    max_arrow_ipc_bytes: maxArrowIpcBytes,
+    max_preview_string_bytes: maxPreviewStringBytes,
+  };
+}
+
+function browserSafeOptionalLimit(value: number | undefined, max: number, path: string): number {
+  if (value === undefined) {
+    return max;
+  }
+  const limit = requiredPositiveInteger(value, path);
+  if (limit > max) {
+    throw new AxonSdkError(`${path} ${limit} exceeds browser-safe maximum ${max}`);
+  }
+  return limit;
 }
 
 export function parseReadAccessPlan(value: unknown): ReadAccessPlan {
@@ -3469,11 +3592,68 @@ export function normalizeArrowIpcResult(result: WireArrowIpcResult): ArrowIpcRes
       `Arrow IPC content type '${result.content_type}' does not match expected content type '${expectedContentType}' for format '${result.format}'`,
     );
   }
+  const delivery = result.delivery ?? 'single_buffer';
+  if (delivery !== 'single_buffer' && delivery !== 'chunked_buffers') {
+    throw new AxonProtocolError(`unknown Arrow IPC delivery '${String(delivery)}'`);
+  }
+
+  if (delivery === 'single_buffer') {
+    if (result.bytes === undefined) {
+      throw new AxonProtocolError('single_buffer Arrow IPC result requires bytes');
+    }
+    const bytes = normalizeBytes(result.bytes);
+    const byteLength =
+      result.byte_length === undefined
+        ? bytes.byteLength
+        : requiredNonNegativeInteger(result.byte_length, 'success.result.byte_length');
+    if (byteLength !== bytes.byteLength) {
+      throw new AxonProtocolError(
+        `single_buffer Arrow IPC byte_length ${byteLength} did not match bytes length ${bytes.byteLength}`,
+      );
+    }
+    const chunkCount =
+      result.chunk_count === undefined
+        ? bytes.byteLength === 0
+          ? 0
+          : 1
+        : requiredNonNegativeInteger(result.chunk_count, 'success.result.chunk_count');
+    if (chunkCount > 1) {
+      throw new AxonProtocolError('single_buffer Arrow IPC chunk_count must be 0 or 1');
+    }
+
+    return {
+      format: result.format,
+      content_type: result.content_type,
+      delivery,
+      bytes,
+      byte_length: byteLength,
+      chunk_count: chunkCount,
+    };
+  }
+
+  if (result.bytes !== undefined) {
+    throw new AxonProtocolError('chunked_buffers Arrow IPC result must not include final bytes');
+  }
+  const byteLength = requiredNonNegativeInteger(result.byte_length, 'success.result.byte_length');
+  const chunkCount = requiredNonNegativeInteger(result.chunk_count, 'success.result.chunk_count');
+  if (byteLength === 0 && chunkCount !== 0) {
+    throw new AxonProtocolError(
+      'chunked_buffers Arrow IPC result with zero byte_length requires chunk_count 0',
+    );
+  }
+  if (byteLength > 0 && chunkCount === 0) {
+    throw new AxonProtocolError(
+      'chunked_buffers Arrow IPC result with non-zero byte_length requires chunk_count > 0',
+    );
+  }
 
   return {
     format: result.format,
     content_type: result.content_type,
-    bytes: normalizeBytes(result.bytes),
+    delivery,
+    bytes: new Uint8Array(0),
+    byte_length: byteLength,
+    chunk_count: chunkCount,
   };
 }
 
@@ -3483,6 +3663,7 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
   private readonly onEvent?: BrowserWorkerEventHandler;
   private readonly pending = new Map<string, PendingRequest>();
   private readonly tables = new Map<string, OpenedTableMetadata>();
+  private readonly completedRequests = new Set<string>();
   private terminated = false;
 
   private readonly handleWorkerMessage = (event: MessageEvent<unknown>): void => {
@@ -3495,7 +3676,14 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
     }
 
     if (message.kind === 'event') {
-      this.onEvent?.(message.event);
+      try {
+        if ('arrow_ipc_chunk' in message.event) {
+          this.handleArrowIpcChunk(message.event.arrow_ipc_chunk);
+        }
+        this.onEvent?.(message.event);
+      } catch (error) {
+        this.rejectAll(toError(error));
+      }
       return;
     }
 
@@ -3506,14 +3694,16 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
       return;
     }
 
-    this.pending.delete(requestId);
-
     if ('error' in response) {
+      this.pending.delete(requestId);
+      this.rememberCompletedRequest(requestId);
       pending.reject(new AxonWorkerError(response.error));
       return;
     }
 
     if (!(pending.expected in response)) {
+      this.pending.delete(requestId);
+      this.rememberCompletedRequest(requestId);
       pending.reject(
         new AxonProtocolError(
           `worker response for request '${requestId}' did not match expected '${pending.expected}' envelope`,
@@ -3522,6 +3712,19 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
       return;
     }
 
+    if ('success' in response) {
+      try {
+        this.finalizeArrowIpcSuccess(requestId, response.success, pending);
+      } catch (error) {
+        this.pending.delete(requestId);
+        this.rememberCompletedRequest(requestId);
+        pending.reject(toError(error));
+        return;
+      }
+    }
+
+    this.pending.delete(requestId);
+    this.rememberCompletedRequest(requestId);
     pending.resolve(response);
   };
 
@@ -3780,7 +3983,10 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
     const requestId = options.requestId ?? this.requestId();
     const queryRequest =
       typeof request === 'string' ? this.queryRequestFromSql(name, request, options) : request;
-    const response = await this.send(queryCommand(requestId, name, queryRequest), 'success');
+    const response = await this.send(
+      queryCommand(requestId, name, queryRequestWithBrowserSafeDefaults(queryRequest)),
+      'success',
+    );
     if (!('success' in response)) {
       throw new AxonProtocolError(
         `worker response for request '${requestId}' did not contain a success envelope`,
@@ -3884,7 +4090,122 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
   private rejectAll(error: Error): void {
     for (const [requestId, pending] of this.pending) {
       this.pending.delete(requestId);
+      this.rememberCompletedRequest(requestId);
       pending.reject(error);
+    }
+  }
+
+  private handleArrowIpcChunk(chunk: BrowserWorkerArrowIpcChunkEvent): void {
+    if (this.completedRequests.has(chunk.request_id)) {
+      throw new AxonProtocolError(
+        `received Arrow IPC chunk after request '${chunk.request_id}' completed`,
+      );
+    }
+    const pending = this.pending.get(chunk.request_id);
+    if (!pending) {
+      throw new AxonProtocolError(`unknown Arrow IPC chunk request '${chunk.request_id}'`);
+    }
+    if (pending.expected !== 'success') {
+      throw new AxonProtocolError(
+        `Arrow IPC chunks are only valid for success requests, got '${pending.expected}'`,
+      );
+    }
+    if (chunk.bytes.byteLength !== chunk.byte_length) {
+      throw new AxonProtocolError(
+        `Arrow IPC chunk byte_length ${chunk.byte_length} did not match bytes length ${chunk.bytes.byteLength}`,
+      );
+    }
+
+    const chunks =
+      pending.arrowIpcChunks ??
+      (pending.arrowIpcChunks = {
+        chunks: [],
+        nextSequence: 0,
+        nextByteOffset: 0,
+      });
+    if (chunk.sequence < chunks.nextSequence) {
+      throw new AxonProtocolError(`duplicate Arrow IPC chunk sequence ${chunk.sequence}`);
+    }
+    if (chunk.sequence !== chunks.nextSequence) {
+      throw new AxonProtocolError(
+        `expected Arrow IPC chunk sequence ${chunks.nextSequence}, got ${chunk.sequence}`,
+      );
+    }
+    if (chunk.byte_offset !== chunks.nextByteOffset) {
+      throw new AxonProtocolError(
+        `expected Arrow IPC chunk byte_offset ${chunks.nextByteOffset}, got ${chunk.byte_offset}`,
+      );
+    }
+
+    chunks.chunks.push(chunk.bytes);
+    chunks.nextSequence += 1;
+    chunks.nextByteOffset += chunk.byte_length;
+  }
+
+  private finalizeArrowIpcSuccess(
+    requestId: string,
+    success: BrowserWorkerSuccessEnvelope,
+    pending: PendingRequest,
+  ): void {
+    if (success.result.delivery === 'single_buffer') {
+      if (pending.arrowIpcChunks && pending.arrowIpcChunks.nextSequence > 0) {
+        throw new AxonProtocolError(
+          `single_buffer Arrow IPC success for request '${requestId}' followed chunk events`,
+        );
+      }
+      return;
+    }
+
+    if (success.result.byte_length === 0 && success.result.chunk_count === 0) {
+      success.result.bytes = new Uint8Array(0);
+      return;
+    }
+
+    const chunks = pending.arrowIpcChunks;
+    if (!chunks || chunks.nextSequence === 0) {
+      throw new AxonProtocolError(`missing Arrow IPC chunks for request '${requestId}'`);
+    }
+    if (
+      chunks.nextByteOffset === success.result.byte_length &&
+      chunks.nextSequence !== success.result.chunk_count
+    ) {
+      throw new AxonProtocolError(
+        `Arrow IPC chunk count mismatch for request '${requestId}': got ${chunks.nextSequence}, expected ${success.result.chunk_count}`,
+      );
+    }
+    if (chunks.nextSequence < success.result.chunk_count) {
+      throw new AxonProtocolError(
+        `missing Arrow IPC chunks for request '${requestId}': got ${chunks.nextSequence}, expected ${success.result.chunk_count}`,
+      );
+    }
+    if (chunks.nextSequence !== success.result.chunk_count) {
+      throw new AxonProtocolError(
+        `Arrow IPC chunk count mismatch for request '${requestId}': got ${chunks.nextSequence}, expected ${success.result.chunk_count}`,
+      );
+    }
+    if (chunks.nextByteOffset !== success.result.byte_length) {
+      throw new AxonProtocolError(
+        `Arrow IPC byte length mismatch for request '${requestId}': got ${chunks.nextByteOffset}, expected ${success.result.byte_length}`,
+      );
+    }
+
+    const bytes = new Uint8Array(success.result.byte_length);
+    let offset = 0;
+    for (const chunk of chunks.chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    success.result.bytes = bytes;
+  }
+
+  private rememberCompletedRequest(requestId: string): void {
+    this.completedRequests.add(requestId);
+    if (this.completedRequests.size <= 128) {
+      return;
+    }
+    const oldest = this.completedRequests.values().next().value;
+    if (typeof oldest === 'string') {
+      this.completedRequests.delete(oldest);
     }
   }
 }
@@ -4159,6 +4480,31 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
             'range_read_metrics.access_mode',
             BROWSER_ACCESS_MODES,
           ),
+          arrow_ipc_bytes: optionalNumber(
+            payload.arrow_ipc_bytes,
+            'range_read_metrics.arrow_ipc_bytes',
+          ),
+          arrow_ipc_chunk_count: optionalNumber(
+            payload.arrow_ipc_chunk_count,
+            'range_read_metrics.arrow_ipc_chunk_count',
+          ),
+          preview_rows: optionalNumber(payload.preview_rows, 'range_read_metrics.preview_rows'),
+          preview_string_bytes: optionalNumber(
+            payload.preview_string_bytes,
+            'range_read_metrics.preview_string_bytes',
+          ),
+          planning_duration_ms: optionalNumber(
+            payload.planning_duration_ms,
+            'range_read_metrics.planning_duration_ms',
+          ),
+          arrow_ipc_encode_duration_ms: optionalNumber(
+            payload.arrow_ipc_encode_duration_ms,
+            'range_read_metrics.arrow_ipc_encode_duration_ms',
+          ),
+          preview_duration_ms: optionalNumber(
+            payload.preview_duration_ms,
+            'range_read_metrics.preview_duration_ms',
+          ),
         },
       };
     case 'cache_metrics':
@@ -4199,6 +4545,23 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
         terminal_error: {
           context: normalizeWorkerEventContext(payload.context, 'terminal_error.context'),
           error: normalizeQueryError(payload.error, 'terminal_error.error'),
+        },
+      };
+    case 'arrow_ipc_chunk':
+      return {
+        arrow_ipc_chunk: {
+          context: normalizeWorkerEventContext(payload.context, 'arrow_ipc_chunk.context'),
+          request_id: requiredString(payload.request_id, 'arrow_ipc_chunk.request_id'),
+          sequence: requiredNonNegativeInteger(payload.sequence, 'arrow_ipc_chunk.sequence'),
+          byte_offset: requiredNonNegativeInteger(
+            payload.byte_offset,
+            'arrow_ipc_chunk.byte_offset',
+          ),
+          byte_length: requiredNonNegativeInteger(
+            payload.byte_length,
+            'arrow_ipc_chunk.byte_length',
+          ),
+          bytes: normalizeBytes(payload.bytes as number[] | ArrayBuffer | Uint8Array),
         },
       };
   }
@@ -4535,6 +4898,15 @@ function requiredNonNegativeInteger(value: unknown, path: string): number {
   return number;
 }
 
+function requiredPositiveInteger(value: unknown, path: string): number {
+  const number = requiredNumber(value, path);
+  if (!Number.isInteger(number) || number <= 0) {
+    throw new AxonProtocolError(`${path} must be a positive integer`);
+  }
+
+  return number;
+}
+
 function optionalNonNegativeInteger(value: unknown, path: string): number | undefined {
   if (value === undefined) {
     return undefined;
@@ -4741,6 +5113,7 @@ const WORKER_EVENT_TAGS = [
   'fallback',
   'cancellation',
   'terminal_error',
+  'arrow_ipc_chunk',
 ] as const;
 const WORKER_ENVELOPE_TAGS = [...WORKER_RESPONSE_TAGS, ...WORKER_EVENT_TAGS] as const;
 

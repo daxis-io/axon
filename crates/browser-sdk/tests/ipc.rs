@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 
 use browser_sdk::{
-    ArrowIpcFormat, ArrowIpcResultEnvelope, BrowserWorkerCommand, BrowserWorkerEventContext,
-    BrowserWorkerEventEnvelope, BrowserWorkerEventPhase, BrowserWorkerLogLevel,
-    BrowserWorkerProgressStage, BrowserWorkerResponseEnvelope, BrowserWorkerSqlOutput,
-    BrowserWorkerTransportCacheMetrics,
+    ArrowIpcDelivery, ArrowIpcFormat, ArrowIpcResultEnvelope, BrowserWorkerCommand,
+    BrowserWorkerEventContext, BrowserWorkerEventEnvelope, BrowserWorkerEventPhase,
+    BrowserWorkerLogLevel, BrowserWorkerProgressStage, BrowserWorkerResponseEnvelope,
+    BrowserWorkerSqlDelivery, BrowserWorkerSqlOutput, BrowserWorkerTransportCacheMetrics,
 };
+use bytes::Bytes;
 use query_contract::{
     BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpParquetDatasetDescriptor,
     BrowserHttpSnapshotDescriptor, CapabilityKey, CapabilityReport, CapabilityState,
@@ -124,6 +125,68 @@ fn browser_sdk_round_trips_open_delta_table_and_arrow_ipc_sql_output() {
 }
 
 #[test]
+fn browser_sdk_round_trips_chunked_sql_delivery_and_browser_safe_defaults() {
+    let snapshot = sample_snapshot_descriptor();
+    let mut sql = BrowserWorkerCommand::sql(
+        "req-sql-chunked",
+        "events",
+        QueryRequest::new(
+            snapshot.table_uri.clone(),
+            "select count(*) as rows from events",
+            ExecutionTarget::BrowserWasm,
+        ),
+    );
+    match &mut sql {
+        BrowserWorkerCommand::Sql(command) => {
+            command.delivery = BrowserWorkerSqlDelivery::ChunkedBuffers;
+            command.browser_safe_defaults = true;
+        }
+        _ => panic!("expected sql command"),
+    }
+
+    let serialized_sql = serde_json::to_value(&sql).expect("sql serializes");
+    assert_eq!(
+        serialized_sql["sql"]["delivery"],
+        serde_json::json!("chunked_buffers")
+    );
+    assert_eq!(
+        serialized_sql["sql"]["browser_safe_defaults"],
+        serde_json::json!(true)
+    );
+
+    let round_tripped_sql: BrowserWorkerCommand =
+        serde_json::from_value(serialized_sql).expect("sql deserializes");
+    match round_tripped_sql {
+        BrowserWorkerCommand::Sql(command) => {
+            assert_eq!(command.delivery, BrowserWorkerSqlDelivery::ChunkedBuffers);
+            assert!(command.browser_safe_defaults);
+        }
+        _ => panic!("expected sql command"),
+    }
+
+    let legacy_sql: BrowserWorkerCommand = serde_json::from_value(serde_json::json!({
+        "sql": {
+            "request_id": "req-legacy-sql",
+            "name": "events",
+            "query": {
+                "table_uri": snapshot.table_uri,
+                "sql": "select 1 from events",
+                "preferred_target": "browser_wasm"
+            },
+            "output": "arrow_ipc_stream"
+        }
+    }))
+    .expect("legacy sql command deserializes");
+    match legacy_sql {
+        BrowserWorkerCommand::Sql(command) => {
+            assert_eq!(command.delivery, BrowserWorkerSqlDelivery::SingleBuffer);
+            assert!(!command.browser_safe_defaults);
+        }
+        _ => panic!("expected sql command"),
+    }
+}
+
+#[test]
 fn browser_sdk_round_trips_open_parquet_dataset_command() {
     let dataset = sample_parquet_dataset_descriptor();
     let open_parquet_dataset =
@@ -227,11 +290,105 @@ fn browser_sdk_exposes_arrow_ipc_result_envelope() {
     let success = round_tripped.success_envelope().expect("success envelope");
     assert_eq!(success.request_id, "req-1");
     assert_eq!(success.result.format, ArrowIpcFormat::Stream);
+    assert_eq!(success.result.delivery, ArrowIpcDelivery::SingleBuffer);
     assert_eq!(
         success.result.content_type,
         "application/vnd.apache.arrow.stream"
     );
-    assert_eq!(success.result.bytes, vec![0xff, 0xff, 0x00, 0x01]);
+    assert_eq!(
+        success.result.bytes.as_deref(),
+        Some(&[0xff, 0xff, 0x00, 0x01][..])
+    );
+    assert_eq!(success.result.byte_length, 4);
+}
+
+#[test]
+fn browser_sdk_preserves_owned_arrow_ipc_bytes_without_recopying() {
+    let bytes = Bytes::from_static(&[0xff, 0xff, 0x00, 0x01]);
+    let original_ptr = bytes.as_ptr();
+
+    let result = ArrowIpcResultEnvelope::from_bytes(ArrowIpcFormat::Stream, bytes);
+
+    let result_bytes = result.bytes.as_ref().expect("single-buffer bytes");
+    assert_eq!(result_bytes.as_ptr(), original_ptr);
+    assert_eq!(result_bytes.as_ref(), &[0xff, 0xff, 0x00, 0x01]);
+    assert_eq!(result.byte_length, 4);
+    assert_eq!(result.chunk_count, 1);
+}
+
+#[test]
+fn browser_sdk_round_trips_arrow_ipc_chunk_events_and_chunked_result_metadata() {
+    let context = BrowserWorkerEventContext::query("req-chunked", "events");
+    let event =
+        BrowserWorkerEventEnvelope::arrow_ipc_chunk(context, "req-chunked", 1, 3, vec![4, 5]);
+    let serialized = serde_json::to_value(&event).expect("chunk event serializes");
+    assert_eq!(serialized["arrow_ipc_chunk"]["request_id"], "req-chunked");
+    assert_eq!(serialized["arrow_ipc_chunk"]["sequence"], 1);
+    assert_eq!(serialized["arrow_ipc_chunk"]["byte_offset"], 3);
+    assert_eq!(serialized["arrow_ipc_chunk"]["byte_length"], 2);
+    assert_eq!(
+        serialized["arrow_ipc_chunk"]["bytes"],
+        serde_json::json!([4, 5])
+    );
+
+    let round_tripped: BrowserWorkerEventEnvelope =
+        serde_json::from_value(serialized).expect("chunk event deserializes");
+    match round_tripped {
+        BrowserWorkerEventEnvelope::ArrowIpcChunk(chunk) => {
+            assert_eq!(chunk.request_id, "req-chunked");
+            assert_eq!(chunk.sequence, 1);
+            assert_eq!(chunk.byte_offset, 3);
+            assert_eq!(chunk.byte_length, 2);
+            assert_eq!(chunk.bytes, vec![4, 5]);
+        }
+        _ => panic!("expected arrow_ipc_chunk event"),
+    }
+
+    let result = ArrowIpcResultEnvelope::chunked(ArrowIpcFormat::Stream, 5, 2)
+        .expect("chunked result metadata should be valid");
+    let serialized_result = serde_json::to_value(&result).expect("chunked result serializes");
+    assert_eq!(
+        serialized_result["delivery"],
+        serde_json::json!("chunked_buffers")
+    );
+    assert_eq!(serialized_result["byte_length"], serde_json::json!(5));
+    assert_eq!(serialized_result["chunk_count"], serde_json::json!(2));
+    assert!(serialized_result.get("bytes").is_none());
+
+    let round_tripped_result: ArrowIpcResultEnvelope =
+        serde_json::from_value(serialized_result).expect("chunked result deserializes");
+    assert_eq!(
+        round_tripped_result.delivery,
+        ArrowIpcDelivery::ChunkedBuffers
+    );
+    assert_eq!(round_tripped_result.bytes, None);
+    assert_eq!(round_tripped_result.byte_length, 5);
+    assert_eq!(round_tripped_result.chunk_count, 2);
+}
+
+#[test]
+fn browser_sdk_rejects_invalid_arrow_ipc_result_invariants() {
+    serde_json::from_value::<ArrowIpcResultEnvelope>(serde_json::json!({
+        "format": "stream",
+        "content_type": "application/vnd.apache.arrow.stream",
+        "delivery": "single_buffer",
+        "byte_length": 4,
+        "chunk_count": 1
+    }))
+    .expect_err("single_buffer delivery requires final bytes");
+
+    serde_json::from_value::<ArrowIpcResultEnvelope>(serde_json::json!({
+        "format": "stream",
+        "content_type": "application/vnd.apache.arrow.stream",
+        "delivery": "chunked_buffers",
+        "byte_length": 4,
+        "chunk_count": 1,
+        "bytes": [1, 2, 3, 4]
+    }))
+    .expect_err("chunked_buffers delivery must not duplicate final bytes");
+
+    ArrowIpcResultEnvelope::chunked(ArrowIpcFormat::Stream, 4, 0)
+        .expect_err("non-empty chunked payload requires at least one chunk");
 }
 
 fn sample_parquet_inspection() -> ParquetInspectionSummary {
@@ -385,6 +542,13 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
                 rows_emitted: 3,
                 snapshot_bootstrap_duration_ms: Some(6),
                 access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
+                arrow_ipc_bytes: Some(4),
+                arrow_ipc_chunk_count: Some(1),
+                preview_rows: Some(3),
+                preview_string_bytes: Some(12),
+                planning_duration_ms: Some(2),
+                arrow_ipc_encode_duration_ms: Some(1),
+                preview_duration_ms: Some(1),
             },
             explain: None,
         },
@@ -471,6 +635,13 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             rows_emitted: 25,
             snapshot_bootstrap_duration_ms: Some(7),
             access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
+            arrow_ipc_bytes: Some(1024),
+            arrow_ipc_chunk_count: Some(4),
+            preview_rows: Some(25),
+            preview_string_bytes: Some(128),
+            planning_duration_ms: Some(2),
+            arrow_ipc_encode_duration_ms: Some(3),
+            preview_duration_ms: Some(1),
         },
     );
 
@@ -829,6 +1000,13 @@ fn sample_query_response(
             rows_emitted: 1,
             snapshot_bootstrap_duration_ms: None,
             access_mode: None,
+            arrow_ipc_bytes: None,
+            arrow_ipc_chunk_count: None,
+            preview_rows: None,
+            preview_string_bytes: None,
+            planning_duration_ms: None,
+            arrow_ipc_encode_duration_ms: None,
+            preview_duration_ms: None,
         },
         explain: None,
     }

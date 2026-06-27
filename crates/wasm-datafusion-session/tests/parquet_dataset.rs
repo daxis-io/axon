@@ -368,6 +368,7 @@ fn session_runtime_limit_changes_reuse_immutable_prepared_state() {
             runtime_limits: Some(QueryRuntimeLimits {
                 max_result_rows: Some(10),
                 max_arrow_ipc_bytes: None,
+                max_preview_string_bytes: None,
                 max_scan_bytes: None,
             }),
             ..QueryExecutionOptions::default()

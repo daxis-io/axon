@@ -1,5 +1,6 @@
 //! Public browser SDK contracts for worker-hosted query execution.
 
+use bytes::Bytes;
 use query_contract::{
     BrowserAccessMode, BrowserHttpParquetDatasetDescriptor, BrowserHttpSnapshotDescriptor,
     ExecutionTarget, FallbackReason, ParquetInspectionSummary, QueryError, QueryMetricsSummary,
@@ -63,6 +64,22 @@ impl Default for BrowserWorkerSqlOutput {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserWorkerSqlDelivery {
+    #[default]
+    SingleBuffer,
+    ChunkedBuffers,
+}
+
+const fn is_single_buffer_sql_delivery(delivery: &BrowserWorkerSqlDelivery) -> bool {
+    matches!(delivery, BrowserWorkerSqlDelivery::SingleBuffer)
+}
+
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrowserWorkerSqlCommand {
@@ -72,6 +89,10 @@ pub struct BrowserWorkerSqlCommand {
     pub request: QueryRequest,
     #[serde(default)]
     pub output: BrowserWorkerSqlOutput,
+    #[serde(default, skip_serializing_if = "is_single_buffer_sql_delivery")]
+    pub delivery: BrowserWorkerSqlDelivery,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub browser_safe_defaults: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -139,6 +160,8 @@ impl BrowserWorkerCommand {
             name: name.into(),
             request,
             output: BrowserWorkerSqlOutput::ArrowIpcStream,
+            delivery: BrowserWorkerSqlDelivery::SingleBuffer,
+            browser_safe_defaults: false,
         })
     }
 
@@ -342,6 +365,20 @@ pub struct BrowserWorkerRangeReadMetricsEvent {
     pub snapshot_bootstrap_duration_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_mode: Option<BrowserAccessMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrow_ipc_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrow_ipc_chunk_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_rows: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_string_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planning_duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrow_ipc_encode_duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_duration_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -385,6 +422,17 @@ pub struct BrowserWorkerTerminalErrorEvent {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserWorkerArrowIpcChunkEvent {
+    pub context: BrowserWorkerEventContext,
+    pub request_id: String,
+    pub sequence: u64,
+    pub byte_offset: u64,
+    pub byte_length: u64,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrowserWorkerEventEnvelope {
     Progress(BrowserWorkerProgressEvent),
@@ -394,6 +442,7 @@ pub enum BrowserWorkerEventEnvelope {
     Fallback(BrowserWorkerFallbackEvent),
     Cancellation(BrowserWorkerCancellationEvent),
     TerminalError(BrowserWorkerTerminalErrorEvent),
+    ArrowIpcChunk(BrowserWorkerArrowIpcChunkEvent),
 }
 
 impl BrowserWorkerEventEnvelope {
@@ -452,6 +501,13 @@ impl BrowserWorkerEventEnvelope {
             rows_emitted: metrics.rows_emitted,
             snapshot_bootstrap_duration_ms: metrics.snapshot_bootstrap_duration_ms,
             access_mode: metrics.access_mode,
+            arrow_ipc_bytes: metrics.arrow_ipc_bytes,
+            arrow_ipc_chunk_count: metrics.arrow_ipc_chunk_count,
+            preview_rows: metrics.preview_rows,
+            preview_string_bytes: metrics.preview_string_bytes,
+            planning_duration_ms: metrics.planning_duration_ms,
+            arrow_ipc_encode_duration_ms: metrics.arrow_ipc_encode_duration_ms,
+            preview_duration_ms: metrics.preview_duration_ms,
         })
     }
 
@@ -483,6 +539,24 @@ impl BrowserWorkerEventEnvelope {
         Self::TerminalError(BrowserWorkerTerminalErrorEvent { context, error })
     }
 
+    pub fn arrow_ipc_chunk(
+        context: BrowserWorkerEventContext,
+        request_id: impl Into<String>,
+        sequence: u64,
+        byte_offset: u64,
+        bytes: Vec<u8>,
+    ) -> Self {
+        let byte_length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        Self::ArrowIpcChunk(BrowserWorkerArrowIpcChunkEvent {
+            context,
+            request_id: request_id.into(),
+            sequence,
+            byte_offset,
+            byte_length,
+            bytes,
+        })
+    }
+
     pub fn context(&self) -> &BrowserWorkerEventContext {
         match self {
             Self::Progress(event) => &event.context,
@@ -492,6 +566,7 @@ impl BrowserWorkerEventEnvelope {
             Self::Fallback(event) => &event.context,
             Self::Cancellation(event) => &event.context,
             Self::TerminalError(event) => &event.context,
+            Self::ArrowIpcChunk(event) => &event.context,
         }
     }
 }
@@ -512,20 +587,68 @@ impl ArrowIpcFormat {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArrowIpcDelivery {
+    #[default]
+    SingleBuffer,
+    ChunkedBuffers,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ArrowIpcResultEnvelope {
     pub format: ArrowIpcFormat,
     pub content_type: String,
-    pub bytes: Vec<u8>,
+    pub delivery: ArrowIpcDelivery,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<Bytes>,
+    pub byte_length: u64,
+    pub chunk_count: u64,
 }
 
 impl ArrowIpcResultEnvelope {
     pub fn new(format: ArrowIpcFormat, bytes: Vec<u8>) -> Self {
+        Self::from_bytes(format, Bytes::from(bytes))
+    }
+
+    pub fn from_bytes(format: ArrowIpcFormat, bytes: Bytes) -> Self {
+        let byte_length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         Self {
             format,
             content_type: format.content_type().to_string(),
-            bytes,
+            delivery: ArrowIpcDelivery::SingleBuffer,
+            bytes: Some(bytes),
+            byte_length,
+            chunk_count: if byte_length == 0 { 0 } else { 1 },
         }
+    }
+
+    pub fn chunked(
+        format: ArrowIpcFormat,
+        byte_length: u64,
+        chunk_count: u64,
+    ) -> Result<Self, String> {
+        if byte_length > 0 && chunk_count == 0 {
+            return Err(
+                "chunked Arrow IPC result with non-zero byte_length requires chunk_count > 0"
+                    .to_string(),
+            );
+        }
+        if byte_length == 0 && chunk_count != 0 {
+            return Err(
+                "chunked Arrow IPC result with zero byte_length requires chunk_count == 0"
+                    .to_string(),
+            );
+        }
+
+        Ok(Self {
+            format,
+            content_type: format.content_type().to_string(),
+            delivery: ArrowIpcDelivery::ChunkedBuffers,
+            bytes: None,
+            byte_length,
+            chunk_count,
+        })
     }
 }
 
@@ -539,7 +662,14 @@ impl<'de> Deserialize<'de> for ArrowIpcResultEnvelope {
         struct RawArrowIpcResultEnvelope {
             format: ArrowIpcFormat,
             content_type: String,
-            bytes: Vec<u8>,
+            #[serde(default)]
+            delivery: ArrowIpcDelivery,
+            #[serde(default)]
+            bytes: Option<Bytes>,
+            #[serde(default)]
+            byte_length: Option<u64>,
+            #[serde(default)]
+            chunk_count: Option<u64>,
         }
 
         let raw = RawArrowIpcResultEnvelope::deserialize(deserializer)?;
@@ -552,11 +682,72 @@ impl<'de> Deserialize<'de> for ArrowIpcResultEnvelope {
             )));
         }
 
-        Ok(Self {
-            format: raw.format,
-            content_type: raw.content_type,
-            bytes: raw.bytes,
-        })
+        match raw.delivery {
+            ArrowIpcDelivery::SingleBuffer => {
+                let bytes = raw.bytes.ok_or_else(|| {
+                    de::Error::custom("single_buffer Arrow IPC result requires bytes")
+                })?;
+                let byte_length = u64::try_from(bytes.len()).map_err(|_| {
+                    de::Error::custom("single_buffer Arrow IPC byte length overflowed u64")
+                })?;
+                if let Some(declared_byte_length) = raw.byte_length {
+                    if declared_byte_length != byte_length {
+                        return Err(de::Error::custom(format!(
+                            "single_buffer Arrow IPC byte_length {declared_byte_length} did not match bytes length {byte_length}"
+                        )));
+                    }
+                }
+                let chunk_count = raw
+                    .chunk_count
+                    .unwrap_or(if byte_length == 0 { 0 } else { 1 });
+                if chunk_count > 1 {
+                    return Err(de::Error::custom(
+                        "single_buffer Arrow IPC result chunk_count must be 0 or 1",
+                    ));
+                }
+
+                Ok(Self {
+                    format: raw.format,
+                    content_type: raw.content_type,
+                    delivery: raw.delivery,
+                    bytes: Some(bytes),
+                    byte_length,
+                    chunk_count,
+                })
+            }
+            ArrowIpcDelivery::ChunkedBuffers => {
+                if raw.bytes.is_some() {
+                    return Err(de::Error::custom(
+                        "chunked_buffers Arrow IPC result must not include final bytes",
+                    ));
+                }
+                let byte_length = raw.byte_length.ok_or_else(|| {
+                    de::Error::custom("chunked_buffers Arrow IPC result requires byte_length")
+                })?;
+                let chunk_count = raw.chunk_count.ok_or_else(|| {
+                    de::Error::custom("chunked_buffers Arrow IPC result requires chunk_count")
+                })?;
+                if byte_length == 0 && chunk_count != 0 {
+                    return Err(de::Error::custom(
+                        "chunked_buffers Arrow IPC result with zero byte_length requires chunk_count == 0",
+                    ));
+                }
+                if byte_length > 0 && chunk_count == 0 {
+                    return Err(de::Error::custom(
+                        "chunked_buffers Arrow IPC result with non-zero byte_length requires chunk_count > 0",
+                    ));
+                }
+
+                Ok(Self {
+                    format: raw.format,
+                    content_type: raw.content_type,
+                    delivery: raw.delivery,
+                    bytes: None,
+                    byte_length,
+                    chunk_count,
+                })
+            }
+        }
     }
 }
 

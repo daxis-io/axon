@@ -148,6 +148,8 @@ pub struct QueryRuntimeLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_arrow_ipc_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_preview_string_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_scan_bytes: Option<u64>,
 }
 
@@ -1564,6 +1566,27 @@ pub struct QueryMetricsSummary {
     /// Browser object access mode used for the execution when tracked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_mode: Option<BrowserAccessMode>,
+    /// Arrow IPC payload bytes produced for the query result when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrow_ipc_bytes: Option<u64>,
+    /// Arrow IPC chunks posted for the query result when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrow_ipc_chunk_count: Option<u64>,
+    /// Preview rows materialized from Arrow IPC when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_rows: Option<u64>,
+    /// UTF-8 bytes used by string values in the materialized preview when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_string_bytes: Option<u64>,
+    /// Wall-clock duration of SQL planning when the runtime can isolate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planning_duration_ms: Option<u64>,
+    /// Wall-clock duration of Arrow IPC encoding when the runtime can isolate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrow_ipc_encode_duration_ms: Option<u64>,
+    /// Wall-clock duration of preview construction when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_duration_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1669,6 +1692,18 @@ pub struct DaxisQueryMetrics {
     pub rows_returned: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrow_ipc_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrow_ipc_chunk_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_rows: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_string_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planning_duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrow_ipc_encode_duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_duration_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scan_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

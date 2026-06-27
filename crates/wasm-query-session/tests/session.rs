@@ -337,6 +337,7 @@ fn session_sql_enforces_request_runtime_limits() {
         runtime_limits: Some(QueryRuntimeLimits {
             max_result_rows: Some(1),
             max_arrow_ipc_bytes: None,
+            max_preview_string_bytes: None,
             max_scan_bytes: None,
         }),
         ..QueryExecutionOptions::default()
@@ -385,6 +386,7 @@ fn session_sql_enforces_request_scan_runtime_limits_before_execution() {
         runtime_limits: Some(QueryRuntimeLimits {
             max_result_rows: None,
             max_arrow_ipc_bytes: None,
+            max_preview_string_bytes: None,
             max_scan_bytes: Some(1),
         }),
         ..QueryExecutionOptions::default()

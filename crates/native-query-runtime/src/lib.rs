@@ -766,6 +766,13 @@ fn collect_query_metrics(
         rows_emitted: 0,
         snapshot_bootstrap_duration_ms: None,
         access_mode: None,
+        arrow_ipc_bytes: None,
+        arrow_ipc_chunk_count: None,
+        preview_rows: None,
+        preview_string_bytes: None,
+        planning_duration_ms: None,
+        arrow_ipc_encode_duration_ms: None,
+        preview_duration_ms: None,
     })
 }
 

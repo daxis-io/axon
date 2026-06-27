@@ -1100,6 +1100,7 @@ fn execute_query_rejects_browser_runtime_limits() {
         runtime_limits: Some(QueryRuntimeLimits {
             max_result_rows: Some(1),
             max_arrow_ipc_bytes: None,
+            max_preview_string_bytes: None,
             max_scan_bytes: None,
         }),
         ..QueryExecutionOptions::default()

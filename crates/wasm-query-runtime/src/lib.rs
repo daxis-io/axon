@@ -1051,6 +1051,7 @@ pub struct RuntimeArrowIpcResult {
     pub ipc_bytes: Bytes,
     pub row_count: u64,
     pub encoded_bytes: u64,
+    pub encode_duration_ms: u64,
     pub scan_metrics: Vec<wasm_parquet_engine::ScanTargetMetricsSnapshot>,
 }
 
@@ -1561,7 +1562,9 @@ impl BrowserRuntimeSession {
         let artifacts = self
             .run_with_execution_timeout(snapshot, candidate_files.len(), execution)
             .await?;
+        let encode_started_at = BrowserRuntimeInstant::now();
         let ipc_bytes = encode_execution_result_to_arrow_ipc(plan, &artifacts.result)?;
+        let encode_duration_ms = encode_started_at.elapsed_ms();
         let row_count = u64::try_from(artifacts.result.rows().len())
             .map_err(|_| execution_runtime_error("browser execution row counts overflowed u64"))?;
         let encoded_bytes = u64::try_from(ipc_bytes.len())
@@ -1571,6 +1574,7 @@ impl BrowserRuntimeSession {
             ipc_bytes,
             row_count,
             encoded_bytes,
+            encode_duration_ms,
             scan_metrics: artifacts.scan_metrics,
         })
     }
@@ -2617,6 +2621,13 @@ fn execution_metrics(
         rows_emitted,
         snapshot_bootstrap_duration_ms: plan.snapshot_bootstrap_duration_ms(),
         access_mode: plan.access_mode(),
+        arrow_ipc_bytes: None,
+        arrow_ipc_chunk_count: None,
+        preview_rows: None,
+        preview_string_bytes: None,
+        planning_duration_ms: None,
+        arrow_ipc_encode_duration_ms: None,
+        preview_duration_ms: None,
     })
 }
 

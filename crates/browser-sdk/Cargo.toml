@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+bytes = { version = "=1.11.1", features = ["serde"] }
 query-contract = { path = "../query-contract" }
 serde.workspace = true
 

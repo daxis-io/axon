@@ -752,6 +752,13 @@ fn execution_metrics(
         rows_emitted,
         snapshot_bootstrap_duration_ms: plan.snapshot_bootstrap_duration_ms(),
         access_mode: plan.access_mode(),
+        arrow_ipc_bytes: Some(runtime_result.encoded_bytes),
+        arrow_ipc_chunk_count: None,
+        preview_rows: None,
+        preview_string_bytes: None,
+        planning_duration_ms: None,
+        arrow_ipc_encode_duration_ms: Some(runtime_result.encode_duration_ms),
+        preview_duration_ms: None,
     })
 }
 

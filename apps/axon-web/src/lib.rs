@@ -14,7 +14,8 @@ use arrow_schema::{DataType as ArrowDataType, TimeUnit};
 use js_sys::{Object, Reflect, Uint8Array};
 use query_contract::{
     BrowserHttpParquetDatasetDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget,
-    QueryError, QueryErrorCode, QueryRequest, QueryResponse, SnapshotResolutionRequest,
+    FallbackReason, QueryError, QueryErrorCode, QueryRequest, QueryResponse,
+    SnapshotResolutionRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -26,7 +27,7 @@ use wasm_delta_snapshot::{
 };
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{ObjectSource, ParquetMetadataCache, ScanTarget};
-use wasm_query_runtime::{BrowserObjectAccessMode, BrowserRuntimeConfig};
+use wasm_query_runtime::{BrowserObjectAccessMode, BrowserRuntimeConfig, BrowserRuntimeInstant};
 
 const DEFAULT_QUERY_SESSION_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_QUERY_PREVIEW_LIMIT: usize = 501;
@@ -124,6 +125,10 @@ struct SandboxSqlMetadata {
     arrow_ipc_byte_length: u64,
     #[serde(serialize_with = "serialize_decimal_string")]
     row_count: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    preview_string_bytes: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    preview_duration_ms: u64,
     cache_metrics: SandboxCacheMetrics,
 }
 
@@ -340,14 +345,37 @@ impl SandboxQuerySession {
             .sql(&name, &request)
             .await
             .map_err(query_error_to_js_value)?;
-        let arrow_ipc_bytes = result.runtime_result.ipc_bytes.to_vec();
+        let arrow_ipc_bytes = result.runtime_result.ipc_bytes;
+        let preview_started_at = BrowserRuntimeInstant::now();
         let preview = preview_from_arrow_ipc(&arrow_ipc_bytes, preview_limit)
             .map_err(query_error_to_js_value)?;
+        let preview_duration_ms = preview_started_at.elapsed_ms();
+        let preview_string_bytes =
+            preview_string_bytes(&preview).map_err(query_error_to_js_value)?;
+        if let Some(max_preview_string_bytes) = request
+            .options
+            .runtime_limits
+            .and_then(|limits| limits.max_preview_string_bytes)
+        {
+            if preview_string_bytes > max_preview_string_bytes {
+                return Err(query_error_to_js_value(preview_budget_exceeded_error(
+                    preview_string_bytes,
+                    max_preview_string_bytes,
+                )));
+            }
+        }
+        let mut response = result.response;
+        response.metrics.arrow_ipc_bytes = Some(result.runtime_result.encoded_bytes);
+        response.metrics.preview_rows = Some(u64::try_from(preview.rows.len()).unwrap_or(u64::MAX));
+        response.metrics.preview_string_bytes = Some(preview_string_bytes);
+        response.metrics.preview_duration_ms = Some(preview_duration_ms);
         let metadata = SandboxSqlMetadata {
-            response: result.response,
+            response,
             row_count: result.runtime_result.row_count,
             arrow_ipc_byte_length: result.runtime_result.encoded_bytes,
             preview,
+            preview_string_bytes,
+            preview_duration_ms,
             cache_metrics: cache_metrics(&self.session),
         };
 
@@ -613,6 +641,28 @@ fn preview_from_arrow_ipc(
         preview_row_limit,
         truncated: row_count > u64::try_from(preview_row_limit).unwrap_or(u64::MAX),
     })
+}
+
+fn preview_string_bytes(preview: &QueryPreviewOutput) -> Result<u64, QueryError> {
+    preview.rows.iter().try_fold(0_u64, |total, row| {
+        row.iter().try_fold(total, |row_total, value| {
+            let bytes = value.as_str().map(str::len).unwrap_or(0);
+            row_total
+                .checked_add(u64::try_from(bytes).unwrap_or(u64::MAX))
+                .ok_or_else(|| preview_runtime_error("preview string byte totals overflowed u64"))
+        })
+    })
+}
+
+fn preview_budget_exceeded_error(observed: u64, max_allowed: u64) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::FallbackRequired,
+        format!(
+            "browser execution exceeded the configured max_preview_string_bytes budget ({observed} > {max_allowed})"
+        ),
+        ExecutionTarget::BrowserWasm,
+    )
+    .with_fallback_reason(FallbackReason::BrowserRuntimeConstraint)
 }
 
 fn preview_value(array: &dyn Array, row_index: usize) -> Value {

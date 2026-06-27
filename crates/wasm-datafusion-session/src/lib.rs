@@ -409,6 +409,7 @@ impl BrowserDataFusionSession {
                     prepared.pruning,
                     reuse_metrics,
                     started_at,
+                    &runtime_result,
                 ),
                 explain,
             },
@@ -1142,6 +1143,7 @@ fn runtime_result_from_datafusion(
         ipc_bytes: datafusion_result.ipc_bytes.into(),
         row_count: datafusion_result.row_count,
         encoded_bytes: datafusion_result.encoded_bytes,
+        encode_duration_ms: 0,
         scan_metrics: Vec::new(),
     }
 }
@@ -1156,6 +1158,7 @@ fn datafusion_query_metrics(
     prebootstrap_pruning: BrowserPrebootstrapPruningSummary,
     reuse_metrics: DataFusionSessionReuseMetrics,
     started_at: BrowserRuntimeInstant,
+    runtime_result: &RuntimeArrowIpcResult,
 ) -> QueryMetricsSummary {
     QueryMetricsSummary {
         bytes_fetched: scan_metrics.bytes_fetched,
@@ -1200,6 +1203,13 @@ fn datafusion_query_metrics(
         rows_emitted: scan_metrics.rows_emitted,
         snapshot_bootstrap_duration_ms,
         access_mode,
+        arrow_ipc_bytes: Some(runtime_result.encoded_bytes),
+        arrow_ipc_chunk_count: None,
+        preview_rows: None,
+        preview_string_bytes: None,
+        planning_duration_ms: None,
+        arrow_ipc_encode_duration_ms: None,
+        preview_duration_ms: None,
     }
 }
 
@@ -1768,6 +1778,7 @@ mod tests {
             runtime_limits: Some(query_contract::QueryRuntimeLimits {
                 max_result_rows: None,
                 max_arrow_ipc_bytes: Some(1),
+                max_preview_string_bytes: None,
                 max_scan_bytes: None,
             }),
             ..query_contract::QueryExecutionOptions::default()

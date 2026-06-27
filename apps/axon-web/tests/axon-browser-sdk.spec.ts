@@ -773,6 +773,250 @@ test('normalizes Arrow IPC bytes and exposes success fallback reasons', async ()
   });
 });
 
+test('query sends chunked delivery with browser-safe defaults', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const resultPromise = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT * FROM events',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-query-defaults' },
+  );
+
+  await Promise.resolve();
+  expect(worker.commands).toHaveLength(1);
+  const command = worker.commands[0];
+  expect(command).toHaveProperty('sql');
+  if (!('sql' in command)) {
+    throw new Error('expected sql command');
+  }
+  expect(command.sql).toMatchObject({
+    request_id: 'req-query-defaults',
+    output: 'arrow_ipc_stream',
+    delivery: 'chunked_buffers',
+    browser_safe_defaults: true,
+    query: {
+      options: {
+        result_page: {
+          limit: 501,
+          offset: 0,
+        },
+        runtime_limits: {
+          max_result_rows: 501,
+          max_arrow_ipc_bytes: 8 * 1024 * 1024,
+          max_preview_string_bytes: 256 * 1024,
+        },
+      },
+    },
+  });
+
+  worker.emitMessage(legacySuccessMessage('req-query-defaults', [1, 2, 3, 4]));
+  await expect(resultPromise).resolves.toMatchObject({
+    request_id: 'req-query-defaults',
+  });
+});
+
+test('query preserves stricter browser-safe limits and rejects looser SDK limits', async () => {
+  const strictWorker = new FakeWorker();
+  const strictClient = createAxonBrowserClient({ worker: strictWorker as unknown as Worker });
+
+  const strictResult = strictClient.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT * FROM events',
+      preferred_target: 'browser_wasm',
+      options: {
+        result_page: {
+          limit: 20,
+          offset: 40,
+        },
+        runtime_limits: {
+          max_result_rows: 20,
+          max_arrow_ipc_bytes: 1024,
+          max_preview_string_bytes: 2048,
+        },
+      },
+    },
+    { requestId: 'req-query-strict-limits' },
+  );
+  await Promise.resolve();
+  const strictCommand = strictWorker.commands[0];
+  if (!('sql' in strictCommand)) {
+    throw new Error('expected sql command');
+  }
+  expect(strictCommand.sql.query.options).toMatchObject({
+    result_page: {
+      limit: 20,
+      offset: 40,
+    },
+    runtime_limits: {
+      max_result_rows: 20,
+      max_arrow_ipc_bytes: 1024,
+      max_preview_string_bytes: 2048,
+    },
+  });
+  strictWorker.emitMessage(legacySuccessMessage('req-query-strict-limits', [1]));
+  await strictResult;
+
+  const looseWorker = new FakeWorker();
+  const looseClient = createAxonBrowserClient({ worker: looseWorker as unknown as Worker });
+  const looseResult = looseClient.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT * FROM events',
+      preferred_target: 'browser_wasm',
+      options: {
+        result_page: {
+          limit: 502,
+          offset: 0,
+        },
+      },
+    },
+    { requestId: 'req-query-loose-limits' },
+  );
+  await Promise.resolve();
+  if (looseWorker.commands.length > 0) {
+    looseWorker.emitMessage(legacySuccessMessage('req-query-loose-limits', [1]));
+  }
+
+  await expect(looseResult).rejects.toThrow(AxonSdkError);
+  await expect(looseResult).rejects.toThrow('result_page.limit');
+});
+
+test('reassembles ordered Arrow IPC chunks before resolving success', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const resultPromise = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT * FROM events',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-query-chunked' },
+  );
+
+  worker.emitRawMessage(arrowIpcChunk('req-query-chunked', 0, 0, [1, 2]));
+  worker.emitRawMessage(arrowIpcChunk('req-query-chunked', 1, 2, [3, 4]));
+  worker.emitRawMessage(chunkedSuccessMessage('req-query-chunked', 4, 2));
+
+  const result = await resultPromise;
+  expect([...result.result.bytes]).toEqual([1, 2, 3, 4]);
+  expect(result.result).toMatchObject({
+    delivery: 'chunked_buffers',
+    byte_length: 4,
+    chunk_count: 2,
+  });
+});
+
+test('accepts empty chunked Arrow IPC success without chunk events', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const resultPromise = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT * FROM events',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-query-empty-chunked' },
+  );
+
+  worker.emitRawMessage(chunkedSuccessMessage('req-query-empty-chunked', 0, 0));
+
+  const result = await resultPromise;
+  expect([...result.result.bytes]).toEqual([]);
+});
+
+test('rejects malformed Arrow IPC chunk streams', async () => {
+  await expectChunkProtocolReject(
+    [arrowIpcChunk('req-query-bad-chunks', 1, 0, [1])],
+    'expected Arrow IPC chunk sequence 0',
+  );
+  await expectChunkProtocolReject(
+    [
+      arrowIpcChunk('req-query-bad-chunks', 0, 0, [1]),
+      arrowIpcChunk('req-query-bad-chunks', 0, 1, [2]),
+    ],
+    'duplicate Arrow IPC chunk sequence 0',
+  );
+  await expectChunkProtocolReject(
+    [arrowIpcChunk('req-query-bad-chunks', 0, 1, [1])],
+    'expected Arrow IPC chunk byte_offset 0',
+  );
+  await expectChunkProtocolReject(
+    [arrowIpcChunk('unknown-request', 0, 0, [1])],
+    "unknown Arrow IPC chunk request 'unknown-request'",
+  );
+  await expectChunkProtocolReject(
+    [
+      arrowIpcChunk('req-query-bad-chunks', 0, 0, [1]),
+      chunkedSuccessMessage('req-query-bad-chunks', 2, 2),
+    ],
+    'missing Arrow IPC chunks',
+  );
+  await expectChunkProtocolReject(
+    [
+      arrowIpcChunk('req-query-bad-chunks', 0, 0, [1]),
+      chunkedSuccessMessage('req-query-bad-chunks', 2, 1),
+    ],
+    'Arrow IPC byte length mismatch',
+  );
+  await expectChunkProtocolReject(
+    [
+      arrowIpcChunk('req-query-bad-chunks', 0, 0, [1]),
+      chunkedSuccessMessage('req-query-bad-chunks', 1, 2),
+    ],
+    'Arrow IPC chunk count mismatch',
+  );
+});
+
+test('rejects chunks after terminal responses', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const firstResult = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT * FROM events',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-query-completed' },
+  );
+  worker.emitRawMessage(chunkedSuccessMessage('req-query-completed', 0, 0));
+  await firstResult;
+
+  const secondResult = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT * FROM events',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-query-after-completion' },
+  );
+  worker.emitRawMessage(arrowIpcChunk('req-query-completed', 0, 0, [1]));
+
+  await expect(secondResult).rejects.toThrow(AxonProtocolError);
+  await expect(secondResult).rejects.toThrow("after request 'req-query-completed' completed");
+});
+
 test('inspectParquet sends an inspect command and resolves the inspection summary', async () => {
   const worker = new FakeWorker();
   const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
@@ -3897,6 +4141,83 @@ function daxisApprovedAxonReadDescriptor(): DaxisApprovedAxonReadDescriptor {
       allow_remote_fallback: true,
     },
   };
+}
+
+function legacySuccessMessage(
+  requestId: string,
+  bytes: number[],
+): WireBrowserWorkerMessageEnvelope {
+  return {
+    success: {
+      request_id: requestId,
+      response: queryResponse(),
+      result: {
+        format: 'stream',
+        content_type: 'application/vnd.apache.arrow.stream',
+        bytes,
+      },
+    },
+  };
+}
+
+function chunkedSuccessMessage(requestId: string, byteLength: number, chunkCount: number): unknown {
+  return {
+    success: {
+      request_id: requestId,
+      response: queryResponse(),
+      result: {
+        format: 'stream',
+        content_type: 'application/vnd.apache.arrow.stream',
+        delivery: 'chunked_buffers',
+        byte_length: byteLength,
+        chunk_count: chunkCount,
+      },
+    },
+  };
+}
+
+function arrowIpcChunk(
+  requestId: string,
+  sequence: number,
+  byteOffset: number,
+  bytes: number[],
+): unknown {
+  return {
+    arrow_ipc_chunk: {
+      context: {
+        phase: 'query',
+        request_id: requestId,
+      },
+      request_id: requestId,
+      sequence,
+      byte_offset: byteOffset,
+      byte_length: bytes.length,
+      bytes,
+    },
+  };
+}
+
+async function expectChunkProtocolReject(messages: unknown[], expectedMessage: string) {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+  const requestId = 'req-query-bad-chunks';
+  const resultPromise = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT * FROM events',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId },
+  );
+
+  for (const message of messages) {
+    worker.emitRawMessage(message);
+  }
+
+  await expect(resultPromise).rejects.toThrow(AxonProtocolError);
+  await expect(resultPromise).rejects.toThrow(expectedMessage);
 }
 
 function queryResponse(overrides: Partial<QueryResponse> = {}): QueryResponse {
