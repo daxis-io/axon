@@ -30,7 +30,13 @@ import {
   queryResultPageRequest,
   resultPageFromPreview,
 } from './query-pagination.ts';
+import {
+  clearQueryRuntimeState,
+  publishQueryRuntimeState,
+  publishWorkerEvent,
+} from './query-runtime-state.ts';
 import { SAMPLE_QUERY_SOURCE, sameQuerySource, type QueryTableSource } from './query-source.ts';
+import type { Catalog } from './types.ts';
 
 type FixtureObject = {
   relative_path: string;
@@ -270,6 +276,7 @@ function createQueryClient(): AxonBrowserClient {
       }),
     requestId: () => `editor-request-${++requestCounter}`,
     onEvent: (envelope) => {
+      publishWorkerEvent(envelope);
       for (const handler of eventListeners) handler(envelope);
     },
   });
@@ -455,6 +462,14 @@ export async function getSession(
       }
       session = s;
       coldStartMs = Math.round(performance.now() - t0);
+      publishQueryRuntimeState(
+        {
+          source: s.source,
+          catalog: catalogFromSession(s),
+          manifest: s.manifest,
+        },
+        coldStartMs,
+      );
       sessionSubscribers.forEach((fn) => fn(s));
       return s;
     })
@@ -487,6 +502,7 @@ export function discardQuerySession(source?: QueryTableSource): void {
   }
   if (discarded) {
     sessionGeneration += 1;
+    clearQueryRuntimeState(source);
   }
 }
 
@@ -666,6 +682,15 @@ export function deriveCatalogTable(state: SessionState): CatalogTable {
     // TODO Phase 2: parse protocol action from Delta log
     protocol: { minReaderVersion: 2, minWriterVersion: 5, features: [] },
     columns: inferColumnsFromSnapshot(snapshot, partitionTypes),
+  };
+}
+
+function catalogFromSession(state: SessionState): Catalog {
+  return {
+    name: state.source.catalogName,
+    region: state.source.region,
+    storage: state.source.storage,
+    tables: [deriveCatalogTable(state)],
   };
 }
 

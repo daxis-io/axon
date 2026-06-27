@@ -2,8 +2,7 @@
 // flow with a production app chrome (brand + back link) and the
 // design's empty-state illustration as the landing tile.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ConnectModal } from './connect/ConnectModal.tsx';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
 import { availabilityForSource, type SourceId } from './connect/data.ts';
 import {
@@ -18,8 +17,11 @@ import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { IconBolt, IconChevR, IconPlus } from './components/icons.tsx';
 import { navigate } from './router.ts';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
-import { unregisterLocalDeltaRuntime } from '../services/local-delta.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
+
+const ConnectModal = lazy(() =>
+  import('./connect/ConnectModal.tsx').then((module) => ({ default: module.ConnectModal })),
+);
 
 export function ConnectPage() {
   const [catalogs, setCatalogs] = useState<ConnectedCatalog[]>(() => loadConnectedCatalogs());
@@ -54,10 +56,9 @@ export function ConnectPage() {
       setCatalogs(upsert.catalogs);
       const replacedRegistryIds = localRegistryIdsForCatalogs(upsert.replaced);
       if (replacedRegistryIds.length > 0) {
-        void Promise.all(
-          replacedRegistryIds.map((registryId) => unregisterLocalDeltaRuntime(registryId)),
-        ).catch((error) =>
-          console.warn('failed to unregister duplicate local Delta catalog:', error),
+        unregisterLocalDeltaRuntimeIds(
+          replacedRegistryIds,
+          'failed to unregister duplicate local Delta catalog:',
         );
       }
       setFreshId(mergedCatalogId);
@@ -72,9 +73,7 @@ export function ConnectPage() {
       const removed = cs.find((catalog) => catalog.id === id);
       const registryIds = removed ? localRegistryIdsForCatalogs([removed]) : [];
       if (registryIds.length > 0) {
-        void Promise.all(
-          registryIds.map((registryId) => unregisterLocalDeltaRuntime(registryId)),
-        ).catch((error) => console.warn('failed to unregister local Delta catalog:', error));
+        unregisterLocalDeltaRuntimeIds(registryIds, 'failed to unregister local Delta catalog:');
       }
       return cs.filter((c) => c.id !== id);
     });
@@ -215,14 +214,16 @@ export function ConnectPage() {
       </main>
 
       {modalOpen && (
-        <ConnectModal
-          initialStep={modalStep}
-          initialSource={modalSource}
-          serverFallbackEnabled={SERVER_QUERY_FALLBACK_ENABLED}
-          connectorFeatures={CONNECTOR_FEATURES}
-          onClose={() => setModalOpen(false)}
-          onConnect={onConnect}
-        />
+        <Suspense fallback={null}>
+          <ConnectModal
+            initialStep={modalStep}
+            initialSource={modalSource}
+            serverFallbackEnabled={SERVER_QUERY_FALLBACK_ENABLED}
+            connectorFeatures={CONNECTOR_FEATURES}
+            onClose={() => setModalOpen(false)}
+            onConnect={onConnect}
+          />
+        </Suspense>
       )}
 
       {panelOpen && (
@@ -252,4 +253,12 @@ function glyphClass(c: ConnectedCatalog) {
   if (c.kind === 'unity_catalog') return 'uc';
   if (c.kind === 'delta_share') return 'ds';
   return c.provider || 'gcs';
+}
+
+function unregisterLocalDeltaRuntimeIds(registryIds: string[], message: string): void {
+  void import('../services/local-delta.ts')
+    .then(({ unregisterLocalDeltaRuntime }) =>
+      Promise.all(registryIds.map((registryId) => unregisterLocalDeltaRuntime(registryId))),
+    )
+    .catch((error) => console.warn(message, error));
 }

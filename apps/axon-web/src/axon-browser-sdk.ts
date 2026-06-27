@@ -1220,14 +1220,20 @@ export class DeltaSharingError extends Error {
 }
 
 export function createAxonBrowserClient(options: AxonBrowserClientOptions): AxonBrowserClient {
-  const worker =
-    'workerUrl' in options
-      ? new Worker(options.workerUrl, { type: 'module', ...options.workerOptions })
-      : 'worker' in options
-        ? createWorkerFromOption(options.worker)
-        : createWorkerFromBundleSelection(options);
+  if ('worker' in options && typeof options.worker !== 'function') {
+    return new AxonBrowserWorkerClient(options.worker, options.requestId, options.onEvent);
+  }
 
-  return new AxonBrowserWorkerClient(worker, options.requestId, options.onEvent);
+  const createWorker =
+    'workerUrl' in options
+      ? () => new Worker(options.workerUrl, { type: 'module', ...options.workerOptions })
+      : 'worker' in options
+        ? () => createWorkerFromOption(options.worker)
+        : () => createWorkerFromBundleSelection(options);
+
+  return new LazyAxonBrowserClient(
+    () => new AxonBrowserWorkerClient(createWorker(), options.requestId, options.onEvent),
+  );
 }
 
 export function createDeltaSharingClient(
@@ -3657,6 +3663,282 @@ export function normalizeArrowIpcResult(result: WireArrowIpcResult): ArrowIpcRes
   };
 }
 
+type OpenPreparedDeltaTable = (
+  name: string,
+  descriptor: BrowserHttpSnapshotDescriptor,
+  options?: AxonRequestOptions,
+) => Promise<BrowserWorkerOpenedEnvelope>;
+
+async function openDeltaLocationWithTableOpener(
+  openDeltaTable: OpenPreparedDeltaTable,
+  requestId: string | undefined,
+  name: string,
+  options: DeltaLocationOpenOptions,
+): Promise<DeltaLocationOpenedEnvelope> {
+  if ('source' in options) {
+    const resolutionMode = options.resolutionMode ?? 'browser_local';
+    const descriptor = browserDeltaSourceUsesSnapshotReconstruction(options.source)
+      ? await resolveDeltaSnapshotBrowserLocal(options.source, {
+          snapshotVersion: options.snapshotVersion,
+          resolveBrowserSnapshot: options.resolveBrowserSnapshot,
+        })
+      : await materializeDescriptorFromBrowserSource(options.source);
+    const opened = await openDeltaTable(name, descriptor, { requestId });
+    return {
+      ...opened,
+      location: browserDeltaLocationOpenMetadata(options.source, descriptor, resolutionMode),
+    };
+  }
+
+  const request = deltaLocationResolveRequestFromOptions(options);
+  validateDeltaLocationResolveRequest(request);
+  const response = await resolveDeltaLocationFromOptions(options, request);
+  validateDeltaLocationResolveResponse(response, request, Date.now());
+  const opened = await openDeltaTable(name, response.descriptor, { requestId });
+  return {
+    ...opened,
+    location: deltaLocationOpenMetadata(response),
+  };
+}
+
+async function openDeltaShareWithTableOpener(
+  openDeltaTable: OpenPreparedDeltaTable,
+  requestId: string | undefined,
+  name: string,
+  options: DeltaSharingOpenOptions,
+): Promise<DeltaSharingOpenedEnvelope> {
+  const plan = await options.session.resolveTable(options.table, {
+    version: options.version,
+    limitHint: options.limitHint,
+    predicateHints: options.predicateHints,
+    responseFormat: options.responseFormat,
+    readerFeatures: options.readerFeatures,
+  });
+  const opened = await openDeltaTable(name, plan.descriptor, { requestId });
+  return {
+    ...opened,
+    deltaSharing: deltaSharingReadPlanMetadata(plan),
+  };
+}
+
+async function openUnityCatalogTableWithTableOpener(
+  openDeltaTable: OpenPreparedDeltaTable,
+  requestId: string | undefined,
+  name: string,
+  options: UnityCatalogOpenOptions,
+): Promise<UnityCatalogOpenResult> {
+  const request = unityCatalogReadAccessRequestFromOptions(options);
+  const plan = parseReadAccessPlan(await options.resolveReadAccessPlan(request));
+  if (plan.fullName !== options.fullName) {
+    throw new AxonProtocolError(
+      `Unity Catalog read plan '${plan.fullName}' did not match requested table '${options.fullName}'`,
+    );
+  }
+
+  switch (plan.plan_type) {
+    case 'brokered_delta': {
+      validateReadAccessPlanNotExpired(plan, Date.now());
+      if (!options.brokeredDelta) {
+        throw new AxonSdkError('brokered Delta read plans require a brokeredDelta adapter');
+      }
+      const resolvedSnapshot = normalizeResolvedSnapshotDescriptor(
+        await options.brokeredDelta.resolveSnapshot(plan),
+        'brokered_delta.resolvedSnapshot',
+      );
+      const paths = resolvedSnapshot.active_files.map((file) => file.path);
+      const signResponse = normalizeObjectGrantBatchSignResponse(
+        await options.brokeredDelta.batchSign(plan, paths),
+        'brokered_delta.batchSign',
+      );
+      validateObjectGrantSignedUrlsNotExpired(signResponse.signedUrls, Date.now());
+      const signedUrlsByPath = Object.fromEntries(
+        signResponse.signedUrls.map((signed) => [signed.path, signed.url]),
+      );
+      const descriptor = snapshotFromBrokeredDeltaReadPlan(
+        plan,
+        resolvedSnapshot,
+        signedUrlsByPath,
+      );
+      const opened = await openDeltaTable(name, descriptor, { requestId });
+      return {
+        ...opened,
+        status: 'opened',
+        planType: 'brokered_delta',
+        tableId: plan.tableId,
+        fullName: plan.fullName,
+        expiresAtEpochMs: plan.expiresAtEpochMs,
+      };
+    }
+    case 'delta_sharing': {
+      validateReadAccessPlanNotExpired(plan, Date.now());
+      const descriptor = snapshotFromDeltaSharingReadAccessPlan(plan);
+      const opened = await openDeltaTable(name, descriptor, { requestId });
+      return {
+        ...opened,
+        status: 'opened',
+        planType: 'delta_sharing',
+        tableId: plan.tableId,
+        fullName: plan.fullName,
+        expiresAtEpochMs: plan.expiresAtEpochMs,
+      };
+    }
+    case 'sql_fallback_required':
+      if (options.serverFallbackEnabled === true && options.executeSqlFallback) {
+        return {
+          status: 'sql_fallback_routed',
+          planType: 'sql_fallback_required',
+          tableId: plan.tableId,
+          fullName: plan.fullName,
+          reason: plan.reason,
+          message: plan.message,
+          result: await options.executeSqlFallback(plan),
+        };
+      }
+      return {
+        status: 'sql_fallback_required',
+        planType: 'sql_fallback_required',
+        tableId: plan.tableId,
+        fullName: plan.fullName,
+        reason: plan.reason,
+        message: plan.message,
+        statementEndpoint: plan.statementEndpoint,
+        warehouseRequired: true,
+      };
+    case 'blocked':
+      return {
+        status: 'blocked',
+        planType: 'blocked',
+        tableId: plan.tableId,
+        fullName: plan.fullName,
+        reason: plan.reason,
+        message: plan.message,
+      };
+  }
+}
+
+class LazyAxonBrowserClient implements AxonBrowserClient {
+  private client: AxonBrowserWorkerClient | undefined;
+  private terminated = false;
+
+  constructor(private readonly createClient: () => AxonBrowserWorkerClient) {}
+
+  async openDeltaTable(
+    name: string,
+    snapshot: BrowserHttpSnapshotDescriptor,
+    options?: AxonRequestOptions,
+  ): Promise<BrowserWorkerOpenedEnvelope> {
+    return this.workerClient().openDeltaTable(name, snapshot, options);
+  }
+
+  openDeltaLocation(
+    name: string,
+    options: DeltaLocationServerSnapshotOpenOptions,
+  ): Promise<DeltaLocationServerSnapshotOpenedEnvelope>;
+  openDeltaLocation(
+    name: string,
+    options: DeltaLocationBrowserSourceOpenOptions,
+  ): Promise<DeltaLocationBrowserOpenedEnvelope>;
+  async openDeltaLocation(
+    name: string,
+    options: DeltaLocationOpenOptions,
+  ): Promise<DeltaLocationOpenedEnvelope> {
+    return openDeltaLocationWithTableOpener(
+      (tableName, descriptor, requestOptions) =>
+        this.workerClient().openDeltaTable(tableName, descriptor, requestOptions),
+      options.requestId,
+      name,
+      options,
+    );
+  }
+
+  async openDeltaShare(
+    name: string,
+    options: DeltaSharingOpenOptions,
+  ): Promise<DeltaSharingOpenedEnvelope> {
+    return openDeltaShareWithTableOpener(
+      (tableName, descriptor, requestOptions) =>
+        this.workerClient().openDeltaTable(tableName, descriptor, requestOptions),
+      options.requestId,
+      name,
+      options,
+    );
+  }
+
+  async openParquetDataset(
+    name: string,
+    dataset: BrowserHttpParquetDatasetDescriptor,
+    options?: AxonRequestOptions,
+  ): Promise<BrowserWorkerOpenedEnvelope> {
+    return this.workerClient().openParquetDataset(name, dataset, options);
+  }
+
+  async openUnityCatalogTable(
+    name: string,
+    options: UnityCatalogOpenOptions,
+  ): Promise<UnityCatalogOpenResult> {
+    return openUnityCatalogTableWithTableOpener(
+      (tableName, descriptor, requestOptions) =>
+        this.workerClient().openDeltaTable(tableName, descriptor, requestOptions),
+      options.requestId,
+      name,
+      options,
+    );
+  }
+
+  async inspectParquet(
+    name: string,
+    path: string,
+    options?: AxonRequestOptions,
+  ): Promise<ParquetInspectionSummary> {
+    return this.workerClient().inspectParquet(name, path, options);
+  }
+
+  query(
+    name: string,
+    request: QueryRequest,
+    options?: AxonRequestOptions,
+  ): Promise<AxonQueryResult>;
+  query(name: string, sql: string, options?: AxonQueryOptions): Promise<AxonQueryResult>;
+  async query(
+    name: string,
+    request: QueryRequest | string,
+    options: AxonRequestOptions | AxonQueryOptions = {},
+  ): Promise<AxonQueryResult> {
+    const client = this.workerClient();
+    if (typeof request === 'string') {
+      return client.query(name, request, options as AxonQueryOptions);
+    }
+    return client.query(name, request, options as AxonRequestOptions);
+  }
+
+  cancelQuery(queryId: string, options?: AxonRequestOptions): void {
+    this.client?.cancelQuery(queryId, options);
+  }
+
+  async dispose(
+    name: string,
+    options?: AxonRequestOptions,
+  ): Promise<BrowserWorkerDisposedEnvelope> {
+    return this.workerClient().dispose(name, options);
+  }
+
+  terminate(): void {
+    if (this.terminated) return;
+    this.terminated = true;
+    this.client?.terminate();
+  }
+
+  private workerClient(): AxonBrowserWorkerClient {
+    if (this.terminated) {
+      throw new AxonSdkError('Axon browser client has been terminated');
+    }
+    if (!this.client) {
+      this.client = this.createClient();
+    }
+    return this.client;
+  }
+}
+
 class AxonBrowserWorkerClient implements AxonBrowserClient {
   private readonly worker: Worker;
   private readonly requestId: RequestIdFactory;
@@ -3812,30 +4094,13 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
     options: DeltaLocationOpenOptions,
   ): Promise<DeltaLocationOpenedEnvelope> {
     const requestId = options.requestId ?? this.requestId();
-    if ('source' in options) {
-      const resolutionMode = options.resolutionMode ?? 'browser_local';
-      const descriptor = browserDeltaSourceUsesSnapshotReconstruction(options.source)
-        ? await resolveDeltaSnapshotBrowserLocal(options.source, {
-            snapshotVersion: options.snapshotVersion,
-            resolveBrowserSnapshot: options.resolveBrowserSnapshot,
-          })
-        : await materializeDescriptorFromBrowserSource(options.source);
-      const opened = await this.openDeltaTable(name, descriptor, { requestId });
-      return {
-        ...opened,
-        location: browserDeltaLocationOpenMetadata(options.source, descriptor, resolutionMode),
-      };
-    }
-
-    const request = deltaLocationResolveRequestFromOptions(options);
-    validateDeltaLocationResolveRequest(request);
-    const response = await resolveDeltaLocationFromOptions(options, request);
-    validateDeltaLocationResolveResponse(response, request, Date.now());
-    const opened = await this.openDeltaTable(name, response.descriptor, { requestId });
-    return {
-      ...opened,
-      location: deltaLocationOpenMetadata(response),
-    };
+    return openDeltaLocationWithTableOpener(
+      (tableName, descriptor, requestOptions) =>
+        this.openDeltaTable(tableName, descriptor, requestOptions),
+      requestId,
+      name,
+      options,
+    );
   }
 
   async openDeltaShare(
@@ -3843,18 +4108,13 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
     options: DeltaSharingOpenOptions,
   ): Promise<DeltaSharingOpenedEnvelope> {
     const requestId = options.requestId ?? this.requestId();
-    const plan = await options.session.resolveTable(options.table, {
-      version: options.version,
-      limitHint: options.limitHint,
-      predicateHints: options.predicateHints,
-      responseFormat: options.responseFormat,
-      readerFeatures: options.readerFeatures,
-    });
-    const opened = await this.openDeltaTable(name, plan.descriptor, { requestId });
-    return {
-      ...opened,
-      deltaSharing: deltaSharingReadPlanMetadata(plan),
-    };
+    return openDeltaShareWithTableOpener(
+      (tableName, descriptor, requestOptions) =>
+        this.openDeltaTable(tableName, descriptor, requestOptions),
+      requestId,
+      name,
+      options,
+    );
   }
 
   async openUnityCatalogTable(
@@ -3862,93 +4122,13 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
     options: UnityCatalogOpenOptions,
   ): Promise<UnityCatalogOpenResult> {
     const requestId = options.requestId ?? this.requestId();
-    const request = unityCatalogReadAccessRequestFromOptions(options);
-    const plan = parseReadAccessPlan(await options.resolveReadAccessPlan(request));
-    if (plan.fullName !== options.fullName) {
-      throw new AxonProtocolError(
-        `Unity Catalog read plan '${plan.fullName}' did not match requested table '${options.fullName}'`,
-      );
-    }
-
-    switch (plan.plan_type) {
-      case 'brokered_delta': {
-        validateReadAccessPlanNotExpired(plan, Date.now());
-        if (!options.brokeredDelta) {
-          throw new AxonSdkError('brokered Delta read plans require a brokeredDelta adapter');
-        }
-        const resolvedSnapshot = normalizeResolvedSnapshotDescriptor(
-          await options.brokeredDelta.resolveSnapshot(plan),
-          'brokered_delta.resolvedSnapshot',
-        );
-        const paths = resolvedSnapshot.active_files.map((file) => file.path);
-        const signResponse = normalizeObjectGrantBatchSignResponse(
-          await options.brokeredDelta.batchSign(plan, paths),
-          'brokered_delta.batchSign',
-        );
-        validateObjectGrantSignedUrlsNotExpired(signResponse.signedUrls, Date.now());
-        const signedUrlsByPath = Object.fromEntries(
-          signResponse.signedUrls.map((signed) => [signed.path, signed.url]),
-        );
-        const descriptor = snapshotFromBrokeredDeltaReadPlan(
-          plan,
-          resolvedSnapshot,
-          signedUrlsByPath,
-        );
-        const opened = await this.openDeltaTable(name, descriptor, { requestId });
-        return {
-          ...opened,
-          status: 'opened',
-          planType: 'brokered_delta',
-          tableId: plan.tableId,
-          fullName: plan.fullName,
-          expiresAtEpochMs: plan.expiresAtEpochMs,
-        };
-      }
-      case 'delta_sharing': {
-        validateReadAccessPlanNotExpired(plan, Date.now());
-        const descriptor = snapshotFromDeltaSharingReadAccessPlan(plan);
-        const opened = await this.openDeltaTable(name, descriptor, { requestId });
-        return {
-          ...opened,
-          status: 'opened',
-          planType: 'delta_sharing',
-          tableId: plan.tableId,
-          fullName: plan.fullName,
-          expiresAtEpochMs: plan.expiresAtEpochMs,
-        };
-      }
-      case 'sql_fallback_required':
-        if (options.serverFallbackEnabled === true && options.executeSqlFallback) {
-          return {
-            status: 'sql_fallback_routed',
-            planType: 'sql_fallback_required',
-            tableId: plan.tableId,
-            fullName: plan.fullName,
-            reason: plan.reason,
-            message: plan.message,
-            result: await options.executeSqlFallback(plan),
-          };
-        }
-        return {
-          status: 'sql_fallback_required',
-          planType: 'sql_fallback_required',
-          tableId: plan.tableId,
-          fullName: plan.fullName,
-          reason: plan.reason,
-          message: plan.message,
-          statementEndpoint: plan.statementEndpoint,
-          warehouseRequired: true,
-        };
-      case 'blocked':
-        return {
-          status: 'blocked',
-          planType: 'blocked',
-          tableId: plan.tableId,
-          fullName: plan.fullName,
-          reason: plan.reason,
-          message: plan.message,
-        };
-    }
+    return openUnityCatalogTableWithTableOpener(
+      (tableName, descriptor, requestOptions) =>
+        this.openDeltaTable(tableName, descriptor, requestOptions),
+      requestId,
+      name,
+      options,
+    );
   }
 
   async inspectParquet(

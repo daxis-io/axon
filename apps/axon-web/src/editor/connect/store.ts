@@ -298,13 +298,69 @@ function durableConnectedCatalogs(catalogs: ConnectedCatalog[]): ConnectedCatalo
     .map((catalog) => {
       const schemas = catalog.schemas
         .map((schema) => ({
-          ...schema,
-          tables: schema.tables.filter((table) => table.localPersistence !== 'session_handles'),
+          name: schema.name,
+          tables: schema.tables
+            .filter((table) => table.localPersistence !== 'session_handles')
+            .map(durableConnectedTable),
         }))
         .filter((schema) => schema.tables.length > 0);
-      return schemas.length > 0 ? summarizeCatalog({ ...catalog, schemas }) : null;
+      return schemas.length > 0
+        ? summarizeCatalog(durableConnectedCatalog(catalog, schemas))
+        : null;
     })
     .filter((catalog): catalog is ConnectedCatalog => catalog !== null);
+}
+
+function durableConnectedCatalog(
+  catalog: ConnectedCatalog,
+  schemas: ConnectedCatalogSchema[],
+): ConnectedCatalog {
+  return {
+    id: catalog.id,
+    alias: catalog.alias,
+    kind: catalog.kind,
+    provider: catalog.provider,
+    storage: catalog.storage,
+    host: catalog.host,
+    path: catalog.path,
+    region: catalog.region,
+    status: catalog.status,
+    connectedAt: catalog.connectedAt,
+    schemas,
+  };
+}
+
+function durableConnectedTable(
+  table: ConnectedCatalogSchema['tables'][number],
+): ConnectedCatalogSchema['tables'][number] {
+  return {
+    id: table.id,
+    name: table.name,
+    snapshot: table.snapshot,
+    rows: table.rows,
+    files: table.files,
+    size: table.size,
+    protocol: table.protocol,
+    features: table.features,
+    uri: table.uri,
+    manifestUrl: table.manifestUrl,
+    localRegistryId: table.localRegistryId,
+    localPersistence: table.localPersistence,
+    descriptorResolutionMetrics: table.descriptorResolutionMetrics,
+    source: table.source
+      ? {
+          id: table.source.id,
+          kind: table.source.kind,
+          provider: table.source.provider,
+          storage: table.source.storage,
+          host: table.source.host,
+          path: table.source.path,
+          region: table.source.region,
+          canonicalKey: table.source.canonicalKey,
+          connectedAt: table.source.connectedAt,
+        }
+      : undefined,
+  };
 }
 
 function summarizeCatalog(catalog: ConnectedCatalog): ConnectedCatalog {

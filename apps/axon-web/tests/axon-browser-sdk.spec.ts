@@ -21,6 +21,7 @@ import {
   AxonProtocolError,
   AxonSdkError,
   AxonWorkerError,
+  DeltaSharingError,
   DeltaLocationResolverError,
   createDeltaSharingClient,
   createAxonBrowserClient,
@@ -38,6 +39,7 @@ import {
   type BrokeredDeltaReadAccessPlan,
   type DeltaSharingFetch,
   type DeltaSharingReadPlan,
+  type DeltaSharingSession,
   type DeltaLocationResolveRequest,
   type DeltaLocationResolveResponse,
   type ResolvedSnapshotDescriptor,
@@ -125,6 +127,26 @@ class FakeWorker implements Pick<
       }
     }
   }
+}
+
+function failingDeltaSharingSession(error: Error): DeltaSharingSession {
+  return {
+    profile: {
+      kind: 'delta_sharing',
+      profileSource: 'uploaded_profile',
+      endpoint: 'https://sharing.example.test',
+      authMode: 'bearer',
+    },
+    listShares: async () => ({ items: [] }),
+    listSchemas: async () => ({ items: [] }),
+    listTables: async () => ({ items: [] }),
+    listAllTables: async () => ({ items: [] }),
+    getTableVersion: async () => 0,
+    getTableMetadata: async (table) => ({ table, rawActions: [] }),
+    resolveTable: async () => {
+      throw error;
+    },
+  };
 }
 
 const baselineOnlyFeatures: PlatformFeatures = {
@@ -276,7 +298,7 @@ test('selectBundle rejects unknown bundle statuses from dynamic manifests', () =
   expect(() => selectBundle(invalidManifest, simdOnlyFeatures)).toThrow(AxonSdkError);
 });
 
-test('createAxonBrowserClient constructs a worker from the selected bundle', () => {
+test('createAxonBrowserClient with workerUrl does not construct a Worker at creation', () => {
   const workerGlobal = globalThis as typeof globalThis & { Worker?: typeof Worker };
   const previousWorker = workerGlobal.Worker;
   const createdWorkers: { url: string | URL; options?: WorkerOptions }[] = [];
@@ -292,6 +314,184 @@ test('createAxonBrowserClient constructs a worker from the selected bundle', () 
 
   try {
     const client = createAxonBrowserClient({
+      workerUrl: '/workers/axon-browser-baseline.js',
+      workerOptions: {
+        name: 'axon-worker',
+      },
+    });
+
+    expect(createdWorkers).toEqual([]);
+
+    client.terminate();
+
+    expect(createdWorkers).toEqual([]);
+  } finally {
+    if (previousWorker) {
+      workerGlobal.Worker = previousWorker;
+    } else {
+      Reflect.deleteProperty(workerGlobal, 'Worker');
+    }
+  }
+});
+
+test('createAxonBrowserClient with a worker factory does not call the factory at creation', () => {
+  let calls = 0;
+  const client = createAxonBrowserClient({
+    worker: () => {
+      calls += 1;
+      return new FakeWorker() as unknown as Worker;
+    },
+  });
+
+  expect(calls).toBe(0);
+
+  client.terminate();
+
+  expect(calls).toBe(0);
+});
+
+test('createAxonBrowserClient preserves concrete Worker eager behavior', () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  client.cancelQuery('query-daxis-timeout', { requestId: 'cancel-daxis-timeout' });
+
+  expect(worker.commands).toEqual([
+    {
+      cancel: {
+        request_id: 'cancel-daxis-timeout',
+        query_id: 'query-daxis-timeout',
+      },
+    },
+  ]);
+});
+
+test('first worker-backed command constructs a lazy worker exactly once', async () => {
+  const worker = new FakeWorker();
+  let calls = 0;
+  const client = createAxonBrowserClient({
+    worker: () => {
+      calls += 1;
+      return worker as unknown as Worker;
+    },
+  });
+
+  const opened = client.openDeltaTable('events', snapshot, { requestId: 'req-lazy-open' });
+
+  expect(calls).toBe(1);
+  expect(worker.commands).toEqual([
+    {
+      open_delta_table: {
+        request_id: 'req-lazy-open',
+        name: 'events',
+        snapshot,
+      },
+    },
+  ]);
+
+  worker.emitMessage({ opened: { request_id: 'req-lazy-open', name: 'events' } });
+
+  await expect(opened).resolves.toEqual({ request_id: 'req-lazy-open', name: 'events' });
+  expect(calls).toBe(1);
+});
+
+test('concurrent first worker-backed commands share one lazy worker-backed client', async () => {
+  const worker = new FakeWorker();
+  let calls = 0;
+  const client = createAxonBrowserClient({
+    worker: () => {
+      calls += 1;
+      return worker as unknown as Worker;
+    },
+  });
+
+  const opened = client.openDeltaTable('events', snapshot, { requestId: 'req-lazy-open' });
+  const disposed = client.dispose('events', { requestId: 'req-lazy-dispose' });
+
+  expect(calls).toBe(1);
+  expect(worker.commands.map((command) => Object.keys(command)[0])).toEqual([
+    'open_delta_table',
+    'dispose',
+  ]);
+
+  worker.emitMessage({ opened: { request_id: 'req-lazy-open', name: 'events' } });
+  worker.emitMessage({ disposed: { request_id: 'req-lazy-dispose', name: 'events' } });
+
+  await expect(opened).resolves.toEqual({ request_id: 'req-lazy-open', name: 'events' });
+  await expect(disposed).resolves.toEqual({ request_id: 'req-lazy-dispose', name: 'events' });
+  expect(calls).toBe(1);
+});
+
+test('failed lazy worker initialization can be retried', async () => {
+  const worker = new FakeWorker();
+  let calls = 0;
+  const client = createAxonBrowserClient({
+    worker: () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error('worker unavailable');
+      }
+      return worker as unknown as Worker;
+    },
+  });
+
+  await expect(
+    client.openDeltaTable('events', snapshot, { requestId: 'req-lazy-fails' }),
+  ).rejects.toThrow('worker unavailable');
+
+  const opened = client.openDeltaTable('events', snapshot, { requestId: 'req-lazy-retry' });
+  worker.emitMessage({ opened: { request_id: 'req-lazy-retry', name: 'events' } });
+
+  await expect(opened).resolves.toEqual({ request_id: 'req-lazy-retry', name: 'events' });
+  expect(calls).toBe(2);
+});
+
+test('terminate before first lazy use does not construct a worker', () => {
+  let calls = 0;
+  const client = createAxonBrowserClient({
+    worker: () => {
+      calls += 1;
+      return new FakeWorker() as unknown as Worker;
+    },
+  });
+
+  client.terminate();
+
+  expect(calls).toBe(0);
+});
+
+test('cancelQuery before first lazy use does not construct a worker', () => {
+  let calls = 0;
+  const client = createAxonBrowserClient({
+    worker: () => {
+      calls += 1;
+      return new FakeWorker() as unknown as Worker;
+    },
+  });
+
+  client.cancelQuery('query-before-worker', { requestId: 'cancel-before-worker' });
+
+  expect(calls).toBe(0);
+});
+
+test('lazy bundle-backed client constructs a Worker from the selected bundle on first command', async () => {
+  const workerGlobal = globalThis as typeof globalThis & { Worker?: typeof Worker };
+  const previousWorker = workerGlobal.Worker;
+  const createdWorkers: { url: string | URL; options?: WorkerOptions }[] = [];
+  const workers: ConstructedWorker[] = [];
+
+  class ConstructedWorker extends FakeWorker {
+    constructor(url: string | URL, options?: WorkerOptions) {
+      super();
+      createdWorkers.push({ url, options });
+      workers.push(this);
+    }
+  }
+
+  workerGlobal.Worker = ConstructedWorker as unknown as typeof Worker;
+
+  try {
+    const client = createAxonBrowserClient({
       bundleManifest: manifest,
       platformFeatures: simdOnlyFeatures,
       workerOptions: {
@@ -299,7 +499,9 @@ test('createAxonBrowserClient constructs a worker from the selected bundle', () 
       },
     });
 
-    client.terminate();
+    expect(createdWorkers).toEqual([]);
+
+    const opened = client.openDeltaTable('events', snapshot, { requestId: 'req-bundle-open' });
 
     expect(createdWorkers).toEqual([
       {
@@ -310,6 +512,9 @@ test('createAxonBrowserClient constructs a worker from the selected bundle', () 
         },
       },
     ]);
+
+    workers[0].emitMessage({ opened: { request_id: 'req-bundle-open', name: 'events' } });
+    await expect(opened).resolves.toEqual({ request_id: 'req-bundle-open', name: 'events' });
   } finally {
     if (previousWorker) {
       workerGlobal.Worker = previousWorker;
@@ -317,6 +522,98 @@ test('createAxonBrowserClient constructs a worker from the selected bundle', () 
       Reflect.deleteProperty(workerGlobal, 'Worker');
     }
   }
+});
+
+test('lazy openDeltaLocation resolver failures do not construct a worker', async () => {
+  let calls = 0;
+  const client = createAxonBrowserClient({
+    worker: () => {
+      calls += 1;
+      return new FakeWorker() as unknown as Worker;
+    },
+  });
+
+  await expect(
+    client.openDeltaLocation('events', {
+      resolutionMode: 'server_snapshot',
+      provider: 'gcs',
+      tableUri: 'gs://bucket/table',
+      credentialProfile: { id: 'browser-profile' },
+      resolveDeltaLocation: async () => {
+        throw new DeltaLocationResolverError('storage_auth_failed', 'storage broker denied access');
+      },
+    }),
+  ).rejects.toThrow(DeltaLocationResolverError);
+
+  expect(calls).toBe(0);
+});
+
+test('lazy openDeltaShare resolution failures do not construct a worker', async () => {
+  let calls = 0;
+  const client = createAxonBrowserClient({
+    worker: () => {
+      calls += 1;
+      return new FakeWorker() as unknown as Worker;
+    },
+  });
+  const session = failingDeltaSharingSession(
+    new DeltaSharingError('unsupported_access_mode', 'directory access requires a resolver'),
+  );
+
+  await expect(
+    client.openDeltaShare('shared_events', {
+      session,
+      table: { share: 'main', schema: 'analytics', table: 'events' },
+    }),
+  ).rejects.toThrow(DeltaSharingError);
+
+  expect(calls).toBe(0);
+});
+
+test('lazy openUnityCatalogTable non-browser plans do not construct a worker', async () => {
+  let calls = 0;
+  const client = createAxonBrowserClient({
+    worker: () => {
+      calls += 1;
+      return new FakeWorker() as unknown as Worker;
+    },
+  });
+
+  await expect(
+    client.openUnityCatalogTable('payments', {
+      fullName: 'main.secure.payments',
+      resolveReadAccessPlan: async () => ({
+        plan_type: 'sql_fallback_required',
+        tableId: 'tbl-governed',
+        fullName: 'main.secure.payments',
+        reason: 'row_filter',
+        message: 'governed table requires service-side SQL execution',
+        statementEndpoint: 'https://dbc.example.com/api/2.0/sql/statements',
+        warehouseRequired: true,
+      }),
+    }),
+  ).resolves.toMatchObject({
+    status: 'sql_fallback_required',
+    reason: 'row_filter',
+  });
+
+  await expect(
+    client.openUnityCatalogTable('denied', {
+      fullName: 'main.secure.denied',
+      resolveReadAccessPlan: async () => ({
+        plan_type: 'blocked',
+        tableId: 'tbl-blocked',
+        fullName: 'main.secure.denied',
+        reason: 'unknown_policy_state',
+        message: 'policy state is not safe for browser execution',
+      }),
+    }),
+  ).resolves.toMatchObject({
+    status: 'blocked',
+    reason: 'unknown_policy_state',
+  });
+
+  expect(calls).toBe(0);
 });
 
 test('does not export cancelCommand as a request-response SDK helper', () => {

@@ -1,17 +1,19 @@
 import { Analytics } from '@vercel/analytics/react';
-import { StrictMode } from 'react';
+import { StrictMode, Suspense, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
-import { App } from './App.tsx';
 import { AppProviders } from './AppProviders.tsx';
-import { ConnectPage } from './ConnectPage.tsx';
 import { useRoute } from './router.ts';
 import './styles/design-tokens.css';
 import './connect/connect-styles.css';
 
+const App = lazy(() => import('./App.tsx').then((module) => ({ default: module.App })));
+const ConnectPage = lazy(() =>
+  import('./ConnectPage.tsx').then((module) => ({ default: module.ConnectPage })),
+);
+
 function Router() {
   const route = useRoute();
-  if (route === '/connect') return <ConnectPage />;
-  return <App />;
+  return <Suspense fallback={null}>{route === '/connect' ? <ConnectPage /> : <App />}</Suspense>;
 }
 
 const rootEl = document.getElementById('root');

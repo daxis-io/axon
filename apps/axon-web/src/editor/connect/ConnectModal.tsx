@@ -14,10 +14,6 @@ import {
   type MouseEvent,
   type ReactNode,
 } from 'react';
-import init, {
-  preflight_parquet_metadata_for_targets,
-  resolve_delta_snapshot_from_manifest,
-} from '../../wasm/axon_web_wasm.js';
 import { IconChevR, IconClose, IconKey, IconTable } from '../components/icons.tsx';
 import {
   LOCAL_DISCOVERY,
@@ -33,19 +29,11 @@ import { DEFAULT_AXON_CATALOG_ALIAS } from './store.ts';
 import type { ConnectForm, ConnectResult, SchemaSelection, TestState } from './types.ts';
 import type { BrowserHttpSnapshotDescriptor } from '../../axon-browser-sdk.ts';
 import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
-import {
-  LocalDeltaError,
-  openLocalDeltaTableFromDirectoryHandle,
-  openLocalDeltaTableFromFileList,
-  type LocalDeltaRuntime,
-  type LocalFileSystemDirectoryHandle,
+import type {
+  LocalDeltaRuntime,
+  LocalFileSystemDirectoryHandle,
 } from '../../services/local-delta.ts';
-import {
-  preflightPublicObjectStorageDescriptorRangeRead,
-  registerPublicObjectStorageRuntimeCache,
-  resolvePublicObjectStorageDescriptor,
-  type PublicObjectStorageDescriptorResolutionMetrics,
-} from '../../services/object-storage.ts';
+import type { PublicObjectStorageDescriptorResolutionMetrics } from '../../services/object-storage.ts';
 
 type Props = {
   initialStep?: 1 | 2 | 3;
@@ -79,12 +67,15 @@ const DEFAULT_FORM: ConnectForm = {
 
 let connectWasmReady: Promise<unknown> | undefined;
 
-function ensureConnectWasm(): Promise<unknown> {
+async function loadConnectWasm() {
+  const wasm = await import('../../wasm/axon_web_wasm.js');
   if (!connectWasmReady) {
-    connectWasmReady = init();
+    connectWasmReady = wasm.default();
   }
-  return connectWasmReady;
+  await connectWasmReady;
+  return wasm;
 }
+
 export function ConnectModal({
   initialStep = 1,
   initialSource = null,
@@ -169,21 +160,24 @@ export function ConnectModal({
         if (form.provider !== 'gcs') {
           throw new Error('Public object storage currently supports GCS table roots.');
         }
-        await ensureConnectWasm();
+        const [wasm, objectStorage] = await Promise.all([
+          loadConnectWasm(),
+          import('../../services/object-storage.ts'),
+        ]);
         let descriptorResolutionMetrics: PublicObjectStorageDescriptorResolutionMetrics | undefined;
-        const descriptor = await resolvePublicObjectStorageDescriptor({
+        const descriptor = await objectStorage.resolvePublicObjectStorageDescriptor({
           provider: 'gcs',
           tableUri: form.uri,
-          resolveDeltaSnapshotFromManifest: resolve_delta_snapshot_from_manifest,
+          resolveDeltaSnapshotFromManifest: wasm.resolve_delta_snapshot_from_manifest,
           onMetrics: (metrics) => {
             descriptorResolutionMetrics = metrics;
           },
         });
-        const preflight = await preflightPublicObjectStorageDescriptorRangeRead({
+        const preflight = await objectStorage.preflightPublicObjectStorageDescriptorRangeRead({
           descriptor,
-          preflightParquetMetadataForTargets: preflight_parquet_metadata_for_targets,
+          preflightParquetMetadataForTargets: wasm.preflight_parquet_metadata_for_targets,
         });
-        registerPublicObjectStorageRuntimeCache({
+        objectStorage.registerPublicObjectStorageRuntimeCache({
           provider: 'gcs',
           tableUri: form.uri,
           snapshot: { kind: 'latest' },
@@ -534,7 +528,11 @@ function ConfigLocal({
     setError(null);
     try {
       const handle = await picker({ mode: 'read' });
-      await openRuntime(() => openLocalDeltaTableFromDirectoryHandle(handle));
+      await openRuntime(async () => {
+        const { openLocalDeltaTableFromDirectoryHandle } =
+          await import('../../services/local-delta.ts');
+        return openLocalDeltaTableFromDirectoryHandle(handle);
+      });
     } catch (err) {
       if (!isAbortError(err)) {
         setForm({ ...form, detected: null, localDelta: null });
@@ -546,7 +544,10 @@ function ConfigLocal({
   };
 
   const openSelectedFiles = (files: FileList | null) => {
-    void openRuntime(() => openLocalDeltaTableFromFileList(files));
+    void openRuntime(async () => {
+      const { openLocalDeltaTableFromFileList } = await import('../../services/local-delta.ts');
+      return openLocalDeltaTableFromFileList(files);
+    });
   };
 
   const dropDirectory = async (event: DragEvent) => {
@@ -557,7 +558,11 @@ function ConfigLocal({
     );
     const handle = item?.getAsFileSystemHandle ? await item.getAsFileSystemHandle() : null;
     if (handle?.kind === 'directory') {
-      await openRuntime(() => openLocalDeltaTableFromDirectoryHandle(handle));
+      await openRuntime(async () => {
+        const { openLocalDeltaTableFromDirectoryHandle } =
+          await import('../../services/local-delta.ts');
+        return openLocalDeltaTableFromDirectoryHandle(handle);
+      });
       return;
     }
     setOver(false);
@@ -743,7 +748,6 @@ function localDeltaPersistenceLabel(persistence: LocalDeltaRuntime['persistence'
 }
 
 function localDeltaErrorMessage(error: unknown): string {
-  if (error instanceof LocalDeltaError) return error.message;
   return error instanceof Error ? error.message : String(error);
 }
 

@@ -6,6 +6,11 @@ import {
   type LocalDeltaHandleFileRecord,
   type LocalDeltaHandleStoreRecord,
 } from '../persistence/handle-store.ts';
+import {
+  hasLocalDeltaRuntime as hasMarkedLocalDeltaRuntime,
+  markLocalDeltaRuntimeActive,
+  markLocalDeltaRuntimeInactive,
+} from './local-delta-session.ts';
 
 export type LocalFileSystemFileHandle = {
   readonly kind: 'file';
@@ -175,6 +180,7 @@ export async function loadLocalDeltaRuntime(
     );
   }
   sessionLocalDeltaTables.set(registryId, table);
+  markLocalDeltaRuntimeActive(registryId);
   return buildLocalDeltaRuntime(
     table,
     { ...options, registryId },
@@ -191,7 +197,7 @@ export async function loadActiveLocalDeltaRuntime(
 }
 
 export function hasLocalDeltaRuntime(registryId?: string): boolean {
-  return registryId ? sessionLocalDeltaTables.has(registryId) : false;
+  return hasMarkedLocalDeltaRuntime(registryId);
 }
 
 export function clearActiveLocalDeltaRegistryId(): void {
@@ -219,6 +225,7 @@ export function releaseLocalDeltaObjectUrls(registryId?: string): void {
 
 export async function unregisterLocalDeltaRuntime(registryId: string): Promise<void> {
   sessionLocalDeltaTables.delete(registryId);
+  markLocalDeltaRuntimeInactive(registryId);
   releaseLocalDeltaObjectUrls(registryId);
 
   if (activeLocalDeltaRegistryId() === registryId) {
@@ -333,6 +340,7 @@ async function openLocalDeltaRuntime(
     throw error;
   }
   sessionLocalDeltaTables.set(registryId, sessionTable);
+  markLocalDeltaRuntimeActive(registryId);
 
   const durableTable = durableLocalDeltaTableForRuntime(sessionTable, runtime);
   const persisted = await tryPersistLocalDeltaTable(durableTable);
@@ -481,6 +489,7 @@ async function tryPersistLocalDeltaTable(
       persisted,
     );
     if (persisted.registryId) {
+      markLocalDeltaRuntimeActive(persisted.registryId);
       setActiveLocalDeltaRegistryId(persisted.registryId);
     }
     return persisted;

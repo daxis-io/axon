@@ -3,8 +3,8 @@
 // Snapshot tab can render. Lifted from main.ts's parser (originally rendered as
 // flat action rows in the sandbox; here we aggregate per-commit).
 
-import { getSession, subscribeSession } from './query.ts';
 import { SAMPLE_QUERY_SOURCE, sameQuerySource, type QueryTableSource } from './query-source.ts';
+import { getQueryRuntimeState, subscribeQueryRuntimeState } from './query-runtime-state.ts';
 import type { CommitEntry, CommitOp } from './types.ts';
 
 type ParsedAction =
@@ -28,8 +28,8 @@ export async function loadCommits(
 ): Promise<CommitEntry[]> {
   if (source.kind !== 'manifest') return [];
 
-  const state = await getSession(source);
-  if (!state.manifest) return [];
+  const state = getQueryRuntimeState(source);
+  if (!state?.manifest) return [];
   const baseHref = window.location.href;
   const commits: CommitEntry[] = [];
 
@@ -68,7 +68,8 @@ export function subscribeCommits(
     return () => {};
   }
 
-  return subscribeSession((state) => {
+  listener([]);
+  return subscribeQueryRuntimeState((state) => {
     if (!sameQuerySource(state.source, source)) return;
     loadCommits(source)
       .then(listener)

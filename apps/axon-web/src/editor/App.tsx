@@ -1,9 +1,11 @@
 import {
   useCallback,
   useEffect,
+  lazy,
   useMemo,
   useRef,
   useState,
+  Suspense,
   type CSSProperties,
   type MouseEvent,
 } from 'react';
@@ -16,7 +18,7 @@ import {
 import { subscribeEngineStatus } from '../services/engine.ts';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
 import { appendHistory, loadHistory } from '../services/history.ts';
-import { hasLocalDeltaRuntime, unregisterLocalDeltaRuntime } from '../services/local-delta.ts';
+import { hasLocalDeltaRuntime } from '../services/local-delta-session.ts';
 import {
   appendResultPage,
   queryResultPageRun,
@@ -24,7 +26,6 @@ import {
   sameQueryResultPageRun,
   type QueryResultPageRun,
 } from '../services/query-pagination.ts';
-import { discardQuerySession, runQuery } from '../services/query.ts';
 import {
   firstQueryableTableRef,
   querySourceFromConnectedCatalogs,
@@ -81,7 +82,6 @@ import {
   IconStop,
   IconTable,
 } from './components/icons.tsx';
-import { ConnectModal } from './connect/ConnectModal.tsx';
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
 import type { SourceId } from './connect/data.ts';
 import {
@@ -101,6 +101,10 @@ import {
   TweakSelect,
   TweaksPanel,
 } from './tweaks/TweaksPanel.tsx';
+
+const ConnectModal = lazy(() =>
+  import('./connect/ConnectModal.tsx').then((module) => ({ default: module.ConnectModal })),
+);
 
 type Tab = {
   id: string;
@@ -296,12 +300,11 @@ export function App() {
       const replacedRegistryIds = localRegistryIdsForCatalogs(upsert.replaced);
       if (replacedRegistryIds.length > 0) {
         if (upsert.replaced.some((replaced) => replaced.id === selectedTableRef?.catalogId)) {
-          discardQuerySession();
+          discardActiveQuerySession();
         }
-        void Promise.all(
-          replacedRegistryIds.map((registryId) => unregisterLocalDeltaRuntime(registryId)),
-        ).catch((error) =>
-          console.warn('failed to unregister duplicate local Delta catalog:', error),
+        unregisterLocalDeltaRuntimeIds(
+          replacedRegistryIds,
+          'failed to unregister duplicate local Delta catalog:',
         );
       }
       setFreshCatalogId(mergedCatalogId);
@@ -331,10 +334,11 @@ export function App() {
             : resolveActiveTableRef(nextAvailable, current),
         );
         if (removedLocalRegistryIds.length > 0) {
-          if (selectedTableRef?.catalogId === id) discardQuerySession();
-          void Promise.all(
-            removedLocalRegistryIds.map((registryId) => unregisterLocalDeltaRuntime(registryId)),
-          ).catch((error) => console.warn('failed to unregister local Delta catalog:', error));
+          if (selectedTableRef?.catalogId === id) discardActiveQuerySession();
+          unregisterLocalDeltaRuntimeIds(
+            removedLocalRegistryIds,
+            'failed to unregister local Delta catalog:',
+          );
         }
         return next;
       });
@@ -485,6 +489,7 @@ export function App() {
       snapshot_version: tab.pin ?? undefined,
     };
 
+    const { runQuery } = await import('../services/query.ts');
     const outcome = await runQuery(
       req,
       (event) => {
@@ -608,6 +613,7 @@ export function App() {
       size: page.size,
     });
 
+    const { runQuery } = await import('../services/query.ts');
     const outcome = await runQuery(
       req,
       (event) => {
@@ -1095,14 +1101,16 @@ export function App() {
       )}
 
       {connectModalOpen && (
-        <ConnectModal
-          initialStep={connectInitialStep}
-          initialSource={connectInitialSource}
-          serverFallbackEnabled={SERVER_QUERY_FALLBACK_ENABLED}
-          connectorFeatures={CONNECTOR_FEATURES}
-          onClose={() => setConnectModalOpen(false)}
-          onConnect={handleConnected}
-        />
+        <Suspense fallback={null}>
+          <ConnectModal
+            initialStep={connectInitialStep}
+            initialSource={connectInitialSource}
+            serverFallbackEnabled={SERVER_QUERY_FALLBACK_ENABLED}
+            connectorFeatures={CONNECTOR_FEATURES}
+            onClose={() => setConnectModalOpen(false)}
+            onConnect={handleConnected}
+          />
+        </Suspense>
       )}
 
       {connectedPanelOpen && (
@@ -1163,4 +1171,18 @@ export function App() {
       </TweaksPanel>
     </div>
   );
+}
+
+function discardActiveQuerySession(): void {
+  void import('../services/query.ts')
+    .then(({ discardQuerySession }) => discardQuerySession())
+    .catch((error) => console.warn('failed to discard query session:', error));
+}
+
+function unregisterLocalDeltaRuntimeIds(registryIds: string[], message: string): void {
+  void import('../services/local-delta.ts')
+    .then(({ unregisterLocalDeltaRuntime }) =>
+      Promise.all(registryIds.map((registryId) => unregisterLocalDeltaRuntime(registryId))),
+    )
+    .catch((error) => console.warn(message, error));
 }

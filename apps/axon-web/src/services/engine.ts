@@ -4,7 +4,11 @@ import {
   selectBundle,
   type BrowserWorkerCacheMetricsEvent,
 } from '../axon-browser-sdk.ts';
-import { getColdStartMs, subscribeSession, subscribeWorkerEvents } from './query.ts';
+import {
+  getColdStartMs,
+  subscribeQueryRuntimeState,
+  subscribeWorkerEvents,
+} from './query-runtime-state.ts';
 import type { EngineStatus } from './types.ts';
 
 // Engine status combines compile-time data (bundle selection) with runtime
@@ -67,7 +71,7 @@ function ensureSubscribed() {
   if (subscribed) return;
   subscribed = true;
 
-  subscribeSession(() => {
+  subscribeQueryRuntimeState(() => {
     notify();
   });
 

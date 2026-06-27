@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Request, type Route } from '@playwright/test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -493,6 +493,110 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.getByRole('dialog', { name: 'Connect a local Delta folder' })).toBeVisible();
 
     expect(consoleErrors, `console errors:\n${consoleErrors.join('\n')}`).toEqual([]);
+  });
+
+  test('lazy startup defers query runtime requests until the first workspace query', async ({
+    page,
+  }) => {
+    const requests = trackRelevantRequests(page);
+
+    await page.goto('/');
+    await expect(page.locator('.shell .brand-name')).toContainText('axon');
+    await expect(page.locator('.queryref-bar .qref')).toContainText('events');
+
+    const initial = requests.slice();
+    expectRequestLogExcludes(initial, [
+      'axon_web_wasm_bg.wasm',
+      'sandbox-query-worker',
+      '/src/services/query.ts',
+      '/src/services/local-delta.ts',
+      '/src/services/object-storage.ts',
+      '/src/wasm/',
+    ]);
+    expect(initial.filter((request) => request.resourceType === 'worker')).toEqual([]);
+
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+    await expect(page.locator('.res-meta')).toContainText(/browser · wasm/i, {
+      timeout: 30_000,
+    });
+
+    await expect
+      .poll(() => ({
+        queryRuntime: requests.some((request) => request.url.includes('/src/services/query.ts')),
+        worker: requests.some(
+          (request) =>
+            request.resourceType === 'worker' || request.url.includes('sandbox-query-worker'),
+        ),
+        wasm: requests.some(
+          (request) =>
+            request.url.includes('/src/wasm/') || request.url.includes('axon_web_wasm_bg.wasm'),
+        ),
+      }))
+      .toEqual({ queryRuntime: true, worker: true, wasm: true });
+  });
+
+  test('lazy startup keeps the connect route storage runtimes deferred to validation actions', async ({
+    page,
+  }) => {
+    const requests = trackRelevantRequests(page);
+    await page.route('https://storage.googleapis.com/**', async (route) => {
+      await route.fulfill({
+        status: 404,
+        contentType: 'application/xml',
+        headers: { 'access-control-allow-origin': APP_ORIGIN },
+        body: '<Error><Code>NoSuchBucket</Code></Error>',
+      });
+    });
+
+    await page.goto('/connect');
+    await expect(page.getByRole('heading', { name: 'Connect a Delta source' })).toBeVisible();
+
+    const initial = requests.slice();
+    expectRequestLogExcludes(initial, [
+      '/src/editor/App.tsx',
+      '/src/services/query.ts',
+      'sandbox-query-worker',
+      '/src/services/local-delta.ts',
+      '/src/services/object-storage.ts',
+      '/src/wasm/',
+      'axon_web_wasm_bg.wasm',
+    ]);
+    expect(initial.filter((request) => request.resourceType === 'worker')).toEqual([]);
+
+    await page.getByRole('button', { name: 'Connect a source' }).click();
+    await expect(page.getByRole('dialog', { name: 'Connect a Delta source' })).toBeVisible();
+
+    const afterModal = requests.slice(initial.length);
+    expect(
+      afterModal.some((request) => request.url.includes('/src/editor/connect/ConnectModal.tsx')),
+    ).toBe(true);
+    expectRequestLogExcludes(afterModal, [
+      '/src/services/object-storage.ts',
+      '/src/services/local-delta.ts',
+      '/src/wasm/',
+      'axon_web_wasm_bg.wasm',
+    ]);
+
+    const sourceDialog = page.getByRole('dialog', { name: 'Connect a Delta source' });
+    await sourceDialog.locator('.cc-source-row', { hasText: 'Object storage' }).click();
+    await sourceDialog.getByRole('button', { name: /Continue/ }).click();
+    const configDialog = page.getByRole('dialog', { name: 'Connect to object storage' });
+    await expect(configDialog).toBeVisible();
+
+    const beforeValidationCount = requests.length;
+    await configDialog.getByRole('button', { name: 'Test connection' }).click();
+    await expect(configDialog).toContainText(/not configured|failed|NoSuchBucket|public GCS/i);
+
+    const validationRequests = requests.slice(beforeValidationCount);
+    expect(
+      validationRequests.some((request) => request.url.includes('/src/services/object-storage.ts')),
+    ).toBe(true);
+    expect(
+      validationRequests.some(
+        (request) =>
+          request.url.includes('/src/wasm/') || request.url.includes('axon_web_wasm_bg.wasm'),
+      ),
+    ).toBe(true);
   });
 
   test('persists client appearance settings from the Tweaks panel across reloads', async ({
@@ -1856,6 +1960,44 @@ function prodLikeParquetPath(categoryPath: string): string {
   const fileName = readdirSync(categoryDir).find((name) => name.endsWith('.parquet'));
   if (!fileName) throw new Error(`no Parquet fixture found under ${categoryPath}`);
   return `${categoryPath}/${fileName}`;
+}
+
+type RequestLogEntry = {
+  url: string;
+  resourceType: string;
+};
+
+function trackRelevantRequests(page: Page): RequestLogEntry[] {
+  const requests: RequestLogEntry[] = [];
+  page.on('request', (request) => {
+    if (isIgnoredRequest(request)) return;
+    requests.push({
+      url: request.url(),
+      resourceType: request.resourceType(),
+    });
+  });
+  return requests;
+}
+
+function expectRequestLogExcludes(requests: RequestLogEntry[], forbidden: string[]): void {
+  const urls = requests.map((request) => request.url);
+  for (const pattern of forbidden) {
+    expect(
+      urls.filter((url) => url.includes(pattern)),
+      `unexpected startup request matching ${pattern}:\n${urls.join('\n')}`,
+    ).toEqual([]);
+  }
+}
+
+function isIgnoredRequest(request: Request): boolean {
+  const url = request.url();
+  if (url.startsWith('chrome-extension://')) return true;
+  if (url.includes('/@vite/') || url.includes('/@react-refresh')) return true;
+  if (url.includes('/node_modules/')) return true;
+  if (url.includes('__playwright')) return true;
+  if (url.endsWith('/favicon.ico')) return true;
+  if (url.endsWith('.css') || url.endsWith('.map')) return true;
+  return false;
 }
 
 async function blockDurableLocalDeltaRegistry(page: Page): Promise<void> {

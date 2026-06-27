@@ -8,6 +8,11 @@ export type ManifestQueryTableSource = {
   manifestUrl: string;
   storage: string;
   region: string;
+  snapshot?: number;
+  rows?: number;
+  files?: number;
+  size?: string;
+  protocol?: string;
 };
 
 export type LocalDeltaQueryTableSource = {
@@ -201,6 +206,11 @@ function querySourceForTable(
       manifestUrl: table.manifestUrl,
       storage: table.source?.storage ?? catalog.storage,
       region: table.source?.region ?? catalog.region ?? SAMPLE_QUERY_SOURCE.region,
+      snapshot: table.snapshot,
+      rows: table.rows,
+      files: table.files,
+      size: table.size,
+      protocol: table.protocol,
     };
   }
 

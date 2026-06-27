@@ -1,39 +1,27 @@
 import type { Catalog, CatalogTable } from './types.ts';
-import { deriveCatalogTable, getCurrentSession, getSession, subscribeSession } from './query.ts';
-import { SAMPLE_QUERY_SOURCE, sameQuerySource, type QueryTableSource } from './query-source.ts';
-import { LocalDeltaError } from './local-delta.ts';
+import { getQueryRuntimeState, subscribeQueryRuntimeState } from './query-runtime-state.ts';
+import { SAMPLE_QUERY_SOURCE, type QueryTableSource } from './query-source.ts';
 
 export async function loadCatalog(
   source: QueryTableSource = SAMPLE_QUERY_SOURCE,
 ): Promise<Catalog> {
-  try {
-    const state = await getSession(source);
-    return buildCatalog(deriveCatalogTable(state), state.source);
-  } catch (error) {
-    if (source.kind === 'local_delta' && canUseLocalDeltaCatalogFallback(error)) {
-      return buildLocalDeltaCatalogFallback(source);
-    }
-    throw error;
-  }
+  return snapshotCatalog(source);
 }
 
-export function snapshotCatalog(
-  source: QueryTableSource = SAMPLE_QUERY_SOURCE,
-): Catalog | undefined {
-  const state = getCurrentSession(source);
-  if (!state) return undefined;
-  return buildCatalog(deriveCatalogTable(state), state.source);
+export function snapshotCatalog(source: QueryTableSource = SAMPLE_QUERY_SOURCE): Catalog {
+  return getQueryRuntimeState(source)?.catalog ?? summaryCatalog(source);
 }
 
 export function subscribeCatalog(
   listener: (catalog: Catalog) => void,
   source: QueryTableSource = SAMPLE_QUERY_SOURCE,
 ): () => void {
-  return subscribeSession((state) => {
-    if (sameQuerySource(state.source, source)) {
-      listener(buildCatalog(deriveCatalogTable(state), state.source));
-    }
-  });
+  listener(snapshotCatalog(source));
+  return subscribeQueryRuntimeState((state) => listener(state.catalog), source);
+}
+
+function summaryCatalog(source: QueryTableSource): Catalog {
+  return buildCatalog(summaryCatalogTable(source), source);
 }
 
 function buildCatalog(table: CatalogTable, source: QueryTableSource): Catalog {
@@ -45,33 +33,45 @@ function buildCatalog(table: CatalogTable, source: QueryTableSource): Catalog {
   };
 }
 
-function buildLocalDeltaCatalogFallback(
-  source: Extract<QueryTableSource, { kind: 'local_delta' }>,
-): Catalog {
+function summaryCatalogTable(source: QueryTableSource): CatalogTable {
   return {
-    name: source.catalogName,
-    region: source.region,
-    storage: source.storage,
-    tables: [
-      {
-        name: source.tableName,
-        uri: source.storage,
-        kind: 'delta',
-        snapshot: source.snapshot ?? 0,
-        size_bytes: 0,
-        row_count: source.rows ?? 0,
-        file_count: source.files ?? 0,
-        row_group_count: 0,
-        partition_columns: [],
-        protocol: protocolFromLabel(source.protocol),
-        columns: [],
-      },
-    ],
+    name: source.tableName,
+    uri: tableUriFromSource(source),
+    kind: 'delta',
+    snapshot: summaryNumber(source, 'snapshot'),
+    size_bytes: parseSizeLabel(summaryString(source, 'size')),
+    row_count: summaryNumber(source, 'rows'),
+    file_count: summaryNumber(source, 'files'),
+    row_group_count: 0,
+    partition_columns: [],
+    protocol: protocolFromLabel(summaryString(source, 'protocol')),
+    columns: [],
   };
 }
 
-function canUseLocalDeltaCatalogFallback(error: unknown): boolean {
-  return error instanceof LocalDeltaError && error.code === 'registry_unavailable';
+function tableUriFromSource(source: QueryTableSource): string {
+  if (source.kind === 'object_store_table_root') return source.tableUri;
+  return source.storage;
+}
+
+function summaryNumber(source: QueryTableSource, field: 'snapshot' | 'rows' | 'files'): number {
+  return source[field] ?? 0;
+}
+
+function summaryString(source: QueryTableSource, field: 'size' | 'protocol'): string | undefined {
+  return source[field];
+}
+
+function parseSizeLabel(label: string | undefined): number {
+  if (!label) return 0;
+  const match = /^([\d.]+)\s*(B|KB|MB|GB)$/i.exec(label.trim());
+  if (!match) return 0;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) return 0;
+  const unit = match[2].toUpperCase();
+  const multiplier =
+    unit === 'GB' ? 1024 * 1024 * 1024 : unit === 'MB' ? 1024 * 1024 : unit === 'KB' ? 1024 : 1;
+  return Math.round(value * multiplier);
 }
 
 function protocolFromLabel(label: string | undefined) {
