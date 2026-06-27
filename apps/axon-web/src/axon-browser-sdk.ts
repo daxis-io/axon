@@ -633,6 +633,8 @@ export type QueryMetricsSummary = {
   scan_footer_range_reads?: number;
   scan_data_range_reads?: number;
   duplicate_range_reads?: number;
+  coalesced_range_reads?: number;
+  coalesced_gap_bytes_fetched?: number;
   footer_cache_hits?: number;
   footer_cache_misses?: number;
   footer_range_reads_avoided?: number;
@@ -906,6 +908,8 @@ export type BrowserWorkerRangeReadMetricsEvent = {
   scan_footer_range_reads?: number;
   scan_data_range_reads?: number;
   duplicate_range_reads?: number;
+  coalesced_range_reads?: number;
+  coalesced_gap_bytes_fetched?: number;
   footer_cache_hits?: number;
   footer_cache_misses?: number;
   footer_range_reads_avoided?: number;
@@ -4585,6 +4589,14 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
           duplicate_range_reads: optionalNumber(
             payload.duplicate_range_reads,
             'range_read_metrics.duplicate_range_reads',
+          ),
+          coalesced_range_reads: optionalNumber(
+            payload.coalesced_range_reads,
+            'range_read_metrics.coalesced_range_reads',
+          ),
+          coalesced_gap_bytes_fetched: optionalNumber(
+            payload.coalesced_gap_bytes_fetched,
+            'range_read_metrics.coalesced_gap_bytes_fetched',
           ),
           footer_cache_hits: optionalNumber(
             payload.footer_cache_hits,

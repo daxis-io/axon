@@ -523,6 +523,8 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
                 scan_footer_range_reads: Some(2),
                 scan_data_range_reads: Some(6),
                 duplicate_range_reads: Some(2),
+                coalesced_range_reads: Some(1),
+                coalesced_gap_bytes_fetched: Some(12_288),
                 footer_cache_hits: Some(1),
                 footer_cache_misses: Some(3),
                 footer_range_reads_avoided: Some(2),
@@ -569,6 +571,8 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
     assert_eq!(metrics.scan_footer_range_reads, Some(2));
     assert_eq!(metrics.scan_data_range_reads, Some(6));
     assert_eq!(metrics.duplicate_range_reads, Some(2));
+    assert_eq!(metrics.coalesced_range_reads, Some(1));
+    assert_eq!(metrics.coalesced_gap_bytes_fetched, Some(12_288));
     assert_eq!(metrics.footer_cache_hits, Some(1));
     assert_eq!(metrics.footer_cache_misses, Some(3));
     assert_eq!(metrics.footer_range_reads_avoided, Some(2));
@@ -616,6 +620,8 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             scan_footer_range_reads: Some(2),
             scan_data_range_reads: Some(6),
             duplicate_range_reads: Some(2),
+            coalesced_range_reads: Some(1),
+            coalesced_gap_bytes_fetched: Some(12_288),
             footer_cache_hits: Some(1),
             footer_cache_misses: Some(3),
             footer_range_reads_avoided: Some(2),
@@ -699,6 +705,8 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             assert_eq!(event.scan_footer_range_reads, Some(2));
             assert_eq!(event.scan_data_range_reads, Some(6));
             assert_eq!(event.duplicate_range_reads, Some(2));
+            assert_eq!(event.coalesced_range_reads, Some(1));
+            assert_eq!(event.coalesced_gap_bytes_fetched, Some(12_288));
             assert_eq!(event.footer_cache_hits, Some(1));
             assert_eq!(event.footer_cache_misses, Some(3));
             assert_eq!(event.footer_range_reads_avoided, Some(2));
@@ -981,6 +989,8 @@ fn sample_query_response(
             scan_footer_range_reads: None,
             scan_data_range_reads: None,
             duplicate_range_reads: None,
+            coalesced_range_reads: None,
+            coalesced_gap_bytes_fetched: None,
             footer_cache_hits: None,
             footer_cache_misses: None,
             footer_range_reads_avoided: None,

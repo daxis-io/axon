@@ -246,6 +246,18 @@ fn session_preserves_bootstrapped_etag_for_datafusion_scan_if_range() {
             Some(0),
             "open plus SQL should avoid repeating exact trailer/footer ranges once object identity is available"
         );
+        assert!(
+            result.response.metrics.coalesced_range_reads.is_some(),
+            "coalesced range metrics should surface through the DataFusion session path"
+        );
+        assert!(
+            result
+                .response
+                .metrics
+                .coalesced_gap_bytes_fetched
+                .is_some(),
+            "coalesced gap metrics should surface through the DataFusion session path"
+        );
         assert_eq!(result.response.metrics.footer_cache_hits, Some(1));
         assert_eq!(result.response.metrics.footer_cache_misses, Some(1));
         assert_eq!(result.response.metrics.footer_range_reads_avoided, Some(2));

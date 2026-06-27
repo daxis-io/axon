@@ -777,6 +777,10 @@ fn emit_open_bootstrap_metrics<F>(
             scan_footer_range_reads: None,
             scan_data_range_reads: None,
             duplicate_range_reads: None,
+            coalesced_range_reads: Some(snapshot.range_read_metrics().coalesced_range_reads),
+            coalesced_gap_bytes_fetched: Some(
+                snapshot.range_read_metrics().coalesced_gap_bytes_fetched,
+            ),
             footer_cache_hits: Some(snapshot.range_read_metrics().footer_cache_hits),
             footer_cache_misses: Some(snapshot.range_read_metrics().footer_cache_misses),
             footer_range_reads_avoided: Some(

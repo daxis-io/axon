@@ -329,6 +329,10 @@ pub struct BrowserWorkerRangeReadMetricsEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicate_range_reads: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coalesced_range_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coalesced_gap_bytes_fetched: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footer_cache_hits: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footer_cache_misses: Option<u64>,
@@ -482,6 +486,8 @@ impl BrowserWorkerEventEnvelope {
             scan_footer_range_reads: metrics.scan_footer_range_reads,
             scan_data_range_reads: metrics.scan_data_range_reads,
             duplicate_range_reads: metrics.duplicate_range_reads,
+            coalesced_range_reads: metrics.coalesced_range_reads,
+            coalesced_gap_bytes_fetched: metrics.coalesced_gap_bytes_fetched,
             footer_cache_hits: metrics.footer_cache_hits,
             footer_cache_misses: metrics.footer_cache_misses,
             footer_range_reads_avoided: metrics.footer_range_reads_avoided,

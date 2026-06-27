@@ -40,25 +40,36 @@ Performance work can cache resolved descriptors, access envelopes, and footer me
 
 ## Current Status
 
-Landed on `origin/main` before this alignment update:
+The original performance sequence is complete through the planned browser-query hot-path slices:
 
 - `perf(range): instrument duplicate descriptor/footer/range reads`
 - `perf(range): preserve object identity in scans`
 - `perf(range): share parquet metadata cache`
+- `perf(pruning): prune active files before DataFusion footer bootstrap`
+- `perf(pruning): fail open on zero-candidate prebootstrap pruning`
+- `perf(pruning): normalize partition pruning across DataFusion and legacy runtime`
+- `perf(snapshot): carry descriptors through E9/query-session runtime cache`
+- `perf(ipc): stream Arrow IPC chunks from worker`
+- `perf(startup): lazy-load startup query paths`
+- `perf(scan): split scan metrics from debug trace`
+- `perf(range): coalesce small-gap Parquet range batches` in the current implementation slice
 
-The next runtime slice is DataFusion prebootstrap pruning from partition values and Delta stats. After that, descriptor carryover should target the E9 read-resolution and query-session runtime cache, not the durable E1 catalog registry.
+Remaining work should be treated as backlog and driven by measured browser telemetry rather than the original sequence order.
 
 ---
 
-## Executive Ranking
+## Remaining Backlog
 
-1. **DataFusion prebootstrap pruning** should come next. Shared range/footer caching has landed; pruning now needs to avoid fetching candidate-file footers when partition values or Delta stats can decide the file set first.
-2. **E9/session-scoped descriptor carryover** should follow. Public object-storage connect already resolves and preflights enough state to avoid repeating log reconstruction on the first query, but that state belongs in read-resolution/runtime cache, not durable catalog state.
-3. **Arrow IPC streaming and default output budgets** should follow. The current DataFusion path streams internally, then materializes one IPC buffer across the WASM boundary.
-4. **Runtime startup lazy loading** should remove WASM and worker creation from the first catalog render.
-5. **DataFusion trace and scan clone cleanup** should come after the network and output-path fixes unless profiling proves trace cloning dominates a target workload.
+Prioritize these only when metrics show they are the next limiting factor:
 
-Run this investigation as six separate workstreams. Share metrics and fixtures across them, but keep changes small enough that each workstream can prove a specific latency, memory, or byte-read improvement.
+1. Tune range-coalescing thresholds from real browser telemetry.
+2. Add explicit scan-overfetch budget enforcement if metrics justify it.
+3. Build a shared Delta/Parquet range-cache and readahead substrate.
+4. Add physical-vs-logical range request summary metrics if current labels become ambiguous.
+5. Capture browser UAT evidence on a representative public dataset.
+6. Continue row-group/page-index pruning before data-page reads.
+
+Keep future changes small enough that each workstream can prove a specific latency, memory, or byte-read improvement.
 
 ---
 
@@ -103,6 +114,8 @@ Preferred metric fields:
 - `footer_cache_hit`
 - `range_cache_hit`
 - `duplicate_range_reads`
+- `coalesced_range_reads`
+- `coalesced_gap_bytes_fetched`
 - `prebootstrap_files_pruned`
 - `footer_reads_avoided`
 - `row_groups_skipped`
@@ -125,21 +138,21 @@ The connected catalog stores summary state, not an openable read resolution. Fir
 
 Delta log materialization reads `_delta_log` objects through `HttpRangeReader`. Parquet footer inspection reads a trailer range, then a footer payload range in `crates/wasm-parquet-engine/src/lib.rs`.
 
-The active scan path uses `HttpRangeAsyncFileReader`. Each `get_bytes` call becomes one bounded HTTP range request. The richer extent cache lives in `crates/wasm-http-object-store/src/lib.rs`, but the Parquet/DataFusion scan path does not use it as the shared read layer.
+The active scan path uses `HttpRangeAsyncFileReader`. Single `get_bytes` calls remain exact bounded HTTP range requests. Batched `get_byte_ranges` calls can coalesce nearby ranges only when the scan target has strong object identity and the request can use `If-Range`. The richer extent cache lives in `crates/wasm-http-object-store/src/lib.rs`; a shared Delta/Parquet cache and readahead substrate remains backlog.
 
 ### Main Gaps
 
-- Range instrumentation, object identity propagation, and shared footer metadata reuse have landed. Remaining work should preserve those metrics and avoid weakening identity checks.
-- The existing cache coalesces adjacent or overlapping extents, but it does not merge nearby small-gap reads.
-- Public connect preflight only checks the first active file, and query execution does not consume that preflight result through the E9/runtime cache yet.
+- Range instrumentation, object identity propagation, shared footer metadata reuse, descriptor carryover, and small-gap Parquet range coalescing have landed or are implemented in the current slice.
+- Future cache/readahead work should preserve logical range metrics and avoid weakening strong `ETag`/`If-Range` validation.
+- Public connect preflight still checks only the first active file; broader representative-browser UAT remains backlog.
 
 ### Implementation Slices
 
 1. Preserve `object_etag`, object size, and canonical resource identity from snapshot bootstrap into DataFusion scan targets. **Status: landed.**
-2. Put Parquet range reads behind the existing object-store extent cache, or extract a shared range-cache interface used by both object-store reads and Parquet scan reads. **Status: partially addressed by session-scoped footer metadata reuse; small-gap range coalescing remains open.**
+2. Put Parquet range reads behind the existing object-store extent cache, or extract a shared range-cache interface used by both object-store reads and Parquet scan reads. **Status: partially addressed by session-scoped footer metadata reuse and small-gap Parquet range coalescing; shared Delta/Parquet cache substrate remains backlog.**
 3. Add a Parquet metadata cache keyed by canonical object id plus immutable identity such as `ETag` and size. Cache trailer bytes, footer bytes, and decoded row-group metadata. **Status: landed for footer metadata reuse.**
-4. Add small-gap coalescing for planned Parquet reads. Track coalesced read amplification so the browser does not fetch large gaps to save a small request count.
-5. Carry connect-time descriptor and first-file preflight identity into the E9 read-resolution and query-session runtime cache, with expiration and identity refresh rules. Do not persist read resolutions or openable descriptors in durable catalog state.
+4. Add small-gap coalescing for planned Parquet reads. Track coalesced read amplification so the browser does not fetch large gaps to save a small request count. **Status: implemented in the current slice with strict `206`/`Content-Range`/body-length/object-size/ETag validation.**
+5. Carry connect-time descriptor and first-file preflight identity into the E9 read-resolution and query-session runtime cache, with expiration and identity refresh rules. Do not persist read resolutions or openable descriptors in durable catalog state. **Status: landed.**
 
 ### Correctness Constraints
 
@@ -467,6 +480,8 @@ Then profile `/` and `/connect` in browser network/performance tools:
 
 Add metrics and tests that expose duplicate descriptor, footer, and data-range reads. Do this before optimizing so every later slice can prove its effect.
 
+**Status: complete.**
+
 Useful first tests:
 
 - Connect plus first query should count descriptor resolution once.
@@ -479,11 +494,15 @@ Preserve `ETag` and size from snapshot/bootstrap into scan targets. Add the shar
 
 This step supports Areas 1, 2, and 3.
 
+**Status: complete.**
+
 ### Step 2: Add DataFusion Prebootstrap Pruning
 
 Use partition values and Delta stats before `bootstrap_snapshot_metadata`. Fetch footers only for candidate files.
 
 This step addresses the main network waste in Area 2.
+
+**Status: complete, including typed partition normalization and explicit zero-candidate fail-open behavior.**
 
 ### Step 3: Carry Descriptors From Connect To Query
 
@@ -491,11 +510,15 @@ Carry the resolved object-store descriptor and its identity envelope through E9 
 
 This step addresses Area 3 and strengthens Area 1.
 
+**Status: complete.**
+
 ### Step 4: Stream IPC And Set Browser Budgets
 
 Chunk IPC across the worker boundary, remove the full-buffer copy where possible, build preview during encoding, and enforce browser defaults for result output.
 
 This step addresses Area 4.
+
+**Status: complete for chunked IPC, exact-sized transferable buffers, and browser-safe output defaults.**
 
 ### Step 5: Lazy-Load Startup Paths
 
@@ -503,11 +526,21 @@ Remove WASM and worker construction from initial catalog render. Split routes an
 
 This step addresses Area 6.
 
+**Status: complete for lazy startup query paths.**
+
 ### Step 6: Reduce Custom Scan Trace Cost
 
 Split metrics from debug traces, reduce descriptor/file clones, and add plan-shape tests for exact and mixed predicates.
 
 This step addresses Area 5.
+
+**Status: complete for scan metrics/debug trace split. Further clone reductions are backlog only if profiling justifies them.**
+
+### Step 7: Coalesce Small-Gap Parquet Range Batches
+
+Coalesce planned Parquet `get_byte_ranges` batches only under strong object identity, strict `If-Range` validation, and bounded overfetch policy.
+
+**Status: implemented in the current slice.**
 
 ---
 
@@ -524,5 +557,6 @@ This step addresses Area 5.
 9. `perf(startup): avoid WASM load during initial catalog render`
 10. `perf(startup): lazy-create query worker and split routes`
 11. `perf(scan): split custom scan metrics from debug trace`
+12. `perf(range): coalesce small-gap Parquet range batches`
 
 Each ticket should include one failing-first test or profiling assertion, the code change, and one command that proves the target behavior changed.

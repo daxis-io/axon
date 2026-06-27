@@ -747,6 +747,8 @@ fn collect_query_metrics(
         scan_footer_range_reads: None,
         scan_data_range_reads: None,
         duplicate_range_reads: None,
+        coalesced_range_reads: None,
+        coalesced_gap_bytes_fetched: None,
         footer_cache_hits: None,
         footer_cache_misses: None,
         footer_range_reads_avoided: None,

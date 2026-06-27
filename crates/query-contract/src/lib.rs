@@ -1509,6 +1509,12 @@ pub struct QueryMetricsSummary {
     /// Exact duplicate HTTP range reads observed across the measured browser query path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicate_range_reads: Option<u64>,
+    /// Physical HTTP range requests that served two or more logical Parquet ranges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coalesced_range_reads: Option<u64>,
+    /// Gap bytes fetched only because nearby logical Parquet ranges were coalesced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coalesced_gap_bytes_fetched: Option<u64>,
     /// Parquet footer metadata cache hits observed across bootstrap, inspect, or scan paths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footer_cache_hits: Option<u64>,
@@ -1734,6 +1740,10 @@ pub struct DaxisQueryMetrics {
     pub scan_data_range_reads: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duplicate_range_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coalesced_range_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coalesced_gap_bytes_fetched: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footer_cache_hits: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

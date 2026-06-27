@@ -51,6 +51,11 @@ pub const MAX_PARQUET_FOOTER_SIZE_BYTES: u64 = 16 * 1024 * 1024;
 pub const PARQUET_TRAILER_SIZE_BYTES: u64 = 8;
 pub const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
 pub const DEFAULT_STREAM_BATCH_SIZE: usize = 1024;
+const MAX_COALESCED_INDIVIDUAL_GAP_BYTES: u64 = 16 * 1024;
+const MAX_COALESCED_CUMULATIVE_GAP_BYTES: u64 = 64 * 1024;
+const MAX_COALESCED_GAP_AMPLIFICATION_NUMERATOR: u64 = 1;
+const MAX_COALESCED_GAP_AMPLIFICATION_DENOMINATOR: u64 = 4;
+const MAX_COALESCED_PHYSICAL_RANGE_BYTES: u64 = 512 * 1024;
 
 pub fn runtime_target() -> ExecutionTarget {
     ExecutionTarget::BrowserWasm
@@ -378,6 +383,8 @@ pub struct ParquetRangeReadMetrics {
     pub scan_footer_range_reads: u64,
     pub scan_data_range_reads: u64,
     pub duplicate_range_reads: u64,
+    pub coalesced_range_reads: u64,
+    pub coalesced_gap_bytes_fetched: u64,
     pub identity_present_range_reads: u64,
     pub identity_missing_range_reads: u64,
     pub footer_cache_hits: u64,
@@ -427,6 +434,13 @@ impl ParquetRangeReadMetrics {
             self.footer_cache_degraded_identity_reads.saturating_add(1);
     }
 
+    pub fn record_coalesced_range_read(&mut self, gap_bytes_fetched: u64) {
+        self.coalesced_range_reads = self.coalesced_range_reads.saturating_add(1);
+        self.coalesced_gap_bytes_fetched = self
+            .coalesced_gap_bytes_fetched
+            .saturating_add(gap_bytes_fetched);
+    }
+
     pub fn merge(&self, right: &Self) -> Self {
         merge_parquet_range_read_metrics(self, right)
     }
@@ -449,6 +463,12 @@ pub fn merge_parquet_range_read_metrics(
         duplicate_range_reads: left
             .duplicate_range_reads
             .saturating_add(right.duplicate_range_reads),
+        coalesced_range_reads: left
+            .coalesced_range_reads
+            .saturating_add(right.coalesced_range_reads),
+        coalesced_gap_bytes_fetched: left
+            .coalesced_gap_bytes_fetched
+            .saturating_add(right.coalesced_gap_bytes_fetched),
         identity_present_range_reads: left
             .identity_present_range_reads
             .saturating_add(right.identity_present_range_reads),
@@ -842,6 +862,16 @@ impl SharedScanTargetMetricsHandle {
             .record_footer_cache_degraded_identity_read();
         Ok(())
     }
+
+    fn record_coalesced_range_read(&self, gap_bytes_fetched: u64) -> Result<(), QueryError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| {
+            execution_runtime_error("scan target metrics handle was poisoned during execution")
+        })?;
+        snapshot
+            .range_read_metrics
+            .record_coalesced_range_read(gap_bytes_fetched);
+        Ok(())
+    }
 }
 
 impl ScanTargetMetricsHandle for SharedScanTargetMetricsHandle {
@@ -941,6 +971,268 @@ fn query_error_from_parquet_error(
     }
 }
 
+#[derive(Clone, Debug)]
+struct PlannedLogicalRange {
+    index: usize,
+    range: Range<u64>,
+}
+
+impl PlannedLogicalRange {
+    fn len(&self) -> Result<u64, QueryError> {
+        range_len(&self.range)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PlannedUnionSpan {
+    range: Range<u64>,
+    logical_ranges: Vec<PlannedLogicalRange>,
+}
+
+impl PlannedUnionSpan {
+    fn len(&self) -> Result<u64, QueryError> {
+        range_len(&self.range)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PlannedRangeRead {
+    physical_range: Range<u64>,
+    logical_ranges: Vec<PlannedLogicalRange>,
+    coalesced_gap_bytes: u64,
+}
+
+impl PlannedRangeRead {
+    fn exact(logical: PlannedLogicalRange) -> Self {
+        Self {
+            physical_range: logical.range.clone(),
+            logical_ranges: vec![logical],
+            coalesced_gap_bytes: 0,
+        }
+    }
+
+    fn is_coalesced(&self) -> bool {
+        self.logical_ranges.len() > 1
+    }
+}
+
+fn plan_range_reads(
+    ranges: Vec<Range<u64>>,
+    allow_coalescing: bool,
+    object_size_bytes: u64,
+) -> Result<Vec<PlannedRangeRead>, QueryError> {
+    if ranges.len() < 2 || !allow_coalescing {
+        return Ok(exact_range_read_plan(ranges));
+    }
+
+    let mut logical = Vec::with_capacity(ranges.len());
+    for (index, range) in ranges.iter().cloned().enumerate() {
+        let length = range_len(&range)?;
+        if length == 0 || range.end > object_size_bytes {
+            return Ok(exact_range_read_plan(ranges));
+        }
+        logical.push(PlannedLogicalRange { index, range });
+    }
+
+    logical.sort_by(|left, right| {
+        left.range
+            .start
+            .cmp(&right.range.start)
+            .then_with(|| left.range.end.cmp(&right.range.end))
+            .then_with(|| left.index.cmp(&right.index))
+    });
+
+    let spans = merged_union_spans(logical)?;
+    let grouped = coalesced_range_read_plan(spans)?;
+    Ok(grouped)
+}
+
+fn exact_range_read_plan(ranges: Vec<Range<u64>>) -> Vec<PlannedRangeRead> {
+    ranges
+        .into_iter()
+        .enumerate()
+        .map(|(index, range)| PlannedRangeRead::exact(PlannedLogicalRange { index, range }))
+        .collect()
+}
+
+fn merged_union_spans(
+    logical_ranges: Vec<PlannedLogicalRange>,
+) -> Result<Vec<PlannedUnionSpan>, QueryError> {
+    let mut spans: Vec<PlannedUnionSpan> = Vec::new();
+    for logical in logical_ranges {
+        if let Some(current) = spans.last_mut() {
+            if logical.range.start <= current.range.end {
+                current.range.end = current.range.end.max(logical.range.end);
+                current.logical_ranges.push(logical);
+                continue;
+            }
+        }
+        spans.push(PlannedUnionSpan {
+            range: logical.range.clone(),
+            logical_ranges: vec![logical],
+        });
+    }
+    Ok(spans)
+}
+
+fn coalesced_range_read_plan(
+    spans: Vec<PlannedUnionSpan>,
+) -> Result<Vec<PlannedRangeRead>, QueryError> {
+    let mut plan = Vec::new();
+    let mut current = PlannedCoalescingGroup::new();
+    for span in spans {
+        if current.is_empty() {
+            current.push_first(span)?;
+            continue;
+        }
+        if current.can_push(&span)? {
+            current.push_next(span)?;
+        } else {
+            plan.extend(current.finish()?);
+            current = PlannedCoalescingGroup::new();
+            current.push_first(span)?;
+        }
+    }
+    if !current.is_empty() {
+        plan.extend(current.finish()?);
+    }
+    Ok(plan)
+}
+
+#[derive(Clone, Debug, Default)]
+struct PlannedCoalescingGroup {
+    spans: Vec<PlannedUnionSpan>,
+    requested_union_bytes: u64,
+    gap_bytes: u64,
+}
+
+impl PlannedCoalescingGroup {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.spans.is_empty()
+    }
+
+    fn push_first(&mut self, span: PlannedUnionSpan) -> Result<(), QueryError> {
+        self.requested_union_bytes = span.len()?;
+        self.spans.push(span);
+        Ok(())
+    }
+
+    fn can_push(&self, span: &PlannedUnionSpan) -> Result<bool, QueryError> {
+        let candidate = self.candidate_policy(span)?;
+        Ok(
+            candidate.individual_gap_bytes <= MAX_COALESCED_INDIVIDUAL_GAP_BYTES
+                && candidate.gap_bytes <= MAX_COALESCED_CUMULATIVE_GAP_BYTES
+                && candidate.physical_length <= MAX_COALESCED_PHYSICAL_RANGE_BYTES
+                && candidate
+                    .gap_bytes
+                    .saturating_mul(MAX_COALESCED_GAP_AMPLIFICATION_DENOMINATOR)
+                    <= candidate
+                        .requested_union_bytes
+                        .saturating_mul(MAX_COALESCED_GAP_AMPLIFICATION_NUMERATOR),
+        )
+    }
+
+    fn push_next(&mut self, span: PlannedUnionSpan) -> Result<(), QueryError> {
+        let candidate = self.candidate_policy(&span)?;
+        self.requested_union_bytes = candidate.requested_union_bytes;
+        self.gap_bytes = candidate.gap_bytes;
+        self.spans.push(span);
+        Ok(())
+    }
+
+    fn candidate_policy(
+        &self,
+        span: &PlannedUnionSpan,
+    ) -> Result<CandidateCoalescingPolicy, QueryError> {
+        let current_end = self.physical_end()?;
+        let individual_gap_bytes = span
+            .range
+            .start
+            .checked_sub(current_end)
+            .ok_or_else(|| execution_runtime_error("coalesced range spans were not sorted"))?;
+        let gap_bytes = self
+            .gap_bytes
+            .checked_add(individual_gap_bytes)
+            .ok_or_else(|| execution_runtime_error("coalesced range gap bytes overflowed u64"))?;
+        let requested_union_bytes = self
+            .requested_union_bytes
+            .checked_add(span.len()?)
+            .ok_or_else(|| execution_runtime_error("coalesced requested bytes overflowed u64"))?;
+        let physical_start = self.physical_start()?;
+        let physical_length = span
+            .range
+            .end
+            .checked_sub(physical_start)
+            .ok_or_else(|| execution_runtime_error("coalesced range length underflowed u64"))?;
+        Ok(CandidateCoalescingPolicy {
+            individual_gap_bytes,
+            gap_bytes,
+            requested_union_bytes,
+            physical_length,
+        })
+    }
+
+    fn physical_start(&self) -> Result<u64, QueryError> {
+        self.spans
+            .first()
+            .map(|span| span.range.start)
+            .ok_or_else(|| execution_runtime_error("coalesced range group was empty"))
+    }
+
+    fn physical_end(&self) -> Result<u64, QueryError> {
+        self.spans
+            .last()
+            .map(|span| span.range.end)
+            .ok_or_else(|| execution_runtime_error("coalesced range group was empty"))
+    }
+
+    fn finish(self) -> Result<Vec<PlannedRangeRead>, QueryError> {
+        let physical_range = self.physical_start()?..self.physical_end()?;
+        let logical_ranges = self
+            .spans
+            .into_iter()
+            .flat_map(|span| span.logical_ranges)
+            .collect::<Vec<_>>();
+        if logical_ranges.len() == 1 {
+            let logical = logical_ranges
+                .into_iter()
+                .next()
+                .expect("single logical range should exist");
+            return Ok(vec![PlannedRangeRead::exact(logical)]);
+        }
+        if range_len(&physical_range)? > MAX_COALESCED_PHYSICAL_RANGE_BYTES {
+            return Ok(logical_ranges
+                .into_iter()
+                .map(PlannedRangeRead::exact)
+                .collect());
+        }
+        Ok(vec![PlannedRangeRead {
+            physical_range,
+            logical_ranges,
+            coalesced_gap_bytes: self.gap_bytes,
+        }])
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CandidateCoalescingPolicy {
+    individual_gap_bytes: u64,
+    gap_bytes: u64,
+    requested_union_bytes: u64,
+    physical_length: u64,
+}
+
+fn range_len(range: &Range<u64>) -> Result<u64, QueryError> {
+    range
+        .end
+        .checked_sub(range.start)
+        .ok_or_else(|| execution_runtime_error("parquet byte range underflowed u64"))
+}
+
 #[derive(Clone)]
 struct HttpRangeAsyncFileReader {
     reader: HttpRangeReader,
@@ -1015,6 +1307,168 @@ impl HttpRangeAsyncFileReader {
         )?;
         metrics.record_range_read(phase, metric_resource, object_identity, range.start, length)?;
         Ok(read.bytes)
+    }
+
+    async fn fetch_coalesced_range_owned(
+        reader: HttpRangeReader,
+        object_url: String,
+        validation: HttpRangeValidation,
+        request_timeout: Option<Duration>,
+        metrics: SharedScanTargetMetricsHandle,
+        expected_object_size: u64,
+        range: Range<u64>,
+    ) -> Result<Bytes, QueryError> {
+        let length = range_len(&range)?;
+        if length == 0 {
+            return Ok(Bytes::new());
+        }
+
+        let read = reader
+            .read_range_with_validation(
+                &object_url,
+                HttpByteRange::Bounded {
+                    offset: range.start,
+                    length,
+                },
+                Some(validation),
+                request_timeout,
+            )
+            .await?;
+        let observed_object_size = read.metadata.size_bytes.ok_or_else(|| {
+            parquet_protocol_error("coalesced range response did not report object size metadata")
+        })?;
+        if observed_object_size != expected_object_size {
+            return Err(parquet_protocol_error(format!(
+                "coalesced range response expected object size {expected_object_size} bytes, but the response reported {observed_object_size} bytes"
+            )));
+        }
+        metrics.record_bytes_fetched(
+            u64::try_from(read.bytes.len())
+                .map_err(|_| execution_runtime_error("scan byte totals overflowed u64"))?,
+        )?;
+        Ok(read.bytes)
+    }
+
+    async fn fetch_byte_ranges_owned(
+        reader: HttpRangeReader,
+        target: ScanTarget,
+        validation: Option<HttpRangeValidation>,
+        request_timeout: Option<Duration>,
+        metrics: SharedScanTargetMetricsHandle,
+        phase: ParquetRangeReadPhase,
+        ranges: Vec<Range<u64>>,
+    ) -> Result<Vec<Bytes>, QueryError> {
+        let plan = plan_range_reads(ranges.clone(), validation.is_some(), target.size_bytes)?;
+        let mut outputs = vec![None; ranges.len()];
+        for planned in plan {
+            if planned.is_coalesced() {
+                let validation = validation.clone().ok_or_else(|| {
+                    execution_runtime_error("coalesced parquet reads require an If-Range validator")
+                })?;
+                let physical_start = planned.physical_range.start;
+                let bytes = Self::fetch_coalesced_range_owned(
+                    reader.clone(),
+                    target.object_source.url.clone(),
+                    validation,
+                    request_timeout,
+                    metrics.clone(),
+                    target.size_bytes,
+                    planned.physical_range.clone(),
+                )
+                .await?;
+
+                let mut slices = Vec::with_capacity(planned.logical_ranges.len());
+                for logical in &planned.logical_ranges {
+                    let slice_start =
+                        logical
+                            .range
+                            .start
+                            .checked_sub(physical_start)
+                            .ok_or_else(|| {
+                                execution_runtime_error(
+                                    "coalesced logical range started before physical range",
+                                )
+                            })?;
+                    let slice_end =
+                        logical
+                            .range
+                            .end
+                            .checked_sub(physical_start)
+                            .ok_or_else(|| {
+                                execution_runtime_error(
+                                    "coalesced logical range ended before physical range",
+                                )
+                            })?;
+                    let slice_start = usize::try_from(slice_start).map_err(|_| {
+                        execution_runtime_error("coalesced slice start overflowed usize")
+                    })?;
+                    let slice_end = usize::try_from(slice_end).map_err(|_| {
+                        execution_runtime_error("coalesced slice end overflowed usize")
+                    })?;
+                    if slice_end > bytes.len() || slice_start > slice_end {
+                        return Err(execution_runtime_error(
+                            "coalesced response bytes did not cover a logical range",
+                        ));
+                    }
+                    slices.push((logical.index, bytes.slice(slice_start..slice_end)));
+                }
+
+                metrics.record_coalesced_range_read(planned.coalesced_gap_bytes)?;
+                for logical in &planned.logical_ranges {
+                    metrics.record_range_read(
+                        phase,
+                        target.path.clone(),
+                        target.object_identity(),
+                        logical.range.start,
+                        logical.len()?,
+                    )?;
+                }
+                for (index, slice) in slices {
+                    outputs[index] = Some(slice);
+                }
+            } else {
+                let logical = planned
+                    .logical_ranges
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| execution_runtime_error("range read plan was empty"))?;
+                let bytes = Self::fetch_range_owned(
+                    reader.clone(),
+                    target.object_source.url.clone(),
+                    validation.clone(),
+                    request_timeout,
+                    metrics.clone(),
+                    phase,
+                    target.path.clone(),
+                    target.object_identity(),
+                    logical.range,
+                )
+                .await?;
+                outputs[logical.index] = Some(bytes);
+            }
+        }
+
+        outputs
+            .into_iter()
+            .enumerate()
+            .map(|(index, bytes)| {
+                bytes.ok_or_else(|| {
+                    execution_runtime_error(format!(
+                        "parquet byte range {index} did not produce output bytes"
+                    ))
+                })
+            })
+            .collect()
+    }
+
+    fn planned_physical_request_count(
+        ranges: Vec<Range<u64>>,
+        allow_coalescing: bool,
+        object_size_bytes: u64,
+    ) -> usize {
+        plan_range_reads(ranges.clone(), allow_coalescing, object_size_bytes)
+            .map(|plan| plan.len())
+            .unwrap_or(ranges.len())
     }
 
     async fn load_metadata(
@@ -1174,6 +1628,72 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
                 self.target.path.clone(),
                 self.target.object_identity(),
                 range,
+            )
+            .await
+            .map_err(parquet_error_from_query_error)
+        }
+        .boxed()
+    }
+
+    fn get_byte_ranges(
+        &mut self,
+        ranges: Vec<Range<u64>>,
+    ) -> BoxFuture<'_, parquet::errors::Result<Vec<Bytes>>> {
+        let validation = self.validation();
+        if self.count_metadata_fetches {
+            let request_count = Self::planned_physical_request_count(
+                ranges.clone(),
+                validation.is_some(),
+                self.target.size_bytes,
+            );
+            self.metadata_probe_round_trips = self
+                .metadata_probe_round_trips
+                .checked_add(
+                    u64::try_from(request_count)
+                        .expect("metadata request counts should fit in u64"),
+                )
+                .expect("metadata probe round trips should not overflow");
+        }
+        let phase = if self.count_metadata_fetches {
+            ParquetRangeReadPhase::ScanFooter
+        } else {
+            ParquetRangeReadPhase::ScanData
+        };
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let reader = self.reader.clone();
+            let target = self.target.clone();
+            let request_timeout = self.request_timeout;
+            let metrics = self.metrics.clone();
+            let (future, handle) = async move {
+                Self::fetch_byte_ranges_owned(
+                    reader,
+                    target,
+                    validation,
+                    request_timeout,
+                    metrics,
+                    phase,
+                    ranges,
+                )
+                .await
+                .map_err(parquet_error_from_query_error)
+            }
+            .remote_handle();
+            wasm_bindgen_futures::spawn_local(future);
+            return async move { handle.await }.boxed();
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        async move {
+            Self::fetch_byte_ranges_owned(
+                self.reader.clone(),
+                self.target.clone(),
+                validation,
+                self.request_timeout,
+                self.metrics.clone(),
+                phase,
+                ranges,
             )
             .await
             .map_err(parquet_error_from_query_error)
@@ -2965,9 +3485,19 @@ fn execution_runtime_error(message: impl Into<String>) -> QueryError {
 #[cfg(test)]
 mod tests {
     use super::{
-        merge_parquet_range_read_metrics, ParquetObjectIdentity, ParquetRangeReadKey,
-        ParquetRangeReadMetrics, ParquetRangeReadPhase,
+        merge_parquet_range_read_metrics, HttpRangeAsyncFileReader, ObjectSource,
+        ParquetObjectIdentity, ParquetRangeReadKey, ParquetRangeReadMetrics, ParquetRangeReadPhase,
+        ScanTarget, SharedScanTargetMetricsHandle,
     };
+    use crate::{ScanTargetMetricsHandle, ScanTargetMetricsSnapshot};
+    use parquet::arrow::async_reader::AsyncFileReader;
+    use std::collections::BTreeMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::thread::{self, JoinHandle};
+    use wasm_http_object_store::HttpRangeReader;
 
     #[test]
     fn range_read_metrics_store_compact_keys_without_signed_url_material() {
@@ -3065,5 +3595,515 @@ mod tests {
         assert_eq!(metrics.identity_missing_range_reads, 1);
         assert_eq!(metrics.duplicate_range_reads, 1);
         assert_eq!(metrics.exact_range_read_keys.len(), 1);
+    }
+
+    #[test]
+    fn range_read_metric_merge_sums_coalesced_physical_counters() {
+        let mut left = ParquetRangeReadMetrics::default();
+        left.record_coalesced_range_read(32);
+        let mut right = ParquetRangeReadMetrics::default();
+        right.record_coalesced_range_read(48);
+
+        let merged = merge_parquet_range_read_metrics(&left, &right);
+
+        assert_eq!(merged.coalesced_range_reads, 2);
+        assert_eq!(merged.coalesced_gap_bytes_fetched, 80);
+    }
+
+    #[tokio::test]
+    async fn nearby_small_gap_byte_ranges_coalesce_into_one_if_range_request() {
+        let body = test_body(128 * 1024);
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+        let mut reader = test_async_reader(&server, body.len(), Some("\"object-v1\""));
+
+        let ranges = vec![1_024..33_792, 37_888..70_656];
+        let chunks = reader
+            .get_byte_ranges(ranges.clone())
+            .await
+            .expect("coalesced ranges should read");
+
+        assert_eq!(chunks, expected_chunks(&body, &ranges));
+        let requests = server.recorded_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].headers.get("range"),
+            Some(&"bytes=1024-70655".to_string())
+        );
+        assert_eq!(
+            requests[0].headers.get("if-range"),
+            Some(&"\"object-v1\"".to_string())
+        );
+        let metrics = reader.metrics.snapshot();
+        assert_eq!(metrics.range_read_metrics.scan_data_range_reads, 2);
+        assert_eq!(metrics.range_read_metrics.coalesced_range_reads, 1);
+        assert_eq!(
+            metrics.range_read_metrics.coalesced_gap_bytes_fetched,
+            4_096
+        );
+        assert_eq!(metrics.bytes_fetched, 69_632);
+    }
+
+    #[tokio::test]
+    async fn large_gap_byte_ranges_do_not_coalesce() {
+        let body = test_body(128 * 1024);
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+        let mut reader = test_async_reader(&server, body.len(), Some("\"object-v1\""));
+
+        let ranges = vec![1_024..33_792, 50_177..82_945];
+        let chunks = reader
+            .get_byte_ranges(ranges.clone())
+            .await
+            .expect("exact ranges should read");
+
+        assert_eq!(chunks, expected_chunks(&body, &ranges));
+        let requests = server.recorded_requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[0].headers.get("range"),
+            Some(&"bytes=1024-33791".to_string())
+        );
+        assert_eq!(
+            requests[1].headers.get("range"),
+            Some(&"bytes=50177-82944".to_string())
+        );
+        let metrics = reader.metrics.snapshot();
+        assert_eq!(metrics.range_read_metrics.scan_data_range_reads, 2);
+        assert_eq!(metrics.range_read_metrics.coalesced_range_reads, 0);
+        assert_eq!(metrics.range_read_metrics.coalesced_gap_bytes_fetched, 0);
+    }
+
+    #[tokio::test]
+    async fn missing_and_weak_etags_decline_coalescing() {
+        for etag in [None, Some("W/\"object-v1\"")] {
+            let body = test_body(64 * 1024);
+            let server = RangeCoalescingServer::new(body.clone(), etag.map(str::to_string));
+            let mut reader = test_async_reader(&server, body.len(), etag);
+            let ranges = vec![256..512, 768..1_024];
+
+            let chunks = reader
+                .get_byte_ranges(ranges.clone())
+                .await
+                .expect("exact ranges should read without strong identity");
+
+            assert_eq!(chunks, expected_chunks(&body, &ranges));
+            let requests = server.recorded_requests();
+            assert_eq!(requests.len(), 2);
+            assert!(requests
+                .iter()
+                .all(|request| !request.headers.contains_key("if-range")));
+            assert_eq!(
+                reader
+                    .metrics
+                    .snapshot()
+                    .range_read_metrics
+                    .coalesced_range_reads,
+                0
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn coalesced_reads_fail_closed_on_non_partial_or_malformed_responses() {
+        for behavior in [
+            RangeResponseBehavior::FullObject200,
+            RangeResponseBehavior::WrongContentRange,
+            RangeResponseBehavior::ShortBody,
+        ] {
+            let body = test_body(64 * 1024);
+            let server = RangeCoalescingServer::new_with_behavior(
+                body,
+                Some("\"object-v1\"".to_string()),
+                behavior,
+            );
+            let mut reader = test_async_reader(&server, 64 * 1024, Some("\"object-v1\""));
+
+            let error = reader
+                .get_byte_ranges(vec![1_024..2_048, 3_072..4_096])
+                .await
+                .expect_err("invalid coalesced responses must fail closed");
+
+            assert!(
+                error.to_string().contains("Partial Content")
+                    || error.to_string().contains("Content-Range")
+                    || error.to_string().contains("returned"),
+                "unexpected error: {error}"
+            );
+            assert_eq!(server.recorded_requests().len(), 1);
+            assert_eq!(
+                reader
+                    .metrics
+                    .snapshot()
+                    .range_read_metrics
+                    .coalesced_range_reads,
+                0
+            );
+            assert_eq!(
+                reader
+                    .metrics
+                    .snapshot()
+                    .range_read_metrics
+                    .scan_data_range_reads,
+                0
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unsorted_overlapping_and_duplicate_inputs_preserve_outputs_and_gap_accounting() {
+        let body = test_body(128 * 1024);
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+        let mut reader = test_async_reader(&server, body.len(), Some("\"object-v1\""));
+
+        let ranges = vec![36_000..76_000, 1_000..21_000, 20_000..25_000, 1_000..21_000];
+        let chunks = reader
+            .get_byte_ranges(ranges.clone())
+            .await
+            .expect("overlapping ranges should slice out of coalesced data");
+
+        assert_eq!(chunks, expected_chunks(&body, &ranges));
+        let requests = server.recorded_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].headers.get("range"),
+            Some(&"bytes=1000-75999".to_string())
+        );
+        let metrics = reader.metrics.snapshot();
+        assert_eq!(metrics.range_read_metrics.scan_data_range_reads, 4);
+        assert_eq!(metrics.range_read_metrics.duplicate_range_reads, 1);
+        assert_eq!(metrics.range_read_metrics.coalesced_range_reads, 1);
+        assert_eq!(
+            metrics.range_read_metrics.coalesced_gap_bytes_fetched,
+            11_000
+        );
+    }
+
+    #[tokio::test]
+    async fn coalescing_policy_boundaries_are_enforced() {
+        let body = test_body(1024 * 1024);
+        for (gap, expected_requests) in [(16 * 1024, 1), (16 * 1024 + 1, 2)] {
+            let server =
+                RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+            let mut reader = test_async_reader(&server, body.len(), Some("\"object-v1\""));
+            reader
+                .get_byte_ranges(vec![0..65_536, 65_536 + gap..65_536 + gap + 65_536])
+                .await
+                .expect("boundary ranges should read");
+            assert_eq!(server.recorded_requests().len(), expected_requests);
+        }
+
+        let exact_cumulative_gap = vec![
+            0..65_536,
+            81_920..147_456,
+            163_840..229_376,
+            245_760..311_296,
+            327_680..393_216,
+        ];
+        let just_over_cumulative_gap = vec![
+            0..65_536,
+            81_920..147_456,
+            163_840..229_376,
+            245_760..311_296,
+            327_680..393_216,
+            393_217..458_753,
+        ];
+        for (ranges, expected_requests) in
+            [(exact_cumulative_gap, 1), (just_over_cumulative_gap, 2)]
+        {
+            let server =
+                RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+            let mut reader = test_async_reader(&server, body.len(), Some("\"object-v1\""));
+            reader
+                .get_byte_ranges(ranges)
+                .await
+                .expect("cumulative gap boundary ranges should read");
+            assert_eq!(server.recorded_requests().len(), expected_requests);
+        }
+
+        for (gap, expected_requests) in [(512, 1), (513, 2)] {
+            let server =
+                RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+            let mut reader = test_async_reader(&server, body.len(), Some("\"object-v1\""));
+            reader
+                .get_byte_ranges(vec![0..1_024, 1_024 + gap..2_048 + gap])
+                .await
+                .expect("amplification boundary ranges should read");
+            assert_eq!(server.recorded_requests().len(), expected_requests);
+        }
+
+        for (second_end, expected_requests) in [(524_288, 1), (524_289, 2)] {
+            let server =
+                RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+            let mut reader = test_async_reader(&server, body.len(), Some("\"object-v1\""));
+            reader
+                .get_byte_ranges(vec![0..262_144, 262_144..second_end])
+                .await
+                .expect("physical size boundary ranges should read");
+            assert_eq!(server.recorded_requests().len(), expected_requests);
+        }
+    }
+
+    fn test_async_reader(
+        server: &RangeCoalescingServer,
+        object_len: usize,
+        object_etag: Option<&str>,
+    ) -> HttpRangeAsyncFileReader {
+        HttpRangeAsyncFileReader::new(
+            HttpRangeReader::new(),
+            ScanTarget {
+                object_source: ObjectSource::new(server.url()),
+                object_etag: object_etag.map(str::to_string),
+                path: "part-000.parquet".to_string(),
+                size_bytes: u64::try_from(object_len).expect("test body length should fit in u64"),
+                partition_values: BTreeMap::new(),
+            },
+            None,
+            None,
+            SharedScanTargetMetricsHandle::new(ScanTargetMetricsSnapshot::default()),
+        )
+    }
+
+    fn test_body(len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|index| u8::try_from(index % 251).expect("modulo should fit in u8"))
+            .collect()
+    }
+
+    fn expected_chunks(body: &[u8], ranges: &[std::ops::Range<u64>]) -> Vec<bytes::Bytes> {
+        ranges
+            .iter()
+            .map(|range| {
+                let start = usize::try_from(range.start).expect("test range start should fit");
+                let end = usize::try_from(range.end).expect("test range end should fit");
+                bytes::Bytes::copy_from_slice(&body[start..end])
+            })
+            .collect()
+    }
+
+    #[derive(Clone, Debug)]
+    struct CapturedRequest {
+        headers: BTreeMap<String, String>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum RangeResponseBehavior {
+        Normal,
+        FullObject200,
+        WrongContentRange,
+        ShortBody,
+    }
+
+    struct TestResponse {
+        status_line: &'static str,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    }
+
+    struct RangeCoalescingServer {
+        address: std::net::SocketAddr,
+        stop: Arc<AtomicBool>,
+        requests: Arc<Mutex<Vec<CapturedRequest>>>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl RangeCoalescingServer {
+        fn new(body: Vec<u8>, etag: Option<String>) -> Self {
+            Self::new_with_behavior(body, etag, RangeResponseBehavior::Normal)
+        }
+
+        fn new_with_behavior(
+            body: Vec<u8>,
+            etag: Option<String>,
+            behavior: RangeResponseBehavior,
+        ) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+            listener
+                .set_nonblocking(true)
+                .expect("listener should allow nonblocking accept");
+            let address = listener.local_addr().expect("listener addr should resolve");
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop_for_thread = Arc::clone(&stop);
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let requests_for_thread = Arc::clone(&requests);
+
+            let thread = thread::spawn(move || {
+                while !stop_for_thread.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            if stop_for_thread.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            stream
+                                .set_nonblocking(false)
+                                .expect("accepted streams should allow blocking reads");
+                            let request = read_request(&mut stream);
+                            requests_for_thread
+                                .lock()
+                                .expect("recorded requests should be writable")
+                                .push(request.clone());
+                            write_response(
+                                &mut stream,
+                                ranged_response(&request, &body, etag.as_deref(), behavior),
+                            );
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("test server accept should succeed: {error}"),
+                    }
+                }
+            });
+
+            Self {
+                address,
+                stop,
+                requests,
+                thread: Some(thread),
+            }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}/object", self.address)
+        }
+
+        fn recorded_requests(&self) -> Vec<CapturedRequest> {
+            self.requests
+                .lock()
+                .expect("recorded requests should be readable")
+                .clone()
+        }
+    }
+
+    impl Drop for RangeCoalescingServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = std::net::TcpStream::connect(self.address);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 512];
+        loop {
+            let read = stream
+                .read(&mut chunk)
+                .expect("test server should read request bytes");
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let request = String::from_utf8_lossy(&buffer);
+        let headers = request
+            .lines()
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .filter_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+            })
+            .collect();
+
+        CapturedRequest { headers }
+    }
+
+    fn write_response(stream: &mut std::net::TcpStream, response: TestResponse) {
+        write!(stream, "HTTP/1.1 {}\r\n", response.status_line).expect("status line should write");
+        for (header, value) in response.headers {
+            write!(stream, "{header}: {value}\r\n").expect("header should write");
+        }
+        write!(stream, "\r\n").expect("header terminator should write");
+        stream
+            .write_all(&response.body)
+            .expect("response body should write");
+        stream.flush().expect("response should flush");
+    }
+
+    fn ranged_response(
+        request: &CapturedRequest,
+        body: &[u8],
+        etag: Option<&str>,
+        behavior: RangeResponseBehavior,
+    ) -> TestResponse {
+        let mut response = match request.headers.get("range") {
+            Some(range_header) => {
+                let (start, end) = resolve_range(range_header, body.len());
+                let bounded = body[start..=end].to_vec();
+                match behavior {
+                    RangeResponseBehavior::Normal => TestResponse {
+                        status_line: "206 Partial Content",
+                        headers: vec![
+                            ("Content-Length".to_string(), bounded.len().to_string()),
+                            (
+                                "Content-Range".to_string(),
+                                format!("bytes {start}-{end}/{}", body.len()),
+                            ),
+                        ],
+                        body: bounded,
+                    },
+                    RangeResponseBehavior::FullObject200 => TestResponse {
+                        status_line: "200 OK",
+                        headers: vec![("Content-Length".to_string(), body.len().to_string())],
+                        body: body.to_vec(),
+                    },
+                    RangeResponseBehavior::WrongContentRange => TestResponse {
+                        status_line: "206 Partial Content",
+                        headers: vec![
+                            ("Content-Length".to_string(), bounded.len().to_string()),
+                            (
+                                "Content-Range".to_string(),
+                                format!("bytes {}-{}/{}", start + 1, end + 1, body.len()),
+                            ),
+                        ],
+                        body: bounded,
+                    },
+                    RangeResponseBehavior::ShortBody => TestResponse {
+                        status_line: "206 Partial Content",
+                        headers: vec![
+                            (
+                                "Content-Length".to_string(),
+                                bounded.len().saturating_sub(1).to_string(),
+                            ),
+                            (
+                                "Content-Range".to_string(),
+                                format!("bytes {start}-{end}/{}", body.len()),
+                            ),
+                        ],
+                        body: bounded[..bounded.len().saturating_sub(1)].to_vec(),
+                    },
+                }
+            }
+            None => TestResponse {
+                status_line: "200 OK",
+                headers: vec![("Content-Length".to_string(), body.len().to_string())],
+                body: body.to_vec(),
+            },
+        };
+        if let Some(etag) = etag {
+            response
+                .headers
+                .push(("ETag".to_string(), etag.to_string()));
+        }
+        response
+    }
+
+    fn resolve_range(range_header: &str, object_len: usize) -> (usize, usize) {
+        let range = range_header
+            .strip_prefix("bytes=")
+            .expect("test server expects byte ranges");
+        let (start, end) = range
+            .split_once('-')
+            .expect("range should include '-' separator");
+        let start = start.parse::<usize>().expect("range start should parse");
+        let end = end.parse::<usize>().expect("range end should parse");
+        assert!(start <= end, "test range should be ascending");
+        assert!(end < object_len, "test range should fit in object");
+        (start, end)
     }
 }
