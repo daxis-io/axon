@@ -229,6 +229,7 @@ pub fn attach_browser_http_urls(
                 size_bytes: file.size_bytes,
                 partition_values: file.partition_values,
                 stats: file.stats,
+                object_etag: None,
             })
         })
         .collect::<Result<Vec<_>, QueryError>>()?;

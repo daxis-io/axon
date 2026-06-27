@@ -1534,6 +1534,7 @@ fn materialize_snapshot_preserves_descriptor_metadata_and_file_order() {
                 size_bytes: 333,
                 partition_values: BTreeMap::from([("category".to_string(), Some("z".to_string()))]),
                 stats: None,
+                object_etag: None,
             },
             BrowserHttpFileDescriptor {
                 path: "a-first.parquet".to_string(),
@@ -1544,6 +1545,7 @@ fn materialize_snapshot_preserves_descriptor_metadata_and_file_order() {
                     ("region".to_string(), None),
                 ]),
                 stats: None,
+                object_etag: None,
             },
         ],
     };
@@ -1593,6 +1595,7 @@ fn materialize_snapshot_allows_browser_local_blob_descriptors() {
             size_bytes: 128,
             partition_values: BTreeMap::new(),
             stats: None,
+            object_etag: None,
         }],
     };
 
@@ -2595,6 +2598,7 @@ fn materialize_snapshot_rejects_duplicate_paths() {
                 size_bytes: 128,
                 partition_values: BTreeMap::new(),
                 stats: None,
+                object_etag: None,
             },
             BrowserHttpFileDescriptor {
                 path: duplicate_path.clone(),
@@ -2602,6 +2606,7 @@ fn materialize_snapshot_rejects_duplicate_paths() {
                 size_bytes: 256,
                 partition_values: BTreeMap::new(),
                 stats: None,
+                object_etag: None,
             },
         ],
     };
@@ -2630,6 +2635,7 @@ fn materialize_snapshot_rejects_invalid_url_syntax_without_leaking_query_or_frag
             size_bytes: 128,
             partition_values: BTreeMap::new(),
             stats: None,
+            object_etag: None,
         }],
     };
 
@@ -2659,6 +2665,7 @@ fn materialize_snapshot_rejects_unsupported_schemes_without_leaking_query_or_fra
             size_bytes: 128,
             partition_values: BTreeMap::new(),
             stats: None,
+            object_etag: None,
         }],
     };
 
@@ -2688,6 +2695,7 @@ fn materialize_snapshot_rejects_non_loopback_plain_http_urls() {
             size_bytes: 128,
             partition_values: BTreeMap::new(),
             stats: None,
+            object_etag: None,
         }],
     };
 
@@ -2742,6 +2750,7 @@ fn materialize_snapshot_rejects_loopback_http_even_in_host_tests() {
             size_bytes: 10,
             partition_values: BTreeMap::from([("category".to_string(), Some("A".to_string()))]),
             stats: None,
+            object_etag: None,
         }],
     };
     let session =

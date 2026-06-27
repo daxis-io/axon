@@ -10,10 +10,10 @@ use std::ops::ControlFlow;
 
 use arrow_schema::TimeUnit;
 use query_contract::{
-    BrowserHttpParquetDatasetDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget,
-    FallbackReason, ParquetInspectionSummary, PartitionColumnType, QueryError, QueryErrorCode,
-    QueryMetricsSummary, QueryRequest, QueryResponse, QueryResultPage, QueryRuntimeLimits,
-    MAX_QUERY_RESULT_PAGE_LIMIT,
+    BrowserHttpParquetDatasetDescriptor, BrowserHttpSnapshotDescriptor, CapabilityReport,
+    ExecutionTarget, FallbackReason, ParquetInspectionSummary, PartitionColumnType, QueryError,
+    QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse, QueryResultPage,
+    QueryRuntimeLimits, MAX_QUERY_RESULT_PAGE_LIMIT,
 };
 use sqlparser::ast::{
     ObjectName, Query as SqlQuery, Select, SelectFlavor, SetExpr as SqlSetExpr,
@@ -91,7 +91,9 @@ impl BrowserDataFusionCancellation {
 pub struct CachedDataFusionTable {
     descriptor: BrowserHttpSnapshotDescriptor,
     materialized: MaterializedBrowserSnapshot,
-    last_prepared_snapshot: Option<BootstrappedBrowserSnapshot>,
+    last_prepared: Option<CachedPreparedDataFusionTable>,
+    registered_table: Option<RegisteredDataFusionTable>,
+    pending_reuse_metrics: DataFusionSessionReuseMetrics,
     cached_bytes: u64,
     last_used_millis: u64,
 }
@@ -101,6 +103,57 @@ struct PreparedDataFusionTable {
     descriptor: BrowserHttpSnapshotDescriptor,
     bootstrapped: BootstrappedBrowserSnapshot,
     pruning: BrowserPrebootstrapPruningSummary,
+    cache_key: Option<PreparedDataFusionTableCacheKey>,
+    reuse_metrics: DataFusionSessionReuseMetrics,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CachedPreparedDataFusionTable {
+    key: PreparedDataFusionTableCacheKey,
+    bootstrapped: BootstrappedBrowserSnapshot,
+    pruning: BrowserPrebootstrapPruningSummary,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RegisteredDataFusionTable {
+    key: PreparedDataFusionTableCacheKey,
+    query_budget: BrowserDataFusionQueryBudget,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PreparedDataFusionTableCacheKey {
+    sql: String,
+    table_uri: String,
+    snapshot_version: i64,
+    partition_column_types: BTreeMap<String, PartitionColumnType>,
+    browser_compatibility: CapabilityReport,
+    required_capabilities: CapabilityReport,
+    descriptor_files: Vec<PreparedDescriptorFileIdentity>,
+    candidate_object_identities: Vec<PreparedCandidateObjectIdentity>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PreparedDescriptorFileIdentity {
+    path: String,
+    size_bytes: u64,
+    partition_values: BTreeMap<String, Option<String>>,
+    stats: Option<String>,
+    object_etag: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PreparedCandidateObjectIdentity {
+    path: String,
+    size_bytes: u64,
+    object_etag: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct DataFusionSessionReuseMetrics {
+    session_reuse_count: u64,
+    opened_table_reuse_count: u64,
+    identity_refresh_count: u64,
+    access_envelope_refresh_count: u64,
 }
 
 impl BrowserDataFusionSession {
@@ -193,7 +246,41 @@ impl BrowserDataFusionSession {
         descriptor: BrowserHttpSnapshotDescriptor,
         materialized: MaterializedBrowserSnapshot,
     ) -> Result<(), QueryError> {
-        let cached_bytes = cached_table_bytes(&materialized, None)?;
+        let carried_prepared = self
+            .tables
+            .get(&name)
+            .and_then(|table| table.last_prepared.as_ref())
+            .and_then(|prepared| {
+                let key = prepared_cache_key_for_descriptor_reopen(
+                    &descriptor,
+                    &prepared.bootstrapped,
+                    &prepared.key.sql,
+                )?;
+                prepared_cache_key_matches_reopen(&prepared.key, &key).then(|| {
+                    let mut prepared = prepared.clone();
+                    prepared.key = key;
+                    prepared
+                })
+            });
+        let mut pending_reuse_metrics = DataFusionSessionReuseMetrics::default();
+        if self.tables.contains_key(&name) {
+            if carried_prepared.is_some() {
+                pending_reuse_metrics.access_envelope_refresh_count = 1;
+            } else if self
+                .tables
+                .get(&name)
+                .and_then(|table| table.last_prepared.as_ref())
+                .is_some()
+            {
+                pending_reuse_metrics.identity_refresh_count = 1;
+            }
+        }
+        let cached_bytes = cached_table_bytes(
+            &materialized,
+            carried_prepared
+                .as_ref()
+                .map(|prepared| &prepared.bootstrapped),
+        )?;
         let last_used_millis = self.bump_access_clock();
 
         if self.tables.contains_key(&name) {
@@ -208,7 +295,8 @@ impl BrowserDataFusionSession {
             name,
             descriptor,
             materialized,
-            None,
+            carried_prepared,
+            pending_reuse_metrics,
             cached_bytes,
             last_used_millis,
         )
@@ -257,8 +345,14 @@ impl BrowserDataFusionSession {
             &prepared.bootstrapped,
             execution_budget,
         )?;
-        self.register_prepared_datafusion_table(name, &prepared, query_budget)
-            .await?;
+        let mut reuse_metrics = prepared.reuse_metrics;
+        if self
+            .register_prepared_datafusion_table(name, &prepared, query_budget)
+            .await?
+        {
+            reuse_metrics.opened_table_reuse_count =
+                reuse_metrics.opened_table_reuse_count.saturating_add(1);
+        }
 
         let datafusion_result = if has_request_budget {
             let result = self
@@ -268,8 +362,8 @@ impl BrowserDataFusionSession {
                 .register_prepared_datafusion_table(name, &prepared, self.query_budget)
                 .await;
             match (result, restore_result) {
-                (Ok(datafusion_result), Ok(())) => datafusion_result,
-                (Err(error), Ok(())) => return Err(error),
+                (Ok(datafusion_result), Ok(_)) => datafusion_result,
+                (Err(error), Ok(_)) => return Err(error),
                 (Ok(_), Err(error)) => return Err(error),
                 (Err(error), Err(_)) => return Err(error),
             }
@@ -313,6 +407,7 @@ impl BrowserDataFusionSession {
                     snapshot_bootstrap_duration_ms,
                     access_mode,
                     prepared.pruning,
+                    reuse_metrics,
                     started_at,
                 ),
                 explain,
@@ -340,13 +435,44 @@ impl BrowserDataFusionSession {
         name: &str,
         sql: &str,
     ) -> Result<PreparedDataFusionTable, QueryError> {
-        let (descriptor, materialized) = {
+        let (descriptor, materialized, cached_prepared, pending_reuse_metrics) = {
             let table = self
                 .tables
                 .get(name)
                 .ok_or_else(|| missing_table_error(name))?;
-            (table.descriptor.clone(), table.materialized.clone())
+            (
+                table.descriptor.clone(),
+                table.materialized.clone(),
+                table.last_prepared.clone(),
+                table.pending_reuse_metrics,
+            )
         };
+
+        if let Some(cached_prepared) = cached_prepared {
+            if let Some(cache_key) =
+                prepared_cache_key_for_bootstrapped(&descriptor, &cached_prepared.bootstrapped, sql)
+            {
+                if cache_key == cached_prepared.key {
+                    let bootstrapped =
+                        bootstrapped_snapshot_for_prepared_reuse(&cached_prepared.bootstrapped)?;
+                    let filtered_descriptor =
+                        datafusion_descriptor_for_bootstrapped_snapshot(&descriptor, &bootstrapped);
+                    if let Some(table) = self.tables.get_mut(name) {
+                        table.pending_reuse_metrics = DataFusionSessionReuseMetrics::default();
+                    }
+                    let mut reuse_metrics = pending_reuse_metrics;
+                    reuse_metrics.session_reuse_count =
+                        reuse_metrics.session_reuse_count.saturating_add(1);
+                    return Ok(PreparedDataFusionTable {
+                        descriptor: filtered_descriptor,
+                        bootstrapped,
+                        pruning: cached_prepared.pruning,
+                        cache_key: Some(cache_key),
+                        reuse_metrics,
+                    });
+                }
+            }
+        }
 
         let PrebootstrappedBrowserSnapshot {
             bootstrapped_snapshot,
@@ -358,10 +484,17 @@ impl BrowserDataFusionSession {
         let filtered_descriptor =
             datafusion_descriptor_for_bootstrapped_snapshot(&descriptor, &bootstrapped_snapshot);
         let cached_bytes = cached_table_bytes(&materialized, Some(&bootstrapped_snapshot))?;
+        let cache_key =
+            prepared_cache_key_for_bootstrapped(&descriptor, &bootstrapped_snapshot, sql);
 
         if let Some(table) = self.tables.get_mut(name) {
-            table.last_prepared_snapshot = Some(bootstrapped_snapshot.clone());
+            table.last_prepared = cache_key.clone().map(|key| CachedPreparedDataFusionTable {
+                key,
+                bootstrapped: bootstrapped_snapshot.clone(),
+                pruning: pruning.clone(),
+            });
             table.cached_bytes = cached_bytes;
+            table.pending_reuse_metrics = DataFusionSessionReuseMetrics::default();
         }
         self.evict_to_budget(name)?;
 
@@ -369,6 +502,8 @@ impl BrowserDataFusionSession {
             descriptor: filtered_descriptor,
             bootstrapped: bootstrapped_snapshot,
             pruning,
+            cache_key,
+            reuse_metrics: pending_reuse_metrics,
         })
     }
 
@@ -377,14 +512,34 @@ impl BrowserDataFusionSession {
         name: &str,
         prepared: &PreparedDataFusionTable,
         query_budget: BrowserDataFusionQueryBudget,
-    ) -> Result<(), QueryError> {
+    ) -> Result<bool, QueryError> {
+        if let Some(cache_key) = &prepared.cache_key {
+            if self
+                .tables
+                .get(name)
+                .and_then(|table| table.registered_table.as_ref())
+                .is_some_and(|registered| {
+                    registered.key == *cache_key && registered.query_budget == query_budget
+                })
+            {
+                return Ok(true);
+            }
+        }
+
         self.register_datafusion_table_descriptor(
             name,
             &prepared.descriptor,
             Some(&prepared.bootstrapped),
             query_budget,
         )
-        .await
+        .await?;
+        if let Some(table) = self.tables.get_mut(name) {
+            table.registered_table = prepared
+                .cache_key
+                .clone()
+                .map(|key| RegisteredDataFusionTable { key, query_budget });
+        }
+        Ok(false)
     }
 
     async fn register_datafusion_table_descriptor(
@@ -424,7 +579,8 @@ impl BrowserDataFusionSession {
         name: String,
         descriptor: BrowserHttpSnapshotDescriptor,
         materialized: MaterializedBrowserSnapshot,
-        last_prepared_snapshot: Option<BootstrappedBrowserSnapshot>,
+        last_prepared: Option<CachedPreparedDataFusionTable>,
+        pending_reuse_metrics: DataFusionSessionReuseMetrics,
         cached_bytes: u64,
         last_used_millis: u64,
     ) -> Result<(), QueryError> {
@@ -433,7 +589,9 @@ impl BrowserDataFusionSession {
             CachedDataFusionTable {
                 descriptor,
                 materialized,
-                last_prepared_snapshot,
+                last_prepared,
+                registered_table: None,
+                pending_reuse_metrics,
                 cached_bytes,
                 last_used_millis,
             },
@@ -490,7 +648,9 @@ impl CachedDataFusionTable {
     }
 
     pub fn last_prepared_snapshot(&self) -> Option<&BootstrappedBrowserSnapshot> {
-        self.last_prepared_snapshot.as_ref()
+        self.last_prepared
+            .as_ref()
+            .map(|prepared| &prepared.bootstrapped)
     }
 
     pub fn cached_bytes(&self) -> u64 {
@@ -582,6 +742,160 @@ fn datafusion_descriptor_for_bootstrapped_snapshot(
         .active_files
         .retain(|file| candidate_paths.contains(&file.path));
     descriptor
+}
+
+fn prepared_cache_key_for_bootstrapped(
+    descriptor: &BrowserHttpSnapshotDescriptor,
+    bootstrapped: &BootstrappedBrowserSnapshot,
+    sql: &str,
+) -> Option<PreparedDataFusionTableCacheKey> {
+    if descriptor.table_uri != bootstrapped.table_uri()
+        || descriptor.snapshot_version != bootstrapped.snapshot_version()
+    {
+        return None;
+    }
+
+    let mut descriptor_files = descriptor
+        .active_files
+        .iter()
+        .map(|file| {
+            let object_etag = match file.object_etag.as_deref() {
+                Some(object_etag) => Some(strong_quoted_object_etag(object_etag)?),
+                None => None,
+            };
+            Some(PreparedDescriptorFileIdentity {
+                path: file.path.clone(),
+                size_bytes: file.size_bytes,
+                partition_values: file.partition_values.clone(),
+                stats: file.stats.clone(),
+                object_etag,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    descriptor_files.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let descriptor_files_by_path = descriptor_files
+        .iter()
+        .map(|file| (file.path.as_str(), file))
+        .collect::<BTreeMap<_, _>>();
+    let mut candidate_object_identities = Vec::new();
+    for file in bootstrapped.active_files() {
+        let descriptor_file = descriptor_files_by_path.get(file.path())?;
+        if descriptor_file.size_bytes != file.size_bytes() {
+            return None;
+        }
+        let object_etag = strong_quoted_object_etag(file.object_etag()?)?;
+        if descriptor_file
+            .object_etag
+            .as_ref()
+            .is_some_and(|descriptor_object_etag| descriptor_object_etag != &object_etag)
+        {
+            return None;
+        }
+        candidate_object_identities.push(PreparedCandidateObjectIdentity {
+            path: file.path().to_string(),
+            size_bytes: file.size_bytes(),
+            object_etag,
+        });
+    }
+    candidate_object_identities.sort_by(|left, right| left.path.cmp(&right.path));
+
+    Some(PreparedDataFusionTableCacheKey {
+        sql: sql.to_string(),
+        table_uri: descriptor.table_uri.clone(),
+        snapshot_version: descriptor.snapshot_version,
+        partition_column_types: descriptor.partition_column_types.clone(),
+        browser_compatibility: descriptor.browser_compatibility.clone(),
+        required_capabilities: descriptor.required_capabilities.clone(),
+        descriptor_files,
+        candidate_object_identities,
+    })
+}
+
+fn prepared_cache_key_for_descriptor_reopen(
+    descriptor: &BrowserHttpSnapshotDescriptor,
+    bootstrapped: &BootstrappedBrowserSnapshot,
+    sql: &str,
+) -> Option<PreparedDataFusionTableCacheKey> {
+    let key = prepared_cache_key_for_bootstrapped(descriptor, bootstrapped, sql)?;
+    let descriptor_files_by_path = key
+        .descriptor_files
+        .iter()
+        .map(|file| (file.path.as_str(), file))
+        .collect::<BTreeMap<_, _>>();
+    for candidate in &key.candidate_object_identities {
+        let descriptor_file = descriptor_files_by_path.get(candidate.path.as_str())?;
+        if descriptor_file.object_etag.as_deref()? != candidate.object_etag {
+            return None;
+        }
+    }
+    Some(key)
+}
+
+fn prepared_cache_key_matches_reopen(
+    existing: &PreparedDataFusionTableCacheKey,
+    candidate: &PreparedDataFusionTableCacheKey,
+) -> bool {
+    if existing == candidate {
+        return true;
+    }
+    existing.sql == candidate.sql
+        && existing.table_uri == candidate.table_uri
+        && existing.snapshot_version == candidate.snapshot_version
+        && existing.partition_column_types == candidate.partition_column_types
+        && existing.browser_compatibility == candidate.browser_compatibility
+        && existing.required_capabilities == candidate.required_capabilities
+        && existing.candidate_object_identities == candidate.candidate_object_identities
+        && descriptor_file_identities_match_reopen(
+            &existing.descriptor_files,
+            &candidate.descriptor_files,
+        )
+}
+
+fn descriptor_file_identities_match_reopen(
+    existing: &[PreparedDescriptorFileIdentity],
+    candidate: &[PreparedDescriptorFileIdentity],
+) -> bool {
+    if existing.len() != candidate.len() {
+        return false;
+    }
+    existing.iter().zip(candidate).all(|(existing, candidate)| {
+        existing.path == candidate.path
+            && existing.size_bytes == candidate.size_bytes
+            && existing.partition_values == candidate.partition_values
+            && existing.stats == candidate.stats
+            && match (&existing.object_etag, &candidate.object_etag) {
+                (Some(existing), Some(candidate)) => existing == candidate,
+                (None, Some(_)) => true,
+                _ => existing.object_etag == candidate.object_etag,
+            }
+    })
+}
+
+fn bootstrapped_snapshot_for_prepared_reuse(
+    snapshot: &BootstrappedBrowserSnapshot,
+) -> Result<BootstrappedBrowserSnapshot, QueryError> {
+    BootstrappedBrowserSnapshot::new_with_partition_metadata_and_telemetry(
+        snapshot.table_uri(),
+        snapshot.snapshot_version(),
+        snapshot.active_files().to_vec(),
+        snapshot.partition_column_types().clone(),
+        snapshot.required_capabilities().clone(),
+        Some(0),
+        Some(0),
+        snapshot.access_mode(),
+    )
+}
+
+fn strong_quoted_object_etag(etag: &str) -> Option<String> {
+    let etag = etag.trim();
+    if etag.starts_with("W/") || etag.starts_with("w/") {
+        return None;
+    }
+    if !(etag.starts_with('"') && etag.ends_with('"')) {
+        return None;
+    }
+    Some(etag.to_string())
 }
 
 fn datafusion_partition_column_type(
@@ -840,6 +1154,7 @@ fn datafusion_query_metrics(
     snapshot_bootstrap_duration_ms: Option<u64>,
     access_mode: Option<query_contract::BrowserAccessMode>,
     prebootstrap_pruning: BrowserPrebootstrapPruningSummary,
+    reuse_metrics: DataFusionSessionReuseMetrics,
     started_at: BrowserRuntimeInstant,
 ) -> QueryMetricsSummary {
     QueryMetricsSummary {
@@ -877,6 +1192,11 @@ fn datafusion_query_metrics(
         delta_log_manifest_list_duration_ms: None,
         snapshot_resolve_count: None,
         snapshot_resolve_duration_ms: None,
+        descriptor_cache_hit: None,
+        session_reuse_count: Some(reuse_metrics.session_reuse_count),
+        opened_table_reuse_count: Some(reuse_metrics.opened_table_reuse_count),
+        identity_refresh_count: Some(reuse_metrics.identity_refresh_count),
+        access_envelope_refresh_count: Some(reuse_metrics.access_envelope_refresh_count),
         rows_emitted: scan_metrics.rows_emitted,
         snapshot_bootstrap_duration_ms,
         access_mode,

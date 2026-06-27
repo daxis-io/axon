@@ -21,6 +21,7 @@ import {
 import type { CatalogTable, QueryEvent, QueryExecRequest, QueryRunOutcome } from './types.ts';
 import { loadLocalDeltaRuntime, releaseLocalDeltaObjectUrls } from './local-delta.ts';
 import {
+  lookupPublicObjectStorageRuntimeCache,
   resolvePublicObjectStorageDescriptor,
   type PublicObjectStorageDescriptorResolutionMetrics,
 } from './object-storage.ts';
@@ -87,6 +88,7 @@ export type SessionSetupMetrics = Pick<
   | 'delta_log_manifest_list_duration_ms'
   | 'snapshot_resolve_count'
   | 'snapshot_resolve_duration_ms'
+  | 'descriptor_cache_hit'
 >;
 
 export type SessionSetupMetricsState = {
@@ -188,17 +190,29 @@ async function buildSession(source: QueryTableSource): Promise<SessionState> {
     let setupMetrics = source.descriptorResolutionMetrics
       ? sessionSetupMetricsFromPublicObjectStorage(source.descriptorResolutionMetrics)
       : undefined;
-    const descriptor = await resolvePublicObjectStorageDescriptor({
+    const cached = lookupPublicObjectStorageRuntimeCache({
       provider: source.provider,
       tableUri: source.tableUri,
-      resolveDeltaSnapshotFromManifest: resolve_delta_snapshot_from_manifest,
-      onMetrics: (metrics) => {
-        setupMetrics = mergeSessionSetupMetrics(
-          setupMetrics,
-          sessionSetupMetricsFromPublicObjectStorage(metrics),
-        );
-      },
+      snapshot: { kind: 'latest' },
+      expectedSnapshotVersion: source.snapshot,
     });
+    let descriptor: BrowserHttpSnapshotDescriptor;
+    if (cached) {
+      descriptor = cached.descriptor;
+      setupMetrics = mergeSessionSetupMetrics(setupMetrics, { descriptor_cache_hit: 1 });
+    } else {
+      descriptor = await resolvePublicObjectStorageDescriptor({
+        provider: source.provider,
+        tableUri: source.tableUri,
+        resolveDeltaSnapshotFromManifest: resolve_delta_snapshot_from_manifest,
+        onMetrics: (metrics) => {
+          setupMetrics = mergeSessionSetupMetrics(
+            setupMetrics,
+            sessionSetupMetricsFromPublicObjectStorage(metrics),
+          );
+        },
+      });
+    }
 
     return {
       client: createQueryClient(),
@@ -314,7 +328,8 @@ function sessionSetupMetricsFromQueryMetrics(
     metrics.delta_log_manifest_list_count === undefined &&
     metrics.delta_log_manifest_list_duration_ms === undefined &&
     metrics.snapshot_resolve_count === undefined &&
-    metrics.snapshot_resolve_duration_ms === undefined
+    metrics.snapshot_resolve_duration_ms === undefined &&
+    metrics.descriptor_cache_hit === undefined
   ) {
     return undefined;
   }
@@ -324,6 +339,7 @@ function sessionSetupMetricsFromQueryMetrics(
     delta_log_manifest_list_duration_ms: metrics.delta_log_manifest_list_duration_ms,
     snapshot_resolve_count: metrics.snapshot_resolve_count,
     snapshot_resolve_duration_ms: metrics.snapshot_resolve_duration_ms,
+    descriptor_cache_hit: metrics.descriptor_cache_hit,
   };
 }
 
@@ -351,6 +367,7 @@ export function mergeSessionSetupMetrics(
       left.snapshot_resolve_duration_ms,
       right.snapshot_resolve_duration_ms,
     ),
+    descriptor_cache_hit: addMetric(left.descriptor_cache_hit, right.descriptor_cache_hit),
   };
 }
 
@@ -397,6 +414,11 @@ export function queryMetricsFromRangeReadMetricsEvent(
       footer_cache_degraded_identity_reads: metrics.footer_cache_degraded_identity_reads,
       identity_present_range_reads: metrics.identity_present_range_reads,
       identity_missing_range_reads: metrics.identity_missing_range_reads,
+      descriptor_cache_hit: metrics.descriptor_cache_hit,
+      session_reuse_count: metrics.session_reuse_count,
+      opened_table_reuse_count: metrics.opened_table_reuse_count,
+      identity_refresh_count: metrics.identity_refresh_count,
+      access_envelope_refresh_count: metrics.access_envelope_refresh_count,
       rows_emitted: metrics.rows_emitted,
       snapshot_bootstrap_duration_ms: metrics.snapshot_bootstrap_duration_ms,
       access_mode: metrics.access_mode,

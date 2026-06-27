@@ -619,6 +619,11 @@ fn emit_open_bootstrap_metrics<F>(
             delta_log_manifest_list_duration_ms: None,
             snapshot_resolve_count: None,
             snapshot_resolve_duration_ms: None,
+            descriptor_cache_hit: None,
+            session_reuse_count: None,
+            opened_table_reuse_count: None,
+            identity_refresh_count: None,
+            access_envelope_refresh_count: None,
             rows_emitted,
             snapshot_bootstrap_duration_ms: snapshot.snapshot_bootstrap_duration_ms(),
             access_mode: snapshot.access_mode(),
@@ -855,6 +860,7 @@ fn sample_snapshot() -> BrowserHttpSnapshotDescriptor {
             size_bytes: 128,
             partition_values: Default::default(),
             stats: None,
+            object_etag: None,
         }],
     }
 }

@@ -42,6 +42,7 @@ import {
 } from '../../services/local-delta.ts';
 import {
   preflightPublicObjectStorageDescriptorRangeRead,
+  registerPublicObjectStorageRuntimeCache,
   resolvePublicObjectStorageDescriptor,
   type PublicObjectStorageDescriptorResolutionMetrics,
 } from '../../services/object-storage.ts';
@@ -178,9 +179,16 @@ export function ConnectModal({
             descriptorResolutionMetrics = metrics;
           },
         });
-        await preflightPublicObjectStorageDescriptorRangeRead({
+        const preflight = await preflightPublicObjectStorageDescriptorRangeRead({
           descriptor,
           preflightParquetMetadataForTargets: preflight_parquet_metadata_for_targets,
+        });
+        registerPublicObjectStorageRuntimeCache({
+          provider: 'gcs',
+          tableUri: form.uri,
+          snapshot: { kind: 'latest' },
+          descriptor,
+          preflight,
         });
         setForm({
           ...form,

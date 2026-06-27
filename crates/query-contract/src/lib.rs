@@ -314,6 +314,8 @@ pub struct BrowserHttpFileDescriptor {
     pub partition_values: BTreeMap<String, Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stats: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_etag: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1101,6 +1103,7 @@ impl BrokeredDeltaReadPlan {
                     size_bytes: file.size_bytes,
                     partition_values: file.partition_values,
                     stats: file.stats,
+                    object_etag: None,
                 })
             })
             .collect::<Result<Vec<_>, QueryError>>()?;
@@ -1537,6 +1540,21 @@ pub struct QueryMetricsSummary {
     /// Wall-clock duration of snapshot resolver work when tracked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_resolve_duration_ms: Option<u64>,
+    /// In-memory descriptor handoff cache hits observed before query execution when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor_cache_hit: Option<u64>,
+    /// Prepared browser query session state reused for this execution when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_reuse_count: Option<u64>,
+    /// Opened DataFusion table registrations reused for this execution when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_table_reuse_count: Option<u64>,
+    /// Immutable object identity refreshes performed before reuse when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_refresh_count: Option<u64>,
+    /// Access-envelope refreshes performed while preserving immutable state when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_envelope_refresh_count: Option<u64>,
     /// Rows emitted by the scan layer when the runtime can report them; otherwise `0`.
     #[serde(default)]
     pub rows_emitted: u64,

@@ -2,9 +2,12 @@ import { expect, test } from '@playwright/test';
 
 import {
   buildPublicDeltaLogManifest,
+  clearPublicObjectStorageRuntimeCache,
+  lookupPublicObjectStorageRuntimeCache,
   publicObjectUrl,
   parsePublicObjectStorageTableRoot,
   preflightPublicObjectStorageDescriptorRangeRead,
+  registerPublicObjectStorageRuntimeCache,
   resolvePublicObjectStorageDescriptor,
 } from '../src/services/object-storage.ts';
 
@@ -219,7 +222,8 @@ test.describe('public object storage', () => {
     });
   });
 
-  test('measures repeated public descriptor resolution across connect and first query setup', async () => {
+  test('avoids repeated public descriptor resolution across connect and first query setup', async () => {
+    clearPublicObjectStorageRuntimeCache();
     const metricEvents: Array<{
       descriptor_resolution_count: number;
       snapshot_resolve_count: number;
@@ -263,19 +267,147 @@ test.describe('public object storage', () => {
         },
       });
 
-    await resolve();
-    await resolve();
+    const descriptor = await resolve();
+    const preflight = await preflightPublicObjectStorageDescriptorRangeRead({
+      descriptor,
+      preflightParquetMetadataForTargets: async () =>
+        JSON.stringify([
+          {
+            path: 'part-000.parquet',
+            url: 'https://storage.googleapis.com/bucket/table/part-000.parquet',
+            size_bytes: '128',
+            object_etag: '"part-000-v1"',
+            footer_length_bytes: '64',
+            row_group_count: '1',
+            row_count: '1',
+            fields: [],
+            field_stats: {},
+          },
+        ]),
+    });
+    registerPublicObjectStorageRuntimeCache({
+      provider: 'gcs',
+      tableUri: 'gs://bucket/table',
+      snapshot: { kind: 'latest' },
+      descriptor,
+      preflight,
+      nowMs: () => 1_000,
+      ttlMs: 60_000,
+    });
 
-    expect(listCalls).toBe(2);
-    expect(snapshotResolves).toBe(2);
-    expect(metricEvents).toHaveLength(2);
+    const cached = lookupPublicObjectStorageRuntimeCache({
+      provider: 'gcs',
+      tableUri: ' gs://bucket/table/ ',
+      snapshot: { kind: 'latest' },
+      expectedSnapshotVersion: 0,
+      nowMs: () => 2_000,
+    });
+
+    expect(cached?.descriptor).toEqual({
+      ...descriptor,
+      active_files: [
+        {
+          path: 'part-000.parquet',
+          url: 'https://storage.googleapis.com/bucket/table/part-000.parquet',
+          size_bytes: 128,
+          partition_values: {},
+          object_etag: '"part-000-v1"',
+        },
+      ],
+    });
+    expect(cached?.identity).toEqual({
+      path: 'part-000.parquet',
+      size_bytes: 128,
+      object_etag: '"part-000-v1"',
+    });
+    expect(listCalls).toBe(1);
+    expect(snapshotResolves).toBe(1);
+    expect(metricEvents).toHaveLength(1);
     expect(
       metricEvents.reduce((sum, metrics) => sum + metrics.descriptor_resolution_count, 0),
-    ).toBe(2);
-    expect(metricEvents.reduce((sum, metrics) => sum + metrics.snapshot_resolve_count, 0)).toBe(2);
+    ).toBe(1);
+    expect(metricEvents.reduce((sum, metrics) => sum + metrics.snapshot_resolve_count, 0)).toBe(1);
     expect(
       metricEvents.reduce((sum, metrics) => sum + metrics.delta_log_manifest_list_count, 0),
-    ).toBe(2);
+    ).toBe(1);
+    clearPublicObjectStorageRuntimeCache();
+  });
+
+  test('keeps latest and pinned public descriptor runtime cache identities distinct', () => {
+    clearPublicObjectStorageRuntimeCache();
+    const descriptor = publicDescriptor();
+
+    registerPublicObjectStorageRuntimeCache({
+      provider: 'gcs',
+      tableUri: 'gs://bucket/table',
+      snapshot: { kind: 'latest' },
+      descriptor,
+      preflight: [
+        {
+          path: 'part-000.parquet',
+          url: 'https://storage.googleapis.com/bucket/table/part-000.parquet',
+          size_bytes: 128,
+          object_etag: '"part-000-v1"',
+        },
+      ],
+      nowMs: () => 1_000,
+      ttlMs: 60_000,
+    });
+
+    expect(
+      lookupPublicObjectStorageRuntimeCache({
+        provider: 'gcs',
+        tableUri: 'gs://bucket/table',
+        snapshot: { kind: 'version', version: 0 },
+        expectedSnapshotVersion: 0,
+        nowMs: () => 2_000,
+      }),
+    ).toBeUndefined();
+    expect(
+      lookupPublicObjectStorageRuntimeCache({
+        provider: 'gcs',
+        tableUri: 'gs://bucket/table',
+        snapshot: { kind: 'latest' },
+        expectedSnapshotVersion: 0,
+        nowMs: () => 2_000,
+      })?.descriptor.active_files[0],
+    ).toMatchObject({
+      path: 'part-000.parquet',
+      size_bytes: 128,
+      object_etag: '"part-000-v1"',
+    });
+    clearPublicObjectStorageRuntimeCache();
+  });
+
+  test('expires public descriptor runtime cache entries before reuse', () => {
+    clearPublicObjectStorageRuntimeCache();
+    registerPublicObjectStorageRuntimeCache({
+      provider: 'gcs',
+      tableUri: 'gs://bucket/table',
+      snapshot: { kind: 'latest' },
+      descriptor: publicDescriptor(),
+      preflight: [
+        {
+          path: 'part-000.parquet',
+          url: 'https://storage.googleapis.com/bucket/table/part-000.parquet',
+          size_bytes: 128,
+          object_etag: '"part-000-v1"',
+        },
+      ],
+      nowMs: () => 1_000,
+      ttlMs: 100,
+    });
+
+    expect(
+      lookupPublicObjectStorageRuntimeCache({
+        provider: 'gcs',
+        tableUri: 'gs://bucket/table',
+        snapshot: { kind: 'latest' },
+        expectedSnapshotVersion: 0,
+        nowMs: () => 1_101,
+      }),
+    ).toBeUndefined();
+    clearPublicObjectStorageRuntimeCache();
   });
 
   test('preflights an active data file range-read before accepting a public table root', async () => {
@@ -318,4 +450,63 @@ test.describe('public object storage', () => {
       },
     ]);
   });
+
+  test('preflights cached descriptors without leaking descriptor identity fields', async () => {
+    const targets: unknown[] = [];
+
+    await preflightPublicObjectStorageDescriptorRangeRead({
+      descriptor: {
+        table_uri: 'gs://bucket/table',
+        snapshot_version: 0,
+        partition_column_types: {},
+        active_files: [
+          {
+            path: 'part-000.parquet',
+            url: 'https://storage.googleapis.com/bucket/table/part-000.parquet',
+            size_bytes: 128,
+            partition_values: {},
+            object_etag: '"part-000-v1"',
+          },
+        ],
+      },
+      preflightParquetMetadataForTargets: async (targetsJson) => {
+        targets.push(...JSON.parse(targetsJson));
+        return JSON.stringify([
+          {
+            path: 'part-000.parquet',
+            url: 'https://storage.googleapis.com/bucket/table/part-000.parquet',
+            size_bytes: '128',
+            object_etag: '"part-000-v1"',
+          },
+        ]);
+      },
+    });
+
+    expect(targets).toEqual([
+      {
+        path: 'part-000.parquet',
+        url: 'https://storage.googleapis.com/bucket/table/part-000.parquet',
+        size_bytes: 128,
+        partition_values: {},
+      },
+    ]);
+  });
 });
+
+function publicDescriptor() {
+  return {
+    table_uri: 'gs://bucket/table',
+    snapshot_version: 0,
+    partition_column_types: {},
+    browser_compatibility: { capabilities: {} },
+    required_capabilities: { capabilities: {} },
+    active_files: [
+      {
+        path: 'part-000.parquet',
+        url: 'https://storage.googleapis.com/bucket/table/part-000.parquet',
+        size_bytes: 128,
+        partition_values: {},
+      },
+    ],
+  };
+}

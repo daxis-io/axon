@@ -54,9 +54,35 @@ export type PublicObjectStorageDescriptorResolutionMetrics = {
   snapshot_resolve_duration_ms: number;
 };
 
+export type PublicObjectStorageRuntimeCacheSnapshot =
+  | { kind: 'latest' }
+  | { kind: 'version'; version: number };
+
+export type PublicObjectStoragePreflightResult = Array<{
+  path: string;
+  url: string;
+  size_bytes: number;
+  object_etag?: string;
+}>;
+
+export type PublicObjectStorageRuntimeCacheIdentity = {
+  path: string;
+  size_bytes: number;
+  object_etag: string;
+};
+
+export type PublicObjectStorageRuntimeCacheEntry = {
+  descriptor: BrowserHttpSnapshotDescriptor;
+  identity: PublicObjectStorageRuntimeCacheIdentity;
+  expiresAtEpochMs: number;
+};
+
 type PublicObjectStorageFetchOptions = {
   fetch?: PublicObjectStorageFetch;
 };
+
+const DEFAULT_RUNTIME_CACHE_TTL_MS = 2 * 60 * 1000;
+const publicObjectStorageRuntimeCache = new Map<string, PublicObjectStorageRuntimeCacheEntry>();
 
 type ResolvedPublicSnapshot = {
   table_uri: string;
@@ -228,12 +254,24 @@ export async function resolvePublicObjectStorageDescriptor(input: {
 export async function preflightPublicObjectStorageDescriptorRangeRead(input: {
   descriptor: BrowserHttpSnapshotDescriptor;
   preflightParquetMetadataForTargets: (targetsJson: string) => Promise<string>;
-}): Promise<void> {
+}): Promise<PublicObjectStoragePreflightResult> {
   const target = input.descriptor.active_files[0];
-  if (!target) return;
+  if (!target) return [];
 
   try {
-    await input.preflightParquetMetadataForTargets(JSON.stringify([target]));
+    return parsePreflightResult(
+      await input.preflightParquetMetadataForTargets(
+        JSON.stringify([
+          {
+            path: target.path,
+            url: target.url,
+            size_bytes: target.size_bytes,
+            partition_values: target.partition_values,
+            ...(target.stats === undefined ? {} : { stats: target.stats }),
+          },
+        ]),
+      ),
+    );
   } catch (error) {
     throw accessFailed(
       `public object storage active Parquet range-read failed: ${
@@ -241,6 +279,86 @@ export async function preflightPublicObjectStorageDescriptorRangeRead(input: {
       }`,
     );
   }
+}
+
+export function registerPublicObjectStorageRuntimeCache(input: {
+  provider: PublicObjectStorageProvider;
+  tableUri: string;
+  snapshot: PublicObjectStorageRuntimeCacheSnapshot;
+  descriptor: BrowserHttpSnapshotDescriptor;
+  preflight: PublicObjectStoragePreflightResult;
+  nowMs?: () => number;
+  ttlMs?: number;
+}): boolean {
+  const root = parsePublicObjectStorageTableRoot({
+    provider: input.provider,
+    tableUri: input.tableUri,
+  });
+  if (input.descriptor.table_uri !== root.tableUri) return false;
+
+  const firstFile = input.descriptor.active_files[0];
+  const firstPreflight = input.preflight[0];
+  if (!firstFile || !firstPreflight || firstFile.path !== firstPreflight.path) return false;
+  if (firstFile.url !== firstPreflight.url) return false;
+  if (firstFile.size_bytes !== firstPreflight.size_bytes) return false;
+
+  const objectEtag = strongObjectEtag(firstPreflight.object_etag);
+  if (!objectEtag) return false;
+  const descriptor = cloneDescriptor(input.descriptor);
+  descriptor.active_files = descriptor.active_files.map((file, index) =>
+    index === 0 ? { ...file, object_etag: objectEtag } : file,
+  );
+
+  publicObjectStorageRuntimeCache.set(
+    publicObjectStorageRuntimeCacheKey(input.provider, root.tableUri, input.snapshot),
+    {
+      descriptor,
+      identity: {
+        path: firstFile.path,
+        size_bytes: firstFile.size_bytes,
+        object_etag: objectEtag,
+      },
+      expiresAtEpochMs: (input.nowMs ?? Date.now)() + (input.ttlMs ?? DEFAULT_RUNTIME_CACHE_TTL_MS),
+    },
+  );
+  return true;
+}
+
+export function lookupPublicObjectStorageRuntimeCache(input: {
+  provider: PublicObjectStorageProvider;
+  tableUri: string;
+  snapshot: PublicObjectStorageRuntimeCacheSnapshot;
+  expectedSnapshotVersion?: number;
+  nowMs?: () => number;
+}): PublicObjectStorageRuntimeCacheEntry | undefined {
+  const root = parsePublicObjectStorageTableRoot({
+    provider: input.provider,
+    tableUri: input.tableUri,
+  });
+  const key = publicObjectStorageRuntimeCacheKey(input.provider, root.tableUri, input.snapshot);
+  const entry = publicObjectStorageRuntimeCache.get(key);
+  if (!entry) return undefined;
+
+  if (entry.expiresAtEpochMs <= (input.nowMs ?? Date.now)()) {
+    publicObjectStorageRuntimeCache.delete(key);
+    return undefined;
+  }
+  if (
+    input.expectedSnapshotVersion !== undefined &&
+    entry.descriptor.snapshot_version !== input.expectedSnapshotVersion
+  ) {
+    return undefined;
+  }
+
+  return {
+    descriptor: cloneDescriptor(entry.descriptor),
+    identity: { ...entry.identity },
+    expiresAtEpochMs: entry.expiresAtEpochMs,
+  };
+}
+
+export function clearPublicObjectStorageRuntimeCache(): void {
+  publicObjectStorageRuntimeCache.clear();
 }
 
 type GcsListEntry = {
@@ -403,6 +521,48 @@ function containsSecretMaterial(value: string): boolean {
     lower.includes('access_token') ||
     lower.includes('bearer')
   );
+}
+
+function publicObjectStorageRuntimeCacheKey(
+  provider: PublicObjectStorageProvider,
+  tableUri: string,
+  snapshot: PublicObjectStorageRuntimeCacheSnapshot,
+): string {
+  const snapshotKey = snapshot.kind === 'latest' ? 'latest' : `version:${snapshot.version}`;
+  return `${provider}|${tableUri}|${snapshotKey}`;
+}
+
+function parsePreflightResult(json: string): PublicObjectStoragePreflightResult {
+  const values = JSON.parse(json) as unknown;
+  if (!Array.isArray(values)) return [];
+  return values.flatMap((value) => {
+    if (typeof value !== 'object' || value === null) return [];
+    const record = value as Record<string, unknown>;
+    const path = typeof record.path === 'string' ? record.path : undefined;
+    const url = typeof record.url === 'string' ? record.url : undefined;
+    const sizeBytes = numericPreflightValue(record.size_bytes);
+    if (!path || !url || sizeBytes === undefined) return [];
+    const objectEtag = typeof record.object_etag === 'string' ? record.object_etag : undefined;
+    return [{ path, url, size_bytes: sizeBytes, object_etag: objectEtag }];
+  });
+}
+
+function numericPreflightValue(value: unknown): number | undefined {
+  const parsed = typeof value === 'string' ? Number(value) : value;
+  return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed >= 0
+    ? parsed
+    : undefined;
+}
+
+function strongObjectEtag(etag: string | undefined): string | undefined {
+  const trimmed = etag?.trim();
+  if (!trimmed || trimmed.startsWith('W/') || trimmed.startsWith('w/')) return undefined;
+  if (!trimmed.startsWith('"') || !trimmed.endsWith('"')) return undefined;
+  return trimmed;
+}
+
+function cloneDescriptor(descriptor: BrowserHttpSnapshotDescriptor): BrowserHttpSnapshotDescriptor {
+  return JSON.parse(JSON.stringify(descriptor)) as BrowserHttpSnapshotDescriptor;
 }
 
 function nowMs(): number {

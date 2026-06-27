@@ -10,7 +10,8 @@ use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
 use query_contract::{
     BrowserHttpFileDescriptor, BrowserHttpParquetDatasetDescriptor, CapabilityReport,
-    ExecutionTarget, PartitionColumnType, QueryErrorCode, QueryRequest,
+    ExecutionTarget, PartitionColumnType, QueryErrorCode, QueryExecutionOptions, QueryRequest,
+    QueryRuntimeLimits,
 };
 use wasm_datafusion_session::BrowserDataFusionSession;
 use wasm_query_runtime::{BrowserObjectAccessMode, BrowserRuntimeConfig};
@@ -82,6 +83,7 @@ fn session_queries_standard_parquet_dataset_over_loopback_range_reads() {
                 size_bytes: object_size,
                 partition_values: BTreeMap::new(),
                 stats: None,
+                object_etag: None,
             }],
         };
         let mut session = BrowserDataFusionSession::new(browser_safe_http_config(), u64::MAX)
@@ -183,6 +185,7 @@ fn session_preserves_bootstrapped_etag_for_datafusion_scan_if_range() {
                 size_bytes: object_size,
                 partition_values: BTreeMap::new(),
                 stats: None,
+            object_etag: None,
             }],
         };
         let mut session = BrowserDataFusionSession::new(browser_safe_http_config(), u64::MAX)
@@ -258,6 +261,280 @@ fn session_preserves_bootstrapped_etag_for_datafusion_scan_if_range() {
 }
 
 #[test]
+fn session_reuses_prepared_snapshot_for_repeated_sql_when_identity_matches() {
+    let _guard = PARQUET_DATASET_TEST_LOCK
+        .lock()
+        .expect("Parquet dataset tests should serialize local HTTP servers");
+
+    runtime().block_on(async {
+        let object = parquet_bytes_with_i64_columns(&[(3, 25), (1, 5), (2, 12)]);
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let server =
+            RequestCapturingServer::new_with_etag(object, Some("\"part-000-v1\"".to_string()));
+        let dataset = BrowserHttpParquetDatasetDescriptor {
+            table_uri: "https://example.invalid/datasets/events".to_string(),
+            partition_column_types: BTreeMap::new(),
+            browser_compatibility: CapabilityReport::default(),
+            required_capabilities: CapabilityReport::default(),
+            files: vec![BrowserHttpFileDescriptor {
+                path: "part-000.parquet".to_string(),
+                url: server.url(),
+                size_bytes: object_size,
+                partition_values: BTreeMap::new(),
+                stats: None,
+                object_etag: None,
+            }],
+        };
+        let mut session = BrowserDataFusionSession::new(browser_safe_http_config(), u64::MAX)
+            .expect("browser DataFusion session should construct");
+
+        session
+            .open_parquet_dataset("events", dataset)
+            .await
+            .expect("standard Parquet dataset should open");
+
+        let request = QueryRequest::new(
+            "https://example.invalid/datasets/events",
+            "SELECT id FROM events WHERE value > 10 ORDER BY id",
+            ExecutionTarget::BrowserWasm,
+        );
+        session
+            .sql("events", &request)
+            .await
+            .expect("first SQL should prepare the table");
+        let result = session
+            .sql("events", &request)
+            .await
+            .expect("second SQL should reuse the prepared table");
+
+        assert_eq!(result.runtime_result.row_count, 2);
+        assert_eq!(result.response.metrics.session_reuse_count, Some(1));
+        assert_eq!(result.response.metrics.opened_table_reuse_count, Some(1));
+        assert_eq!(
+            result.response.metrics.bootstrap_footer_range_reads,
+            Some(0)
+        );
+    });
+}
+
+#[test]
+fn session_runtime_limit_changes_reuse_immutable_prepared_state() {
+    let _guard = PARQUET_DATASET_TEST_LOCK
+        .lock()
+        .expect("Parquet dataset tests should serialize local HTTP servers");
+
+    runtime().block_on(async {
+        let object = parquet_bytes_with_i64_columns(&[(3, 25), (1, 5), (2, 12)]);
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let server =
+            RequestCapturingServer::new_with_etag(object, Some("\"part-000-v1\"".to_string()));
+        let dataset = BrowserHttpParquetDatasetDescriptor {
+            table_uri: "https://example.invalid/datasets/events".to_string(),
+            partition_column_types: BTreeMap::new(),
+            browser_compatibility: CapabilityReport::default(),
+            required_capabilities: CapabilityReport::default(),
+            files: vec![BrowserHttpFileDescriptor {
+                path: "part-000.parquet".to_string(),
+                url: server.url(),
+                size_bytes: object_size,
+                partition_values: BTreeMap::new(),
+                stats: None,
+                object_etag: None,
+            }],
+        };
+        let mut session = BrowserDataFusionSession::new(browser_safe_http_config(), u64::MAX)
+            .expect("browser DataFusion session should construct");
+
+        session
+            .open_parquet_dataset("events", dataset)
+            .await
+            .expect("standard Parquet dataset should open");
+
+        let base_request = QueryRequest::new(
+            "https://example.invalid/datasets/events",
+            "SELECT id FROM events WHERE value > 10 ORDER BY id",
+            ExecutionTarget::BrowserWasm,
+        );
+        session
+            .sql("events", &base_request)
+            .await
+            .expect("first SQL should prepare the table");
+        let limited_request = QueryRequest::new(
+            "https://example.invalid/datasets/events",
+            "SELECT id FROM events WHERE value > 10 ORDER BY id",
+            ExecutionTarget::BrowserWasm,
+        )
+        .with_options(QueryExecutionOptions {
+            runtime_limits: Some(QueryRuntimeLimits {
+                max_result_rows: Some(10),
+                max_arrow_ipc_bytes: None,
+                max_scan_bytes: None,
+            }),
+            ..QueryExecutionOptions::default()
+        });
+
+        let result = session
+            .sql("events", &limited_request)
+            .await
+            .expect("runtime-limit-only changes should reuse immutable prepared state");
+
+        assert_eq!(result.runtime_result.row_count, 2);
+        assert_eq!(result.response.metrics.session_reuse_count, Some(1));
+        assert_eq!(
+            result.response.metrics.bootstrap_footer_range_reads,
+            Some(0)
+        );
+    });
+}
+
+#[test]
+fn session_reuses_prepared_state_across_access_envelope_refresh_when_identity_matches() {
+    let _guard = PARQUET_DATASET_TEST_LOCK
+        .lock()
+        .expect("Parquet dataset tests should serialize local HTTP servers");
+
+    runtime().block_on(async {
+        let object = parquet_bytes_with_i64_columns(&[(3, 25), (1, 5), (2, 12)]);
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let first_server = RequestCapturingServer::new_with_etag(
+            object.clone(),
+            Some("\"part-000-v1\"".to_string()),
+        );
+        let refreshed_server =
+            RequestCapturingServer::new_with_etag(object, Some("\"part-000-v1\"".to_string()));
+        let mut session = BrowserDataFusionSession::new(browser_safe_http_config(), u64::MAX)
+            .expect("browser DataFusion session should construct");
+        let first_dataset = single_identity_dataset(
+            "https://example.invalid/datasets/events",
+            first_server.url(),
+            object_size,
+            "\"part-000-v1\"",
+        );
+        let refreshed_dataset = single_identity_dataset(
+            "https://example.invalid/datasets/events",
+            refreshed_server.url(),
+            object_size,
+            "\"part-000-v1\"",
+        );
+
+        session
+            .open_parquet_dataset("events", first_dataset)
+            .await
+            .expect("initial dataset should open");
+        let request = QueryRequest::new(
+            "https://example.invalid/datasets/events",
+            "SELECT id FROM events WHERE value > 10 ORDER BY id",
+            ExecutionTarget::BrowserWasm,
+        );
+        session
+            .sql("events", &request)
+            .await
+            .expect("first SQL should prepare immutable state");
+
+        session
+            .open_parquet_dataset("events", refreshed_dataset)
+            .await
+            .expect("refreshed access envelope should reopen");
+        let result = session
+            .sql("events", &request)
+            .await
+            .expect("matching identity should reuse prepared state");
+
+        assert_eq!(result.runtime_result.row_count, 2);
+        assert_eq!(result.response.metrics.session_reuse_count, Some(1));
+        assert_eq!(
+            result.response.metrics.access_envelope_refresh_count,
+            Some(1)
+        );
+        assert_eq!(result.response.metrics.identity_refresh_count, Some(0));
+        assert_eq!(
+            result.response.metrics.bootstrap_footer_range_reads,
+            Some(0)
+        );
+        assert!(
+            refreshed_server.recorded_requests().len() > 0,
+            "the refreshed descriptor URL should be used for scan reads"
+        );
+    });
+}
+
+#[test]
+fn session_drops_prepared_state_across_reopen_when_strong_etag_drifts() {
+    let _guard = PARQUET_DATASET_TEST_LOCK
+        .lock()
+        .expect("Parquet dataset tests should serialize local HTTP servers");
+
+    runtime().block_on(async {
+        let object = parquet_bytes_with_i64_columns(&[(3, 25), (1, 5), (2, 12)]);
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let first_server = RequestCapturingServer::new_with_etag(
+            object.clone(),
+            Some("\"part-000-v1\"".to_string()),
+        );
+        let drifted_server =
+            RequestCapturingServer::new_with_etag(object, Some("\"part-000-v2\"".to_string()));
+        let mut session = BrowserDataFusionSession::new(browser_safe_http_config(), u64::MAX)
+            .expect("browser DataFusion session should construct");
+
+        session
+            .open_parquet_dataset(
+                "events",
+                single_identity_dataset(
+                    "https://example.invalid/datasets/events",
+                    first_server.url(),
+                    object_size,
+                    "\"part-000-v1\"",
+                ),
+            )
+            .await
+            .expect("initial dataset should open");
+        let request = QueryRequest::new(
+            "https://example.invalid/datasets/events",
+            "SELECT id FROM events WHERE value > 10 ORDER BY id",
+            ExecutionTarget::BrowserWasm,
+        );
+        session
+            .sql("events", &request)
+            .await
+            .expect("first SQL should prepare immutable state");
+
+        session
+            .open_parquet_dataset(
+                "events",
+                single_identity_dataset(
+                    "https://example.invalid/datasets/events",
+                    drifted_server.url(),
+                    object_size,
+                    "\"part-000-v2\"",
+                ),
+            )
+            .await
+            .expect("drifted identity descriptor should reopen");
+        let result = session
+            .sql("events", &request)
+            .await
+            .expect("drifted identity should rebuild prepared state");
+
+        assert_eq!(result.runtime_result.row_count, 2);
+        assert_eq!(result.response.metrics.session_reuse_count, Some(0));
+        assert_eq!(result.response.metrics.identity_refresh_count, Some(1));
+        assert_eq!(
+            result.response.metrics.access_envelope_refresh_count,
+            Some(0)
+        );
+        assert!(
+            result
+                .response
+                .metrics
+                .bootstrap_footer_range_reads
+                .unwrap_or(0)
+                > 0,
+            "drifted identity should force footer/bootstrap work"
+        );
+    });
+}
+
+#[test]
 fn session_treats_weak_etag_as_missing_if_range_identity() {
     let _guard = PARQUET_DATASET_TEST_LOCK
         .lock()
@@ -279,6 +556,7 @@ fn session_treats_weak_etag_as_missing_if_range_identity() {
                 size_bytes: object_size,
                 partition_values: BTreeMap::new(),
                 stats: None,
+                object_etag: None,
             }],
         };
         let mut session = BrowserDataFusionSession::new(browser_safe_http_config(), u64::MAX)
@@ -360,6 +638,7 @@ fn session_prunes_partitions_before_footer_bootstrap() {
                         Some("2026-06-25".to_string()),
                     )]),
                     stats: None,
+                    object_etag: None,
                 },
                 BrowserHttpFileDescriptor {
                     path: "event_date=2026-06-24/part-000.parquet".to_string(),
@@ -371,6 +650,7 @@ fn session_prunes_partitions_before_footer_bootstrap() {
                         Some("2026-06-24".to_string()),
                     )]),
                     stats: None,
+                    object_etag: None,
                 },
             ],
         };
@@ -439,6 +719,7 @@ fn session_prunes_delta_integer_stats_before_footer_bootstrap() {
                         .expect("object size should fit in u64"),
                     partition_values: BTreeMap::new(),
                     stats: Some(delta_i64_stats_json("value", 1, 7)),
+                    object_etag: None,
                 },
                 BrowserHttpFileDescriptor {
                     path: "part-high.parquet".to_string(),
@@ -447,6 +728,7 @@ fn session_prunes_delta_integer_stats_before_footer_bootstrap() {
                         .expect("object size should fit in u64"),
                     partition_values: BTreeMap::new(),
                     stats: Some(delta_i64_stats_json("value", 25, 30)),
+                    object_etag: None,
                 },
             ],
         };
@@ -509,6 +791,7 @@ fn session_fail_opens_zero_candidate_prebootstrap_pruning() {
                         .expect("object size should fit in u64"),
                     partition_values: BTreeMap::new(),
                     stats: Some(delta_i64_stats_json("value", 5, 5)),
+                    object_etag: None,
                 },
                 BrowserHttpFileDescriptor {
                     path: "part-b.parquet".to_string(),
@@ -517,6 +800,7 @@ fn session_fail_opens_zero_candidate_prebootstrap_pruning() {
                         .expect("object size should fit in u64"),
                     partition_values: BTreeMap::new(),
                     stats: Some(delta_i64_stats_json("value", 7, 7)),
+                    object_etag: None,
                 },
             ],
         };
@@ -584,6 +868,7 @@ fn session_fail_opens_unsupported_prebootstrap_shape_to_all_active_files() {
                         Some("2026-06-25".to_string()),
                     )]),
                     stats: None,
+                    object_etag: None,
                 },
                 BrowserHttpFileDescriptor {
                     path: "event_date=2026-06-24/part-other.parquet".to_string(),
@@ -595,6 +880,7 @@ fn session_fail_opens_unsupported_prebootstrap_shape_to_all_active_files() {
                         Some("2026-06-24".to_string()),
                     )]),
                     stats: None,
+                    object_etag: None,
                 },
             ],
         };
@@ -674,6 +960,7 @@ fn session_fail_opens_missing_malformed_incomplete_or_incompatible_delta_stats()
                             .expect("object size should fit in u64"),
                         partition_values: BTreeMap::new(),
                         stats,
+                        object_etag: None,
                     },
                     BrowserHttpFileDescriptor {
                         path: format!("part-matching-{case_name}.parquet"),
@@ -682,6 +969,7 @@ fn session_fail_opens_missing_malformed_incomplete_or_incompatible_delta_stats()
                             .expect("object size should fit in u64"),
                         partition_values: BTreeMap::new(),
                         stats: Some(delta_i64_stats_json("value", 25, 25)),
+                        object_etag: None,
                     },
                 ],
             };
@@ -768,6 +1056,7 @@ fn session_pruned_noncandidate_unsupported_compression_is_not_bootstrapped() {
                         Some("2026-06-25".to_string()),
                     )]),
                     stats: None,
+                    object_etag: None,
                 },
                 BrowserHttpFileDescriptor {
                     path: "event_date=2026-06-24/part-zstd.parquet".to_string(),
@@ -779,6 +1068,7 @@ fn session_pruned_noncandidate_unsupported_compression_is_not_bootstrapped() {
                         Some("2026-06-24".to_string()),
                     )]),
                     stats: None,
+                    object_etag: None,
                 },
             ],
         };
@@ -831,6 +1121,7 @@ fn session_rejects_zstd_candidate_before_data_scanning() {
                 size_bytes: object_size,
                 partition_values: BTreeMap::new(),
                 stats: None,
+                object_etag: None,
             }],
         };
         let mut session = BrowserDataFusionSession::new(browser_safe_http_config(), u64::MAX)
@@ -872,6 +1163,28 @@ fn browser_safe_http_config() -> BrowserRuntimeConfig {
         object_access_mode: BrowserObjectAccessMode::BrowserSafeHttp,
         allow_cloud_credentials: false,
         ..BrowserRuntimeConfig::default()
+    }
+}
+
+fn single_identity_dataset(
+    table_uri: &str,
+    url: String,
+    object_size: u64,
+    object_etag: &str,
+) -> BrowserHttpParquetDatasetDescriptor {
+    BrowserHttpParquetDatasetDescriptor {
+        table_uri: table_uri.to_string(),
+        partition_column_types: BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
+        required_capabilities: CapabilityReport::default(),
+        files: vec![BrowserHttpFileDescriptor {
+            path: "part-000.parquet".to_string(),
+            url,
+            size_bytes: object_size,
+            partition_values: BTreeMap::new(),
+            stats: None,
+            object_etag: Some(object_etag.to_string()),
+        }],
     }
 }
 

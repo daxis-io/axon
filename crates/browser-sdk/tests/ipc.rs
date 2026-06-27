@@ -377,6 +377,11 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
                 delta_log_manifest_list_duration_ms: Some(3),
                 snapshot_resolve_count: Some(1),
                 snapshot_resolve_duration_ms: Some(6),
+                descriptor_cache_hit: Some(1),
+                session_reuse_count: Some(2),
+                opened_table_reuse_count: Some(3),
+                identity_refresh_count: Some(4),
+                access_envelope_refresh_count: Some(5),
                 rows_emitted: 3,
                 snapshot_bootstrap_duration_ms: Some(6),
                 access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
@@ -407,6 +412,11 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
     assert_eq!(metrics.descriptor_resolution_count, Some(1));
     assert_eq!(metrics.delta_log_manifest_list_count, Some(1));
     assert_eq!(metrics.snapshot_resolve_count, Some(1));
+    assert_eq!(metrics.descriptor_cache_hit, Some(1));
+    assert_eq!(metrics.session_reuse_count, Some(2));
+    assert_eq!(metrics.opened_table_reuse_count, Some(3));
+    assert_eq!(metrics.identity_refresh_count, Some(4));
+    assert_eq!(metrics.access_envelope_refresh_count, Some(5));
     assert_eq!(metrics.snapshot_bootstrap_duration_ms, Some(6));
     assert_eq!(
         metrics.access_mode,
@@ -453,6 +463,11 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             delta_log_manifest_list_duration_ms: Some(3),
             snapshot_resolve_count: Some(1),
             snapshot_resolve_duration_ms: Some(6),
+            descriptor_cache_hit: Some(1),
+            session_reuse_count: Some(2),
+            opened_table_reuse_count: Some(3),
+            identity_refresh_count: Some(4),
+            access_envelope_refresh_count: Some(5),
             rows_emitted: 25,
             snapshot_bootstrap_duration_ms: Some(7),
             access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
@@ -522,6 +537,11 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             assert_eq!(event.descriptor_resolution_count, Some(1));
             assert_eq!(event.delta_log_manifest_list_count, Some(1));
             assert_eq!(event.snapshot_resolve_count, Some(1));
+            assert_eq!(event.descriptor_cache_hit, Some(1));
+            assert_eq!(event.session_reuse_count, Some(2));
+            assert_eq!(event.opened_table_reuse_count, Some(3));
+            assert_eq!(event.identity_refresh_count, Some(4));
+            assert_eq!(event.access_envelope_refresh_count, Some(5));
             assert_eq!(event.rows_emitted, 25);
             assert_eq!(event.snapshot_bootstrap_duration_ms, Some(7));
             assert_eq!(event.access_mode, Some(BrowserAccessMode::BrowserSafeHttp));
@@ -735,6 +755,7 @@ fn sample_snapshot_descriptor() -> BrowserHttpSnapshotDescriptor {
             size_bytes: 128,
             partition_values: BTreeMap::new(),
             stats: None,
+            object_etag: None,
         }],
     }
 }
@@ -760,6 +781,7 @@ fn sample_parquet_dataset_descriptor() -> BrowserHttpParquetDatasetDescriptor {
                 Some("2026-06-01".to_string()),
             )]),
             stats: None,
+            object_etag: None,
         }],
     }
 }
@@ -799,6 +821,11 @@ fn sample_query_response(
             delta_log_manifest_list_duration_ms: None,
             snapshot_resolve_count: None,
             snapshot_resolve_duration_ms: None,
+            descriptor_cache_hit: None,
+            session_reuse_count: None,
+            opened_table_reuse_count: None,
+            identity_refresh_count: None,
+            access_envelope_refresh_count: None,
             rows_emitted: 1,
             snapshot_bootstrap_duration_ms: None,
             access_mode: None,

@@ -132,6 +132,7 @@ fn browser_runtime_materializes_https_descriptors_in_wasm() {
             size_bytes: 128,
             partition_values: std::collections::BTreeMap::new(),
             stats: None,
+            object_etag: None,
         }],
     };
 
@@ -438,6 +439,7 @@ fn materialize_snapshot_rejects_loopback_http_in_wasm() {
             size_bytes: 128,
             partition_values: std::collections::BTreeMap::new(),
             stats: None,
+            object_etag: None,
         }],
     };
 

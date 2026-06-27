@@ -110,6 +110,7 @@ fn browser_http_snapshot_conversion_preserves_bootstrapped_object_identity() {
             size_bytes: 4096,
             partition_values: BTreeMap::new(),
             stats: None,
+            object_etag: None,
         }],
     };
     let object_etags = BTreeMap::from([(

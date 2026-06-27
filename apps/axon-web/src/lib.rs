@@ -65,6 +65,8 @@ struct ParquetPreflightOutput {
     url: String,
     #[serde(serialize_with = "serialize_decimal_string")]
     size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    object_etag: Option<String>,
     partition_values: BTreeMap<String, Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     delta_stats: Option<String>,
@@ -416,7 +418,7 @@ pub async fn preflight_parquet_metadata_for_targets(
             size_bytes: target.size_bytes,
             partition_values: target.partition_values.clone(),
         };
-        let metadata = wasm_parquet_engine::read_parquet_metadata_for_target_with_cache(
+        let footer = wasm_parquet_engine::read_parquet_footer_for_target_with_cache(
             &reader,
             &scan_target,
             None,
@@ -425,10 +427,13 @@ pub async fn preflight_parquet_metadata_for_targets(
         )
         .await
         .map_err(query_error_to_js_value)?;
+        let metadata = wasm_parquet_engine::parse_parquet_metadata(&scan_target, &footer)
+            .map_err(query_error_to_js_value)?;
         outputs.push(ParquetPreflightOutput {
             path: target.path,
             url: target.url,
             size_bytes: metadata.object_size_bytes,
+            object_etag: footer.object_etag().map(str::to_string),
             partition_values: target.partition_values,
             delta_stats: target.stats,
             footer_length_bytes: metadata.footer_length_bytes,

@@ -105,6 +105,7 @@ export type BrowserHttpFileDescriptor = {
   size_bytes: number;
   partition_values: Record<string, string | null>;
   stats?: string;
+  object_etag?: string;
 };
 
 export type BrowserHttpSnapshotDescriptor = {
@@ -639,6 +640,11 @@ export type QueryMetricsSummary = {
   delta_log_manifest_list_duration_ms?: number;
   snapshot_resolve_count?: number;
   snapshot_resolve_duration_ms?: number;
+  descriptor_cache_hit?: number;
+  session_reuse_count?: number;
+  opened_table_reuse_count?: number;
+  identity_refresh_count?: number;
+  access_envelope_refresh_count?: number;
   rows_emitted?: number;
   snapshot_bootstrap_duration_ms?: number;
   access_mode?: BrowserAccessMode;
@@ -890,6 +896,11 @@ export type BrowserWorkerRangeReadMetricsEvent = {
   delta_log_manifest_list_duration_ms?: number;
   snapshot_resolve_count?: number;
   snapshot_resolve_duration_ms?: number;
+  descriptor_cache_hit?: number;
+  session_reuse_count?: number;
+  opened_table_reuse_count?: number;
+  identity_refresh_count?: number;
+  access_envelope_refresh_count?: number;
   rows_emitted: number;
   snapshot_bootstrap_duration_ms?: number;
   access_mode?: BrowserAccessMode;
@@ -1382,6 +1393,7 @@ export function parseReadAccessPlan(value: unknown): ReadAccessPlan {
           'size_bytes',
           'partition_values',
           'stats',
+          'object_etag',
         ]);
         const normalized = normalizeBrowserHttpFileDescriptor(file, filePath);
         validateHttpsUrl(normalized.url, `delta_sharing.files[${index}].url`);
@@ -1784,6 +1796,10 @@ function normalizeBrowserHttpFileDescriptor(
   const stats = optionalString(file.stats, `${path}.stats`);
   if (stats !== undefined) {
     normalized.stats = stats;
+  }
+  const objectEtag = optionalString(file.object_etag, `${path}.object_etag`);
+  if (objectEtag !== undefined) {
+    normalized.object_etag = objectEtag;
   }
   return normalized;
 }
@@ -3168,6 +3184,7 @@ function deltaSharingBrowserFile(
     size_bytes: file.size_bytes,
     partition_values: file.partition_values,
     ...(file.stats === undefined ? {} : { stats: file.stats }),
+    ...(file.object_etag === undefined ? {} : { object_etag: file.object_etag }),
   };
 }
 
@@ -4111,6 +4128,26 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
           snapshot_resolve_duration_ms: optionalNumber(
             payload.snapshot_resolve_duration_ms,
             'range_read_metrics.snapshot_resolve_duration_ms',
+          ),
+          descriptor_cache_hit: optionalNumber(
+            payload.descriptor_cache_hit,
+            'range_read_metrics.descriptor_cache_hit',
+          ),
+          session_reuse_count: optionalNumber(
+            payload.session_reuse_count,
+            'range_read_metrics.session_reuse_count',
+          ),
+          opened_table_reuse_count: optionalNumber(
+            payload.opened_table_reuse_count,
+            'range_read_metrics.opened_table_reuse_count',
+          ),
+          identity_refresh_count: optionalNumber(
+            payload.identity_refresh_count,
+            'range_read_metrics.identity_refresh_count',
+          ),
+          access_envelope_refresh_count: optionalNumber(
+            payload.access_envelope_refresh_count,
+            'range_read_metrics.access_envelope_refresh_count',
           ),
           rows_emitted: requiredNumber(payload.rows_emitted, 'range_read_metrics.rows_emitted'),
           snapshot_bootstrap_duration_ms: optionalNumber(

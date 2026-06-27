@@ -442,6 +442,7 @@ fn loopback_descriptor(
                 size_bytes: file.size_bytes,
                 partition_values: file.partition_values.clone(),
                 stats: file.stats.clone(),
+                object_etag: None,
             })
             .collect(),
     }
@@ -465,6 +466,7 @@ fn https_descriptor(
                 size_bytes: file.size_bytes,
                 partition_values: file.partition_values.clone(),
                 stats: file.stats.clone(),
+                object_etag: None,
             })
             .collect(),
     }

@@ -327,6 +327,16 @@ pub struct BrowserWorkerRangeReadMetricsEvent {
     pub snapshot_resolve_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_resolve_duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor_cache_hit: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_reuse_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_table_reuse_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_refresh_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_envelope_refresh_count: Option<u64>,
     pub rows_emitted: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_bootstrap_duration_ms: Option<u64>,
@@ -434,6 +444,11 @@ impl BrowserWorkerEventEnvelope {
             delta_log_manifest_list_duration_ms: metrics.delta_log_manifest_list_duration_ms,
             snapshot_resolve_count: metrics.snapshot_resolve_count,
             snapshot_resolve_duration_ms: metrics.snapshot_resolve_duration_ms,
+            descriptor_cache_hit: metrics.descriptor_cache_hit,
+            session_reuse_count: metrics.session_reuse_count,
+            opened_table_reuse_count: metrics.opened_table_reuse_count,
+            identity_refresh_count: metrics.identity_refresh_count,
+            access_envelope_refresh_count: metrics.access_envelope_refresh_count,
             rows_emitted: metrics.rows_emitted,
             snapshot_bootstrap_duration_ms: metrics.snapshot_bootstrap_duration_ms,
             access_mode: metrics.access_mode,
