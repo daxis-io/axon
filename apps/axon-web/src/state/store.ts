@@ -12,6 +12,7 @@ import {
   type LayoutSlice,
   type LayoutState,
 } from './slices/layout.ts';
+import { createConnectionsSlice, type ConnectionsSlice } from './slices/connections.ts';
 import {
   createSettingsSlice,
   sanitizeAppearanceSettings,
@@ -20,7 +21,7 @@ import {
   type SettingsState,
 } from './slices/settings.ts';
 
-export type AxonClientState = LayoutSlice & SettingsSlice;
+export type AxonClientState = LayoutSlice & SettingsSlice & ConnectionsSlice;
 
 export type PersistedAxonClientState = {
   layout: LayoutState;
@@ -161,9 +162,10 @@ export function createAxonClientStore(options?: { storage?: StateStorage<void> }
 
   return createStore<AxonClientState>()(
     persist(
-      (set) => ({
+      (set, get) => ({
         ...createLayoutSlice<AxonClientState>(set),
         ...createSettingsSlice<AxonClientState>(set),
+        ...createConnectionsSlice<AxonClientState>(set, get),
       }),
       {
         name: CLIENT_STATE_STORAGE_KEY,

@@ -27,9 +27,7 @@ import {
   type QueryResultPageRun,
 } from '../services/query-pagination.ts';
 import {
-  firstQueryableTableRef,
   querySourceFromConnectedCatalogs,
-  resolveActiveTableRef,
   type ActiveConnectedTableRef,
 } from '../services/query-source.ts';
 import { loadSaved, saveQuery } from '../services/saved.ts';
@@ -49,8 +47,12 @@ import type {
   SavedQuery,
 } from '../services/types.ts';
 import {
+  selectActiveConnectedTableRef,
   selectAppearanceSettings,
+  selectAvailableConnectedCatalogs,
+  selectConnectionActions,
   selectDefaultTarget,
+  selectFreshCatalogId,
   selectLayout,
   selectLayoutActions,
   selectSettingsActions,
@@ -84,14 +86,6 @@ import {
 } from './components/icons.tsx';
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
 import type { SourceId } from './connect/data.ts';
-import {
-  buildCatalogFromResult,
-  catalogsAvailableForFeatures,
-  loadConnectedCatalogs,
-  localRegistryIdsForCatalogs,
-  saveConnectedCatalogs,
-  upsertConnectedCatalog,
-} from './connect/store.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { formatBytes, formatRows, hexToSoft, prettifySql } from './lib/format.ts';
 import {
@@ -164,6 +158,10 @@ export function App() {
   );
   const defaultTargetOptions = availableExecutionTargetValues(SERVER_QUERY_FALLBACK_ENABLED);
   const settingsActions = useAxonClientStore(selectSettingsActions);
+  const availableConnectedCatalogs = useAxonClientStore(selectAvailableConnectedCatalogs);
+  const activeTableRef = useAxonClientStore(selectActiveConnectedTableRef);
+  const freshCatalogId = useAxonClientStore(selectFreshCatalogId);
+  const connectionActions = useAxonClientStore(selectConnectionActions);
 
   const [catalog, setCatalog] = useState<Catalog | undefined>(() => snapshotCatalog());
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -216,19 +214,6 @@ export function App() {
   const [connectInitialStep, setConnectInitialStep] = useState<1 | 2 | 3>(1);
   const [connectInitialSource, setConnectInitialSource] = useState<SourceId | null>(null);
   const [connectedPanelOpen, setConnectedPanelOpen] = useState(false);
-  const [connectedCatalogs, setConnectedCatalogs] = useState<ConnectedCatalog[]>(() =>
-    loadConnectedCatalogs(),
-  );
-  const [selectedTableRef, setSelectedTableRef] = useState<ActiveConnectedTableRef | undefined>();
-  const [freshCatalogId, setFreshCatalogId] = useState<string | null>(null);
-  const availableConnectedCatalogs = useMemo(
-    () => catalogsAvailableForFeatures(connectedCatalogs, CONNECTOR_FEATURES),
-    [connectedCatalogs],
-  );
-  const activeTableRef = useMemo(
-    () => resolveActiveTableRef(availableConnectedCatalogs, selectedTableRef),
-    [availableConnectedCatalogs, selectedTableRef],
-  );
   const querySource = useMemo(
     () => querySourceFromConnectedCatalogs(availableConnectedCatalogs, activeTableRef),
     [activeTableRef, availableConnectedCatalogs],
@@ -271,10 +256,6 @@ export function App() {
     activeResultPageRunRef.current = activeResultPageRun;
   }, [activeResultPageRun]);
 
-  useEffect(() => {
-    saveConnectedCatalogs(connectedCatalogs);
-  }, [connectedCatalogs]);
-
   const openConnectModal = useCallback((step: 1 | 2 | 3 = 1, src: SourceId | null = null) => {
     setConnectInitialStep(step);
     setConnectInitialSource(src);
@@ -287,63 +268,43 @@ export function App() {
 
   const handleConnected = useCallback(
     (result: ConnectResult) => {
-      const catalog = buildCatalogFromResult(result);
-      const upsert = upsertConnectedCatalog(connectedCatalogs, catalog);
-      const mergedCatalogId =
-        upsert.catalogs.find(
-          (candidate) =>
-            candidate.alias.trim().toLowerCase() === catalog.alias.trim().toLowerCase(),
-        )?.id ?? catalog.id;
-      setConnectedCatalogs(upsert.catalogs);
-      const firstTable = firstQueryableTableRef([catalog]);
-      if (firstTable) setSelectedTableRef({ ...firstTable, catalogId: mergedCatalogId });
-      const replacedRegistryIds = localRegistryIdsForCatalogs(upsert.replaced);
-      if (replacedRegistryIds.length > 0) {
-        if (upsert.replaced.some((replaced) => replaced.id === selectedTableRef?.catalogId)) {
-          discardActiveQuerySession();
-        }
+      const mutation = connectionActions.connect(result);
+      if (mutation.shouldDiscardActiveQuerySession) {
+        discardActiveQuerySession();
+      }
+      if (mutation.localRegistryIdsToUnregister.length > 0) {
         unregisterLocalDeltaRuntimeIds(
-          replacedRegistryIds,
+          mutation.localRegistryIdsToUnregister,
           'failed to unregister duplicate local Delta catalog:',
         );
       }
-      setFreshCatalogId(mergedCatalogId);
       setConnectModalOpen(false);
-      window.setTimeout(() => setFreshCatalogId(null), 4500);
+      window.setTimeout(() => connectionActions.clearFreshCatalogId(), 4500);
       setToast({
-        msg: `${upsert.replaced.length > 0 ? 'Updated' : 'Connected'} · ${
-          catalog.alias
-        } · ${catalog.schemas.reduce((a, s) => a + s.tables.length, 0)} tables`,
+        msg: `${mutation.replaced.length > 0 ? 'Updated' : 'Connected'} · ${
+          mutation.catalogAlias ?? 'catalog'
+        } · ${mutation.tableCount} tables`,
         kind: 'ok',
       });
       window.setTimeout(() => setToast(null), 2400);
     },
-    [connectedCatalogs, selectedTableRef?.catalogId],
+    [connectionActions],
   );
 
   const removeConnectedCatalog = useCallback(
     (id: string) => {
-      setConnectedCatalogs((cs) => {
-        const removed = cs.find((catalog) => catalog.id === id);
-        const removedLocalRegistryIds = removed ? localRegistryIdsForCatalogs([removed]) : [];
-        const next = cs.filter((c) => c.id !== id);
-        const nextAvailable = catalogsAvailableForFeatures(next, CONNECTOR_FEATURES);
-        setSelectedTableRef((current) =>
-          current?.catalogId === id
-            ? firstQueryableTableRef(nextAvailable)
-            : resolveActiveTableRef(nextAvailable, current),
+      const mutation = connectionActions.removeCatalog(id);
+      if (mutation.shouldDiscardActiveQuerySession) {
+        discardActiveQuerySession();
+      }
+      if (mutation.localRegistryIdsToUnregister.length > 0) {
+        unregisterLocalDeltaRuntimeIds(
+          mutation.localRegistryIdsToUnregister,
+          'failed to unregister local Delta catalog:',
         );
-        if (removedLocalRegistryIds.length > 0) {
-          if (selectedTableRef?.catalogId === id) discardActiveQuerySession();
-          unregisterLocalDeltaRuntimeIds(
-            removedLocalRegistryIds,
-            'failed to unregister local Delta catalog:',
-          );
-        }
-        return next;
-      });
+      }
     },
-    [selectedTableRef],
+    [connectionActions],
   );
 
   // ─── Apply theme + tokens ──────────────────────────────
@@ -902,7 +863,7 @@ export function App() {
           width={sidebarW}
           onInsert={insertAtCursor}
           onResize={startResizeSidebar}
-          onPickConnectedTable={setSelectedTableRef}
+          onPickConnectedTable={connectionActions.selectTable}
         />
 
         <div className="workspace">
@@ -1118,7 +1079,7 @@ export function App() {
           catalogs={availableConnectedCatalogs}
           activeTable={activeTableRef}
           freshId={freshCatalogId}
-          onActivate={setSelectedTableRef}
+          onActivate={connectionActions.selectTable}
           onAdd={() => {
             setConnectedPanelOpen(false);
             openConnectModal(1);

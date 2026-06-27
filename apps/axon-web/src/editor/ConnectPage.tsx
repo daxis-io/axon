@@ -2,42 +2,34 @@
 // flow with a production app chrome (brand + back link) and the
 // design's empty-state illustration as the landing tile.
 
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useCallback, useState } from 'react';
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
 import { availabilityForSource, type SourceId } from './connect/data.ts';
-import {
-  buildCatalogFromResult,
-  catalogsAvailableForFeatures,
-  loadConnectedCatalogs,
-  localRegistryIdsForCatalogs,
-  saveConnectedCatalogs,
-  upsertConnectedCatalog,
-} from './connect/store.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { IconBolt, IconChevR, IconPlus } from './components/icons.tsx';
 import { navigate } from './router.ts';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
+import {
+  selectAvailableConnectedCatalogs,
+  selectConnectionActions,
+  selectFreshCatalogId,
+  useAxonClientStore,
+} from '../state/hooks.ts';
+import type { ConnectionMutationResult } from '../state/slices/connections.ts';
 
 const ConnectModal = lazy(() =>
   import('./connect/ConnectModal.tsx').then((module) => ({ default: module.ConnectModal })),
 );
 
 export function ConnectPage() {
-  const [catalogs, setCatalogs] = useState<ConnectedCatalog[]>(() => loadConnectedCatalogs());
-  const [freshId, setFreshId] = useState<string | null>(null);
+  const availableCatalogs = useAxonClientStore(selectAvailableConnectedCatalogs);
+  const freshId = useAxonClientStore(selectFreshCatalogId);
+  const connectionActions = useAxonClientStore(selectConnectionActions);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalStep, setModalStep] = useState<1 | 2 | 3>(1);
   const [modalSource, setModalSource] = useState<SourceId | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
-  const availableCatalogs = useMemo(
-    () => catalogsAvailableForFeatures(catalogs, CONNECTOR_FEATURES),
-    [catalogs],
-  );
-
-  useEffect(() => {
-    saveConnectedCatalogs(catalogs);
-  }, [catalogs]);
 
   const open = useCallback((step: 1 | 2 | 3 = 1, src: SourceId | null = null) => {
     setModalStep(step);
@@ -47,37 +39,24 @@ export function ConnectPage() {
 
   const onConnect = useCallback(
     (result: ConnectResult) => {
-      const cat = buildCatalogFromResult(result);
-      const upsert = upsertConnectedCatalog(catalogs, cat);
-      const mergedCatalogId =
-        upsert.catalogs.find(
-          (candidate) => candidate.alias.trim().toLowerCase() === cat.alias.trim().toLowerCase(),
-        )?.id ?? cat.id;
-      setCatalogs(upsert.catalogs);
-      const replacedRegistryIds = localRegistryIdsForCatalogs(upsert.replaced);
-      if (replacedRegistryIds.length > 0) {
-        unregisterLocalDeltaRuntimeIds(
-          replacedRegistryIds,
-          'failed to unregister duplicate local Delta catalog:',
-        );
-      }
-      setFreshId(mergedCatalogId);
+      const mutation = connectionActions.connect(result);
+      applyConnectPageMutationSideEffects(
+        mutation,
+        'failed to unregister duplicate local Delta catalog:',
+      );
       setModalOpen(false);
-      window.setTimeout(() => setFreshId(null), 4500);
+      window.setTimeout(() => connectionActions.clearFreshCatalogId(), 4500);
     },
-    [catalogs],
+    [connectionActions],
   );
 
-  const removeCatalog = useCallback((id: string) => {
-    setCatalogs((cs) => {
-      const removed = cs.find((catalog) => catalog.id === id);
-      const registryIds = removed ? localRegistryIdsForCatalogs([removed]) : [];
-      if (registryIds.length > 0) {
-        unregisterLocalDeltaRuntimeIds(registryIds, 'failed to unregister local Delta catalog:');
-      }
-      return cs.filter((c) => c.id !== id);
-    });
-  }, []);
+  const removeCatalog = useCallback(
+    (id: string) => {
+      const mutation = connectionActions.removeCatalog(id);
+      applyConnectPageMutationSideEffects(mutation, 'failed to unregister local Delta catalog:');
+    },
+    [connectionActions],
+  );
 
   const tableCount = availableCatalogs.reduce(
     (a, c) => a + c.schemas.reduce((b, s) => b + s.tables.length, 0),
@@ -253,6 +232,37 @@ function glyphClass(c: ConnectedCatalog) {
   if (c.kind === 'unity_catalog') return 'uc';
   if (c.kind === 'delta_share') return 'ds';
   return c.provider || 'gcs';
+}
+
+type ConnectPageMutationSideEffectOptions = {
+  discardActiveQuerySession?: () => void;
+  unregisterLocalDeltaRuntimeIds?: (registryIds: string[], message: string) => void;
+};
+
+export function applyConnectPageMutationSideEffects(
+  mutation: Pick<
+    ConnectionMutationResult,
+    'localRegistryIdsToUnregister' | 'shouldDiscardActiveQuerySession'
+  >,
+  unregisterMessage: string,
+  options: ConnectPageMutationSideEffectOptions = {},
+): void {
+  if (mutation.shouldDiscardActiveQuerySession) {
+    (options.discardActiveQuerySession ?? discardActiveQuerySession)();
+  }
+
+  if (mutation.localRegistryIdsToUnregister.length > 0) {
+    (options.unregisterLocalDeltaRuntimeIds ?? unregisterLocalDeltaRuntimeIds)(
+      mutation.localRegistryIdsToUnregister,
+      unregisterMessage,
+    );
+  }
+}
+
+function discardActiveQuerySession(): void {
+  void import('../services/query.ts')
+    .then(({ discardQuerySession }) => discardQuerySession())
+    .catch((error) => console.warn('failed to discard query session:', error));
 }
 
 function unregisterLocalDeltaRuntimeIds(registryIds: string[], message: string): void {
