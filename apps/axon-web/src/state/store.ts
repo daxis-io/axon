@@ -27,8 +27,9 @@ import {
   type TabsSlice,
   type TabsState,
 } from './slices/tabs.ts';
+import { createUiSlice, type UiSlice } from './slices/ui.ts';
 
-export type AxonClientState = LayoutSlice & SettingsSlice & ConnectionsSlice & TabsSlice;
+export type AxonClientState = LayoutSlice & SettingsSlice & ConnectionsSlice & TabsSlice & UiSlice;
 
 export type PersistedAxonClientState = {
   layout: LayoutState;
@@ -177,6 +178,7 @@ export function createAxonClientStore(options?: { storage?: StateStorage<void> }
         ...createSettingsSlice<AxonClientState>(set),
         ...createConnectionsSlice<AxonClientState>(set, get),
         ...createTabsSlice<AxonClientState>(set, get),
+        ...createUiSlice<AxonClientState>(set),
       }),
       {
         name: CLIENT_STATE_STORAGE_KEY,

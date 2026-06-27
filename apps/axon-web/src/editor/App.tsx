@@ -59,6 +59,8 @@ import {
   selectSettingsActions,
   selectTabActions,
   selectTabs,
+  selectUi,
+  selectUiActions,
   useAxonClientStore,
 } from '../state/hooks.ts';
 import {
@@ -89,7 +91,6 @@ import {
   IconTable,
 } from './components/icons.tsx';
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
-import type { SourceId } from './connect/data.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { formatBytes, formatRows, hexToSoft, prettifySql } from './lib/format.ts';
 import {
@@ -153,6 +154,16 @@ export function App() {
   const tabsState = useAxonClientStore(selectTabs);
   const activeSqlTab = useAxonClientStore(selectActiveSqlTab);
   const tabActions = useAxonClientStore(selectTabActions);
+  const {
+    saveOpen,
+    capsOpen,
+    toast,
+    connectModalOpen,
+    connectInitialStep,
+    connectInitialSource,
+    connectedPanelOpen,
+  } = useAxonClientStore(selectUi);
+  const uiActions = useAxonClientStore(selectUiActions);
   const tabs = tabsState.items;
   const activeTabId = tabsState.activeTabId;
   const active = activeSqlTab ?? tabs[0]!;
@@ -160,7 +171,6 @@ export function App() {
   const [catalog, setCatalog] = useState<Catalog | undefined>(() => snapshotCatalog());
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [saved, setSaved] = useState<SavedQuery[]>([]);
-  const [saveOpen, setSaveOpen] = useState(false);
 
   const tableMeta = catalog?.tables[0];
 
@@ -176,17 +186,9 @@ export function App() {
   const [plan, setPlan] = useState<PlanSummary | undefined>(undefined);
   const [commits, setCommits] = useState<CommitEntry[]>([]);
   const [engineStatus, setEngineStatus] = useState<EngineStatus | undefined>(undefined);
-  const [capsOpen, setCapsOpen] = useState(false);
-  const [toast, setToast] = useState<{ msg: string; kind: 'ok' | 'warn' } | null>(null);
 
   const cancelRef = useRef<AbortController | null>(null);
   const runTimer = useRef<number | null>(null);
-
-  // ─── Connect-catalog workflow state ────────────────────
-  const [connectModalOpen, setConnectModalOpen] = useState(false);
-  const [connectInitialStep, setConnectInitialStep] = useState<1 | 2 | 3>(1);
-  const [connectInitialSource, setConnectInitialSource] = useState<SourceId | null>(null);
-  const [connectedPanelOpen, setConnectedPanelOpen] = useState(false);
   const querySource = useMemo(
     () => querySourceFromConnectedCatalogs(availableConnectedCatalogs, activeTableRef),
     [activeTableRef, availableConnectedCatalogs],
@@ -227,15 +229,18 @@ export function App() {
     activeResultPageRunRef.current = activeResultPageRun;
   }, [activeResultPageRun]);
 
-  const openConnectModal = useCallback((step: 1 | 2 | 3 = 1, src: SourceId | null = null) => {
-    setConnectInitialStep(step);
-    setConnectInitialSource(src);
-    setConnectModalOpen(true);
-  }, []);
+  const showToast = useCallback(
+    (message: string, kind: 'ok' | 'warn' = 'ok') => {
+      uiActions.showToast(message, kind);
+      window.setTimeout(() => uiActions.clearToast(), 2400);
+    },
+    [uiActions],
+  );
+
   const reselectLocalFolder = useCallback(() => {
-    setConnectedPanelOpen(false);
-    openConnectModal(2, 'local');
-  }, [openConnectModal]);
+    uiActions.closeConnectedPanel();
+    uiActions.openConnectModal(2, 'local');
+  }, [uiActions]);
 
   const handleConnected = useCallback(
     (result: ConnectResult) => {
@@ -249,17 +254,15 @@ export function App() {
           'failed to unregister duplicate local Delta catalog:',
         );
       }
-      setConnectModalOpen(false);
+      uiActions.closeConnectModal();
       window.setTimeout(() => connectionActions.clearFreshCatalogId(), 4500);
-      setToast({
-        msg: `${mutation.replaced.length > 0 ? 'Updated' : 'Connected'} · ${
+      showToast(
+        `${mutation.replaced.length > 0 ? 'Updated' : 'Connected'} · ${
           mutation.catalogAlias ?? 'catalog'
         } · ${mutation.tableCount} tables`,
-        kind: 'ok',
-      });
-      window.setTimeout(() => setToast(null), 2400);
+      );
     },
-    [connectionActions],
+    [connectionActions, showToast, uiActions],
   );
 
   const removeConnectedCatalog = useCallback(
@@ -332,12 +335,6 @@ export function App() {
   }, []);
 
   const engine = engineStatus;
-
-  // ─── Toast helper ──────────────────────────────────────
-  const showToast = useCallback((msg: string, kind: 'ok' | 'warn' = 'ok') => {
-    setToast({ msg, kind });
-    window.setTimeout(() => setToast(null), 2400);
-  }, []);
 
   // ─── Tab editing ───────────────────────────────────────
   const updateActiveSql = useCallback(
@@ -643,12 +640,12 @@ export function App() {
       const target = tab.preferred === 'native' ? 'native' : 'browser_wasm';
       void saveQuery({ name, sql: tab.sql, target }).then((entry) => {
         setSaved((prev) => [entry, ...prev.filter((s) => s.name !== entry.name)]);
-        setSaveOpen(false);
+        uiActions.closeSaveDialog();
         tabActions.markActiveSaved(`${name}.sql`, tab.id);
         showToast(`Saved · ${name}`);
       });
     },
-    [active, showToast, tabActions],
+    [active, showToast, tabActions, uiActions],
   );
 
   // ─── Keyboard shortcuts ────────────────────────────────
@@ -656,12 +653,12 @@ export function App() {
     const h = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault();
-        setSaveOpen(true);
+        uiActions.openSaveDialog();
       }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, []);
+  }, [uiActions]);
 
   const supportedCount = CAPABILITY_ORDER.length;
 
@@ -690,7 +687,7 @@ export function App() {
               ? `${availableConnectedCatalogs.length} connected catalog(s) · click to manage`
               : 'Switch catalog'
           }
-          onClick={() => availableConnectedCatalogs.length > 0 && setConnectedPanelOpen(true)}
+          onClick={() => availableConnectedCatalogs.length > 0 && uiActions.openConnectedPanel()}
         >
           <span className="conn-dot" />
           <span className="conn-name">
@@ -707,7 +704,7 @@ export function App() {
 
         <button
           className="btn ghost"
-          onClick={() => openConnectModal(1)}
+          onClick={() => uiActions.openConnectModal(1)}
           title="Connect a Delta source (local file, object storage, Unity Catalog, or Delta Sharing)"
         >
           <IconPlus size={11} /> Connect
@@ -718,7 +715,7 @@ export function App() {
         <button
           className="engine-chip"
           data-cap-trigger
-          onClick={() => setCapsOpen((v) => !v)}
+          onClick={uiActions.toggleCapabilityPopover}
           title="Engine capabilities"
         >
           <span className="dot" />
@@ -747,7 +744,7 @@ export function App() {
           <button className="btn ghost" onClick={formatSql} title="Format (⌘⇧F)">
             <IconFormat size={13} /> Format
           </button>
-          <button className="btn ghost icon" title="Save (⌘S)" onClick={() => setSaveOpen(true)}>
+          <button className="btn ghost icon" title="Save (⌘S)" onClick={uiActions.openSaveDialog}>
             <IconSave size={13} />
           </button>
         </div>
@@ -782,7 +779,7 @@ export function App() {
           <CapabilityPopover
             matrix={capMatrix}
             serverFallbackEnabled={SERVER_QUERY_FALLBACK_ENABLED}
-            onClose={() => setCapsOpen(false)}
+            onClose={uiActions.closeCapabilityPopover}
             anchorRight={300}
             anchorTop={50}
           />
@@ -987,13 +984,13 @@ export function App() {
             background: toast?.kind === 'warn' ? 'var(--warning)' : 'var(--success)',
           }}
         />
-        <span>{toast?.msg ?? ''}</span>
+        <span>{toast?.message ?? ''}</span>
       </div>
 
       {saveOpen && (
         <SaveDialog
           initialName={active.title.replace(/\.sql$/, '')}
-          onCancel={() => setSaveOpen(false)}
+          onCancel={uiActions.closeSaveDialog}
           onSave={onSaveConfirm}
         />
       )}
@@ -1005,7 +1002,7 @@ export function App() {
             initialSource={connectInitialSource}
             serverFallbackEnabled={SERVER_QUERY_FALLBACK_ENABLED}
             connectorFeatures={CONNECTOR_FEATURES}
-            onClose={() => setConnectModalOpen(false)}
+            onClose={uiActions.closeConnectModal}
             onConnect={handleConnected}
           />
         </Suspense>
@@ -1018,11 +1015,11 @@ export function App() {
           freshId={freshCatalogId}
           onActivate={connectionActions.selectTable}
           onAdd={() => {
-            setConnectedPanelOpen(false);
-            openConnectModal(1);
+            uiActions.closeConnectedPanel();
+            uiActions.openConnectModal(1);
           }}
           onRemove={removeConnectedCatalog}
-          onClose={() => setConnectedPanelOpen(false)}
+          onClose={uiActions.closeConnectedPanel}
         />
       )}
 
