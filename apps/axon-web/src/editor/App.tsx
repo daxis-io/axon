@@ -48,6 +48,7 @@ import type {
 } from '../services/types.ts';
 import {
   selectActiveConnectedTableRef,
+  selectActiveSqlTab,
   selectAppearanceSettings,
   selectAvailableConnectedCatalogs,
   selectConnectionActions,
@@ -56,6 +57,8 @@ import {
   selectLayout,
   selectLayoutActions,
   selectSettingsActions,
+  selectTabActions,
+  selectTabs,
   useAxonClientStore,
 } from '../state/hooks.ts';
 import {
@@ -67,6 +70,7 @@ import {
   availableExecutionTargetValues,
   coerceDefaultTargetForAvailability,
 } from '../state/slices/settings.ts';
+import type { SqlTab } from '../state/slices/tabs.ts';
 import { CapabilityPopover } from './components/Capabilities.tsx';
 import { Editor } from './components/Editor.tsx';
 import { Results, type RunUiState } from './components/Results.tsx';
@@ -100,22 +104,6 @@ const ConnectModal = lazy(() =>
   import('./connect/ConnectModal.tsx').then((module) => ({ default: module.ConnectModal })),
 );
 
-type Tab = {
-  id: string;
-  title: string;
-  sql: string;
-  dirty: boolean;
-  pin: number | null;
-  preferred: 'auto' | 'browser_wasm' | 'native';
-};
-
-const SAMPLE_QUERIES = {
-  count: 'SELECT COUNT(*) AS row_count FROM events',
-  category:
-    'SELECT category,\n       COUNT(*) AS rows,\n       SUM(value) AS total_value\nFROM events\nGROUP BY category\nORDER BY category',
-  top: 'SELECT id, category, value\nFROM events\nWHERE value >= 90\nORDER BY value DESC\nLIMIT 20',
-} as const;
-
 const TARGET_OPTIONS = SERVER_QUERY_FALLBACK_ENABLED
   ? [
       { id: 'auto' as const, short: 'Auto', cls: 'auto' },
@@ -124,7 +112,7 @@ const TARGET_OPTIONS = SERVER_QUERY_FALLBACK_ENABLED
     ]
   : [{ id: 'browser_wasm' as const, short: 'Browser', cls: 'browser' }];
 
-function targetTitle(id: Tab['preferred']): string {
+function targetTitle(id: SqlTab['preferred']): string {
   if (!SERVER_QUERY_FALLBACK_ENABLED) {
     return 'Run in Browser (WASM)';
   }
@@ -162,32 +150,17 @@ export function App() {
   const activeTableRef = useAxonClientStore(selectActiveConnectedTableRef);
   const freshCatalogId = useAxonClientStore(selectFreshCatalogId);
   const connectionActions = useAxonClientStore(selectConnectionActions);
+  const tabsState = useAxonClientStore(selectTabs);
+  const activeSqlTab = useAxonClientStore(selectActiveSqlTab);
+  const tabActions = useAxonClientStore(selectTabActions);
+  const tabs = tabsState.items;
+  const activeTabId = tabsState.activeTabId;
+  const active = activeSqlTab ?? tabs[0]!;
 
   const [catalog, setCatalog] = useState<Catalog | undefined>(() => snapshotCatalog());
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [saved, setSaved] = useState<SavedQuery[]>([]);
   const [saveOpen, setSaveOpen] = useState(false);
-
-  const [tabs, setTabs] = useState<Tab[]>([
-    {
-      id: 'q1',
-      title: 'count-rows.sql',
-      sql: SAMPLE_QUERIES.count,
-      dirty: false,
-      pin: null,
-      preferred: 'browser_wasm',
-    },
-    {
-      id: 'q2',
-      title: 'category-totals.sql',
-      sql: SAMPLE_QUERIES.category,
-      dirty: false,
-      pin: null,
-      preferred: 'browser_wasm',
-    },
-  ]);
-  const [activeTab, setActiveTab] = useState('q1');
-  const active = tabs.find((x) => x.id === activeTab) ?? tabs[0];
 
   const tableMeta = catalog?.tables[0];
 
@@ -228,18 +201,16 @@ export function App() {
     !hasLocalDeltaRuntime(querySource.localRegistryId);
 
   const activeResultPageRun = useMemo(() => {
-    const tab = tabs.find((candidate) => candidate.id === activeTab);
-    if (!tab) return undefined;
     return queryResultPageRun(
       {
-        sql: tab.sql,
+        sql: active.sql,
         table_name: tableMeta?.name ?? querySource.tableName,
-        preferred_target: tab.preferred,
-        snapshot_version: tab.pin ?? undefined,
+        preferred_target: active.preferred,
+        snapshot_version: active.pin ?? undefined,
       },
       querySource,
     );
-  }, [activeTab, querySource, tableMeta?.name, tabs]);
+  }, [active.pin, active.preferred, active.sql, querySource, tableMeta?.name]);
   const canLoadMoreRows =
     resultData?.page?.has_more === true &&
     resultPageRun !== undefined &&
@@ -371,46 +342,33 @@ export function App() {
   // ─── Tab editing ───────────────────────────────────────
   const updateActiveSql = useCallback(
     (sql: string) => {
-      setTabs((tt) => tt.map((x) => (x.id === activeTab ? { ...x, sql, dirty: true } : x)));
+      tabActions.updateActiveSql(sql);
     },
-    [activeTab],
+    [tabActions],
   );
 
   const insertAtCursor = useCallback(
     (text: string) => {
-      setTabs((tt) =>
-        tt.map((x) =>
-          x.id === activeTab
-            ? { ...x, sql: x.sql + (x.sql.endsWith('\n') ? '' : '\n') + text, dirty: true }
-            : x,
-        ),
-      );
+      tabActions.insertIntoActiveSql(text);
     },
-    [activeTab],
+    [tabActions],
   );
 
   const setActivePreferred = useCallback(
-    (target: Tab['preferred']) => {
-      setTabs((tt) => tt.map((x) => (x.id === activeTab ? { ...x, preferred: target } : x)));
+    (target: SqlTab['preferred']) => {
+      tabActions.setActivePreferred(target);
     },
-    [activeTab],
+    [tabActions],
   );
 
   const togglePin = useCallback(() => {
-    setTabs((tt) =>
-      tt.map((x) => {
-        if (x.id !== activeTab) return x;
-        const pinned = x.pin != null;
-        return { ...x, pin: pinned ? null : (tableMeta?.snapshot ?? null) };
-      }),
-    );
-  }, [activeTab, tableMeta?.snapshot]);
+    tabActions.toggleActivePin(tableMeta?.snapshot);
+  }, [tabActions, tableMeta?.snapshot]);
 
   // ─── Run lifecycle ─────────────────────────────────────
   const runActive = useCallback(async () => {
     if (runState.status === 'running') return;
-    const tab = tabs.find((x) => x.id === activeTab);
-    if (!tab) return;
+    const tab = active;
     if (localAccessNeedsReselect) {
       setResultData(undefined);
       setResultPageRun(undefined);
@@ -515,7 +473,7 @@ export function App() {
           outcome.executed_on === 'browser_wasm' ? 'browser' : 'native'
         }`,
       );
-      setTabs((tt) => tt.map((x) => (x.id === activeTab ? { ...x, dirty: false } : x)));
+      tabActions.markActiveClean(tab.id);
     } else {
       setPlan(undefined);
       setRunState({
@@ -542,13 +500,13 @@ export function App() {
       showToast(outcome.message, 'warn');
     }
   }, [
-    activeTab,
+    active,
     localAccessNeedsReselect,
     querySource,
     reselectLocalFolder,
     runState.status,
     showToast,
-    tabs,
+    tabActions,
     tableMeta?.name,
   ]);
 
@@ -628,38 +586,20 @@ export function App() {
   }, [showToast]);
 
   const formatSql = useCallback(() => {
-    setTabs((tt) =>
-      tt.map((x) => (x.id === activeTab ? { ...x, sql: prettifySql(x.sql), dirty: true } : x)),
-    );
+    tabActions.formatActiveSql(prettifySql);
     showToast('Formatted');
-  }, [activeTab, showToast]);
+  }, [showToast, tabActions]);
 
   const addTab = useCallback(() => {
-    const id = 'q' + (tabs.length + 1) + '-' + Math.random().toString(36).slice(2, 6);
-    setTabs((tt) => [
-      ...tt,
-      {
-        id,
-        title: `untitled-${tt.length + 1}.sql`,
-        sql: 'SELECT ',
-        dirty: true,
-        pin: null,
-        preferred: defaultTarget,
-      },
-    ]);
-    setActiveTab(id);
-  }, [defaultTarget, tabs.length]);
+    tabActions.addSqlTab(defaultTarget);
+  }, [defaultTarget, tabActions]);
 
   const closeTab = useCallback(
     (id: string, e: MouseEvent) => {
       e.stopPropagation();
-      const idx = tabs.findIndex((x) => x.id === id);
-      const next = tabs.filter((x) => x.id !== id);
-      if (next.length === 0) return;
-      setTabs(next);
-      if (activeTab === id) setActiveTab(next[Math.max(0, idx - 1)].id);
+      tabActions.closeTab(id);
     },
-    [activeTab, tabs],
+    [tabActions],
   );
 
   // ─── Resize handles ────────────────────────────────────
@@ -699,19 +639,16 @@ export function App() {
   // ─── Save handlers ─────────────────────────────────────
   const onSaveConfirm = useCallback(
     (name: string) => {
-      const tab = tabs.find((x) => x.id === activeTab);
-      if (!tab) return;
+      const tab = active;
       const target = tab.preferred === 'native' ? 'native' : 'browser_wasm';
       void saveQuery({ name, sql: tab.sql, target }).then((entry) => {
         setSaved((prev) => [entry, ...prev.filter((s) => s.name !== entry.name)]);
         setSaveOpen(false);
-        setTabs((tt) =>
-          tt.map((x) => (x.id === activeTab ? { ...x, dirty: false, title: `${name}.sql` } : x)),
-        );
+        tabActions.markActiveSaved(`${name}.sql`, tab.id);
         showToast(`Saved · ${name}`);
       });
     },
-    [activeTab, tabs, showToast],
+    [active, showToast, tabActions],
   );
 
   // ─── Keyboard shortcuts ────────────────────────────────
@@ -872,9 +809,9 @@ export function App() {
               <div
                 key={tb.id}
                 className={
-                  'qtab ' + (tb.id === activeTab ? 'active ' : '') + (tb.dirty ? 'dirty ' : '')
+                  'qtab ' + (tb.id === activeTabId ? 'active ' : '') + (tb.dirty ? 'dirty ' : '')
                 }
-                onClick={() => setActiveTab(tb.id)}
+                onClick={() => tabActions.selectTab(tb.id)}
               >
                 <span className="name">{tb.title}</span>
                 <span

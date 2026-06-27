@@ -20,12 +20,20 @@ import {
   type SettingsSlice,
   type SettingsState,
 } from './slices/settings.ts';
+import {
+  cloneTabsState,
+  createTabsSlice,
+  sanitizeTabsState,
+  type TabsSlice,
+  type TabsState,
+} from './slices/tabs.ts';
 
-export type AxonClientState = LayoutSlice & SettingsSlice & ConnectionsSlice;
+export type AxonClientState = LayoutSlice & SettingsSlice & ConnectionsSlice & TabsSlice;
 
 export type PersistedAxonClientState = {
   layout: LayoutState;
   settings: SettingsState;
+  tabs: TabsState;
 };
 
 export type AxonClientStore = StoreApi<AxonClientState>;
@@ -119,6 +127,7 @@ function mergePersistedClientState(
   const persistedExecution = isRecord(persistedSettings.execution)
     ? persistedSettings.execution
     : {};
+  const persistedTabs = isRecord(persistedState.tabs) ? persistedState.tabs : undefined;
 
   return {
     ...currentState,
@@ -136,6 +145,7 @@ function mergePersistedClientState(
       appearance: sanitizeAppearanceSettings(persistedAppearance, currentState.settings.appearance),
       execution: sanitizeExecutionSettings(persistedExecution, currentState.settings.execution),
     },
+    tabs: sanitizeTabsState(persistedTabs, currentState.tabs),
   };
 }
 
@@ -166,6 +176,7 @@ export function createAxonClientStore(options?: { storage?: StateStorage<void> }
         ...createLayoutSlice<AxonClientState>(set),
         ...createSettingsSlice<AxonClientState>(set),
         ...createConnectionsSlice<AxonClientState>(set, get),
+        ...createTabsSlice<AxonClientState>(set, get),
       }),
       {
         name: CLIENT_STATE_STORAGE_KEY,
@@ -180,6 +191,7 @@ export function createAxonClientStore(options?: { storage?: StateStorage<void> }
             appearance: { ...state.settings.appearance },
             execution: { ...state.settings.execution },
           },
+          tabs: cloneTabsState(state.tabs),
         }),
         merge: mergePersistedClientState,
       },

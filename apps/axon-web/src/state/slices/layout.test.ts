@@ -54,7 +54,7 @@ describe('layout slice', () => {
     expect(raw).toBeTypeOf('string');
 
     const persisted = JSON.parse(raw ?? '{}') as { state?: Record<string, unknown> };
-    expect(Object.keys(persisted.state ?? {}).sort()).toEqual(['layout', 'settings']);
+    expect(Object.keys(persisted.state ?? {}).sort()).toEqual(['layout', 'settings', 'tabs']);
     expect(persisted.state).not.toHaveProperty('layoutActions');
     expect(persisted.state).not.toHaveProperty('settingsActions');
 

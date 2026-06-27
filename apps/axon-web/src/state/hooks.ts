@@ -16,6 +16,14 @@ export const selectSelectedTableRef = (state: AxonClientState) =>
   state.connections.selectedTableRef;
 export const selectFreshCatalogId = (state: AxonClientState) => state.connections.freshCatalogId;
 export const selectConnectionActions = (state: AxonClientState) => state.connectionActions;
+export const selectTabs = (state: AxonClientState) => state.tabs;
+export const selectActiveTab = (state: AxonClientState) =>
+  state.tabs.items.find((tab) => tab.id === state.tabs.activeTabId) ?? state.tabs.items[0];
+export const selectActiveSqlTab = (state: AxonClientState) => {
+  const active = selectActiveTab(state);
+  return active?.kind === 'sql' ? active : undefined;
+};
+export const selectTabActions = (state: AxonClientState) => state.tabsActions;
 
 let availableCatalogInput: ConnectedCatalog[] | undefined;
 let availableCatalogOutput: ConnectedCatalog[] | undefined;
