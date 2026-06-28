@@ -4,7 +4,6 @@ import {
 } from '../../services/query-pagination.ts';
 import type { CommitEntry, HistoryEntry } from '../../services/types.ts';
 import {
-  selectRunCapabilities,
   selectRunEvents,
   selectRunLoadingMoreRows,
   selectRunMetrics,
@@ -46,7 +45,6 @@ export function RunResultsPanel({
   const metrics = useAxonClientStore(selectRunMetrics);
   const events = useAxonClientStore(selectRunEvents);
   const plan = useAxonClientStore(selectRunPlan);
-  const capabilities = useAxonClientStore(selectRunCapabilities);
   const canLoadMoreRows =
     resultData?.page?.has_more === true &&
     resultPageRun !== undefined &&
@@ -63,7 +61,6 @@ export function RunResultsPanel({
       serverFallbackEnabled={serverFallbackEnabled}
       plan={plan}
       commits={commits}
-      capabilities={capabilities}
       snapshotPin={snapshotPin}
       tableSnapshot={tableSnapshot}
       tableUri={tableUri}

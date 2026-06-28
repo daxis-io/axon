@@ -16,7 +16,7 @@
 - M2G: replace local `App.tsx` run-related `useState` calls with store selectors/actions while keeping `AbortController`, interval handles, dynamic `import('../services/query.ts')`, history writes, toasts, catalog/commits/history/saved/query source, and query semantics in `App.tsx`.
 - Preserve local Delta reselect, fallback-event filtering, `sameQueryResultPageRun` load-more guard, stale batch discard toast, `tabActions.markActiveClean`, cancel text, and history append on success/error.
 - M2H: add `editor/components/RunResultsPanel.tsx` to subscribe to changing run result state. `App.tsx` should select only stable primitives such as `selectRunIsRunning` for topbar/editor wiring so the 80 ms elapsed timer does not rerender the whole shell.
-- M2H verification note: the render boundary is verified by code structure. `App.tsx` subscribes to `selectRunIsRunning` and stable actions only; `RunResultsPanel.tsx` owns subscriptions for `runState`, results, pagination, metrics, events, plan, and capabilities.
+- M2H verification note: the render boundary is verified by code structure. `App.tsx` subscribes to `selectRunIsRunning` and stable actions only; `RunResultsPanel.tsx` owns subscriptions for `runState`, results, pagination, metrics, events, and plan. Capability popover data stays in `App.tsx` as a direct store read so it does not add an unused results-panel subscription.
 
 ## Commit Plan
 

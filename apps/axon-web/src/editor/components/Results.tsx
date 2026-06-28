@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
-  CapabilityMatrixRow,
   CommitEntry,
   HistoryEntry,
   PlanSummary,
@@ -33,7 +32,6 @@ type ResultsProps = {
   serverFallbackEnabled: boolean;
   plan: PlanSummary | undefined;
   commits: CommitEntry[];
-  capabilities?: CapabilityMatrixRow[];
   snapshotPin: number | null;
   tableSnapshot: number | undefined;
   tableUri: string | undefined;
