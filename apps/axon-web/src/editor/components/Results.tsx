@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   CapabilityMatrixRow,
   CommitEntry,
-  ExecutionTarget,
   HistoryEntry,
   PlanSummary,
   QueryEvent,
@@ -11,6 +10,7 @@ import type {
   ResultCell,
   ResultColumn,
 } from '../../services/types.ts';
+import type { RunUiState } from '../../state/slices/run.ts';
 import { formatBytes } from '../lib/format.ts';
 import {
   IconArrowDown,
@@ -23,24 +23,6 @@ import {
   IconRefresh,
   IconSearch,
 } from './icons.tsx';
-
-export type RunUiState =
-  | { status: 'idle' }
-  | { status: 'running'; target: ExecutionTarget; elapsed: number }
-  | {
-      status: 'done';
-      target: ExecutionTarget;
-      ms: number;
-      rows: number;
-      fallback?: { code: string; detail: string } | null;
-    }
-  | {
-      status: 'error';
-      target?: ExecutionTarget;
-      ms: number;
-      message: string;
-      code?: string;
-    };
 
 type ResultsProps = {
   runState: RunUiState;

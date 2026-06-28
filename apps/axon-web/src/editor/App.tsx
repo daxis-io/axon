@@ -74,10 +74,11 @@ import {
   coerceDefaultTargetForAvailability,
 } from '../state/slices/settings.ts';
 import type { EngineActions } from '../state/slices/engine.ts';
+import type { RunUiState } from '../state/slices/run.ts';
 import type { SqlTab } from '../state/slices/tabs.ts';
 import { CapabilityPopover } from './components/Capabilities.tsx';
 import { Editor } from './components/Editor.tsx';
-import { Results, type RunUiState } from './components/Results.tsx';
+import { Results } from './components/Results.tsx';
 import { SaveDialog } from './components/SaveDialog.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import {

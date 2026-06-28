@@ -28,6 +28,18 @@ export const selectUi = (state: AxonClientState) => state.ui;
 export const selectUiActions = (state: AxonClientState) => state.uiActions;
 export const selectEngineStatus = (state: AxonClientState) => state.engine.status;
 export const selectEngineActions = (state: AxonClientState) => state.engineActions;
+export const selectRun = (state: AxonClientState) => state.run;
+export const selectRunState = (state: AxonClientState) => state.run.runState;
+export const selectRunIsRunning = (state: AxonClientState) =>
+  state.run.runState.status === 'running';
+export const selectRunResultData = (state: AxonClientState) => state.run.resultData;
+export const selectRunResultPageRun = (state: AxonClientState) => state.run.resultPageRun;
+export const selectRunLoadingMoreRows = (state: AxonClientState) => state.run.loadingMoreRows;
+export const selectRunMetrics = (state: AxonClientState) => state.run.metrics;
+export const selectRunEvents = (state: AxonClientState) => state.run.events;
+export const selectRunPlan = (state: AxonClientState) => state.run.plan;
+export const selectRunCapabilities = (state: AxonClientState) => state.run.capabilities;
+export const selectRunActions = (state: AxonClientState) => state.runActions;
 
 let availableCatalogInput: ConnectedCatalog[] | undefined;
 let availableCatalogOutput: ConnectedCatalog[] | undefined;
