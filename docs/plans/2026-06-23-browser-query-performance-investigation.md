@@ -102,6 +102,13 @@ Next backlog recommendation: capture live public-GCS browser UAT evidence on a
 representative table before starting a shared Delta/Parquet range-cache and
 readahead substrate or scan-byte budget enforcement.
 
+### Live Public-GCS Browser UAT Evidence - 2026-06-28
+
+Live public-GCS browser UAT evidence remained blocked in the implementation
+shell because `AXON_LIVE_PUBLIC_GCS_TABLE_URI` was not set. No live metrics or
+test artifact were collected; this is an external environment gate, not
+product-success evidence.
+
 ---
 
 ## Baseline Evidence
