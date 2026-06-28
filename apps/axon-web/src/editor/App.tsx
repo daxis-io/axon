@@ -20,7 +20,6 @@ import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
 import { appendHistory, loadHistory } from '../services/history.ts';
 import { hasLocalDeltaRuntime } from '../services/local-delta-session.ts';
 import {
-  appendResultPage,
   queryResultPageRun,
   queryResultPageRunRequest,
   sameQueryResultPageRun,
@@ -34,15 +33,10 @@ import { loadSaved, saveQuery } from '../services/saved.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
 import { subscribeCommits } from '../services/snapshot.ts';
 import type {
-  CapabilityMatrixRow,
   Catalog,
   CommitEntry,
   HistoryEntry,
-  PlanSummary,
-  QueryEvent,
   QueryExecRequest,
-  QueryMetricsSummary,
-  QueryResultData,
   SavedQuery,
 } from '../services/types.ts';
 import {
@@ -57,6 +51,15 @@ import {
   selectFreshCatalogId,
   selectLayout,
   selectLayoutActions,
+  selectRunActions,
+  selectRunCapabilities,
+  selectRunEvents,
+  selectRunLoadingMoreRows,
+  selectRunMetrics,
+  selectRunPlan,
+  selectRunResultData,
+  selectRunResultPageRun,
+  selectRunState,
   selectSettingsActions,
   selectTabActions,
   selectTabs,
@@ -74,7 +77,6 @@ import {
   coerceDefaultTargetForAvailability,
 } from '../state/slices/settings.ts';
 import type { EngineActions } from '../state/slices/engine.ts';
-import type { RunUiState } from '../state/slices/run.ts';
 import type { SqlTab } from '../state/slices/tabs.ts';
 import { CapabilityPopover } from './components/Capabilities.tsx';
 import { Editor } from './components/Editor.tsx';
@@ -186,16 +188,15 @@ export function App() {
 
   const tableMeta = catalog?.tables[0];
 
-  const [runState, setRunState] = useState<RunUiState>({ status: 'idle' });
-  const [resultData, setResultData] = useState<QueryResultData | undefined>();
-  const [resultPageRun, setResultPageRun] = useState<QueryResultPageRun | undefined>();
-  const [loadingMoreRows, setLoadingMoreRows] = useState(false);
-  const [metrics, setMetrics] = useState<QueryMetricsSummary | undefined>();
-  const [events, setEvents] = useState<QueryEvent[]>([]);
-  const [capMatrix, setCapMatrix] = useState<CapabilityMatrixRow[]>(() =>
-    defaultCapabilityMatrix(),
-  );
-  const [plan, setPlan] = useState<PlanSummary | undefined>(undefined);
+  const runState = useAxonClientStore(selectRunState);
+  const resultData = useAxonClientStore(selectRunResultData);
+  const resultPageRun = useAxonClientStore(selectRunResultPageRun);
+  const loadingMoreRows = useAxonClientStore(selectRunLoadingMoreRows);
+  const metrics = useAxonClientStore(selectRunMetrics);
+  const events = useAxonClientStore(selectRunEvents);
+  const capMatrix = useAxonClientStore(selectRunCapabilities);
+  const plan = useAxonClientStore(selectRunPlan);
+  const runActions = useAxonClientStore(selectRunActions);
   const [commits, setCommits] = useState<CommitEntry[]>([]);
 
   const cancelRef = useRef<AbortController | null>(null);
@@ -376,13 +377,7 @@ export function App() {
     if (runState.status === 'running') return;
     const tab = active;
     if (localAccessNeedsReselect) {
-      setResultData(undefined);
-      setResultPageRun(undefined);
-      setMetrics(undefined);
-      setEvents([]);
-      setPlan(undefined);
-      setRunState({ status: 'idle' });
-      setLoadingMoreRows(false);
+      runActions.clearForLocalAccessReselect();
       reselectLocalFolder();
       showToast('Reselect this local Delta folder to restore browser file access.', 'warn');
       return;
@@ -394,17 +389,11 @@ export function App() {
 
     const target = tab.preferred === 'native' ? 'native' : 'browser_wasm';
 
-    setLoadingMoreRows(false);
-    setResultPageRun(undefined);
-    setEvents([]);
-    setPlan(undefined);
-    setRunState({ status: 'running', target, elapsed: 0 });
+    runActions.startRun(target);
     if (runTimer.current != null) window.clearInterval(runTimer.current);
     const startedAt = performance.now();
     runTimer.current = window.setInterval(() => {
-      setRunState((prev) =>
-        prev.status === 'running' ? { ...prev, elapsed: performance.now() - startedAt } : prev,
-      );
+      runActions.updateRunElapsed(performance.now() - startedAt);
     }, 80);
 
     const req: QueryExecRequest = {
@@ -421,8 +410,7 @@ export function App() {
         if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') {
           return;
         }
-        setEvents((prev) => [...prev, event]);
-        if (event.kind === 'metrics') setMetrics(event.metrics);
+        runActions.appendRunEvent(event);
       },
       ctrl.signal,
       querySource,
@@ -431,17 +419,6 @@ export function App() {
     if (runTimer.current != null) window.clearInterval(runTimer.current);
 
     if (outcome.status === 'done') {
-      setResultData(outcome.result);
-      setResultPageRun(queryResultPageRun(req, querySource));
-      setMetrics(outcome.metrics);
-      if (outcome.explain) {
-        setPlan({ tree: outcome.explain });
-      } else {
-        setPlan(undefined);
-      }
-      setCapMatrix(
-        overlayCapabilityReport(defaultCapabilityMatrix(), outcome.capabilities.capabilities ?? {}),
-      );
       const fb = SERVER_QUERY_FALLBACK_ENABLED ? outcome.fallback_reason : undefined;
       const fallbackPretty =
         typeof fb === 'string'
@@ -452,12 +429,22 @@ export function App() {
                 detail: `${fb.capability_gate.capability} required (${fb.capability_gate.required_state})`,
               }
             : null;
-      setRunState({
-        status: 'done',
-        target: outcome.executed_on,
-        ms: outcome.elapsed_ms,
-        rows: outcome.result.row_count,
-        fallback: fallbackPretty,
+      runActions.finishRunSuccess({
+        runState: {
+          status: 'done',
+          target: outcome.executed_on,
+          ms: outcome.elapsed_ms,
+          rows: outcome.result.row_count,
+          fallback: fallbackPretty,
+        },
+        resultData: outcome.result,
+        resultPageRun: queryResultPageRun(req, querySource),
+        metrics: outcome.metrics,
+        plan: outcome.explain ? { tree: outcome.explain } : undefined,
+        capabilities: overlayCapabilityReport(
+          defaultCapabilityMatrix(),
+          outcome.capabilities.capabilities ?? {},
+        ),
       });
       const entry = await appendHistory({
         ms: outcome.elapsed_ms,
@@ -481,8 +468,7 @@ export function App() {
       );
       tabActions.markActiveClean(tab.id);
     } else {
-      setPlan(undefined);
-      setRunState({
+      runActions.finishRunError({
         status: 'error',
         target: outcome.target,
         ms: outcome.elapsed_ms,
@@ -511,6 +497,7 @@ export function App() {
     querySource,
     reselectLocalFolder,
     runState.status,
+    runActions,
     showToast,
     tabActions,
     tableMeta?.name,
@@ -531,7 +518,7 @@ export function App() {
 
     const ctrl = new AbortController();
     cancelRef.current = ctrl;
-    setLoadingMoreRows(true);
+    runActions.startLoadMoreRows();
 
     const req = queryResultPageRunRequest(runForPage, {
       offset: page.next_offset,
@@ -545,14 +532,11 @@ export function App() {
         if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') {
           return;
         }
-        setEvents((prev) => [...prev, event]);
-        if (event.kind === 'metrics') setMetrics(event.metrics);
+        runActions.appendRunEvent(event);
       },
       ctrl.signal,
       runForPage.source,
     );
-
-    setLoadingMoreRows(false);
 
     const latestResultRun = resultPageRunRef.current;
     const latestActiveRun = activeResultPageRunRef.current;
@@ -562,34 +546,46 @@ export function App() {
       !sameQueryResultPageRun(latestResultRun, runForPage) ||
       !sameQueryResultPageRun(latestActiveRun, runForPage)
     ) {
+      runActions.finishLoadMoreRows();
       showToast('Result batch discarded because the query changed.', 'warn');
       return;
     }
 
     if (outcome.status === 'done') {
-      const merged = appendResultPage(currentResult, outcome.result);
-      setResultData(merged);
-      setResultPageRun(runForPage);
-      setMetrics(outcome.metrics);
-      if (outcome.explain) setPlan({ tree: outcome.explain });
-      setRunState((prev) =>
-        prev.status === 'done' ? { ...prev, ms: outcome.elapsed_ms, rows: merged.row_count } : prev,
-      );
+      const update = runActions.finishLoadMoreRowsSuccess({
+        runForPage,
+        activeRun: latestActiveRun,
+        resultData: outcome.result,
+        metrics: outcome.metrics,
+        plan: outcome.explain ? { tree: outcome.explain } : undefined,
+        elapsedMs: outcome.elapsed_ms,
+      });
+      if (update.discarded) {
+        showToast('Result batch discarded because the query changed.', 'warn');
+        return;
+      }
       showToast(`Loaded ${outcome.result.rows.length.toLocaleString()} more rows`);
       return;
     }
 
+    runActions.finishLoadMoreRows();
     showToast(outcome.message, 'warn');
-  }, [activeResultPageRun, loadingMoreRows, resultData, resultPageRun, runState.status, showToast]);
+  }, [
+    activeResultPageRun,
+    loadingMoreRows,
+    resultData,
+    resultPageRun,
+    runActions,
+    runState.status,
+    showToast,
+  ]);
 
   const cancelRun = useCallback(() => {
     cancelRef.current?.abort();
     if (runTimer.current != null) window.clearInterval(runTimer.current);
-    setLoadingMoreRows(false);
-    setResultPageRun(undefined);
-    setRunState({ status: 'idle' });
+    runActions.cancelRun();
     showToast('Query cancelled', 'warn');
-  }, [showToast]);
+  }, [runActions, showToast]);
 
   const formatSql = useCallback(() => {
     tabActions.formatActiveSql(prettifySql);
