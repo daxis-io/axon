@@ -53,13 +53,10 @@ import {
   selectLayoutActions,
   selectRunActions,
   selectRunCapabilities,
-  selectRunEvents,
+  selectRunIsRunning,
   selectRunLoadingMoreRows,
-  selectRunMetrics,
-  selectRunPlan,
   selectRunResultData,
   selectRunResultPageRun,
-  selectRunState,
   selectSettingsActions,
   selectTabActions,
   selectTabs,
@@ -67,6 +64,7 @@ import {
   selectUiActions,
   useAxonClientStore,
 } from '../state/hooks.ts';
+import { axonClientStore } from '../state/store.ts';
 import {
   ACCENT_VALUES,
   APPEARANCE_DENSITY_VALUES,
@@ -80,7 +78,7 @@ import type { EngineActions } from '../state/slices/engine.ts';
 import type { SqlTab } from '../state/slices/tabs.ts';
 import { CapabilityPopover } from './components/Capabilities.tsx';
 import { Editor } from './components/Editor.tsx';
-import { Results } from './components/Results.tsx';
+import { RunResultsPanel } from './components/RunResultsPanel.tsx';
 import { SaveDialog } from './components/SaveDialog.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import {
@@ -188,14 +186,7 @@ export function App() {
 
   const tableMeta = catalog?.tables[0];
 
-  const runState = useAxonClientStore(selectRunState);
-  const resultData = useAxonClientStore(selectRunResultData);
-  const resultPageRun = useAxonClientStore(selectRunResultPageRun);
-  const loadingMoreRows = useAxonClientStore(selectRunLoadingMoreRows);
-  const metrics = useAxonClientStore(selectRunMetrics);
-  const events = useAxonClientStore(selectRunEvents);
-  const capMatrix = useAxonClientStore(selectRunCapabilities);
-  const plan = useAxonClientStore(selectRunPlan);
+  const runIsRunning = useAxonClientStore(selectRunIsRunning);
   const runActions = useAxonClientStore(selectRunActions);
   const [commits, setCommits] = useState<CommitEntry[]>([]);
 
@@ -225,17 +216,7 @@ export function App() {
       querySource,
     );
   }, [active.pin, active.preferred, active.sql, querySource, tableMeta?.name]);
-  const canLoadMoreRows =
-    resultData?.page?.has_more === true &&
-    resultPageRun !== undefined &&
-    activeResultPageRun !== undefined &&
-    sameQueryResultPageRun(resultPageRun, activeResultPageRun);
-  const resultPageRunRef = useRef<QueryResultPageRun | undefined>(undefined);
   const activeResultPageRunRef = useRef<QueryResultPageRun | undefined>(undefined);
-
-  useEffect(() => {
-    resultPageRunRef.current = resultPageRun;
-  }, [resultPageRun]);
 
   useEffect(() => {
     activeResultPageRunRef.current = activeResultPageRun;
@@ -374,7 +355,7 @@ export function App() {
 
   // ─── Run lifecycle ─────────────────────────────────────
   const runActive = useCallback(async () => {
-    if (runState.status === 'running') return;
+    if (runIsRunning) return;
     const tab = active;
     if (localAccessNeedsReselect) {
       runActions.clearForLocalAccessReselect();
@@ -496,7 +477,7 @@ export function App() {
     localAccessNeedsReselect,
     querySource,
     reselectLocalFolder,
-    runState.status,
+    runIsRunning,
     runActions,
     showToast,
     tabActions,
@@ -504,9 +485,10 @@ export function App() {
   ]);
 
   const loadMoreRows = useCallback(async () => {
-    if (runState.status === 'running' || loadingMoreRows) return;
-    const currentResult = resultData;
-    const runForPage = resultPageRun;
+    const runSnapshot = axonClientStore.getState();
+    if (selectRunIsRunning(runSnapshot) || selectRunLoadingMoreRows(runSnapshot)) return;
+    const currentResult = selectRunResultData(runSnapshot);
+    const runForPage = selectRunResultPageRun(runSnapshot);
     const activeRun = activeResultPageRun;
     if (!currentResult || !runForPage || !activeRun) return;
     const page = currentResult.page;
@@ -538,7 +520,7 @@ export function App() {
       runForPage.source,
     );
 
-    const latestResultRun = resultPageRunRef.current;
+    const latestResultRun = selectRunResultPageRun(axonClientStore.getState());
     const latestActiveRun = activeResultPageRunRef.current;
     if (
       !latestResultRun ||
@@ -570,15 +552,7 @@ export function App() {
 
     runActions.finishLoadMoreRows();
     showToast(outcome.message, 'warn');
-  }, [
-    activeResultPageRun,
-    loadingMoreRows,
-    resultData,
-    resultPageRun,
-    runActions,
-    runState.status,
-    showToast,
-  ]);
+  }, [activeResultPageRun, runActions, showToast]);
 
   const cancelRun = useCallback(() => {
     cancelRef.current?.abort();
@@ -666,6 +640,7 @@ export function App() {
   }, [uiActions]);
 
   const supportedCount = CAPABILITY_ORDER.length;
+  const capMatrix = selectRunCapabilities(axonClientStore.getState());
 
   return (
     <div
@@ -757,7 +732,7 @@ export function App() {
         <span className="tb-divider" />
 
         <div className="run-group">
-          {runState.status === 'running' ? (
+          {runIsRunning ? (
             <button
               className="btn primary"
               onClick={cancelRun}
@@ -887,27 +862,21 @@ export function App() {
             <Editor
               value={active.sql}
               catalog={catalog}
-              running={runState.status === 'running'}
+              running={runIsRunning}
               onChange={updateActiveSql}
               onRun={runActive}
               onFormat={formatSql}
             />
             <div className="split-resizer" onMouseDown={startResizeResults} />
-            <Results
-              runState={runState}
-              resultData={resultData}
-              metrics={metrics}
-              events={events}
+            <RunResultsPanel
               history={history}
               serverFallbackEnabled={SERVER_QUERY_FALLBACK_ENABLED}
-              plan={plan}
               commits={commits}
-              capabilities={capMatrix}
               snapshotPin={active.pin}
               tableSnapshot={tableMeta?.snapshot}
               tableUri={tableMeta?.uri}
-              loadingMoreRows={loadingMoreRows}
-              onLoadMoreRows={canLoadMoreRows ? loadMoreRows : undefined}
+              activeResultPageRun={activeResultPageRun}
+              onLoadMoreRows={loadMoreRows}
               protocolVersion={
                 tableMeta
                   ? {
