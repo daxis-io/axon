@@ -26,6 +26,8 @@ export const selectActiveSqlTab = (state: AxonClientState) => {
 export const selectTabActions = (state: AxonClientState) => state.tabsActions;
 export const selectUi = (state: AxonClientState) => state.ui;
 export const selectUiActions = (state: AxonClientState) => state.uiActions;
+export const selectEngineStatus = (state: AxonClientState) => state.engine.status;
+export const selectEngineActions = (state: AxonClientState) => state.engineActions;
 
 let availableCatalogInput: ConnectedCatalog[] | undefined;
 let availableCatalogOutput: ConnectedCatalog[] | undefined;

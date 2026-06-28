@@ -37,7 +37,6 @@ import type {
   CapabilityMatrixRow,
   Catalog,
   CommitEntry,
-  EngineStatus,
   HistoryEntry,
   PlanSummary,
   QueryEvent,
@@ -53,6 +52,8 @@ import {
   selectAvailableConnectedCatalogs,
   selectConnectionActions,
   selectDefaultTarget,
+  selectEngineActions,
+  selectEngineStatus,
   selectFreshCatalogId,
   selectLayout,
   selectLayoutActions,
@@ -72,6 +73,7 @@ import {
   availableExecutionTargetValues,
   coerceDefaultTargetForAvailability,
 } from '../state/slices/settings.ts';
+import type { EngineActions } from '../state/slices/engine.ts';
 import type { SqlTab } from '../state/slices/tabs.ts';
 import { CapabilityPopover } from './components/Capabilities.tsx';
 import { Editor } from './components/Editor.tsx';
@@ -126,6 +128,13 @@ function targetTitle(id: SqlTab['preferred']): string {
   return 'Run on native DataFusion runtime';
 }
 
+export function subscribeAppEngineStatus(
+  engineActions: Pick<EngineActions, 'setStatus'>,
+  subscribe: typeof subscribeEngineStatus = subscribeEngineStatus,
+): () => void {
+  return subscribe(engineActions.setStatus);
+}
+
 function connectedTableForRef(
   catalogs: ConnectedCatalog[],
   ref?: ActiveConnectedTableRef,
@@ -154,6 +163,8 @@ export function App() {
   const tabsState = useAxonClientStore(selectTabs);
   const activeSqlTab = useAxonClientStore(selectActiveSqlTab);
   const tabActions = useAxonClientStore(selectTabActions);
+  const engine = useAxonClientStore(selectEngineStatus);
+  const engineActions = useAxonClientStore(selectEngineActions);
   const {
     saveOpen,
     capsOpen,
@@ -185,7 +196,6 @@ export function App() {
   );
   const [plan, setPlan] = useState<PlanSummary | undefined>(undefined);
   const [commits, setCommits] = useState<CommitEntry[]>([]);
-  const [engineStatus, setEngineStatus] = useState<EngineStatus | undefined>(undefined);
 
   const cancelRef = useRef<AbortController | null>(null);
   const runTimer = useRef<number | null>(null);
@@ -300,7 +310,7 @@ export function App() {
     let active = true;
     const unsubCatalog = subscribeCatalog(setCatalog, querySource);
     const unsubCommits = subscribeCommits(setCommits, querySource);
-    const unsubEngine = subscribeEngineStatus(setEngineStatus);
+    const unsubEngine = subscribeAppEngineStatus(engineActions);
     loadCatalog(querySource)
       .then((loaded) => {
         if (active) setCatalog(loaded);
@@ -315,7 +325,7 @@ export function App() {
       unsubCommits();
       unsubEngine();
     };
-  }, [querySource]);
+  }, [engineActions, querySource]);
 
   useEffect(() => {
     let active = true;
@@ -333,8 +343,6 @@ export function App() {
       active = false;
     };
   }, []);
-
-  const engine = engineStatus;
 
   // ─── Tab editing ───────────────────────────────────────
   const updateActiveSql = useCallback(
