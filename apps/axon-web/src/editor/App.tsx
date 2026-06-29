@@ -9,7 +9,8 @@ import {
   type CSSProperties,
   type MouseEvent,
 } from 'react';
-import { loadCatalog, subscribeCatalog, snapshotCatalog } from '../services/catalog.ts';
+import { useQuery } from '@tanstack/react-query';
+import { catalogQueryOptions, commitsQueryOptions } from '../query/catalog.ts';
 import {
   CAPABILITY_ORDER,
   defaultCapabilityMatrix,
@@ -31,14 +32,7 @@ import {
 } from '../services/query-source.ts';
 import { loadSaved, saveQuery } from '../services/saved.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
-import { subscribeCommits } from '../services/snapshot.ts';
-import type {
-  Catalog,
-  CommitEntry,
-  HistoryEntry,
-  QueryExecRequest,
-  SavedQuery,
-} from '../services/types.ts';
+import type { HistoryEntry, QueryExecRequest, SavedQuery } from '../services/types.ts';
 import {
   selectActiveConnectedTableRef,
   selectActiveSqlTab,
@@ -179,8 +173,12 @@ export function App() {
   const tabs = tabsState.items;
   const activeTabId = tabsState.activeTabId;
   const active = activeSqlTab ?? tabs[0]!;
-
-  const [catalog, setCatalog] = useState<Catalog | undefined>(() => snapshotCatalog());
+  const querySource = useMemo(
+    () => querySourceFromConnectedCatalogs(availableConnectedCatalogs, activeTableRef),
+    [activeTableRef, availableConnectedCatalogs],
+  );
+  const { data: catalog } = useQuery(catalogQueryOptions(querySource));
+  const { data: commits = [] } = useQuery(commitsQueryOptions(querySource));
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [saved, setSaved] = useState<SavedQuery[]>([]);
 
@@ -188,14 +186,9 @@ export function App() {
 
   const runIsRunning = useAxonClientStore(selectRunIsRunning);
   const runActions = useAxonClientStore(selectRunActions);
-  const [commits, setCommits] = useState<CommitEntry[]>([]);
 
   const cancelRef = useRef<AbortController | null>(null);
   const runTimer = useRef<number | null>(null);
-  const querySource = useMemo(
-    () => querySourceFromConnectedCatalogs(availableConnectedCatalogs, activeTableRef),
-    [activeTableRef, availableConnectedCatalogs],
-  );
   const activeConnectedTable = useMemo(
     () => connectedTableForRef(availableConnectedCatalogs, activeTableRef),
     [activeTableRef, availableConnectedCatalogs],
@@ -288,27 +281,10 @@ export function App() {
     root.style.setProperty('--mono', `"${appearance.monoFont}", ui-monospace, Menlo, monospace`);
   }, [appearance]);
 
-  // ─── Subscribe to catalog + kick off session bootstrap ──
+  // ─── Subscribe to engine status ─────────────────────────
   useEffect(() => {
-    let active = true;
-    const unsubCatalog = subscribeCatalog(setCatalog, querySource);
-    const unsubCommits = subscribeCommits(setCommits, querySource);
-    const unsubEngine = subscribeAppEngineStatus(engineActions);
-    loadCatalog(querySource)
-      .then((loaded) => {
-        if (active) setCatalog(loaded);
-      })
-      .catch((err) => {
-        if (!active) return;
-        console.error('failed to load catalog:', err);
-      });
-    return () => {
-      active = false;
-      unsubCatalog();
-      unsubCommits();
-      unsubEngine();
-    };
-  }, [engineActions, querySource]);
+    return subscribeAppEngineStatus(engineActions);
+  }, [engineActions]);
 
   useEffect(() => {
     let active = true;

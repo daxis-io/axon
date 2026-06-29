@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineStatus } from '../services/types.ts';
 import { selectEngineActions, selectEngineStatus } from '../state/hooks.ts';
@@ -49,5 +50,17 @@ describe('App engine status subscription', () => {
     expect(selectEngineStatus(store.getState())).toEqual(status);
     expect(cleanup).toBe(unsubscribe);
     expect(subscribe).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('App catalog server-state wiring', () => {
+  it('reads catalog and commit data through query adapters', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+
+    expect(source).toContain('useQuery(catalogQueryOptions(querySource))');
+    expect(source).toContain('useQuery(commitsQueryOptions(querySource))');
+    expect(source).not.toMatch(
+      /\b(loadCatalog|subscribeCatalog|snapshotCatalog|subscribeCommits)\b/,
+    );
   });
 });
