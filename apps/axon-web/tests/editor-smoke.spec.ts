@@ -1465,9 +1465,7 @@ test.describe('editor (Phase 1 smoke)', () => {
     const connectState = await page.evaluate(() =>
       localStorage.getItem('axon.connect.catalogs.v1'),
     );
-    expect(connectState ?? '').not.toMatch(
-      /secret|access[_-]?key|bearer|token|service[_-]?account|client[_-]?secret|sas/i,
-    );
+    expect(connectState).toBeNull();
 
     // Result-grid actions operate on the visible result set.
     await page.locator('button[title="Copy results as CSV"]').click();
