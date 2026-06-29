@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { defaultCapabilityMatrix } from '../../services/capabilities.ts';
 import { SAMPLE_QUERY_SOURCE } from '../../services/query-source.ts';
@@ -333,5 +334,19 @@ describe('run slice', () => {
     const second = createAxonClientStore({ storage });
     expect(selectRunState(second.getState())).toEqual({ status: 'idle' });
     expect(selectRunResultData(second.getState())).toBeUndefined();
+  });
+
+  it('keeps elapsed-bearing run subscriptions scoped below the app shell', () => {
+    const appSource = readFileSync(new URL('../../editor/App.tsx', import.meta.url), 'utf8');
+    const resultsPanelSource = readFileSync(
+      new URL('../../editor/components/RunResultsPanel.tsx', import.meta.url),
+      'utf8',
+    );
+    const subscribedRunSelectors = [
+      ...appSource.matchAll(/useAxonClientStore\((selectRun[A-Za-z]+)\)/g),
+    ].map((match) => match[1]);
+
+    expect(subscribedRunSelectors.sort()).toEqual(['selectRunActions', 'selectRunIsRunning']);
+    expect(resultsPanelSource).toContain('useAxonClientStore(selectRunState)');
   });
 });
