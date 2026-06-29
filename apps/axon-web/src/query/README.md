@@ -34,6 +34,10 @@ Keep keys stable and route new query key families through this module.
 
 `commitsQueryOptions(source)` wraps commit-log loading. `AppProviders` installs a ref-counted runtime bridge that writes published runtime catalogs to the matching catalog query and invalidates the matching commits query.
 
+## Local Metadata Server State
+
+`historyQueryOptions()` and `savedQueriesQueryOptions()` wrap the existing metadata services. The mutation helpers call the same services and then update `QueryClient` with the returned entries so IndexedDB-unavailable fallback still updates current in-memory UI state.
+
 ## M0 Boundary
 
 M0 intentionally did not add query functions, fetchers, mutations, catalog loading, invalidation policy, route data loading, persisted caches, or product data behavior. M3 starts moving existing editor server state onto TanStack Query without adding persistent query caches.
