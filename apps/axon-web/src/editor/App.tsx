@@ -4,13 +4,18 @@ import {
   lazy,
   useMemo,
   useRef,
-  useState,
   Suspense,
   type CSSProperties,
   type MouseEvent,
 } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { catalogQueryOptions, commitsQueryOptions } from '../query/catalog.ts';
+import {
+  appendHistoryEntry,
+  historyQueryOptions,
+  saveSavedQuery,
+  savedQueriesQueryOptions,
+} from '../query/local.ts';
 import {
   CAPABILITY_ORDER,
   defaultCapabilityMatrix,
@@ -18,7 +23,6 @@ import {
 } from '../services/capabilities.ts';
 import { subscribeEngineStatus } from '../services/engine.ts';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
-import { appendHistory, loadHistory } from '../services/history.ts';
 import { hasLocalDeltaRuntime } from '../services/local-delta-session.ts';
 import {
   queryResultPageRun,
@@ -30,9 +34,8 @@ import {
   querySourceFromConnectedCatalogs,
   type ActiveConnectedTableRef,
 } from '../services/query-source.ts';
-import { loadSaved, saveQuery } from '../services/saved.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
-import type { HistoryEntry, QueryExecRequest, SavedQuery } from '../services/types.ts';
+import type { QueryExecRequest } from '../services/types.ts';
 import {
   selectActiveConnectedTableRef,
   selectActiveSqlTab,
@@ -173,14 +176,15 @@ export function App() {
   const tabs = tabsState.items;
   const activeTabId = tabsState.activeTabId;
   const active = activeSqlTab ?? tabs[0]!;
+  const queryClient = useQueryClient();
   const querySource = useMemo(
     () => querySourceFromConnectedCatalogs(availableConnectedCatalogs, activeTableRef),
     [activeTableRef, availableConnectedCatalogs],
   );
   const { data: catalog } = useQuery(catalogQueryOptions(querySource));
   const { data: commits = [] } = useQuery(commitsQueryOptions(querySource));
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [saved, setSaved] = useState<SavedQuery[]>([]);
+  const { data: history = [] } = useQuery(historyQueryOptions());
+  const { data: saved = [] } = useQuery(savedQueriesQueryOptions());
 
   const tableMeta = catalog?.tables[0];
 
@@ -286,23 +290,6 @@ export function App() {
     return subscribeAppEngineStatus(engineActions);
   }, [engineActions]);
 
-  useEffect(() => {
-    let active = true;
-    loadHistory()
-      .then((entries) => {
-        if (active) setHistory(entries);
-      })
-      .catch((err) => console.warn('failed to load query history:', err));
-    loadSaved()
-      .then((entries) => {
-        if (active) setSaved(entries);
-      })
-      .catch((err) => console.warn('failed to load saved queries:', err));
-    return () => {
-      active = false;
-    };
-  }, []);
-
   // ─── Tab editing ───────────────────────────────────────
   const updateActiveSql = useCallback(
     (sql: string) => {
@@ -403,7 +390,7 @@ export function App() {
           outcome.capabilities.capabilities ?? {},
         ),
       });
-      const entry = await appendHistory({
+      await appendHistoryEntry(queryClient, {
         ms: outcome.elapsed_ms,
         rows: outcome.result.row_count,
         status: 'ok',
@@ -417,7 +404,6 @@ export function App() {
           : null,
         sql: tab.sql,
       });
-      setHistory((h) => [entry, ...h].slice(0, 100));
       showToast(
         `Query OK · ${outcome.result.row_count.toLocaleString()} rows · ${outcome.elapsed_ms} ms · ${
           outcome.executed_on === 'browser_wasm' ? 'browser' : 'native'
@@ -432,7 +418,7 @@ export function App() {
         message: outcome.message,
         code: outcome.code,
       });
-      const entry = await appendHistory({
+      await appendHistoryEntry(queryClient, {
         ms: outcome.elapsed_ms,
         rows: 0,
         status: 'error',
@@ -445,12 +431,12 @@ export function App() {
             : null,
         sql: tab.sql,
       });
-      setHistory((h) => [entry, ...h].slice(0, 100));
       showToast(outcome.message, 'warn');
     }
   }, [
     active,
     localAccessNeedsReselect,
+    queryClient,
     querySource,
     reselectLocalFolder,
     runIsRunning,
@@ -593,14 +579,13 @@ export function App() {
     (name: string) => {
       const tab = active;
       const target = tab.preferred === 'native' ? 'native' : 'browser_wasm';
-      void saveQuery({ name, sql: tab.sql, target }).then((entry) => {
-        setSaved((prev) => [entry, ...prev.filter((s) => s.name !== entry.name)]);
+      void saveSavedQuery(queryClient, { name, sql: tab.sql, target }).then((entry) => {
         uiActions.closeSaveDialog();
-        tabActions.markActiveSaved(`${name}.sql`, tab.id);
-        showToast(`Saved · ${name}`);
+        tabActions.markActiveSaved(`${entry.name}.sql`, tab.id);
+        showToast(`Saved · ${entry.name}`);
       });
     },
-    [active, showToast, tabActions, uiActions],
+    [active, queryClient, showToast, tabActions, uiActions],
   );
 
   // ─── Keyboard shortcuts ────────────────────────────────
