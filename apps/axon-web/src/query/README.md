@@ -16,17 +16,26 @@ Unknown failures, network-style failures, and 5xx-style failures may retry up to
 
 ## Query Keys
 
-`queryKeys` is the canonical key factory for this slice:
+`queryKeys` is the canonical key factory for this slice. Catalog keys are scoped by a deterministic source identity that uses the same fields as `sameQuerySource`, not raw object identity:
 
-- `queryKeys.catalog.root(connectionId)`
-  - returns `['catalog', connectionId]`
+- `queryKeys.catalog.root()`
+- `queryKeys.catalog.source(source)`
+- `queryKeys.catalog.tableDerived(source)`
+- `queryKeys.catalog.commits(source)`
+- `queryKeys.local.root()`
 - `queryKeys.local.history()`
 - `queryKeys.local.saved()`
 
 Keep keys stable and route new query key families through this module.
 
+## Catalog Server State
+
+`catalogQueryOptions(source)` reads the current table-derived catalog through the legacy catalog service and seeds the query with `snapshotCatalog(source)`.
+
+`commitsQueryOptions(source)` wraps commit-log loading. `AppProviders` installs a ref-counted runtime bridge that writes published runtime catalogs to the matching catalog query and invalidates the matching commits query.
+
 ## M0 Boundary
 
-M0 intentionally does not add query functions, fetchers, mutations, catalog loading, invalidation policy, route data loading, persisted caches, or product data behavior.
+M0 intentionally did not add query functions, fetchers, mutations, catalog loading, invalidation policy, route data loading, persisted caches, or product data behavior. M3 starts moving existing editor server state onto TanStack Query without adding persistent query caches.
 
 M0 also does not add `CatalogProvider`, `DataAccessResolver`, `ExecutionProvider`, or any provider-specific execution logic. Those belong to later slices.
