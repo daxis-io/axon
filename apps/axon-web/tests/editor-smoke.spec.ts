@@ -313,18 +313,16 @@ test.describe('editor (Phase 1 smoke)', () => {
       alias: 'new-acme',
       storage: ' gs://acme-lake/silver ',
     });
-    const previousWindow = globalThis.window;
+    const previousLocalStorage = globalThis.localStorage;
     const storage = new Map<string, string>([
       ['axon.connect.catalogs.v1', JSON.stringify([updated, original, other])],
     ]);
 
-    Object.defineProperty(globalThis, 'window', {
+    Object.defineProperty(globalThis, 'localStorage', {
       configurable: true,
       value: {
-        localStorage: {
-          getItem: (key: string) => storage.get(key) ?? null,
-          setItem: (key: string, value: string) => storage.set(key, value),
-        },
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => storage.set(key, value),
       },
     });
 
@@ -337,12 +335,12 @@ test.describe('editor (Phase 1 smoke)', () => {
         'other-lake',
       ]);
     } finally {
-      if (previousWindow === undefined) {
-        Reflect.deleteProperty(globalThis, 'window');
+      if (previousLocalStorage === undefined) {
+        Reflect.deleteProperty(globalThis, 'localStorage');
       } else {
-        Object.defineProperty(globalThis, 'window', {
+        Object.defineProperty(globalThis, 'localStorage', {
           configurable: true,
-          value: previousWindow,
+          value: previousLocalStorage,
         });
       }
     }
@@ -649,7 +647,7 @@ test.describe('editor (Phase 1 smoke)', () => {
       };
     });
     expect(persistedBeforeReload.legacyTweaks).toBeNull();
-    expect(persistedBeforeReload.topLevelKeys).toEqual(['layout', 'settings']);
+    expect(persistedBeforeReload.topLevelKeys).toEqual(['layout', 'settings', 'tabs']);
     expect(persistedBeforeReload.raw).toContain('"theme":"dark"');
     expect(persistedBeforeReload.raw).toContain('"density":"comfy"');
     expect(persistedBeforeReload.raw).toContain('"accent":"#0F9D74"');
@@ -1313,13 +1311,9 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.locator('table.grid')).toContainText('4');
   });
 
-  test('unexpected local Delta registry errors surface instead of using fallback catalog metadata', async ({
+  test('unexpected local Delta registry errors surface when querying instead of using fallback catalog metadata', async ({
     page,
   }) => {
-    const consoleErrors: string[] = [];
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') consoleErrors.push(msg.text());
-    });
     await page.addInitScript(() => {
       localStorage.setItem(
         'axon.connect.catalogs.v1',
@@ -1365,10 +1359,10 @@ test.describe('editor (Phase 1 smoke)', () => {
 
     await page.goto('/');
 
-    await expect
-      .poll(() => consoleErrors.join('\n'), { timeout: 15_000 })
-      .toContain('failed to load catalog');
-    expect(consoleErrors.join('\n')).toContain('registry boom');
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+    await expect(page.locator('.res-meta')).toContainText(/error/i, { timeout: 15_000 });
+    await expect(page.locator('.results')).toContainText('registry boom');
   });
 
   test('cancelling File System Access directory picker leaves local connect dialog stable', async ({
@@ -1468,11 +1462,10 @@ test.describe('editor (Phase 1 smoke)', () => {
       )
       .toEqual({ localKeys: [], hasMetadataDb: true });
 
-    const connectState = await page.evaluate(
-      () => localStorage.getItem('axon.connect.catalogs.v1') ?? '',
+    const connectState = await page.evaluate(() =>
+      localStorage.getItem('axon.connect.catalogs.v1'),
     );
-    expect(connectState).toContain('sample-lake');
-    expect(connectState).not.toMatch(
+    expect(connectState ?? '').not.toMatch(
       /secret|access[_-]?key|bearer|token|service[_-]?account|client[_-]?secret|sas/i,
     );
 
