@@ -91,7 +91,7 @@ import {
   IconTable,
 } from './components/icons.tsx';
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
-import { catalogTablePath } from './catalog-navigation.ts';
+import { catalogTablePath, savedQueryPath } from './catalog-navigation.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { formatBytes, formatRows, hexToSoft, prettifySql } from './lib/format.ts';
 import { navigate } from './router.tsx';
@@ -587,7 +587,7 @@ export function App() {
       const target = tab.preferred === 'native' ? 'native' : 'browser_wasm';
       void saveSavedQuery(queryClient, { name, sql: tab.sql, target }).then((entry) => {
         uiActions.closeSaveDialog();
-        tabActions.markActiveSaved(`${entry.name}.sql`, tab.id);
+        tabActions.markActiveSaved(`${entry.name}.sql`, tab.id, entry.id);
         showToast(`Saved · ${entry.name}`);
       });
     },
@@ -745,6 +745,7 @@ export function App() {
           onInsert={insertAtCursor}
           onResize={startResizeSidebar}
           onPickConnectedTable={navigateToConnectedTable}
+          onOpenSavedQuery={(query) => navigate(savedQueryPath(query.id))}
         />
 
         <div className="workspace">

@@ -6,13 +6,15 @@ import {
   useParams,
   type RouterHistory,
 } from '@tanstack/react-router';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Suspense, lazy, useEffect, useMemo } from 'react';
 import { catalogQueryOptions, commitsQueryOptions } from '../query/catalog.ts';
+import { savedQueriesQueryOptions } from '../query/local.ts';
 import {
   selectActiveConnectedTableRef,
   selectAvailableConnectedCatalogs,
   selectConnectionActions,
+  selectTabActions,
   useAxonClientStore,
 } from '../state/hooks.ts';
 import {
@@ -107,6 +109,34 @@ function CatalogTableRoute() {
 }
 
 function SavedQueryRoute() {
+  const params = useParams({ from: editorRouteTemplates.savedQuery });
+  const tabActions = useAxonClientStore(selectTabActions);
+  const savedQueries = useQuery(savedQueriesQueryOptions());
+  const savedQuery = useMemo(
+    () => savedQueries.data.find((query) => query.id === params.savedId),
+    [params.savedId, savedQueries.data],
+  );
+
+  useEffect(() => {
+    if (!savedQuery) return;
+    tabActions.openSavedQuery(savedQuery);
+  }, [savedQuery, tabActions]);
+
+  if (!savedQuery && savedQueries.isFetching) {
+    return null;
+  }
+
+  if (!savedQuery) {
+    return (
+      <RouteEmptyState
+        title="Saved query not found"
+        detail="The saved query in this URL is not available in local metadata."
+        actionLabel="Back to workspace"
+        actionHref="/"
+      />
+    );
+  }
+
   return <WorkspaceRoute />;
 }
 

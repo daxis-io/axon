@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { SavedQuery } from '../../services/types.ts';
 import { selectActiveSqlTab, selectActiveTab, selectTabActions, selectTabs } from '../hooks.ts';
 import {
   CLIENT_STATE_STORAGE_KEY,
@@ -9,6 +10,18 @@ import {
 function persistedClientState(storage: ReturnType<typeof createMemoryClientStateStorage>) {
   return JSON.parse(storage.getItem(CLIENT_STATE_STORAGE_KEY) ?? '{}') as {
     state?: Record<string, unknown>;
+  };
+}
+
+function savedQuery(overrides: Partial<SavedQuery> = {}): SavedQuery {
+  return {
+    id: 'saved-1',
+    name: 'revenue by day',
+    owner: 'you',
+    edited: '10:30',
+    target: 'browser_wasm',
+    sql: 'SELECT revenue FROM daily_revenue',
+    ...overrides,
   };
 }
 
@@ -181,6 +194,42 @@ describe('tabs slice', () => {
     ]);
   });
 
+  it('opens a saved query in a new clean tab and reuses it by saved id', () => {
+    const store = createAxonClientStore({ storage: createMemoryClientStateStorage() });
+    const actions = selectTabActions(store.getState());
+
+    actions.openSavedQuery(savedQuery({ id: 'saved-1', target: 'native' }));
+
+    const opened = selectActiveSqlTab(store.getState());
+    expect(opened).toMatchObject({
+      title: 'revenue by day.sql',
+      sql: 'SELECT revenue FROM daily_revenue',
+      dirty: false,
+      pin: null,
+      preferred: 'native',
+      savedQueryId: 'saved-1',
+    });
+    expect(selectTabs(store.getState()).items).toHaveLength(3);
+
+    actions.updateActiveSql('SELECT dirty');
+    actions.openSavedQuery(
+      savedQuery({
+        id: 'saved-1',
+        name: 'revenue by day',
+        sql: 'SELECT revenue FROM daily_revenue ORDER BY 1',
+      }),
+    );
+
+    expect(selectTabs(store.getState()).items).toHaveLength(3);
+    expect(selectActiveSqlTab(store.getState())).toMatchObject({
+      id: opened?.id,
+      title: 'revenue by day.sql',
+      sql: 'SELECT revenue FROM daily_revenue ORDER BY 1',
+      dirty: false,
+      savedQueryId: 'saved-1',
+    });
+  });
+
   it('persists tabs without persisting actions or unrelated client state', () => {
     const storage = createMemoryClientStateStorage();
     const first = createAxonClientStore({ storage });
@@ -227,6 +276,7 @@ describe('tabs slice', () => {
         items: [
           {
             ...state.tabs.items[0],
+            savedQueryId: 'saved-safe',
             resultData: { rows: [] },
             signedUrl: 'https://example.invalid/private',
             fileBytes: 'abc',
@@ -249,6 +299,7 @@ describe('tabs slice', () => {
       dirty: false,
       pin: null,
       preferred: 'browser_wasm',
+      savedQueryId: 'saved-safe',
     });
   });
 
@@ -269,6 +320,7 @@ describe('tabs slice', () => {
                 dirty: true,
                 pin: 7,
                 preferred: 'native',
+                savedQueryId: 'safe-saved-query',
                 resultData: { rows: [] },
                 signedUrl: 'https://example.invalid/private',
                 fileBytes: 'abc',
@@ -284,6 +336,7 @@ describe('tabs slice', () => {
                 dirty: false,
                 pin: null,
                 preferred: 'browser_wasm',
+                savedQueryId: 123,
               },
               {
                 kind: 'sql',
@@ -319,6 +372,7 @@ describe('tabs slice', () => {
           dirty: true,
           pin: 7,
           preferred: 'native',
+          savedQueryId: 'safe-saved-query',
         },
       ],
     });

@@ -1,5 +1,6 @@
 import type { DefaultTargetSetting } from './settings.ts';
 import { isDefaultTargetSetting } from './settings.ts';
+import type { SavedQuery } from '../../services/types.ts';
 
 export type SqlTab = {
   kind: 'sql';
@@ -9,6 +10,7 @@ export type SqlTab = {
   dirty: boolean;
   pin: number | null;
   preferred: DefaultTargetSetting;
+  savedQueryId?: string;
 };
 
 export type EditorTab = SqlTab;
@@ -27,8 +29,9 @@ export type TabsActions = {
   formatActiveSql(formatter: (sql: string) => string): void;
   setActivePreferred(target: DefaultTargetSetting): void;
   toggleActivePin(snapshot: number | null | undefined): void;
-  markActiveSaved(title: string, id?: string): void;
+  markActiveSaved(title: string, id?: string, savedQueryId?: string): void;
   markActiveClean(id?: string): void;
+  openSavedQuery(query: SavedQuery): void;
 };
 
 export type TabsSlice = {
@@ -90,6 +93,7 @@ function cloneTab(tab: EditorTab): EditorTab {
     dirty: tab.dirty,
     pin: tab.pin,
     preferred: tab.preferred,
+    ...(tab.savedQueryId ? { savedQueryId: tab.savedQueryId } : {}),
   };
 }
 
@@ -149,6 +153,7 @@ function sanitizeTab(input: unknown, seenIds: Set<string>): EditorTab | undefine
   }
 
   seenIds.add(input.id);
+  const savedQueryId = isNonEmptyString(input.savedQueryId) ? input.savedQueryId : undefined;
   return {
     kind: 'sql',
     id: input.id,
@@ -157,6 +162,7 @@ function sanitizeTab(input: unknown, seenIds: Set<string>): EditorTab | undefine
     dirty: input.dirty,
     pin: input.pin,
     preferred: input.preferred,
+    ...(savedQueryId ? { savedQueryId } : {}),
   };
 }
 
@@ -297,7 +303,8 @@ export function createTabsSlice<TState extends TabsSlice>(
           })),
         }));
       },
-      markActiveSaved(title, id) {
+      markActiveSaved(title, id, savedQueryId) {
+        const sanitizedSavedQueryId = isNonEmptyString(savedQueryId) ? savedQueryId : undefined;
         set((state) => ({
           ...state,
           tabs: updateActiveSqlTab(
@@ -306,6 +313,7 @@ export function createTabsSlice<TState extends TabsSlice>(
               ...tab,
               title,
               dirty: false,
+              ...(sanitizedSavedQueryId ? { savedQueryId: sanitizedSavedQueryId } : {}),
             }),
             id,
           ),
@@ -316,6 +324,62 @@ export function createTabsSlice<TState extends TabsSlice>(
           ...state,
           tabs: updateActiveSqlTab(state.tabs, (tab) => ({ ...tab, dirty: false }), id),
         }));
+      },
+      openSavedQuery(query) {
+        const savedQueryId = isNonEmptyString(query.id) ? query.id : undefined;
+        const title = `${query.name.trim() || 'Untitled query'}.sql`;
+        const preferred = isDefaultTargetSetting(query.target) ? query.target : 'browser_wasm';
+
+        set((state) => {
+          const existing = savedQueryId
+            ? state.tabs.items.find(
+                (tab) => tab.kind === 'sql' && tab.savedQueryId === savedQueryId,
+              )
+            : undefined;
+
+          if (existing) {
+            return {
+              ...state,
+              tabs: {
+                activeTabId: existing.id,
+                items: state.tabs.items.map((tab) =>
+                  tab.id === existing.id
+                    ? {
+                        ...tab,
+                        title,
+                        sql: query.sql,
+                        dirty: false,
+                        pin: null,
+                        preferred,
+                        ...(savedQueryId ? { savedQueryId } : {}),
+                      }
+                    : tab,
+                ),
+              },
+            };
+          }
+
+          const id = createTabId(state.tabs.items.length);
+          return {
+            ...state,
+            tabs: {
+              activeTabId: id,
+              items: [
+                ...state.tabs.items,
+                {
+                  kind: 'sql',
+                  id,
+                  title,
+                  sql: query.sql,
+                  dirty: false,
+                  pin: null,
+                  preferred,
+                  ...(savedQueryId ? { savedQueryId } : {}),
+                },
+              ],
+            },
+          };
+        });
       },
     },
   };

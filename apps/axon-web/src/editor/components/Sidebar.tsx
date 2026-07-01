@@ -30,6 +30,7 @@ type SidebarProps = {
   onResize: (e: MouseEvent) => void;
   onPickTable?: (table: CatalogTable) => void;
   onPickConnectedTable?: (table: ActiveConnectedTableRef) => void;
+  onOpenSavedQuery?: (query: SavedQuery) => void;
 };
 
 export function Sidebar({
@@ -44,6 +45,7 @@ export function Sidebar({
   onResize,
   onPickTable,
   onPickConnectedTable,
+  onOpenSavedQuery,
 }: SidebarProps) {
   const [tab, setTab] = useState<SidebarTab>('catalog');
   const [query, setQuery] = useState('');
@@ -385,7 +387,18 @@ LIMIT 100;`)
               </div>
             )}
             {saved.map((s) => (
-              <div key={s.id} className="sb-saved-item">
+              <div
+                key={s.id}
+                className="sb-saved-item"
+                role="button"
+                tabIndex={0}
+                onClick={() => onOpenSavedQuery?.(s)}
+                onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return;
+                  event.preventDefault();
+                  onOpenSavedQuery?.(s);
+                }}
+              >
                 <span className="ico" style={{ color: 'var(--accent)' }}>
                   <IconBookmark size={13} />
                 </span>
