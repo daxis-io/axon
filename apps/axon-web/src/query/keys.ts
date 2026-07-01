@@ -1,9 +1,10 @@
 import type { QueryTableSource } from '../services/query-source.ts';
+import type { PublicObjectStorageProvider } from '../services/object-storage.ts';
 
 export type QuerySourceIdentity =
   | readonly ['manifest', string, string, string, string]
   | readonly ['local_delta', string, string, string, string]
-  | readonly ['object_store_table_root', 'gcs', string];
+  | readonly ['object_store_table_root', PublicObjectStorageProvider, string];
 
 export function querySourceIdentity(source: QueryTableSource): QuerySourceIdentity {
   if (source.kind === 'manifest') {

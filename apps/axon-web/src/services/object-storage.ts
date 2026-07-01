@@ -5,13 +5,14 @@ import type {
   PartitionColumnType,
 } from '../axon-browser-sdk.ts';
 
-export type PublicObjectStorageProvider = 'gcs';
+export type PublicObjectStorageProvider = 'gcs' | 's3';
 
 export type PublicObjectStorageTableRoot = {
   provider: PublicObjectStorageProvider;
   tableUri: string;
   bucket: string;
   prefix: string;
+  region?: string;
   tableRootUrl: string;
 };
 
@@ -101,11 +102,8 @@ type ResolvedPublicSnapshot = {
 export function parsePublicObjectStorageTableRoot(input: {
   provider: PublicObjectStorageProvider;
   tableUri: string;
+  region?: string;
 }): PublicObjectStorageTableRoot {
-  if (input.provider !== 'gcs') {
-    throw invalidUri('public object storage currently supports only GCS table roots');
-  }
-
   const trimmed = input.tableUri.trim().replace(/\/+$/, '');
   if (containsSecretMaterial(trimmed)) {
     throw invalidUri('public object storage table URI must not contain credential material');
@@ -122,14 +120,8 @@ export function parsePublicObjectStorageTableRoot(input: {
     );
   }
 
-  if (
-    parsed.protocol !== 'gs:' ||
-    !parsed.hostname ||
-    hasUserinfo(parsed) ||
-    parsed.search ||
-    parsed.hash
-  ) {
-    throw invalidUri('public object storage table URI must look like gs://bucket/table');
+  if (!parsed.hostname || hasUserinfo(parsed) || parsed.search || parsed.hash) {
+    throw invalidUri(providerUriShapeMessage(input.provider));
   }
 
   const prefix = normalizeObjectPath(parsed.pathname);
@@ -138,15 +130,39 @@ export function parsePublicObjectStorageTableRoot(input: {
   }
 
   const bucket = parsed.hostname;
-  return {
-    provider: input.provider,
-    tableUri: `gs://${bucket}/${prefix}`,
-    bucket,
-    prefix,
-    tableRootUrl: `https://storage.googleapis.com/${encodeObjectPath(bucket)}/${encodeObjectPath(
+  if (input.provider === 'gcs') {
+    if (parsed.protocol !== 'gs:') {
+      throw invalidUri(providerUriShapeMessage(input.provider));
+    }
+    return {
+      provider: input.provider,
+      tableUri: `gs://${bucket}/${prefix}`,
+      bucket,
       prefix,
-    )}/`,
-  };
+      tableRootUrl: `https://storage.googleapis.com/${encodeObjectPath(bucket)}/${encodeObjectPath(
+        prefix,
+      )}/`,
+    };
+  }
+
+  if (input.provider === 's3') {
+    if (parsed.protocol !== 's3:') {
+      throw invalidUri(providerUriShapeMessage(input.provider));
+    }
+    const bucket = normalizeS3BucketForVirtualHostedHttps(parsed.hostname, parsed.port);
+    const region = normalizeS3Region(input.region);
+    return {
+      provider: input.provider,
+      tableUri: `s3://${bucket}/${prefix}`,
+      bucket,
+      prefix,
+      ...(region ? { region } : {}),
+      tableRootUrl: `${s3BucketOrigin(bucket, region)}/${encodeObjectPath(prefix)}/`,
+    };
+  }
+
+  const unsupportedProvider: never = input.provider;
+  throw invalidUri(`unsupported public object storage provider: ${String(unsupportedProvider)}`);
 }
 
 export function publicObjectUrl(root: PublicObjectStorageTableRoot, relativePath: string): string {
@@ -176,7 +192,7 @@ export async function buildPublicDeltaLogManifest(
 
   do {
     listRequestCount += 1;
-    const response = await fetcher(gcsListUrl(root, continuationToken), {
+    const response = await fetcher(publicObjectStorageListUrl(root, continuationToken), {
       credentials: 'omit',
     });
     if (!response.ok) {
@@ -185,8 +201,8 @@ export async function buildPublicDeltaLogManifest(
       );
     }
 
-    const page = parseGcsListResponse(await response.text());
-    objects.push(...page.keys.map((entry) => deltaLogObjectFromGcsEntry(root, entry)));
+    const page = parseObjectStorageListResponse(await response.text());
+    objects.push(...page.keys.map((entry) => deltaLogObjectFromListEntry(root, entry)));
     continuationToken = page.nextContinuationToken;
   } while (continuationToken);
 
@@ -205,6 +221,7 @@ export async function buildPublicDeltaLogManifest(
 export async function resolvePublicObjectStorageDescriptor(input: {
   provider: PublicObjectStorageProvider;
   tableUri: string;
+  region?: string;
   resolveDeltaSnapshotFromManifest: (manifestJson: string, tableUri: string) => Promise<string>;
   fetch?: PublicObjectStorageFetch;
   onMetrics?: (metrics: PublicObjectStorageDescriptorResolutionMetrics) => void;
@@ -212,6 +229,7 @@ export async function resolvePublicObjectStorageDescriptor(input: {
   const root = parsePublicObjectStorageTableRoot({
     provider: input.provider,
     tableUri: input.tableUri,
+    region: input.region,
   });
   const manifest = await buildPublicDeltaLogManifest(root, { fetch: input.fetch });
   const snapshotResolveStartedAt = nowMs();
@@ -284,6 +302,7 @@ export async function preflightPublicObjectStorageDescriptorRangeRead(input: {
 export function registerPublicObjectStorageRuntimeCache(input: {
   provider: PublicObjectStorageProvider;
   tableUri: string;
+  region?: string;
   snapshot: PublicObjectStorageRuntimeCacheSnapshot;
   descriptor: BrowserHttpSnapshotDescriptor;
   preflight: PublicObjectStoragePreflightResult;
@@ -293,6 +312,7 @@ export function registerPublicObjectStorageRuntimeCache(input: {
   const root = parsePublicObjectStorageTableRoot({
     provider: input.provider,
     tableUri: input.tableUri,
+    region: input.region,
   });
   if (input.descriptor.table_uri !== root.tableUri) return false;
 
@@ -310,7 +330,7 @@ export function registerPublicObjectStorageRuntimeCache(input: {
   );
 
   publicObjectStorageRuntimeCache.set(
-    publicObjectStorageRuntimeCacheKey(input.provider, root.tableUri, input.snapshot),
+    publicObjectStorageRuntimeCacheKey(root.provider, root.tableUri, input.snapshot, root.region),
     {
       descriptor,
       identity: {
@@ -327,6 +347,7 @@ export function registerPublicObjectStorageRuntimeCache(input: {
 export function lookupPublicObjectStorageRuntimeCache(input: {
   provider: PublicObjectStorageProvider;
   tableUri: string;
+  region?: string;
   snapshot: PublicObjectStorageRuntimeCacheSnapshot;
   expectedSnapshotVersion?: number;
   nowMs?: () => number;
@@ -334,8 +355,14 @@ export function lookupPublicObjectStorageRuntimeCache(input: {
   const root = parsePublicObjectStorageTableRoot({
     provider: input.provider,
     tableUri: input.tableUri,
+    region: input.region,
   });
-  const key = publicObjectStorageRuntimeCacheKey(input.provider, root.tableUri, input.snapshot);
+  const key = publicObjectStorageRuntimeCacheKey(
+    root.provider,
+    root.tableUri,
+    input.snapshot,
+    root.region,
+  );
   const entry = publicObjectStorageRuntimeCache.get(key);
   if (!entry) return undefined;
 
@@ -361,19 +388,25 @@ export function clearPublicObjectStorageRuntimeCache(): void {
   publicObjectStorageRuntimeCache.clear();
 }
 
-type GcsListEntry = {
+type ObjectStorageListEntry = {
   key: string;
   sizeBytes?: number;
   etag?: string;
 };
 
-type GcsListPage = {
-  keys: GcsListEntry[];
+type ObjectStorageListPage = {
+  keys: ObjectStorageListEntry[];
   nextContinuationToken?: string;
 };
 
-function gcsListUrl(root: PublicObjectStorageTableRoot, continuationToken: string | undefined) {
-  const url = new URL(`https://storage.googleapis.com/${encodeObjectPath(root.bucket)}`);
+function publicObjectStorageListUrl(
+  root: PublicObjectStorageTableRoot,
+  continuationToken: string | undefined,
+) {
+  const url =
+    root.provider === 's3'
+      ? new URL(`${s3BucketOrigin(root.bucket, root.region)}/`)
+      : new URL(`https://storage.googleapis.com/${encodeObjectPath(root.bucket)}`);
   url.searchParams.set('list-type', '2');
   url.searchParams.set('prefix', `${root.prefix}/_delta_log/`);
   url.searchParams.set('max-keys', '1000');
@@ -383,9 +416,9 @@ function gcsListUrl(root: PublicObjectStorageTableRoot, continuationToken: strin
   return url.toString();
 }
 
-function deltaLogObjectFromGcsEntry(
+function deltaLogObjectFromListEntry(
   root: PublicObjectStorageTableRoot,
-  entry: GcsListEntry,
+  entry: ObjectStorageListEntry,
 ): PublicDeltaLogManifestObject {
   const rootPrefix = `${root.prefix}/`;
   if (!entry.key.startsWith(rootPrefix)) {
@@ -404,15 +437,18 @@ function deltaLogObjectFromGcsEntry(
   return object;
 }
 
-function parseGcsListResponse(xml: string): GcsListPage {
+function parseObjectStorageListResponse(xml: string): ObjectStorageListPage {
   const domParser = globalThis.DOMParser;
   if (typeof domParser === 'function') {
-    return parseGcsListResponseWithDom(xml, domParser);
+    return parseObjectStorageListResponseWithDom(xml, domParser);
   }
-  return parseGcsListResponseWithRegex(xml);
+  return parseObjectStorageListResponseWithRegex(xml);
 }
 
-function parseGcsListResponseWithDom(xml: string, DomParser: typeof DOMParser): GcsListPage {
+function parseObjectStorageListResponseWithDom(
+  xml: string,
+  DomParser: typeof DOMParser,
+): ObjectStorageListPage {
   const doc = new DomParser().parseFromString(xml, 'application/xml');
   if (doc.getElementsByTagName('parsererror').length > 0) {
     throw accessFailed('public object storage listing returned invalid XML');
@@ -428,7 +464,7 @@ function parseGcsListResponseWithDom(xml: string, DomParser: typeof DOMParser): 
   };
 }
 
-function parseGcsListResponseWithRegex(xml: string): GcsListPage {
+function parseObjectStorageListResponseWithRegex(xml: string): ObjectStorageListPage {
   const contents = Array.from(xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)).map((match) => {
     const block = match[1] ?? '';
     return {
@@ -516,20 +552,64 @@ function containsSecretMaterial(value: string): boolean {
     /akia[0-9a-z]{16}/i.test(value) ||
     lower.includes('x-goog-signature') ||
     lower.includes('x-goog-credential') ||
+    lower.includes('x-amz-signature') ||
+    lower.includes('x-amz-credential') ||
+    lower.includes('x-amz-security-token') ||
     lower.includes('google_application_credentials') ||
+    lower.includes('aws_access_key_id') ||
+    lower.includes('aws_secret_access_key') ||
+    lower.includes('aws_session_token') ||
     lower.includes('private_key') ||
     lower.includes('access_token') ||
     lower.includes('bearer')
   );
 }
 
+function providerUriShapeMessage(provider: PublicObjectStorageProvider): string {
+  return provider === 's3'
+    ? 'public object storage S3 table URI must look like s3://bucket/table'
+    : 'public object storage GCS table URI must look like gs://bucket/table';
+}
+
+function normalizeS3Region(region: string | undefined): string {
+  const normalized = region?.trim().toLowerCase();
+  if (!normalized) {
+    throw invalidUri('public object storage S3 region is required');
+  }
+  if (!/^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(normalized)) {
+    throw invalidUri('public object storage S3 region must be an AWS region identifier');
+  }
+  return normalized;
+}
+
+function normalizeS3BucketForVirtualHostedHttps(bucket: string, port: string): string {
+  if (
+    port ||
+    bucket !== bucket.toLowerCase() ||
+    !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(bucket)
+  ) {
+    throw invalidUri(
+      'public object storage S3 bucket must be DNS-compatible without dots for virtual-hosted HTTPS',
+    );
+  }
+  return bucket;
+}
+
+function s3BucketOrigin(bucket: string, region: string | undefined): string {
+  if (!region) {
+    throw invalidUri('public object storage S3 region is required');
+  }
+  return `https://${bucket}.s3.${region}.amazonaws.com`;
+}
+
 function publicObjectStorageRuntimeCacheKey(
   provider: PublicObjectStorageProvider,
   tableUri: string,
   snapshot: PublicObjectStorageRuntimeCacheSnapshot,
+  region?: string,
 ): string {
   const snapshotKey = snapshot.kind === 'latest' ? 'latest' : `version:${snapshot.version}`;
-  return `${provider}|${tableUri}|${snapshotKey}`;
+  return `${provider}|${region ?? ''}|${tableUri}|${snapshotKey}`;
 }
 
 function parsePreflightResult(json: string): PublicObjectStoragePreflightResult {

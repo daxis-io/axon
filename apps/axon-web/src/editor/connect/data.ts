@@ -40,8 +40,8 @@ export const SOURCES: SourceCard[] = [
   {
     id: 'object_store',
     title: 'Object storage',
-    blurb: 'Read public GCS Delta logs from the browser.',
-    examples: 'public gs:// table root · browser range reads',
+    blurb: 'Read public GCS or S3 Delta logs from the browser.',
+    examples: 'public gs:// or s3:// table root · browser range reads',
     owners: {
       access: 'Browser',
       snapshot: 'Browser',

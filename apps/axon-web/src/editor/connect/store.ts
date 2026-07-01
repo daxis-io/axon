@@ -482,7 +482,13 @@ function storageForResult(result: ConnectResult): string {
 
 function regionForResult(result: ConnectResult): string {
   const { source, form } = result;
-  if (source === 'object_store') return form.region || 'auto';
+  if (source === 'object_store') {
+    const region = form.region.trim();
+    if (form.provider === 's3' && !region) {
+      throw new Error('Public S3 object storage requires an AWS region.');
+    }
+    return region || 'auto';
+  }
   if (source === 'unity_catalog') return 'brokered';
   if (source === 'delta_share') return 'provider-vended';
   return 'browser-local';

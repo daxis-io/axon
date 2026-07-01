@@ -50,6 +50,19 @@ describe('queryKeys', () => {
         region: 'us',
       }),
     ).toEqual(['object_store_table_root', 'gcs', 'gs://bucket/events']);
+
+    expect(
+      querySourceIdentity({
+        kind: 'object_store_table_root',
+        provider: 's3',
+        catalogName: 'public',
+        schemaName: 'main',
+        tableName: 'events',
+        tableUri: 's3://bucket/events',
+        storage: 's3://bucket/events',
+        region: 'us-east-2',
+      }),
+    ).toEqual(['object_store_table_root', 's3', 's3://bucket/events']);
   });
 
   it('builds catalog keys under stable source identity prefixes', () => {

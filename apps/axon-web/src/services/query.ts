@@ -199,6 +199,7 @@ async function buildSession(source: QueryTableSource): Promise<SessionState> {
     const cached = lookupPublicObjectStorageRuntimeCache({
       provider: source.provider,
       tableUri: source.tableUri,
+      region: source.region,
       snapshot: { kind: 'latest' },
       expectedSnapshotVersion: source.snapshot,
     });
@@ -210,6 +211,7 @@ async function buildSession(source: QueryTableSource): Promise<SessionState> {
       descriptor = await resolvePublicObjectStorageDescriptor({
         provider: source.provider,
         tableUri: source.tableUri,
+        region: source.region,
         resolveDeltaSnapshotFromManifest: resolve_delta_snapshot_from_manifest,
         onMetrics: (metrics) => {
           setupMetrics = mergeSessionSetupMetrics(

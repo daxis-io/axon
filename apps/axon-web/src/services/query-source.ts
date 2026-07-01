@@ -1,4 +1,7 @@
-import type { PublicObjectStorageDescriptorResolutionMetrics } from './object-storage.ts';
+import type {
+  PublicObjectStorageDescriptorResolutionMetrics,
+  PublicObjectStorageProvider,
+} from './object-storage.ts';
 
 export type ManifestQueryTableSource = {
   kind: 'manifest';
@@ -32,7 +35,7 @@ export type LocalDeltaQueryTableSource = {
 
 export type ObjectStoreTableRootQueryTableSource = {
   kind: 'object_store_table_root';
-  provider: 'gcs';
+  provider: PublicObjectStorageProvider;
   catalogName: string;
   schemaName: string;
   tableName: string;
@@ -214,17 +217,17 @@ function querySourceForTable(
     };
   }
 
-  const tableUri = publicObjectStoreTableUri(catalog, table);
-  if (tableUri) {
+  const tableRoot = publicObjectStoreTableRoot(catalog, table);
+  if (tableRoot) {
     return {
       kind: 'object_store_table_root',
-      provider: 'gcs',
+      provider: tableRoot.provider,
       catalogName: catalog.alias,
       schemaName,
       tableName: table.name,
-      tableUri,
-      storage: tableUri,
-      region: catalog.region || SAMPLE_QUERY_SOURCE.region,
+      tableUri: tableRoot.tableUri,
+      storage: tableRoot.tableUri,
+      region: table.source?.region ?? catalog.region ?? SAMPLE_QUERY_SOURCE.region,
       snapshot: table.snapshot,
       rows: table.rows,
       files: table.files,
@@ -242,15 +245,24 @@ function isQueryableTable(
   table: QueryCatalogCandidate['schemas'][number]['tables'][number],
 ): boolean {
   return (
-    !!table.manifestUrl || !!table.localRegistryId || !!publicObjectStoreTableUri(catalog, table)
+    !!table.manifestUrl || !!table.localRegistryId || !!publicObjectStoreTableRoot(catalog, table)
   );
 }
 
-function publicObjectStoreTableUri(
+function publicObjectStoreTableRoot(
   catalog: QueryCatalogCandidate,
   table: QueryCatalogCandidate['schemas'][number]['tables'][number],
-): string | undefined {
-  if (catalog.kind !== 'object_store' || catalog.provider !== 'gcs') return undefined;
+): { provider: PublicObjectStorageProvider; tableUri: string } | undefined {
+  if (catalog.kind !== 'object_store') return undefined;
+  const provider = publicObjectStorageProvider(catalog.provider);
+  if (!provider) return undefined;
   const tableUri = table.uri ?? table.source?.storage ?? catalog.storage;
-  return tableUri.startsWith('gs://') ? tableUri : undefined;
+  const expectedScheme = provider === 's3' ? 's3://' : 'gs://';
+  return tableUri.startsWith(expectedScheme) ? { provider, tableUri } : undefined;
+}
+
+function publicObjectStorageProvider(
+  provider: string | undefined,
+): PublicObjectStorageProvider | undefined {
+  return provider === 'gcs' || provider === 's3' ? provider : undefined;
 }

@@ -83,6 +83,102 @@ test.describe('query source', () => {
     });
   });
 
+  test('selects public S3 object-store table roots without a manifest', () => {
+    const catalogs = [
+      {
+        id: 'public-s3',
+        alias: 'public-s3',
+        kind: 'object_store',
+        provider: 's3',
+        storage: 's3://axon-public-s3-fixture-452456948477/fixtures/prod-like/table',
+        region: 'us-east-2',
+        schemas: [
+          {
+            name: 'default',
+            tables: [
+              {
+                name: 'orders',
+                uri: 's3://axon-public-s3-fixture-452456948477/fixtures/prod-like/table',
+                snapshot: 0,
+                rows: 4,
+                files: 1,
+                size: '1 KB',
+                protocol: 'r1/w2',
+              },
+            ],
+          },
+        ],
+      },
+    ] as QueryCatalogCandidate[];
+
+    expect(querySourceFromConnectedCatalogs(catalogs)).toEqual({
+      kind: 'object_store_table_root',
+      provider: 's3',
+      catalogName: 'public-s3',
+      schemaName: 'default',
+      tableName: 'orders',
+      tableUri: 's3://axon-public-s3-fixture-452456948477/fixtures/prod-like/table',
+      storage: 's3://axon-public-s3-fixture-452456948477/fixtures/prod-like/table',
+      region: 'us-east-2',
+      snapshot: 0,
+      rows: 4,
+      files: 1,
+      size: '1 KB',
+      protocol: 'r1/w2',
+    });
+  });
+
+  test('rejects public S3 connect results without an explicit bucket region', () => {
+    expect(() =>
+      buildCatalogFromResult({
+        source: 'object_store',
+        alias: 'public-s3',
+        form: {
+          path: '',
+          detected: null,
+          localDelta: null,
+          provider: 's3',
+          uri: 's3://bucket/table',
+          region: '',
+          endpoint: 'browser-local',
+          objectStorage: null,
+          uc_mode: 'databricks',
+          uc_host: '',
+          uc_bff_url: '',
+          uc_session_label: '',
+          uc_catalog: '',
+          uc_schema_filter: '',
+          ds_mode: 'profile',
+          ds_profile_name: '',
+          ds_endpoint: '',
+          ds_share: '',
+        },
+        selection: { default: 'all' },
+        discovered: {
+          summary: 'Detected 1 public Delta table',
+          schemas: [
+            {
+              name: 'default',
+              tableCount: 1,
+              included: true,
+              tables: [
+                {
+                  name: 'orders',
+                  uri: 's3://bucket/table',
+                  snapshot: 0,
+                  rows: 4,
+                  files: 1,
+                  size: '1 KB',
+                  protocol: 'r1/w2',
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    ).toThrow(/S3.*region/i);
+  });
+
   test('carries public descriptor setup metrics from connected catalogs into query sources', () => {
     const catalog = buildCatalogFromResult({
       source: 'object_store',
@@ -164,9 +260,18 @@ test.describe('query source', () => {
 
     expect(sameQuerySource(left, { ...left })).toBe(true);
     expect(sameQuerySource(left, { ...left, tableUri: 'gs://bucket/other' })).toBe(false);
+    expect(
+      sameQuerySource(left, {
+        ...left,
+        provider: 's3',
+        tableUri: 's3://bucket/table',
+        storage: 's3://bucket/table',
+        region: 'us-east-2',
+      }),
+    ).toBe(false);
   });
 
-  test('pre-bootstrap catalog exposes only summary metadata from the query source', async () => {
+  test('pre-bootstrap GCS catalog exposes only summary metadata from the query source', async () => {
     const catalogs = [
       {
         id: 'public-gcs',
@@ -203,6 +308,58 @@ test.describe('query source', () => {
         {
           name: 'orders',
           uri: 'gs://bucket/table',
+          kind: 'delta',
+          snapshot: 12,
+          size_bytes: 3 * 1024,
+          row_count: 42,
+          file_count: 7,
+          row_group_count: 0,
+          partition_columns: [],
+          protocol: { minReaderVersion: 3, minWriterVersion: 7, features: [] },
+          columns: [],
+        },
+      ],
+    });
+    await expect(loadCatalog(source)).resolves.toEqual(snapshotCatalog(source));
+  });
+
+  test('pre-bootstrap S3 catalog exposes only summary metadata from the query source', async () => {
+    const catalogs = [
+      {
+        id: 'public-s3',
+        alias: 'public-s3',
+        kind: 'object_store',
+        provider: 's3',
+        storage: 's3://bucket/table',
+        region: 'us-east-2',
+        schemas: [
+          {
+            name: 'default',
+            tables: [
+              {
+                name: 'orders',
+                uri: 's3://bucket/table',
+                snapshot: 12,
+                rows: 42,
+                files: 7,
+                size: '3 KB',
+                protocol: 'r3/w7',
+              },
+            ],
+          },
+        ],
+      },
+    ] as QueryCatalogCandidate[];
+    const source = querySourceFromConnectedCatalogs(catalogs);
+
+    expect(snapshotCatalog(source)).toEqual({
+      name: 'public-s3',
+      region: 'us-east-2',
+      storage: 's3://bucket/table',
+      tables: [
+        {
+          name: 'orders',
+          uri: 's3://bucket/table',
           kind: 'delta',
           snapshot: 12,
           size_bytes: 3 * 1024,

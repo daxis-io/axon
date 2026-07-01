@@ -67,6 +67,12 @@ The public GCS live smoke is env-gated. Without `AXON_LIVE_PUBLIC_GCS_TABLE_URI`
 AXON_LIVE_PUBLIC_GCS_TABLE_URI=gs://bucket/table npm run test:browser:public-gcs-live -- --reporter=line
 ```
 
+The public S3 live smoke is env-gated the same way and needs the bucket region because `s3://` table roots do not encode it.
+
+```bash
+AXON_LIVE_PUBLIC_S3_TABLE_URI=s3://bucket/table AXON_LIVE_PUBLIC_S3_REGION=us-east-2 npm run test:browser:public-s3-live -- --reporter=line
+```
+
 In the Codex macOS execution sandbox, Chromium can fail before any app code runs with `bootstrap_check_in ... MachPortRendezvousServer ... Permission denied`. Treat that as an environment failure and rerun the same Playwright browser command outside the sandbox or with elevated execution permissions before diagnosing app behavior.
 
 To run one browser while iterating:

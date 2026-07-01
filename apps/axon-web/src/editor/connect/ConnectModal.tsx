@@ -33,7 +33,10 @@ import type {
   LocalDeltaRuntime,
   LocalFileSystemDirectoryHandle,
 } from '../../services/local-delta.ts';
-import type { PublicObjectStorageDescriptorResolutionMetrics } from '../../services/object-storage.ts';
+import type {
+  PublicObjectStorageDescriptorResolutionMetrics,
+  PublicObjectStorageProvider,
+} from '../../services/object-storage.ts';
 
 type Props = {
   initialStep?: 1 | 2 | 3;
@@ -157,17 +160,19 @@ export function ConnectModal({
     }
     if (source === 'object_store') {
       try {
-        if (form.provider !== 'gcs') {
-          throw new Error('Public object storage currently supports GCS table roots.');
+        if (!isPublicObjectStorageProvider(form.provider)) {
+          throw new Error('Public object storage currently supports GCS and S3 table roots.');
         }
+        const publicProvider = form.provider;
         const [wasm, objectStorage] = await Promise.all([
           loadConnectWasm(),
           import('../../services/object-storage.ts'),
         ]);
         let descriptorResolutionMetrics: PublicObjectStorageDescriptorResolutionMetrics | undefined;
         const descriptor = await objectStorage.resolvePublicObjectStorageDescriptor({
-          provider: 'gcs',
+          provider: publicProvider,
           tableUri: form.uri,
+          region: form.region,
           resolveDeltaSnapshotFromManifest: wasm.resolve_delta_snapshot_from_manifest,
           onMetrics: (metrics) => {
             descriptorResolutionMetrics = metrics;
@@ -178,8 +183,9 @@ export function ConnectModal({
           preflightParquetMetadataForTargets: wasm.preflight_parquet_metadata_for_targets,
         });
         objectStorage.registerPublicObjectStorageRuntimeCache({
-          provider: 'gcs',
+          provider: publicProvider,
           tableUri: form.uri,
+          region: form.region,
           snapshot: { kind: 'latest' },
           descriptor,
           preflight,
@@ -819,6 +825,12 @@ function publicObjectStorageErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isPublicObjectStorageProvider(
+  provider: ConnectForm['provider'],
+): provider is PublicObjectStorageProvider {
+  return provider === 'gcs' || provider === 's3';
+}
+
 // ─── Object storage config ──────────────────────────────
 function ConfigObjectStore({
   form,
@@ -837,6 +849,7 @@ function ConfigObjectStore({
     (p) => p.id === form.provider,
   ) as ObjectStoreProvider;
   const okURI = form.uri.startsWith(provider.scheme);
+  const regionRequired = provider.id === 's3';
 
   return (
     <div className="cc-config-grid">
@@ -848,11 +861,21 @@ function ConfigObjectStore({
               <button
                 key={p.id}
                 className={form.provider === p.id ? 'active' : ''}
-                disabled={p.id !== 'gcs'}
-                title={p.id === 'gcs' ? undefined : 'Public object storage currently supports GCS'}
+                disabled={!isPublicObjectStorageProvider(p.id)}
+                title={
+                  isPublicObjectStorageProvider(p.id)
+                    ? undefined
+                    : 'Public object storage currently supports GCS and S3'
+                }
                 onClick={() => {
-                  if (p.id !== 'gcs') return;
-                  setForm({ ...form, provider: p.id, objectStorage: null });
+                  if (!isPublicObjectStorageProvider(p.id)) return;
+                  setForm({
+                    ...form,
+                    provider: p.id,
+                    uri: `${p.scheme}${objectStorePathWithoutScheme(form.uri, provider.scheme)}`,
+                    region: p.regions[0] ?? '',
+                    objectStorage: null,
+                  });
                 }}
               >
                 <span className={'g ' + p.id}>{p.scheme.replace('://', '').toUpperCase()}</span>
@@ -887,24 +910,24 @@ function ConfigObjectStore({
             )}
           </div>
           <div className="cc-help">
-            Point at a public GCS Delta table root. Axon lists and reads <code>_delta_log/</code> in
-            the browser without private credentials.
+            Point at a public GCS or S3 Delta table root. Axon lists and reads{' '}
+            <code>_delta_log/</code> in the browser without private credentials.
           </div>
         </div>
 
         <div className="cc-row-2">
           <div className="cc-field">
             <label className="cc-label">
-              Region <span className="opt">· optional</span>
+              Region <span className="opt">· {regionRequired ? 'required' : 'optional'}</span>
             </label>
             <select
               className="cc-select"
               value={form.region}
               onChange={(e: ChangeEvent<HTMLSelectElement>) =>
-                setForm({ ...form, region: e.target.value })
+                setForm({ ...form, region: e.target.value, objectStorage: null })
               }
             >
-              <option value="">Auto-detect</option>
+              {!regionRequired && <option value="">Auto-detect</option>}
               {provider.regions.map((r: string) => (
                 <option key={r} value={r}>
                   {r}
@@ -952,7 +975,7 @@ function ConfigObjectStore({
           okText={`${provider.label} Delta log is browser-readable`}
           okDetail="The browser can reconstruct the snapshot and range-read active Parquet files."
           errText={error ?? 'Browser-local storage access not configured'}
-          errDetail="Use a public GCS Delta table root with anonymous listing, log reads, Parquet range reads, and CORS for this browser origin."
+          errDetail="Use a public GCS or S3 Delta table root with anonymous listing, log reads, Parquet range reads, and CORS for this browser origin."
         />
       </div>
 
@@ -1657,7 +1680,7 @@ function discoveryForSource(source: SourceId): DiscoveryPayload | null {
 function labelForSource(s: SourceId) {
   return {
     local: 'Local files',
-    object_store: 'Object storage (GCS)',
+    object_store: 'Object storage',
     unity_catalog: 'Unity Catalog (brokered)',
     delta_share: 'Delta Sharing',
   }[s];
@@ -1687,8 +1710,13 @@ function subtitleForConfig(s: SourceId | null) {
   if (!s) return '';
   return {
     local: 'Read a Delta table directly from this machine — nothing leaves disk.',
-    object_store: 'Bring up a public GCS Delta table root as a queryable catalog.',
+    object_store: 'Bring up a public GCS or S3 Delta table root as a queryable catalog.',
     unity_catalog: 'Use a session-backed broker that returns ReadAccessPlan responses.',
     delta_share: 'Read tables shared by another organisation through the open protocol.',
   }[s];
+}
+
+function objectStorePathWithoutScheme(uri: string, currentScheme: string): string {
+  if (uri.startsWith(currentScheme)) return uri.slice(currentScheme.length);
+  return uri.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
 }

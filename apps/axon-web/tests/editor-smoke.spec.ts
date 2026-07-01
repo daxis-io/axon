@@ -583,7 +583,9 @@ test.describe('editor (Phase 1 smoke)', () => {
 
     const beforeValidationCount = requests.length;
     await configDialog.getByRole('button', { name: 'Test connection' }).click();
-    await expect(configDialog).toContainText(/not configured|failed|NoSuchBucket|public GCS/i);
+    await expect(configDialog).toContainText(
+      /not configured|failed|NoSuchBucket|public GCS|public object storage/i,
+    );
 
     const validationRequests = requests.slice(beforeValidationCount);
     expect(
@@ -697,7 +699,7 @@ test.describe('editor (Phase 1 smoke)', () => {
       /Access\s*Browser/i,
     );
     await expect(dialog.locator('.cc-source-row', { hasText: 'Object storage' })).toContainText(
-      /public GCS/i,
+      /public GCS or S3/i,
     );
     await expect(dialog.locator('.cc-source-row', { hasText: 'Object storage' })).toContainText(
       /Snapshot\s*Browser/i,
@@ -736,7 +738,14 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(configDialog).toContainText(/browser-local delta log access/i);
     await expect(configDialog).not.toContainText(/trusted delta snapshot descriptor resolver/i);
     await expect(configDialog).not.toContainText(/BFF/i);
-    await expect(configDialog.getByRole('button', { name: /AWS S3/ })).toBeDisabled();
+    const s3Provider = configDialog.getByRole('button', { name: /AWS S3/ });
+    await expect(s3Provider).toBeEnabled();
+    await s3Provider.click();
+    await expect(configDialog.locator('.prefix')).toHaveText('s3://');
+    await expect(configDialog.locator('select.cc-select')).toHaveValue('us-east-1');
+    await expect(configDialog.locator('select.cc-select option[value=""]')).toHaveCount(0);
+    await configDialog.getByRole('button', { name: /Google Cloud Storage/ }).click();
+    await expect(configDialog.locator('.prefix')).toHaveText('gs://');
     await expect(configDialog.getByRole('button', { name: /Azure ADLS Gen2/ })).toBeDisabled();
     await expect(configDialog.getByRole('button', { name: /Cloudflare R2/ })).toBeDisabled();
     await expect(
