@@ -38,8 +38,7 @@ type PublicGcsLiveEvidence = {
   table_name: string;
   browser_name: string;
   base_url: string;
-  metrics: Record<RequiredLiveMetricKey, number> &
-    Partial<Record<OptionalLiveMetricKey, number>>;
+  metrics: Record<RequiredLiveMetricKey, number> & Partial<Record<OptionalLiveMetricKey, number>>;
 };
 
 test('public GCS live evidence artifact redacts table URI and preserves required metrics', () => {
@@ -129,10 +128,11 @@ test.describe('public GCS live smoke', () => {
     ).toBe('PAR1');
   });
 
-  test('app connects and queries a live public GCS Delta table root in browser WASM', async (
-    { page, browserName, baseURL },
-    testInfo,
-  ) => {
+  test('app connects and queries a live public GCS Delta table root in browser WASM', async ({
+    page,
+    browserName,
+    baseURL,
+  }, testInfo) => {
     const tableName = tableNameFromTableUri(liveTableUri!);
 
     await installRangeReadMetricsCapture(page);
