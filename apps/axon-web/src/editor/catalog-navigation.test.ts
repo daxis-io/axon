@@ -5,6 +5,7 @@ import {
   catalogTableRefFromParams,
   resolveCatalogTableRoute,
   savedQueryPath,
+  tableRefForRouteSelection,
 } from './catalog-navigation.ts';
 import type { QueryCatalogCandidate } from '../services/query-source.ts';
 
@@ -166,5 +167,32 @@ describe('catalog navigation helpers', () => {
       queryableTableCount: 0,
       catalogs: [],
     });
+  });
+
+  it('selects a route table only when the valid route differs from current state', () => {
+    const resolution = resolveCatalogTableRoute(connectedCatalogs(), {
+      catalogId: 'cat/local 1',
+      schemaName: 'sales ops',
+      tableName: 'orders/returns',
+    });
+
+    expect(tableRefForRouteSelection(resolution)).toEqual({
+      catalogId: 'cat/local 1',
+      schemaName: 'sales ops',
+      tableName: 'orders/returns',
+    });
+    expect(
+      tableRefForRouteSelection(resolution, {
+        catalogId: 'cat/local 1',
+        schemaName: 'sales ops',
+        tableName: 'orders/returns',
+      }),
+    ).toBeUndefined();
+    expect(
+      tableRefForRouteSelection({
+        status: 'invalid',
+        reason: 'table_not_found',
+      }),
+    ).toBeUndefined();
   });
 });

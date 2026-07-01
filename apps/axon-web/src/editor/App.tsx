@@ -91,8 +91,10 @@ import {
   IconTable,
 } from './components/icons.tsx';
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
+import { catalogTablePath } from './catalog-navigation.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { formatBytes, formatRows, hexToSoft, prettifySql } from './lib/format.ts';
+import { navigate } from './router.tsx';
 import {
   TweakColor,
   TweakRadio,
@@ -270,6 +272,10 @@ export function App() {
     },
     [connectionActions],
   );
+
+  const navigateToConnectedTable = useCallback((ref: ActiveConnectedTableRef) => {
+    navigate(catalogTablePath(ref));
+  }, []);
 
   // ─── Apply theme + tokens ──────────────────────────────
   useEffect(() => {
@@ -738,7 +744,7 @@ export function App() {
           width={sidebarW}
           onInsert={insertAtCursor}
           onResize={startResizeSidebar}
-          onPickConnectedTable={connectionActions.selectTable}
+          onPickConnectedTable={navigateToConnectedTable}
         />
 
         <div className="workspace">
@@ -948,7 +954,7 @@ export function App() {
           catalogs={availableConnectedCatalogs}
           activeTable={activeTableRef}
           freshId={freshCatalogId}
-          onActivate={connectionActions.selectTable}
+          onActivate={navigateToConnectedTable}
           onAdd={() => {
             uiActions.closeConnectedPanel();
             uiActions.openConnectModal(1);

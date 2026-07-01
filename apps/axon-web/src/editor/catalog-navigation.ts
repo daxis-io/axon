@@ -105,6 +105,25 @@ export function resolveCatalogTableRoute(
   return { status: 'valid', ref, source };
 }
 
+export function tableRefForRouteSelection(
+  resolution: CatalogTableRouteResolution,
+  current?: ActiveConnectedTableRef,
+): ActiveConnectedTableRef | undefined {
+  if (resolution.status !== 'valid') {
+    return undefined;
+  }
+
+  if (
+    current?.catalogId === resolution.ref.catalogId &&
+    current.schemaName === resolution.ref.schemaName &&
+    current.tableName === resolution.ref.tableName
+  ) {
+    return undefined;
+  }
+
+  return resolution.ref;
+}
+
 export function catalogExplorerModel(
   catalogs: QueryCatalogCandidate[],
   activeTable?: ActiveConnectedTableRef,

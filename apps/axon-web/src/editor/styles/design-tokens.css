@@ -776,6 +776,39 @@ textarea {
   letter-spacing: 0.05em;
 }
 
+.route-empty {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 12px;
+  background: var(--paper);
+  color: var(--ink-3);
+  padding: 24px;
+  text-align: center;
+}
+.route-empty-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r);
+  background: var(--ink);
+  color: var(--paper);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+}
+.route-empty h1 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+.route-empty p {
+  margin: 0;
+  max-width: 420px;
+}
+
 .tabbar {
   display: flex;
   border-bottom: 1px solid var(--line);

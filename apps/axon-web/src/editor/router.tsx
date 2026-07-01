@@ -3,12 +3,23 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  useParams,
   type RouterHistory,
 } from '@tanstack/react-router';
-import { Suspense, lazy } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { Suspense, lazy, useEffect, useMemo } from 'react';
+import { catalogQueryOptions, commitsQueryOptions } from '../query/catalog.ts';
+import {
+  selectActiveConnectedTableRef,
+  selectAvailableConnectedCatalogs,
+  selectConnectionActions,
+  useAxonClientStore,
+} from '../state/hooks.ts';
 import {
   catalogTablePath,
+  resolveCatalogTableRoute,
   savedQueryPath,
+  tableRefForRouteSelection,
   type CatalogTableHref,
   type CatalogTableRouteParams,
   type SavedQueryHref,
@@ -59,6 +70,39 @@ function CatalogsRoute() {
 }
 
 function CatalogTableRoute() {
+  const params = useParams({ from: editorRouteTemplates.catalogTable });
+  const availableCatalogs = useAxonClientStore(selectAvailableConnectedCatalogs);
+  const activeTable = useAxonClientStore(selectActiveConnectedTableRef);
+  const connectionActions = useAxonClientStore(selectConnectionActions);
+  const queryClient = useQueryClient();
+  const resolution = useMemo(
+    () => resolveCatalogTableRoute(availableCatalogs, params),
+    [availableCatalogs, params],
+  );
+
+  useEffect(() => {
+    if (resolution.status !== 'valid') return;
+
+    const nextRef = tableRefForRouteSelection(resolution, activeTable);
+    if (nextRef) {
+      connectionActions.selectTable(nextRef);
+    }
+
+    void queryClient.ensureQueryData(catalogQueryOptions(resolution.source));
+    void queryClient.ensureQueryData(commitsQueryOptions(resolution.source));
+  }, [activeTable, connectionActions, queryClient, resolution]);
+
+  if (resolution.status !== 'valid') {
+    return (
+      <RouteEmptyState
+        title="Table route not found"
+        detail="The catalog, schema, or table in this URL is not connected."
+        actionLabel="View catalogs"
+        actionHref="/catalogs"
+      />
+    );
+  }
+
   return <WorkspaceRoute />;
 }
 
@@ -128,4 +172,27 @@ export function navigate(next: EditorRouteHref): void {
 
 export function catalogTableParamsPath(params: CatalogTableRouteParams): string {
   return catalogTablePath(params);
+}
+
+function RouteEmptyState({
+  title,
+  detail,
+  actionLabel,
+  actionHref,
+}: {
+  title: string;
+  detail: string;
+  actionLabel: string;
+  actionHref: EditorRouteHref;
+}) {
+  return (
+    <div className="route-empty">
+      <div className="route-empty-mark">A</div>
+      <h1>{title}</h1>
+      <p>{detail}</p>
+      <button className="cc-btn primary" onClick={() => navigate(actionHref)}>
+        {actionLabel}
+      </button>
+    </div>
+  );
 }
