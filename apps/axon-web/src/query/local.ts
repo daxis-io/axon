@@ -1,7 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { queryOptions } from '@tanstack/react-query';
 import { appendHistory, loadHistory } from '../services/history.ts';
-import { deleteSaved, loadSaved, saveQuery } from '../services/saved.ts';
+import { loadSaved, saveQuery } from '../services/saved.ts';
 import type { HistoryEntry, SavedQuery } from '../services/types.ts';
 import { queryKeys } from './keys';
 
@@ -50,13 +50,4 @@ export async function saveSavedQuery(
     ...(current ?? []).filter((candidate) => candidate.name !== entry.name),
   ]);
   return entry;
-}
-
-export async function deleteSavedQuery(
-  queryClient: QueryClient,
-  id: string,
-): Promise<SavedQuery[]> {
-  const remaining = await deleteSaved(id);
-  queryClient.setQueryData(queryKeys.local.saved(), remaining);
-  return remaining;
 }

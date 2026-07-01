@@ -146,4 +146,10 @@ describe('local metadata query adapters', () => {
     expect(client.getQueryData(queryKeys.local.history())).toEqual([appended]);
     expect(client.getQueryData(queryKeys.local.saved())).toEqual([saved]);
   });
+
+  it('keeps unused saved-query deletion helpers out of the public query API', async () => {
+    const queryModule = await import('./index');
+
+    expect(queryModule).not.toHaveProperty('deleteSavedQuery');
+  });
 });

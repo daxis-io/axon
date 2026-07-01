@@ -3,7 +3,6 @@ export { catalogQueryOptions, commitsQueryOptions, installCatalogQueryBridge } f
 export { queryKeys, querySourceIdentity } from './keys';
 export {
   appendHistoryEntry,
-  deleteSavedQuery,
   historyQueryOptions,
   saveSavedQuery,
   savedQueriesQueryOptions,
