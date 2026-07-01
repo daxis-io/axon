@@ -9,6 +9,7 @@ import {
   localRegistryIdsForCatalogs,
   upsertConnectedCatalog,
 } from '../src/editor/connect/store.ts';
+import { catalogTablePath, savedQueryPath } from '../src/editor/catalog-navigation.ts';
 import type { ConnectedCatalog, ConnectResult } from '../src/editor/connect/types.ts';
 import {
   querySourceFromConnectedCatalogs,
@@ -491,6 +492,90 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.getByRole('dialog', { name: 'Connect a local Delta folder' })).toBeVisible();
 
     expect(consoleErrors, `console errors:\n${consoleErrors.join('\n')}`).toEqual([]);
+  });
+
+  test('catalog routes support explorer navigation, reload, and browser history', async ({
+    page,
+  }) => {
+    const catalogs = [
+      connectedCatalogFixture(),
+      connectedCatalogFixture({
+        id: 'second-lake-fixture',
+        alias: 'second-lake',
+        storage: 'gs://axon-second/prod-like-events',
+        connectedAt: 'second fixture',
+      }),
+    ];
+    await page.addInitScript((value) => {
+      localStorage.setItem('axon.connect.catalogs.v1', JSON.stringify(value));
+    }, catalogs);
+
+    const secondTablePath = catalogTablePath({
+      catalogId: 'second-lake-fixture',
+      schemaName: 'prod_like',
+      tableName: 'events',
+    });
+
+    await page.goto('/catalogs');
+    await expect(page.locator('.catalogs-title')).toContainText('Catalogs');
+    await expect(page.locator('.catalogs-stats')).toContainText('2 catalogs');
+    await page
+      .locator('.catalog-block', { hasText: 'second-lake' })
+      .locator('.catalog-table-row', { hasText: 'events' })
+      .click();
+
+    await expect(page).toHaveURL(new RegExp(`${secondTablePath}$`));
+    await expect(page.locator('.conn-pill')).toContainText('second-lake');
+
+    await page.reload();
+    await expect(page.locator('.conn-pill')).toContainText('second-lake', { timeout: 15_000 });
+
+    await page.goBack();
+    await expect(page.locator('.catalogs-title')).toContainText('Catalogs');
+
+    await page.goForward();
+    await expect(page.locator('.conn-pill')).toContainText('second-lake');
+  });
+
+  test('invalid catalog table routes render a catalog recovery action', async ({ page }) => {
+    await page.addInitScript(
+      (value) => {
+        localStorage.setItem('axon.connect.catalogs.v1', JSON.stringify(value));
+      },
+      [connectedCatalogFixture()],
+    );
+
+    await page.goto('/catalog/sample-lake-fixture/prod_like/missing');
+
+    await expect(page.getByRole('heading', { name: 'Table route not found' })).toBeVisible();
+    await page.getByRole('button', { name: 'View catalogs' }).click();
+    await expect(page).toHaveURL(/\/catalogs$/);
+  });
+
+  test('saved query routes open saved tabs and report missing ids', async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem(
+        'axon-editor.saved.v1',
+        JSON.stringify([
+          {
+            id: 'saved-route-1',
+            name: 'saved route',
+            owner: 'you',
+            edited: '10:30',
+            target: 'browser_wasm',
+            sql: 'SELECT 1 AS saved_route',
+          },
+        ]),
+      );
+    });
+
+    await page.goto(savedQueryPath('saved-route-1'));
+
+    await expect(page.locator('.qtab.active')).toContainText('saved route.sql');
+    await expect(page.locator('.code-input')).toHaveValue('SELECT 1 AS saved_route');
+
+    await page.goto('/saved/missing');
+    await expect(page.getByRole('heading', { name: 'Saved query not found' })).toBeVisible();
   });
 
   test('lazy startup defers query runtime requests until the first workspace query', async ({
