@@ -9,7 +9,9 @@ import { Suspense, lazy } from 'react';
 import {
   catalogTablePath,
   savedQueryPath,
+  type CatalogTableHref,
   type CatalogTableRouteParams,
+  type SavedQueryHref,
 } from './catalog-navigation.ts';
 
 export { catalogTablePath, savedQueryPath };
@@ -22,16 +24,14 @@ export const editorRouteTemplates = {
   savedQuery: '/saved/$savedId',
 } as const;
 
-export type EditorRouteHref =
-  | '/'
-  | '/connect'
-  | '/catalogs'
-  | `/catalog/${string}/${string}/${string}`
-  | `/saved/${string}`;
+export type EditorRouteHref = '/' | '/connect' | '/catalogs' | CatalogTableHref | SavedQueryHref;
 
 const App = lazy(() => import('./App.tsx').then((module) => ({ default: module.App })));
 const ConnectPage = lazy(() =>
   import('./ConnectPage.tsx').then((module) => ({ default: module.ConnectPage })),
+);
+const CatalogsPage = lazy(() =>
+  import('./CatalogsPage.tsx').then((module) => ({ default: module.CatalogsPage })),
 );
 
 function WorkspaceRoute() {
@@ -51,7 +51,11 @@ function ConnectRoute() {
 }
 
 function CatalogsRoute() {
-  return <WorkspaceRoute />;
+  return (
+    <Suspense fallback={null}>
+      <CatalogsPage />
+    </Suspense>
+  );
 }
 
 function CatalogTableRoute() {

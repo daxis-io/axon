@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  catalogExplorerModel,
   catalogTablePath,
   catalogTableRefFromParams,
   resolveCatalogTableRoute,
@@ -107,6 +108,63 @@ describe('catalog navigation helpers', () => {
         schemaName: 'sales ops',
         tableName: 'missing',
       },
+    });
+  });
+
+  it('builds explorer rows with active and queryable route state', () => {
+    expect(
+      catalogExplorerModel(connectedCatalogs(), {
+        catalogId: 'cat/local 1',
+        schemaName: 'sales ops',
+        tableName: 'orders/returns',
+      }),
+    ).toEqual({
+      status: 'ready',
+      catalogCount: 1,
+      schemaCount: 1,
+      tableCount: 1,
+      queryableTableCount: 1,
+      catalogs: [
+        {
+          id: 'cat/local 1',
+          alias: 'local lake',
+          storage: '/tmp/lake',
+          region: 'browser-local',
+          kind: 'local',
+          schemas: [
+            {
+              name: 'sales ops',
+              tableCount: 1,
+              tables: [
+                {
+                  key: 'cat/local 1/sales ops/orders/returns',
+                  name: 'orders/returns',
+                  active: true,
+                  path: '/catalog/cat%2Flocal%201/sales%20ops/orders%2Freturns',
+                  queryable: true,
+                  snapshot: 9,
+                  rows: 42,
+                  files: undefined,
+                  size: undefined,
+                  storage: 'gs://unit-test/orders',
+                  region: 'us-test1',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('reports an empty explorer model when no catalogs are connected', () => {
+    expect(catalogExplorerModel([])).toEqual({
+      status: 'empty',
+      catalogCount: 0,
+      schemaCount: 0,
+      tableCount: 0,
+      queryableTableCount: 0,
+      catalogs: [],
     });
   });
 });
