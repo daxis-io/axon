@@ -7,7 +7,7 @@ import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
 import { availabilityForSource, type SourceId } from './connect/data.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { IconBolt, IconChevR, IconPlus } from './components/icons.tsx';
-import { navigate } from './router.ts';
+import { navigate } from './router.tsx';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
 import {

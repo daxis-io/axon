@@ -103,7 +103,7 @@ export function querySourceFromConnectedCatalogs(
   catalogs: QueryCatalogCandidate[],
   activeTable?: ActiveConnectedTableRef,
 ): QueryTableSource {
-  const active = activeTable ? querySourceForTableRef(catalogs, activeTable) : undefined;
+  const active = activeTable ? querySourceForConnectedTableRef(catalogs, activeTable) : undefined;
   if (active) return active;
 
   for (const catalog of catalogs) {
@@ -137,7 +137,7 @@ export function resolveActiveTableRef(
   catalogs: QueryCatalogCandidate[],
   activeTable?: ActiveConnectedTableRef,
 ): ActiveConnectedTableRef | undefined {
-  if (activeTable && querySourceForTableRef(catalogs, activeTable)) {
+  if (activeTable && querySourceForConnectedTableRef(catalogs, activeTable)) {
     return activeTable;
   }
   return firstQueryableTableRef(catalogs);
@@ -167,7 +167,7 @@ export function sameQuerySource(a: QueryTableSource, b: QueryTableSource): boole
   return false;
 }
 
-function querySourceForTableRef(
+export function querySourceForConnectedTableRef(
   catalogs: QueryCatalogCandidate[],
   activeTable: ActiveConnectedTableRef,
 ): QueryTableSource | undefined {
