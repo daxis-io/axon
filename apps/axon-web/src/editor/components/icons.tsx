@@ -130,6 +130,12 @@ export const IconSparkle = (p: IconProps) => (
 export const IconBookmark = (p: IconProps) => <Icon {...p} d="M6 4h12v17l-6-4-6 4z" />;
 export const IconBolt = (p: IconProps) => <Icon {...p} d="M13 3 5 14h6l-1 7 8-11h-6z" />;
 export const IconFormat = (p: IconProps) => <Icon {...p} d="M4 6h16M4 10h10M4 14h16M4 18h8" />;
+export const IconSettings = (p: IconProps) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M12 2.5v3M12 18.5v3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M2.5 12h3M18.5 12h3M4.6 19.4l2.1-2.1M17.3 6.7l2.1-2.1" />
+  </Icon>
+);
 export const IconArrowDown = (p: IconProps) => <Icon {...p} d="M12 5v14m-5-5 5 5 5-5" />;
 export const IconArrowUp = (p: IconProps) => <Icon {...p} d="M12 19V5m-5 5 5-5 5 5" />;
 export const IconChevDownTiny = (p: IconProps) => (

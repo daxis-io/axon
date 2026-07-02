@@ -87,6 +87,7 @@ import {
   IconPlus,
   IconRefresh,
   IconSave,
+  IconSettings,
   IconStop,
   IconTable,
 } from './components/icons.tsx';
@@ -690,6 +691,14 @@ export function App() {
         <div className="tb-actions">
           <button className="btn ghost" onClick={formatSql} title="Format (⌘⇧F)">
             <IconFormat size={13} /> Format
+          </button>
+          <button
+            className="btn ghost icon"
+            title="Settings"
+            aria-label="Open settings"
+            onClick={() => navigate('/settings')}
+          >
+            <IconSettings size={13} />
           </button>
           <button className="btn ghost icon" title="Save (⌘S)" onClick={uiActions.openSaveDialog}>
             <IconSave size={13} />

@@ -6,7 +6,7 @@ import { Suspense, lazy, useCallback, useState } from 'react';
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
 import { availabilityForSource, type SourceId } from './connect/data.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
-import { IconBolt, IconChevR, IconPlus } from './components/icons.tsx';
+import { IconBolt, IconChevR, IconPlus, IconSettings } from './components/icons.tsx';
 import { navigate } from './router.tsx';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
@@ -84,6 +84,9 @@ export function ConnectPage() {
             {availableCatalogs.length} connected
           </button>
         )}
+        <button className="cc-btn" onClick={() => navigate('/settings')}>
+          <IconSettings size={12} /> Settings
+        </button>
         <button className="cc-btn" onClick={() => navigate('/')}>
           Back to workspace <IconChevR size={11} />
         </button>

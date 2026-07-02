@@ -809,6 +809,79 @@ textarea {
   max-width: 420px;
 }
 
+/* ─────────────────── Settings route ─────────────────── */
+
+.settings-page {
+  min-height: 100vh;
+}
+.settings-main {
+  height: calc(100vh - var(--topbar-h));
+  overflow: auto;
+  padding: 14px 16px 28px;
+  background: var(--paper);
+}
+.settings-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+.settings-title,
+.settings-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.settings-title {
+  color: var(--ink);
+  font-weight: 650;
+  font-size: 13px;
+}
+.settings-title svg {
+  color: var(--accent);
+}
+.settings-summary {
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+.settings-summary span {
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper-2);
+  white-space: nowrap;
+}
+.settings-shell {
+  max-width: 760px;
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--paper);
+  overflow: hidden;
+}
+.settings-shell-row {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.settings-shell-row:last-child {
+  border-bottom: 0;
+}
+.settings-shell-row h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+.settings-shell-row p {
+  margin: 3px 0 0;
+  color: var(--ink-3);
+  font: 11.5px var(--mono);
+}
+
 .tabbar {
   display: flex;
   border-bottom: 1px solid var(--line);

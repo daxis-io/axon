@@ -38,4 +38,15 @@ describe('editor router', () => {
     expect(router.state.location.pathname).toBe('/saved/saved 1');
     expect(router.state.matches.at(-1)?.routeId).toBe(editorRouteTemplates.savedQuery);
   });
+
+  it('matches the routed settings surface', async () => {
+    const router = createEditorRouter({
+      history: createMemoryHistory({ initialEntries: ['/settings'] }),
+    });
+
+    await router.load();
+
+    expect(router.state.location.pathname).toBe('/settings');
+    expect(router.state.matches.at(-1)?.routeId).toBe(editorRouteTemplates.settings);
+  });
 });

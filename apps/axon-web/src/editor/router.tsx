@@ -33,11 +33,18 @@ export const editorRouteTemplates = {
   root: '/',
   connect: '/connect',
   catalogs: '/catalogs',
+  settings: '/settings',
   catalogTable: '/catalog/$catalogId/$schemaName/$tableName',
   savedQuery: '/saved/$savedId',
 } as const;
 
-export type EditorRouteHref = '/' | '/connect' | '/catalogs' | CatalogTableHref | SavedQueryHref;
+export type EditorRouteHref =
+  | '/'
+  | '/connect'
+  | '/catalogs'
+  | '/settings'
+  | CatalogTableHref
+  | SavedQueryHref;
 
 const App = lazy(() => import('./App.tsx').then((module) => ({ default: module.App })));
 const ConnectPage = lazy(() =>
@@ -45,6 +52,9 @@ const ConnectPage = lazy(() =>
 );
 const CatalogsPage = lazy(() =>
   import('./CatalogsPage.tsx').then((module) => ({ default: module.CatalogsPage })),
+);
+const SettingsPage = lazy(() =>
+  import('./SettingsPage.tsx').then((module) => ({ default: module.SettingsPage })),
 );
 
 function WorkspaceRoute() {
@@ -67,6 +77,14 @@ function CatalogsRoute() {
   return (
     <Suspense fallback={null}>
       <CatalogsPage />
+    </Suspense>
+  );
+}
+
+function SettingsRoute() {
+  return (
+    <Suspense fallback={null}>
+      <SettingsPage />
     </Suspense>
   );
 }
@@ -157,6 +175,11 @@ function createRouteTree() {
     path: editorRouteTemplates.catalogs,
     component: CatalogsRoute,
   });
+  const settingsRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: editorRouteTemplates.settings,
+    component: SettingsRoute,
+  });
   const catalogTableRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: editorRouteTemplates.catalogTable,
@@ -172,6 +195,7 @@ function createRouteTree() {
     indexRoute,
     connectRoute,
     catalogsRoute,
+    settingsRoute,
     catalogTableRoute,
     savedRoute,
   ]);

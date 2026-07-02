@@ -8,7 +8,7 @@ import {
   useAxonClientStore,
 } from '../state/hooks.ts';
 import { catalogExplorerModel } from './catalog-navigation.ts';
-import { IconChevR, IconDatabase, IconPlus, IconTable } from './components/icons.tsx';
+import { IconChevR, IconDatabase, IconPlus, IconSettings, IconTable } from './components/icons.tsx';
 import { formatRows } from './lib/format.ts';
 import { navigate } from './router.tsx';
 
@@ -41,6 +41,9 @@ export function CatalogsPage() {
 
         <button className="cc-btn" onClick={() => navigate('/connect')}>
           <IconPlus size={12} /> Connect
+        </button>
+        <button className="cc-btn" onClick={() => navigate('/settings')}>
+          <IconSettings size={12} /> Settings
         </button>
         <button className="cc-btn" onClick={() => navigate('/')}>
           Workspace <IconChevR size={11} />
