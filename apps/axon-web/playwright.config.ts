@@ -1,6 +1,12 @@
 import { defineConfig, devices } from '@playwright/test';
 
-export default defineConfig({
+import publicGcsLiveConfig from './playwright.public-gcs-live.config';
+
+const requestedPublicGcsLiveSpec = process.argv.some((arg) =>
+  /(^|[/\\])public-gcs-live\.spec\.ts$/.test(arg),
+);
+
+const browserWorkerMatrixConfig = defineConfig({
   testDir: './tests',
   testMatch: /browser-worker-matrix\.spec\.ts/,
   workers: 1,
@@ -31,3 +37,5 @@ export default defineConfig({
     timeout: 60_000,
   },
 });
+
+export default requestedPublicGcsLiveSpec ? publicGcsLiveConfig : browserWorkerMatrixConfig;
