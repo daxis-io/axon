@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_APPEARANCE_SETTINGS,
   DEFAULT_EXECUTION_SETTINGS,
   type SettingsState,
 } from '../state/slices/settings.ts';
-import { parseSettingsPatchJson, settingsToJson } from './settings-model.ts';
+import { applySettingsState, parseSettingsPatchJson, settingsToJson } from './settings-model.ts';
 
 describe('settings model', () => {
   it('serializes only the honored settings shape', () => {
@@ -117,5 +117,25 @@ describe('settings model', () => {
         execution: { defaultTarget: 'browser_wasm' },
       },
     });
+  });
+
+  it('applies a parsed settings state through the settings actions boundary', () => {
+    const updateAppearance = vi.fn();
+    const updateExecution = vi.fn();
+    const settings: SettingsState = {
+      appearance: {
+        theme: 'dark',
+        density: 'compact',
+        accent: '#C2410C',
+        uiFont: 'IBM Plex Sans',
+        monoFont: 'Fira Code',
+      },
+      execution: { defaultTarget: 'auto' },
+    };
+
+    applySettingsState({ updateAppearance, updateExecution }, settings);
+
+    expect(updateAppearance).toHaveBeenCalledWith(settings.appearance);
+    expect(updateExecution).toHaveBeenCalledWith(settings.execution);
   });
 });

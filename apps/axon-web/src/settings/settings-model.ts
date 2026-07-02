@@ -4,6 +4,7 @@ import {
   coerceDefaultTargetForAvailability,
   sanitizeAppearanceSettings,
   sanitizeExecutionSettings,
+  type SettingsActions,
   type SettingsState,
 } from '../state/slices/settings.ts';
 
@@ -28,6 +29,14 @@ function honoredSettingsShape(settings: SettingsState): SettingsState {
 
 export function settingsToJson(settings: SettingsState): string {
   return JSON.stringify(honoredSettingsShape(settings), null, 2);
+}
+
+export function applySettingsState(
+  settingsActions: Pick<SettingsActions, 'updateAppearance' | 'updateExecution'>,
+  settings: SettingsState,
+): void {
+  settingsActions.updateAppearance(settings.appearance);
+  settingsActions.updateExecution(settings.execution);
 }
 
 export function parseSettingsPatchJson(
