@@ -101,10 +101,10 @@ export function SettingsPage() {
 
       <main className="settings-main">
         <section className="settings-head">
-          <div className="settings-title">
+          <h1 className="settings-title">
             <IconSettings size={16} />
             <span>Settings</span>
-          </div>
+          </h1>
           <div className="settings-summary" aria-label="Current settings">
             <span>{appearance.theme}</span>
             <span>{appearance.density}</span>

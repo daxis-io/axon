@@ -3,6 +3,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AppProviders } from './AppProviders.tsx';
 import { AppRouter } from './router.tsx';
+import { SettingsEffects } from './SettingsEffects.tsx';
 import './styles/design-tokens.css';
 import './connect/connect-styles.css';
 
@@ -14,6 +15,7 @@ if (!rootEl) {
 createRoot(rootEl).render(
   <StrictMode>
     <AppProviders>
+      <SettingsEffects />
       <AppRouter />
       <Analytics />
     </AppProviders>

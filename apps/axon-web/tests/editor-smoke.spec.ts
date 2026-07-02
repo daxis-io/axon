@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page, type Request, type Route } from '@playwright/test';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -70,6 +70,16 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(source).not.toContain('<IconBranch');
     expect(source).not.toContain('<IconShare');
     expect(source).not.toContain('<IconSparkle');
+  });
+
+  test('workspace settings surface replaces the floating Tweaks panel', () => {
+    const source = readFileSync(new URL('../src/editor/App.tsx', import.meta.url), 'utf8');
+
+    expect(source).not.toContain("from './tweaks/TweaksPanel.tsx'");
+    expect(source).not.toContain('<TweaksPanel');
+    expect(existsSync(new URL('../src/editor/tweaks/TweaksPanel.tsx', import.meta.url))).toBe(
+      false,
+    );
   });
 
   test('editor shell mounts Vercel Web Analytics once at the app root', () => {
@@ -684,13 +694,15 @@ test.describe('editor (Phase 1 smoke)', () => {
     ).toBe(true);
   });
 
-  test('persists client appearance settings from the Tweaks panel across reloads', async ({
+  test('persists client appearance settings from the routed settings surface across reloads', async ({
     page,
   }) => {
     await page.goto('/');
     await expect(page.locator('.shell .brand-name')).toContainText('axon');
 
     await page.getByRole('button', { name: 'Open settings' }).click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
     await page
       .getByRole('radiogroup', { name: 'Mode' })
       .getByRole('radio', { name: 'dark' })
@@ -742,7 +754,8 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(persistedBeforeReload.raw).toContain('"monoFont":"Fira Code"');
 
     await page.reload();
-    await expect(page.locator('.shell .brand-name')).toContainText('axon');
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
 
     await expect
       .poll(() =>
@@ -762,7 +775,6 @@ test.describe('editor (Phase 1 smoke)', () => {
         monoFont: expect.stringContaining('Fira Code'),
       });
 
-    await page.getByRole('button', { name: 'Open settings' }).click();
     await expect(
       page.getByRole('radiogroup', { name: 'Mode' }).getByRole('radio', { name: 'dark' }),
     ).toHaveAttribute('aria-checked', 'true');

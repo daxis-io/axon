@@ -839,6 +839,7 @@ textarea {
   color: var(--ink);
   font-weight: 650;
   font-size: 13px;
+  margin: 0;
 }
 .settings-title svg {
   color: var(--accent);

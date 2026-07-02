@@ -39,7 +39,6 @@ import type { QueryExecRequest } from '../services/types.ts';
 import {
   selectActiveConnectedTableRef,
   selectActiveSqlTab,
-  selectAppearanceSettings,
   selectAvailableConnectedCatalogs,
   selectConnectionActions,
   selectDefaultTarget,
@@ -54,7 +53,6 @@ import {
   selectRunLoadingMoreRows,
   selectRunResultData,
   selectRunResultPageRun,
-  selectSettingsActions,
   selectTabActions,
   selectTabs,
   selectUi,
@@ -62,15 +60,7 @@ import {
   useAxonClientStore,
 } from '../state/hooks.ts';
 import { axonClientStore } from '../state/store.ts';
-import {
-  ACCENT_VALUES,
-  APPEARANCE_DENSITY_VALUES,
-  APPEARANCE_THEME_VALUES,
-  MONO_FONT_VALUES,
-  UI_FONT_VALUES,
-  availableExecutionTargetValues,
-  coerceDefaultTargetForAvailability,
-} from '../state/slices/settings.ts';
+import { coerceDefaultTargetForAvailability } from '../state/slices/settings.ts';
 import type { EngineActions } from '../state/slices/engine.ts';
 import type { SqlTab } from '../state/slices/tabs.ts';
 import { CapabilityPopover } from './components/Capabilities.tsx';
@@ -94,15 +84,8 @@ import {
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
 import { catalogTablePath, savedQueryPath } from './catalog-navigation.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
-import { formatBytes, formatRows, hexToSoft, prettifySql } from './lib/format.ts';
+import { formatBytes, formatRows, prettifySql } from './lib/format.ts';
 import { navigate } from './router.tsx';
-import {
-  TweakColor,
-  TweakRadio,
-  TweakSection,
-  TweakSelect,
-  TweaksPanel,
-} from './tweaks/TweaksPanel.tsx';
 
 const ConnectModal = lazy(() =>
   import('./connect/ConnectModal.tsx').then((module) => ({ default: module.ConnectModal })),
@@ -149,14 +132,11 @@ function connectedTableForRef(
 export function App() {
   const { sidebarW, resultsH } = useAxonClientStore(selectLayout);
   const layoutActions = useAxonClientStore(selectLayoutActions);
-  const appearance = useAxonClientStore(selectAppearanceSettings);
   const configuredDefaultTarget = useAxonClientStore(selectDefaultTarget);
   const defaultTarget = coerceDefaultTargetForAvailability(
     configuredDefaultTarget,
     SERVER_QUERY_FALLBACK_ENABLED,
   );
-  const defaultTargetOptions = availableExecutionTargetValues(SERVER_QUERY_FALLBACK_ENABLED);
-  const settingsActions = useAxonClientStore(selectSettingsActions);
   const availableConnectedCatalogs = useAxonClientStore(selectAvailableConnectedCatalogs);
   const activeTableRef = useAxonClientStore(selectActiveConnectedTableRef);
   const freshCatalogId = useAxonClientStore(selectFreshCatalogId);
@@ -277,20 +257,6 @@ export function App() {
   const navigateToConnectedTable = useCallback((ref: ActiveConnectedTableRef) => {
     navigate(catalogTablePath(ref));
   }, []);
-
-  // ─── Apply theme + tokens ──────────────────────────────
-  useEffect(() => {
-    const root = document.documentElement;
-    root.setAttribute('data-theme', appearance.theme === 'dark' ? 'dark' : 'light');
-    root.setAttribute('data-density', appearance.density);
-    root.style.setProperty('--accent', appearance.accent);
-    root.style.setProperty(
-      '--accent-soft',
-      hexToSoft(appearance.accent, appearance.theme === 'dark'),
-    );
-    root.style.setProperty('--ui', `"${appearance.uiFont}", ui-sans-serif, system-ui, sans-serif`);
-    root.style.setProperty('--mono', `"${appearance.monoFont}", ui-monospace, Menlo, monospace`);
-  }, [appearance]);
 
   // ─── Subscribe to engine status ─────────────────────────
   useEffect(() => {
@@ -973,48 +939,6 @@ export function App() {
           onClose={uiActions.closeConnectedPanel}
         />
       )}
-
-      <TweaksPanel>
-        <TweakSection label="Theme" />
-        <TweakRadio
-          label="Mode"
-          value={appearance.theme}
-          options={APPEARANCE_THEME_VALUES}
-          onChange={(v) => settingsActions.setAppearanceValue('theme', v)}
-        />
-        <TweakColor
-          label="Accent"
-          value={appearance.accent}
-          options={ACCENT_VALUES}
-          onChange={(v) => settingsActions.setAppearanceValue('accent', v)}
-        />
-        <TweakRadio
-          label="Density"
-          value={appearance.density}
-          options={APPEARANCE_DENSITY_VALUES}
-          onChange={(v) => settingsActions.setAppearanceValue('density', v)}
-        />
-        <TweakSection label="Typography" />
-        <TweakSelect
-          label="UI font"
-          value={appearance.uiFont}
-          options={UI_FONT_VALUES}
-          onChange={(v) => settingsActions.setAppearanceValue('uiFont', v)}
-        />
-        <TweakSelect
-          label="Code font"
-          value={appearance.monoFont}
-          options={MONO_FONT_VALUES}
-          onChange={(v) => settingsActions.setAppearanceValue('monoFont', v)}
-        />
-        <TweakSection label="Engine defaults" />
-        <TweakRadio
-          label="Default target"
-          value={defaultTarget}
-          options={defaultTargetOptions}
-          onChange={settingsActions.setDefaultTarget}
-        />
-      </TweaksPanel>
     </div>
   );
 }
