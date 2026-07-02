@@ -105,6 +105,13 @@ export function resolveCatalogTableRoute(
   return { status: 'valid', ref, source };
 }
 
+export function isQueryableCatalogTable(
+  catalogs: QueryCatalogCandidate[],
+  ref: ActiveConnectedTableRef,
+): boolean {
+  return querySourceForConnectedTableRef(catalogs, ref) !== undefined;
+}
+
 export function tableRefForRouteSelection(
   resolution: CatalogTableRouteResolution,
   current?: ActiveConnectedTableRef,
@@ -143,8 +150,7 @@ export function catalogExplorerModel(
           schemaName: schema.name,
           tableName: table.name,
         };
-        const source = querySourceForConnectedTableRef(catalogs, ref);
-        const queryable = source !== undefined;
+        const queryable = isQueryableCatalogTable(catalogs, ref);
         if (queryable) queryableTableCount += 1;
 
         return {

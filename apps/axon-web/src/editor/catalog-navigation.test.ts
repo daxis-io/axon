@@ -3,6 +3,7 @@ import {
   catalogExplorerModel,
   catalogTablePath,
   catalogTableRefFromParams,
+  isQueryableCatalogTable,
   resolveCatalogTableRoute,
   savedQueryPath,
   tableRefForRouteSelection,
@@ -30,6 +31,34 @@ function connectedCatalogs(): QueryCatalogCandidate[] {
               },
               snapshot: 9,
               rows: 42,
+            },
+          ],
+        },
+      ],
+    },
+  ];
+}
+
+function publicObjectStoreCatalogs(): QueryCatalogCandidate[] {
+  return [
+    {
+      id: 'public-gcs',
+      alias: 'public gcs',
+      storage: 'gs://public-bucket/silver/events',
+      region: 'us-test1',
+      kind: 'object_store',
+      provider: 'gcs',
+      schemas: [
+        {
+          name: 'default',
+          tables: [
+            {
+              name: 'events',
+              uri: 'gs://public-bucket/silver/events',
+              snapshot: 12,
+              rows: 1200,
+              files: 3,
+              size: '42 MB',
             },
           ],
         },
@@ -156,6 +185,16 @@ describe('catalog navigation helpers', () => {
         },
       ],
     });
+  });
+
+  it('treats public object-store table roots as queryable route targets', () => {
+    expect(
+      isQueryableCatalogTable(publicObjectStoreCatalogs(), {
+        catalogId: 'public-gcs',
+        schemaName: 'default',
+        tableName: 'events',
+      }),
+    ).toBe(true);
   });
 
   it('reports an empty explorer model when no catalogs are connected', () => {

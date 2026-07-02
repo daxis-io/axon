@@ -1138,6 +1138,54 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.locator('.conn-pill')).toContainText('second-lake');
   });
 
+  test('workspace pickers navigate public object-store table roots without manifests', async ({
+    page,
+  }) => {
+    const publicRoot = publicObjectStoreTableRootCatalogFixture();
+    const publicRootPath = catalogTablePath({
+      catalogId: publicRoot.id,
+      schemaName: 'default',
+      tableName: 'events',
+    });
+    const samplePath = catalogTablePath({
+      catalogId: 'sample-lake-fixture',
+      schemaName: 'prod_like',
+      tableName: 'events',
+    });
+    await page.addInitScript(
+      (value) => {
+        localStorage.setItem('axon.connect.catalogs.v1', JSON.stringify(value));
+      },
+      [connectedCatalogFixture(), publicRoot],
+    );
+
+    await page.goto('/');
+    await expect(page.locator('.conn-pill')).toContainText('sample-lake', { timeout: 15_000 });
+
+    const sidebar = page.locator('.sidebar');
+    const publicSidebarRow = sidebar.locator('.sb-row.tbl', { hasText: 'events' }).nth(1);
+    await expect(publicSidebarRow).toHaveAttribute('aria-disabled', 'false');
+    await publicSidebarRow.click();
+
+    await expect(page).toHaveURL(new RegExp(`${publicRootPath}$`));
+    await expect(page.locator('.conn-pill')).toContainText('public-root');
+
+    await page.goto(samplePath);
+    await expect(page.locator('.conn-pill')).toContainText('sample-lake', { timeout: 15_000 });
+
+    await page.locator('.conn-pill').click();
+    const panel = page.getByRole('dialog', { name: 'Connected catalogs' });
+    await panel.getByRole('button', { name: /Expand public-root/ }).click();
+    const publicPanelRow = panel.getByRole('button', {
+      name: /Activate public-root default events/,
+    });
+    await expect(publicPanelRow).toBeEnabled();
+    await publicPanelRow.click();
+
+    await expect(page).toHaveURL(new RegExp(`${publicRootPath}$`));
+    await expect(page.locator('.conn-pill')).toContainText('public-root');
+  });
+
   test('connects a local Delta folder from the root editor and queries it in browser WASM', async ({
     page,
   }) => {
@@ -1696,6 +1744,31 @@ function connectedCatalogFixture(overrides: Partial<ConnectedCatalog> = {}): Con
     ],
     ...overrides,
   };
+}
+
+function publicObjectStoreTableRootCatalogFixture(): ConnectedCatalog {
+  return connectedCatalogFixture({
+    id: 'public-root-fixture',
+    alias: 'public-root',
+    storage: 'gs://axon-public/direct-events',
+    connectedAt: 'public root fixture',
+    schemas: [
+      {
+        name: 'default',
+        tables: [
+          {
+            name: 'events',
+            snapshot: 4,
+            rows: 8,
+            files: 1,
+            size: 'fixture',
+            protocol: 'r2/w5',
+            uri: 'gs://axon-public/direct-events',
+          },
+        ],
+      },
+    ],
+  });
 }
 
 async function openLocalDeltaConnectDialog(page: Page) {

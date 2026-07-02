@@ -4,6 +4,7 @@
 import { useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { IconChevR, IconClose, IconRefresh, IconTable } from '../components/icons.tsx';
 import type { ActiveConnectedTableRef } from '../../services/query-source.ts';
+import { isQueryableCatalogTable } from '../catalog-navigation.ts';
 import { IconCog, IconDots } from './icons.tsx';
 import type { ConnectedCatalog } from './types.ts';
 
@@ -116,11 +117,16 @@ export function ConnectedCatalogsPanel({
                             </span>
                           </div>
                           {sch.tables.map((tbl) => {
+                            const ref = {
+                              catalogId: cat.id,
+                              schemaName: sch.name,
+                              tableName: tbl.name,
+                            };
                             const isActive =
                               activeTable?.catalogId === cat.id &&
                               activeTable.schemaName === sch.name &&
                               activeTable.tableName === tbl.name;
-                            const queryable = !!tbl.manifestUrl || !!tbl.localRegistryId;
+                            const queryable = isQueryableCatalogTable(catalogs, ref);
                             return (
                               <button
                                 key={tbl.name}
@@ -137,11 +143,7 @@ export function ConnectedCatalogsPanel({
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   if (!queryable) return;
-                                  onActivate?.({
-                                    catalogId: cat.id,
-                                    schemaName: sch.name,
-                                    tableName: tbl.name,
-                                  });
+                                  onActivate?.(ref);
                                   onClose();
                                 }}
                               >
