@@ -1,7 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query';
-import { QueryClientProvider } from '@tanstack/react-query';
-import { useEffect, type ReactNode } from 'react';
-import { queryClient as defaultQueryClient } from '../query';
+import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
+import { useEffect, useMemo, type ReactNode } from 'react';
+import { createAxonQueryPersistOptions, queryClient as defaultQueryClient } from '../query';
 import { installCatalogQueryBridge } from '../query/catalog.ts';
 
 type AppProvidersProps = {
@@ -11,6 +11,11 @@ type AppProvidersProps = {
 
 export function AppProviders({ children, queryClient = defaultQueryClient }: AppProvidersProps) {
   useEffect(() => installCatalogQueryBridge(queryClient), [queryClient]);
+  const persistOptions = useMemo(() => createAxonQueryPersistOptions(), []);
 
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  return (
+    <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
+      {children}
+    </PersistQueryClientProvider>
+  );
 }

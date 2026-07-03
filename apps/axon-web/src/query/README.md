@@ -1,12 +1,27 @@
 # Query Foundation
 
-This directory is the M0 query substrate for `axon-web`. It provides the shared React Query client factory, a stable default client for app runtime use, and typed query key factories.
+This directory is the query substrate for `axon-web`. It provides the shared React Query client factory, a stable default client for app runtime use, typed query key factories, and the browser cache persistence policy for safe server-state families.
 
 ## Query Client
 
-`createAxonQueryClient()` returns a `QueryClient` with minimal defaults. The only default policy in M0 is `queries.retry: shouldRetryQuery`.
+`createAxonQueryClient()` returns a `QueryClient` with the Axon retry policy and a query `gcTime` aligned to the persisted cache max age.
 
 `queryClient` is the module-level default client used by `AppProviders`. Tests can inject their own client through `AppProviders` instead of creating clients during render.
+
+## Query Cache Persistence
+
+`createAxonQueryPersistOptions()` configures `PersistQueryClientProvider` with an IndexedDB-backed persister built on the repo-local `KeyValueStore`. Persistence is best-effort: unavailable IndexedDB, open failures, read failures, write failures, and remove failures are treated as no-ops so the in-memory query cache remains the runtime authority.
+
+The persisted cache is versioned by `AXON_QUERY_CACHE_BUSTER` and expires after `AXON_QUERY_CACHE_MAX_AGE_MS` (six hours). Mutations are never persisted. Query dehydration is routed through `shouldPersistAxonQuery(query)`, the single allow/deny policy for this cache.
+
+Persisted query families are intentionally narrow:
+
+- `['catalog', 'source', ['manifest', ...], 'table-derived' | 'commits']`
+- `['catalog', 'source', ['object_store_table_root', 'gcs' | 's3', ...], 'table-derived' | 'commits']`
+- `['local', 'history']`
+- `['local', 'saved']`
+
+The policy rejects `local_delta` catalog keys, unknown query families, failed queries, mutations, signed URL strings, token/grant/credential-shaped data, openable browser handles, descriptors, object lists, active-file/session/worker/run-result payloads, metrics, plans, and capabilities.
 
 ## Retry Policy
 
@@ -38,8 +53,8 @@ Keep keys stable and route new query key families through this module.
 
 `historyQueryOptions()` and `savedQueriesQueryOptions()` wrap the existing metadata services. The mutation helpers call the same services and then update `QueryClient` with the returned entries so IndexedDB-unavailable fallback still updates current in-memory UI state.
 
-## M0 Boundary
+## Boundary
 
-M0 intentionally did not add query functions, fetchers, mutations, catalog loading, invalidation policy, route data loading, persisted caches, or product data behavior. M3 starts moving existing editor server state onto TanStack Query without adding persistent query caches.
+The query layer owns cache identity, retry defaults, bridge wiring, local metadata adapters, and the safe persisted-cache policy. It does not own provider-specific execution logic, auth/session-expiry purging, live object-store credentials, route definitions, or result/run-state persistence.
 
-M0 also does not add `CatalogProvider`, `DataAccessResolver`, `ExecutionProvider`, or any provider-specific execution logic. Those belong to later slices.
+This layer also does not add `CatalogProvider`, `DataAccessResolver`, `ExecutionProvider`, or any provider-specific execution logic. Those belong to later slices.

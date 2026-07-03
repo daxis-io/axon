@@ -1,4 +1,5 @@
 import { QueryClient, isCancelledError } from '@tanstack/react-query';
+import { AXON_QUERY_CACHE_MAX_AGE_MS } from './persistence';
 
 const MAX_QUERY_RETRIES = 2;
 
@@ -73,6 +74,7 @@ export function createAxonQueryClient(): QueryClient {
   return new QueryClient({
     defaultOptions: {
       queries: {
+        gcTime: AXON_QUERY_CACHE_MAX_AGE_MS,
         retry: shouldRetryQuery,
       },
     },
