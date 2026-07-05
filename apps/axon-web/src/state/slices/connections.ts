@@ -1,8 +1,10 @@
 import { CONNECTOR_FEATURES } from '../../services/connector-features.ts';
 import {
   firstQueryableTableRef,
+  querySourcesForCatalog,
   resolveActiveTableRef,
   type ActiveConnectedTableRef,
+  type QueryTableSource,
 } from '../../services/query-source.ts';
 import {
   buildCatalogFromResult,
@@ -23,6 +25,7 @@ export type ConnectionsState = {
 export type ConnectionMutationResult = {
   catalogs: ConnectedCatalog[];
   replaced: ConnectedCatalog[];
+  discardedSources: QueryTableSource[];
   localRegistryIdsToUnregister: string[];
   shouldDiscardActiveQuerySession: boolean;
   mergedCatalogId: string | null;
@@ -81,6 +84,7 @@ export function createConnectionsSlice<TState extends ConnectionsSlice>(
     return {
       catalogs: upsert.catalogs,
       replaced: upsert.replaced,
+      discardedSources: querySourcesForCatalogs(upsert.replaced),
       localRegistryIdsToUnregister,
       shouldDiscardActiveQuerySession,
       mergedCatalogId,
@@ -131,6 +135,7 @@ export function createConnectionsSlice<TState extends ConnectionsSlice>(
         return {
           catalogs,
           replaced: [removed],
+          discardedSources: querySourcesForCatalogs([removed]),
           localRegistryIdsToUnregister,
           shouldDiscardActiveQuerySession,
           mergedCatalogId: null,
@@ -164,12 +169,17 @@ function emptyMutationResult(catalogs: ConnectedCatalog[]): ConnectionMutationRe
   return {
     catalogs,
     replaced: [],
+    discardedSources: [],
     localRegistryIdsToUnregister: [],
     shouldDiscardActiveQuerySession: false,
     mergedCatalogId: null,
     catalogAlias: null,
     tableCount: 0,
   };
+}
+
+function querySourcesForCatalogs(catalogs: ConnectedCatalog[]): QueryTableSource[] {
+  return catalogs.flatMap((catalog) => querySourcesForCatalog(catalog));
 }
 
 function mergedCatalogIdFor(catalogs: ConnectedCatalog[], incoming: ConnectedCatalog): string {

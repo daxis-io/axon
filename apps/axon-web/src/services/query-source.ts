@@ -178,6 +178,17 @@ export function querySourceForConnectedTableRef(
   return querySourceForTable(catalog, schema.name, table);
 }
 
+export function querySourcesForCatalog(catalog: QueryCatalogCandidate): QueryTableSource[] {
+  const sources: QueryTableSource[] = [];
+  for (const schema of catalog.schemas) {
+    for (const table of schema.tables) {
+      if (!isQueryableTable(catalog, table)) continue;
+      sources.push(querySourceForTable(catalog, schema.name, table));
+    }
+  }
+  return sources;
+}
+
 function querySourceForTable(
   catalog: QueryCatalogCandidate,
   schemaName: string,

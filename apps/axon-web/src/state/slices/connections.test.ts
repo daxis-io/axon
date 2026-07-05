@@ -166,6 +166,15 @@ describe('connections slice', () => {
 
     expect(result.replaced.map((item) => item.id)).toEqual(['existing']);
     expect(result.shouldDiscardActiveQuerySession).toBe(true);
+    expect(result.discardedSources).toEqual([
+      expect.objectContaining({
+        kind: 'manifest',
+        catalogName: 'workspace',
+        schemaName: 'default',
+        tableName: 'events',
+        manifestUrl: '/manifests/existing.json',
+      }),
+    ]);
   });
 
   it('returns local Delta registry ids when replacement or removal unregisters catalog data', () => {
@@ -216,6 +225,15 @@ describe('connections slice', () => {
     const removal = store.getState().connectionActions.removeCatalog('first');
 
     expect(removal.shouldDiscardActiveQuerySession).toBe(true);
+    expect(removal.discardedSources).toEqual([
+      expect.objectContaining({
+        kind: 'manifest',
+        catalogName: 'first',
+        schemaName: 'default',
+        tableName: 'first',
+        manifestUrl: '/manifests/first.json',
+      }),
+    ]);
     expect(store.getState().connections.selectedTableRef).toEqual(activeRef('second'));
 
     store.getState().connectionActions.removeCatalog('second');

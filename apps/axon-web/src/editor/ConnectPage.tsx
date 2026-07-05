@@ -2,7 +2,9 @@
 // flow with a production app chrome (brand + back link) and the
 // design's empty-state illustration as the landing tile.
 
+import { useQueryClient } from '@tanstack/react-query';
 import { Suspense, lazy, useCallback, useState } from 'react';
+import { purgeCatalogSourcesCache } from '../query/catalog.ts';
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
 import { availabilityForSource, type SourceId } from './connect/data.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
@@ -17,6 +19,7 @@ import {
   useAxonClientStore,
 } from '../state/hooks.ts';
 import type { ConnectionMutationResult } from '../state/slices/connections.ts';
+import type { QueryTableSource } from '../services/query-source.ts';
 
 const ConnectModal = lazy(() =>
   import('./connect/ConnectModal.tsx').then((module) => ({ default: module.ConnectModal })),
@@ -24,6 +27,7 @@ const ConnectModal = lazy(() =>
 
 export function ConnectPage() {
   const availableCatalogs = useAxonClientStore(selectAvailableConnectedCatalogs);
+  const queryClient = useQueryClient();
   const freshId = useAxonClientStore(selectFreshCatalogId);
   const connectionActions = useAxonClientStore(selectConnectionActions);
   const [modalOpen, setModalOpen] = useState(false);
@@ -43,19 +47,24 @@ export function ConnectPage() {
       applyConnectPageMutationSideEffects(
         mutation,
         'failed to unregister duplicate local Delta catalog:',
+        {
+          purgeCatalogSources: (sources) => purgeCatalogSourcesCache(queryClient, sources),
+        },
       );
       setModalOpen(false);
       window.setTimeout(() => connectionActions.clearFreshCatalogId(), 4500);
     },
-    [connectionActions],
+    [connectionActions, queryClient],
   );
 
   const removeCatalog = useCallback(
     (id: string) => {
       const mutation = connectionActions.removeCatalog(id);
-      applyConnectPageMutationSideEffects(mutation, 'failed to unregister local Delta catalog:');
+      applyConnectPageMutationSideEffects(mutation, 'failed to unregister local Delta catalog:', {
+        purgeCatalogSources: (sources) => purgeCatalogSourcesCache(queryClient, sources),
+      });
     },
-    [connectionActions],
+    [connectionActions, queryClient],
   );
 
   const tableCount = availableCatalogs.reduce(
@@ -239,19 +248,24 @@ function glyphClass(c: ConnectedCatalog) {
 
 type ConnectPageMutationSideEffectOptions = {
   discardActiveQuerySession?: () => void;
+  purgeCatalogSources?: (sources: QueryTableSource[]) => void;
   unregisterLocalDeltaRuntimeIds?: (registryIds: string[], message: string) => void;
 };
 
 export function applyConnectPageMutationSideEffects(
   mutation: Pick<
     ConnectionMutationResult,
-    'localRegistryIdsToUnregister' | 'shouldDiscardActiveQuerySession'
+    'discardedSources' | 'localRegistryIdsToUnregister' | 'shouldDiscardActiveQuerySession'
   >,
   unregisterMessage: string,
   options: ConnectPageMutationSideEffectOptions = {},
 ): void {
   if (mutation.shouldDiscardActiveQuerySession) {
     (options.discardActiveQuerySession ?? discardActiveQuerySession)();
+  }
+
+  if (mutation.discardedSources.length > 0) {
+    options.purgeCatalogSources?.(mutation.discardedSources);
   }
 
   if (mutation.localRegistryIdsToUnregister.length > 0) {

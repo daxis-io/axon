@@ -9,7 +9,11 @@ import {
   type MouseEvent,
 } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { catalogQueryOptions, commitsQueryOptions } from '../query/catalog.ts';
+import {
+  catalogQueryOptions,
+  commitsQueryOptions,
+  purgeCatalogSourcesCache,
+} from '../query/catalog.ts';
 import {
   appendHistoryEntry,
   historyQueryOptions,
@@ -221,6 +225,7 @@ export function App() {
       if (mutation.shouldDiscardActiveQuerySession) {
         discardActiveQuerySession();
       }
+      purgeCatalogSourcesCache(queryClient, mutation.discardedSources);
       if (mutation.localRegistryIdsToUnregister.length > 0) {
         unregisterLocalDeltaRuntimeIds(
           mutation.localRegistryIdsToUnregister,
@@ -235,7 +240,7 @@ export function App() {
         } · ${mutation.tableCount} tables`,
       );
     },
-    [connectionActions, showToast, uiActions],
+    [connectionActions, queryClient, showToast, uiActions],
   );
 
   const removeConnectedCatalog = useCallback(
@@ -244,6 +249,7 @@ export function App() {
       if (mutation.shouldDiscardActiveQuerySession) {
         discardActiveQuerySession();
       }
+      purgeCatalogSourcesCache(queryClient, mutation.discardedSources);
       if (mutation.localRegistryIdsToUnregister.length > 0) {
         unregisterLocalDeltaRuntimeIds(
           mutation.localRegistryIdsToUnregister,
@@ -251,7 +257,7 @@ export function App() {
         );
       }
     },
-    [connectionActions],
+    [connectionActions, queryClient],
   );
 
   const navigateToConnectedTable = useCallback((ref: ActiveConnectedTableRef) => {

@@ -2,11 +2,18 @@ import { QueryClient } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearQueryRuntimeState,
+  getQueryRuntimeState,
   publishQueryRuntimeState,
 } from '../services/query-runtime-state.ts';
 import type { QueryTableSource } from '../services/query-source.ts';
 import type { Catalog } from '../services/types.ts';
-import { catalogQueryOptions, commitsQueryOptions, installCatalogQueryBridge } from './catalog';
+import {
+  catalogQueryOptions,
+  commitsQueryOptions,
+  purgeCatalogSourceCache,
+  purgeCatalogSourceCacheForError,
+  installCatalogQueryBridge,
+} from './catalog';
 import {
   AXON_CATALOG_QUERY_STALE_TIME_MS,
   AXON_COMMITS_QUERY_STALE_TIME_MS,
@@ -28,6 +35,12 @@ const source: QueryTableSource = {
   files: 4,
   size: '2 MB',
   protocol: 'r3/w7',
+};
+
+const otherSource: QueryTableSource = {
+  ...source,
+  tableName: 'other-table',
+  manifestUrl: '/manifest-other.json',
 };
 
 function runtimeCatalog(name = 'runtime-catalog'): Catalog {
@@ -136,5 +149,45 @@ describe('catalog query adapters', () => {
       runtimeCatalog('still-installed'),
     );
     expect(invalidateQueries).toHaveBeenCalledTimes(2);
+  });
+
+  it('purges source-scoped catalog cache without clearing local metadata or other sources', () => {
+    const client = new QueryClient();
+    const sourceCatalog = runtimeCatalog('source-catalog');
+    const otherCatalog = runtimeCatalog('other-catalog');
+    const history = [{ id: 'history-1' }];
+    const saved = [{ id: 'saved-1' }];
+
+    client.setQueryData(queryKeys.catalog.tableDerived(source), sourceCatalog);
+    client.setQueryData(queryKeys.catalog.commits(source), [{ v: 1 }]);
+    client.setQueryData(queryKeys.catalog.tableDerived(otherSource), otherCatalog);
+    client.setQueryData(queryKeys.local.history(), history);
+    client.setQueryData(queryKeys.local.saved(), saved);
+    publishQueryRuntimeState({ source, catalog: sourceCatalog }, 10);
+
+    purgeCatalogSourceCache(client, source);
+
+    expect(client.getQueryData(queryKeys.catalog.tableDerived(source))).toBeUndefined();
+    expect(client.getQueryData(queryKeys.catalog.commits(source))).toBeUndefined();
+    expect(client.getQueryData(queryKeys.catalog.tableDerived(otherSource))).toEqual(otherCatalog);
+    expect(client.getQueryData(queryKeys.local.history())).toEqual(history);
+    expect(client.getQueryData(queryKeys.local.saved())).toEqual(saved);
+    expect(getQueryRuntimeState(source)).toBeUndefined();
+  });
+
+  it('purges source-scoped catalog cache for auth or session style failures only', () => {
+    const client = new QueryClient();
+    const sourceCatalog = runtimeCatalog('source-catalog');
+
+    client.setQueryData(queryKeys.catalog.tableDerived(source), sourceCatalog);
+
+    expect(purgeCatalogSourceCacheForError(client, source, { response: { status: 403 } })).toBe(
+      true,
+    );
+    expect(client.getQueryData(queryKeys.catalog.tableDerived(source))).toBeUndefined();
+
+    client.setQueryData(queryKeys.catalog.tableDerived(source), sourceCatalog);
+    expect(purgeCatalogSourceCacheForError(client, source, { status: 404 })).toBe(false);
+    expect(client.getQueryData(queryKeys.catalog.tableDerived(source))).toEqual(sourceCatalog);
   });
 });
