@@ -115,7 +115,6 @@ export function getColdStartMs(): number | undefined {
   return coldStartMs;
 }
 
-const sessionSubscribers = new Set<(state: SessionState) => void>();
 const eventListeners = new Set<EventHandler>();
 
 // Exposed for cross-cutting consumers (engine status, etc.) that need every event,
@@ -474,7 +473,6 @@ export async function getSession(
         },
         coldStartMs,
       );
-      sessionSubscribers.forEach((fn) => fn(s));
       return s;
     })
     .finally(() => {
@@ -515,14 +513,6 @@ function disposeSession(state: SessionState): void {
   if (state.source.kind === 'local_delta') {
     releaseLocalDeltaObjectUrls(state.source.localRegistryId);
   }
-}
-
-export function subscribeSession(listener: (state: SessionState) => void): () => void {
-  sessionSubscribers.add(listener);
-  if (session) listener(session);
-  return () => {
-    sessionSubscribers.delete(listener);
-  };
 }
 
 // ─── Run a query ────────────────────────────────────────────────────────────

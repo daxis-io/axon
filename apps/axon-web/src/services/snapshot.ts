@@ -3,8 +3,8 @@
 // Snapshot tab can render. Lifted from main.ts's parser (originally rendered as
 // flat action rows in the sandbox; here we aggregate per-commit).
 
-import { SAMPLE_QUERY_SOURCE, sameQuerySource, type QueryTableSource } from './query-source.ts';
-import { getQueryRuntimeState, subscribeQueryRuntimeState } from './query-runtime-state.ts';
+import { SAMPLE_QUERY_SOURCE, type QueryTableSource } from './query-source.ts';
+import { getQueryRuntimeState } from './query-runtime-state.ts';
 import type { CommitEntry, CommitOp } from './types.ts';
 
 type ParsedAction =
@@ -57,26 +57,6 @@ export async function loadCommits(
   }
 
   return commits;
-}
-
-export function subscribeCommits(
-  listener: (commits: CommitEntry[]) => void,
-  source: QueryTableSource = SAMPLE_QUERY_SOURCE,
-): () => void {
-  if (source.kind !== 'manifest') {
-    listener([]);
-    return () => {};
-  }
-
-  listener([]);
-  return subscribeQueryRuntimeState((state) => {
-    if (!sameQuerySource(state.source, source)) return;
-    loadCommits(source)
-      .then(listener)
-      .catch((err) => {
-        console.error('failed to load commits:', err);
-      });
-  });
 }
 
 function parseCommitText(text: string): ParsedAction[] {

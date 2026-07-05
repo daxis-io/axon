@@ -1,5 +1,5 @@
 import type { Catalog, CatalogTable } from './types.ts';
-import { getQueryRuntimeState, subscribeQueryRuntimeState } from './query-runtime-state.ts';
+import { getQueryRuntimeState } from './query-runtime-state.ts';
 import { SAMPLE_QUERY_SOURCE, type QueryTableSource } from './query-source.ts';
 
 export async function loadCatalog(
@@ -10,14 +10,6 @@ export async function loadCatalog(
 
 export function snapshotCatalog(source: QueryTableSource = SAMPLE_QUERY_SOURCE): Catalog {
   return getQueryRuntimeState(source)?.catalog ?? summaryCatalog(source);
-}
-
-export function subscribeCatalog(
-  listener: (catalog: Catalog) => void,
-  source: QueryTableSource = SAMPLE_QUERY_SOURCE,
-): () => void {
-  listener(snapshotCatalog(source));
-  return subscribeQueryRuntimeState((state) => listener(state.catalog), source);
 }
 
 function summaryCatalog(source: QueryTableSource): Catalog {
