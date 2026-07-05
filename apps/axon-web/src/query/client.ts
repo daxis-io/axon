@@ -2,6 +2,10 @@ import { QueryClient, isCancelledError } from '@tanstack/react-query';
 import { AXON_QUERY_CACHE_MAX_AGE_MS } from './persistence';
 
 const MAX_QUERY_RETRIES = 2;
+export const AXON_QUERY_GC_TIME_MS = AXON_QUERY_CACHE_MAX_AGE_MS;
+export const AXON_CATALOG_QUERY_STALE_TIME_MS = 5 * 60 * 1000;
+export const AXON_COMMITS_QUERY_STALE_TIME_MS = 60 * 1000;
+export const AXON_LOCAL_METADATA_QUERY_STALE_TIME_MS = 60 * 1000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -74,7 +78,7 @@ export function createAxonQueryClient(): QueryClient {
   return new QueryClient({
     defaultOptions: {
       queries: {
-        gcTime: AXON_QUERY_CACHE_MAX_AGE_MS,
+        gcTime: AXON_QUERY_GC_TIME_MS,
         retry: shouldRetryQuery,
       },
     },

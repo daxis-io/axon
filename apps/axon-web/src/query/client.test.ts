@@ -1,6 +1,12 @@
 import { CancelledError, QueryClient } from '@tanstack/react-query';
 import { describe, expect, it } from 'vitest';
-import { createAxonQueryClient, queryClient, shouldRetryQuery } from './client';
+import {
+  AXON_QUERY_GC_TIME_MS,
+  createAxonQueryClient,
+  queryClient,
+  shouldRetryQuery,
+} from './client';
+import { AXON_QUERY_CACHE_MAX_AGE_MS } from './persistence';
 
 describe('shouldRetryQuery', () => {
   it('does not retry aborted requests', () => {
@@ -39,10 +45,13 @@ describe('createAxonQueryClient', () => {
 
     expect(client).toBeInstanceOf(QueryClient);
     expect(client.getDefaultOptions().queries?.retry).toBe(shouldRetryQuery);
+    expect(client.getDefaultOptions().queries?.gcTime).toBe(AXON_QUERY_GC_TIME_MS);
+    expect(AXON_QUERY_GC_TIME_MS).toBe(AXON_QUERY_CACHE_MAX_AGE_MS);
   });
 
   it('exports a stable default query client', () => {
     expect(queryClient).toBeInstanceOf(QueryClient);
     expect(queryClient.getDefaultOptions().queries?.retry).toBe(shouldRetryQuery);
+    expect(queryClient.getDefaultOptions().queries?.gcTime).toBe(AXON_QUERY_GC_TIME_MS);
   });
 });

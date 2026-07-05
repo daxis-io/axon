@@ -3,6 +3,11 @@ import { queryOptions } from '@tanstack/react-query';
 import { appendHistory, loadHistory } from '../services/history.ts';
 import { loadSaved, saveQuery } from '../services/saved.ts';
 import type { HistoryEntry, SavedQuery } from '../services/types.ts';
+import {
+  AXON_LOCAL_METADATA_QUERY_STALE_TIME_MS,
+  AXON_QUERY_GC_TIME_MS,
+  shouldRetryQuery,
+} from './client';
 import { queryKeys } from './keys';
 
 const MAX_HISTORY_ENTRIES = 100;
@@ -15,6 +20,10 @@ export function historyQueryOptions() {
     queryKey: queryKeys.local.history(),
     queryFn: loadHistory,
     initialData: [] as HistoryEntry[],
+    initialDataUpdatedAt: 0,
+    staleTime: AXON_LOCAL_METADATA_QUERY_STALE_TIME_MS,
+    gcTime: AXON_QUERY_GC_TIME_MS,
+    retry: shouldRetryQuery,
   });
 }
 
@@ -23,6 +32,10 @@ export function savedQueriesQueryOptions() {
     queryKey: queryKeys.local.saved(),
     queryFn: loadSaved,
     initialData: [] as SavedQuery[],
+    initialDataUpdatedAt: 0,
+    staleTime: AXON_LOCAL_METADATA_QUERY_STALE_TIME_MS,
+    gcTime: AXON_QUERY_GC_TIME_MS,
+    retry: shouldRetryQuery,
   });
 }
 

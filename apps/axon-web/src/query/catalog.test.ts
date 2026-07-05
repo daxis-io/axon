@@ -7,6 +7,12 @@ import {
 import type { QueryTableSource } from '../services/query-source.ts';
 import type { Catalog } from '../services/types.ts';
 import { catalogQueryOptions, commitsQueryOptions, installCatalogQueryBridge } from './catalog';
+import {
+  AXON_CATALOG_QUERY_STALE_TIME_MS,
+  AXON_COMMITS_QUERY_STALE_TIME_MS,
+  AXON_QUERY_GC_TIME_MS,
+  shouldRetryQuery,
+} from './client';
 import { queryKeys } from './keys';
 
 const source: QueryTableSource = {
@@ -64,6 +70,10 @@ describe('catalog query adapters', () => {
     const options = catalogQueryOptions(source);
 
     expect(options.queryKey).toEqual(queryKeys.catalog.tableDerived(source));
+    expect(options.initialDataUpdatedAt).toBe(0);
+    expect(options.staleTime).toBe(AXON_CATALOG_QUERY_STALE_TIME_MS);
+    expect(options.gcTime).toBe(AXON_QUERY_GC_TIME_MS);
+    expect(options.retry).toBe(shouldRetryQuery);
     expect(options.initialData).toMatchObject({
       name: 'catalog-a',
       region: 'browser-local',
@@ -88,6 +98,10 @@ describe('catalog query adapters', () => {
     const client = new QueryClient();
 
     expect(options.queryKey).toEqual(queryKeys.catalog.commits(source));
+    expect(options.initialDataUpdatedAt).toBe(0);
+    expect(options.staleTime).toBe(AXON_COMMITS_QUERY_STALE_TIME_MS);
+    expect(options.gcTime).toBe(AXON_QUERY_GC_TIME_MS);
+    expect(options.retry).toBe(shouldRetryQuery);
     await expect(client.fetchQuery(options)).resolves.toEqual([]);
   });
 

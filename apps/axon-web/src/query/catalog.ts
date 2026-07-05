@@ -5,6 +5,12 @@ import { subscribeQueryRuntimeState } from '../services/query-runtime-state.ts';
 import type { QueryTableSource } from '../services/query-source.ts';
 import { loadCommits } from '../services/snapshot.ts';
 import type { CommitEntry } from '../services/types.ts';
+import {
+  AXON_CATALOG_QUERY_STALE_TIME_MS,
+  AXON_COMMITS_QUERY_STALE_TIME_MS,
+  AXON_QUERY_GC_TIME_MS,
+  shouldRetryQuery,
+} from './client';
 import { queryKeys } from './keys';
 
 type BridgeRegistration = {
@@ -19,6 +25,10 @@ export function catalogQueryOptions(source: QueryTableSource) {
     queryKey: queryKeys.catalog.tableDerived(source),
     queryFn: () => loadCatalog(source),
     initialData: snapshotCatalog(source),
+    initialDataUpdatedAt: 0,
+    staleTime: AXON_CATALOG_QUERY_STALE_TIME_MS,
+    gcTime: AXON_QUERY_GC_TIME_MS,
+    retry: shouldRetryQuery,
   });
 }
 
@@ -27,6 +37,10 @@ export function commitsQueryOptions(source: QueryTableSource) {
     queryKey: queryKeys.catalog.commits(source),
     queryFn: () => loadCommits(source),
     initialData: [] as CommitEntry[],
+    initialDataUpdatedAt: 0,
+    staleTime: AXON_COMMITS_QUERY_STALE_TIME_MS,
+    gcTime: AXON_QUERY_GC_TIME_MS,
+    retry: shouldRetryQuery,
   });
 }
 

@@ -13,6 +13,11 @@ import {
   saveSavedQuery,
   savedQueriesQueryOptions,
 } from './local';
+import {
+  AXON_LOCAL_METADATA_QUERY_STALE_TIME_MS,
+  AXON_QUERY_GC_TIME_MS,
+  shouldRetryQuery,
+} from './client';
 import { queryKeys } from './keys';
 
 class MemoryStorage implements Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> {
@@ -85,6 +90,18 @@ describe('local metadata query adapters', () => {
 
     expect(historyQueryOptions().queryKey).toEqual(queryKeys.local.history());
     expect(savedQueriesQueryOptions().queryKey).toEqual(queryKeys.local.saved());
+    expect(historyQueryOptions()).toMatchObject({
+      staleTime: AXON_LOCAL_METADATA_QUERY_STALE_TIME_MS,
+      gcTime: AXON_QUERY_GC_TIME_MS,
+      retry: shouldRetryQuery,
+      initialDataUpdatedAt: 0,
+    });
+    expect(savedQueriesQueryOptions()).toMatchObject({
+      staleTime: AXON_LOCAL_METADATA_QUERY_STALE_TIME_MS,
+      gcTime: AXON_QUERY_GC_TIME_MS,
+      retry: shouldRetryQuery,
+      initialDataUpdatedAt: 0,
+    });
     await expect(client.fetchQuery(historyQueryOptions())).resolves.toEqual(history);
     await expect(client.fetchQuery(savedQueriesQueryOptions())).resolves.toEqual(saved);
   });
