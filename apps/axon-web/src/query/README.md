@@ -4,15 +4,23 @@ This directory is the query substrate for `axon-web`. It provides the shared Rea
 
 ## Query Client
 
-`createAxonQueryClient()` returns a `QueryClient` with the Axon retry policy and a query `gcTime` aligned to the persisted cache max age.
+`createAxonQueryClient()` returns a `QueryClient` with the Axon retry policy and a query `gcTime` aligned to the persisted cache max age through `AXON_QUERY_GC_TIME_MS`.
 
 `queryClient` is the module-level default client used by `AppProviders`. Tests can inject their own client through `AppProviders` instead of creating clients during render.
+
+Resource adapters set explicit cache policy:
+
+- Catalog summaries: `staleTime` is five minutes.
+- Commit timelines: `staleTime` is one minute.
+- Local history and saved queries: `staleTime` is one minute.
+- All server-state query families use `gcTime === AXON_QUERY_CACHE_MAX_AGE_MS`.
+- Placeholder `initialData` is marked stale with `initialDataUpdatedAt: 0`, so existing IndexedDB/local metadata still loads on first mount.
 
 ## Query Cache Persistence
 
 `createAxonQueryPersistOptions()` configures `PersistQueryClientProvider` with an IndexedDB-backed persister built on the repo-local `KeyValueStore`. Persistence is best-effort: unavailable IndexedDB, open failures, read failures, write failures, and remove failures are treated as no-ops so the in-memory query cache remains the runtime authority.
 
-The persisted cache is versioned by `AXON_QUERY_CACHE_BUSTER` and expires after `AXON_QUERY_CACHE_MAX_AGE_MS` (six hours). Mutations are never persisted. Query dehydration is routed through `shouldPersistAxonQuery(query)`, the single allow/deny policy for this cache.
+The persisted cache is versioned by `AXON_QUERY_CACHE_BUSTER` and expires after `AXON_QUERY_CACHE_MAX_AGE_MS` (six hours). The buster changes when the app/cache schema changes. Mutations are never persisted. Query dehydration is routed through `shouldPersistAxonQuery(query)`, the single allow/deny policy for this cache.
 
 Persisted query families are intentionally narrow:
 
@@ -21,7 +29,7 @@ Persisted query families are intentionally narrow:
 - `['local', 'history']`
 - `['local', 'saved']`
 
-The policy rejects `local_delta` catalog keys, unknown query families, failed queries, mutations, signed URL strings, token/grant/credential-shaped data, openable browser handles, descriptors, object lists, active-file/session/worker/run-result payloads, metrics, plans, and capabilities.
+The policy rejects `local_delta` catalog keys, unknown query families, failed queries, mutations, signed URL strings, token/grant/credential-shaped data, openable browser handles, descriptors, object lists, active-file/session/worker/run-result payloads, metrics, plans, and capabilities. These fields remain runtime-only even when they appear inside otherwise allowed key families.
 
 ## Retry Policy
 
@@ -49,12 +57,14 @@ Keep keys stable and route new query key families through this module.
 
 `commitsQueryOptions(source)` wraps commit-log loading. `AppProviders` installs a ref-counted runtime bridge that writes published runtime catalogs to the matching catalog query and invalidates the matching commits query.
 
+`purgeCatalogSourceCache(queryClient, source)` removes only the `queryKeys.catalog.source(source)` subtree and clears the matching runtime catalog state. It is used when connected sources are removed or replaced. `purgeCatalogSourceCacheForError` applies the same purge only for auth/session-style failures (`401`, `403`, `419`, `440`). These helpers do not purge `queryKeys.local.history()` or `queryKeys.local.saved()`.
+
 ## Local Metadata Server State
 
 `historyQueryOptions()` and `savedQueriesQueryOptions()` wrap the existing metadata services. The mutation helpers call the same services and then update `QueryClient` with the returned entries so IndexedDB-unavailable fallback still updates current in-memory UI state.
 
 ## Boundary
 
-The query layer owns cache identity, retry defaults, bridge wiring, local metadata adapters, and the safe persisted-cache policy. It does not own provider-specific execution logic, auth/session-expiry purging, live object-store credentials, route definitions, or result/run-state persistence.
+The query layer owns cache identity, retry defaults, source-scoped catalog cache purging, bridge wiring, local metadata adapters, and the safe persisted-cache policy. It does not own provider-specific execution logic, durable auth/session state, live object-store credentials, route definitions, or result/run-state persistence.
 
 This layer also does not add `CatalogProvider`, `DataAccessResolver`, `ExecutionProvider`, or any provider-specific execution logic. Those belong to later slices.
