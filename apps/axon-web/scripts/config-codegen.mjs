@@ -3,9 +3,12 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const GENERATED_CONFIG_DIR = 'src/generated/config';
+export const CONFIG_PROTO_PATH = 'proto/axon/config/v1/settings.proto';
 
 export function runConfigCodegen({ output = '.' } = {}) {
-  execFileSync('buf', ['generate', '--output', output], { stdio: 'inherit' });
+  execFileSync('buf', ['generate', '--output', output, '--path', CONFIG_PROTO_PATH], {
+    stdio: 'inherit',
+  });
   normalizeGeneratedConfig(join(output, GENERATED_CONFIG_DIR));
 }
 
@@ -13,7 +16,7 @@ export function normalizeGeneratedConfig(configDir = GENERATED_CONFIG_DIR) {
   normalizeGeneratedTypescript(join(configDir, 'protobuf'));
 }
 
-function normalizeGeneratedTypescript(root) {
+export function normalizeGeneratedTypescript(root) {
   if (!existsSync(root)) {
     return;
   }
