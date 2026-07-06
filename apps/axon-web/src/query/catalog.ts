@@ -27,7 +27,7 @@ const catalogBridgeRegistrations = new WeakMap<QueryClient, BridgeRegistration>(
 export function catalogQueryOptions(source: QueryTableSource) {
   return queryOptions({
     queryKey: queryKeys.catalog.tableDerived(source),
-    queryFn: () => loadCatalog(source),
+    queryFn: ({ client }) => loadWithCatalogSourcePurge(client, source, () => loadCatalog(source)),
     initialData: snapshotCatalog(source),
     initialDataUpdatedAt: 0,
     staleTime: AXON_CATALOG_QUERY_STALE_TIME_MS,
@@ -39,13 +39,26 @@ export function catalogQueryOptions(source: QueryTableSource) {
 export function commitsQueryOptions(source: QueryTableSource) {
   return queryOptions({
     queryKey: queryKeys.catalog.commits(source),
-    queryFn: () => loadCommits(source),
+    queryFn: ({ client }) => loadWithCatalogSourcePurge(client, source, () => loadCommits(source)),
     initialData: [] as CommitEntry[],
     initialDataUpdatedAt: 0,
     staleTime: AXON_COMMITS_QUERY_STALE_TIME_MS,
     gcTime: AXON_QUERY_GC_TIME_MS,
     retry: shouldRetryQuery,
   });
+}
+
+async function loadWithCatalogSourcePurge<T>(
+  queryClient: QueryClient,
+  source: QueryTableSource,
+  load: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await load();
+  } catch (error) {
+    purgeCatalogSourceCacheForError(queryClient, source, error);
+    throw error;
+  }
 }
 
 export function purgeCatalogSourceCache(queryClient: QueryClient, source: QueryTableSource): void {

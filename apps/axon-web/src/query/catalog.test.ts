@@ -6,6 +6,7 @@ import {
   publishQueryRuntimeState,
 } from '../services/query-runtime-state.ts';
 import type { QueryTableSource } from '../services/query-source.ts';
+import { snapshotCatalog } from '../services/catalog.ts';
 import type { Catalog } from '../services/types.ts';
 import {
   catalogQueryOptions,
@@ -21,6 +22,29 @@ import {
   shouldRetryQuery,
 } from './client';
 import { queryKeys } from './keys';
+
+const catalogServiceMocks = vi.hoisted(() => ({
+  loadCatalog: vi.fn(),
+}));
+const snapshotServiceMocks = vi.hoisted(() => ({
+  loadCommits: vi.fn(),
+}));
+
+vi.mock('../services/catalog.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/catalog.ts')>();
+  return {
+    ...actual,
+    loadCatalog: catalogServiceMocks.loadCatalog,
+  };
+});
+
+vi.mock('../services/snapshot.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/snapshot.ts')>();
+  return {
+    ...actual,
+    loadCommits: snapshotServiceMocks.loadCommits,
+  };
+});
 
 const source: QueryTableSource = {
   kind: 'manifest',
@@ -73,10 +97,16 @@ function runtimeCatalog(name = 'runtime-catalog'): Catalog {
 describe('catalog query adapters', () => {
   beforeEach(() => {
     clearQueryRuntimeState();
+    catalogServiceMocks.loadCatalog.mockImplementation((querySource: QueryTableSource) =>
+      Promise.resolve(snapshotCatalog(querySource)),
+    );
+    snapshotServiceMocks.loadCommits.mockResolvedValue([]);
   });
 
   afterEach(() => {
     clearQueryRuntimeState();
+    catalogServiceMocks.loadCatalog.mockReset();
+    snapshotServiceMocks.loadCommits.mockReset();
   });
 
   it('builds catalog query options with source-stable table-derived keys and summary initial data', async () => {
@@ -189,5 +219,69 @@ describe('catalog query adapters', () => {
     client.setQueryData(queryKeys.catalog.tableDerived(source), sourceCatalog);
     expect(purgeCatalogSourceCacheForError(client, source, { status: 404 })).toBe(false);
     expect(client.getQueryData(queryKeys.catalog.tableDerived(source))).toEqual(sourceCatalog);
+  });
+
+  it('purges source-scoped catalog cache when the catalog query fails with an auth or session status', async () => {
+    const client = new QueryClient();
+    const sourceCatalog = runtimeCatalog('source-catalog');
+    const otherCatalog = runtimeCatalog('other-catalog');
+    const error = { response: { status: 403 } };
+
+    catalogServiceMocks.loadCatalog.mockRejectedValue(error);
+    client.setQueryData(queryKeys.catalog.tableDerived(source), sourceCatalog);
+    client.setQueryData(queryKeys.catalog.commits(source), [{ v: 1 }]);
+    client.setQueryData(queryKeys.catalog.tableDerived(otherSource), otherCatalog);
+    publishQueryRuntimeState({ source, catalog: sourceCatalog }, 10);
+
+    const options = catalogQueryOptions(source);
+    if (typeof options.queryFn !== 'function') {
+      throw new Error('expected catalog query function');
+    }
+
+    await expect(
+      options.queryFn({
+        client,
+        queryKey: options.queryKey,
+        signal: new AbortController().signal,
+        meta: undefined,
+      }),
+    ).rejects.toBe(error);
+
+    expect(client.getQueryData(queryKeys.catalog.tableDerived(source))).toBeUndefined();
+    expect(client.getQueryData(queryKeys.catalog.commits(source))).toBeUndefined();
+    expect(client.getQueryData(queryKeys.catalog.tableDerived(otherSource))).toEqual(otherCatalog);
+    expect(getQueryRuntimeState(source)).toBeUndefined();
+  });
+
+  it('purges source-scoped catalog cache when the commits query fails with an auth or session status', async () => {
+    const client = new QueryClient();
+    const sourceCatalog = runtimeCatalog('source-catalog');
+    const otherCatalog = runtimeCatalog('other-catalog');
+    const error = { statusCode: 440 };
+
+    snapshotServiceMocks.loadCommits.mockRejectedValue(error);
+    client.setQueryData(queryKeys.catalog.tableDerived(source), sourceCatalog);
+    client.setQueryData(queryKeys.catalog.commits(source), [{ v: 1 }]);
+    client.setQueryData(queryKeys.catalog.tableDerived(otherSource), otherCatalog);
+    publishQueryRuntimeState({ source, catalog: sourceCatalog }, 10);
+
+    const options = commitsQueryOptions(source);
+    if (typeof options.queryFn !== 'function') {
+      throw new Error('expected commits query function');
+    }
+
+    await expect(
+      options.queryFn({
+        client,
+        queryKey: options.queryKey,
+        signal: new AbortController().signal,
+        meta: undefined,
+      }),
+    ).rejects.toBe(error);
+
+    expect(client.getQueryData(queryKeys.catalog.tableDerived(source))).toBeUndefined();
+    expect(client.getQueryData(queryKeys.catalog.commits(source))).toBeUndefined();
+    expect(client.getQueryData(queryKeys.catalog.tableDerived(otherSource))).toEqual(otherCatalog);
+    expect(getQueryRuntimeState(source)).toBeUndefined();
   });
 });
