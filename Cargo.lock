@@ -381,6 +381,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "axon-contract-proto"
+version = "0.1.0"
+dependencies = [
+ "buffa",
+]
+
+[[package]]
 name = "axon-web-wasm"
 version = "0.1.0"
 dependencies = [
@@ -504,6 +511,23 @@ dependencies = [
  "serde",
  "serde_json",
  "wasm-bindgen-test",
+]
+
+[[package]]
+name = "buffa"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33f29a40702df4b86ccd84211bfde8cee0bce6d0811450ade4a86a7d0958a23a"
+dependencies = [
+ "bytes",
+ "foldhash 0.1.5",
+ "hashbrown 0.15.5",
+ "once_cell",
+ "rustversion",
+ "serde",
+ "serde_json",
+ "smoothutf8",
+ "thiserror",
 ]
 
 [[package]]
@@ -3738,6 +3762,15 @@ name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+
+[[package]]
+name = "smoothutf8"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36358427d32ecdb1624616deed99eccfef0a167fe5bf40ddb51efe6980bc1ec8"
+dependencies = [
+ "simdutf8",
+]
 
 [[package]]
 name = "snap"

@@ -1,0 +1,9 @@
+[package]
+name = "axon-contract-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+buffa = "=0.8.1"

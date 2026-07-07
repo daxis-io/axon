@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/contract-proto",
   "crates/browser-engine-worker",
   "crates/browser-sdk",
   "crates/delta-control-plane",
