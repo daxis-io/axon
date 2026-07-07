@@ -120,3 +120,99 @@ git log --oneline --reverse origin/main..HEAD
 - Catalog contracts stay discovery-only and do not include read resolution, signed URLs, object grants, execution messages, services, or volume file entries.
 - Buffa Rust proof is either green with checked-in generated output and wasm `cargo check`, or the exact blocker and prost fallback are recorded.
 - Final response lists passed checks, checks skipped with reasons, and commit list.
+
+## Completed Slice Commits
+
+- `5e9d85c docs: plan e3a contract surfaces pi`
+- `d084393 chore(web): extend protobuf codegen for contract packages`
+- `c9f80be chore(web): add catalog contract messages`
+- `61e6062 chore(contract): record rust protobuf backend decision`
+- Slice 5 is this handoff documentation commit.
+
+## Implemented Contract Surface
+
+- `axon/common/v1`
+  - `ObjectRef`
+  - `PageRequest`
+  - `PageInfo`
+  - `ProviderCapabilities`
+  - `ProviderAuthority`
+  - `ProviderError`
+  - `ProviderErrorCode`
+- `axon/catalog/v1`
+  - Discovery nodes: `CatalogNode`, `SchemaNode`, `TableNode`, `ColumnNode`, `VolumeNode`, `FunctionNode`, `ModelNode`
+  - Metadata: `TableMetadata`, `VolumeMetadata`, `DeltaProtocolFeature`
+  - Responses: list responses for catalogs, schemas, tables, columns, volumes, functions, and models, plus get-table/get-volume metadata responses
+- Generated TypeScript:
+  - `apps/axon-web/src/generated/contracts/protobuf/axon/common/v1/common_pb.ts`
+  - `apps/axon-web/src/generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts`
+- TypeScript smoke:
+  - `apps/axon-web/src/generated/contracts/contracts-codegen.test.ts`
+
+## Rust Backend Decision
+
+- Decision: use buffa for the first Rust protobuf proof.
+- Generation proof:
+  - Buf remote plugin: `buf.build/anthropics/buffa:v0.8.0`
+  - Generated source package: `axon.common.v1`
+  - Checked-in output: `crates/contract-proto/src/generated/axon.common.v1.*.rs`
+- Runtime dependency:
+  - `buffa = "=0.8.1"`
+- Proof crate:
+  - `crates/contract-proto`
+  - Package name: `axon-contract-proto`
+  - Wrapper: no-std module `axon_common_v1`
+- Verified:
+  - `cargo check -p axon-contract-proto --locked`
+  - `cargo check -p axon-contract-proto --target wasm32-unknown-unknown --locked`
+- Prost fallback was not needed for this slice.
+
+## Verification Evidence
+
+Passed during implementation:
+
+```bash
+cd apps/axon-web && npm install
+cd apps/axon-web && npm run codegen:config:check
+cd apps/axon-web && npm run codegen:contracts:check
+cd apps/axon-web && npm run codegen:check
+cd apps/axon-web && npm test -- src/generated/contracts
+cd apps/axon-web && npm test -- src/settings/config-codegen.test.ts src/generated/contracts
+cd apps/axon-web && npm run format:check
+cd apps/axon-web && buf lint
+cd apps/axon-web && buf format --diff --exit-code
+cargo check -p axon-contract-proto
+cargo check -p axon-contract-proto --locked
+cargo check -p axon-contract-proto --target wasm32-unknown-unknown --locked
+cargo fmt --check -p axon-contract-proto
+git diff --check
+```
+
+Environment notes:
+
+- Direct `buf` codegen commands that use remote plugins need network access outside the restricted sandbox. The same commands passed when rerun with network access.
+- The machine hit `ENOSPC` while creating a temp directory for codegen. Root cause was the Data volume being full; removing generated Rust build artifacts at `/Users/ethanurbanski/axon/target` freed enough space to continue.
+- Because `target/` was removed, later Rust/browser checks rebuild from scratch.
+
+## Next Slices
+
+1. `axon/dataaccess/v1`
+   - Port read-resolution messages, descriptors, object-grant request/response shapes, and blocked/fallback reason taxonomy.
+   - Add parity tests against existing `crates/query-contract` JSON Schema/OpenAPI fixtures.
+   - Keep descriptor/grant messages free of long-lived secrets; signed URLs and proxy paths remain short-lived data-access outputs.
+
+2. `axon/exec/v1`
+   - Port execution request/response and browser-worker IPC envelopes.
+   - Define the `QueryEngine` service shape only where bytes cross a process/worker boundary.
+   - Keep Arrow IPC result payloads opaque bytes; do not model result rows in proto.
+
+3. `axon/fs/v1`
+   - Add filesystem entry/listing/object-read-resolution messages for E8.
+   - Keep volume file browsing out of `axon/catalog/v1`; catalog volumes remain discovery objects only.
+
+## Handoff Notes
+
+- `npm run codegen:config:check` remains the config-only drift gate and now constrains generation to `proto/axon/config/v1/settings.proto`.
+- `npm run codegen:contracts` and `npm run codegen:contracts:check` discover contract protos under `proto/axon` and exclude `proto/axon/config`.
+- `npm run codegen:check` runs both config and contract drift checks.
+- The Rust proof intentionally covers only `axon.common.v1`; dataaccess/exec/fs should extend the crate only after their proto surfaces land and pass locked host + wasm checks.
