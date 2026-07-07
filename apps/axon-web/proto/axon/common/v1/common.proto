@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package axon.common.v1;
+
+message ObjectRef {
+  string connection_id = 1;
+  string catalog = 2;
+  string schema = 3;
+  string name = 4;
+}
+
+message PageRequest {
+  string cursor = 1;
+  uint32 page_size = 2;
+}
+
+message PageInfo {
+  string next_cursor = 1;
+  bool has_more = 2;
+}
+
+message ProviderCapabilities {
+  bool browsable = 1;
+  bool paginated = 2;
+  bool supports_views = 3;
+  bool supports_volumes = 4;
+  bool supports_functions = 5;
+  bool supports_models = 6;
+  bool supports_column_metadata = 7;
+  ProviderAuthority authority = 8;
+}
+
+message ProviderError {
+  ProviderErrorCode code = 1;
+  string message = 2;
+  string correlation_id = 3;
+}
+
+enum ProviderAuthority {
+  PROVIDER_AUTHORITY_UNSPECIFIED = 0;
+  PROVIDER_AUTHORITY_BROWSER = 1;
+  PROVIDER_AUTHORITY_BROKERED = 2;
+  PROVIDER_AUTHORITY_HOST = 3;
+}
+
+enum ProviderErrorCode {
+  PROVIDER_ERROR_CODE_UNSPECIFIED = 0;
+  PROVIDER_ERROR_CODE_SESSION_EXPIRED = 1;
+  PROVIDER_ERROR_CODE_BLOCKED = 2;
+  PROVIDER_ERROR_CODE_NOT_FOUND = 3;
+  PROVIDER_ERROR_CODE_UNAVAILABLE = 4;
+  PROVIDER_ERROR_CODE_INVALID = 5;
+}
