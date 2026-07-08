@@ -104,3 +104,105 @@ git log --oneline --reverse origin/main..HEAD
 - Rust dataaccess output is either proven by locked host and wasm checks, or the exact generation/check blocker is recorded without shipping unproven output.
 - Final response lists passed checks, blockers, commit list, and current git status.
 
+## Completed Slice Commits
+
+- `0c4384e docs: plan e3a dataaccess contract pi`
+- `4fba9a2 chore(web): add dataaccess contract messages`
+- `b4a9b90 test(web): cover dataaccess contract parity`
+- `434bed2 chore(contract): generate dataaccess rust contracts`
+- Slice 5 is this handoff documentation commit.
+
+## Implemented Contract Surface
+
+- `axon/dataaccess/v1`
+  - `CapabilityReport`
+  - `PartitionValue`
+  - `BrowserHttpFileDescriptor`
+  - `BrowserHttpSnapshotDescriptor`
+  - `BrokeredObjectAccess`
+  - `BrokeredPolicyAuthority`
+  - `BrokeredDeltaReadAccessPlan`
+  - `DeltaSharingReadAccessPlan`
+  - `SqlFallbackRequiredReadAccessPlan`
+  - `BlockedReadAccessPlan`
+  - `ReadAccessPlan`
+  - `TableReadResolution`
+  - `ObjectGrantListRequest` / `ObjectGrantListResponse`
+  - `ObjectGrantHeadRequest` / `ObjectGrantHeadResponse`
+  - `ObjectGrantBatchSignRequest` / `ObjectGrantBatchSignResponse`
+  - `ObjectGrantRangeRequest` / `ObjectGrantRangeResponse`
+  - `ObjectGrantAuditRange` / `ObjectGrantAuditEvent`
+- Generated TypeScript:
+  - `apps/axon-web/src/generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts`
+- TypeScript parity coverage:
+  - `apps/axon-web/src/generated/contracts/dataaccess-codegen.test.ts`
+  - The test records explicit normalization for legacy `plan_type` and nullable `partition_values` instead of claiming byte-for-byte protobuf JSON parity.
+- Generated Rust:
+  - `crates/contract-proto/src/generated/axon.dataaccess.v1.*.rs`
+  - Export module: `axon_dataaccess_v1`
+  - Nested Buffa package modules: `axon::common::v1` and `axon::dataaccess::v1`
+  - Compatibility module preserved: `axon_common_v1`
+
+## Rust Backend Evidence
+
+- Decision: continue with Buffa for the Rust protobuf backend.
+- Generation command used the pinned Buf remote plugin `buf.build/anthropics/buffa:v0.8.0`.
+- Runtime dependencies:
+  - `buffa = "=0.8.1"`
+  - `buffa-types = "=0.8.1"` for `google.protobuf.NullValue`
+- Prost fallback was not needed.
+- Verified:
+  - `cargo check -p axon-contract-proto --locked`
+  - `cargo check -p axon-contract-proto --target wasm32-unknown-unknown --locked`
+  - `cargo fmt --check -p axon-contract-proto`
+
+## Verification Evidence
+
+Passed during implementation:
+
+```bash
+cd apps/axon-web && npm install
+cd apps/axon-web && npm run build:wasm
+cd apps/axon-web && npm run codegen:config:check
+cd apps/axon-web && npm run codegen:contracts:check
+cd apps/axon-web && npm run codegen:check
+cd apps/axon-web && npm test -- src/generated/contracts
+cd apps/axon-web && npm exec -- tsc --noEmit
+cd apps/axon-web && npm run lint
+cd apps/axon-web && npm run format:check
+cd apps/axon-web && buf lint
+cd apps/axon-web && buf format --diff --exit-code
+cargo check -p axon-contract-proto
+cargo check -p axon-contract-proto --locked
+cargo check -p axon-contract-proto --target wasm32-unknown-unknown --locked
+cargo fmt --check -p axon-contract-proto
+cargo build -p browser-engine-worker --target wasm32-unknown-unknown --release --locked
+bash tests/security/verify_browser_dependency_guardrails.sh
+git diff --check origin/main...HEAD
+```
+
+Environment notes:
+
+- `npm run codegen:config:check`, `npm run codegen:contracts:check`, and `npm run codegen:check` require Buf remote plugin network access outside the restricted sandbox.
+- The first `npm run build:wasm` attempt failed with `No space left on device` while compiling Arrow/DataFusion into this worktree's `target/`.
+- `cargo clean` in `.worktrees/e3a-dataaccess-contract-pi` removed 598.2 MiB of partial build artifacts and raised free space to about 12 GiB.
+- After that cleanup, `npm run build:wasm` passed and produced `apps/axon-web/src/wasm/*` for TypeScript checks.
+- `bash tests/security/verify_browser_dependency_guardrails.sh` requires `target/wasm32-unknown-unknown/release/browser_engine_worker.wasm`; the artifact was built with the locked browser-engine-worker command before rerunning the script.
+
+## Next PI Order
+
+1. `axon/exec/v1`
+   - Add execution request/response messages and browser-worker IPC envelopes.
+   - Keep Arrow IPC payloads opaque.
+   - Add services only where bytes cross a process or worker boundary.
+
+2. `axon/fs/v1`
+   - Add workspace filesystem entry, directory listing, and object-read-resolution messages.
+   - Reuse dataaccess object-grant/range primitives.
+   - Keep volume file browsing out of `axon/catalog/v1`.
+
+## Ownership Boundary
+
+- `CatalogProvider` discovers.
+- `DataAccessResolver` resolves.
+- `ExecutionProvider` runs.
