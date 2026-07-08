@@ -625,6 +625,8 @@ impl ::buffa::Enumeration for DirectExternalEngineReadSupport {
 #[repr(i32)]
 pub enum ObjectGrantAuditAction {
     OBJECT_GRANT_AUDIT_ACTION_UNSPECIFIED = 0i32,
+    /// Legacy HTTP JSON uses "list", "head", "batch_sign", and "range";
+    /// protobuf JSON uses these enum symbols and must be normalized at boundaries.
     OBJECT_GRANT_AUDIT_ACTION_LIST = 1i32,
     OBJECT_GRANT_AUDIT_ACTION_HEAD = 2i32,
     OBJECT_GRANT_AUDIT_ACTION_BATCH_SIGN = 3i32,
@@ -717,6 +719,8 @@ impl ::buffa::Enumeration for ObjectGrantAuditAction {
 #[repr(i32)]
 pub enum ObjectGrantAuditOutcome {
     OBJECT_GRANT_AUDIT_OUTCOME_UNSPECIFIED = 0i32,
+    /// Legacy HTTP JSON uses "allowed" and "denied"; protobuf JSON uses these
+    /// enum symbols and must be normalized at boundaries.
     OBJECT_GRANT_AUDIT_OUTCOME_ALLOWED = 1i32,
     OBJECT_GRANT_AUDIT_OUTCOME_DENIED = 2i32,
 }
@@ -3374,14 +3378,22 @@ impl ::buffa::ExtensionSet for ObjectGrantHeadRequest {
 }
 #[derive(Clone, PartialEq, Default)]
 pub struct ObjectGrantHeadResponse {
-    /// Field 1: `object`
-    pub object: ::buffa::MessageField<ObjectGrantObject>,
+    /// Field 1: `path`
+    pub path: ::buffa::alloc::string::String,
+    /// Field 2: `size_bytes`
+    pub size_bytes: u64,
+    /// Field 3: `etag`
+    pub etag: ::core::option::Option<::buffa::alloc::string::String>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
 impl ::core::fmt::Debug for ObjectGrantHeadResponse {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-        f.debug_struct("ObjectGrantHeadResponse").field("object", &self.object).finish()
+        f.debug_struct("ObjectGrantHeadResponse")
+            .field("path", &self.path)
+            .field("size_bytes", &self.size_bytes)
+            .field("etag", &self.etag)
+            .finish()
     }
 }
 impl ObjectGrantHeadResponse {
@@ -3390,6 +3402,18 @@ impl ObjectGrantHeadResponse {
     ///
     /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
     pub const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.ObjectGrantHeadResponse";
+}
+impl ObjectGrantHeadResponse {
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::etag`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_etag(
+        mut self,
+        value: impl Into<::buffa::alloc::string::String>,
+    ) -> Self {
+        self.etag = Some(value.into());
+        self
+    }
 }
 ::buffa::impl_default_instance!(ObjectGrantHeadResponse);
 impl ::buffa::MessageName for ObjectGrantHeadResponse {
@@ -3405,31 +3429,37 @@ impl ::buffa::Message for ObjectGrantHeadResponse {
     /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
     /// compliant message will never overflow this type.
     #[allow(clippy::let_and_return)]
-    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
         let mut size = 0u32;
-        if self.object.is_set() {
-            let __slot = __cache.reserve();
-            let inner_size = self.object.compute_size(__cache);
-            __cache.set(__slot, inner_size);
-            size
-                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
-                    + inner_size;
+        if !self.path.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.path) as u32;
+        }
+        if self.size_bytes != 0u64 {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(self.size_bytes) as u32;
+        }
+        if let Some(ref v) = self.etag {
+            size += 1u32 + ::buffa::types::string_encoded_len(v) as u32;
         }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
     fn write_to(
         &self,
-        __cache: &mut ::buffa::SizeCache,
+        _cache: &mut ::buffa::SizeCache,
         buf: &mut impl ::buffa::bytes::BufMut,
     ) {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
-        if self.object.is_set() {
-            ::buffa::types::put_len_delimited_header(1u32, __cache.consume_next(), buf);
-            self.object.write_to(__cache, buf);
+        if !self.path.is_empty() {
+            ::buffa::types::put_string_field(1u32, &self.path, buf);
+        }
+        if self.size_bytes != 0u64 {
+            ::buffa::types::put_uint64_field(2u32, self.size_bytes, buf);
+        }
+        if let Some(ref v) = self.etag {
+            ::buffa::types::put_string_field(3u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -3449,10 +3479,23 @@ impl ::buffa::Message for ObjectGrantHeadResponse {
                     tag,
                     ::buffa::encoding::WireType::LengthDelimited,
                 )?;
-                ::buffa::Message::merge_length_delimited(
-                    self.object.get_or_insert_default(),
+                ::buffa::types::merge_string(&mut self.path, buf)?;
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.size_bytes = ::buffa::types::decode_uint64(buf)?;
+            }
+            3u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::types::merge_string(
+                    self.etag.get_or_insert_with(::buffa::alloc::string::String::new),
                     buf,
-                    ctx,
                 )?;
             }
             _ => {
@@ -3463,7 +3506,9 @@ impl ::buffa::Message for ObjectGrantHeadResponse {
         ::core::result::Result::Ok(())
     }
     fn clear(&mut self) {
-        self.object = ::buffa::MessageField::none();
+        self.path.clear();
+        self.size_bytes = 0u64;
+        self.etag = ::core::option::Option::None;
         self.__buffa_unknown_fields.clear();
     }
 }
@@ -3959,9 +4004,9 @@ pub struct ObjectGrantRangeRequest {
     /// Field 1: `path`
     pub path: ::buffa::alloc::string::String,
     /// Field 2: `start`
-    pub start: u64,
+    pub start: ::core::option::Option<u64>,
     /// Field 3: `end`
-    pub end: u64,
+    pub end: ::core::option::Option<u64>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
@@ -3980,6 +4025,22 @@ impl ObjectGrantRangeRequest {
     ///
     /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
     pub const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.ObjectGrantRangeRequest";
+}
+impl ObjectGrantRangeRequest {
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::start`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_start(mut self, value: u64) -> Self {
+        self.start = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::end`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_end(mut self, value: u64) -> Self {
+        self.end = Some(value);
+        self
+    }
 }
 ::buffa::impl_default_instance!(ObjectGrantRangeRequest);
 impl ::buffa::MessageName for ObjectGrantRangeRequest {
@@ -4002,11 +4063,11 @@ impl ::buffa::Message for ObjectGrantRangeRequest {
         if !self.path.is_empty() {
             size += 1u32 + ::buffa::types::string_encoded_len(&self.path) as u32;
         }
-        if self.start != 0u64 {
-            size += 1u32 + ::buffa::types::uint64_encoded_len(self.start) as u32;
+        if let Some(v) = self.start {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
-        if self.end != 0u64 {
-            size += 1u32 + ::buffa::types::uint64_encoded_len(self.end) as u32;
+        if let Some(v) = self.end {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
@@ -4021,11 +4082,11 @@ impl ::buffa::Message for ObjectGrantRangeRequest {
         if !self.path.is_empty() {
             ::buffa::types::put_string_field(1u32, &self.path, buf);
         }
-        if self.start != 0u64 {
-            ::buffa::types::put_uint64_field(2u32, self.start, buf);
+        if let Some(v) = self.start {
+            ::buffa::types::put_uint64_field(2u32, v, buf);
         }
-        if self.end != 0u64 {
-            ::buffa::types::put_uint64_field(3u32, self.end, buf);
+        if let Some(v) = self.end {
+            ::buffa::types::put_uint64_field(3u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -4052,14 +4113,18 @@ impl ::buffa::Message for ObjectGrantRangeRequest {
                     tag,
                     ::buffa::encoding::WireType::Varint,
                 )?;
-                self.start = ::buffa::types::decode_uint64(buf)?;
+                self.start = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
             }
             3u32 => {
                 ::buffa::encoding::check_wire_type(
                     tag,
                     ::buffa::encoding::WireType::Varint,
                 )?;
-                self.end = ::buffa::types::decode_uint64(buf)?;
+                self.end = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
             }
             _ => {
                 self.__buffa_unknown_fields
@@ -4070,8 +4135,8 @@ impl ::buffa::Message for ObjectGrantRangeRequest {
     }
     fn clear(&mut self) {
         self.path.clear();
-        self.start = 0u64;
-        self.end = 0u64;
+        self.start = ::core::option::Option::None;
+        self.end = ::core::option::Option::None;
         self.__buffa_unknown_fields.clear();
     }
 }
@@ -4084,6 +4149,9 @@ impl ::buffa::ExtensionSet for ObjectGrantRangeRequest {
         &mut self.__buffa_unknown_fields
     }
 }
+/// Protobuf transports use this envelope for range bytes and metadata. The
+/// existing HTTP object-grant route returns the bytes directly as
+/// application/octet-stream with equivalent response headers.
 #[derive(Clone, PartialEq, Default)]
 pub struct ObjectGrantRangeResponse {
     /// Field 1: `data`
@@ -4264,9 +4332,9 @@ impl ::buffa::ExtensionSet for ObjectGrantRangeResponse {
 #[derive(Clone, PartialEq, Default)]
 pub struct ObjectGrantAuditRange {
     /// Field 1: `start`
-    pub start: u64,
+    pub start: ::core::option::Option<u64>,
     /// Field 2: `end`
-    pub end: u64,
+    pub end: ::core::option::Option<u64>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
@@ -4284,6 +4352,22 @@ impl ObjectGrantAuditRange {
     ///
     /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
     pub const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.ObjectGrantAuditRange";
+}
+impl ObjectGrantAuditRange {
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::start`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_start(mut self, value: u64) -> Self {
+        self.start = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::end`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_end(mut self, value: u64) -> Self {
+        self.end = Some(value);
+        self
+    }
 }
 ::buffa::impl_default_instance!(ObjectGrantAuditRange);
 impl ::buffa::MessageName for ObjectGrantAuditRange {
@@ -4303,11 +4387,11 @@ impl ::buffa::Message for ObjectGrantAuditRange {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
         let mut size = 0u32;
-        if self.start != 0u64 {
-            size += 1u32 + ::buffa::types::uint64_encoded_len(self.start) as u32;
+        if let Some(v) = self.start {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
-        if self.end != 0u64 {
-            size += 1u32 + ::buffa::types::uint64_encoded_len(self.end) as u32;
+        if let Some(v) = self.end {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
@@ -4319,11 +4403,11 @@ impl ::buffa::Message for ObjectGrantAuditRange {
     ) {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
-        if self.start != 0u64 {
-            ::buffa::types::put_uint64_field(1u32, self.start, buf);
+        if let Some(v) = self.start {
+            ::buffa::types::put_uint64_field(1u32, v, buf);
         }
-        if self.end != 0u64 {
-            ::buffa::types::put_uint64_field(2u32, self.end, buf);
+        if let Some(v) = self.end {
+            ::buffa::types::put_uint64_field(2u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -4343,14 +4427,18 @@ impl ::buffa::Message for ObjectGrantAuditRange {
                     tag,
                     ::buffa::encoding::WireType::Varint,
                 )?;
-                self.start = ::buffa::types::decode_uint64(buf)?;
+                self.start = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
             }
             2u32 => {
                 ::buffa::encoding::check_wire_type(
                     tag,
                     ::buffa::encoding::WireType::Varint,
                 )?;
-                self.end = ::buffa::types::decode_uint64(buf)?;
+                self.end = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
             }
             _ => {
                 self.__buffa_unknown_fields
@@ -4360,8 +4448,8 @@ impl ::buffa::Message for ObjectGrantAuditRange {
         ::core::result::Result::Ok(())
     }
     fn clear(&mut self) {
-        self.start = 0u64;
-        self.end = 0u64;
+        self.start = ::core::option::Option::None;
+        self.end = ::core::option::Option::None;
         self.__buffa_unknown_fields.clear();
     }
 }

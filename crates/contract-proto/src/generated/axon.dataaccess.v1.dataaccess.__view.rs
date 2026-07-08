@@ -5136,10 +5136,12 @@ impl ::buffa::HasMessageView for super::super::ObjectGrantHeadRequest {
 }
 #[derive(Clone, Debug, Default)]
 pub struct ObjectGrantHeadResponseView<'a> {
-    /// Field 1: `object`
-    pub object: ::buffa::MessageFieldView<
-        super::super::__buffa::view::ObjectGrantObjectView<'a>,
-    >,
+    /// Field 1: `path`
+    pub path: &'a str,
+    /// Field 2: `size_bytes`
+    pub size_bytes: u64,
+    /// Field 3: `etag`
+    pub etag: ::core::option::Option<&'a str>,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ::buffa::MessageView<'a> for ObjectGrantHeadResponseView<'a> {
@@ -5174,21 +5176,21 @@ impl<'a> ::buffa::MessageView<'a> for ObjectGrantHeadResponseView<'a> {
                     tag,
                     ::buffa::encoding::WireType::LengthDelimited,
                 )?;
-                let __sub_ctx = ctx.descend()?;
-                let sub = ::buffa::types::borrow_bytes(&mut cur)?;
-                match view.object.as_mut() {
-                    Some(existing) => {
-                        ::buffa::MessageView::merge_into_view(existing, sub, __sub_ctx)?
-                    }
-                    None => {
-                        view.object = ::buffa::MessageFieldView::set(
-                            <super::super::__buffa::view::ObjectGrantObjectView as ::buffa::MessageView>::decode_view_ctx(
-                                sub,
-                                __sub_ctx,
-                            )?,
-                        );
-                    }
-                }
+                view.path = ::buffa::types::borrow_str(&mut cur)?;
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.size_bytes = ::buffa::types::decode_uint64(&mut cur)?;
+            }
+            3u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                view.etag = Some(::buffa::types::borrow_str(&mut cur)?);
             }
             _ => {
                 ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
@@ -5218,14 +5220,9 @@ impl<'a> ::buffa::MessageView<'a> for ObjectGrantHeadResponseView<'a> {
         use ::buffa::alloc::string::ToString as _;
         let _ = __buffa_src;
         ::core::result::Result::Ok(super::super::ObjectGrantHeadResponse {
-            object: match self.object.as_option() {
-                Some(v) => {
-                    ::buffa::MessageField::<
-                        super::super::ObjectGrantObject,
-                    >::some(v.to_owned_from_source(__buffa_src)?)
-                }
-                None => ::buffa::MessageField::none(),
-            },
+            path: self.path.to_string(),
+            size_bytes: self.size_bytes,
+            etag: self.etag.map(|s| s.to_string()),
             __buffa_unknown_fields: self.__buffa_unknown_fields.to_owned()?.into(),
             ..::core::default::Default::default()
         })
@@ -5233,17 +5230,18 @@ impl<'a> ::buffa::MessageView<'a> for ObjectGrantHeadResponseView<'a> {
 }
 impl<'a> ::buffa::ViewEncode<'a> for ObjectGrantHeadResponseView<'a> {
     #[allow(clippy::needless_borrow, clippy::let_and_return)]
-    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
         let mut size = 0u32;
-        if self.object.is_set() {
-            let __slot = __cache.reserve();
-            let inner_size = self.object.compute_size(__cache);
-            __cache.set(__slot, inner_size);
-            size
-                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
-                    + inner_size;
+        if !self.path.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.path) as u32;
+        }
+        if self.size_bytes != 0u64 {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(self.size_bytes) as u32;
+        }
+        if let Some(ref v) = self.etag {
+            size += 1u32 + ::buffa::types::string_encoded_len(v) as u32;
         }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
@@ -5251,14 +5249,19 @@ impl<'a> ::buffa::ViewEncode<'a> for ObjectGrantHeadResponseView<'a> {
     #[allow(clippy::needless_borrow)]
     fn write_to(
         &self,
-        __cache: &mut ::buffa::SizeCache,
+        _cache: &mut ::buffa::SizeCache,
         buf: &mut impl ::buffa::bytes::BufMut,
     ) {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
-        if self.object.is_set() {
-            ::buffa::types::put_len_delimited_header(1u32, __cache.consume_next(), buf);
-            self.object.write_to(__cache, buf);
+        if !self.path.is_empty() {
+            ::buffa::types::put_string_field(1u32, &self.path, buf);
+        }
+        if self.size_bytes != 0u64 {
+            ::buffa::types::put_uint64_field(2u32, self.size_bytes, buf);
+        }
+        if let Some(ref v) = self.etag {
+            ::buffa::types::put_string_field(3u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -5356,14 +5359,20 @@ impl ObjectGrantHeadResponseOwnedView {
     pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
         self.0.into_bytes()
     }
-    /// Field 1: `object`
+    /// Field 1: `path`
     #[must_use]
-    pub fn object(
-        &self,
-    ) -> &::buffa::MessageFieldView<
-        super::super::__buffa::view::ObjectGrantObjectView<'_>,
-    > {
-        &self.0.reborrow().object
+    pub fn path(&self) -> &'_ str {
+        self.0.reborrow().path
+    }
+    /// Field 2: `size_bytes`
+    #[must_use]
+    pub fn size_bytes(&self) -> u64 {
+        self.0.reborrow().size_bytes
+    }
+    /// Field 3: `etag`
+    #[must_use]
+    pub fn etag(&self) -> ::core::option::Option<&'_ str> {
+        self.0.reborrow().etag
     }
 }
 impl ::core::convert::From<::buffa::OwnedView<ObjectGrantHeadResponseView<'static>>>
@@ -6386,9 +6395,9 @@ pub struct ObjectGrantRangeRequestView<'a> {
     /// Field 1: `path`
     pub path: &'a str,
     /// Field 2: `start`
-    pub start: u64,
+    pub start: ::core::option::Option<u64>,
     /// Field 3: `end`
-    pub end: u64,
+    pub end: ::core::option::Option<u64>,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ::buffa::MessageView<'a> for ObjectGrantRangeRequestView<'a> {
@@ -6430,14 +6439,14 @@ impl<'a> ::buffa::MessageView<'a> for ObjectGrantRangeRequestView<'a> {
                     tag,
                     ::buffa::encoding::WireType::Varint,
                 )?;
-                view.start = ::buffa::types::decode_uint64(&mut cur)?;
+                view.start = Some(::buffa::types::decode_uint64(&mut cur)?);
             }
             3u32 => {
                 ::buffa::encoding::check_wire_type(
                     tag,
                     ::buffa::encoding::WireType::Varint,
                 )?;
-                view.end = ::buffa::types::decode_uint64(&mut cur)?;
+                view.end = Some(::buffa::types::decode_uint64(&mut cur)?);
             }
             _ => {
                 ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
@@ -6484,11 +6493,11 @@ impl<'a> ::buffa::ViewEncode<'a> for ObjectGrantRangeRequestView<'a> {
         if !self.path.is_empty() {
             size += 1u32 + ::buffa::types::string_encoded_len(&self.path) as u32;
         }
-        if self.start != 0u64 {
-            size += 1u32 + ::buffa::types::uint64_encoded_len(self.start) as u32;
+        if let Some(v) = self.start {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
-        if self.end != 0u64 {
-            size += 1u32 + ::buffa::types::uint64_encoded_len(self.end) as u32;
+        if let Some(v) = self.end {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
@@ -6504,11 +6513,11 @@ impl<'a> ::buffa::ViewEncode<'a> for ObjectGrantRangeRequestView<'a> {
         if !self.path.is_empty() {
             ::buffa::types::put_string_field(1u32, &self.path, buf);
         }
-        if self.start != 0u64 {
-            ::buffa::types::put_uint64_field(2u32, self.start, buf);
+        if let Some(v) = self.start {
+            ::buffa::types::put_uint64_field(2u32, v, buf);
         }
-        if self.end != 0u64 {
-            ::buffa::types::put_uint64_field(3u32, self.end, buf);
+        if let Some(v) = self.end {
+            ::buffa::types::put_uint64_field(3u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -6613,12 +6622,12 @@ impl ObjectGrantRangeRequestOwnedView {
     }
     /// Field 2: `start`
     #[must_use]
-    pub fn start(&self) -> u64 {
+    pub fn start(&self) -> ::core::option::Option<u64> {
         self.0.reborrow().start
     }
     /// Field 3: `end`
     #[must_use]
-    pub fn end(&self) -> u64 {
+    pub fn end(&self) -> ::core::option::Option<u64> {
         self.0.reborrow().end
     }
 }
@@ -6644,6 +6653,9 @@ impl ::buffa::HasMessageView for super::super::ObjectGrantRangeRequest {
     type View<'a> = ObjectGrantRangeRequestView<'a>;
     type ViewHandle = ObjectGrantRangeRequestOwnedView;
 }
+/// Protobuf transports use this envelope for range bytes and metadata. The
+/// existing HTTP object-grant route returns the bytes directly as
+/// application/octet-stream with equivalent response headers.
 #[derive(Clone, Debug, Default)]
 pub struct ObjectGrantRangeResponseView<'a> {
     /// Field 1: `data`
@@ -6931,9 +6943,9 @@ impl ::buffa::HasMessageView for super::super::ObjectGrantRangeResponse {
 #[derive(Clone, Debug, Default)]
 pub struct ObjectGrantAuditRangeView<'a> {
     /// Field 1: `start`
-    pub start: u64,
+    pub start: ::core::option::Option<u64>,
     /// Field 2: `end`
-    pub end: u64,
+    pub end: ::core::option::Option<u64>,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ::buffa::MessageView<'a> for ObjectGrantAuditRangeView<'a> {
@@ -6968,14 +6980,14 @@ impl<'a> ::buffa::MessageView<'a> for ObjectGrantAuditRangeView<'a> {
                     tag,
                     ::buffa::encoding::WireType::Varint,
                 )?;
-                view.start = ::buffa::types::decode_uint64(&mut cur)?;
+                view.start = Some(::buffa::types::decode_uint64(&mut cur)?);
             }
             2u32 => {
                 ::buffa::encoding::check_wire_type(
                     tag,
                     ::buffa::encoding::WireType::Varint,
                 )?;
-                view.end = ::buffa::types::decode_uint64(&mut cur)?;
+                view.end = Some(::buffa::types::decode_uint64(&mut cur)?);
             }
             _ => {
                 ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
@@ -7018,11 +7030,11 @@ impl<'a> ::buffa::ViewEncode<'a> for ObjectGrantAuditRangeView<'a> {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
         let mut size = 0u32;
-        if self.start != 0u64 {
-            size += 1u32 + ::buffa::types::uint64_encoded_len(self.start) as u32;
+        if let Some(v) = self.start {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
-        if self.end != 0u64 {
-            size += 1u32 + ::buffa::types::uint64_encoded_len(self.end) as u32;
+        if let Some(v) = self.end {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
@@ -7035,11 +7047,11 @@ impl<'a> ::buffa::ViewEncode<'a> for ObjectGrantAuditRangeView<'a> {
     ) {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
-        if self.start != 0u64 {
-            ::buffa::types::put_uint64_field(1u32, self.start, buf);
+        if let Some(v) = self.start {
+            ::buffa::types::put_uint64_field(1u32, v, buf);
         }
-        if self.end != 0u64 {
-            ::buffa::types::put_uint64_field(2u32, self.end, buf);
+        if let Some(v) = self.end {
+            ::buffa::types::put_uint64_field(2u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -7139,12 +7151,12 @@ impl ObjectGrantAuditRangeOwnedView {
     }
     /// Field 1: `start`
     #[must_use]
-    pub fn start(&self) -> u64 {
+    pub fn start(&self) -> ::core::option::Option<u64> {
         self.0.reborrow().start
     }
     /// Field 2: `end`
     #[must_use]
-    pub fn end(&self) -> u64 {
+    pub fn end(&self) -> ::core::option::Option<u64> {
         self.0.reborrow().end
     }
 }

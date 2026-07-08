@@ -116,7 +116,9 @@ message ObjectGrantHeadRequest {
 }
 
 message ObjectGrantHeadResponse {
-  ObjectGrantObject object = 1;
+  string path = 1;
+  uint64 size_bytes = 2 [json_name = "sizeBytes"];
+  optional string etag = 3;
 }
 
 message ObjectGrantObject {
@@ -141,10 +143,13 @@ message ObjectGrantSignedUrl {
 
 message ObjectGrantRangeRequest {
   string path = 1;
-  uint64 start = 2;
-  uint64 end = 3;
+  optional uint64 start = 2;
+  optional uint64 end = 3;
 }
 
+// Protobuf transports use this envelope for range bytes and metadata. The
+// existing HTTP object-grant route returns the bytes directly as
+// application/octet-stream with equivalent response headers.
 message ObjectGrantRangeResponse {
   bytes data = 1;
   optional string content_range = 2 [json_name = "contentRange"];
@@ -153,8 +158,8 @@ message ObjectGrantRangeResponse {
 }
 
 message ObjectGrantAuditRange {
-  uint64 start = 1;
-  uint64 end = 2;
+  optional uint64 start = 1;
+  optional uint64 end = 2;
 }
 
 message ObjectGrantAuditEvent {
@@ -226,6 +231,8 @@ enum DirectExternalEngineReadSupport {
 
 enum ObjectGrantAuditAction {
   OBJECT_GRANT_AUDIT_ACTION_UNSPECIFIED = 0;
+  // Legacy HTTP JSON uses "list", "head", "batch_sign", and "range";
+  // protobuf JSON uses these enum symbols and must be normalized at boundaries.
   OBJECT_GRANT_AUDIT_ACTION_LIST = 1;
   OBJECT_GRANT_AUDIT_ACTION_HEAD = 2;
   OBJECT_GRANT_AUDIT_ACTION_BATCH_SIGN = 3;
@@ -234,6 +241,8 @@ enum ObjectGrantAuditAction {
 
 enum ObjectGrantAuditOutcome {
   OBJECT_GRANT_AUDIT_OUTCOME_UNSPECIFIED = 0;
+  // Legacy HTTP JSON uses "allowed" and "denied"; protobuf JSON uses these
+  // enum symbols and must be normalized at boundaries.
   OBJECT_GRANT_AUDIT_OUTCOME_ALLOWED = 1;
   OBJECT_GRANT_AUDIT_OUTCOME_DENIED = 2;
 }

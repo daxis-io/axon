@@ -9,7 +9,14 @@ import {
   BrowserHttpFileDescriptorSchema,
   DirectExternalEngineReadSupport,
   ObjectGrantBatchSignResponseSchema,
+  ObjectGrantAuditAction,
+  ObjectGrantAuditEventSchema,
+  ObjectGrantAuditOutcome,
+  ObjectGrantAuditRangeSchema,
+  ObjectGrantHeadResponseSchema,
   ObjectGrantListResponseSchema,
+  ObjectGrantRangeRequestSchema,
+  ObjectGrantRangeResponseSchema,
   PartitionValueSchema,
   PolicyAuthorityKind,
   ReadAccessPlanSchema,
@@ -125,6 +132,78 @@ describe('dataaccess contract codegen', () => {
       ],
     });
   });
+
+  it('preserves object grant head response JSON without a protobuf-only envelope', () => {
+    const head = create(ObjectGrantHeadResponseSchema, {
+      path: 'part-000.parquet',
+      sizeBytes: 512n,
+      etag: '"part-000-v7"',
+    });
+
+    expect(toJson(ObjectGrantHeadResponseSchema, head)).toEqual({
+      path: 'part-000.parquet',
+      sizeBytes: '512',
+      etag: '"part-000-v7"',
+    });
+  });
+
+  it('documents proxy range bytes as an explicit protobuf envelope', () => {
+    const request = create(ObjectGrantRangeRequestSchema, {
+      path: 'part-000.parquet',
+      start: 0n,
+      end: 16n,
+    });
+    const range = create(ObjectGrantRangeResponseSchema, {
+      data: new Uint8Array([1, 2, 3, 4]),
+      contentRange: 'bytes 0-3/512',
+      etag: '"part-000-v7"',
+      sizeBytes: 512n,
+    });
+
+    expect(toJson(ObjectGrantRangeRequestSchema, request)).toEqual({
+      path: 'part-000.parquet',
+      start: '0',
+      end: '16',
+    });
+    expect(toJson(ObjectGrantRangeResponseSchema, range)).toEqual({
+      data: 'AQIDBA==',
+      contentRange: 'bytes 0-3/512',
+      etag: '"part-000-v7"',
+      sizeBytes: '512',
+    });
+  });
+
+  it('normalizes legacy lowercase object grant audit enums into protobuf enum JSON', () => {
+    const legacyAudit = {
+      eventId: 'audit-123',
+      eventType: 'object_grant_access',
+      occurredAtEpochMs: 1_800_000_000_000,
+      tenantId: 'tenant-123',
+      workspaceId: 'workspace-123',
+      userSubject: 'user:analyst@example.test',
+      tableId: 'tbl-123',
+      fullName: 'main.sales.orders',
+      grantId: 'grant-456',
+      queryId: 'query-789',
+      requestId: 'req-123',
+      correlationId: 'corr-123',
+      action: 'range',
+      objectPath: 'part-000.parquet',
+      range: { start: 0, end: 16 },
+      outcome: 'allowed',
+    } satisfies LegacyObjectGrantAuditEvent;
+
+    const normalized = legacyObjectGrantAuditEventToProtobufJson(legacyAudit);
+    const decoded = fromJson(ObjectGrantAuditEventSchema, normalized);
+    const protobufJson = toJson(ObjectGrantAuditEventSchema, decoded);
+
+    expect(protobufJson).toEqual(normalized);
+    expect(protobufJson).toMatchObject({
+      action: 'OBJECT_GRANT_AUDIT_ACTION_RANGE',
+      outcome: 'OBJECT_GRANT_AUDIT_OUTCOME_ALLOWED',
+      range: { start: '0', end: '16' },
+    });
+  });
 });
 
 type LegacyReadAccessPlan = {
@@ -207,6 +286,28 @@ type LegacyBrowserHttpFileDescriptor = {
   stats?: string;
 };
 
+type LegacyObjectGrantAuditEvent = {
+  eventId: string;
+  eventType: 'object_grant_access';
+  occurredAtEpochMs: number;
+  tenantId: string;
+  workspaceId: string;
+  userSubject: string;
+  tableId: string;
+  fullName: string;
+  grantId: string;
+  queryId: string;
+  requestId: string;
+  correlationId: string;
+  action: 'list' | 'head' | 'batch_sign' | 'range';
+  objectPath: string;
+  range?: {
+    start: number;
+    end: number;
+  };
+  outcome: 'allowed' | 'denied';
+};
+
 function legacyBrowserHttpFileDescriptorToProtobufJson(
   file: LegacyBrowserHttpFileDescriptor,
 ): JsonValue {
@@ -281,5 +382,60 @@ function normalizeReadAccessPlanReason(value: LegacyReadAccessPlan['reason']): R
       return ReadAccessPlanReason.UNKNOWN_POLICY_STATE;
     default:
       return ReadAccessPlanReason.UNSPECIFIED;
+  }
+}
+
+function legacyObjectGrantAuditEventToProtobufJson(event: LegacyObjectGrantAuditEvent): JsonValue {
+  return toJson(
+    ObjectGrantAuditEventSchema,
+    create(ObjectGrantAuditEventSchema, {
+      eventId: event.eventId,
+      eventType: event.eventType,
+      occurredAtEpochMs: BigInt(event.occurredAtEpochMs),
+      tenantId: event.tenantId,
+      workspaceId: event.workspaceId,
+      userSubject: event.userSubject,
+      tableId: event.tableId,
+      fullName: event.fullName,
+      grantId: event.grantId,
+      queryId: event.queryId,
+      requestId: event.requestId,
+      correlationId: event.correlationId,
+      action: normalizeObjectGrantAuditAction(event.action),
+      objectPath: event.objectPath,
+      range: event.range
+        ? create(ObjectGrantAuditRangeSchema, {
+            start: BigInt(event.range.start),
+            end: BigInt(event.range.end),
+          })
+        : undefined,
+      outcome: normalizeObjectGrantAuditOutcome(event.outcome),
+    }),
+  );
+}
+
+function normalizeObjectGrantAuditAction(
+  value: LegacyObjectGrantAuditEvent['action'],
+): ObjectGrantAuditAction {
+  switch (value) {
+    case 'list':
+      return ObjectGrantAuditAction.LIST;
+    case 'head':
+      return ObjectGrantAuditAction.HEAD;
+    case 'batch_sign':
+      return ObjectGrantAuditAction.BATCH_SIGN;
+    case 'range':
+      return ObjectGrantAuditAction.RANGE;
+  }
+}
+
+function normalizeObjectGrantAuditOutcome(
+  value: LegacyObjectGrantAuditEvent['outcome'],
+): ObjectGrantAuditOutcome {
+  switch (value) {
+    case 'allowed':
+      return ObjectGrantAuditOutcome.ALLOWED;
+    case 'denied':
+      return ObjectGrantAuditOutcome.DENIED;
   }
 }

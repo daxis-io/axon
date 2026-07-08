@@ -189,6 +189,15 @@ Environment notes:
 - After that cleanup, `npm run build:wasm` passed and produced `apps/axon-web/src/wasm/*` for TypeScript checks.
 - `bash tests/security/verify_browser_dependency_guardrails.sh` requires `target/wasm32-unknown-unknown/release/browser_engine_worker.wasm`; the artifact was built with the locked browser-engine-worker command before rerunning the script.
 
+## Audit Follow-Up
+
+- Fresh review found no merge-blocking issues, but called out three transport-shape risks before future wiring.
+- `ObjectGrantHeadResponse` now mirrors the legacy OpenAPI head response body directly (`path`, `sizeBytes`, `etag`) instead of wrapping `ObjectGrantObject` in a protobuf-only envelope.
+- `ObjectGrantRangeResponse` remains an explicit protobuf envelope for transports that need to carry bytes plus metadata. The existing HTTP route still returns `application/octet-stream` bytes with equivalent headers; boundary code must normalize rather than expose protobuf JSON as that HTTP response body.
+- `ObjectGrantRangeRequest.start/end` and `ObjectGrantAuditRange.start/end` are optional scalars so protobuf JSON preserves an explicit zero start offset.
+- `ObjectGrantAuditAction` and `ObjectGrantAuditOutcome` remain protobuf enums. Legacy HTTP JSON uses lowercase strings, so boundary code must map `list`/`head`/`batch_sign`/`range` and `allowed`/`denied` to the protobuf enum symbols.
+- `apps/axon-web/src/generated/contracts/dataaccess-codegen.test.ts` covers the head response JSON shape, range request zero start, range response envelope, and legacy audit enum normalization.
+
 ## Next PI Order
 
 1. `axon/exec/v1`
