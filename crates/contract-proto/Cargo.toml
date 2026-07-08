@@ -7,3 +7,4 @@ publish = false
 
 [dependencies]
 buffa = "=0.8.1"
+buffa-types = "=0.8.1"

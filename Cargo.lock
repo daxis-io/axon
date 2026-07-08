@@ -385,6 +385,7 @@ name = "axon-contract-proto"
 version = "0.1.0"
 dependencies = [
  "buffa",
+ "buffa-types",
 ]
 
 [[package]]
@@ -527,6 +528,19 @@ dependencies = [
  "serde",
  "serde_json",
  "smoothutf8",
+ "thiserror",
+]
+
+[[package]]
+name = "buffa-types"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22cb54bcbf6946c58e550eeaf6209047146363dbc7cbdc87e49e67089ed2ff5f"
+dependencies = [
+ "buffa",
+ "bytes",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
