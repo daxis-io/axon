@@ -1,0 +1,239 @@
+syntax = "proto3";
+
+package axon.dataaccess.v1;
+
+import "axon/common/v1/common.proto";
+import "google/protobuf/struct.proto";
+
+message CapabilityReport {
+  map<string, CapabilityState> capabilities = 1;
+}
+
+message PartitionValue {
+  oneof value {
+    string string_value = 1;
+    google.protobuf.NullValue null_value = 2;
+  }
+}
+
+message BrowserHttpFileDescriptor {
+  string path = 1;
+  string url = 2;
+  uint64 size_bytes = 3 [json_name = "size_bytes"];
+  map<string, PartitionValue> partition_values = 4 [json_name = "partition_values"];
+  optional string stats = 5;
+  optional string object_etag = 6;
+}
+
+message BrowserHttpSnapshotDescriptor {
+  string table_uri = 1;
+  int64 snapshot_version = 2;
+  map<string, PartitionColumnType> partition_column_types = 3;
+  CapabilityReport browser_compatibility = 4;
+  CapabilityReport required_capabilities = 5;
+  repeated BrowserHttpFileDescriptor active_files = 6;
+}
+
+message BrokeredObjectAccess {
+  bool list = 1;
+  bool head = 2;
+  bool get = 3;
+  bool range_get = 4 [json_name = "rangeGet"];
+  bool batch_sign = 5 [json_name = "batchSign"];
+  bool proxy_range = 6 [json_name = "proxyRange"];
+}
+
+message BrokeredPolicyAuthority {
+  PolicyAuthorityKind authority = 1;
+  DirectExternalEngineReadSupport direct_external_engine_read = 2 [json_name = "directExternalEngineRead"];
+}
+
+message BrokeredDeltaReadAccessPlan {
+  string table_id = 1 [json_name = "tableId"];
+  string full_name = 2 [json_name = "fullName"];
+  string table_root = 3 [json_name = "tableRoot"];
+  string grant_id = 4 [json_name = "grantId"];
+  uint64 expires_at_epoch_ms = 5 [json_name = "expiresAtEpochMs"];
+  BrokeredDeltaAccessMode delta_access_mode = 6 [json_name = "deltaAccessMode"];
+  BrokeredPolicyAuthority policy_authority = 7 [json_name = "policyAuthority"];
+  BrokeredObjectAccess object_access = 8 [json_name = "objectAccess"];
+}
+
+message DeltaSharingReadAccessPlan {
+  string table_id = 1 [json_name = "tableId"];
+  string full_name = 2 [json_name = "fullName"];
+  string sharing_endpoint = 3 [json_name = "sharingEndpoint"];
+  uint64 expires_at_epoch_ms = 4 [json_name = "expiresAtEpochMs"];
+  repeated BrowserHttpFileDescriptor files = 5;
+}
+
+message SqlFallbackRequiredReadAccessPlan {
+  string table_id = 1 [json_name = "tableId"];
+  string full_name = 2 [json_name = "fullName"];
+  ReadAccessPlanReason reason = 3;
+  string message = 4;
+  string statement_endpoint = 5 [json_name = "statementEndpoint"];
+  bool warehouse_required = 6 [json_name = "warehouseRequired"];
+}
+
+message BlockedReadAccessPlan {
+  string table_id = 1 [json_name = "tableId"];
+  string full_name = 2 [json_name = "fullName"];
+  ReadAccessPlanReason reason = 3;
+  string message = 4;
+}
+
+message ReadAccessPlan {
+  oneof plan {
+    BrokeredDeltaReadAccessPlan brokered_delta = 1;
+    DeltaSharingReadAccessPlan delta_sharing = 2;
+    SqlFallbackRequiredReadAccessPlan sql_fallback_required = 3;
+    BlockedReadAccessPlan blocked = 4;
+  }
+}
+
+message TableReadResolution {
+  axon.common.v1.ObjectRef table_ref = 1;
+
+  oneof resolution {
+    BrowserHttpSnapshotDescriptor descriptor = 2;
+    ReadAccessPlan read_access_plan = 3;
+    SqlFallbackRequiredReadAccessPlan fallback = 4;
+    BlockedReadAccessPlan blocked = 5;
+  }
+}
+
+message ObjectGrantListRequest {
+  string prefix = 1;
+}
+
+message ObjectGrantListResponse {
+  repeated ObjectGrantObject objects = 1;
+}
+
+message ObjectGrantHeadRequest {
+  string path = 1;
+}
+
+message ObjectGrantHeadResponse {
+  ObjectGrantObject object = 1;
+}
+
+message ObjectGrantObject {
+  string path = 1;
+  uint64 size_bytes = 2 [json_name = "sizeBytes"];
+  optional string etag = 3;
+}
+
+message ObjectGrantBatchSignRequest {
+  repeated string paths = 1;
+}
+
+message ObjectGrantBatchSignResponse {
+  repeated ObjectGrantSignedUrl signed_urls = 1 [json_name = "signedUrls"];
+}
+
+message ObjectGrantSignedUrl {
+  string path = 1;
+  string url = 2;
+  uint64 expires_at_epoch_ms = 3 [json_name = "expiresAtEpochMs"];
+}
+
+message ObjectGrantRangeRequest {
+  string path = 1;
+  uint64 start = 2;
+  uint64 end = 3;
+}
+
+message ObjectGrantRangeResponse {
+  bytes data = 1;
+  optional string content_range = 2 [json_name = "contentRange"];
+  optional string etag = 3;
+  uint64 size_bytes = 4 [json_name = "sizeBytes"];
+}
+
+message ObjectGrantAuditRange {
+  uint64 start = 1;
+  uint64 end = 2;
+}
+
+message ObjectGrantAuditEvent {
+  string event_id = 1 [json_name = "eventId"];
+  string event_type = 2 [json_name = "eventType"];
+  uint64 occurred_at_epoch_ms = 3 [json_name = "occurredAtEpochMs"];
+  string tenant_id = 4 [json_name = "tenantId"];
+  string workspace_id = 5 [json_name = "workspaceId"];
+  string user_subject = 6 [json_name = "userSubject"];
+  string table_id = 7 [json_name = "tableId"];
+  string full_name = 8 [json_name = "fullName"];
+  string grant_id = 9 [json_name = "grantId"];
+  string query_id = 10 [json_name = "queryId"];
+  string request_id = 11 [json_name = "requestId"];
+  string correlation_id = 12 [json_name = "correlationId"];
+  ObjectGrantAuditAction action = 13;
+  string object_path = 14 [json_name = "objectPath"];
+  ObjectGrantAuditRange range = 15;
+  ObjectGrantAuditOutcome outcome = 16;
+}
+
+enum CapabilityState {
+  CAPABILITY_STATE_UNSPECIFIED = 0;
+  CAPABILITY_STATE_SUPPORTED = 1;
+  CAPABILITY_STATE_NATIVE_ONLY = 2;
+  CAPABILITY_STATE_UNSUPPORTED = 3;
+  CAPABILITY_STATE_EXPERIMENTAL = 4;
+}
+
+enum PartitionColumnType {
+  PARTITION_COLUMN_TYPE_UNSPECIFIED = 0;
+  PARTITION_COLUMN_TYPE_STRING = 1;
+  PARTITION_COLUMN_TYPE_INT64 = 2;
+  PARTITION_COLUMN_TYPE_BOOLEAN = 3;
+  PARTITION_COLUMN_TYPE_UNSUPPORTED = 4;
+}
+
+enum ReadAccessPlanReason {
+  READ_ACCESS_PLAN_REASON_UNSPECIFIED = 0;
+  READ_ACCESS_PLAN_REASON_ROW_FILTER = 1;
+  READ_ACCESS_PLAN_REASON_COLUMN_MASK = 2;
+  READ_ACCESS_PLAN_REASON_VIEW = 3;
+  READ_ACCESS_PLAN_REASON_UNKNOWN_POLICY_STATE = 4;
+  READ_ACCESS_PLAN_REASON_NO_DIRECT_EXTERNAL_ENGINE_READ_SUPPORT = 5;
+  READ_ACCESS_PLAN_REASON_UNSUPPORTED_TABLE_TYPE = 6;
+  READ_ACCESS_PLAN_REASON_GRANT_EXPIRED = 7;
+  READ_ACCESS_PLAN_REASON_STORAGE_CORS_BLOCKED = 8;
+  READ_ACCESS_PLAN_REASON_BROKER_UNAVAILABLE = 9;
+}
+
+enum BrokeredDeltaAccessMode {
+  BROKERED_DELTA_ACCESS_MODE_UNSPECIFIED = 0;
+  BROKERED_DELTA_ACCESS_MODE_DELTA_LOG = 1;
+  BROKERED_DELTA_ACCESS_MODE_PRESIGNED_FILES = 2;
+}
+
+enum PolicyAuthorityKind {
+  POLICY_AUTHORITY_KIND_UNSPECIFIED = 0;
+  POLICY_AUTHORITY_KIND_UNITY_CATALOG = 1;
+  POLICY_AUTHORITY_KIND_DELTA_SHARING = 2;
+  POLICY_AUTHORITY_KIND_MOCK_BROKER = 3;
+}
+
+enum DirectExternalEngineReadSupport {
+  DIRECT_EXTERNAL_ENGINE_READ_SUPPORT_UNSPECIFIED = 0;
+  DIRECT_EXTERNAL_ENGINE_READ_SUPPORT_CONFIRMED = 1;
+  DIRECT_EXTERNAL_ENGINE_READ_SUPPORT_NOT_CONFIRMED = 2;
+}
+
+enum ObjectGrantAuditAction {
+  OBJECT_GRANT_AUDIT_ACTION_UNSPECIFIED = 0;
+  OBJECT_GRANT_AUDIT_ACTION_LIST = 1;
+  OBJECT_GRANT_AUDIT_ACTION_HEAD = 2;
+  OBJECT_GRANT_AUDIT_ACTION_BATCH_SIGN = 3;
+  OBJECT_GRANT_AUDIT_ACTION_RANGE = 4;
+}
+
+enum ObjectGrantAuditOutcome {
+  OBJECT_GRANT_AUDIT_OUTCOME_UNSPECIFIED = 0;
+  OBJECT_GRANT_AUDIT_OUTCOME_ALLOWED = 1;
+  OBJECT_GRANT_AUDIT_OUTCOME_DENIED = 2;
+}
