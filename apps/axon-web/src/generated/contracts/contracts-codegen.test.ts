@@ -84,4 +84,38 @@ describe('contract codegen', () => {
     expect(error.code).toBe(ProviderErrorCode.SESSION_EXPIRED);
     expect(response.tables[0]?.ref?.name).toBe('events');
   });
+
+  it('preserves absence of optional table statistics and protocol versions', () => {
+    const metadata = create(TableMetadataSchema, {});
+    const decoded = fromJson(TableMetadataSchema, {});
+
+    for (const message of [metadata, decoded]) {
+      expect(message.rowCount).toBeUndefined();
+      expect(message.sizeBytes).toBeUndefined();
+      expect(message.fileCount).toBeUndefined();
+      expect(message.latestSnapshotVersion).toBeUndefined();
+      expect(message.minReaderVersion).toBeUndefined();
+      expect(message.minWriterVersion).toBeUndefined();
+    }
+
+    const explicitZero = create(TableMetadataSchema, {
+      rowCount: 0n,
+      sizeBytes: 0n,
+      fileCount: 0n,
+      latestSnapshotVersion: 0n,
+      minReaderVersion: 0,
+      minWriterVersion: 0,
+    });
+    const explicitZeroJson = toJson(TableMetadataSchema, explicitZero);
+
+    expect(explicitZero.rowCount).toBe(0n);
+    expect(explicitZeroJson).toMatchObject({
+      rowCount: '0',
+      sizeBytes: '0',
+      fileCount: '0',
+      latestSnapshotVersion: '0',
+      minReaderVersion: 0,
+      minWriterVersion: 0,
+    });
+  });
 });

@@ -53,12 +53,12 @@ message TableMetadata {
   repeated ColumnNode columns = 2;
   repeated string partition_columns = 3;
   map<string, string> properties = 4;
-  uint64 row_count = 5;
-  uint64 size_bytes = 6;
-  uint64 file_count = 7;
-  int64 latest_snapshot_version = 8;
-  uint32 min_reader_version = 9;
-  uint32 min_writer_version = 10;
+  optional uint64 row_count = 5;
+  optional uint64 size_bytes = 6;
+  optional uint64 file_count = 7;
+  optional int64 latest_snapshot_version = 8;
+  optional uint32 min_reader_version = 9;
+  optional uint32 min_writer_version = 10;
   repeated DeltaProtocolFeature protocol_features = 11;
   string storage_location = 12;
 }
