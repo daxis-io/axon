@@ -1988,6 +1988,72 @@ fn runtime_pushes_integer_filters_into_parquet_row_group_pruning() {
 }
 
 #[test]
+fn runtime_reuses_shared_parquet_range_cache_across_repeated_scans() {
+    let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
+        .expect("default config should be supported");
+    let object = parquet_bytes_with_i64_row_groups(&[&[1_i64, 2, 3], &[10_i64, 11, 12]]);
+    let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+    let server = RequestCapturingObjectServer::from_objects(BTreeMap::from([(
+        "/part-000.parquet".to_string(),
+        object,
+    )]));
+    let resolved = ResolvedSnapshotDescriptor {
+        table_uri: "gs://axon-fixtures/range-cache-reuse".to_string(),
+        snapshot_version: 0,
+        partition_column_types: BTreeMap::new(),
+        browser_compatibility: CapabilityReport::default(),
+        required_capabilities: CapabilityReport::default(),
+        active_files: vec![ResolvedFileDescriptor {
+            path: "part-000.parquet".to_string(),
+            size_bytes: object_size,
+            partition_values: BTreeMap::new(),
+            stats: None,
+        }],
+    };
+    let materialized = session
+        .materialize_resolved_snapshot(&resolved, |file| {
+            BrowserObjectSource::from_url(server.url_for_path(&file.path))
+        })
+        .expect("resolved snapshot should materialize into browser object sources");
+    let request = QueryRequest::new(
+        materialized.table_uri(),
+        "SELECT id FROM axon_table WHERE id >= 10 ORDER BY id",
+        ExecutionTarget::BrowserWasm,
+    );
+    let prepared = runtime()
+        .block_on(session.prepare_execution(&materialized, &request))
+        .expect("single parquet file should prepare");
+
+    let first = runtime()
+        .block_on(session.execute_plan(&materialized, prepared.execution_plan()))
+        .expect("first browser execution should succeed");
+    let requests_after_first = server.recorded_paths().len();
+    let cache_after_first = session.range_cache().snapshot();
+    assert!(
+        cache_after_first.range_cache_stores > 0,
+        "first scan should store fetched data ranges in the session range cache"
+    );
+
+    let second = runtime()
+        .block_on(session.execute_plan(&materialized, prepared.execution_plan()))
+        .expect("second browser execution should succeed");
+    let cache_after_second = session.range_cache().snapshot();
+
+    assert_eq!(first.output_names(), second.output_names());
+    assert_eq!(first.rows(), second.rows());
+    assert_eq!(
+        server.recorded_paths().len(),
+        requests_after_first + 1,
+        "second scan should only perform the existing metadata-cache identity validation probe"
+    );
+    assert_eq!(second.metrics().bytes_fetched, 0);
+    assert!(
+        cache_after_second.range_cache_hits > cache_after_first.range_cache_hits,
+        "second scan should be served by the session-owned range cache"
+    );
+}
+
+#[test]
 fn runtime_executes_partition_group_by_from_local_delta_snapshot() {
     let session = BrowserRuntimeSession::new(BrowserRuntimeConfig::default())
         .expect("default config should be supported");

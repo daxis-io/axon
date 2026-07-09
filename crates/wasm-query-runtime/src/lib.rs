@@ -432,6 +432,7 @@ pub struct BrowserRuntimeSession {
     config: BrowserRuntimeConfig,
     reader: HttpRangeReader,
     metadata_cache: wasm_parquet_engine::ParquetMetadataCache,
+    range_cache: wasm_parquet_engine::ParquetRangeCache,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1472,12 +1473,27 @@ impl BrowserRuntimeSession {
         reader: HttpRangeReader,
         metadata_cache: wasm_parquet_engine::ParquetMetadataCache,
     ) -> Result<Self, QueryError> {
+        Self::with_reader_and_caches(
+            config,
+            reader,
+            metadata_cache,
+            wasm_parquet_engine::ParquetRangeCache::default(),
+        )
+    }
+
+    pub fn with_reader_and_caches(
+        config: BrowserRuntimeConfig,
+        reader: HttpRangeReader,
+        metadata_cache: wasm_parquet_engine::ParquetMetadataCache,
+        range_cache: wasm_parquet_engine::ParquetRangeCache,
+    ) -> Result<Self, QueryError> {
         config.validate()?;
 
         Ok(Self {
             config,
             reader,
             metadata_cache,
+            range_cache,
         })
     }
 
@@ -1487,6 +1503,10 @@ impl BrowserRuntimeSession {
 
     pub fn metadata_cache(&self) -> &wasm_parquet_engine::ParquetMetadataCache {
         &self.metadata_cache
+    }
+
+    pub fn range_cache(&self) -> &wasm_parquet_engine::ParquetRangeCache {
+        &self.range_cache
     }
 
     pub fn analyze_query_shape(&self, sql: &str) -> Result<BrowserQueryShape, QueryError> {
@@ -2139,6 +2159,7 @@ impl BrowserRuntimeSession {
                 Some(Duration::from_millis(self.config.request_timeout_ms)),
                 row_group_predicate.as_ref(),
                 Some(&self.metadata_cache),
+                Some(&self.range_cache),
             )
             .await?;
             let metrics = scanned.metrics;

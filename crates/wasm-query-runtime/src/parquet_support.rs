@@ -80,11 +80,12 @@ pub(super) async fn stream_scan_target_batches(
     request_timeout: Option<Duration>,
     row_group_predicate: Option<&parquet_engine::ParquetRowGroupPruningPredicate>,
     metadata_cache: Option<&parquet_engine::ParquetMetadataCache>,
+    range_cache: Option<&parquet_engine::ParquetRangeCache>,
 ) -> Result<
     parquet_engine::ScanTargetBatchStream<impl Stream<Item = Result<RecordBatch, QueryError>>>,
     QueryError,
 > {
-    parquet_engine::stream_scan_target_batches_with_row_group_pruning_and_cache(
+    parquet_engine::stream_scan_target_batches_with_row_group_pruning_and_caches(
         reader,
         target,
         required_columns,
@@ -92,6 +93,7 @@ pub(super) async fn stream_scan_target_batches(
         request_timeout,
         row_group_predicate,
         metadata_cache,
+        range_cache,
     )
     .await
 }

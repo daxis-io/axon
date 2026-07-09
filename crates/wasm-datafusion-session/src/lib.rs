@@ -169,13 +169,15 @@ impl BrowserDataFusionSession {
     ) -> Result<Self, QueryError> {
         let runtime = BrowserRuntimeSession::new(config)?;
         let metadata_cache = runtime.metadata_cache().clone();
+        let range_cache = runtime.range_cache().clone();
         Ok(Self {
             runtime,
             query_budget,
-            datafusion: WasmDataFusionEngine::with_budget_cancellation_and_metadata_cache(
+            datafusion: WasmDataFusionEngine::with_budget_cancellation_and_caches(
                 query_budget.into(),
                 BrowserQueryCancellation::default(),
                 metadata_cache,
+                range_cache,
             ),
             tables: BTreeMap::new(),
             max_cached_bytes,

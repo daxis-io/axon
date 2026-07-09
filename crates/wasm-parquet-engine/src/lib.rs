@@ -41,8 +41,8 @@ use query_contract::{
     PartitionColumnType, QueryError, QueryErrorCode,
 };
 use wasm_http_object_store::{
-    HttpByteRange, HttpMetadataProbeRequirements, HttpRangeReadResult, HttpRangeReader,
-    HttpRangeValidation,
+    ByteExtent, ExtentCacheEntry, ExtentCacheKey, HttpByteRange, HttpMetadataProbeRequirements,
+    HttpRangeReadResult, HttpRangeReader, HttpRangeValidation, MemoryPersistentExtentCache,
 };
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -319,6 +319,182 @@ impl ParquetObjectIdentity {
             size_bytes,
         }
     }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ParquetRangeCacheMetrics {
+    pub range_cache_hits: u64,
+    pub range_cache_misses: u64,
+    pub range_cache_stores: u64,
+    pub range_cache_degraded_identity_reads: u64,
+    pub range_cache_identity_drift_misses: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ParquetRangeCache {
+    extents: Arc<MemoryPersistentExtentCache>,
+    metrics: Arc<Mutex<ParquetRangeCacheMetrics>>,
+    identities_by_resource: Arc<Mutex<BTreeMap<String, ParquetObjectIdentity>>>,
+}
+
+impl Default for ParquetRangeCache {
+    fn default() -> Self {
+        Self {
+            extents: Arc::new(MemoryPersistentExtentCache::default()),
+            metrics: Arc::new(Mutex::new(ParquetRangeCacheMetrics::default())),
+            identities_by_resource: Arc::new(Mutex::new(BTreeMap::new())),
+        }
+    }
+}
+
+impl ParquetRangeCache {
+    pub fn with_max_entries(max_entries: usize) -> Self {
+        Self {
+            extents: Arc::new(MemoryPersistentExtentCache::with_max_entries(max_entries)),
+            metrics: Arc::new(Mutex::new(ParquetRangeCacheMetrics::default())),
+            identities_by_resource: Arc::new(Mutex::new(BTreeMap::new())),
+        }
+    }
+
+    pub fn snapshot(&self) -> ParquetRangeCacheMetrics {
+        self.metrics
+            .lock()
+            .expect("parquet range cache metrics should not be poisoned")
+            .clone()
+    }
+
+    async fn load(
+        &self,
+        target: &ScanTarget,
+        range: Range<u64>,
+    ) -> Result<Option<Bytes>, QueryError> {
+        let Some((key, extent)) = self.cache_key_and_extent(target, &range)? else {
+            self.record_degraded_identity_read()?;
+            return Ok(None);
+        };
+        self.record_identity_seen(
+            &key.resource,
+            target
+                .object_identity()
+                .as_ref()
+                .expect("cache key requires identity"),
+        )?;
+
+        match self.extents.load_extent(&key, extent)? {
+            Some(entry) => {
+                self.record_hit()?;
+                Ok(Some(entry.slice(extent)?))
+            }
+            None => {
+                self.record_miss()?;
+                Ok(None)
+            }
+        }
+    }
+
+    async fn store(
+        &self,
+        target: &ScanTarget,
+        range: Range<u64>,
+        bytes: Bytes,
+    ) -> Result<(), QueryError> {
+        let Some((key, extent)) = self.cache_key_and_extent(target, &range)? else {
+            return Ok(());
+        };
+        let entry = ExtentCacheEntry::new(key, extent, bytes)?;
+        self.extents.store_extent(&entry)?;
+        self.record_store()?;
+        Ok(())
+    }
+
+    fn cache_key_and_extent(
+        &self,
+        target: &ScanTarget,
+        range: &Range<u64>,
+    ) -> Result<Option<(ExtentCacheKey, ByteExtent)>, QueryError> {
+        let length = range_len(range)?;
+        if length == 0 {
+            return Ok(None);
+        }
+        let Some(identity) = target.object_identity() else {
+            return Ok(None);
+        };
+        let identity = parquet_range_cache_identity(&identity);
+        let key = ExtentCacheKey::new(canonical_parquet_cache_resource(target), Some(identity));
+        let extent = ByteExtent::new(range.start, length)?;
+        Ok(Some((key, extent)))
+    }
+
+    fn record_identity_seen(
+        &self,
+        resource: &str,
+        identity: &ParquetObjectIdentity,
+    ) -> Result<(), QueryError> {
+        let mut identities = self
+            .identities_by_resource
+            .lock()
+            .map_err(|_| execution_runtime_error("parquet range cache identities were poisoned"))?;
+        if identities
+            .get(resource)
+            .is_some_and(|previous| previous != identity)
+        {
+            self.record_identity_drift_miss()?;
+        }
+        identities.insert(resource.to_string(), identity.clone());
+        Ok(())
+    }
+
+    fn record_hit(&self) -> Result<(), QueryError> {
+        let mut metrics = self
+            .metrics
+            .lock()
+            .map_err(|_| execution_runtime_error("parquet range cache metrics were poisoned"))?;
+        metrics.range_cache_hits = metrics.range_cache_hits.saturating_add(1);
+        Ok(())
+    }
+
+    fn record_miss(&self) -> Result<(), QueryError> {
+        let mut metrics = self
+            .metrics
+            .lock()
+            .map_err(|_| execution_runtime_error("parquet range cache metrics were poisoned"))?;
+        metrics.range_cache_misses = metrics.range_cache_misses.saturating_add(1);
+        Ok(())
+    }
+
+    fn record_store(&self) -> Result<(), QueryError> {
+        let mut metrics = self
+            .metrics
+            .lock()
+            .map_err(|_| execution_runtime_error("parquet range cache metrics were poisoned"))?;
+        metrics.range_cache_stores = metrics.range_cache_stores.saturating_add(1);
+        Ok(())
+    }
+
+    fn record_degraded_identity_read(&self) -> Result<(), QueryError> {
+        let mut metrics = self
+            .metrics
+            .lock()
+            .map_err(|_| execution_runtime_error("parquet range cache metrics were poisoned"))?;
+        metrics.range_cache_degraded_identity_reads = metrics
+            .range_cache_degraded_identity_reads
+            .saturating_add(1);
+        Ok(())
+    }
+
+    fn record_identity_drift_miss(&self) -> Result<(), QueryError> {
+        let mut metrics = self
+            .metrics
+            .lock()
+            .map_err(|_| execution_runtime_error("parquet range cache metrics were poisoned"))?;
+        metrics.range_cache_identity_drift_misses =
+            metrics.range_cache_identity_drift_misses.saturating_add(1);
+        Ok(())
+    }
+}
+
+fn parquet_range_cache_identity(identity: &ParquetObjectIdentity) -> String {
+    format!("etag={};size={}", identity.object_etag, identity.size_bytes)
 }
 
 #[derive(Clone, Debug)]
@@ -1239,9 +1415,22 @@ struct HttpRangeAsyncFileReader {
     target: ScanTarget,
     request_timeout: Option<Duration>,
     metadata_cache: Option<ParquetMetadataCache>,
+    range_cache: Option<ParquetRangeCache>,
     metrics: SharedScanTargetMetricsHandle,
     count_metadata_fetches: bool,
     metadata_probe_round_trips: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PhysicalRangeReadSource {
+    Cache,
+    Network,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PhysicalRangeRead {
+    bytes: Bytes,
+    source: PhysicalRangeReadSource,
 }
 
 impl HttpRangeAsyncFileReader {
@@ -1250,6 +1439,7 @@ impl HttpRangeAsyncFileReader {
         target: ScanTarget,
         request_timeout: Option<Duration>,
         metadata_cache: Option<ParquetMetadataCache>,
+        range_cache: Option<ParquetRangeCache>,
         metrics: SharedScanTargetMetricsHandle,
     ) -> Self {
         Self {
@@ -1257,6 +1447,7 @@ impl HttpRangeAsyncFileReader {
             target,
             request_timeout,
             metadata_cache,
+            range_cache,
             metrics,
             count_metadata_fetches: false,
             metadata_probe_round_trips: 0,
@@ -1273,26 +1464,44 @@ impl HttpRangeAsyncFileReader {
 
     async fn fetch_range_owned(
         reader: HttpRangeReader,
-        object_url: String,
+        target: ScanTarget,
         validation: Option<HttpRangeValidation>,
         request_timeout: Option<Duration>,
         metrics: SharedScanTargetMetricsHandle,
+        range_cache: Option<ParquetRangeCache>,
         phase: ParquetRangeReadPhase,
-        metric_resource: String,
-        object_identity: Option<ParquetObjectIdentity>,
         range: Range<u64>,
-    ) -> Result<Bytes, QueryError> {
+    ) -> Result<PhysicalRangeRead, QueryError> {
         let length = range
             .end
             .checked_sub(range.start)
             .ok_or_else(|| execution_runtime_error("parquet byte range underflowed u64"))?;
         if length == 0 {
-            return Ok(Bytes::new());
+            return Ok(PhysicalRangeRead {
+                bytes: Bytes::new(),
+                source: PhysicalRangeReadSource::Network,
+            });
+        }
+
+        if let Some(cache) = &range_cache {
+            if let Some(bytes) = cache.load(&target, range.clone()).await? {
+                metrics.record_range_read(
+                    phase,
+                    target.path.clone(),
+                    target.object_identity(),
+                    range.start,
+                    length,
+                )?;
+                return Ok(PhysicalRangeRead {
+                    bytes,
+                    source: PhysicalRangeReadSource::Cache,
+                });
+            }
         }
 
         let read = reader
             .read_range_with_validation(
-                &object_url,
+                &target.object_source.url,
                 HttpByteRange::Bounded {
                     offset: range.start,
                     length,
@@ -1305,27 +1514,51 @@ impl HttpRangeAsyncFileReader {
             u64::try_from(read.bytes.len())
                 .map_err(|_| execution_runtime_error("scan byte totals overflowed u64"))?,
         )?;
-        metrics.record_range_read(phase, metric_resource, object_identity, range.start, length)?;
-        Ok(read.bytes)
+        metrics.record_range_read(
+            phase,
+            target.path.clone(),
+            target.object_identity(),
+            range.start,
+            length,
+        )?;
+        if let Some(cache) = &range_cache {
+            cache.store(&target, range, read.bytes.clone()).await?;
+        }
+        Ok(PhysicalRangeRead {
+            bytes: read.bytes,
+            source: PhysicalRangeReadSource::Network,
+        })
     }
 
     async fn fetch_coalesced_range_owned(
         reader: HttpRangeReader,
-        object_url: String,
+        target: ScanTarget,
         validation: HttpRangeValidation,
         request_timeout: Option<Duration>,
         metrics: SharedScanTargetMetricsHandle,
-        expected_object_size: u64,
+        range_cache: Option<ParquetRangeCache>,
         range: Range<u64>,
-    ) -> Result<Bytes, QueryError> {
+    ) -> Result<PhysicalRangeRead, QueryError> {
         let length = range_len(&range)?;
         if length == 0 {
-            return Ok(Bytes::new());
+            return Ok(PhysicalRangeRead {
+                bytes: Bytes::new(),
+                source: PhysicalRangeReadSource::Network,
+            });
+        }
+
+        if let Some(cache) = &range_cache {
+            if let Some(bytes) = cache.load(&target, range.clone()).await? {
+                return Ok(PhysicalRangeRead {
+                    bytes,
+                    source: PhysicalRangeReadSource::Cache,
+                });
+            }
         }
 
         let read = reader
             .read_range_with_validation(
-                &object_url,
+                &target.object_source.url,
                 HttpByteRange::Bounded {
                     offset: range.start,
                     length,
@@ -1337,16 +1570,23 @@ impl HttpRangeAsyncFileReader {
         let observed_object_size = read.metadata.size_bytes.ok_or_else(|| {
             parquet_protocol_error("coalesced range response did not report object size metadata")
         })?;
-        if observed_object_size != expected_object_size {
+        if observed_object_size != target.size_bytes {
             return Err(parquet_protocol_error(format!(
-                "coalesced range response expected object size {expected_object_size} bytes, but the response reported {observed_object_size} bytes"
+                "coalesced range response expected object size {} bytes, but the response reported {observed_object_size} bytes",
+                target.size_bytes
             )));
         }
         metrics.record_bytes_fetched(
             u64::try_from(read.bytes.len())
                 .map_err(|_| execution_runtime_error("scan byte totals overflowed u64"))?,
         )?;
-        Ok(read.bytes)
+        if let Some(cache) = &range_cache {
+            cache.store(&target, range, read.bytes.clone()).await?;
+        }
+        Ok(PhysicalRangeRead {
+            bytes: read.bytes,
+            source: PhysicalRangeReadSource::Network,
+        })
     }
 
     async fn fetch_byte_ranges_owned(
@@ -1355,6 +1595,7 @@ impl HttpRangeAsyncFileReader {
         validation: Option<HttpRangeValidation>,
         request_timeout: Option<Duration>,
         metrics: SharedScanTargetMetricsHandle,
+        range_cache: Option<ParquetRangeCache>,
         phase: ParquetRangeReadPhase,
         ranges: Vec<Range<u64>>,
     ) -> Result<Vec<Bytes>, QueryError> {
@@ -1366,16 +1607,17 @@ impl HttpRangeAsyncFileReader {
                     execution_runtime_error("coalesced parquet reads require an If-Range validator")
                 })?;
                 let physical_start = planned.physical_range.start;
-                let bytes = Self::fetch_coalesced_range_owned(
+                let read = Self::fetch_coalesced_range_owned(
                     reader.clone(),
-                    target.object_source.url.clone(),
+                    target.clone(),
                     validation,
                     request_timeout,
                     metrics.clone(),
-                    target.size_bytes,
+                    range_cache.clone(),
                     planned.physical_range.clone(),
                 )
                 .await?;
+                let bytes = read.bytes;
 
                 let mut slices = Vec::with_capacity(planned.logical_ranges.len());
                 for logical in &planned.logical_ranges {
@@ -1413,7 +1655,9 @@ impl HttpRangeAsyncFileReader {
                     slices.push((logical.index, bytes.slice(slice_start..slice_end)));
                 }
 
-                metrics.record_coalesced_range_read(planned.coalesced_gap_bytes)?;
+                if read.source == PhysicalRangeReadSource::Network {
+                    metrics.record_coalesced_range_read(planned.coalesced_gap_bytes)?;
+                }
                 for logical in &planned.logical_ranges {
                     metrics.record_range_read(
                         phase,
@@ -1432,19 +1676,18 @@ impl HttpRangeAsyncFileReader {
                     .into_iter()
                     .next()
                     .ok_or_else(|| execution_runtime_error("range read plan was empty"))?;
-                let bytes = Self::fetch_range_owned(
+                let read = Self::fetch_range_owned(
                     reader.clone(),
-                    target.object_source.url.clone(),
+                    target.clone(),
                     validation.clone(),
                     request_timeout,
                     metrics.clone(),
+                    range_cache.clone(),
                     phase,
-                    target.path.clone(),
-                    target.object_identity(),
                     logical.range,
                 )
                 .await?;
-                outputs[logical.index] = Some(bytes);
+                outputs[logical.index] = Some(read.bytes);
             }
         }
 
@@ -1574,12 +1817,11 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
                     .expect("metadata probe round trips should not overflow");
             }
             let reader = self.reader.clone();
-            let object_url = self.target.object_source.url.clone();
-            let metric_resource = self.target.path.clone();
-            let object_identity = self.target.object_identity();
+            let target = self.target.clone();
             let validation = self.validation();
             let request_timeout = self.request_timeout;
             let metrics = self.metrics.clone();
+            let range_cache = self.range_cache.clone();
             let phase = if self.count_metadata_fetches {
                 ParquetRangeReadPhase::ScanFooter
             } else {
@@ -1588,16 +1830,16 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
             let (future, handle) = async move {
                 Self::fetch_range_owned(
                     reader,
-                    object_url,
+                    target,
                     validation,
                     request_timeout,
                     metrics,
+                    range_cache,
                     phase,
-                    metric_resource,
-                    object_identity,
                     range,
                 )
                 .await
+                .map(|read| read.bytes)
                 .map_err(parquet_error_from_query_error)
             }
             .remote_handle();
@@ -1620,16 +1862,16 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
             };
             Self::fetch_range_owned(
                 self.reader.clone(),
-                self.target.object_source.url.clone(),
+                self.target.clone(),
                 self.validation(),
                 self.request_timeout,
                 self.metrics.clone(),
+                self.range_cache.clone(),
                 phase,
-                self.target.path.clone(),
-                self.target.object_identity(),
                 range,
             )
             .await
+            .map(|read| read.bytes)
             .map_err(parquet_error_from_query_error)
         }
         .boxed()
@@ -1666,6 +1908,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
             let target = self.target.clone();
             let request_timeout = self.request_timeout;
             let metrics = self.metrics.clone();
+            let range_cache = self.range_cache.clone();
             let (future, handle) = async move {
                 Self::fetch_byte_ranges_owned(
                     reader,
@@ -1673,6 +1916,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
                     validation,
                     request_timeout,
                     metrics,
+                    range_cache,
                     phase,
                     ranges,
                 )
@@ -1692,6 +1936,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
                 validation,
                 self.request_timeout,
                 self.metrics.clone(),
+                self.range_cache.clone(),
                 phase,
                 ranges,
             )
@@ -1878,13 +2123,14 @@ pub async fn stream_scan_target_batches_with_row_group_pruning(
     row_group_predicate: Option<&ParquetRowGroupPruningPredicate>,
 ) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
 {
-    stream_scan_target_batches_with_row_group_pruning_and_cache(
+    stream_scan_target_batches_with_row_group_pruning_and_caches(
         reader,
         target,
         required_columns,
         partition_column_types,
         request_timeout,
         row_group_predicate,
+        None,
         None,
     )
     .await
@@ -1898,6 +2144,30 @@ pub async fn stream_scan_target_batches_with_row_group_pruning_and_cache(
     request_timeout: Option<Duration>,
     row_group_predicate: Option<&ParquetRowGroupPruningPredicate>,
     cache: Option<&ParquetMetadataCache>,
+) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
+{
+    stream_scan_target_batches_with_row_group_pruning_and_caches(
+        reader,
+        target,
+        required_columns,
+        partition_column_types,
+        request_timeout,
+        row_group_predicate,
+        cache,
+        None,
+    )
+    .await
+}
+
+pub async fn stream_scan_target_batches_with_row_group_pruning_and_caches(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    required_columns: &[String],
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    request_timeout: Option<Duration>,
+    row_group_predicate: Option<&ParquetRowGroupPruningPredicate>,
+    metadata_cache: Option<&ParquetMetadataCache>,
+    range_cache: Option<&ParquetRangeCache>,
 ) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
 {
     let metrics_handle = SharedScanTargetMetricsHandle::new(ScanTargetMetricsSnapshot {
@@ -1916,7 +2186,8 @@ pub async fn stream_scan_target_batches_with_row_group_pruning_and_cache(
         reader.clone(),
         target.clone(),
         request_timeout,
-        cache.cloned(),
+        metadata_cache.cloned(),
+        range_cache.cloned(),
         metrics_handle.clone(),
     ))
     .await
@@ -1993,6 +2264,8 @@ struct MultiScanState {
     partition_column_types: BTreeMap<String, PartitionColumnType>,
     request_timeout: Option<Duration>,
     aggregate_metrics: AggregateScanTargetMetricsHandle,
+    metadata_cache: Option<ParquetMetadataCache>,
+    range_cache: Option<ParquetRangeCache>,
 }
 
 /// Streams record batches across multiple scan targets in target order.
@@ -2008,6 +2281,28 @@ pub async fn stream_scan_targets(
     request_timeout: Option<Duration>,
 ) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
 {
+    stream_scan_targets_with_caches(
+        reader,
+        targets,
+        required_columns,
+        partition_column_types,
+        request_timeout,
+        None,
+        None,
+    )
+    .await
+}
+
+pub async fn stream_scan_targets_with_caches(
+    reader: &HttpRangeReader,
+    targets: &[ScanTarget],
+    required_columns: &[String],
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    request_timeout: Option<Duration>,
+    metadata_cache: Option<&ParquetMetadataCache>,
+    range_cache: Option<&ParquetRangeCache>,
+) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
+{
     let aggregate_handle = AggregateScanTargetMetricsHandle::default();
     let metrics: Arc<dyn ScanTargetMetricsHandle + Send + Sync> =
         Arc::new(aggregate_handle.clone());
@@ -2020,6 +2315,8 @@ pub async fn stream_scan_targets(
         partition_column_types: partition_column_types.clone(),
         request_timeout,
         aggregate_metrics: aggregate_handle,
+        metadata_cache: metadata_cache.cloned(),
+        range_cache: range_cache.cloned(),
     };
     let batches = stream::try_unfold(state, |mut state| async move {
         loop {
@@ -2035,12 +2332,15 @@ pub async fn stream_scan_targets(
             };
             state.next_target_index += 1;
 
-            let stream = stream_scan_target_batches(
+            let stream = stream_scan_target_batches_with_row_group_pruning_and_caches(
                 &state.reader,
                 &target,
                 &state.required_columns,
                 &state.partition_column_types,
                 state.request_timeout,
+                None,
+                state.metadata_cache.as_ref(),
+                state.range_cache.as_ref(),
             )
             .await?;
             state
@@ -2080,14 +2380,36 @@ pub async fn scan_target_input_rows_with_cache(
     request_timeout: Option<Duration>,
     cache: Option<&ParquetMetadataCache>,
 ) -> Result<Vec<ParquetInputRow>, QueryError> {
-    let stream = stream_scan_target_batches_with_row_group_pruning_and_cache(
+    scan_target_input_rows_with_caches(
+        reader,
+        target,
+        required_columns,
+        partition_column_types,
+        request_timeout,
+        cache,
+        None,
+    )
+    .await
+}
+
+pub async fn scan_target_input_rows_with_caches(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    required_columns: &[String],
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    request_timeout: Option<Duration>,
+    metadata_cache: Option<&ParquetMetadataCache>,
+    range_cache: Option<&ParquetRangeCache>,
+) -> Result<Vec<ParquetInputRow>, QueryError> {
+    let stream = stream_scan_target_batches_with_row_group_pruning_and_caches(
         reader,
         target,
         required_columns,
         partition_column_types,
         request_timeout,
         None,
-        cache,
+        metadata_cache,
+        range_cache,
     )
     .await?;
     stream
@@ -3486,8 +3808,8 @@ fn execution_runtime_error(message: impl Into<String>) -> QueryError {
 mod tests {
     use super::{
         merge_parquet_range_read_metrics, HttpRangeAsyncFileReader, ObjectSource,
-        ParquetObjectIdentity, ParquetRangeReadKey, ParquetRangeReadMetrics, ParquetRangeReadPhase,
-        ScanTarget, SharedScanTargetMetricsHandle,
+        ParquetObjectIdentity, ParquetRangeCache, ParquetRangeReadKey, ParquetRangeReadMetrics,
+        ParquetRangeReadPhase, ScanTarget, SharedScanTargetMetricsHandle,
     };
     use crate::{ScanTargetMetricsHandle, ScanTargetMetricsSnapshot};
     use parquet::arrow::async_reader::AsyncFileReader;
@@ -3642,6 +3964,179 @@ mod tests {
             4_096
         );
         assert_eq!(metrics.bytes_fetched, 69_632);
+    }
+
+    #[tokio::test]
+    async fn coalesced_physical_read_satisfies_later_overlapping_get_bytes_from_range_cache() {
+        let body = test_body(16 * 1024);
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+        let cache = ParquetRangeCache::default();
+        let mut reader =
+            test_async_reader_with_range_cache(&server, body.len(), Some("\"object-v1\""), cache);
+
+        let first_ranges = vec![1_024..2_048, 2_560..3_584];
+        let chunks = reader
+            .get_byte_ranges(first_ranges.clone())
+            .await
+            .expect("coalesced ranges should read");
+        assert_eq!(chunks, expected_chunks(&body, &first_ranges));
+
+        let overlapping = reader
+            .get_bytes(2_000..2_800)
+            .await
+            .expect("overlapping logical read should reuse cached physical bytes");
+
+        assert_eq!(
+            overlapping,
+            bytes::Bytes::copy_from_slice(&body[2_000..2_800])
+        );
+        assert_eq!(server.recorded_requests().len(), 1);
+        let metrics = reader.metrics.snapshot();
+        assert_eq!(metrics.bytes_fetched, 2_560);
+        assert_eq!(metrics.range_read_metrics.scan_data_range_reads, 3);
+        let cache_metrics = reader
+            .range_cache
+            .as_ref()
+            .expect("test reader should have a range cache")
+            .snapshot();
+        assert_eq!(cache_metrics.range_cache_hits, 1);
+        assert_eq!(cache_metrics.range_cache_misses, 1);
+        assert_eq!(cache_metrics.range_cache_stores, 1);
+    }
+
+    #[tokio::test]
+    async fn changed_strong_identity_refetches_overlapping_range_without_stale_cache_reuse() {
+        let body = test_body(16 * 1024);
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+        let cache = ParquetRangeCache::default();
+        let mut first_reader = test_async_reader_with_range_cache(
+            &server,
+            body.len(),
+            Some("\"object-v1\""),
+            cache.clone(),
+        );
+        first_reader
+            .get_bytes(1_024..2_048)
+            .await
+            .expect("first strong-identity range should read");
+
+        server.set_etag(Some("\"object-v2\"".to_string()));
+        let mut second_reader = test_async_reader_with_range_cache(
+            &server,
+            body.len(),
+            Some("\"object-v2\""),
+            cache.clone(),
+        );
+        let overlapping = second_reader
+            .get_bytes(1_536..1_792)
+            .await
+            .expect("changed identity must refetch overlapping bytes");
+
+        assert_eq!(
+            overlapping,
+            bytes::Bytes::copy_from_slice(&body[1_536..1_792])
+        );
+        assert_eq!(server.recorded_requests().len(), 2);
+        let cache_metrics = cache.snapshot();
+        assert_eq!(cache_metrics.range_cache_hits, 0);
+        assert_eq!(cache_metrics.range_cache_misses, 2);
+        assert_eq!(cache_metrics.range_cache_identity_drift_misses, 1);
+    }
+
+    #[tokio::test]
+    async fn changed_size_identity_refetches_overlapping_range_without_stale_cache_reuse() {
+        let body = test_body(16 * 1024);
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+        let cache = ParquetRangeCache::default();
+        let mut first_reader = test_async_reader_with_range_cache(
+            &server,
+            body.len(),
+            Some("\"object-v1\""),
+            cache.clone(),
+        );
+        first_reader
+            .get_bytes(1_024..2_048)
+            .await
+            .expect("first strong-identity range should read");
+
+        let mut second_reader = test_async_reader_with_range_cache(
+            &server,
+            body.len() + 1,
+            Some("\"object-v1\""),
+            cache.clone(),
+        );
+        let overlapping = second_reader
+            .get_bytes(1_536..1_792)
+            .await
+            .expect("changed size identity must refetch overlapping bytes");
+
+        assert_eq!(
+            overlapping,
+            bytes::Bytes::copy_from_slice(&body[1_536..1_792])
+        );
+        assert_eq!(server.recorded_requests().len(), 2);
+        let cache_metrics = cache.snapshot();
+        assert_eq!(cache_metrics.range_cache_hits, 0);
+        assert_eq!(cache_metrics.range_cache_misses, 2);
+        assert_eq!(cache_metrics.range_cache_identity_drift_misses, 1);
+    }
+
+    #[tokio::test]
+    async fn weak_identity_skips_range_cache_lookup_and_store() {
+        let body = test_body(16 * 1024);
+        let server = RangeCoalescingServer::new(body.clone(), Some("W/\"object-v1\"".to_string()));
+        let cache = ParquetRangeCache::default();
+        let mut reader = test_async_reader_with_range_cache(
+            &server,
+            body.len(),
+            Some("W/\"object-v1\""),
+            cache.clone(),
+        );
+
+        let first = reader
+            .get_bytes(1_024..2_048)
+            .await
+            .expect("weak identity range should read");
+        let second = reader
+            .get_bytes(1_536..1_792)
+            .await
+            .expect("weak identity overlap should refetch");
+
+        assert_eq!(first, bytes::Bytes::copy_from_slice(&body[1_024..2_048]));
+        assert_eq!(second, bytes::Bytes::copy_from_slice(&body[1_536..1_792]));
+        assert_eq!(server.recorded_requests().len(), 2);
+        let cache_metrics = cache.snapshot();
+        assert_eq!(cache_metrics.range_cache_hits, 0);
+        assert_eq!(cache_metrics.range_cache_misses, 0);
+        assert_eq!(cache_metrics.range_cache_stores, 0);
+        assert_eq!(cache_metrics.range_cache_degraded_identity_reads, 2);
+    }
+
+    #[tokio::test]
+    async fn missing_identity_skips_range_cache_lookup_and_store() {
+        let body = test_body(16 * 1024);
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+        let cache = ParquetRangeCache::default();
+        let mut reader =
+            test_async_reader_with_range_cache(&server, body.len(), None, cache.clone());
+
+        let first = reader
+            .get_bytes(1_024..2_048)
+            .await
+            .expect("missing identity range should read");
+        let second = reader
+            .get_bytes(1_536..1_792)
+            .await
+            .expect("missing identity overlap should refetch");
+
+        assert_eq!(first, bytes::Bytes::copy_from_slice(&body[1_024..2_048]));
+        assert_eq!(second, bytes::Bytes::copy_from_slice(&body[1_536..1_792]));
+        assert_eq!(server.recorded_requests().len(), 2);
+        let cache_metrics = cache.snapshot();
+        assert_eq!(cache_metrics.range_cache_hits, 0);
+        assert_eq!(cache_metrics.range_cache_misses, 0);
+        assert_eq!(cache_metrics.range_cache_stores, 0);
+        assert_eq!(cache_metrics.range_cache_degraded_identity_reads, 2);
     }
 
     #[tokio::test]
@@ -4071,6 +4566,29 @@ mod tests {
         object_len: usize,
         object_etag: Option<&str>,
     ) -> HttpRangeAsyncFileReader {
+        test_async_reader_with_optional_range_cache(server, object_len, object_etag, None)
+    }
+
+    fn test_async_reader_with_range_cache(
+        server: &RangeCoalescingServer,
+        object_len: usize,
+        object_etag: Option<&str>,
+        range_cache: ParquetRangeCache,
+    ) -> HttpRangeAsyncFileReader {
+        test_async_reader_with_optional_range_cache(
+            server,
+            object_len,
+            object_etag,
+            Some(range_cache),
+        )
+    }
+
+    fn test_async_reader_with_optional_range_cache(
+        server: &RangeCoalescingServer,
+        object_len: usize,
+        object_etag: Option<&str>,
+        range_cache: Option<ParquetRangeCache>,
+    ) -> HttpRangeAsyncFileReader {
         HttpRangeAsyncFileReader::new(
             HttpRangeReader::new(),
             ScanTarget {
@@ -4082,6 +4600,7 @@ mod tests {
             },
             None,
             None,
+            range_cache,
             SharedScanTargetMetricsHandle::new(ScanTargetMetricsSnapshot::default()),
         )
     }
@@ -4126,6 +4645,7 @@ mod tests {
         address: std::net::SocketAddr,
         stop: Arc<AtomicBool>,
         requests: Arc<Mutex<Vec<CapturedRequest>>>,
+        etag: Arc<Mutex<Option<String>>>,
         thread: Option<JoinHandle<()>>,
     }
 
@@ -4148,6 +4668,8 @@ mod tests {
             let stop_for_thread = Arc::clone(&stop);
             let requests = Arc::new(Mutex::new(Vec::new()));
             let requests_for_thread = Arc::clone(&requests);
+            let etag = Arc::new(Mutex::new(etag));
+            let etag_for_thread = Arc::clone(&etag);
 
             let thread = thread::spawn(move || {
                 while !stop_for_thread.load(Ordering::SeqCst) {
@@ -4164,6 +4686,10 @@ mod tests {
                                 .lock()
                                 .expect("recorded requests should be writable")
                                 .push(request.clone());
+                            let etag = etag_for_thread
+                                .lock()
+                                .expect("test server ETag should be readable")
+                                .clone();
                             write_response(
                                 &mut stream,
                                 ranged_response(&request, &body, etag.as_deref(), behavior),
@@ -4181,6 +4707,7 @@ mod tests {
                 address,
                 stop,
                 requests,
+                etag,
                 thread: Some(thread),
             }
         }
@@ -4194,6 +4721,13 @@ mod tests {
                 .lock()
                 .expect("recorded requests should be readable")
                 .clone()
+        }
+
+        fn set_etag(&self, etag: Option<String>) {
+            *self
+                .etag
+                .lock()
+                .expect("test server ETag should be writable") = etag;
         }
     }
 

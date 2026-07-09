@@ -824,7 +824,7 @@ impl MemoryPersistentExtentCache {
         }
     }
 
-    fn load_entry(
+    pub fn load_extent(
         &self,
         key: &ExtentCacheKey,
         requested_extent: ByteExtent,
@@ -845,7 +845,7 @@ impl MemoryPersistentExtentCache {
         Ok(Some(loaded))
     }
 
-    fn store_entry(&self, entry: &ExtentCacheEntry) -> Result<(), QueryError> {
+    pub fn store_extent(&self, entry: &ExtentCacheEntry) -> Result<(), QueryError> {
         let mut entries = self
             .entries
             .lock()
@@ -879,11 +879,11 @@ impl PersistentExtentCache for MemoryPersistentExtentCache {
         key: &'a ExtentCacheKey,
         requested_extent: ByteExtent,
     ) -> PersistentCacheFuture<'a, Option<ExtentCacheEntry>> {
-        Box::pin(async move { self.load_entry(key, requested_extent) })
+        Box::pin(async move { self.load_extent(key, requested_extent) })
     }
 
     fn store<'a>(&'a self, entry: &'a ExtentCacheEntry) -> PersistentCacheFuture<'a, ()> {
-        Box::pin(async move { self.store_entry(entry) })
+        Box::pin(async move { self.store_extent(entry) })
     }
 }
 
