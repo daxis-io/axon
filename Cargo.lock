@@ -492,7 +492,9 @@ dependencies = [
 name = "browser-engine-worker"
 version = "0.1.0"
 dependencies = [
+ "axon-contract-proto",
  "browser-sdk",
+ "buffa",
  "js-sys",
  "query-contract",
  "serde",

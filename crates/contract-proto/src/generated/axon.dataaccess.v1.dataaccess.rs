@@ -1261,7 +1261,7 @@ pub struct BrowserHttpSnapshotDescriptor {
     /// Field 1: `table_uri`
     pub table_uri: ::buffa::alloc::string::String,
     /// Field 2: `snapshot_version`
-    pub snapshot_version: i64,
+    pub snapshot_version: ::core::option::Option<i64>,
     /// Field 3: `partition_column_types`
     pub partition_column_types: ::buffa::__private::HashMap<
         ::buffa::alloc::string::String,
@@ -1295,6 +1295,15 @@ impl BrowserHttpSnapshotDescriptor {
     /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
     pub const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.BrowserHttpSnapshotDescriptor";
 }
+impl BrowserHttpSnapshotDescriptor {
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::snapshot_version`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_snapshot_version(mut self, value: i64) -> Self {
+        self.snapshot_version = Some(value);
+        self
+    }
+}
 ::buffa::impl_default_instance!(BrowserHttpSnapshotDescriptor);
 impl ::buffa::MessageName for BrowserHttpSnapshotDescriptor {
     const PACKAGE: &'static str = "axon.dataaccess.v1";
@@ -1316,10 +1325,8 @@ impl ::buffa::Message for BrowserHttpSnapshotDescriptor {
         if !self.table_uri.is_empty() {
             size += 1u32 + ::buffa::types::string_encoded_len(&self.table_uri) as u32;
         }
-        if self.snapshot_version != 0i64 {
-            size
-                += 1u32
-                    + ::buffa::types::int64_encoded_len(self.snapshot_version) as u32;
+        if let Some(v) = self.snapshot_version {
+            size += 1u32 + ::buffa::types::int64_encoded_len(v) as u32;
         }
         size
             += ::buffa::map_codec::field_len::<
@@ -1364,8 +1371,8 @@ impl ::buffa::Message for BrowserHttpSnapshotDescriptor {
         if !self.table_uri.is_empty() {
             ::buffa::types::put_string_field(1u32, &self.table_uri, buf);
         }
-        if self.snapshot_version != 0i64 {
-            ::buffa::types::put_int64_field(2u32, self.snapshot_version, buf);
+        if let Some(v) = self.snapshot_version {
+            ::buffa::types::put_int64_field(2u32, v, buf);
         }
         ::buffa::map_codec::write_field::<
             ::buffa::map_codec::Str,
@@ -1409,7 +1416,9 @@ impl ::buffa::Message for BrowserHttpSnapshotDescriptor {
                     tag,
                     ::buffa::encoding::WireType::Varint,
                 )?;
-                self.snapshot_version = ::buffa::types::decode_int64(buf)?;
+                self.snapshot_version = ::core::option::Option::Some(
+                    ::buffa::types::decode_int64(buf)?,
+                );
             }
             3u32 => {
                 ::buffa::encoding::check_wire_type(
@@ -1462,7 +1471,7 @@ impl ::buffa::Message for BrowserHttpSnapshotDescriptor {
     }
     fn clear(&mut self) {
         self.table_uri.clear();
-        self.snapshot_version = 0i64;
+        self.snapshot_version = ::core::option::Option::None;
         self.partition_column_types.clear();
         self.browser_compatibility = ::buffa::MessageField::none();
         self.required_capabilities = ::buffa::MessageField::none();
@@ -1472,6 +1481,211 @@ impl ::buffa::Message for BrowserHttpSnapshotDescriptor {
 }
 impl ::buffa::ExtensionSet for BrowserHttpSnapshotDescriptor {
     const PROTO_FQN: &'static str = "axon.dataaccess.v1.BrowserHttpSnapshotDescriptor";
+    fn unknown_fields(&self) -> &::buffa::UnknownFields {
+        &self.__buffa_unknown_fields
+    }
+    fn unknown_fields_mut(&mut self) -> &mut ::buffa::UnknownFields {
+        &mut self.__buffa_unknown_fields
+    }
+}
+/// Carries a directly openable Parquet dataset and its browser capability reports.
+#[derive(Clone, PartialEq, Default)]
+pub struct BrowserHttpParquetDatasetDescriptor {
+    /// Field 1: `table_uri`
+    pub table_uri: ::buffa::alloc::string::String,
+    /// Field 2: `partition_column_types`
+    pub partition_column_types: ::buffa::__private::HashMap<
+        ::buffa::alloc::string::String,
+        ::buffa::EnumValue<PartitionColumnType>,
+    >,
+    /// Field 3: `browser_compatibility`
+    pub browser_compatibility: ::buffa::MessageField<CapabilityReport>,
+    /// Field 4: `required_capabilities`
+    pub required_capabilities: ::buffa::MessageField<CapabilityReport>,
+    /// Field 5: `files`
+    pub files: ::buffa::alloc::vec::Vec<BrowserHttpFileDescriptor>,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
+}
+impl ::core::fmt::Debug for BrowserHttpParquetDatasetDescriptor {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("BrowserHttpParquetDatasetDescriptor")
+            .field("table_uri", &self.table_uri)
+            .field("partition_column_types", &self.partition_column_types)
+            .field("browser_compatibility", &self.browser_compatibility)
+            .field("required_capabilities", &self.required_capabilities)
+            .field("files", &self.files)
+            .finish()
+    }
+}
+impl BrowserHttpParquetDatasetDescriptor {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.BrowserHttpParquetDatasetDescriptor";
+}
+::buffa::impl_default_instance!(BrowserHttpParquetDatasetDescriptor);
+impl ::buffa::MessageName for BrowserHttpParquetDatasetDescriptor {
+    const PACKAGE: &'static str = "axon.dataaccess.v1";
+    const NAME: &'static str = "BrowserHttpParquetDatasetDescriptor";
+    const FULL_NAME: &'static str = "axon.dataaccess.v1.BrowserHttpParquetDatasetDescriptor";
+    const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.BrowserHttpParquetDatasetDescriptor";
+}
+impl ::buffa::Message for BrowserHttpParquetDatasetDescriptor {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if !self.table_uri.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.table_uri) as u32;
+        }
+        size
+            += ::buffa::map_codec::field_len::<
+                ::buffa::map_codec::Str,
+                ::buffa::map_codec::OpenEnum<_>,
+                _,
+            >(&self.partition_column_types, 1u32);
+        if self.browser_compatibility.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.browser_compatibility.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        if self.required_capabilities.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.required_capabilities.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        for v in &self.files {
+            let __slot = __cache.reserve();
+            let inner_size = v.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        size
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if !self.table_uri.is_empty() {
+            ::buffa::types::put_string_field(1u32, &self.table_uri, buf);
+        }
+        ::buffa::map_codec::write_field::<
+            ::buffa::map_codec::Str,
+            ::buffa::map_codec::OpenEnum<_>,
+            _,
+        >(&self.partition_column_types, 2u32, buf);
+        if self.browser_compatibility.is_set() {
+            ::buffa::types::put_len_delimited_header(3u32, __cache.consume_next(), buf);
+            self.browser_compatibility.write_to(__cache, buf);
+        }
+        if self.required_capabilities.is_set() {
+            ::buffa::types::put_len_delimited_header(4u32, __cache.consume_next(), buf);
+            self.required_capabilities.write_to(__cache, buf);
+        }
+        for v in &self.files {
+            ::buffa::types::put_len_delimited_header(5u32, __cache.consume_next(), buf);
+            v.write_to(__cache, buf);
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::types::merge_string(&mut self.table_uri, buf)?;
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::map_codec::merge_entry::<
+                    ::buffa::map_codec::Str,
+                    ::buffa::map_codec::OpenEnum<_>,
+                    _,
+                >(&mut self.partition_column_types, buf, ctx)?;
+            }
+            3u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::Message::merge_length_delimited(
+                    self.browser_compatibility.get_or_insert_default(),
+                    buf,
+                    ctx,
+                )?;
+            }
+            4u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::Message::merge_length_delimited(
+                    self.required_capabilities.get_or_insert_default(),
+                    buf,
+                    ctx,
+                )?;
+            }
+            5u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                let mut elem = ::core::default::Default::default();
+                ::buffa::Message::merge_length_delimited(&mut elem, buf, ctx)?;
+                self.files.push(elem);
+            }
+            _ => {
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.table_uri.clear();
+        self.partition_column_types.clear();
+        self.browser_compatibility = ::buffa::MessageField::none();
+        self.required_capabilities = ::buffa::MessageField::none();
+        self.files.clear();
+        self.__buffa_unknown_fields.clear();
+    }
+}
+impl ::buffa::ExtensionSet for BrowserHttpParquetDatasetDescriptor {
+    const PROTO_FQN: &'static str = "axon.dataaccess.v1.BrowserHttpParquetDatasetDescriptor";
     fn unknown_fields(&self) -> &::buffa::UnknownFields {
         &self.__buffa_unknown_fields
     }

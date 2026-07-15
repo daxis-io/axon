@@ -10,6 +10,8 @@ use browser_sdk::{
     BrowserWorkerProgressStage, BrowserWorkerResponseEnvelope, BrowserWorkerSqlCommand,
     BrowserWorkerSqlDelivery,
 };
+#[cfg(feature = "exec-contract-size-probe")]
+use buffa::Message as _;
 use query_contract::{
     BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget,
     FallbackReason, QueryError, QueryErrorCode, QueryExecutionOptions, QueryMetricsSummary,
@@ -28,6 +30,49 @@ pub const DEFAULT_ARROW_IPC_CHUNK_BYTES: usize = 1024 * 1024;
 const BROWSER_SAFE_RESULT_ROW_LIMIT: u64 = MAX_QUERY_RESULT_PAGE_LIMIT;
 const BROWSER_SAFE_ARROW_IPC_BYTES: u64 = 8 * 1024 * 1024;
 const BROWSER_SAFE_PREVIEW_STRING_BYTES: u64 = 256 * 1024;
+
+/// Forces the generated execution-contract encoder into a feature-gated worker artifact.
+///
+/// This export is disabled in production builds and exists only so the E3A size gate measures
+/// the real browser worker with representative common, data-access, and execution messages linked.
+#[cfg(feature = "exec-contract-size-probe")]
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
+pub extern "C" fn exec_contract_size_probe_encoded_len() -> usize {
+    use axon_contract_proto::{axon, axon_exec_v1};
+
+    let snapshot = axon::dataaccess::v1::BrowserHttpSnapshotDescriptor {
+        table_uri: "https://storage.example.test/table".into(),
+        snapshot_version: Some(0),
+        ..Default::default()
+    };
+    let request = axon_exec_v1::ExecuteRequest {
+        request_id: "exec-contract-size-probe".into(),
+        table_ref: axon::common::v1::ObjectRef {
+            connection_id: "probe".into(),
+            catalog: "main".into(),
+            schema: "default".into(),
+            name: "events".into(),
+            ..Default::default()
+        }
+        .into(),
+        descriptor: axon_exec_v1::OpenableDescriptor {
+            descriptor: snapshot.into(),
+            ..Default::default()
+        }
+        .into(),
+        query: axon_exec_v1::QueryRequest {
+            table_uri: "https://storage.example.test/table".into(),
+            snapshot_version: Some(0),
+            sql: "SELECT * FROM events".into(),
+            preferred_target: axon_exec_v1::ExecutionTarget::BrowserWasm.into(),
+            ..Default::default()
+        }
+        .into(),
+        ..Default::default()
+    };
+
+    request.encode_to_vec().len()
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

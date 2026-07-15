@@ -48,6 +48,10 @@ pub use self::__buffa::view::BrowserHttpSnapshotDescriptorView;
 #[doc(inline)]
 pub use self::__buffa::view::BrowserHttpSnapshotDescriptorOwnedView;
 #[doc(inline)]
+pub use self::__buffa::view::BrowserHttpParquetDatasetDescriptorView;
+#[doc(inline)]
+pub use self::__buffa::view::BrowserHttpParquetDatasetDescriptorOwnedView;
+#[doc(inline)]
 pub use self::__buffa::view::BrokeredObjectAccessView;
 #[doc(inline)]
 pub use self::__buffa::view::BrokeredObjectAccessOwnedView;

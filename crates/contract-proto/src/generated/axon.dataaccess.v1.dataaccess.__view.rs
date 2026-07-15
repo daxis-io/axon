@@ -966,7 +966,7 @@ pub struct BrowserHttpSnapshotDescriptorView<'a> {
     /// Field 1: `table_uri`
     pub table_uri: &'a str,
     /// Field 2: `snapshot_version`
-    pub snapshot_version: i64,
+    pub snapshot_version: ::core::option::Option<i64>,
     /// Field 3: `partition_column_types` (map)
     pub partition_column_types: ::buffa::MapView<
         'a,
@@ -1027,7 +1027,7 @@ impl<'a> ::buffa::MessageView<'a> for BrowserHttpSnapshotDescriptorView<'a> {
                     tag,
                     ::buffa::encoding::WireType::Varint,
                 )?;
-                view.snapshot_version = ::buffa::types::decode_int64(&mut cur)?;
+                view.snapshot_version = Some(::buffa::types::decode_int64(&mut cur)?);
             }
             4u32 => {
                 ::buffa::encoding::check_wire_type(
@@ -1195,10 +1195,8 @@ impl<'a> ::buffa::ViewEncode<'a> for BrowserHttpSnapshotDescriptorView<'a> {
         if !self.table_uri.is_empty() {
             size += 1u32 + ::buffa::types::string_encoded_len(&self.table_uri) as u32;
         }
-        if self.snapshot_version != 0i64 {
-            size
-                += 1u32
-                    + ::buffa::types::int64_encoded_len(self.snapshot_version) as u32;
+        if let Some(v) = self.snapshot_version {
+            size += 1u32 + ::buffa::types::int64_encoded_len(v) as u32;
         }
         #[allow(clippy::for_kv_map)]
         for (k, v) in &self.partition_column_types {
@@ -1246,8 +1244,8 @@ impl<'a> ::buffa::ViewEncode<'a> for BrowserHttpSnapshotDescriptorView<'a> {
         if !self.table_uri.is_empty() {
             ::buffa::types::put_string_field(1u32, &self.table_uri, buf);
         }
-        if self.snapshot_version != 0i64 {
-            ::buffa::types::put_int64_field(2u32, self.snapshot_version, buf);
+        if let Some(v) = self.snapshot_version {
+            ::buffa::types::put_int64_field(2u32, v, buf);
         }
         for (k, v) in &self.partition_column_types {
             let entry_size: u32 = 1u32 + ::buffa::types::string_encoded_len(k) as u32
@@ -1383,7 +1381,7 @@ impl BrowserHttpSnapshotDescriptorOwnedView {
     }
     /// Field 2: `snapshot_version`
     #[must_use]
-    pub fn snapshot_version(&self) -> i64 {
+    pub fn snapshot_version(&self) -> ::core::option::Option<i64> {
         self.0.reborrow().snapshot_version
     }
     /// Field 3: `partition_column_types` (map)
@@ -1451,6 +1449,481 @@ impl ::core::convert::AsRef<
 impl ::buffa::HasMessageView for super::super::BrowserHttpSnapshotDescriptor {
     type View<'a> = BrowserHttpSnapshotDescriptorView<'a>;
     type ViewHandle = BrowserHttpSnapshotDescriptorOwnedView;
+}
+/// Carries a directly openable Parquet dataset and its browser capability reports.
+#[derive(Clone, Debug, Default)]
+pub struct BrowserHttpParquetDatasetDescriptorView<'a> {
+    /// Field 1: `table_uri`
+    pub table_uri: &'a str,
+    /// Field 2: `partition_column_types` (map)
+    pub partition_column_types: ::buffa::MapView<
+        'a,
+        &'a str,
+        ::buffa::EnumValue<super::super::PartitionColumnType>,
+    >,
+    /// Field 3: `browser_compatibility`
+    pub browser_compatibility: ::buffa::MessageFieldView<
+        super::super::__buffa::view::CapabilityReportView<'a>,
+    >,
+    /// Field 4: `required_capabilities`
+    pub required_capabilities: ::buffa::MessageFieldView<
+        super::super::__buffa::view::CapabilityReportView<'a>,
+    >,
+    /// Field 5: `files`
+    pub files: ::buffa::RepeatedView<
+        'a,
+        super::super::__buffa::view::BrowserHttpFileDescriptorView<'a>,
+    >,
+    pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
+}
+impl<'a> ::buffa::MessageView<'a> for BrowserHttpParquetDatasetDescriptorView<'a> {
+    type Owned = super::super::BrowserHttpParquetDatasetDescriptor;
+    fn decode_view(buf: &'a [u8]) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        let __limit = ::core::cell::Cell::new(::buffa::DEFAULT_UNKNOWN_FIELD_LIMIT);
+        <Self as ::buffa::MessageView>::decode_view_ctx(
+            buf,
+            ::buffa::DecodeContext::new(::buffa::RECURSION_LIMIT, &__limit),
+        )
+    }
+    fn decode_view_with_ctx(
+        buf: &'a [u8],
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        <Self as ::buffa::MessageView>::decode_view_ctx(buf, ctx)
+    }
+    fn merge_view_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        cur: &'a [u8],
+        before_tag: &'a [u8],
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<&'a [u8], ::buffa::DecodeError> {
+        let _ = ctx;
+        #[allow(unused_variables)]
+        let view = self;
+        let mut cur = cur;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                view.table_uri = ::buffa::types::borrow_str(&mut cur)?;
+            }
+            3u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                let __sub_ctx = ctx.descend()?;
+                let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                match view.browser_compatibility.as_mut() {
+                    Some(existing) => {
+                        ::buffa::MessageView::merge_into_view(existing, sub, __sub_ctx)?
+                    }
+                    None => {
+                        view.browser_compatibility = ::buffa::MessageFieldView::set(
+                            <super::super::__buffa::view::CapabilityReportView as ::buffa::MessageView>::decode_view_ctx(
+                                sub,
+                                __sub_ctx,
+                            )?,
+                        );
+                    }
+                }
+            }
+            4u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                let __sub_ctx = ctx.descend()?;
+                let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                match view.required_capabilities.as_mut() {
+                    Some(existing) => {
+                        ::buffa::MessageView::merge_into_view(existing, sub, __sub_ctx)?
+                    }
+                    None => {
+                        view.required_capabilities = ::buffa::MessageFieldView::set(
+                            <super::super::__buffa::view::CapabilityReportView as ::buffa::MessageView>::decode_view_ctx(
+                                sub,
+                                __sub_ctx,
+                            )?,
+                        );
+                    }
+                }
+            }
+            5u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                let __sub_ctx = ctx.descend()?;
+                let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                view.files
+                    .push(
+                        <super::super::__buffa::view::BrowserHttpFileDescriptorView as ::buffa::MessageView>::decode_view_ctx(
+                            sub,
+                            __sub_ctx,
+                        )?,
+                    );
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                let entry_bytes = ::buffa::types::borrow_bytes(&mut cur)?;
+                let mut entry_cur: &'a [u8] = entry_bytes;
+                let mut key = "";
+                let mut val = ::core::default::Default::default();
+                while !entry_cur.is_empty() {
+                    let entry_tag = ::buffa::encoding::Tag::decode(&mut entry_cur)?;
+                    match entry_tag.field_number() {
+                        1 => {
+                            ::buffa::encoding::check_wire_type(
+                                entry_tag,
+                                ::buffa::encoding::WireType::LengthDelimited,
+                            )?;
+                            key = ::buffa::types::borrow_str(&mut entry_cur)?;
+                        }
+                        2 => {
+                            ::buffa::encoding::check_wire_type(
+                                entry_tag,
+                                ::buffa::encoding::WireType::Varint,
+                            )?;
+                            val = ::buffa::EnumValue::from(
+                                ::buffa::types::decode_int32(&mut entry_cur)?,
+                            );
+                        }
+                        _ => {
+                            ::buffa::encoding::skip_field_depth(
+                                entry_tag,
+                                &mut entry_cur,
+                                ctx.depth(),
+                            )?;
+                        }
+                    }
+                }
+                view.partition_column_types.push(key, val);
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
+                let span_len = before_tag.len() - cur.len();
+                view.__buffa_unknown_fields.push_record(before_tag, span_len, ctx)?;
+            }
+        }
+        ::core::result::Result::Ok(cur)
+    }
+    fn to_owned_message(
+        &self,
+    ) -> ::core::result::Result<
+        super::super::BrowserHttpParquetDatasetDescriptor,
+        ::buffa::DecodeError,
+    > {
+        self.to_owned_from_source(None)
+    }
+    #[allow(clippy::useless_conversion, clippy::needless_update)]
+    fn to_owned_from_source(
+        &self,
+        __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+    ) -> ::core::result::Result<
+        super::super::BrowserHttpParquetDatasetDescriptor,
+        ::buffa::DecodeError,
+    > {
+        #[allow(unused_imports)]
+        use ::buffa::alloc::string::ToString as _;
+        let _ = __buffa_src;
+        ::core::result::Result::Ok(super::super::BrowserHttpParquetDatasetDescriptor {
+            table_uri: self.table_uri.to_string(),
+            partition_column_types: self
+                .partition_column_types
+                .iter()
+                .map(|(k, v)| (k.to_string(), *v))
+                .collect(),
+            browser_compatibility: match self.browser_compatibility.as_option() {
+                Some(v) => {
+                    ::buffa::MessageField::<
+                        super::super::CapabilityReport,
+                    >::some(v.to_owned_from_source(__buffa_src)?)
+                }
+                None => ::buffa::MessageField::none(),
+            },
+            required_capabilities: match self.required_capabilities.as_option() {
+                Some(v) => {
+                    ::buffa::MessageField::<
+                        super::super::CapabilityReport,
+                    >::some(v.to_owned_from_source(__buffa_src)?)
+                }
+                None => ::buffa::MessageField::none(),
+            },
+            files: self
+                .files
+                .iter()
+                .map(|v| v.to_owned_from_source(__buffa_src))
+                .collect::<::core::result::Result<_, ::buffa::DecodeError>>()?,
+            __buffa_unknown_fields: self.__buffa_unknown_fields.to_owned()?.into(),
+            ..::core::default::Default::default()
+        })
+    }
+}
+impl<'a> ::buffa::ViewEncode<'a> for BrowserHttpParquetDatasetDescriptorView<'a> {
+    #[allow(clippy::needless_borrow, clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if !self.table_uri.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.table_uri) as u32;
+        }
+        #[allow(clippy::for_kv_map)]
+        for (k, v) in &self.partition_column_types {
+            let entry_size: u32 = 1u32 + ::buffa::types::string_encoded_len(k) as u32
+                + 1u32 + ::buffa::types::int32_encoded_len(v.to_i32()) as u32;
+            size
+                += 1u32 + ::buffa::encoding::varint_len(entry_size as u64) as u32
+                    + entry_size;
+        }
+        if self.browser_compatibility.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.browser_compatibility.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        if self.required_capabilities.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.required_capabilities.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        for v in &self.files {
+            let __slot = __cache.reserve();
+            let inner_size = v.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        size
+    }
+    #[allow(clippy::needless_borrow)]
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if !self.table_uri.is_empty() {
+            ::buffa::types::put_string_field(1u32, &self.table_uri, buf);
+        }
+        for (k, v) in &self.partition_column_types {
+            let entry_size: u32 = 1u32 + ::buffa::types::string_encoded_len(k) as u32
+                + 1u32 + ::buffa::types::int32_encoded_len(v.to_i32()) as u32;
+            ::buffa::encoding::Tag::new(
+                    2u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::encoding::encode_varint(entry_size as u64, buf);
+            ::buffa::encoding::Tag::new(
+                    1u32,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )
+                .encode(buf);
+            ::buffa::types::encode_string(k, buf);
+            ::buffa::encoding::Tag::new(2u32, ::buffa::encoding::WireType::Varint)
+                .encode(buf);
+            ::buffa::types::encode_int32(v.to_i32(), buf);
+        }
+        if self.browser_compatibility.is_set() {
+            ::buffa::types::put_len_delimited_header(3u32, __cache.consume_next(), buf);
+            self.browser_compatibility.write_to(__cache, buf);
+        }
+        if self.required_capabilities.is_set() {
+            ::buffa::types::put_len_delimited_header(4u32, __cache.consume_next(), buf);
+            self.required_capabilities.write_to(__cache, buf);
+        }
+        for v in &self.files {
+            ::buffa::types::put_len_delimited_header(5u32, __cache.consume_next(), buf);
+            v.write_to(__cache, buf);
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+}
+impl<'a> ::buffa::MessageName for BrowserHttpParquetDatasetDescriptorView<'a> {
+    const PACKAGE: &'static str = "axon.dataaccess.v1";
+    const NAME: &'static str = "BrowserHttpParquetDatasetDescriptor";
+    const FULL_NAME: &'static str = "axon.dataaccess.v1.BrowserHttpParquetDatasetDescriptor";
+    const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.BrowserHttpParquetDatasetDescriptor";
+}
+::buffa::impl_default_view_instance!(BrowserHttpParquetDatasetDescriptorView);
+::buffa::impl_view_reborrow!(BrowserHttpParquetDatasetDescriptorView);
+/** Self-contained, `'static` owned view of a `BrowserHttpParquetDatasetDescriptor` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`BrowserHttpParquetDatasetDescriptorView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`BrowserHttpParquetDatasetDescriptorView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+#[derive(Clone, Debug)]
+pub struct BrowserHttpParquetDatasetDescriptorOwnedView(
+    ::buffa::OwnedView<BrowserHttpParquetDatasetDescriptorView<'static>>,
+);
+impl BrowserHttpParquetDatasetDescriptorOwnedView {
+    /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+    ///
+    /// The view borrows directly from the buffer's data; the buffer is
+    /// retained inside the returned handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+    /// protobuf data.
+    pub fn decode(
+        bytes: ::buffa::bytes::Bytes,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        ::core::result::Result::Ok(
+            BrowserHttpParquetDatasetDescriptorOwnedView(
+                ::buffa::OwnedView::decode(bytes)?,
+            ),
+        )
+    }
+    /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+    /// max message size).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+    /// exceeds the configured limits.
+    pub fn decode_with_options(
+        bytes: ::buffa::bytes::Bytes,
+        opts: &::buffa::DecodeOptions,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        ::core::result::Result::Ok(
+            BrowserHttpParquetDatasetDescriptorOwnedView(
+                ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+            ),
+        )
+    }
+    /// Build from an owned message via an encode → decode round-trip.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+    /// somehow invalid (should not happen for well-formed messages).
+    pub fn from_owned(
+        msg: &super::super::BrowserHttpParquetDatasetDescriptor,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        ::core::result::Result::Ok(
+            BrowserHttpParquetDatasetDescriptorOwnedView(
+                ::buffa::OwnedView::from_owned(msg)?,
+            ),
+        )
+    }
+    /// Borrow the full [`BrowserHttpParquetDatasetDescriptorView`] with its lifetime tied to `&self`.
+    #[must_use]
+    pub fn view(&self) -> &BrowserHttpParquetDatasetDescriptorView<'_> {
+        self.0.reborrow()
+    }
+    /// Convert to the owned message type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if re-materializing preserved unknown fields
+    /// fails (e.g. the unknown-field limit is exceeded).
+    pub fn to_owned_message(
+        &self,
+    ) -> ::core::result::Result<
+        super::super::BrowserHttpParquetDatasetDescriptor,
+        ::buffa::DecodeError,
+    > {
+        self.0.to_owned_message()
+    }
+    /// The underlying bytes buffer.
+    #[must_use]
+    pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+        self.0.bytes()
+    }
+    /// Consume the handle, returning the underlying bytes buffer.
+    #[must_use]
+    pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+        self.0.into_bytes()
+    }
+    /// Field 1: `table_uri`
+    #[must_use]
+    pub fn table_uri(&self) -> &'_ str {
+        self.0.reborrow().table_uri
+    }
+    /// Field 2: `partition_column_types` (map)
+    #[must_use]
+    pub fn partition_column_types(
+        &self,
+    ) -> &::buffa::MapView<
+        '_,
+        &'_ str,
+        ::buffa::EnumValue<super::super::PartitionColumnType>,
+    > {
+        &self.0.reborrow().partition_column_types
+    }
+    /// Field 3: `browser_compatibility`
+    #[must_use]
+    pub fn browser_compatibility(
+        &self,
+    ) -> &::buffa::MessageFieldView<
+        super::super::__buffa::view::CapabilityReportView<'_>,
+    > {
+        &self.0.reborrow().browser_compatibility
+    }
+    /// Field 4: `required_capabilities`
+    #[must_use]
+    pub fn required_capabilities(
+        &self,
+    ) -> &::buffa::MessageFieldView<
+        super::super::__buffa::view::CapabilityReportView<'_>,
+    > {
+        &self.0.reborrow().required_capabilities
+    }
+    /// Field 5: `files`
+    #[must_use]
+    pub fn files(
+        &self,
+    ) -> &::buffa::RepeatedView<
+        '_,
+        super::super::__buffa::view::BrowserHttpFileDescriptorView<'_>,
+    > {
+        &self.0.reborrow().files
+    }
+}
+impl ::core::convert::From<
+    ::buffa::OwnedView<BrowserHttpParquetDatasetDescriptorView<'static>>,
+> for BrowserHttpParquetDatasetDescriptorOwnedView {
+    fn from(
+        inner: ::buffa::OwnedView<BrowserHttpParquetDatasetDescriptorView<'static>>,
+    ) -> Self {
+        BrowserHttpParquetDatasetDescriptorOwnedView(inner)
+    }
+}
+impl ::core::convert::From<BrowserHttpParquetDatasetDescriptorOwnedView>
+for ::buffa::OwnedView<BrowserHttpParquetDatasetDescriptorView<'static>> {
+    fn from(wrapper: BrowserHttpParquetDatasetDescriptorOwnedView) -> Self {
+        wrapper.0
+    }
+}
+impl ::core::convert::AsRef<
+    ::buffa::OwnedView<BrowserHttpParquetDatasetDescriptorView<'static>>,
+> for BrowserHttpParquetDatasetDescriptorOwnedView {
+    fn as_ref(
+        &self,
+    ) -> &::buffa::OwnedView<BrowserHttpParquetDatasetDescriptorView<'static>> {
+        &self.0
+    }
+}
+impl ::buffa::HasMessageView for super::super::BrowserHttpParquetDatasetDescriptor {
+    type View<'a> = BrowserHttpParquetDatasetDescriptorView<'a>;
+    type ViewHandle = BrowserHttpParquetDatasetDescriptorOwnedView;
 }
 #[derive(Clone, Debug, Default)]
 pub struct BrokeredObjectAccessView<'a> {

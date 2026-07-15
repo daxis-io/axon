@@ -9,6 +9,7 @@ Current expectations:
 - Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`.
 - `crates/wasm-query-session` keeps repeated legacy narrow browser-query bootstrap costs in-memory only; persistent-cache hooks may exist lower in the stack, but OPFS / IndexedDB backends remain deferred. The Daxis-facing app worker is browser DataFusion-backed through `wasm-datafusion-session`.
 - The blocking artifact budget now targets the real `target/wasm32-unknown-unknown/release/browser_engine_worker.wasm` bundle through `tests/perf/report_browser_worker_artifact.sh`.
+- `tests/perf/report_exec_contract_worker_artifact.sh` enables the off-by-default `exec-contract-size-probe` feature, verifies the worker links `axon-contract-proto`, `buffa`, and `buffa-types`, confirms the probe export survives linking, and applies the same artifact budget. Normal worker builds do not enable this proof-only feature.
 - CI publishes a report-only host-proxy worker startup and memory baseline from `cargo test -p browser-engine-worker --locked report_worker_artifact_baseline -- --exact --nocapture`, while the wasm smoke validates the same report path on the browser target and the legacy narrow worker artifact report states `session_shell = true` and `browser_datafusion = false`. The DataFusion default worker artifact report states `browser_datafusion = true`, and its size evidence is captured through the `axon-web-wasm` DataFusion size report in the release process.
 - Local crate coverage still matters for regression detection:
   - `cargo test -p wasm-http-object-store --locked`
@@ -26,6 +27,7 @@ Supporting docs:
 Useful local commands:
 
 - `bash tests/perf/report_browser_worker_artifact.sh`
+- `bash tests/perf/report_exec_contract_worker_artifact.sh`
 - `cargo test -p wasm-http-object-store --locked`
 - `cargo test -p wasm-http-object-store --target wasm32-unknown-unknown --locked --test wasm_smoke`
 - `cargo test -p browser-engine-worker --target wasm32-unknown-unknown --locked --test wasm_smoke -- --nocapture`

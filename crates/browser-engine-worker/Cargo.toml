@@ -7,8 +7,13 @@ version.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+exec-contract-size-probe = ["dep:axon-contract-proto", "dep:buffa"]
+
 [dependencies]
+axon-contract-proto = { path = "../contract-proto", optional = true }
 browser-sdk = { path = "../browser-sdk" }
+buffa = { version = "=0.8.1", optional = true }
 js-sys = "=0.3.91"
 query-contract = { path = "../query-contract" }
 serde.workspace = true
