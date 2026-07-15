@@ -2,12 +2,15 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
+use bytes::Bytes;
 use query_contract::QueryErrorCode;
 use wasm_http_object_store::{
-    BrowserObject, BrowserObjectRangeReader, ByteExtent, HttpByteRange,
-    HttpMetadataProbeRequirements, HttpObjectMetadata, HttpRangeReader, HttpRangeValidation,
+    BrowserObject, BrowserObjectMetadata, BrowserObjectRangeReader, ByteExtent, ExtentCacheEntry,
+    ExtentCacheKey, HttpByteRange, HttpMetadataProbeRequirements, HttpObjectMetadata,
+    HttpRangeReader, HttpRangeValidation, MemoryPersistentExtentCache, RangeCacheIdentity,
 };
 
 const PARQUET_LIKE_BYTES: &[u8] = b"PAR1abcdefghijklmnoPAR1";
@@ -951,6 +954,53 @@ async fn signed_url_metadata_round_trips_without_forcing_a_reprobe() {
         Some(&"bytes=6-7".to_string())
     );
     assert_eq!(second.bytes.as_ref(), b"gh");
+}
+
+#[tokio::test]
+async fn signed_known_metadata_uses_the_canonical_resource_for_cache_reuse() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+    let base_url = format!(
+        "http://{}/object",
+        listener.local_addr().expect("addr should resolve")
+    );
+    drop(listener);
+    let signed_url = format!("{base_url}?sig=secret#fragment");
+    let identity = RangeCacheIdentity::strong(base_url.clone(), "\"v1\"", 8)
+        .expect("quoted ETag should be cacheable");
+    let persistent = Arc::new(MemoryPersistentExtentCache::with_max_entries(8));
+    persistent
+        .store_extent(
+            &ExtentCacheEntry::new(
+                ExtentCacheKey::from_identity(&identity),
+                ByteExtent::new(0, 8).expect("valid extent"),
+                Bytes::from_static(b"abcdefgh"),
+            )
+            .expect("valid cache entry"),
+        )
+        .expect("persistent cache should store the fixture");
+    let mut reader = BrowserObjectRangeReader::with_persistent_cache(persistent);
+
+    let result = reader
+        .read_extent(
+            &BrowserObject::http(signed_url.clone()),
+            ByteExtent::new(2, 4).expect("valid extent"),
+            Some(BrowserObjectMetadata {
+                resource: signed_url,
+                size_bytes: 8,
+                identity: "\"v1\"".to_string(),
+            }),
+        )
+        .await
+        .expect("canonical known metadata should reuse the cached extent without a request");
+
+    assert_eq!(result.bytes.as_ref(), b"cdef");
+    assert_eq!(result.metadata.resource, base_url);
+    assert_eq!(reader.metrics().bytes_fetched, 0);
+    assert_eq!(reader.metrics().bytes_reused, 4);
+    assert!(reader
+        .cached_extents_for_testing()
+        .iter()
+        .all(|entry| !entry.key.resource.contains("sig=secret")));
 }
 
 fn runtime() -> tokio::runtime::Runtime {

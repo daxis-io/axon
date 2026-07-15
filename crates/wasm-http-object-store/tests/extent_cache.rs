@@ -1,8 +1,14 @@
 use bytes::Bytes;
 use wasm_http_object_store::{
     coalesce_extents, BrowserLocalObject, BrowserObject, BrowserObjectRangeReader, ByteExtent,
-    ExtentCacheEntry, ExtentCacheKey,
+    ExtentCacheEntry, ExtentCacheKey, MemoryRangeCache, RangeCacheIdentity, RangeCacheLookup,
+    RangeCacheStoreOutcome,
 };
+
+fn strong_identity(resource: &str, etag: &str, size_bytes: u64) -> RangeCacheIdentity {
+    RangeCacheIdentity::strong(resource, etag, size_bytes)
+        .expect("quoted strong ETag should form a cache identity")
+}
 
 #[tokio::test]
 async fn coalesces_adjacent_ranges_before_fetch() {
@@ -75,4 +81,133 @@ async fn extent_cache_coalesces_adjacent_ranges_and_reuses_subranges() {
     );
     assert_eq!(reader.metrics().bytes_fetched, 8);
     assert_eq!(reader.metrics().bytes_reused, 4);
+}
+
+#[test]
+fn strong_range_cache_identity_rejects_invalid_inputs() {
+    assert!(RangeCacheIdentity::strong("", "\"v1\"", 8).is_none());
+    assert!(RangeCacheIdentity::strong("https://example.com/object", "", 8).is_none());
+    assert!(RangeCacheIdentity::strong("https://example.com/object", "W/\"v1\"", 8).is_none());
+    assert!(RangeCacheIdentity::strong("https://example.com/object", "v1", 8).is_none());
+    assert!(RangeCacheIdentity::strong("https://example.com/object", "\"\"", 8).is_none());
+}
+
+#[test]
+fn memory_range_cache_reuses_identity_scoped_containing_subranges() {
+    let identity = strong_identity("https://example.com/object", "\"v1\"", 8);
+    let other_resource = strong_identity("https://example.com/other", "\"v1\"", 8);
+    let cache = MemoryRangeCache::new();
+
+    assert_eq!(
+        cache.store(
+            &identity,
+            ByteExtent::new(0, 8).expect("valid extent"),
+            Bytes::from_static(b"abcdefgh"),
+        ),
+        RangeCacheStoreOutcome::Stored
+    );
+    assert_eq!(
+        cache.load(&identity, ByteExtent::new(2, 4).expect("valid extent")),
+        RangeCacheLookup::Hit {
+            bytes: Bytes::from_static(b"cdef")
+        }
+    );
+    assert_eq!(
+        cache.load(
+            &other_resource,
+            ByteExtent::new(2, 4).expect("valid extent")
+        ),
+        RangeCacheLookup::Miss
+    );
+}
+
+#[test]
+fn memory_range_cache_evicts_etag_and_size_drift() {
+    let identity_v1 = strong_identity("https://example.com/object", "\"v1\"", 8);
+    let identity_v2 = strong_identity("https://example.com/object", "\"v2\"", 8);
+    let identity_size_drift = strong_identity("https://example.com/object", "\"v2\"", 9);
+    let cache = MemoryRangeCache::new();
+    let extent = ByteExtent::new(0, 4).expect("valid extent");
+
+    assert_eq!(
+        cache.store(&identity_v1, extent, Bytes::from_static(b"old!")),
+        RangeCacheStoreOutcome::Stored
+    );
+    assert_eq!(cache.load(&identity_v2, extent), RangeCacheLookup::Miss);
+    assert_eq!(cache.load(&identity_v1, extent), RangeCacheLookup::Miss);
+
+    assert_eq!(
+        cache.store(&identity_v2, extent, Bytes::from_static(b"new!")),
+        RangeCacheStoreOutcome::Stored
+    );
+    assert_eq!(
+        cache.load(&identity_size_drift, extent),
+        RangeCacheLookup::Miss
+    );
+    assert_eq!(cache.load(&identity_v2, extent), RangeCacheLookup::Miss);
+
+    assert_eq!(cache.metrics().validation_misses, 2);
+}
+
+#[test]
+fn memory_range_cache_hits_do_not_change_network_bytes() {
+    let identity = strong_identity("https://example.com/object", "\"v1\"", 8);
+    let cache = MemoryRangeCache::new();
+    cache.record_network_bytes_fetched(8);
+    assert_eq!(
+        cache.store(
+            &identity,
+            ByteExtent::new(0, 8).expect("valid extent"),
+            Bytes::from_static(b"abcdefgh"),
+        ),
+        RangeCacheStoreOutcome::Stored
+    );
+
+    assert!(matches!(
+        cache.load(&identity, ByteExtent::new(2, 4).expect("valid extent")),
+        RangeCacheLookup::Hit { .. }
+    ));
+    assert_eq!(cache.metrics().network_bytes_fetched, 8);
+}
+
+#[test]
+fn memory_range_cache_reports_hit_miss_reuse_and_validation_metrics() {
+    let identity_v1 = strong_identity("https://example.com/object", "\"v1\"", 8);
+    let identity_v2 = strong_identity("https://example.com/object", "\"v2\"", 8);
+    let cache = MemoryRangeCache::new();
+
+    assert_eq!(
+        cache.store(
+            &identity_v1,
+            ByteExtent::new(0, 8).expect("valid extent"),
+            Bytes::from_static(b"abcdefgh"),
+        ),
+        RangeCacheStoreOutcome::Stored
+    );
+    assert!(matches!(
+        cache.load(&identity_v1, ByteExtent::new(2, 4).expect("valid extent")),
+        RangeCacheLookup::Hit { .. }
+    ));
+    assert_eq!(
+        cache.load(&identity_v1, ByteExtent::new(8, 1).expect("valid extent")),
+        RangeCacheLookup::Miss
+    );
+    assert_eq!(
+        cache.load(&identity_v2, ByteExtent::new(0, 4).expect("valid extent")),
+        RangeCacheLookup::Miss
+    );
+
+    let metrics = cache.metrics();
+    assert_eq!(metrics.cache_hits, 1);
+    assert_eq!(metrics.cache_misses, 2);
+    assert_eq!(metrics.cache_bytes_reused, 4);
+    assert_eq!(metrics.validation_misses, 1);
+    assert_eq!(metrics.cache_errors, 0);
+}
+
+#[test]
+fn memory_range_cache_is_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<MemoryRangeCache>();
 }

@@ -257,6 +257,285 @@ impl ExtentCacheKey {
             identity,
         }
     }
+
+    pub fn from_identity(identity: &RangeCacheIdentity) -> Self {
+        let size_bytes = identity.size_bytes.to_string();
+        let token = format!(
+            "axon:shared-range-cache:v1:{}:{}:{}:{}",
+            identity.etag.len(),
+            identity.etag,
+            size_bytes.len(),
+            size_bytes
+        );
+        Self::new(identity.resource.clone(), Some(token))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct RangeCacheIdentity {
+    resource: String,
+    etag: String,
+    size_bytes: u64,
+}
+
+impl RangeCacheIdentity {
+    pub fn strong(
+        resource: impl Into<String>,
+        etag: impl Into<String>,
+        size_bytes: u64,
+    ) -> Option<Self> {
+        let resource = resource.into();
+        let etag = etag.into();
+        if resource.trim().is_empty()
+            || etag.len() <= 2
+            || !etag.starts_with('"')
+            || !etag.ends_with('"')
+        {
+            return None;
+        }
+
+        Some(Self {
+            resource,
+            etag,
+            size_bytes,
+        })
+    }
+
+    fn trusted_local(
+        resource: impl Into<String>,
+        identity: impl Into<String>,
+        size_bytes: u64,
+    ) -> Self {
+        Self {
+            resource: resource.into(),
+            etag: identity.into(),
+            size_bytes,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RangeCacheLookup {
+    Hit { bytes: Bytes },
+    Miss,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RangeCacheStoreOutcome {
+    Stored,
+    CacheError,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SharedRangeCacheMetrics {
+    pub network_bytes_fetched: u64,
+    pub cache_bytes_reused: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub validation_misses: u64,
+    pub cache_errors: u64,
+}
+
+#[derive(Debug, Default)]
+struct MemoryRangeCacheState {
+    entries: Vec<ExtentCacheEntry>,
+    metrics: SharedRangeCacheMetrics,
+}
+
+#[derive(Debug, Default)]
+pub struct MemoryRangeCache {
+    state: Mutex<MemoryRangeCacheState>,
+}
+
+impl MemoryRangeCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock_state(&self) -> (std::sync::MutexGuard<'_, MemoryRangeCacheState>, bool) {
+        match self.state.lock() {
+            Ok(state) => (state, false),
+            Err(poisoned) => {
+                self.state.clear_poison();
+                (poisoned.into_inner(), true)
+            }
+        }
+    }
+
+    pub fn load(
+        &self,
+        identity: &RangeCacheIdentity,
+        requested_extent: ByteExtent,
+    ) -> RangeCacheLookup {
+        self.load_internal(identity, requested_extent, true)
+    }
+
+    fn load_internal(
+        &self,
+        identity: &RangeCacheIdentity,
+        requested_extent: ByteExtent,
+        record_miss: bool,
+    ) -> RangeCacheLookup {
+        let (mut state, recovered_poison) = self.lock_state();
+        if recovered_poison {
+            state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+            if record_miss {
+                state.metrics.cache_misses = state.metrics.cache_misses.saturating_add(1);
+            }
+            return RangeCacheLookup::Miss;
+        }
+        let key = ExtentCacheKey::from_identity(identity);
+        evict_stale_memory_entries(&mut state, &key);
+
+        let Some(entry) = state
+            .entries
+            .iter()
+            .find(|entry| entry.can_satisfy(&key, requested_extent))
+            .cloned()
+        else {
+            if record_miss {
+                state.metrics.cache_misses = state.metrics.cache_misses.saturating_add(1);
+            }
+            return RangeCacheLookup::Miss;
+        };
+
+        match entry.slice(requested_extent) {
+            Ok(bytes) => {
+                state.metrics.cache_hits = state.metrics.cache_hits.saturating_add(1);
+                state.metrics.cache_bytes_reused = state
+                    .metrics
+                    .cache_bytes_reused
+                    .saturating_add(requested_extent.length);
+                RangeCacheLookup::Hit { bytes }
+            }
+            Err(_) => {
+                state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+                if record_miss {
+                    state.metrics.cache_misses = state.metrics.cache_misses.saturating_add(1);
+                }
+                RangeCacheLookup::Miss
+            }
+        }
+    }
+
+    pub fn store(
+        &self,
+        identity: &RangeCacheIdentity,
+        extent: ByteExtent,
+        bytes: Bytes,
+    ) -> RangeCacheStoreOutcome {
+        match self.store_entry(identity, extent, bytes) {
+            Ok(_) => RangeCacheStoreOutcome::Stored,
+            Err(()) => RangeCacheStoreOutcome::CacheError,
+        }
+    }
+
+    fn store_entry(
+        &self,
+        identity: &RangeCacheIdentity,
+        extent: ByteExtent,
+        bytes: Bytes,
+    ) -> Result<ExtentCacheEntry, ()> {
+        let (mut state, recovered_poison) = self.lock_state();
+        if recovered_poison {
+            state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+            return Err(());
+        }
+        let key = ExtentCacheKey::from_identity(identity);
+        evict_stale_memory_entries(&mut state, &key);
+        let Ok(mut new_entry) = ExtentCacheEntry::new(key, extent, bytes) else {
+            state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+            return Err(());
+        };
+        let mut retained = Vec::with_capacity(state.entries.len() + 1);
+        let entries = std::mem::take(&mut state.entries);
+
+        for existing in entries {
+            if existing.key == new_entry.key
+                && existing.extent.touches_or_overlaps(new_entry.extent)
+            {
+                match existing.merge(new_entry) {
+                    Ok(merged) => new_entry = merged,
+                    Err(_) => {
+                        state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+                        return Err(());
+                    }
+                }
+            } else {
+                retained.push(existing);
+            }
+        }
+        retained.push(new_entry.clone());
+        state.entries = retained;
+
+        Ok(new_entry)
+    }
+
+    pub fn metrics(&self) -> SharedRangeCacheMetrics {
+        let (mut state, recovered_poison) = self.lock_state();
+        if recovered_poison {
+            state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+        }
+        state.metrics
+    }
+
+    pub fn record_network_bytes_fetched(&self, bytes: u64) {
+        let (mut state, recovered_poison) = self.lock_state();
+        if recovered_poison {
+            state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+        }
+        state.metrics.network_bytes_fetched =
+            state.metrics.network_bytes_fetched.saturating_add(bytes);
+    }
+
+    fn record_hit(&self, bytes: u64) {
+        let (mut state, recovered_poison) = self.lock_state();
+        if recovered_poison {
+            state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+        }
+        state.metrics.cache_hits = state.metrics.cache_hits.saturating_add(1);
+        state.metrics.cache_bytes_reused = state.metrics.cache_bytes_reused.saturating_add(bytes);
+    }
+
+    fn record_miss(&self) {
+        let (mut state, recovered_poison) = self.lock_state();
+        if recovered_poison {
+            state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+        }
+        state.metrics.cache_misses = state.metrics.cache_misses.saturating_add(1);
+    }
+
+    fn record_cache_error(&self) {
+        let (mut state, recovered_poison) = self.lock_state();
+        if recovered_poison {
+            state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+        }
+        state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+    }
+
+    fn entries_for_testing(&self) -> Vec<ExtentCacheEntry> {
+        let (mut state, recovered_poison) = self.lock_state();
+        if recovered_poison {
+            state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+        }
+        state.entries.clone()
+    }
+}
+
+fn evict_stale_memory_entries(state: &mut MemoryRangeCacheState, key: &ExtentCacheKey) {
+    let stale_count = state
+        .entries
+        .iter()
+        .filter(|entry| entry.key.resource == key.resource && entry.key != *key)
+        .count() as u64;
+    if stale_count == 0 {
+        return;
+    }
+
+    state
+        .entries
+        .retain(|entry| entry.key.resource != key.resource || entry.key == *key);
+    state.metrics.validation_misses = state.metrics.validation_misses.saturating_add(stale_count);
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -887,11 +1166,113 @@ impl PersistentExtentCache for MemoryPersistentExtentCache {
     }
 }
 
+pub struct SharedRangeCache {
+    memory: Arc<MemoryRangeCache>,
+    persistent: Option<Arc<dyn PersistentExtentCache>>,
+}
+
+impl Default for SharedRangeCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SharedRangeCache {
+    pub fn new() -> Self {
+        Self {
+            memory: Arc::new(MemoryRangeCache::new()),
+            persistent: None,
+        }
+    }
+
+    pub fn with_persistent_cache(persistent: Arc<dyn PersistentExtentCache>) -> Self {
+        Self {
+            memory: Arc::new(MemoryRangeCache::new()),
+            persistent: Some(persistent),
+        }
+    }
+
+    pub async fn load(
+        &self,
+        identity: &RangeCacheIdentity,
+        requested_extent: ByteExtent,
+    ) -> RangeCacheLookup {
+        if let hit @ RangeCacheLookup::Hit { .. } =
+            self.memory.load_internal(identity, requested_extent, false)
+        {
+            return hit;
+        }
+
+        if let Some(persistent) = self.persistent.as_ref().map(Arc::clone) {
+            let key = ExtentCacheKey::from_identity(identity);
+            match persistent.load(&key, requested_extent).await {
+                Ok(Some(entry)) => {
+                    match ExtentCacheEntry::new(entry.key, entry.extent, entry.bytes) {
+                        Ok(entry) if entry.key == key => match entry.slice(requested_extent) {
+                            Ok(bytes) => {
+                                if self
+                                    .memory
+                                    .store_entry(identity, entry.extent, entry.bytes)
+                                    .is_ok()
+                                {
+                                    self.memory.record_hit(requested_extent.length);
+                                    return RangeCacheLookup::Hit { bytes };
+                                }
+                            }
+                            Err(_) => self.memory.record_cache_error(),
+                        },
+                        Ok(_) | Err(_) => self.memory.record_cache_error(),
+                    }
+                }
+                Err(_) => self.memory.record_cache_error(),
+                Ok(None) => {}
+            }
+        }
+
+        self.memory.record_miss();
+        RangeCacheLookup::Miss
+    }
+
+    pub async fn store(
+        &self,
+        identity: &RangeCacheIdentity,
+        extent: ByteExtent,
+        bytes: Bytes,
+    ) -> RangeCacheStoreOutcome {
+        let Ok(entry) = self.memory.store_entry(identity, extent, bytes) else {
+            return RangeCacheStoreOutcome::CacheError;
+        };
+
+        if let Some(persistent) = self.persistent.as_ref().map(Arc::clone) {
+            if persistent.store(&entry).await.is_err() {
+                self.memory.record_cache_error();
+                return RangeCacheStoreOutcome::CacheError;
+            }
+        }
+
+        RangeCacheStoreOutcome::Stored
+    }
+
+    pub fn metrics(&self) -> SharedRangeCacheMetrics {
+        self.memory.metrics()
+    }
+
+    pub fn record_network_bytes_fetched(&self, bytes: u64) {
+        self.memory.record_network_bytes_fetched(bytes);
+    }
+
+    fn has_persistent_cache(&self) -> bool {
+        self.persistent.is_some()
+    }
+
+    fn entries_for_testing(&self) -> Vec<ExtentCacheEntry> {
+        self.memory.entries_for_testing()
+    }
+}
+
 pub struct BrowserObjectRangeReader {
     http: HttpRangeReader,
-    memory_cache: Vec<ExtentCacheEntry>,
-    persistent_cache: Option<Arc<dyn PersistentExtentCache>>,
-    metrics: BrowserTransportMetrics,
+    range_cache: SharedRangeCache,
 }
 
 impl Default for BrowserObjectRangeReader {
@@ -908,9 +1289,7 @@ impl BrowserObjectRangeReader {
     pub fn with_http_reader(http: HttpRangeReader) -> Self {
         Self {
             http,
-            memory_cache: Vec::new(),
-            persistent_cache: None,
-            metrics: BrowserTransportMetrics::default(),
+            range_cache: SharedRangeCache::new(),
         }
     }
 
@@ -924,26 +1303,31 @@ impl BrowserObjectRangeReader {
     ) -> Self {
         Self {
             http,
-            memory_cache: Vec::new(),
-            persistent_cache: Some(persistent_cache),
-            metrics: BrowserTransportMetrics::default(),
+            range_cache: SharedRangeCache::with_persistent_cache(persistent_cache),
         }
     }
 
     pub fn cache_mode(&self) -> BrowserCacheMode {
-        match self.persistent_cache {
-            Some(_) => BrowserCacheMode::Persistent,
-            None => BrowserCacheMode::MemoryOnly,
+        if self.range_cache.has_persistent_cache() {
+            BrowserCacheMode::Persistent
+        } else {
+            BrowserCacheMode::MemoryOnly
         }
     }
 
     pub fn metrics(&self) -> BrowserTransportMetrics {
-        self.metrics
+        let metrics = self.range_cache.metrics();
+        BrowserTransportMetrics {
+            bytes_fetched: metrics.network_bytes_fetched,
+            bytes_reused: metrics.cache_bytes_reused,
+            validation_misses: metrics.validation_misses,
+            persistent_cache_errors: metrics.cache_errors,
+        }
     }
 
     #[doc(hidden)]
-    pub fn cached_extents_for_testing(&self) -> &[ExtentCacheEntry] {
-        &self.memory_cache
+    pub fn cached_extents_for_testing(&self) -> Vec<ExtentCacheEntry> {
+        self.range_cache.entries_for_testing()
     }
 
     pub async fn read_extent(
@@ -967,19 +1351,22 @@ impl BrowserObjectRangeReader {
         let (metadata, probe_bytes_fetched) = self
             .resolve_http_metadata_for_extent(url, known_metadata)
             .await?;
-        let key = cache_key_for(&metadata);
-        self.record_identity_validation(&metadata);
-        self.metrics.bytes_fetched = self
-            .metrics
-            .bytes_fetched
-            .saturating_add(probe_bytes_fetched);
+        let identity = RangeCacheIdentity::strong(
+            metadata.resource.clone(),
+            metadata.identity.clone(),
+            metadata.size_bytes,
+        );
+        self.range_cache
+            .record_network_bytes_fetched(probe_bytes_fetched);
 
-        if let Some(bytes) = self.try_reuse_extent(&key, extent).await? {
-            return Ok(BrowserObjectReadResult {
-                metadata,
-                extent,
-                bytes,
-            });
+        if let Some(identity) = identity.as_ref() {
+            if let RangeCacheLookup::Hit { bytes } = self.range_cache.load(identity, extent).await {
+                return Ok(BrowserObjectReadResult {
+                    metadata,
+                    extent,
+                    bytes,
+                });
+            }
         }
 
         let fetched = self
@@ -998,13 +1385,16 @@ impl BrowserObjectRangeReader {
             .await?;
         let bytes = fetched.bytes;
         let fetched_metadata = metadata_from_http(fetched.metadata)?;
-        self.metrics.bytes_fetched = self.metrics.bytes_fetched.saturating_add(extent.length);
-        let entry = ExtentCacheEntry::new(key, extent, bytes.clone())?;
-        let merged = self.upsert_memory_entry(entry)?;
-        if let Some(persistent_cache) = self.persistent_cache.as_ref().map(Arc::clone) {
-            if persistent_cache.store(&merged).await.is_err() {
-                self.record_persistent_cache_error();
-            }
+        self.range_cache.record_network_bytes_fetched(extent.length);
+        if let Some(identity) = RangeCacheIdentity::strong(
+            fetched_metadata.resource.clone(),
+            fetched_metadata.identity.clone(),
+            fetched_metadata.size_bytes,
+        ) {
+            let _ = self
+                .range_cache
+                .store(&identity, extent, bytes.clone())
+                .await;
         }
 
         Ok(BrowserObjectReadResult {
@@ -1020,8 +1410,9 @@ impl BrowserObjectRangeReader {
         known_metadata: Option<BrowserObjectMetadata>,
     ) -> Result<(BrowserObjectMetadata, u64), QueryError> {
         let requested_resource = canonical_http_resource(url)?;
-        if let Some(known_metadata) = known_metadata {
+        if let Some(mut known_metadata) = known_metadata {
             if canonical_http_resource(&known_metadata.resource)? == requested_resource {
+                known_metadata.resource = requested_resource;
                 return Ok((known_metadata, 0));
             }
         }
@@ -1048,10 +1439,13 @@ impl BrowserObjectRangeReader {
         extent: ByteExtent,
     ) -> Result<BrowserObjectReadResult, QueryError> {
         let metadata = object.metadata()?;
-        let key = cache_key_for(&metadata);
-        self.record_identity_validation(&metadata);
+        let identity = RangeCacheIdentity::trusted_local(
+            metadata.resource.clone(),
+            metadata.identity.clone(),
+            metadata.size_bytes,
+        );
 
-        if let Some(bytes) = self.try_reuse_extent(&key, extent).await? {
+        if let RangeCacheLookup::Hit { bytes } = self.range_cache.load(&identity, extent).await {
             return Ok(BrowserObjectReadResult {
                 metadata,
                 extent,
@@ -1060,14 +1454,11 @@ impl BrowserObjectRangeReader {
         }
 
         let bytes = object.read_extent(extent).await?;
-        self.metrics.bytes_fetched = self.metrics.bytes_fetched.saturating_add(extent.length);
-        let entry = ExtentCacheEntry::new(key, extent, bytes.clone())?;
-        let merged = self.upsert_memory_entry(entry)?;
-        if let Some(persistent_cache) = self.persistent_cache.as_ref().map(Arc::clone) {
-            if persistent_cache.store(&merged).await.is_err() {
-                self.record_persistent_cache_error();
-            }
-        }
+        self.range_cache.record_network_bytes_fetched(extent.length);
+        let _ = self
+            .range_cache
+            .store(&identity, extent, bytes.clone())
+            .await;
 
         Ok(BrowserObjectReadResult {
             metadata,
@@ -1075,88 +1466,6 @@ impl BrowserObjectRangeReader {
             bytes,
         })
     }
-
-    async fn try_reuse_extent(
-        &mut self,
-        key: &ExtentCacheKey,
-        extent: ByteExtent,
-    ) -> Result<Option<Bytes>, QueryError> {
-        if let Some(entry) = self
-            .memory_cache
-            .iter()
-            .find(|entry| entry.can_satisfy(key, extent))
-            .cloned()
-        {
-            self.metrics.bytes_reused = self.metrics.bytes_reused.saturating_add(extent.length);
-            return Ok(Some(entry.slice(extent)?));
-        }
-
-        if let Some(persistent_cache) = self.persistent_cache.as_ref().map(Arc::clone) {
-            match persistent_cache.load(key, extent).await {
-                Ok(Some(entry)) => match entry.slice(extent) {
-                    Ok(bytes) => {
-                        self.metrics.bytes_reused =
-                            self.metrics.bytes_reused.saturating_add(extent.length);
-                        let _ = self.upsert_memory_entry(entry)?;
-                        return Ok(Some(bytes));
-                    }
-                    Err(_) => self.record_persistent_cache_error(),
-                },
-                Ok(None) => {}
-                Err(_) => self.record_persistent_cache_error(),
-            }
-        }
-
-        Ok(None)
-    }
-
-    fn upsert_memory_entry(
-        &mut self,
-        mut new_entry: ExtentCacheEntry,
-    ) -> Result<ExtentCacheEntry, QueryError> {
-        let mut retained = Vec::with_capacity(self.memory_cache.len() + 1);
-        for entry in self.memory_cache.drain(..) {
-            if entry.key == new_entry.key && entry.extent.touches_or_overlaps(new_entry.extent) {
-                new_entry = entry.merge(new_entry)?;
-            } else {
-                retained.push(entry);
-            }
-        }
-        retained.push(new_entry.clone());
-        self.memory_cache = retained;
-
-        Ok(new_entry)
-    }
-
-    fn record_identity_validation(&mut self, metadata: &BrowserObjectMetadata) {
-        let expected_identity = metadata.identity.as_str();
-        let stale_count = self
-            .memory_cache
-            .iter()
-            .filter(|entry| {
-                entry.key.resource == metadata.resource
-                    && entry.key.identity.as_deref() != Some(expected_identity)
-            })
-            .count() as u64;
-        if stale_count == 0 {
-            return;
-        }
-
-        self.memory_cache.retain(|entry| {
-            !(entry.key.resource == metadata.resource
-                && entry.key.identity.as_deref() != Some(expected_identity))
-        });
-        self.metrics.validation_misses = self.metrics.validation_misses.saturating_add(stale_count);
-    }
-
-    fn record_persistent_cache_error(&mut self) {
-        self.metrics.persistent_cache_errors =
-            self.metrics.persistent_cache_errors.saturating_add(1);
-    }
-}
-
-fn cache_key_for(metadata: &BrowserObjectMetadata) -> ExtentCacheKey {
-    ExtentCacheKey::new(metadata.resource.clone(), Some(metadata.identity.clone()))
 }
 
 fn metadata_from_http(metadata: HttpObjectMetadata) -> Result<BrowserObjectMetadata, QueryError> {
@@ -2253,6 +2562,38 @@ fn blob_size_to_u64(size: f64) -> Result<u64, QueryError> {
         return Err(protocol_error("browser Blob reported an invalid size"));
     }
     Ok(size as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_range_cache_recovers_poisoned_metrics_once() {
+        let cache = Arc::new(MemoryRangeCache::new());
+        let poisoned_cache = Arc::clone(&cache);
+        let poison = std::thread::spawn(move || {
+            let _guard = poisoned_cache
+                .state
+                .lock()
+                .expect("fresh cache lock should succeed");
+            panic!("poison the cache lock");
+        });
+        assert!(poison.join().is_err());
+
+        cache.record_network_bytes_fetched(4);
+        let identity = RangeCacheIdentity::strong("https://example.test/object", "\"v1\"", 4)
+            .expect("quoted ETag should be cacheable");
+        assert_eq!(
+            cache.load(&identity, ByteExtent::new(0, 4).expect("valid extent")),
+            RangeCacheLookup::Miss
+        );
+
+        let metrics = cache.metrics();
+        assert_eq!(metrics.network_bytes_fetched, 4);
+        assert_eq!(metrics.cache_misses, 1);
+        assert_eq!(metrics.cache_errors, 1);
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

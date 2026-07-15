@@ -5,8 +5,14 @@ use query_contract::QueryError;
 use wasm_http_object_store::{
     BrowserCacheMode, BrowserLocalObject, BrowserObject, BrowserObjectRangeReader, ByteExtent,
     ExtentCacheEntry, ExtentCacheKey, MemoryPersistentExtentCache, PersistentCacheFuture,
-    PersistentExtentCache,
+    PersistentExtentCache, RangeCacheIdentity, RangeCacheLookup, RangeCacheStoreOutcome,
+    SharedRangeCache,
 };
+
+fn strong_identity(resource: &str, etag: &str, size_bytes: u64) -> RangeCacheIdentity {
+    RangeCacheIdentity::strong(resource, etag, size_bytes)
+        .expect("quoted strong ETag should form a cache identity")
+}
 
 #[derive(Default)]
 struct RecordingPersistentCache {
@@ -68,6 +74,53 @@ impl PersistentExtentCache for FailingPersistentCache {
                 wasm_http_object_store::supported_target(),
             ))
         })
+    }
+}
+
+#[derive(Default)]
+struct UnsatisfyingPersistentCache;
+
+impl PersistentExtentCache for UnsatisfyingPersistentCache {
+    fn load<'a>(
+        &'a self,
+        key: &'a ExtentCacheKey,
+        _requested_extent: ByteExtent,
+    ) -> PersistentCacheFuture<'a, Option<ExtentCacheEntry>> {
+        Box::pin(async move {
+            ExtentCacheEntry::new(
+                key.clone(),
+                ByteExtent::new(0, 2).expect("valid extent"),
+                Bytes::from_static(b"ab"),
+            )
+            .map(Some)
+        })
+    }
+
+    fn store<'a>(&'a self, _entry: &'a ExtentCacheEntry) -> PersistentCacheFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[derive(Default)]
+struct MalformedPersistentCache;
+
+impl PersistentExtentCache for MalformedPersistentCache {
+    fn load<'a>(
+        &'a self,
+        key: &'a ExtentCacheKey,
+        _requested_extent: ByteExtent,
+    ) -> PersistentCacheFuture<'a, Option<ExtentCacheEntry>> {
+        Box::pin(async move {
+            Ok(Some(ExtentCacheEntry {
+                key: key.clone(),
+                extent: ByteExtent::new(0, 4).expect("valid extent"),
+                bytes: Bytes::from_static(b"ab"),
+            }))
+        })
+    }
+
+    fn store<'a>(&'a self, _entry: &'a ExtentCacheEntry) -> PersistentCacheFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -249,11 +302,8 @@ async fn stale_extents_are_rejected_when_object_identity_changes() {
     assert_eq!(reader.metrics().validation_misses, 1);
     assert_eq!(reader.cached_extents_for_testing().len(), 1);
     assert_eq!(
-        reader.cached_extents_for_testing()[0]
-            .key
-            .identity
-            .as_deref(),
-        Some("v2")
+        reader.cached_extents_for_testing()[0].bytes.as_ref(),
+        b"wxyz"
     );
 }
 
@@ -287,4 +337,121 @@ async fn persistent_cache_hooks_report_mode_and_reuse_cached_extents() {
     assert_eq!(reused.bytes.as_ref(), b"cdef");
     assert_eq!(cold_reader.metrics().bytes_fetched, 0);
     assert_eq!(cold_reader.metrics().bytes_reused, 4);
+}
+
+#[tokio::test]
+async fn shared_range_cache_reuses_persistent_containing_subranges() {
+    let persistent = Arc::new(MemoryPersistentExtentCache::with_max_entries(8));
+    let identity = strong_identity("https://example.test/object", "\"v1\"", 8);
+    let warm_cache = SharedRangeCache::with_persistent_cache(persistent.clone());
+    let cold_cache = SharedRangeCache::with_persistent_cache(persistent);
+
+    assert_eq!(
+        warm_cache
+            .store(
+                &identity,
+                ByteExtent::new(0, 8).expect("valid extent"),
+                Bytes::from_static(b"abcdefgh"),
+            )
+            .await,
+        RangeCacheStoreOutcome::Stored
+    );
+    assert_eq!(
+        cold_cache
+            .load(&identity, ByteExtent::new(2, 4).expect("valid extent"))
+            .await,
+        RangeCacheLookup::Hit {
+            bytes: Bytes::from_static(b"cdef")
+        }
+    );
+
+    let metrics = cold_cache.metrics();
+    assert_eq!(metrics.cache_hits, 1);
+    assert_eq!(metrics.cache_misses, 0);
+    assert_eq!(metrics.cache_bytes_reused, 4);
+}
+
+#[tokio::test]
+async fn shared_range_cache_isolated_from_legacy_raw_etag_keys() {
+    let persistent = Arc::new(MemoryPersistentExtentCache::with_max_entries(8));
+    let identity = strong_identity("https://example.test/object", "\"v1\"", 8);
+    let legacy_key = ExtentCacheKey::new("https://example.test/object", Some("\"v1\"".to_string()));
+    let shared_key = ExtentCacheKey::from_identity(&identity);
+    let legacy_entry = ExtentCacheEntry::new(
+        legacy_key.clone(),
+        ByteExtent::new(0, 8).expect("valid extent"),
+        Bytes::from_static(b"legacy!!"),
+    )
+    .expect("valid legacy entry");
+    persistent
+        .store(&legacy_entry)
+        .await
+        .expect("legacy store should succeed");
+    let cache = SharedRangeCache::with_persistent_cache(persistent);
+
+    assert_ne!(shared_key, legacy_key);
+    assert_eq!(
+        cache
+            .load(&identity, ByteExtent::new(0, 4).expect("valid extent"))
+            .await,
+        RangeCacheLookup::Miss
+    );
+    assert_eq!(cache.metrics().cache_misses, 1);
+}
+
+#[tokio::test]
+async fn shared_range_cache_failures_are_metric_bearing_and_fail_open() {
+    let identity = strong_identity("https://example.test/object", "\"v1\"", 4);
+    let cache = SharedRangeCache::with_persistent_cache(Arc::new(FailingPersistentCache));
+    let extent = ByteExtent::new(0, 4).expect("valid extent");
+
+    assert_eq!(cache.load(&identity, extent).await, RangeCacheLookup::Miss);
+    assert_eq!(
+        cache
+            .store(&identity, extent, Bytes::from_static(b"abcd"))
+            .await,
+        RangeCacheStoreOutcome::CacheError
+    );
+    assert_eq!(
+        cache.load(&identity, extent).await,
+        RangeCacheLookup::Hit {
+            bytes: Bytes::from_static(b"abcd")
+        }
+    );
+
+    let metrics = cache.metrics();
+    assert_eq!(metrics.cache_hits, 1);
+    assert_eq!(metrics.cache_misses, 1);
+    assert_eq!(metrics.cache_errors, 2);
+    assert_eq!(metrics.cache_bytes_reused, 4);
+}
+
+#[tokio::test]
+async fn shared_range_cache_slice_failures_become_metric_bearing_misses() {
+    let identity = strong_identity("https://example.test/object", "\"v1\"", 4);
+    let cache = SharedRangeCache::with_persistent_cache(Arc::new(UnsatisfyingPersistentCache));
+
+    assert_eq!(
+        cache
+            .load(&identity, ByteExtent::new(0, 4).expect("valid extent"))
+            .await,
+        RangeCacheLookup::Miss
+    );
+    assert_eq!(cache.metrics().cache_misses, 1);
+    assert_eq!(cache.metrics().cache_errors, 1);
+}
+
+#[tokio::test]
+async fn shared_range_cache_malformed_persistent_entries_fail_open() {
+    let identity = strong_identity("https://example.test/object", "\"v1\"", 4);
+    let cache = SharedRangeCache::with_persistent_cache(Arc::new(MalformedPersistentCache));
+
+    assert_eq!(
+        cache
+            .load(&identity, ByteExtent::new(0, 4).expect("valid extent"))
+            .await,
+        RangeCacheLookup::Miss
+    );
+    assert_eq!(cache.metrics().cache_misses, 1);
+    assert_eq!(cache.metrics().cache_errors, 1);
 }
