@@ -1,0 +1,628 @@
+syntax = "proto3";
+
+package axon.exec.v1;
+
+import "axon/common/v1/common.proto";
+import "axon/dataaccess/v1/dataaccess.proto";
+import "google/protobuf/struct.proto";
+
+// Selects the executor requested for a query.
+enum ExecutionTarget {
+  EXECUTION_TARGET_UNSPECIFIED = 0;
+  EXECUTION_TARGET_BROWSER_WASM = 1;
+  EXECUTION_TARGET_NATIVE = 2;
+  // Reserved for a later remote execution service implementation.
+  EXECUTION_TARGET_REMOTE_SERVICE = 3;
+}
+
+// Names a query capability that can gate execution or fallback.
+enum CapabilityKey {
+  CAPABILITY_KEY_UNSPECIFIED = 0;
+  CAPABILITY_KEY_CHANGE_DATA_FEED = 1;
+  CAPABILITY_KEY_COLUMN_MAPPING = 2;
+  CAPABILITY_KEY_DELETION_VECTORS = 3;
+  CAPABILITY_KEY_MULTI_PARTITION_EXECUTION = 4;
+  CAPABILITY_KEY_PROXY_ACCESS = 5;
+  CAPABILITY_KEY_RANGE_READS = 6;
+  CAPABILITY_KEY_SIGNED_URL_ACCESS = 7;
+  CAPABILITY_KEY_TIME_TRAVEL = 8;
+  CAPABILITY_KEY_TIMESTAMP_NTZ = 9;
+  CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES = 10;
+}
+
+// Classifies query failures for retry, fallback, and UI handling.
+enum QueryErrorCode {
+  QUERY_ERROR_CODE_UNSPECIFIED = 0;
+  QUERY_ERROR_CODE_ACCESS_DENIED = 1;
+  QUERY_ERROR_CODE_EXECUTION_FAILED = 2;
+  QUERY_ERROR_CODE_FALLBACK_REQUIRED = 3;
+  QUERY_ERROR_CODE_INVALID_REQUEST = 4;
+  QUERY_ERROR_CODE_OBJECT_NOT_FOUND = 5;
+  QUERY_ERROR_CODE_OBJECT_STORE_PROTOCOL = 6;
+  QUERY_ERROR_CODE_SECURITY_POLICY_VIOLATION = 7;
+  QUERY_ERROR_CODE_UNSUPPORTED_FEATURE = 8;
+}
+
+// Identifies how the browser fetched table objects.
+enum BrowserAccessMode {
+  BROWSER_ACCESS_MODE_UNSPECIFIED = 0;
+  BROWSER_ACCESS_MODE_BROWSER_SAFE_HTTP = 1;
+  BROWSER_ACCESS_MODE_CLOUD_OBJECT_STORE = 2;
+}
+
+// Identifies the Arrow IPC container carried in an opaque result.
+enum ArrowIpcFormat {
+  ARROW_IPC_FORMAT_UNSPECIFIED = 0;
+  ARROW_IPC_FORMAT_STREAM = 1;
+  ARROW_IPC_FORMAT_FILE = 2;
+}
+
+// Describes whether Arrow IPC bytes arrive in one result or as chunks.
+enum ArrowIpcDelivery {
+  ARROW_IPC_DELIVERY_UNSPECIFIED = 0;
+  ARROW_IPC_DELIVERY_SINGLE_BUFFER = 1;
+  ARROW_IPC_DELIVERY_CHUNKED_BUFFERS = 2;
+}
+
+// Selects the worker's SQL result encoding.
+enum BrowserWorkerSqlOutput {
+  BROWSER_WORKER_SQL_OUTPUT_UNSPECIFIED = 0;
+  BROWSER_WORKER_SQL_OUTPUT_ARROW_IPC_STREAM = 1;
+}
+
+// Selects how the worker transfers an SQL result.
+enum BrowserWorkerSqlDelivery {
+  BROWSER_WORKER_SQL_DELIVERY_UNSPECIFIED = 0;
+  BROWSER_WORKER_SQL_DELIVERY_SINGLE_BUFFER = 1;
+  BROWSER_WORKER_SQL_DELIVERY_CHUNKED_BUFFERS = 2;
+}
+
+// Identifies the worker operation that emitted an event.
+enum BrowserWorkerEventPhase {
+  BROWSER_WORKER_EVENT_PHASE_UNSPECIFIED = 0;
+  BROWSER_WORKER_EVENT_PHASE_INSTANTIATE = 1;
+  BROWSER_WORKER_EVENT_PHASE_OPEN = 2;
+  BROWSER_WORKER_EVENT_PHASE_INSPECT = 3;
+  BROWSER_WORKER_EVENT_PHASE_QUERY = 4;
+}
+
+// Tracks progress within a worker operation.
+enum BrowserWorkerProgressStage {
+  BROWSER_WORKER_PROGRESS_STAGE_UNSPECIFIED = 0;
+  BROWSER_WORKER_PROGRESS_STAGE_STARTED = 1;
+  BROWSER_WORKER_PROGRESS_STAGE_PLANNING = 2;
+  BROWSER_WORKER_PROGRESS_STAGE_EXECUTING = 3;
+  BROWSER_WORKER_PROGRESS_STAGE_ARROW_IPC_READY = 4;
+  BROWSER_WORKER_PROGRESS_STAGE_FINISHED = 5;
+}
+
+// Classifies diagnostic messages emitted by the worker.
+enum BrowserWorkerLogLevel {
+  BROWSER_WORKER_LOG_LEVEL_UNSPECIFIED = 0;
+  BROWSER_WORKER_LOG_LEVEL_DEBUG = 1;
+  BROWSER_WORKER_LOG_LEVEL_INFO = 2;
+  BROWSER_WORKER_LOG_LEVEL_WARN = 3;
+  BROWSER_WORKER_LOG_LEVEL_ERROR = 4;
+}
+
+// Carries one resolved descriptor that an executor can open directly.
+message OpenableDescriptor {
+  // Resolution fallback and blocked plans are excluded.
+  oneof descriptor {
+    axon.dataaccess.v1.BrowserHttpSnapshotDescriptor snapshot = 1;
+    axon.dataaccess.v1.BrowserHttpParquetDatasetDescriptor parquet_dataset = 2 [json_name = "parquet_dataset"];
+  }
+}
+
+// Requests a bounded result page while preserving explicit zero values.
+message QueryResultPage {
+  optional uint64 limit = 1;
+  optional uint64 offset = 2;
+}
+
+// Caps query work and materialized output when the caller supplies limits.
+message QueryRuntimeLimits {
+  optional uint64 max_result_rows = 1 [json_name = "max_result_rows"];
+  optional uint64 max_arrow_ipc_bytes = 2 [json_name = "max_arrow_ipc_bytes"];
+  optional uint64 max_preview_string_bytes = 3 [json_name = "max_preview_string_bytes"];
+  optional uint64 max_scan_bytes = 4 [json_name = "max_scan_bytes"];
+}
+
+// Controls optional query output, metrics, paging, and runtime budgets.
+message QueryExecutionOptions {
+  optional bool include_explain = 1 [json_name = "include_explain"];
+  optional bool collect_metrics = 2 [json_name = "collect_metrics"];
+  QueryResultPage result_page = 3 [json_name = "result_page"];
+  QueryRuntimeLimits runtime_limits = 4 [json_name = "runtime_limits"];
+}
+
+// Describes SQL execution against a table snapshot and preferred target.
+message QueryRequest {
+  string table_uri = 1 [json_name = "table_uri"];
+  optional int64 snapshot_version = 2 [json_name = "snapshot_version"];
+  string sql = 3;
+  ExecutionTarget preferred_target = 4 [json_name = "preferred_target"];
+  QueryExecutionOptions options = 5;
+}
+
+// Marks a fallback variant that needs no additional data.
+message FallbackReasonMarker {}
+
+// Explains which capability state prevented execution on the requested target.
+message CapabilityGateFallbackReason {
+  CapabilityKey capability = 1;
+  axon.dataaccess.v1.CapabilityState required_state = 2 [json_name = "required_state"];
+}
+
+// Identifies why execution moved or must move to another target.
+message FallbackReason {
+  oneof reason {
+    FallbackReasonMarker access_denied = 1 [json_name = "access_denied"];
+    FallbackReasonMarker browser_runtime_constraint = 2 [json_name = "browser_runtime_constraint"];
+    FallbackReasonMarker native_required = 3 [json_name = "native_required"];
+    FallbackReasonMarker network_failure = 4 [json_name = "network_failure"];
+    FallbackReasonMarker range_read_unavailable = 5 [json_name = "range_read_unavailable"];
+    FallbackReasonMarker security_policy = 6 [json_name = "security_policy"];
+    FallbackReasonMarker signed_url_expired = 7 [json_name = "signed_url_expired"];
+    CapabilityGateFallbackReason capability_gate = 8 [json_name = "capability_gate"];
+  }
+}
+
+// Returns a structured query failure and optional fallback guidance.
+message QueryError {
+  QueryErrorCode code = 1;
+  string message = 2;
+  ExecutionTarget target = 3;
+  FallbackReason fallback_reason = 4 [json_name = "fallback_reason"];
+}
+
+// Summarizes query, I/O, caching, and encoding work reported by an executor.
+message QueryMetricsSummary {
+  optional uint64 bytes_fetched = 1 [json_name = "bytes_fetched"];
+  optional uint64 duration_ms = 2 [json_name = "duration_ms"];
+  optional uint64 files_touched = 3 [json_name = "files_touched"];
+  optional uint64 files_skipped = 4 [json_name = "files_skipped"];
+  optional uint64 prebootstrap_fail_open_count = 5 [json_name = "prebootstrap_fail_open_count"];
+  optional uint64 prebootstrap_files_pruned = 6 [json_name = "prebootstrap_files_pruned"];
+  optional uint64 footer_reads_avoided = 7 [json_name = "footer_reads_avoided"];
+  optional uint64 prebootstrap_candidate_files = 8 [json_name = "prebootstrap_candidate_files"];
+  optional uint64 row_groups_touched = 9 [json_name = "row_groups_touched"];
+  optional uint64 row_groups_skipped = 10 [json_name = "row_groups_skipped"];
+  optional uint64 footer_reads = 11 [json_name = "footer_reads"];
+  optional uint64 bootstrap_footer_range_reads = 12 [json_name = "bootstrap_footer_range_reads"];
+  optional uint64 scan_footer_range_reads = 13 [json_name = "scan_footer_range_reads"];
+  optional uint64 scan_data_range_reads = 14 [json_name = "scan_data_range_reads"];
+  optional uint64 duplicate_range_reads = 15 [json_name = "duplicate_range_reads"];
+  optional uint64 coalesced_range_reads = 16 [json_name = "coalesced_range_reads"];
+  optional uint64 coalesced_gap_bytes_fetched = 17 [json_name = "coalesced_gap_bytes_fetched"];
+  optional uint64 footer_cache_hits = 18 [json_name = "footer_cache_hits"];
+  optional uint64 footer_cache_misses = 19 [json_name = "footer_cache_misses"];
+  optional uint64 footer_range_reads_avoided = 20 [json_name = "footer_range_reads_avoided"];
+  optional uint64 footer_cache_degraded_identity_reads = 21 [json_name = "footer_cache_degraded_identity_reads"];
+  optional uint64 identity_present_range_reads = 22 [json_name = "identity_present_range_reads"];
+  optional uint64 identity_missing_range_reads = 23 [json_name = "identity_missing_range_reads"];
+  optional uint64 descriptor_resolution_count = 24 [json_name = "descriptor_resolution_count"];
+  optional uint64 delta_log_manifest_list_count = 25 [json_name = "delta_log_manifest_list_count"];
+  optional uint64 delta_log_manifest_list_duration_ms = 26 [json_name = "delta_log_manifest_list_duration_ms"];
+  optional uint64 snapshot_resolve_count = 27 [json_name = "snapshot_resolve_count"];
+  optional uint64 snapshot_resolve_duration_ms = 28 [json_name = "snapshot_resolve_duration_ms"];
+  optional uint64 descriptor_cache_hit = 29 [json_name = "descriptor_cache_hit"];
+  optional uint64 session_reuse_count = 30 [json_name = "session_reuse_count"];
+  optional uint64 opened_table_reuse_count = 31 [json_name = "opened_table_reuse_count"];
+  optional uint64 identity_refresh_count = 32 [json_name = "identity_refresh_count"];
+  optional uint64 access_envelope_refresh_count = 33 [json_name = "access_envelope_refresh_count"];
+  optional uint64 rows_emitted = 34 [json_name = "rows_emitted"];
+  optional uint64 snapshot_bootstrap_duration_ms = 35 [json_name = "snapshot_bootstrap_duration_ms"];
+  optional BrowserAccessMode access_mode = 36 [json_name = "access_mode"];
+  optional uint64 arrow_ipc_bytes = 37 [json_name = "arrow_ipc_bytes"];
+  optional uint64 arrow_ipc_chunk_count = 38 [json_name = "arrow_ipc_chunk_count"];
+  optional uint64 preview_rows = 39 [json_name = "preview_rows"];
+  optional uint64 preview_string_bytes = 40 [json_name = "preview_string_bytes"];
+  optional uint64 planning_duration_ms = 41 [json_name = "planning_duration_ms"];
+  optional uint64 arrow_ipc_encode_duration_ms = 42 [json_name = "arrow_ipc_encode_duration_ms"];
+  optional uint64 preview_duration_ms = 43 [json_name = "preview_duration_ms"];
+}
+
+// Carries execution metadata shared by full results and previews.
+message QueryResponse {
+  ExecutionTarget executed_on = 1 [json_name = "executed_on"];
+  axon.dataaccess.v1.CapabilityReport capabilities = 2;
+  FallbackReason fallback_reason = 3 [json_name = "fallback_reason"];
+  QueryMetricsSummary metrics = 4;
+  optional string explain = 5;
+}
+
+// Carries opaque Arrow IPC bytes or metadata for chunks streamed in separate events.
+message ArrowIpcResult {
+  ArrowIpcFormat format = 1;
+  string content_type = 2 [json_name = "content_type"];
+  optional ArrowIpcDelivery delivery = 3;
+  optional bytes bytes = 4;
+  optional uint64 byte_length = 5 [json_name = "byte_length"];
+  optional uint64 chunk_count = 6 [json_name = "chunk_count"];
+}
+
+// Encodes one UI preview value without modeling Arrow rows.
+message PreviewCell {
+  oneof value {
+    string string_value = 1 [json_name = "string_value"];
+    double number_value = 2 [json_name = "number_value"];
+    bool bool_value = 3 [json_name = "bool_value"];
+    google.protobuf.NullValue null_value = 4 [json_name = "null_value"];
+  }
+}
+
+// Groups preview cells for one UI row.
+message ResultPreviewRow {
+  repeated PreviewCell cells = 1;
+}
+
+// Carries a bounded row summary for display alongside Arrow IPC data.
+message ResultPreview {
+  repeated string columns = 1;
+  repeated ResultPreviewRow rows = 2;
+  optional uint64 row_count = 3 [json_name = "row_count"];
+  optional uint64 preview_row_limit = 4 [json_name = "preview_row_limit"];
+  optional bool truncated = 5;
+}
+
+// Aggregates compressed and uncompressed sizes for an inspected Parquet file.
+message ParquetCompressionSummary {
+  uint64 compressed_size_bytes = 1 [json_name = "compressed_size_bytes"];
+  uint64 uncompressed_size_bytes = 2 [json_name = "uncompressed_size_bytes"];
+  uint64 ratio_basis_points = 3 [json_name = "ratio_basis_points"];
+}
+
+// Reports storage metadata for one column chunk within a Parquet row group.
+message ParquetInspectionColumnChunk {
+  string column_name = 1 [json_name = "column_name"];
+  string compression = 2;
+  repeated string encodings = 3;
+  uint64 compressed_size_bytes = 4 [json_name = "compressed_size_bytes"];
+  uint64 uncompressed_size_bytes = 5 [json_name = "uncompressed_size_bytes"];
+  optional uint64 null_count = 6 [json_name = "null_count"];
+  bool has_statistics = 7 [json_name = "has_statistics"];
+  bool has_column_index = 8 [json_name = "has_column_index"];
+  bool has_offset_index = 9 [json_name = "has_offset_index"];
+  bool has_bloom_filter = 10 [json_name = "has_bloom_filter"];
+}
+
+// Summarizes one Parquet row group and its column chunks.
+message ParquetInspectionRowGroup {
+  uint64 index = 1;
+  uint64 row_count = 2 [json_name = "row_count"];
+  uint64 compressed_size_bytes = 3 [json_name = "compressed_size_bytes"];
+  uint64 uncompressed_size_bytes = 4 [json_name = "uncompressed_size_bytes"];
+  repeated ParquetInspectionColumnChunk columns = 5;
+}
+
+// Aggregates type and storage metadata for one Parquet column.
+message ParquetInspectionColumn {
+  string name = 1;
+  string physical_type = 2 [json_name = "physical_type"];
+  optional string logical_type = 3 [json_name = "logical_type"];
+  optional string converted_type = 4 [json_name = "converted_type"];
+  string repetition = 5;
+  bool nullable = 6;
+  uint64 compressed_size_bytes = 7 [json_name = "compressed_size_bytes"];
+  uint64 uncompressed_size_bytes = 8 [json_name = "uncompressed_size_bytes"];
+  optional uint64 null_count = 9 [json_name = "null_count"];
+  repeated string encodings = 10;
+  repeated string compressions = 11;
+  bool has_statistics = 12 [json_name = "has_statistics"];
+  bool has_column_index = 13 [json_name = "has_column_index"];
+  bool has_offset_index = 14 [json_name = "has_offset_index"];
+  bool has_bloom_filter = 15 [json_name = "has_bloom_filter"];
+}
+
+// Describes file-level Parquet metadata returned by worker inspection.
+message ParquetInspectionSummary {
+  string path = 1;
+  uint64 object_size_bytes = 2 [json_name = "object_size_bytes"];
+  uint32 footer_length_bytes = 3 [json_name = "footer_length_bytes"];
+  uint64 metadata_memory_size_bytes = 4 [json_name = "metadata_memory_size_bytes"];
+  optional string created_by = 5 [json_name = "created_by"];
+  int32 file_version = 6 [json_name = "file_version"];
+  uint64 row_group_count = 7 [json_name = "row_group_count"];
+  uint64 row_count = 8 [json_name = "row_count"];
+  uint64 column_count = 9 [json_name = "column_count"];
+  ParquetCompressionSummary compression = 10;
+  repeated ParquetInspectionColumn columns = 11;
+  repeated ParquetInspectionRowGroup row_groups = 12 [json_name = "row_groups"];
+}
+
+// Registers a snapshot descriptor under a worker table name.
+message BrowserWorkerOpenTableCommand {
+  string request_id = 1 [json_name = "request_id"];
+  string name = 2;
+  axon.dataaccess.v1.BrowserHttpSnapshotDescriptor snapshot = 3;
+}
+
+// Registers a resolved Delta snapshot under a worker table name.
+message BrowserWorkerOpenDeltaTableCommand {
+  string request_id = 1 [json_name = "request_id"];
+  string name = 2;
+  axon.dataaccess.v1.BrowserHttpSnapshotDescriptor snapshot = 3;
+}
+
+// Registers a Parquet dataset under a worker table name.
+message BrowserWorkerOpenParquetDatasetCommand {
+  string request_id = 1 [json_name = "request_id"];
+  string name = 2;
+  axon.dataaccess.v1.BrowserHttpParquetDatasetDescriptor dataset = 3;
+}
+
+// Requests Parquet metadata for one file in a registered table.
+message BrowserWorkerInspectParquetCommand {
+  string request_id = 1 [json_name = "request_id"];
+  string name = 2;
+  string path = 3;
+}
+
+// Executes a query against a registered worker table.
+message BrowserWorkerSqlCommand {
+  string request_id = 1 [json_name = "request_id"];
+  string name = 2;
+  QueryRequest query = 3;
+  optional BrowserWorkerSqlOutput output = 4;
+  optional BrowserWorkerSqlDelivery delivery = 5;
+  optional bool browser_safe_defaults = 6 [json_name = "browser_safe_defaults"];
+}
+
+// Requests fire-and-forget cancellation of an in-flight worker query.
+message BrowserWorkerCancelCommand {
+  string request_id = 1 [json_name = "request_id"];
+  optional string query_id = 2 [json_name = "query_id"];
+}
+
+// Releases a registered table from the worker session.
+message BrowserWorkerDisposeCommand {
+  string request_id = 1 [json_name = "request_id"];
+  string name = 2;
+}
+
+// Wraps one command sent to the browser worker.
+message BrowserWorkerCommand {
+  oneof command {
+    BrowserWorkerOpenTableCommand open_table = 1 [json_name = "open_table"];
+    BrowserWorkerOpenDeltaTableCommand open_delta_table = 2 [json_name = "open_delta_table"];
+    BrowserWorkerOpenParquetDatasetCommand open_parquet_dataset = 3 [json_name = "open_parquet_dataset"];
+    BrowserWorkerInspectParquetCommand inspect_parquet = 4 [json_name = "inspect_parquet"];
+    BrowserWorkerSqlCommand sql = 5;
+    BrowserWorkerCancelCommand cancel = 6;
+    BrowserWorkerDisposeCommand dispose = 7;
+  }
+}
+
+// Correlates a worker event with its operation, request, query, and table.
+message BrowserWorkerEventContext {
+  BrowserWorkerEventPhase phase = 1;
+  optional string request_id = 2 [json_name = "request_id"];
+  optional string query_id = 3 [json_name = "query_id"];
+  optional string table_name = 4 [json_name = "table_name"];
+}
+
+// Reports a worker operation's current progress stage.
+message BrowserWorkerProgressEvent {
+  BrowserWorkerEventContext context = 1;
+  BrowserWorkerProgressStage stage = 2;
+}
+
+// Carries one diagnostic message from the worker.
+message BrowserWorkerLogEvent {
+  BrowserWorkerEventContext context = 1;
+  BrowserWorkerLogLevel level = 2;
+  string message = 3;
+}
+
+// Reports query and range-read metrics observed during a worker operation.
+message BrowserWorkerRangeReadMetricsEvent {
+  BrowserWorkerEventContext context = 1;
+  optional uint64 bytes_fetched = 2 [json_name = "bytes_fetched"];
+  optional uint64 files_touched = 3 [json_name = "files_touched"];
+  optional uint64 files_skipped = 4 [json_name = "files_skipped"];
+  optional uint64 prebootstrap_fail_open_count = 5 [json_name = "prebootstrap_fail_open_count"];
+  optional uint64 prebootstrap_files_pruned = 6 [json_name = "prebootstrap_files_pruned"];
+  optional uint64 footer_reads_avoided = 7 [json_name = "footer_reads_avoided"];
+  optional uint64 prebootstrap_candidate_files = 8 [json_name = "prebootstrap_candidate_files"];
+  optional uint64 row_groups_touched = 9 [json_name = "row_groups_touched"];
+  optional uint64 row_groups_skipped = 10 [json_name = "row_groups_skipped"];
+  optional uint64 footer_reads = 11 [json_name = "footer_reads"];
+  optional uint64 bootstrap_footer_range_reads = 12 [json_name = "bootstrap_footer_range_reads"];
+  optional uint64 scan_footer_range_reads = 13 [json_name = "scan_footer_range_reads"];
+  optional uint64 scan_data_range_reads = 14 [json_name = "scan_data_range_reads"];
+  optional uint64 duplicate_range_reads = 15 [json_name = "duplicate_range_reads"];
+  optional uint64 coalesced_range_reads = 16 [json_name = "coalesced_range_reads"];
+  optional uint64 coalesced_gap_bytes_fetched = 17 [json_name = "coalesced_gap_bytes_fetched"];
+  optional uint64 footer_cache_hits = 18 [json_name = "footer_cache_hits"];
+  optional uint64 footer_cache_misses = 19 [json_name = "footer_cache_misses"];
+  optional uint64 footer_range_reads_avoided = 20 [json_name = "footer_range_reads_avoided"];
+  optional uint64 footer_cache_degraded_identity_reads = 21 [json_name = "footer_cache_degraded_identity_reads"];
+  optional uint64 identity_present_range_reads = 22 [json_name = "identity_present_range_reads"];
+  optional uint64 identity_missing_range_reads = 23 [json_name = "identity_missing_range_reads"];
+  optional uint64 descriptor_resolution_count = 24 [json_name = "descriptor_resolution_count"];
+  optional uint64 delta_log_manifest_list_count = 25 [json_name = "delta_log_manifest_list_count"];
+  optional uint64 delta_log_manifest_list_duration_ms = 26 [json_name = "delta_log_manifest_list_duration_ms"];
+  optional uint64 snapshot_resolve_count = 27 [json_name = "snapshot_resolve_count"];
+  optional uint64 snapshot_resolve_duration_ms = 28 [json_name = "snapshot_resolve_duration_ms"];
+  optional uint64 descriptor_cache_hit = 29 [json_name = "descriptor_cache_hit"];
+  optional uint64 session_reuse_count = 30 [json_name = "session_reuse_count"];
+  optional uint64 opened_table_reuse_count = 31 [json_name = "opened_table_reuse_count"];
+  optional uint64 identity_refresh_count = 32 [json_name = "identity_refresh_count"];
+  optional uint64 access_envelope_refresh_count = 33 [json_name = "access_envelope_refresh_count"];
+  optional uint64 rows_emitted = 34 [json_name = "rows_emitted"];
+  optional uint64 snapshot_bootstrap_duration_ms = 35 [json_name = "snapshot_bootstrap_duration_ms"];
+  optional BrowserAccessMode access_mode = 36 [json_name = "access_mode"];
+  optional uint64 arrow_ipc_bytes = 37 [json_name = "arrow_ipc_bytes"];
+  optional uint64 arrow_ipc_chunk_count = 38 [json_name = "arrow_ipc_chunk_count"];
+  optional uint64 preview_rows = 39 [json_name = "preview_rows"];
+  optional uint64 preview_string_bytes = 40 [json_name = "preview_string_bytes"];
+  optional uint64 planning_duration_ms = 41 [json_name = "planning_duration_ms"];
+  optional uint64 arrow_ipc_encode_duration_ms = 42 [json_name = "arrow_ipc_encode_duration_ms"];
+  optional uint64 preview_duration_ms = 43 [json_name = "preview_duration_ms"];
+}
+
+// Summarizes persistent transport-cache reuse and validation failures.
+message BrowserWorkerTransportCacheMetrics {
+  optional uint64 bytes_reused = 1 [json_name = "bytes_reused"];
+  optional uint64 validation_misses = 2 [json_name = "validation_misses"];
+  optional uint64 persistent_cache_errors = 3 [json_name = "persistent_cache_errors"];
+}
+
+// Reports session and transport-cache state for a worker operation.
+message BrowserWorkerCacheMetricsEvent {
+  BrowserWorkerEventContext context = 1;
+  optional uint64 session_cached_bytes = 2 [json_name = "session_cached_bytes"];
+  optional uint64 session_table_count = 3 [json_name = "session_table_count"];
+  optional uint64 max_session_cached_bytes = 4 [json_name = "max_session_cached_bytes"];
+  BrowserWorkerTransportCacheMetrics transport = 5;
+}
+
+// Signals that a query cannot continue on its requested target.
+message BrowserWorkerFallbackEvent {
+  BrowserWorkerEventContext context = 1;
+  FallbackReason reason = 2;
+}
+
+// Reports query cancellation as a structured error.
+message BrowserWorkerCancellationEvent {
+  BrowserWorkerEventContext context = 1;
+  QueryError error = 2;
+}
+
+// Signals a terminal failure during worker command processing.
+message BrowserWorkerTerminalErrorEvent {
+  BrowserWorkerEventContext context = 1;
+  QueryError error = 2;
+}
+
+// Carries one ordered opaque byte chunk for chunked Arrow IPC delivery.
+message BrowserWorkerArrowIpcChunkEvent {
+  BrowserWorkerEventContext context = 1;
+  string request_id = 2 [json_name = "request_id"];
+  optional uint64 sequence = 3;
+  optional uint64 byte_offset = 4 [json_name = "byte_offset"];
+  optional uint64 byte_length = 5 [json_name = "byte_length"];
+  bytes bytes = 6;
+}
+
+// Wraps one event emitted during worker command processing.
+message BrowserWorkerEventEnvelope {
+  oneof event {
+    BrowserWorkerProgressEvent progress = 1;
+    BrowserWorkerLogEvent log = 2;
+    BrowserWorkerRangeReadMetricsEvent range_read_metrics = 3 [json_name = "range_read_metrics"];
+    BrowserWorkerCacheMetricsEvent cache_metrics = 4 [json_name = "cache_metrics"];
+    BrowserWorkerFallbackEvent fallback = 5;
+    BrowserWorkerCancellationEvent cancellation = 6;
+    BrowserWorkerTerminalErrorEvent terminal_error = 7 [json_name = "terminal_error"];
+    BrowserWorkerArrowIpcChunkEvent arrow_ipc_chunk = 8 [json_name = "arrow_ipc_chunk"];
+  }
+}
+
+// Acknowledges successful table registration.
+message BrowserWorkerOpenedEnvelope {
+  string request_id = 1 [json_name = "request_id"];
+  string name = 2;
+}
+
+// Returns query metadata and Arrow IPC, with an optional UI preview.
+message BrowserWorkerSuccessEnvelope {
+  string request_id = 1 [json_name = "request_id"];
+  QueryResponse response = 2;
+  ArrowIpcResult result = 3;
+  ResultPreview preview = 4;
+}
+
+// Returns Parquet metadata for an inspection command.
+message BrowserWorkerParquetInspectionEnvelope {
+  string request_id = 1 [json_name = "request_id"];
+  ParquetInspectionSummary summary = 2;
+}
+
+// Acknowledges successful table disposal.
+message BrowserWorkerDisposedEnvelope {
+  string request_id = 1 [json_name = "request_id"];
+  string name = 2;
+}
+
+// Returns the terminal structured error for a failed worker command.
+message BrowserWorkerErrorEnvelope {
+  string request_id = 1 [json_name = "request_id"];
+  QueryError error = 2;
+}
+
+// Wraps one terminal worker response; cancellation has no response arm.
+message BrowserWorkerResponseEnvelope {
+  oneof response {
+    BrowserWorkerOpenedEnvelope opened = 1;
+    BrowserWorkerSuccessEnvelope success = 2;
+    BrowserWorkerParquetInspectionEnvelope parquet_inspection = 3 [json_name = "parquet_inspection"];
+    BrowserWorkerDisposedEnvelope disposed = 4;
+    BrowserWorkerErrorEnvelope error = 5;
+  }
+}
+
+// Requests streaming execution against a directly openable table descriptor.
+message ExecuteRequest {
+  string request_id = 1 [json_name = "request_id"];
+  axon.common.v1.ObjectRef table_ref = 2 [json_name = "table_ref"];
+  OpenableDescriptor descriptor = 3;
+  QueryRequest query = 4;
+}
+
+// Carries one streamed worker event or one terminal worker response.
+message ExecuteResponse {
+  oneof item {
+    BrowserWorkerEventEnvelope event = 1;
+    BrowserWorkerResponseEnvelope response = 2;
+  }
+}
+
+// Requests a bounded sample from a directly openable table descriptor.
+message PreviewRequest {
+  string request_id = 1 [json_name = "request_id"];
+  axon.common.v1.ObjectRef table_ref = 2 [json_name = "table_ref"];
+  OpenableDescriptor descriptor = 3;
+  ExecutionTarget preferred_target = 4 [json_name = "preferred_target"];
+  optional uint64 limit = 5;
+}
+
+// Returns execution metadata and a bounded UI preview.
+message PreviewSuccess {
+  QueryResponse response = 1;
+  ResultPreview preview = 2;
+}
+
+// Returns either a preview result or a structured query error.
+message PreviewResponse {
+  oneof outcome {
+    PreviewSuccess success = 1;
+    QueryError error = 2;
+  }
+}
+
+// Requests cancellation of a query under a separate control request ID.
+message CancelRequest {
+  string request_id = 1 [json_name = "request_id"];
+  string query_id = 2 [json_name = "query_id"];
+}
+
+// Acknowledges a cancellation request and whether the target accepted it.
+message CancelResponse {
+  string request_id = 1 [json_name = "request_id"];
+  string query_id = 2 [json_name = "query_id"];
+  optional bool accepted = 3;
+}
+
+// Exposes query execution, preview, and cancellation at the process boundary.
+// The public contract uses QueryEngine rather than a transport-specific service name.
+// buf:lint:ignore SERVICE_SUFFIX
+service QueryEngine {
+  // Streams worker events followed by one terminal response.
+  rpc Execute(ExecuteRequest) returns (stream ExecuteResponse);
+  // Returns one bounded preview result.
+  rpc Preview(PreviewRequest) returns (PreviewResponse);
+  // Requests cancellation and reports whether the target accepted it.
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+}

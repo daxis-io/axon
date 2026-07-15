@@ -22,16 +22,25 @@ message BrowserHttpFileDescriptor {
   uint64 size_bytes = 3 [json_name = "size_bytes"];
   map<string, PartitionValue> partition_values = 4 [json_name = "partition_values"];
   optional string stats = 5;
-  optional string object_etag = 6;
+  optional string object_etag = 6 [json_name = "object_etag"];
 }
 
 message BrowserHttpSnapshotDescriptor {
-  string table_uri = 1;
-  int64 snapshot_version = 2;
-  map<string, PartitionColumnType> partition_column_types = 3;
-  CapabilityReport browser_compatibility = 4;
-  CapabilityReport required_capabilities = 5;
-  repeated BrowserHttpFileDescriptor active_files = 6;
+  string table_uri = 1 [json_name = "table_uri"];
+  optional int64 snapshot_version = 2 [json_name = "snapshot_version"];
+  map<string, PartitionColumnType> partition_column_types = 3 [json_name = "partition_column_types"];
+  CapabilityReport browser_compatibility = 4 [json_name = "browser_compatibility"];
+  CapabilityReport required_capabilities = 5 [json_name = "required_capabilities"];
+  repeated BrowserHttpFileDescriptor active_files = 6 [json_name = "active_files"];
+}
+
+// Carries a directly openable Parquet dataset and its browser capability reports.
+message BrowserHttpParquetDatasetDescriptor {
+  string table_uri = 1 [json_name = "table_uri"];
+  map<string, PartitionColumnType> partition_column_types = 2 [json_name = "partition_column_types"];
+  CapabilityReport browser_compatibility = 3 [json_name = "browser_compatibility"];
+  CapabilityReport required_capabilities = 4 [json_name = "required_capabilities"];
+  repeated BrowserHttpFileDescriptor files = 5;
 }
 
 message BrokeredObjectAccess {
