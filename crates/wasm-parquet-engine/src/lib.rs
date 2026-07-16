@@ -41,8 +41,9 @@ use query_contract::{
     PartitionColumnType, QueryError, QueryErrorCode,
 };
 use wasm_http_object_store::{
-    ByteExtent, ExtentCacheEntry, ExtentCacheKey, HttpByteRange, HttpMetadataProbeRequirements,
-    HttpRangeReadResult, HttpRangeReader, HttpRangeValidation, MemoryPersistentExtentCache,
+    ByteExtent, HttpByteRange, HttpMetadataProbeRequirements, HttpRangeReadResult, HttpRangeReader,
+    HttpRangeValidation, MemoryRangeCache, RangeCacheIdentity, RangeCacheLookup,
+    RangeCacheStoreOutcome,
 };
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -56,6 +57,7 @@ const MAX_COALESCED_CUMULATIVE_GAP_BYTES: u64 = 64 * 1024;
 const MAX_COALESCED_GAP_AMPLIFICATION_NUMERATOR: u64 = 1;
 const MAX_COALESCED_GAP_AMPLIFICATION_DENOMINATOR: u64 = 4;
 const MAX_COALESCED_PHYSICAL_RANGE_BYTES: u64 = 512 * 1024;
+const DEFAULT_PARQUET_RANGE_CACHE_ENTRIES: usize = 128;
 
 pub fn runtime_target() -> ExecutionTarget {
     ExecutionTarget::BrowserWasm
@@ -332,35 +334,46 @@ pub struct ParquetRangeCacheMetrics {
 
 #[derive(Clone, Debug)]
 pub struct ParquetRangeCache {
-    extents: Arc<MemoryPersistentExtentCache>,
-    metrics: Arc<Mutex<ParquetRangeCacheMetrics>>,
-    identities_by_resource: Arc<Mutex<BTreeMap<String, ParquetObjectIdentity>>>,
+    extents: Arc<MemoryRangeCache>,
+    compatibility_metrics: Arc<Mutex<ParquetRangeCacheCompatibilityMetrics>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ParquetRangeCacheCompatibilityMetrics {
+    stores: u64,
+    degraded_identity_reads: u64,
 }
 
 impl Default for ParquetRangeCache {
     fn default() -> Self {
-        Self {
-            extents: Arc::new(MemoryPersistentExtentCache::default()),
-            metrics: Arc::new(Mutex::new(ParquetRangeCacheMetrics::default())),
-            identities_by_resource: Arc::new(Mutex::new(BTreeMap::new())),
-        }
+        Self::with_max_entries(DEFAULT_PARQUET_RANGE_CACHE_ENTRIES)
     }
 }
 
 impl ParquetRangeCache {
     pub fn with_max_entries(max_entries: usize) -> Self {
         Self {
-            extents: Arc::new(MemoryPersistentExtentCache::with_max_entries(max_entries)),
-            metrics: Arc::new(Mutex::new(ParquetRangeCacheMetrics::default())),
-            identities_by_resource: Arc::new(Mutex::new(BTreeMap::new())),
+            extents: Arc::new(MemoryRangeCache::with_max_entries(max_entries)),
+            compatibility_metrics: Arc::new(Mutex::new(
+                ParquetRangeCacheCompatibilityMetrics::default(),
+            )),
         }
     }
 
     pub fn snapshot(&self) -> ParquetRangeCacheMetrics {
-        self.metrics
+        let shared_metrics = self.extents.metrics();
+        let compatibility_metrics = self
+            .compatibility_metrics
             .lock()
             .expect("parquet range cache metrics should not be poisoned")
-            .clone()
+            .clone();
+        ParquetRangeCacheMetrics {
+            range_cache_hits: shared_metrics.cache_hits,
+            range_cache_misses: shared_metrics.cache_misses,
+            range_cache_stores: compatibility_metrics.stores,
+            range_cache_degraded_identity_reads: compatibility_metrics.degraded_identity_reads,
+            range_cache_identity_drift_misses: shared_metrics.validation_misses,
+        }
     }
 
     async fn load(
@@ -368,27 +381,14 @@ impl ParquetRangeCache {
         target: &ScanTarget,
         range: Range<u64>,
     ) -> Result<Option<Bytes>, QueryError> {
-        let Some((key, extent)) = self.cache_key_and_extent(target, &range)? else {
+        let Some((identity, extent)) = self.cache_identity_and_extent(target, &range)? else {
             self.record_degraded_identity_read()?;
             return Ok(None);
         };
-        self.record_identity_seen(
-            &key.resource,
-            target
-                .object_identity()
-                .as_ref()
-                .expect("cache key requires identity"),
-        )?;
 
-        match self.extents.load_extent(&key, extent)? {
-            Some(entry) => {
-                self.record_hit()?;
-                Ok(Some(entry.slice(extent)?))
-            }
-            None => {
-                self.record_miss()?;
-                Ok(None)
-            }
+        match self.extents.load(&identity, extent) {
+            RangeCacheLookup::Hit { bytes } => Ok(Some(bytes)),
+            RangeCacheLookup::Miss => Ok(None),
         }
     }
 
@@ -398,20 +398,20 @@ impl ParquetRangeCache {
         range: Range<u64>,
         bytes: Bytes,
     ) -> Result<(), QueryError> {
-        let Some((key, extent)) = self.cache_key_and_extent(target, &range)? else {
+        let Some((identity, extent)) = self.cache_identity_and_extent(target, &range)? else {
             return Ok(());
         };
-        let entry = ExtentCacheEntry::new(key, extent, bytes)?;
-        self.extents.store_extent(&entry)?;
-        self.record_store()?;
+        if self.extents.store(&identity, extent, bytes) == RangeCacheStoreOutcome::Stored {
+            self.record_store()?;
+        }
         Ok(())
     }
 
-    fn cache_key_and_extent(
+    fn cache_identity_and_extent(
         &self,
         target: &ScanTarget,
         range: &Range<u64>,
-    ) -> Result<Option<(ExtentCacheKey, ByteExtent)>, QueryError> {
+    ) -> Result<Option<(RangeCacheIdentity, ByteExtent)>, QueryError> {
         let length = range_len(range)?;
         if length == 0 {
             return Ok(None);
@@ -419,82 +419,34 @@ impl ParquetRangeCache {
         let Some(identity) = target.object_identity() else {
             return Ok(None);
         };
-        let identity = parquet_range_cache_identity(&identity);
-        let key = ExtentCacheKey::new(canonical_parquet_cache_resource(target), Some(identity));
+        let Some(identity) = RangeCacheIdentity::strong(
+            canonical_parquet_cache_resource(target),
+            identity.object_etag,
+            identity.size_bytes,
+        ) else {
+            return Ok(None);
+        };
         let extent = ByteExtent::new(range.start, length)?;
-        Ok(Some((key, extent)))
-    }
-
-    fn record_identity_seen(
-        &self,
-        resource: &str,
-        identity: &ParquetObjectIdentity,
-    ) -> Result<(), QueryError> {
-        let mut identities = self
-            .identities_by_resource
-            .lock()
-            .map_err(|_| execution_runtime_error("parquet range cache identities were poisoned"))?;
-        if identities
-            .get(resource)
-            .is_some_and(|previous| previous != identity)
-        {
-            self.record_identity_drift_miss()?;
-        }
-        identities.insert(resource.to_string(), identity.clone());
-        Ok(())
-    }
-
-    fn record_hit(&self) -> Result<(), QueryError> {
-        let mut metrics = self
-            .metrics
-            .lock()
-            .map_err(|_| execution_runtime_error("parquet range cache metrics were poisoned"))?;
-        metrics.range_cache_hits = metrics.range_cache_hits.saturating_add(1);
-        Ok(())
-    }
-
-    fn record_miss(&self) -> Result<(), QueryError> {
-        let mut metrics = self
-            .metrics
-            .lock()
-            .map_err(|_| execution_runtime_error("parquet range cache metrics were poisoned"))?;
-        metrics.range_cache_misses = metrics.range_cache_misses.saturating_add(1);
-        Ok(())
+        Ok(Some((identity, extent)))
     }
 
     fn record_store(&self) -> Result<(), QueryError> {
         let mut metrics = self
-            .metrics
+            .compatibility_metrics
             .lock()
             .map_err(|_| execution_runtime_error("parquet range cache metrics were poisoned"))?;
-        metrics.range_cache_stores = metrics.range_cache_stores.saturating_add(1);
+        metrics.stores = metrics.stores.saturating_add(1);
         Ok(())
     }
 
     fn record_degraded_identity_read(&self) -> Result<(), QueryError> {
         let mut metrics = self
-            .metrics
+            .compatibility_metrics
             .lock()
             .map_err(|_| execution_runtime_error("parquet range cache metrics were poisoned"))?;
-        metrics.range_cache_degraded_identity_reads = metrics
-            .range_cache_degraded_identity_reads
-            .saturating_add(1);
+        metrics.degraded_identity_reads = metrics.degraded_identity_reads.saturating_add(1);
         Ok(())
     }
-
-    fn record_identity_drift_miss(&self) -> Result<(), QueryError> {
-        let mut metrics = self
-            .metrics
-            .lock()
-            .map_err(|_| execution_runtime_error("parquet range cache metrics were poisoned"))?;
-        metrics.range_cache_identity_drift_misses =
-            metrics.range_cache_identity_drift_misses.saturating_add(1);
-        Ok(())
-    }
-}
-
-fn parquet_range_cache_identity(identity: &ParquetObjectIdentity) -> String {
-    format!("etag={};size={}", identity.object_etag, identity.size_bytes)
 }
 
 #[derive(Clone, Debug)]
@@ -3967,6 +3919,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn uncached_overlapping_read_fetches_the_coalesced_extent_and_overlap() {
+        let body = test_body(16 * 1024);
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+        let mut reader = test_async_reader(&server, body.len(), Some("\"object-v1\""));
+
+        let first_ranges = vec![1_024..2_048, 2_560..3_584];
+        let chunks = reader
+            .get_byte_ranges(first_ranges.clone())
+            .await
+            .expect("coalesced ranges should read");
+        let overlapping = reader
+            .get_bytes(2_000..2_800)
+            .await
+            .expect("uncached overlapping logical read should refetch");
+
+        assert_eq!(chunks, expected_chunks(&body, &first_ranges));
+        assert_eq!(
+            overlapping,
+            bytes::Bytes::copy_from_slice(&body[2_000..2_800])
+        );
+        assert_eq!(server.recorded_requests().len(), 2);
+        let metrics = reader.metrics.snapshot();
+        assert_eq!(metrics.bytes_fetched, 3_360);
+        assert_eq!(metrics.range_read_metrics.scan_data_range_reads, 3);
+        assert_eq!(metrics.range_read_metrics.coalesced_range_reads, 1);
+        assert_eq!(metrics.range_read_metrics.coalesced_gap_bytes_fetched, 512);
+    }
+
+    #[tokio::test]
     async fn coalesced_physical_read_satisfies_later_overlapping_get_bytes_from_range_cache() {
         let body = test_body(16 * 1024);
         let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
@@ -3994,6 +3975,8 @@ mod tests {
         let metrics = reader.metrics.snapshot();
         assert_eq!(metrics.bytes_fetched, 2_560);
         assert_eq!(metrics.range_read_metrics.scan_data_range_reads, 3);
+        assert_eq!(metrics.range_read_metrics.coalesced_range_reads, 1);
+        assert_eq!(metrics.range_read_metrics.coalesced_gap_bytes_fetched, 512);
         let cache_metrics = reader
             .range_cache
             .as_ref()
@@ -4101,6 +4084,33 @@ mod tests {
             .get_bytes(1_536..1_792)
             .await
             .expect("weak identity overlap should refetch");
+
+        assert_eq!(first, bytes::Bytes::copy_from_slice(&body[1_024..2_048]));
+        assert_eq!(second, bytes::Bytes::copy_from_slice(&body[1_536..1_792]));
+        assert_eq!(server.recorded_requests().len(), 2);
+        let cache_metrics = cache.snapshot();
+        assert_eq!(cache_metrics.range_cache_hits, 0);
+        assert_eq!(cache_metrics.range_cache_misses, 0);
+        assert_eq!(cache_metrics.range_cache_stores, 0);
+        assert_eq!(cache_metrics.range_cache_degraded_identity_reads, 2);
+    }
+
+    #[tokio::test]
+    async fn quoted_empty_identity_skips_range_cache_lookup_and_store() {
+        let body = test_body(16 * 1024);
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"\"".to_string()));
+        let cache = ParquetRangeCache::default();
+        let mut reader =
+            test_async_reader_with_range_cache(&server, body.len(), Some("\"\""), cache.clone());
+
+        let first = reader
+            .get_bytes(1_024..2_048)
+            .await
+            .expect("quoted-empty identity range should read");
+        let second = reader
+            .get_bytes(1_536..1_792)
+            .await
+            .expect("quoted-empty identity overlap should refetch");
 
         assert_eq!(first, bytes::Bytes::copy_from_slice(&body[1_024..2_048]));
         assert_eq!(second, bytes::Bytes::copy_from_slice(&body[1_536..1_792]));

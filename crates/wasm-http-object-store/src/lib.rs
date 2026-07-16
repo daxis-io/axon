@@ -344,12 +344,20 @@ struct MemoryRangeCacheState {
 
 #[derive(Debug, Default)]
 pub struct MemoryRangeCache {
+    max_entries: Option<usize>,
     state: Mutex<MemoryRangeCacheState>,
 }
 
 impl MemoryRangeCache {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_max_entries(max_entries: usize) -> Self {
+        Self {
+            max_entries: Some(max_entries.max(1)),
+            state: Mutex::new(MemoryRangeCacheState::default()),
+        }
     }
 
     fn lock_state(&self) -> (std::sync::MutexGuard<'_, MemoryRangeCacheState>, bool) {
@@ -387,17 +395,21 @@ impl MemoryRangeCache {
         let key = ExtentCacheKey::from_identity(identity);
         evict_stale_memory_entries(&mut state, &key);
 
-        let Some(entry) = state
+        let Some(position) = state
             .entries
             .iter()
-            .find(|entry| entry.can_satisfy(&key, requested_extent))
-            .cloned()
+            .position(|entry| entry.can_satisfy(&key, requested_extent))
         else {
             if record_miss {
                 state.metrics.cache_misses = state.metrics.cache_misses.saturating_add(1);
             }
             return RangeCacheLookup::Miss;
         };
+        let entry = state.entries[position].clone();
+        if self.max_entries.is_some() {
+            let recently_used = state.entries.remove(position);
+            state.entries.push(recently_used);
+        }
 
         match entry.slice(requested_extent) {
             Ok(bytes) => {
@@ -466,6 +478,11 @@ impl MemoryRangeCache {
             }
         }
         retained.push(new_entry.clone());
+        if let Some(max_entries) = self.max_entries {
+            while retained.len() > max_entries {
+                retained.remove(0);
+            }
+        }
         state.entries = retained;
 
         Ok(new_entry)

@@ -122,6 +122,67 @@ fn memory_range_cache_reuses_identity_scoped_containing_subranges() {
 }
 
 #[test]
+fn memory_range_cache_with_max_entries_evicts_the_oldest_extent() {
+    let first_identity = strong_identity("https://example.com/first", "\"v1\"", 8);
+    let second_identity = strong_identity("https://example.com/second", "\"v1\"", 8);
+    let cache = MemoryRangeCache::with_max_entries(1);
+    let extent = ByteExtent::new(0, 4).expect("valid extent");
+
+    assert_eq!(
+        cache.store(&first_identity, extent, Bytes::from_static(b"old!")),
+        RangeCacheStoreOutcome::Stored
+    );
+    assert_eq!(
+        cache.store(&second_identity, extent, Bytes::from_static(b"new!")),
+        RangeCacheStoreOutcome::Stored
+    );
+
+    assert_eq!(cache.load(&first_identity, extent), RangeCacheLookup::Miss);
+    assert_eq!(
+        cache.load(&second_identity, extent),
+        RangeCacheLookup::Hit {
+            bytes: Bytes::from_static(b"new!")
+        }
+    );
+}
+
+#[test]
+fn memory_range_cache_with_max_entries_refreshes_recently_used_extents() {
+    let first_identity = strong_identity("https://example.com/first", "\"v1\"", 8);
+    let second_identity = strong_identity("https://example.com/second", "\"v1\"", 8);
+    let third_identity = strong_identity("https://example.com/third", "\"v1\"", 8);
+    let cache = MemoryRangeCache::with_max_entries(2);
+    let extent = ByteExtent::new(0, 4).expect("valid extent");
+
+    assert_eq!(
+        cache.store(&first_identity, extent, Bytes::from_static(b"one!")),
+        RangeCacheStoreOutcome::Stored
+    );
+    assert_eq!(
+        cache.store(&second_identity, extent, Bytes::from_static(b"two!")),
+        RangeCacheStoreOutcome::Stored
+    );
+    assert!(matches!(
+        cache.load(&first_identity, extent),
+        RangeCacheLookup::Hit { .. }
+    ));
+    assert_eq!(
+        cache.store(&third_identity, extent, Bytes::from_static(b"tri!")),
+        RangeCacheStoreOutcome::Stored
+    );
+
+    assert_eq!(cache.load(&second_identity, extent), RangeCacheLookup::Miss);
+    assert!(matches!(
+        cache.load(&first_identity, extent),
+        RangeCacheLookup::Hit { .. }
+    ));
+    assert!(matches!(
+        cache.load(&third_identity, extent),
+        RangeCacheLookup::Hit { .. }
+    ));
+}
+
+#[test]
 fn memory_range_cache_evicts_etag_and_size_drift() {
     let identity_v1 = strong_identity("https://example.com/object", "\"v1\"", 8);
     let identity_v2 = strong_identity("https://example.com/object", "\"v2\"", 8);

@@ -2028,6 +2028,15 @@ fn runtime_reuses_shared_parquet_range_cache_across_repeated_scans() {
         .block_on(session.execute_plan(&materialized, prepared.execution_plan()))
         .expect("first browser execution should succeed");
     let requests_after_first = server.recorded_paths().len();
+    assert_eq!(requests_after_first, 4);
+    assert_eq!(first.metrics().bytes_fetched, 59);
+    assert_eq!(first.metrics().row_groups_touched, 1);
+    assert_eq!(first.metrics().row_groups_skipped, 1);
+    assert_eq!(first.metrics().rows_emitted, 3);
+    assert_eq!(first.metrics().footer_cache_hits, Some(1));
+    assert_eq!(first.metrics().footer_range_reads_avoided, Some(2));
+    assert_eq!(first.metrics().coalesced_range_reads, Some(0));
+    assert_eq!(first.metrics().coalesced_gap_bytes_fetched, Some(0));
     let cache_after_first = session.range_cache().snapshot();
     assert!(
         cache_after_first.range_cache_stores > 0,
@@ -2047,6 +2056,13 @@ fn runtime_reuses_shared_parquet_range_cache_across_repeated_scans() {
         "second scan should only perform the existing metadata-cache identity validation probe"
     );
     assert_eq!(second.metrics().bytes_fetched, 0);
+    assert_eq!(second.metrics().row_groups_touched, 1);
+    assert_eq!(second.metrics().row_groups_skipped, 1);
+    assert_eq!(second.metrics().rows_emitted, 3);
+    assert_eq!(second.metrics().footer_cache_hits, Some(1));
+    assert_eq!(second.metrics().footer_range_reads_avoided, Some(2));
+    assert_eq!(second.metrics().coalesced_range_reads, Some(0));
+    assert_eq!(second.metrics().coalesced_gap_bytes_fetched, Some(0));
     assert!(
         cache_after_second.range_cache_hits > cache_after_first.range_cache_hits,
         "second scan should be served by the session-owned range cache"
