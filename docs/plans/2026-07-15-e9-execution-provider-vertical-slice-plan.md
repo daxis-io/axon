@@ -71,6 +71,31 @@ accepted execution.
 The landed `QueryEngine` declaration is a browser-worker compatibility surface.
 There is no approved remote execution service on the baseline.
 
+## Browser HTTP-cache prerequisite
+
+Status: verified locally on 2026-07-16; remote landing is pending. This
+prerequisite must land before Slice 1 starts from a refreshed `origin/main`.
+
+- Local correctness commit `e0e772b` applies `cache: no-store` to the metadata
+  probe and full/ranged HTTP request boundaries without changing blob reads,
+  Axon's identity-aware range cache, readahead, ETag validation, metrics, or
+  persistence policy.
+- The WASM regression observes both generated JavaScript `Request` objects and
+  preserves `Range`, `If-Range`, HTTP 206 and `Content-Range` validation, ETag,
+  and returned-byte assertions.
+- The live Chromium proof used the anonymous production-like S3 fixture in one
+  browser context, performed full page reloads and explicit persisted-table
+  reselection between queries, and attached
+  `public-s3-repeat-query-evidence.json`.
+- The attached artifact has `repeat_count: 3`; all three runs returned scalar
+  `4` through `browser · wasm`, emitted no Parquet, decode, or worker error, and
+  recorded per-run range metrics. Each run reported `bytes_fetched: 0`,
+  `footer_cache_hits: 2`, `footer_range_reads_avoided: 4`, `rows_emitted: 4`,
+  and `arrow_ipc_bytes: 520`.
+
+This prerequisite does not change any E9 slice or public Rust, TypeScript,
+protobuf, or wire interface.
+
 ## Target modules
 
 ### `DataAccessResolver`

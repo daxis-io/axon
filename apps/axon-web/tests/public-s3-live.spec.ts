@@ -68,27 +68,108 @@ const preCacheComparison: Record<ComparisonMetricKey, number | null> = {
   rows_emitted: 1_048_576,
   arrow_ipc_bytes: 36_744,
 };
-type PublicS3LiveEvidence = {
+type PublicS3LiveRunEvidence = {
+  run: number;
+  scalar_result: string;
+  metrics: ProjectedLiveMetrics;
+};
+type ProjectedLiveMetrics = Record<RequiredLiveMetricKey, number> &
+  Partial<Record<OptionalLiveMetricKey, number>>;
+type PublicS3EvidenceBase = {
   table_uri: string;
   table_name: string;
   browser_name: string;
   base_url: string;
   region: string;
-  metrics: Record<RequiredLiveMetricKey, number> & Partial<Record<OptionalLiveMetricKey, number>>;
+};
+type PublicS3PerformanceEvidence = PublicS3EvidenceBase & {
+  metrics: ProjectedLiveMetrics;
   comparison: {
     pre_cache: Record<ComparisonMetricKey, number | null>;
     current: Record<ComparisonMetricKey, number>;
   };
 };
+type PublicS3RepeatEvidence = PublicS3EvidenceBase & {
+  repeat_count: number;
+  runs: PublicS3LiveRunEvidence[];
+};
 
-test('public S3 live evidence artifact redacts URI secrets and preserves comparison metrics', () => {
-  const evidence = buildPublicS3LiveEvidence({
+const exampleLiveMetrics: LiveMetricsInput = {
+  ...completeLiveMetrics(),
+  bytes_fetched: 42,
+  bootstrap_footer_range_reads: 1,
+  scan_footer_range_reads: 2,
+  scan_data_range_reads: 3,
+  duplicate_range_reads: 4,
+  coalesced_range_reads: 5,
+  coalesced_gap_bytes_fetched: 6,
+  footer_cache_hits: 7,
+  footer_cache_misses: 8,
+  footer_range_reads_avoided: 9,
+  identity_present_range_reads: 10,
+  identity_missing_range_reads: 11,
+  rows_emitted: 12,
+  arrow_ipc_bytes: 13,
+  arrow_ipc_chunk_count: 14,
+  range_cache_hits: 15,
+  range_cache_misses: 16,
+  range_cache_bytes_reused: 17,
+  range_cache_bytes_stored: 18,
+  range_cache_validation_misses: 19,
+  range_cache_degraded_identity_reads: 20,
+  range_readahead_requests: 21,
+  range_readahead_bytes_fetched: 22,
+  range_readahead_bytes_used: 23,
+  range_readahead_wasted_bytes: 24,
+};
+
+test('public S3 repeat evidence redacts URI secrets and preserves per-run metrics', () => {
+  const evidence = buildPublicS3RepeatEvidence({
     tableUri:
       's3://embedded-user:embedded-password@live-bucket/customer/path/table?X-Amz-Signature=signed-secret&token=query-secret#fragment-secret',
     tableName: 'table',
     browserName: 'chromium',
     baseURL: 'https://127.0.0.1:5173',
     region: 'us-east-2',
+    runs: [
+      {
+        run: 1,
+        scalar_result: '42',
+        metrics: exampleLiveMetrics,
+      },
+      {
+        run: 2,
+        scalar_result: '42',
+        metrics: {
+          ...completeLiveMetrics(),
+          bytes_fetched: 24,
+          bootstrap_footer_range_reads: 1,
+          scan_footer_range_reads: 1,
+          scan_data_range_reads: 1,
+          duplicate_range_reads: 0,
+          coalesced_range_reads: 0,
+          coalesced_gap_bytes_fetched: 0,
+          footer_cache_hits: 0,
+          footer_cache_misses: 1,
+          footer_range_reads_avoided: 0,
+          identity_present_range_reads: 2,
+          identity_missing_range_reads: 0,
+          rows_emitted: 12,
+        },
+      },
+    ],
+  });
+
+  expect(evidence.table_uri).toBe('s3://live-bucket/customer/path/table');
+  expect(evidence.table_name).toBe('table');
+  expect(evidence.browser_name).toBe('chromium');
+  expect(evidence.base_url).toBe('https://127.0.0.1:5173');
+  expect(evidence.region).toBe('us-east-2');
+  expect(evidence.repeat_count).toBe(2);
+  expect(evidence.runs).toHaveLength(2);
+  expect(evidence.runs[0]).toEqual({
+    run: 1,
+    scalar_result: '42',
     metrics: {
       bytes_fetched: 42,
       bootstrap_footer_range_reads: 1,
@@ -117,12 +198,11 @@ test('public S3 live evidence artifact redacts URI secrets and preserves compari
       arrow_ipc_chunk_count: 14,
     },
   });
-
-  expect(evidence.table_uri).toBe('s3://live-bucket/customer/path/table');
-  expect(evidence.table_name).toBe('table');
-  expect(evidence.browser_name).toBe('chromium');
-  expect(evidence.base_url).toBe('https://127.0.0.1:5173');
-  expect(evidence.region).toBe('us-east-2');
+  expect(evidence.runs[1]).toMatchObject({
+    run: 2,
+    scalar_result: '42',
+    metrics: { bytes_fetched: 24, rows_emitted: 12 },
+  });
   const serializedEvidence = JSON.stringify(evidence);
   expect(serializedEvidence).not.toContain('embedded-user');
   expect(serializedEvidence).not.toContain('embedded-password');
@@ -130,6 +210,18 @@ test('public S3 live evidence artifact redacts URI secrets and preserves compari
   expect(serializedEvidence).not.toContain('signed-secret');
   expect(serializedEvidence).not.toContain('query-secret');
   expect(serializedEvidence).not.toContain('fragment-secret');
+});
+
+test('public S3 performance evidence preserves comparison metrics', () => {
+  const evidence = buildPublicS3PerformanceEvidence({
+    tableUri: 's3://live-bucket/customer/path/table',
+    tableName: 'table',
+    browserName: 'chromium',
+    baseURL: 'https://127.0.0.1:5173',
+    region: 'us-east-2',
+    metrics: exampleLiveMetrics,
+  });
+
   expect(evidence.metrics).toEqual({
     bytes_fetched: 42,
     bootstrap_footer_range_reads: 1,
@@ -245,39 +337,87 @@ test.describe('public S3 live smoke', () => {
     ).toBe('PAR1');
   });
 
-  test('app connects and queries a live public S3 Delta table root in browser WASM', async ({
+  test('app repeats a live public S3 query across fresh browser runtimes', async ({
     page,
     browserName,
     baseURL,
   }, testInfo) => {
+    testInfo.setTimeout(240_000);
+    const tableName = tableNameFromTableUri(liveTableUri!);
+    const repeatedQuery = `SELECT COUNT(*) AS row_count FROM ${quoteSqlIdentifier(tableName)}`;
+    const runtimeErrors = captureRuntimeErrors(page);
+    const runs: Array<{ run: number; scalar_result: string; metrics: LiveMetricsInput }> = [];
+    let expectedScalarResult: string | undefined;
+
+    await installRangeReadMetricsCapture(page);
+    await connectPublicS3Table(page);
+    for (let run = 1; run <= 3; run += 1) {
+      if (run > 1) await page.reload();
+
+      await selectPersistedPublicTable(page, tableName);
+      const runtimeErrorStart = runtimeErrors.length;
+      await page.locator('.code-input').fill(repeatedQuery);
+      await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+      await expect(page.locator('.res-meta')).toContainText(/browser · wasm/i, {
+        timeout: 60_000,
+      });
+      await expect(page.locator('table.grid')).toContainText('row_count');
+      const scalarResult = (
+        await page.locator('table.grid tbody tr').first().locator('td').last().innerText()
+      ).trim();
+      expect(scalarResult, `run ${run} returned a scalar COUNT(*) result`).not.toBe('');
+      expectedScalarResult ??= scalarResult;
+      expect(scalarResult, `run ${run} matched the first COUNT(*) result`).toBe(
+        expectedScalarResult,
+      );
+      await expect(page.locator('.results')).not.toContainText(
+        /(?:parquet|decode|worker).*(?:error|failed)|(?:error|failed).*(?:parquet|decode|worker)/i,
+      );
+      expect(
+        runtimeErrors
+          .slice(runtimeErrorStart)
+          .filter((message) => /parquet|decode|worker/i.test(message)),
+        `run ${run} emitted no Parquet, decode, or worker errors`,
+      ).toEqual([]);
+
+      runs.push({
+        run,
+        scalar_result: scalarResult,
+        metrics: await latestCapturedRangeReadMetrics(page),
+      });
+    }
+
+    const evidence = buildPublicS3RepeatEvidence({
+      tableUri: liveTableUri!,
+      tableName,
+      browserName,
+      baseURL: baseURL ?? liveOrigin,
+      region: liveRegion!,
+      runs,
+    });
+    const artifactPath = testInfo.outputPath('public-s3-repeat-query-evidence.json');
+    await writeFile(artifactPath, `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
+    await testInfo.attach('public-s3-repeat-query-evidence', {
+      path: artifactPath,
+      contentType: 'application/json',
+    });
+  });
+
+  test('performance fixture records cache and readahead comparison evidence', async ({
+    page,
+    browserName,
+    baseURL,
+  }, testInfo) => {
+    test.skip(
+      !redactTableUri(liveTableUri!).endsWith('/fixtures/s3-browser-perf/table'),
+      'set AXON_LIVE_PUBLIC_S3_TABLE_URI to the s3-browser-perf fixture for performance evidence',
+    );
+    testInfo.setTimeout(240_000);
     const tableName = tableNameFromTableUri(liveTableUri!);
 
     await installRangeReadMetricsCapture(page);
-    await page.goto('/');
-    await page.getByRole('button', { name: /^Connect$/ }).click();
-    const sourceDialog = page.getByRole('dialog', { name: 'Connect a Delta source' });
-    await sourceDialog.locator('.cc-source-row', { hasText: 'Object storage' }).click();
-    await sourceDialog.getByRole('button', { name: /Continue/ }).click();
-
-    const configDialog = page.getByRole('dialog', { name: 'Connect to object storage' });
-    await configDialog.getByRole('button', { name: /AWS S3/ }).click();
-    await configDialog
-      .locator('.cc-input.mono.has-prefix')
-      .fill(liveTableUri!.replace(/^s3:\/\//, ''));
-    await configDialog.locator('select.cc-select').selectOption(liveRegion!);
-    await configDialog.getByRole('button', { name: 'Test connection' }).click();
-    await expect(configDialog).toContainText(/source check passed/i, { timeout: 60_000 });
-    await configDialog.getByRole('button', { name: /Discover tables/ }).click();
-
-    const reviewDialog = page.getByRole('dialog', { name: 'Review & name catalog' });
-    const recommended = reviewDialog.getByLabel('Use recommended organization');
-    if (await recommended.isChecked()) await recommended.uncheck();
-    await reviewDialog.getByLabel('Catalog alias').fill('live-public-s3');
-    await reviewDialog.getByRole('button', { name: /Connect catalog/ }).click();
-
-    await expect(page.locator('.conn-pill')).toContainText('live-public-s3', {
-      timeout: 30_000,
-    });
+    await connectPublicS3Table(page);
     await page.locator('.code-input').fill(`
 SELECT event_id, event_ts, region, customer_id, amount, status
 FROM ${quoteSqlIdentifier(tableName)}
@@ -293,7 +433,7 @@ LIMIT 1000
     await expect(page.locator('table.grid')).toContainText('event_id');
     await expect(page.locator('table.grid')).toContainText('amount');
 
-    const evidence = buildPublicS3LiveEvidence({
+    const evidence = buildPublicS3PerformanceEvidence({
       tableUri: liveTableUri!,
       tableName,
       browserName,
@@ -312,6 +452,60 @@ LIMIT 1000
     });
   });
 });
+
+function captureRuntimeErrors(page: Page): string[] {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  return errors;
+}
+
+async function connectPublicS3Table(page: Page): Promise<void> {
+  await page.goto('/');
+  await page.getByRole('button', { name: /^Connect$/ }).click();
+  const sourceDialog = page.getByRole('dialog', { name: 'Connect a Delta source' });
+  await sourceDialog.locator('.cc-source-row', { hasText: 'Object storage' }).click();
+  await sourceDialog.getByRole('button', { name: /Continue/ }).click();
+
+  const configDialog = page.getByRole('dialog', { name: 'Connect to object storage' });
+  await configDialog.getByRole('button', { name: /AWS S3/ }).click();
+  await configDialog
+    .locator('.cc-input.mono.has-prefix')
+    .fill(liveTableUri!.replace(/^s3:\/\//, ''));
+  await configDialog.locator('select.cc-select').selectOption(liveRegion!);
+  await configDialog.getByRole('button', { name: 'Test connection' }).click();
+  await expect(configDialog).toContainText(/source check passed/i, { timeout: 60_000 });
+  await configDialog.getByRole('button', { name: /Discover tables/ }).click();
+
+  const reviewDialog = page.getByRole('dialog', { name: 'Review & name catalog' });
+  const recommended = reviewDialog.getByLabel('Use recommended organization');
+  if (await recommended.isChecked()) await recommended.uncheck();
+  await reviewDialog.getByLabel('Catalog alias').fill('live-public-s3');
+  await reviewDialog.getByRole('button', { name: /Connect catalog/ }).click();
+
+  await expect(page.locator('.conn-pill')).toContainText('live-public-s3', {
+    timeout: 30_000,
+  });
+}
+
+async function selectPersistedPublicTable(page: Page, tableName: string): Promise<void> {
+  await expect(page.locator('.conn-pill')).toContainText('live-public-s3', {
+    timeout: 30_000,
+  });
+  await page.locator('.conn-pill').click();
+  const panel = page.getByRole('dialog', { name: 'Connected catalogs' });
+  const activateTable = panel.getByRole('button', {
+    name: `Activate live-public-s3 default ${tableName}`,
+  });
+  if (!(await activateTable.isVisible())) {
+    await panel.getByRole('button', { name: 'Expand live-public-s3' }).click();
+  }
+  await expect(activateTable).toBeEnabled();
+  await activateTable.click();
+  await expect(page.locator('.queryref-bar .qref')).toContainText(tableName);
+}
 
 async function installRangeReadMetricsCapture(page: Page): Promise<void> {
   await page.addInitScript((captureKey) => {
@@ -367,36 +561,72 @@ async function latestCapturedRangeReadMetrics(page: Page): Promise<LiveMetricsIn
   return metrics as LiveMetricsInput;
 }
 
-function buildPublicS3LiveEvidence(input: {
+function buildPublicS3PerformanceEvidence(input: {
   tableUri: string;
   tableName: string;
   browserName: string;
   baseURL: string;
   region: string;
   metrics: LiveMetricsInput;
-}): PublicS3LiveEvidence {
-  const metrics = Object.fromEntries(
-    requiredLiveMetricKeys.map((key) => [key, requiredMetric(input.metrics, key)]),
-  ) as PublicS3LiveEvidence['metrics'];
-  for (const key of optionalLiveMetricKeys) {
-    const value = input.metrics[key];
-    if (typeof value === 'number') metrics[key] = value;
-  }
+}): PublicS3PerformanceEvidence {
+  const metrics = projectLiveMetrics(input.metrics);
   const currentComparison = Object.fromEntries(
     comparisonMetricKeys.map((key) => [key, metrics[key]]),
   ) as Record<ComparisonMetricKey, number>;
   return {
-    table_uri: redactTableUri(input.tableUri),
-    table_name: input.tableName,
-    browser_name: input.browserName,
-    base_url: input.baseURL,
-    region: input.region,
+    ...buildEvidenceBase(input),
     metrics,
     comparison: {
       pre_cache: preCacheComparison,
       current: currentComparison,
     },
   };
+}
+
+function buildPublicS3RepeatEvidence(input: {
+  tableUri: string;
+  tableName: string;
+  browserName: string;
+  baseURL: string;
+  region: string;
+  runs: Array<{ run: number; scalar_result: string; metrics: LiveMetricsInput }>;
+}): PublicS3RepeatEvidence {
+  return {
+    ...buildEvidenceBase(input),
+    repeat_count: input.runs.length,
+    runs: input.runs.map((run) => ({
+      run: run.run,
+      scalar_result: run.scalar_result,
+      metrics: projectLiveMetrics(run.metrics),
+    })),
+  };
+}
+
+function buildEvidenceBase(input: {
+  tableUri: string;
+  tableName: string;
+  browserName: string;
+  baseURL: string;
+  region: string;
+}): PublicS3EvidenceBase {
+  return {
+    table_uri: redactTableUri(input.tableUri),
+    table_name: input.tableName,
+    browser_name: input.browserName,
+    base_url: input.baseURL,
+    region: input.region,
+  };
+}
+
+function projectLiveMetrics(metrics: LiveMetricsInput): PublicS3LiveRunEvidence['metrics'] {
+  const projected = Object.fromEntries(
+    requiredLiveMetricKeys.map((key) => [key, requiredMetric(metrics, key)]),
+  ) as PublicS3LiveRunEvidence['metrics'];
+  for (const key of optionalLiveMetricKeys) {
+    const value = metrics[key];
+    if (typeof value === 'number') projected[key] = value;
+  }
+  return projected;
 }
 
 function requiredMetric(metrics: LiveMetricsInput, key: RequiredLiveMetricKey): number {
@@ -411,8 +641,8 @@ function completeLiveMetrics(): LiveMetricsInput {
   return Object.fromEntries(requiredLiveMetricKeys.map((key) => [key, 0])) as LiveMetricsInput;
 }
 
-function buildEvidenceWithMetrics(metrics: LiveMetricsInput): PublicS3LiveEvidence {
-  return buildPublicS3LiveEvidence({
+function buildEvidenceWithMetrics(metrics: LiveMetricsInput): PublicS3PerformanceEvidence {
+  return buildPublicS3PerformanceEvidence({
     tableUri: 's3://live-bucket/customer/path/table',
     tableName: 'table',
     browserName: 'chromium',
