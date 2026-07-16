@@ -5,7 +5,9 @@
 - Worktree: `.worktrees/e9-source-lifecycle-pi`
 - Baseline: `origin/main` at
   `c56a038e5e27151da997b56d85abc9a44820bf3e`
-- Status: implementation in progress
+- Final integration base: `origin/main` at
+  `f8e530c0d9422b8e970e397472147fbf965aa6ef`
+- Status: Slice 1 implementation and verification complete
 - Scope: E9 Slice 1 only. No push and no protobuf or generated-contract change.
 
 ## Preflight
@@ -22,6 +24,13 @@ landed `QuerySourceSelection` or execution-lifecycle implementation.
 The root checkout was already dirty and divergent. It is not the implementation
 workspace and remains untouched. All evidence below comes from the isolated
 worktree created directly from `origin/main`.
+
+During the feedback closeout, `origin/main` advanced by five non-overlapping
+browser-cache/readahead implementation, test, and planning commits ending at
+`f8e530c0d9422b8e970e397472147fbf965aa6ef`. The final autosquash replayed the
+same six branch commits directly onto that ref. The complete post-rewrite web,
+browser, Rust, artifact, security, diff, and history verification below ran on
+that final integration base.
 
 ## Current behavior to remove
 
@@ -222,6 +231,33 @@ src/services/query.test.ts` exited 1. Ten deadline/admission tests failed
   `execution_failed` resource-limit error and publishes neither Arrow chunks nor
   success. No Rust product change was required.
 
+### Fresh-session review execution
+
+- Red: the independent review regressions ran with `npm exec -- vitest run
+src/services/execution-lifecycle.test.ts src/services/query.test.ts
+src/state/slices/run.test.ts src/editor/App.test.ts` and exited 1 with 44
+  failures and 23 passes. The failures reproduced missing selected-ref/version
+  identity, deadline-before-reuse mutation, non-finite fingerprint collisions,
+  duplicate-terminal silence, active-run reset, local cancellation winning a
+  running-SQL race, and stale timer ownership. A follow-up cancellation test
+  timed out because an already-cancelled, hung SQL promise could not be released
+  when the lifecycle deadline later won.
+- Green: the final focused six-file command exited 0 with 91 tests. The full web
+  unit suite exited 0 with 32 files and 240 tests. The source identity now owns
+  the exact selected ref, source access identity, catalog snapshot, and requested
+  snapshot pin. Admission equality is structural, checks ID reuse before deadline
+  processing, and distinguishes every JavaScript numeric value with `Object.is`.
+  Running SQL waits for worker completion, failure, or cancellation confirmation;
+  the existing authoritative lifecycle timer separately signals deadline cleanup
+  without creating another timer.
+- Integration red/green: the first full unit run exposed two persisted catalog
+  restore failures because the query-cache allowlist still recognized the old
+  short identity tuples. The allowlist and cache schema version were updated;
+  its focused 19-test suite and the subsequent 240-test full suite passed. Two
+  codegen cleanup tests timed out only during that first parallel run and passed
+  in isolation. Buf-backed checks initially could not reach `buf.build` inside
+  the network sandbox and passed on the required network-enabled rerun.
+
 ## Commit boundaries
 
 The final branch must contain exactly these six commits, in order:
@@ -292,8 +328,136 @@ E9 Slice 2 remains blocked until that correction lands.
 
 ## Final evidence
 
-- Commit SHAs: pending
-- Focused and full verification: pending
-- Live smoke inputs/skips: pending
-- Audit findings and resolutions: pending
-- Exit-gate verdict: pending
+### Commit identities
+
+The five implementation predecessors are immutable at handoff:
+
+1. `4c02123b82eb8e8e2363161811841f04fad5a531` —
+   `docs: plan e9 source lifecycle pi`
+2. `530f1adb1ece07ac89998cb62a90ade253a79037` —
+   `fix(web): require authoritative query selection`
+3. `89a6fb1b88998ddbb5c8aef8fdee9a69756ac60f` —
+   `refactor(web): model one execution lifecycle`
+4. `8367e90f710d499c313f3e057044b72233d3dec6` —
+   `fix(web): route cancellation through execution lifecycle`
+5. `61072237163b806e64c60d2276cc7a6d277edee7` —
+   `fix(web): enforce execution deadline and buffer bounds`
+
+The sixth identity is this handoff commit itself and is therefore recorded by
+`git rev-parse HEAD` in the delivery evidence rather than embedded
+self-referentially in its own contents. Its subject is
+`docs: document e9 slice one handoff`.
+
+### Focused and full verification
+
+All requested deterministic checks passed:
+
+- All three configuration/contract/codegen checks exited 0.
+- The final focused Vitest command passed 6 files and 91 tests. The full web
+  unit suite passed 32 files and 240 tests.
+- `npm run test:sdk` passed all 147 SDK tests, including generic chunked
+  delivery and explicit single-buffer delivery.
+- The full Playwright matrix passed 24 tests across Chromium, Firefox, and
+  WebKit after building the repository fixture and installing the exact
+  Playwright browser revisions required by this fresh worktree.
+- `npm run build:fixture` and `npm run build:wasm` passed. The latter emitted
+  only the existing dependency deprecation warning.
+- `tsc --noEmit`, ESLint with zero warnings, and Prettier verification passed.
+- With `npm run dev:server` serving HTTPS on port 5173, the editor smoke passed
+  42 tests and skipped only its 2 explicitly gated stress cases. The local
+  Delta smoke passed all 10 tests. Its first sandboxed rerun was denied by the
+  macOS Chromium Mach-port sandbox; the required unsandboxed rerun passed. The
+  server was stopped afterward.
+- `cargo test -p browser-sdk --locked` passed 27 tests,
+  `cargo test -p browser-engine-worker --locked` passed 14 tests, and
+  `cargo test -p axon-contract-proto --locked` passed 6 tests.
+- The WASM-target worker check and `cargo fmt --check` passed. The worker check
+  emitted only the existing `page_index` deprecation warning.
+- The worker artifact report passed at 622,354 bytes against the unchanged
+  750,000-byte budget. The browser dependency and bundle guardrail script
+  passed when run sequentially after the artifact existed.
+- `git diff --check origin/main...HEAD` passed, and the protobuf/generated
+  contract path diff was empty.
+- The final fetched `origin/main`, branch merge-base, and first branch parent all
+  resolved to `f8e530c0d9422b8e970e397472147fbf965aa6ef`; exactly six branch
+  commits remain above it.
+
+The browser matrix first exposed two stale test probes rather than product
+regressions: a raw-dispose query omitted the already-required browser-safe
+limits, and an unsupported-partition probe expected a lazy schema error during
+open. The probes now supply the required limits and issue a query against a
+deterministic partition-only fixture, respectively. Both then passed in all
+three engines. The initial guardrail invocation was parallel with artifact
+creation and observed no artifact; its required sequential rerun passed.
+
+### Live smoke inputs and skips
+
+No live public-object result is claimed. The environment contained none of the
+required inputs:
+
+- GCS skipped because `AXON_LIVE_PUBLIC_GCS_TABLE_URI` was missing.
+- S3 skipped because `AXON_LIVE_PUBLIC_S3_TABLE_URI` and
+  `AXON_LIVE_PUBLIC_S3_REGION` were both missing.
+
+The deterministic GCS and S3 selection/SDK coverage and the local Delta smoke
+passed, but they do not substitute for those gated live checks.
+
+### Final audit
+
+The final `origin/main...HEAD` audit covered fallback paths, stale callbacks,
+race handling, record/listener bounds, duplicate terminal delivery, logging,
+unused code, and claim accuracy. It found and resolved the following before
+handoff:
+
+- Exact sample classification now requires the repository sample fixture
+  identity; a non-fixture source with similar shape cannot acquire sample
+  semantics.
+- Replacing a selected resource clears that stale selection instead of
+  auto-selecting a sole replacement table.
+- History and metadata callbacks carry the execution context they were started
+  for, so a late callback cannot toast or clean up a newer tab.
+- Unused lifecycle wrapper APIs were removed rather than leaving parallel
+  mutation paths.
+- Unavailable-selection UI now states the reason and asks for an explicit table
+  instead of presenting a misleading loading state.
+- The two browser probes described above were aligned with the current lazy
+  execution and required-limit contracts.
+- Public worker error codes again match the Rust/protobuf contract; `deadline`
+  remains a local lifecycle failure and is not a wire `QueryErrorCode`.
+- Canonical admission identity includes the exact selected catalog ref, every
+  source field used to reuse a query session, the catalog snapshot, and the
+  requested snapshot pin. Pagination retains that same authoritative selection.
+- Structural admission comparison replaces JSON fingerprints, so `NaN`,
+  infinities, and other numeric inputs cannot collide. A mismatched expired retry
+  is rejected before it can deadline-fail the original execution.
+- `resetRun()` cannot return created, running, or cancel-requested work to idle.
+  Duplicate same-terminal callbacks are retained as bounded invariant violations.
+- Once SQL starts, local abort requests worker cancellation but does not confirm
+  cancellation. Worker success or failure may win the race, and the lifecycle
+  deadline releases adapter listeners if the worker never confirms.
+- Each elapsed timer is cleared by its owning execution, so an older completion
+  cannot stop a newer run's timer. The unused controller field was removed from
+  active cancellation state.
+- The dormant `editor-request-*` fallback generator was removed. Any editor
+  worker command that omits its execution ID or execution-derived transport span
+  now fails closed instead of manufacturing a second identifier.
+- The persisted query-cache schema was advanced for the expanded canonical key;
+  local capability-bearing source identities remain excluded from persistence.
+
+No blocker or high-severity audit finding remains. Lifecycle records,
+listeners, timers, cancellation handles, and invariant history are bounded;
+capability-bearing inputs remain memory-only and are not logged or persisted.
+
+### Exit-gate verdict
+
+**Pass.** Exact-source tests and negative spies prove that missing, stale,
+empty, or unqueryable selection cannot run a replacement table, inject sample
+data, construct a session or lazy worker, open a table, or execute SQL. The
+execution tests prove that one caller-created ID controls admission, worker
+correlation, cancellation, deadline handling, progress/metrics, and exactly one
+completed, failed, or cancelled terminal outcome. The worker path uses the
+admitted single-buffer maximum and withholds oversized Arrow output, while the
+generic SDK retains its chunked default.
+
+The mandatory E3A correction PI is therefore the recommended next slice. E9
+Slice 2 remains blocked until that correction lands.
