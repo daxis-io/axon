@@ -205,8 +205,22 @@ src/editor/App.test.ts` exited 0 with 4 files and 36 tests passed;
 
 ### Deadline and Arrow bounds
 
-- Red: pending
-- Green: pending
+- Red: `npm exec -- vitest run src/services/execution-lifecycle.test.ts
+src/services/query.test.ts` exited 1. Ten deadline/admission tests failed
+  because invalid inputs were still accepted, no authority timer existed, and
+  expired records were not sweepable; the query suite could not load the
+  not-yet-created worker bounds module. The 21 earlier lifecycle tests remained
+  green.
+- Green: the focused lifecycle/query/run/App command exited 0 with 4 files and
+  55 tests passed, and `npm exec -- tsc --noEmit` exited 0. Two targeted SDK
+  Playwright tests proved the generic query path remains `chunked_buffers` and
+  explicit editor selection is `single_buffer`. Real Chromium worker probes
+  passed for cancellation terminal ordering and oversized-output suppression.
+  The latter initially proved the lower runtime already withholds oversize
+  output but labeled it `fallback_required`; the TypeScript worker now
+  normalizes that exact `max_output_ipc_bytes` path to a structured
+  `execution_failed` resource-limit error and publishes neither Arrow chunks nor
+  success. No Rust product change was required.
 
 ## Commit boundaries
 

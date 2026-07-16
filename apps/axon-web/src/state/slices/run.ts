@@ -265,7 +265,7 @@ export function createRunSlice<TState extends RunSlice>(
         );
       },
       resetRun() {
-        updateRun(set, () => createDefaultRunState());
+        updateRun(set, (run) => (activeExecutionId(run.runState) ? run : createDefaultRunState()));
       },
       clearForLocalAccessReselect() {
         updateRun(set, (run) => {

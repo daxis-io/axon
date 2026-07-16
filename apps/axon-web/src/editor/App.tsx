@@ -10,6 +10,11 @@ import {
 } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  BROWSER_SAFE_ARROW_IPC_BYTES,
+  BROWSER_SAFE_PREVIEW_STRING_BYTES,
+  BROWSER_SAFE_RESULT_ROW_LIMIT,
+} from '../axon-browser-sdk.ts';
+import {
   catalogQueryOptions,
   commitsQueryOptions,
   purgeCatalogSourcesCache,
@@ -113,16 +118,24 @@ const TARGET_OPTIONS = SERVER_QUERY_FALLBACK_ENABLED
 
 const EDITOR_EXECUTION_TIMEOUT_MS = 120_000;
 const EDITOR_EXECUTION_BUDGETS: ExecutionBudgets = Object.freeze({
-  maxResultRows: 501,
-  maxArrowIpcBytes: 8 * 1024 * 1024,
-  maxPreviewStringBytes: 256 * 1024,
+  maxResultRows: BROWSER_SAFE_RESULT_ROW_LIMIT,
+  maxArrowIpcBytes: BROWSER_SAFE_ARROW_IPC_BYTES,
+  maxPreviewStringBytes: BROWSER_SAFE_PREVIEW_STRING_BYTES,
 });
 const editorExecutionController = createExecutionController();
 
 type ActiveCancellation = {
   executionId: string;
-  controller: AbortController;
 };
+
+export function clearOwnedRunTimer(
+  timerRef: { current: number | null },
+  ownedTimer: number,
+  clearTimer: (timer: number) => void = (timer) => window.clearInterval(timer),
+): void {
+  clearTimer(ownedTimer);
+  if (timerRef.current === ownedTimer) timerRef.current = null;
+}
 
 function targetTitle(id: SqlTab['preferred']): string {
   if (!SERVER_QUERY_FALLBACK_ENABLED) {
@@ -232,17 +245,17 @@ export function App() {
     !hasLocalDeltaRuntime(querySource.localRegistryId);
 
   const activeResultPageRun = useMemo(() => {
-    if (!querySource) return undefined;
+    if (querySelection.kind === 'unavailable') return undefined;
     return queryResultPageRun(
       {
         sql: active.sql,
-        table_name: tableMeta?.name ?? querySource.tableName,
+        table_name: tableMeta?.name ?? querySelection.source.tableName,
         preferred_target: active.preferred,
         snapshot_version: active.pin ?? undefined,
       },
-      querySource,
+      querySelection,
     );
-  }, [active.pin, active.preferred, active.sql, querySource, tableMeta?.name]);
+  }, [active.pin, active.preferred, active.sql, querySelection, tableMeta?.name]);
   const activeResultPageRunRef = useRef<QueryResultPageRun | undefined>(undefined);
 
   useEffect(() => {
@@ -346,7 +359,8 @@ export function App() {
       showToast('Select a queryable table before running SQL.', 'warn');
       return;
     }
-    const selectedSource = querySelection.source;
+    const selectedSelection = querySelection;
+    const selectedSource = selectedSelection.source;
     if (localAccessNeedsReselect) {
       runActions.clearForLocalAccessReselect();
       reselectLocalFolder();
@@ -358,9 +372,11 @@ export function App() {
       editorExecutionController.requestCancellation(cancelRef.current.executionId);
     }
     const ctrl = new AbortController();
+    const deadlineCtrl = new AbortController();
     const target = tab.preferred === 'native' ? 'native' : 'browser_wasm';
     const prepared = editorExecutionController.prepare({
-      source: selectedSource,
+      selection: selectedSelection,
+      snapshotVersion: tab.pin ?? undefined,
       sql: tab.sql,
       target,
       timeoutMs: EDITOR_EXECUTION_TIMEOUT_MS,
@@ -373,10 +389,24 @@ export function App() {
 
     const { input } = prepared;
     const executionId = input.executionId;
-    cancelRef.current = { executionId, controller: ctrl };
+    cancelRef.current = { executionId };
     runActions.createRun(executionId, target);
     const unsubscribe = editorExecutionController.subscribe(executionId, (delivery) => {
-      if (delivery.kind !== 'frame') return;
+      if (delivery.kind === 'terminal') {
+        if (delivery.state === 'failed' && delivery.reason === 'deadline') {
+          deadlineCtrl.abort();
+          runActions.finishRunError({
+            status: 'failed',
+            executionId,
+            target,
+            ms: EDITOR_EXECUTION_TIMEOUT_MS,
+            message: 'Execution deadline exceeded.',
+            code: 'deadline',
+          });
+          showToast('Execution deadline exceeded.', 'warn');
+        }
+        return;
+      }
       const event = delivery.payload as QueryEvent;
       if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') return;
       runActions.appendRunEvent(executionId, event);
@@ -405,9 +435,10 @@ export function App() {
     runActions.startRun(executionId);
     if (runTimer.current != null) window.clearInterval(runTimer.current);
     const startedAt = performance.now();
-    runTimer.current = window.setInterval(() => {
+    const ownedTimer = window.setInterval(() => {
       runActions.updateRunElapsed(executionId, performance.now() - startedAt);
     }, 80);
+    runTimer.current = ownedTimer;
 
     const req: QueryExecRequest = {
       sql: tab.sql,
@@ -423,8 +454,9 @@ export function App() {
           req,
           (event) => editorExecutionController.publishFrame(executionId, event),
           source,
-          executionId,
+          input,
           ctrl.signal,
+          deadlineCtrl.signal,
         );
       });
       if (execution.status === 'unavailable') {
@@ -466,7 +498,7 @@ export function App() {
             fallback: fallbackPretty,
           },
           resultData: outcome.result,
-          resultPageRun: queryResultPageRun(req, selectedSource),
+          resultPageRun: queryResultPageRun(req, selectedSelection),
           metrics: outcome.metrics,
           plan: outcome.explain ? { tree: outcome.explain } : undefined,
           capabilities: overlayCapabilityReport(
@@ -516,6 +548,11 @@ export function App() {
         return;
       }
 
+      if (outcome.code === 'deadline') {
+        editorExecutionController.fail(executionId, 'deadline', outcome);
+        return;
+      }
+
       const terminal = editorExecutionController.fail(
         executionId,
         outcome.code ?? 'query_error',
@@ -560,10 +597,7 @@ export function App() {
         showToast(message, 'warn');
       }
     } finally {
-      if (runTimer.current != null) {
-        window.clearInterval(runTimer.current);
-        runTimer.current = null;
-      }
+      clearOwnedRunTimer(runTimer, ownedTimer);
       unsubscribe();
       if (cancelRef.current?.executionId === executionId) cancelRef.current = null;
     }
@@ -595,13 +629,15 @@ export function App() {
     }
 
     const ctrl = new AbortController();
+    const deadlineCtrl = new AbortController();
     const req = queryResultPageRunRequest(runForPage, {
       offset: page.next_offset,
       size: page.size,
     });
     const target = req.preferred_target === 'native' ? 'native' : 'browser_wasm';
     const prepared = editorExecutionController.prepare({
-      source: runForPage.source,
+      selection: runForPage.selection,
+      snapshotVersion: req.snapshot_version,
       sql: req.sql,
       target,
       timeoutMs: EDITOR_EXECUTION_TIMEOUT_MS,
@@ -614,7 +650,14 @@ export function App() {
     const { input } = prepared;
     const executionId = input.executionId;
     const unsubscribe = editorExecutionController.subscribe(executionId, (delivery) => {
-      if (delivery.kind !== 'frame') return;
+      if (delivery.kind === 'terminal') {
+        if (delivery.state === 'failed' && delivery.reason === 'deadline') {
+          deadlineCtrl.abort();
+          runActions.finishLoadMoreRows(executionId);
+          showToast('Result-page execution deadline exceeded.', 'warn');
+        }
+        return;
+      }
       const event = delivery.payload as QueryEvent;
       if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') return;
       runActions.appendRunEvent(executionId, event);
@@ -626,7 +669,7 @@ export function App() {
       return;
     }
 
-    cancelRef.current = { executionId, controller: ctrl };
+    cancelRef.current = { executionId };
     editorExecutionController.attachCancellation(executionId, () => ctrl.abort());
     runActions.startLoadMoreRows(executionId);
 
@@ -635,9 +678,10 @@ export function App() {
       const outcome = await runQuery(
         req,
         (event) => editorExecutionController.publishFrame(executionId, event),
-        runForPage.source,
-        executionId,
+        runForPage.selection.source,
+        input,
         ctrl.signal,
+        deadlineCtrl.signal,
       );
 
       if (outcome.status === 'done') {
@@ -703,7 +747,7 @@ export function App() {
     if (cancellation.kind === 'cancel_requested') {
       runActions.requestRunCancellation(activeCancellation.executionId);
     }
-    if (runTimer.current != null) window.clearInterval(runTimer.current);
+    if (runTimer.current != null) clearOwnedRunTimer(runTimer, runTimer.current);
     showToast('Cancellation requested', 'warn');
   }, [runActions, showToast]);
 

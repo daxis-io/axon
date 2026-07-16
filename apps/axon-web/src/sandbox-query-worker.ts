@@ -27,6 +27,11 @@ import {
   type PrivateTerminalMetadata,
   type PrivateTerminalStatus,
 } from './sandbox-query-stream-protocol';
+import { isBrowserDataFusionCancellation } from './services/query-cancellation.ts';
+import {
+  appendQuerySessionInvalidation,
+  querySessionInvalidationMessage,
+} from './services/query-session-invalidation.ts';
 
 type DecimalString = string;
 
@@ -66,6 +71,10 @@ type ActiveCoordinatorQuery = {
   stage: QueryStage;
   maxBytes: number;
   deadline: ReturnType<typeof setTimeout>;
+  cancellation?: {
+    reason: 'cancelled' | 'deadline_exceeded';
+    grace: ReturnType<typeof setTimeout>;
+  };
 };
 
 type PendingForwardedCommand = {
@@ -73,6 +82,8 @@ type PendingForwardedCommand = {
 };
 
 const PRIVATE_QUERY_DEADLINE_MS = 120_000;
+const PRIVATE_QUERY_CANCELLATION_GRACE_MS = 1_000;
+const MAX_COORDINATOR_PENDING_COMMANDS = 32;
 const workerScope = self as unknown as PublicWorkerScope;
 const activeQueries = new Map<string, ActiveCoordinatorQuery>();
 const pendingForwardedCommands = new Map<string, PendingForwardedCommand>();
@@ -102,6 +113,17 @@ function forwardCommand(command: BrowserWorkerCommand): void {
     );
     return;
   }
+  if (!hasCoordinatorCapacity()) {
+    postQueryError(
+      requestId,
+      context,
+      queryError(
+        'invalid_request',
+        `browser query coordinator capacity ${MAX_COORDINATOR_PENDING_COMMANDS} exceeded`,
+      ),
+    );
+    return;
+  }
   pendingForwardedCommands.set(requestId, { context });
   postToChild({
     kind: 'command',
@@ -121,11 +143,12 @@ function createChild(): Worker {
   });
   next.addEventListener('error', (event) => {
     if (child !== next) return;
-    handleChildCrash(event.message || 'sandbox query child worker crashed');
+    event.preventDefault();
+    handleChildCrash('child worker crashed');
   });
   next.addEventListener('messageerror', () => {
     if (child !== next) return;
-    handleChildCrash('sandbox query child worker emitted an invalid structured-clone message');
+    handleChildCrash('child worker emitted an invalid structured-clone message');
   });
   return next;
 }
@@ -138,6 +161,17 @@ function startCoordinatedQuery(command: BrowserWorkerSqlCommand): void {
       queryId,
       context,
       queryError('invalid_request', `query '${queryId}' is already active in the coordinator`),
+    );
+    return;
+  }
+  if (!hasCoordinatorCapacity()) {
+    postQueryError(
+      queryId,
+      context,
+      queryError(
+        'invalid_request',
+        `browser query coordinator capacity ${MAX_COORDINATOR_PENDING_COMMANDS} exceeded`,
+      ),
     );
     return;
   }
@@ -156,13 +190,7 @@ function startCoordinatedQuery(command: BrowserWorkerSqlCommand): void {
       ? Math.min(requestedMax, BROWSER_SAFE_ARROW_IPC_BYTES)
       : BROWSER_SAFE_ARROW_IPC_BYTES;
   const deadline = setTimeout(() => {
-    if (!activeQueries.has(queryId)) return;
-    postToChild({
-      kind: 'cancel',
-      version: PRIVATE_STREAM_PROTOCOL_VERSION,
-      query_id: queryId,
-      reason: 'deadline_exceeded',
-    });
+    requestQueryCancellation(queryId, 'deadline_exceeded');
   }, PRIVATE_QUERY_DEADLINE_MS);
   activeQueries.set(queryId, {
     command,
@@ -181,13 +209,29 @@ function startCoordinatedQuery(command: BrowserWorkerSqlCommand): void {
 
 function handleCancel(command: BrowserWorkerCancelCommand): void {
   const queryId = command.query_id ?? command.request_id;
-  if (!activeQueries.has(queryId)) return;
+  requestQueryCancellation(queryId, 'cancelled');
+}
+
+function requestQueryCancellation(
+  queryId: string,
+  reason: 'cancelled' | 'deadline_exceeded',
+): void {
+  const active = activeQueries.get(queryId);
+  if (!active || active.cancellation) return;
   postToChild({
     kind: 'cancel',
     version: PRIVATE_STREAM_PROTOCOL_VERSION,
     query_id: queryId,
-    reason: 'cancelled',
+    reason,
   });
+  active.cancellation = {
+    reason,
+    grace: setTimeout(() => {
+      const current = activeQueries.get(queryId);
+      if (!current || current.cancellation?.reason !== reason) return;
+      recycleAfterUnconfirmedCancellation(queryId, reason);
+    }, PRIVATE_QUERY_CANCELLATION_GRACE_MS),
+  };
 }
 
 function handleChildMessage(message: PrivateChildMessage): void {
@@ -207,9 +251,8 @@ function handleChildMessage(message: PrivateChildMessage): void {
       const credit = active.stage.stage(message);
       if (active.stage.stagedByteLength > active.maxBytes) {
         throw queryError(
-          'fallback_required',
-          `browser coordinator exceeded max_arrow_ipc_bytes (${active.stage.stagedByteLength} > ${active.maxBytes})`,
-          'browser_runtime_constraint',
+          'execution_failed',
+          `resource limit runtime_limits.max_arrow_ipc_bytes exceeded: actual ${active.stage.stagedByteLength}, limit ${active.maxBytes}`,
         );
       }
       postToChild({
@@ -412,23 +455,76 @@ function finishActiveQuery(queryId: string): void {
   const active = activeQueries.get(queryId);
   if (!active) return;
   clearTimeout(active.deadline);
+  if (active.cancellation) clearTimeout(active.cancellation.grace);
   activeQueries.delete(queryId);
 }
 
-function handleChildCrash(message: string): void {
-  const error = queryError('execution_failed', message);
+function recycleAfterUnconfirmedCancellation(
+  queryId: string,
+  reason: 'cancelled' | 'deadline_exceeded',
+): void {
+  const invalidationReason = 'child did not confirm cancellation before the grace period expired';
+  const primaryError =
+    reason === 'cancelled'
+      ? queryError(
+          'execution_failed',
+          appendQuerySessionInvalidation(
+            'experimental browser DataFusion query cancelled while awaiting worker confirmation',
+            invalidationReason,
+          ),
+        )
+      : queryError(
+          'execution_failed',
+          appendQuerySessionInvalidation(
+            'browser DataFusion query deadline exceeded while awaiting worker confirmation',
+            invalidationReason,
+          ),
+        );
+  recycleChild(invalidationReason, {
+    queryId,
+    error: primaryError,
+    status: reason,
+  });
+}
+
+function handleChildCrash(invalidationReason: string): void {
+  recycleChild(invalidationReason);
+}
+
+function recycleChild(
+  invalidationReason: string,
+  primary?: {
+    queryId: string;
+    error: QueryError;
+    status: PrivateTerminalStatus;
+  },
+): void {
+  const invalidationError = queryError(
+    'execution_failed',
+    querySessionInvalidationMessage(invalidationReason),
+  );
   for (const [queryId, active] of activeQueries) {
     active.stage.discard();
-    postQueryError(queryId, active.context, error);
+    if (primary?.queryId === queryId) {
+      postQueryError(queryId, active.context, primary.error, primary.status);
+    } else {
+      postQueryError(queryId, active.context, invalidationError);
+    }
     clearTimeout(active.deadline);
+    if (active.cancellation) clearTimeout(active.cancellation.grace);
   }
   activeQueries.clear();
   for (const [requestId, pending] of pendingForwardedCommands) {
-    postQueryError(requestId, pending.context, error);
+    postQueryError(requestId, pending.context, invalidationError);
   }
   pendingForwardedCommands.clear();
-  child.terminate();
+  const previousChild = child;
   child = createChild();
+  previousChild.terminate();
+}
+
+function hasCoordinatorCapacity(): boolean {
+  return activeQueries.size + pendingForwardedCommands.size < MAX_COORDINATOR_PENDING_COMMANDS;
 }
 
 function postQueryError(
@@ -437,7 +533,7 @@ function postQueryError(
   error: QueryError,
   status?: PrivateTerminalStatus,
 ): void {
-  const normalized = redactQueryError(error);
+  const normalized = redactQueryError(normalizeArrowOutputBudgetError(error));
   emitErrorEvents(context, normalized, status);
   postResponse({ error: { request_id: requestId, error: normalized } });
 }
@@ -546,18 +642,12 @@ function emitErrorEvents(
   status?: PrivateTerminalStatus,
 ): void {
   if (error.fallback_reason) emitFallback(context, error.fallback_reason);
-  if (status === 'cancelled' || status === 'deadline_exceeded' || isCancellation(error)) {
-    postEvent({ cancellation: { context, error } });
-  }
   emitLog(context, 'error', error.message);
+  if (status === 'cancelled' || isBrowserDataFusionCancellation(error)) {
+    postEvent({ cancellation: { context, error } });
+    return;
+  }
   postEvent({ terminal_error: { context, error } });
-}
-
-function isCancellation(error: QueryError): boolean {
-  return (
-    error.code === 'execution_failed' &&
-    (error.message.includes('cancelled') || error.message.includes('deadline'))
-  );
 }
 
 function postEvent(event: BrowserWorkerEventEnvelope): void {
@@ -647,6 +737,17 @@ function normalizeQueryError(error: unknown): QueryError {
   if (isQueryError(error)) return redactQueryError(error);
   if (error instanceof Error) return queryError('execution_failed', error.message);
   return queryError('execution_failed', String(error));
+}
+
+function normalizeArrowOutputBudgetError(error: QueryError): QueryError {
+  if (!error.message.includes('max_output_ipc_bytes')) return error;
+  return queryError(
+    'execution_failed',
+    `resource limit runtime_limits.max_arrow_ipc_bytes exceeded: ${error.message.replaceAll(
+      'max_output_ipc_bytes',
+      'max_arrow_ipc_bytes',
+    )}`,
+  );
 }
 
 function isQueryError(value: unknown): value is QueryError {

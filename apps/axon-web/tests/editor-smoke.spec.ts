@@ -11,7 +11,11 @@ import {
 } from '../src/editor/connect/store.ts';
 import { catalogTablePath, savedQueryPath } from '../src/editor/catalog-navigation.ts';
 import type { ConnectedCatalog, ConnectResult } from '../src/editor/connect/types.ts';
-import { resolveQuerySourceSelection, SAMPLE_QUERY_SOURCE } from '../src/services/query-source.ts';
+import {
+  resolveQuerySourceSelection,
+  SAMPLE_QUERY_SOURCE,
+  SAMPLE_QUERY_SOURCE_REF,
+} from '../src/services/query-source.ts';
 import { connectorFeaturesFromEnv } from '../src/services/connector-features.ts';
 import {
   QUERY_RESULT_PAGE_SIZE,
@@ -413,7 +417,7 @@ test.describe('editor (Phase 1 smoke)', () => {
         preferred_target: 'browser_wasm',
         page: { offset: 0, size: QUERY_RESULT_PAGE_SIZE },
       },
-      SAMPLE_QUERY_SOURCE,
+      { kind: 'sample', ref: SAMPLE_QUERY_SOURCE_REF, source: SAMPLE_QUERY_SOURCE },
     );
     const edited = queryResultPageRun(
       {
@@ -421,7 +425,7 @@ test.describe('editor (Phase 1 smoke)', () => {
         table_name: 'events',
         preferred_target: 'browser_wasm',
       },
-      SAMPLE_QUERY_SOURCE,
+      { kind: 'sample', ref: SAMPLE_QUERY_SOURCE_REF, source: SAMPLE_QUERY_SOURCE },
     );
 
     expect(sameQueryResultPageRun(original, edited)).toBe(false);

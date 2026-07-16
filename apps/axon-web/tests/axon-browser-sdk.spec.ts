@@ -1118,6 +1118,38 @@ test('query sends chunked delivery with browser-safe defaults', async () => {
   });
 });
 
+test('query sends single-buffer delivery only when explicitly selected', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const resultPromise = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT * FROM events',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-query-single-buffer', delivery: 'single_buffer' },
+  );
+
+  await Promise.resolve();
+  const command = worker.commands[0];
+  if (!('sql' in command)) throw new Error('expected sql command');
+  expect(command.sql).toMatchObject({
+    request_id: 'req-query-single-buffer',
+    output: 'arrow_ipc_stream',
+    delivery: 'single_buffer',
+    browser_safe_defaults: true,
+  });
+
+  worker.emitMessage(legacySuccessMessage('req-query-single-buffer', [1, 2, 3, 4]));
+  await expect(resultPromise).resolves.toMatchObject({
+    request_id: 'req-query-single-buffer',
+    result: { delivery: 'single_buffer', byte_length: 4 },
+  });
+});
+
 test('query preserves stricter browser-safe limits and rejects looser SDK limits', async () => {
   const strictWorker = new FakeWorker();
   const strictClient = createAxonBrowserClient({ worker: strictWorker as unknown as Worker });

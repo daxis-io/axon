@@ -6,7 +6,7 @@ import type {
 } from '@tanstack/react-query-persist-client';
 import { KeyValueStore } from '../persistence/key-value.ts';
 
-export const AXON_QUERY_CACHE_SCHEMA_VERSION = 1;
+export const AXON_QUERY_CACHE_SCHEMA_VERSION = 2;
 export const AXON_QUERY_CACHE_APP_VERSION = 'axon-web@0.1.0';
 export const AXON_QUERY_CACHE_BUSTER = `${AXON_QUERY_CACHE_APP_VERSION}/query-cache:v${AXON_QUERY_CACHE_SCHEMA_VERSION}`;
 export const AXON_QUERY_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -110,12 +110,12 @@ function isAllowedQueryKey(queryKey: QueryKey): boolean {
 
   const sourceIdentity = queryKey[2];
   if (sourceIdentity[0] === 'manifest') {
-    return sourceIdentity.length === 5;
+    return sourceIdentity.length === 8;
   }
 
   if (sourceIdentity[0] === 'object_store_table_root') {
     return (
-      sourceIdentity.length === 3 && (sourceIdentity[1] === 'gcs' || sourceIdentity[1] === 's3')
+      sourceIdentity.length === 9 && (sourceIdentity[1] === 'gcs' || sourceIdentity[1] === 's3')
     );
   }
 

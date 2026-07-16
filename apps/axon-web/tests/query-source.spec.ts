@@ -278,7 +278,7 @@ test.describe('query source', () => {
     });
   });
 
-  test('compares public object-store table roots by provider and table URI', () => {
+  test('compares public object-store table roots by their execution identity', () => {
     const left = {
       kind: 'object_store_table_root' as const,
       provider: 'gcs' as const,
@@ -292,6 +292,8 @@ test.describe('query source', () => {
 
     expect(sameQuerySource(left, { ...left })).toBe(true);
     expect(sameQuerySource(left, { ...left, tableUri: 'gs://bucket/other' })).toBe(false);
+    expect(sameQuerySource(left, { ...left, region: 'us-east1' })).toBe(false);
+    expect(sameQuerySource(left, { ...left, snapshot: 1 })).toBe(false);
     expect(
       sameQuerySource(left, {
         ...left,

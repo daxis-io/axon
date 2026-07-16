@@ -24,6 +24,14 @@ type AppExecutionGuardModule = {
   executionMayUpdateUi?: (runState: RunUiState, executionId: string) => boolean;
 };
 
+type AppTimerOwnershipModule = {
+  clearOwnedRunTimer?: (
+    timerRef: { current: number | null },
+    ownedTimer: number,
+    clearTimer: (timer: number) => void,
+  ) => void;
+};
+
 function engineStatus(): EngineStatus {
   return {
     bundle: 'axon_web_wasm.wasm',
@@ -112,5 +120,24 @@ describe('App execution callback guard', () => {
       ),
     ).toBe(false);
     expect(executionMayUpdateUi({ status: 'idle' }, 'execution-1')).toBe(false);
+  });
+});
+
+describe('App execution timer ownership', () => {
+  it('clears an old execution timer without detaching a newer run timer', () => {
+    const clearOwnedRunTimer = (AppModule as AppTimerOwnershipModule).clearOwnedRunTimer;
+    const clearTimer = vi.fn();
+    const timerRef = { current: 2 };
+
+    expect(clearOwnedRunTimer).toEqual(expect.any(Function));
+    if (!clearOwnedRunTimer) return;
+
+    clearOwnedRunTimer(timerRef, 1, clearTimer);
+    expect(clearTimer).toHaveBeenCalledWith(1);
+    expect(timerRef.current).toBe(2);
+
+    clearOwnedRunTimer(timerRef, 2, clearTimer);
+    expect(clearTimer).toHaveBeenCalledWith(2);
+    expect(timerRef.current).toBeNull();
   });
 });

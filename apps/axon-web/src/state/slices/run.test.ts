@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { defaultCapabilityMatrix } from '../../services/capabilities.ts';
-import { SAMPLE_QUERY_SOURCE } from '../../services/query-source.ts';
+import { SAMPLE_QUERY_SOURCE, SAMPLE_QUERY_SOURCE_REF } from '../../services/query-source.ts';
 import type { QueryResultPageRun } from '../../services/query-pagination.ts';
 import type {
   CapabilityMatrixRow,
@@ -98,7 +98,11 @@ function runFor(
       preferred_target: target,
       snapshot_version: 12,
     },
-    source: SAMPLE_QUERY_SOURCE,
+    selection: {
+      kind: 'sample',
+      ref: SAMPLE_QUERY_SOURCE_REF,
+      source: SAMPLE_QUERY_SOURCE,
+    },
   };
 }
 
@@ -356,6 +360,41 @@ describe('run slice', () => {
       events: [],
       plan: undefined,
     });
+  });
+
+  it('cannot reset accepted work to idle before an execution reaches terminal state', () => {
+    const store = createAxonClientStore({ storage: createMemoryClientStateStorage() });
+    const actions = selectRunActions(store.getState());
+
+    actions.createRun('execution-1', 'browser_wasm');
+    actions.resetRun();
+    expect(selectRunState(store.getState())).toMatchObject({
+      status: 'created',
+      executionId: 'execution-1',
+    });
+
+    actions.startRun('execution-1');
+    actions.resetRun();
+    expect(selectRunState(store.getState())).toMatchObject({
+      status: 'running',
+      executionId: 'execution-1',
+    });
+
+    actions.requestRunCancellation('execution-1');
+    actions.resetRun();
+    expect(selectRunState(store.getState())).toMatchObject({
+      status: 'cancel_requested',
+      executionId: 'execution-1',
+    });
+
+    actions.finishRunCancelled({
+      status: 'cancelled',
+      executionId: 'execution-1',
+      target: 'browser_wasm',
+      ms: 4,
+    });
+    actions.resetRun();
+    expect(selectRunState(store.getState())).toEqual({ status: 'idle' });
   });
 
   it('loads more rows for the same run and discards stale batches', () => {

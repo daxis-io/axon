@@ -8,7 +8,7 @@ import {
   type ExecutionAdmissionInput,
   type ExecutionBudgets,
 } from './execution-lifecycle.ts';
-import { SAMPLE_QUERY_SOURCE } from './query-source.ts';
+import { SAMPLE_QUERY_SOURCE, SAMPLE_QUERY_SOURCE_REF } from './query-source.ts';
 
 const budgets: ExecutionBudgets = {
   maxResultRows: 501,
@@ -17,11 +17,16 @@ const budgets: ExecutionBudgets = {
   maxScanBytes: 64 * 1024 * 1024,
 };
 
+const sampleSelection = {
+  kind: 'sample',
+  ref: SAMPLE_QUERY_SOURCE_REF,
+  source: SAMPLE_QUERY_SOURCE,
+} as const;
+
 function controllerFixture(maxRecords = 8) {
   let now = 1_000;
   let nextTimer = 0;
   const scheduled = new Map<number, { callback: () => void; delay: number }>();
-  const cleared: number[] = [];
   const lifecycle = new ExecutionLifecycle({ maxRecords });
   const controller = createExecutionController({
     lifecycle,
@@ -33,7 +38,6 @@ function controllerFixture(maxRecords = 8) {
       return handle;
     },
     clearTimer: (handle) => {
-      cleared.push(handle as number);
       scheduled.delete(handle as number);
     },
   });
@@ -41,7 +45,6 @@ function controllerFixture(maxRecords = 8) {
     controller,
     lifecycle,
     scheduled,
-    cleared,
     setNow(value: number) {
       now = value;
     },
@@ -51,7 +54,7 @@ function controllerFixture(maxRecords = 8) {
 function prepareInput() {
   const fixture = controllerFixture();
   const prepared = fixture.controller.prepare({
-    source: SAMPLE_QUERY_SOURCE,
+    selection: sampleSelection,
     sql: 'select * from events',
     target: 'browser_wasm',
     timeoutMs: 120_000,
@@ -66,7 +69,7 @@ describe('execution lifecycle admission', () => {
     const { controller, lifecycle } = controllerFixture();
 
     const prepared = controller.prepare({
-      source: SAMPLE_QUERY_SOURCE,
+      selection: sampleSelection,
       sql: 'select * from events',
       target: 'browser_wasm',
       timeoutMs: 120_000,
@@ -81,6 +84,21 @@ describe('execution lifecycle admission', () => {
         target: 'browser_wasm',
         deadlineAt: 121_000,
         budgets,
+        sourceIdentity: {
+          kind: 'sample',
+          ref: SAMPLE_QUERY_SOURCE_REF,
+          source: [
+            'manifest',
+            'sample-lake',
+            'prod_like',
+            'events',
+            '/fixtures/prod-like/delta-log-manifest.json',
+            'gs://axon-sample/prod-like-events',
+            'browser-local',
+            null,
+          ],
+          snapshotVersion: null,
+        },
       },
       snapshot: { state: 'created', executionId: 'execution-001' },
     });
@@ -104,10 +122,42 @@ describe('execution lifecycle admission', () => {
 
   it.each([
     [
-      'resource',
+      'selected ref',
       (input: ExecutionAdmissionInput) => ({
         ...input,
-        sourceIdentity: ['manifest', 'other', 's', 't', '/m'] as const,
+        sourceIdentity: {
+          ...input.sourceIdentity,
+          ref: { ...input.sourceIdentity.ref, catalogId: 'other-catalog' },
+        },
+      }),
+    ],
+    [
+      'selected snapshot',
+      (input: ExecutionAdmissionInput) => ({
+        ...input,
+        sourceIdentity: {
+          ...input.sourceIdentity,
+          snapshotVersion: 12,
+        },
+      }),
+    ],
+    [
+      'source version',
+      (input: ExecutionAdmissionInput) => ({
+        ...input,
+        sourceIdentity: {
+          ...input.sourceIdentity,
+          source: [
+            'manifest',
+            'sample-lake',
+            'prod_like',
+            'events',
+            '/fixtures/prod-like/delta-log-manifest.json',
+            'gs://axon-sample/prod-like-events',
+            'browser-local',
+            11,
+          ] as const,
+        },
       }),
     ],
     ['sql', (input: ExecutionAdmissionInput) => ({ ...input, sql: 'select 2' })],
@@ -152,7 +202,7 @@ describe('execution lifecycle admission', () => {
     controller.admit(input);
     const before = lifecycle.getSnapshot(input.executionId);
 
-    expect(lifecycle.admit(mutate(input))).toMatchObject({
+    expect(controller.admit(mutate(input))).toMatchObject({
       kind: 'id_reuse',
       launch: false,
       snapshot: before,
@@ -169,7 +219,7 @@ describe('execution lifecycle admission', () => {
       now: () => 100,
     });
     const request = {
-      source: SAMPLE_QUERY_SOURCE,
+      selection: sampleSelection,
       sql: 'select 1',
       target: 'browser_wasm' as const,
       timeoutMs: 1_000,
@@ -181,16 +231,37 @@ describe('execution lifecycle admission', () => {
     expect(lifecycle.recordCount).toBe(1);
   });
 
-  it('uses injected timer functions against the absolute deadline', () => {
-    const { controller, input, scheduled, cleared, setNow } = prepareInput();
-    const callback = vi.fn();
-    setNow(2_000);
+  it('rejects mismatched expired reuse before deadline processing can mutate the original', () => {
+    const { controller, lifecycle, input, setNow } = prepareInput();
+    controller.admit(input);
+    const before = lifecycle.getSnapshot(input.executionId);
+    setNow(input.deadlineAt);
 
-    const handle = controller.scheduleDeadline(input, callback);
+    expect(controller.admit({ ...input, sql: 'select 2' })).toMatchObject({
+      kind: 'id_reuse',
+      launch: false,
+      snapshot: before,
+    });
+    expect(lifecycle.getSnapshot(input.executionId)).toEqual(before);
+  });
 
-    expect(scheduled.get(handle as number)).toEqual({ callback, delay: 119_000 });
-    controller.clearScheduled(handle);
-    expect(cleared).toEqual([handle]);
+  it('distinguishes non-finite immutable inputs without JSON null collisions', () => {
+    const { input } = prepareInput();
+    const lifecycle = new ExecutionLifecycle();
+    const controller = createExecutionController({ lifecycle, now: () => 1_000 });
+    const invalid = { ...input, deadlineAt: Number.NaN };
+    expect(controller.admit(invalid)).toMatchObject({
+      kind: 'rejected',
+      reason: 'invalid_deadline',
+    });
+    expect(controller.admit({ ...invalid, deadlineAt: Number.POSITIVE_INFINITY })).toMatchObject({
+      kind: 'id_reuse',
+      snapshot: { state: 'rejected', rejectionReason: 'invalid_deadline' },
+    });
+    expect(lifecycle.getSnapshot(input.executionId)).toMatchObject({
+      state: 'rejected',
+      input: { deadlineAt: Number.NaN },
+    });
   });
 
   it('maps the domain execution ID to query correlation and internal spans explicitly', () => {
@@ -251,6 +322,9 @@ describe('execution lifecycle cancellation and terminal delivery', () => {
       delivered: false,
       snapshot: { state: 'cancelled' },
     });
+    expect(controller.lifecycle.getSnapshot(input.executionId)?.invariantViolations).toContain(
+      'late cancelled after cancelled',
+    );
     expect(deliveries).toEqual([
       {
         kind: 'terminal',
@@ -371,5 +445,188 @@ describe('execution lifecycle cancellation and terminal delivery', () => {
     controller.confirmCancelled(input.executionId);
 
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [
+      'completed',
+      (controller: ReturnType<typeof createExecutionController>, id: string) =>
+        controller.complete(id),
+    ],
+    [
+      'failed',
+      (controller: ReturnType<typeof createExecutionController>, id: string) =>
+        controller.fail(id, 'worker_error'),
+    ],
+    [
+      'cancelled',
+      (controller: ReturnType<typeof createExecutionController>, id: string) =>
+        controller.confirmCancelled(id),
+    ],
+  ])('records duplicate %s delivery as an invariant violation', (state, terminate) => {
+    const { controller, lifecycle, input } = prepareInput();
+    controller.admit(input);
+    terminate(controller, input.executionId);
+
+    expect(terminate(controller, input.executionId)).toMatchObject({
+      kind: 'recorded',
+      delivered: false,
+    });
+    expect(lifecycle.getSnapshot(input.executionId)?.invariantViolations).toContain(
+      `late ${state} after ${state}`,
+    );
+  });
+});
+
+describe('execution lifecycle deadlines and admission bounds', () => {
+  it.each([
+    ['non-finite rows', { ...budgets, maxResultRows: Number.POSITIVE_INFINITY }],
+    ['fractional rows', { ...budgets, maxResultRows: 1.5 }],
+    ['zero rows', { ...budgets, maxResultRows: 0 }],
+    ['unsafe rows', { ...budgets, maxResultRows: 502 }],
+    ['unsafe Arrow bytes', { ...budgets, maxArrowIpcBytes: 8 * 1024 * 1024 + 1 }],
+    ['unsafe preview bytes', { ...budgets, maxPreviewStringBytes: 256 * 1024 + 1 }],
+    ['unsafe scan bytes', { ...budgets, maxScanBytes: Number.MAX_SAFE_INTEGER + 1 }],
+  ])('rejects %s before admission without an execution stream', (_label, invalidBudgets) => {
+    const { controller } = controllerFixture();
+    const listener = vi.fn();
+    const prepared = controller.prepare({
+      selection: sampleSelection,
+      sql: 'select * from events',
+      target: 'browser_wasm',
+      timeoutMs: 120_000,
+      budgets: invalidBudgets,
+    });
+    if (prepared.kind === 'rejected') throw new Error('expected a recorded admission');
+    controller.subscribe(prepared.input.executionId, listener);
+
+    expect(controller.admit(prepared.input)).toMatchObject({
+      kind: 'rejected',
+      launch: false,
+      snapshot: { state: 'rejected', admitted: false },
+    });
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('rejects an expired absolute deadline before admission', () => {
+    const { controller } = controllerFixture();
+    const prepared = controller.prepare({
+      selection: sampleSelection,
+      sql: 'select * from events',
+      target: 'browser_wasm',
+      timeoutMs: 0,
+      budgets,
+    });
+    if (prepared.kind === 'rejected') throw new Error('expected a recorded admission');
+
+    expect(controller.admit(prepared.input)).toMatchObject({
+      kind: 'rejected',
+      launch: false,
+      reason: 'deadline_expired',
+      snapshot: { state: 'rejected', admitted: false },
+    });
+  });
+
+  it.each([
+    ['non-finite', Number.NaN],
+    ['fractional', 1.5],
+  ])('rejects a %s absolute deadline before admission', (_label, timeoutMs) => {
+    const { controller } = controllerFixture();
+    const prepared = controller.prepare({
+      selection: sampleSelection,
+      sql: 'select * from events',
+      target: 'browser_wasm',
+      timeoutMs,
+      budgets,
+    });
+    if (prepared.kind === 'rejected') throw new Error('expected a recorded admission');
+
+    expect(controller.admit(prepared.input)).toMatchObject({
+      kind: 'rejected',
+      launch: false,
+      reason: 'invalid_deadline',
+      snapshot: { state: 'rejected', admitted: false },
+    });
+  });
+
+  it('uses one whole-lifecycle timer and fails deadline before aborting local work', () => {
+    const { controller, input, scheduled, setNow } = prepareInput();
+    const cancel = vi.fn();
+    const deliveries: unknown[] = [];
+    controller.attachCancellation(input.executionId, cancel);
+    controller.subscribe(input.executionId, (delivery) => deliveries.push(delivery));
+    controller.admit(input);
+
+    expect(scheduled.size).toBe(1);
+    const timer = [...scheduled.values()][0];
+    expect(timer.delay).toBe(120_000);
+    setNow(input.deadlineAt);
+    timer.callback();
+
+    expect(controller.lifecycle.getSnapshot(input.executionId)).toMatchObject({
+      state: 'failed',
+      terminalReason: 'deadline',
+    });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(deliveries).toEqual([
+      {
+        kind: 'terminal',
+        sequence: 1,
+        state: 'failed',
+        reason: 'deadline',
+      },
+    ]);
+    expect(controller.confirmCancelled(input.executionId)).toMatchObject({
+      kind: 'recorded',
+      delivered: false,
+    });
+  });
+
+  it('retains terminal records through their deadline and sweeps them afterward', () => {
+    let now = 100;
+    let sequence = 0;
+    const scheduled: Array<() => void> = [];
+    const lifecycle = new ExecutionLifecycle({ maxRecords: 1 });
+    const controller = createExecutionController({
+      lifecycle,
+      idFactory: () => `execution-${++sequence}`,
+      now: () => now,
+      setTimer: (callback) => {
+        scheduled.push(callback);
+        return callback;
+      },
+      clearTimer: vi.fn(),
+    });
+    const request = {
+      selection: sampleSelection,
+      sql: 'select 1',
+      target: 'browser_wasm' as const,
+      timeoutMs: 10,
+      budgets,
+    };
+    const first = controller.prepare(request);
+    if (first.kind === 'rejected') throw new Error('expected first admission');
+    controller.admit(first.input);
+    controller.complete(first.input.executionId);
+
+    expect(controller.prepare(request)).toEqual({ kind: 'rejected', reason: 'capacity' });
+    now = 110;
+    scheduled[0]?.();
+    expect(controller.prepare(request)).toMatchObject({ kind: 'created' });
+    expect(lifecycle.recordCount).toBe(1);
+  });
+
+  it('bounds listeners and invariant diagnostics per retained execution', () => {
+    const { controller, lifecycle, input } = prepareInput();
+    const listeners = Array.from({ length: 40 }, () => vi.fn());
+    for (const listener of listeners) controller.subscribe(input.executionId, listener);
+    controller.admit(input);
+    controller.complete(input.executionId);
+
+    expect(listeners.filter((listener) => listener.mock.calls.length > 0)).toHaveLength(16);
+    for (let index = 0; index < 100; index += 1) {
+      controller.publishFrame(input.executionId, { index });
+    }
+    expect(lifecycle.getSnapshot(input.executionId)?.invariantViolations).toHaveLength(32);
   });
 });

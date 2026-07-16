@@ -5,6 +5,40 @@ const BINARY_STRING_INT_PARQUET_BASE64 =
 const BINARY_STRING_INT_PARQUET_BYTES = Buffer.from(BINARY_STRING_INT_PARQUET_BASE64, 'base64');
 const BINARY_STRING_INT_PARQUET_PATH =
   '**/fixtures/browser-datafusion-runtime/internal-cursor.parquet**';
+const NON_SETTLING_CHILD_SOURCE = `
+self.postMessage({ kind: 'ready', version: 1 });
+self.addEventListener('message', (event) => {
+  const message = event.data;
+  if (message.kind !== 'command' || !message.command.open_delta_table) return;
+  const command = message.command.open_delta_table;
+  self.postMessage({
+    kind: 'public',
+    version: 1,
+    envelope: { opened: { request_id: command.request_id, name: command.name } },
+  });
+});
+`;
+const CRASH_ON_SQL_CHILD_SOURCE = `
+self.postMessage({ kind: 'ready', version: 1 });
+self.addEventListener('message', (event) => {
+  const message = event.data;
+  if (message.kind !== 'command') return;
+  if (message.command.open_delta_table) {
+    const command = message.command.open_delta_table;
+    self.postMessage({
+      kind: 'public',
+      version: 1,
+      envelope: { opened: { request_id: command.request_id, name: command.name } },
+    });
+    return;
+  }
+  if (message.command.sql) {
+    setTimeout(() => {
+      throw new Error('injected child crash after table open');
+    }, 0);
+  }
+});
+`;
 
 test('private child blocks at zero credit and delivers cancellation and deadline terminals', async ({
   page,
@@ -426,10 +460,22 @@ test('private child blocks at zero credit and delivers cancellation and deadline
   });
 });
 
-test('one-child coordinator discards staged data after a late failure', async ({ page }) => {
+test('one-child coordinator discards staged data after a late failure', async ({
+  page,
+  browserName,
+}) => {
   await routeCursorParquet(page);
-  const workerUrls: string[] = [];
-  page.on('worker', (worker) => workerUrls.push(worker.url()));
+  let childLoads = 0;
+  if (browserName === 'firefox') {
+    page.on('worker', (worker) => {
+      if (worker.url().includes('sandbox-query-child-worker')) childLoads += 1;
+    });
+  } else {
+    await page.route('**/sandbox-query-child-worker.ts*', async (route) => {
+      childLoads += 1;
+      await route.continue();
+    });
+  }
   await page.goto('/');
 
   const result = await page.evaluate(
@@ -547,25 +593,41 @@ test('one-child coordinator discards staged data after a late failure', async ({
     publicErrors: 1,
     publicSuccesses: 0,
   });
-  expect(workerUrls.filter((url) => url.includes('sandbox-query-child-worker'))).toHaveLength(1);
+  expect(childLoads).toBe(1);
 });
 
 test('one-child coordinator fails a forwarded command once when the child crashes', async ({
   page,
+  browserName,
 }) => {
   let childLoads = 0;
-  await page.route('**/sandbox-query-child-worker.ts*', async (route) => {
-    childLoads += 1;
-    if (childLoads === 1) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      await route.abort('failed');
-      return;
-    }
-    await route.continue();
-  });
+  const isFirefox = browserName === 'firefox';
+  const childWorkerPromise = isFirefox
+    ? page.waitForEvent('worker', {
+        predicate: (worker) => worker.url().includes('sandbox-query-child-worker'),
+      })
+    : undefined;
+  if (isFirefox) {
+    page.on('worker', (worker) => {
+      if (worker.url().includes('sandbox-query-child-worker')) childLoads += 1;
+    });
+  } else {
+    await page.route('**/sandbox-query-child-worker.ts*', async (route) => {
+      childLoads += 1;
+      if (childLoads === 1) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/javascript',
+          body: "throw new Error('injected child worker crash');",
+        });
+        return;
+      }
+      await route.continue();
+    });
+  }
   await page.goto('/');
 
-  const result = await page.evaluate(async () => {
+  const resultPromise = page.evaluate(async () => {
     type PublicMessage = { error?: { request_id?: string } };
     const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
     const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
@@ -613,6 +675,15 @@ test('one-child coordinator fails a forwarded command once when the child crashe
       client.terminate();
     }
   });
+  if (childWorkerPromise) {
+    const childWorker = await childWorkerPromise;
+    await childWorker.evaluate(() => {
+      setTimeout(() => {
+        throw new Error('injected child worker crash');
+      }, 0);
+    });
+  }
+  const result = await resultPromise;
 
   expect(result).toMatchObject({
     error: {
@@ -622,6 +693,180 @@ test('one-child coordinator fails a forwarded command once when the child crashe
     publicErrors: 1,
   });
   expect(childLoads).toBeGreaterThanOrEqual(2);
+});
+
+test('one-child coordinator bounds queued SQL and recycles a non-settling child', async ({
+  page,
+  browserName,
+}) => {
+  test.skip(browserName === 'firefox', 'Firefox cannot route nested worker module requests');
+  let childLoads = 0;
+  await page.route('**/sandbox-query-child-worker.ts*', async (route) => {
+    childLoads += 1;
+    if (childLoads === 1) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/javascript',
+        body: NON_SETTLING_CHILD_SOURCE,
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await page.goto('/');
+
+  const result = await page.evaluate(async () => {
+    type CapturedError = {
+      code?: string;
+      message: string;
+      name: string;
+    };
+    const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+    const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
+      type: 'module',
+    });
+    const client = sdk.createAxonBrowserClient({ worker });
+
+    try {
+      await client.openDeltaTable(
+        'blocked',
+        {
+          table_uri: new URL('/fixtures/browser-datafusion-runtime/non-settling', location.href)
+            .href,
+          snapshot_version: 0,
+          partition_column_types: {},
+          browser_compatibility: { capabilities: {} },
+          required_capabilities: { capabilities: {} },
+          active_files: [],
+        },
+        { requestId: 'open-non-settling' },
+      );
+
+      const attempts = Array.from({ length: 33 }, (_, index) =>
+        client.query('blocked', 'SELECT 1', { requestId: `blocked-query-${index}` }).then(
+          () => ({ ok: true as const }),
+          (error: unknown) => {
+            const candidate = error as {
+              message?: string;
+              name?: string;
+              queryError?: { code?: string; message?: string };
+            };
+            return {
+              ok: false as const,
+              error: {
+                code: candidate.queryError?.code,
+                message: String(candidate.queryError?.message ?? candidate.message),
+                name: String(candidate.name),
+              } satisfies CapturedError,
+            };
+          },
+        ),
+      );
+      client.cancelQuery('blocked-query-0', { requestId: 'cancel-non-settling' });
+      const settlements = await Promise.race([
+        Promise.all(attempts),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000)),
+      ]);
+      if (!settlements) return { timedOut: true, errors: [] as CapturedError[] };
+      return {
+        timedOut: false,
+        errors: settlements.flatMap((settlement) => (settlement.ok ? [] : [settlement.error])),
+      };
+    } finally {
+      client.terminate();
+    }
+  });
+
+  expect(result.timedOut).toBe(false);
+  expect(result.errors).toHaveLength(33);
+  expect(
+    result.errors.filter(
+      (error) => error.code === 'invalid_request' && error.message.includes('coordinator capacity'),
+    ),
+  ).toHaveLength(1);
+  expect(
+    result.errors.filter((error) =>
+      error.message.startsWith('experimental browser DataFusion query cancelled'),
+    ),
+  ).toHaveLength(1);
+  expect(
+    result.errors.filter((error) => error.message.includes('browser query session invalidated:')),
+  ).toHaveLength(32);
+  expect(childLoads).toBeGreaterThanOrEqual(2);
+});
+
+test('editor query session reopens its table after a child crash', async ({
+  page,
+  browserName,
+}) => {
+  test.skip(browserName === 'firefox', 'Firefox cannot route nested worker module requests');
+  let childLoads = 0;
+  await page.route('**/sandbox-query-child-worker.ts*', async (route) => {
+    childLoads += 1;
+    if (childLoads === 1) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/javascript',
+        body: CRASH_ON_SQL_CHILD_SOURCE,
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await page.goto('/');
+
+  const result = await page.evaluate(async () => {
+    const query = await import(new URL('/src/services/query.ts', location.href).href);
+    const sourceModule = await import(new URL('/src/services/query-source.ts', location.href).href);
+    const keys = await import(new URL('/src/query/keys.ts', location.href).href);
+    const source = sourceModule.SAMPLE_QUERY_SOURCE;
+    const selection = {
+      kind: 'sample' as const,
+      ref: sourceModule.SAMPLE_QUERY_SOURCE_REF,
+      source,
+    };
+    const sourceIdentity = keys.selectedQuerySourceIdentity(selection);
+    const admission = (executionId: string) => ({
+      executionId,
+      sourceIdentity,
+      sql: 'SELECT COUNT(*) AS value FROM events',
+      target: 'browser_wasm' as const,
+      deadlineAt: Date.now() + 30_000,
+      budgets: {
+        maxResultRows: 501,
+        maxArrowIpcBytes: 8 * 1024 * 1024,
+        maxPreviewStringBytes: 256 * 1024,
+        maxScanBytes: 64 * 1024 * 1024,
+      },
+    });
+
+    query.discardQuerySession();
+    try {
+      const first = await query.runQuery(
+        { sql: 'SELECT COUNT(*) AS value FROM events' },
+        () => undefined,
+        source,
+        admission('child-crash-first'),
+      );
+      const second = await query.runQuery(
+        { sql: 'SELECT COUNT(*) AS value FROM events' },
+        () => undefined,
+        source,
+        admission('child-crash-second'),
+      );
+      return { first, second };
+    } finally {
+      query.discardQuerySession();
+    }
+  });
+
+  expect(result.first).toMatchObject({
+    status: 'error',
+    code: 'execution_failed',
+    message: expect.stringContaining('browser query session invalidated:'),
+  });
+  expect(result.second, JSON.stringify(result)).toMatchObject({ status: 'done' });
+  expect(childLoads).toBeGreaterThanOrEqual(3);
 });
 
 async function routeCursorParquet(page: Page): Promise<void> {

@@ -1,33 +1,36 @@
-import type { QuerySourceSelection, QueryTableSource } from '../services/query-source.ts';
-import type { PublicObjectStorageProvider } from '../services/object-storage.ts';
+import type {
+  ActiveConnectedTableRef,
+  AvailableQuerySourceSelection,
+  QuerySourceIdentity,
+  QuerySourceSelection,
+  QueryTableSource,
+} from '../services/query-source.ts';
+import { querySourceIdentity } from '../services/query-source.ts';
 
-export type QuerySourceIdentity =
-  | readonly ['manifest', string, string, string, string]
-  | readonly ['local_delta', string, string, string, string]
-  | readonly ['object_store_table_root', PublicObjectStorageProvider, string];
+export { querySourceIdentity };
+export type { QuerySourceIdentity };
 
-export function querySourceIdentity(source: QueryTableSource): QuerySourceIdentity {
-  if (source.kind === 'manifest') {
-    return [
-      'manifest',
-      source.catalogName,
-      source.schemaName,
-      source.tableName,
-      source.manifestUrl,
-    ] as const;
-  }
+export type SelectedQuerySourceIdentity = Readonly<{
+  kind: AvailableQuerySourceSelection['kind'];
+  ref: Readonly<ActiveConnectedTableRef>;
+  source: QuerySourceIdentity;
+  snapshotVersion: number | null;
+}>;
 
-  if (source.kind === 'local_delta') {
-    return [
-      'local_delta',
-      source.catalogName,
-      source.schemaName,
-      source.tableName,
-      source.localRegistryId,
-    ] as const;
-  }
-
-  return ['object_store_table_root', source.provider, source.tableUri] as const;
+export function selectedQuerySourceIdentity(
+  selection: AvailableQuerySourceSelection,
+  snapshotVersion?: number,
+): SelectedQuerySourceIdentity {
+  return {
+    kind: selection.kind,
+    ref: {
+      catalogId: selection.ref.catalogId,
+      schemaName: selection.ref.schemaName,
+      tableName: selection.ref.tableName,
+    },
+    source: querySourceIdentity(selection.source),
+    snapshotVersion: snapshotVersion ?? null,
+  };
 }
 
 function catalogRootKey() {

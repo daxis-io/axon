@@ -460,80 +460,71 @@ test('opens Daxis descriptor-resolver tables through the real browser query work
 });
 
 test('surfaces unsupported feature errors from the real browser query worker', async ({ page }) => {
+  await routeBinaryStringIntParquet(page);
   await page.goto('/');
 
-  const result = await page.evaluate(async () => {
-    const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
-    const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
-      type: 'module',
-    });
-    const workerEvents: string[] = [];
-    const client = sdk.createAxonBrowserClient({
-      worker,
-      onEvent: (event: unknown) => workerEvents.push(JSON.stringify(event)),
-    });
-    const manifest = (await (
-      await fetch('/fixtures/prod-like/delta-log-manifest.json')
-    ).json()) as {
-      data_files: Array<{
-        relative_path: string;
-        url_path: string;
-        size_bytes: number;
-        partition_values: Record<string, string>;
-      }>;
-    };
-    const activeFile = manifest.data_files.findLast(
-      (file) => file.partition_values.category === 'B',
-    );
-    if (!activeFile) {
-      throw new Error('expected active B fixture file in prod-like manifest');
-    }
-    const snapshot = {
-      table_uri: new URL(
-        '/fixtures/browser-datafusion-runtime/unsupported-partition',
-        location.href,
-      ).href,
-      snapshot_version: 1,
-      partition_column_types: { category: 'unsupported' },
-      browser_compatibility: { capabilities: {} },
-      required_capabilities: { capabilities: {} },
-      active_files: [
-        {
-          path: activeFile.relative_path,
-          url: new URL(activeFile.url_path, location.href).href,
-          size_bytes: activeFile.size_bytes,
-          partition_values: activeFile.partition_values,
-        },
-      ],
-    };
-
-    try {
-      await client.openDeltaTable('unsupported_partition', snapshot, {
-        requestId: 'open-unsupported-partition',
+  const result = await page.evaluate(
+    async ({ runtimeFixtureSizeBytes }: { runtimeFixtureSizeBytes: number }) => {
+      const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+      const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
+        type: 'module',
       });
-      await client.query('unsupported_partition', 'SELECT * FROM unsupported_partition', {
-        requestId: 'query-unsupported-partition',
+      const workerEvents: string[] = [];
+      const client = sdk.createAxonBrowserClient({
+        worker,
+        onEvent: (event: unknown) => workerEvents.push(JSON.stringify(event)),
       });
-    } catch (error) {
-      const candidate = error as {
-        message?: string;
-        name?: string;
-        queryError?: unknown;
+      const snapshot = {
+        table_uri: new URL(
+          '/fixtures/browser-datafusion-runtime/unsupported-partition',
+          location.href,
+        ).href,
+        snapshot_version: 1,
+        partition_column_types: { category: 'unsupported' },
+        browser_compatibility: { capabilities: {} },
+        required_capabilities: { capabilities: {} },
+        active_files: [
+          {
+            path: 'category=runtime/part-000.parquet',
+            url: new URL(
+              '/fixtures/browser-datafusion-runtime/binary-string-int.parquet',
+              location.href,
+            ).href,
+            size_bytes: runtimeFixtureSizeBytes,
+            partition_values: { category: 'runtime' },
+          },
+        ],
       };
-      return {
-        error: {
-          message: String(candidate.message),
-          name: String(candidate.name),
-          queryError: candidate.queryError,
-        },
-        workerEvents,
-      };
-    } finally {
-      client.terminate();
-    }
 
-    throw new Error('expected unsupported partition type to fail');
-  });
+      try {
+        await client.openDeltaTable('unsupported_partition', snapshot, {
+          requestId: 'open-unsupported-partition',
+        });
+        await client.query('unsupported_partition', 'SELECT category FROM unsupported_partition', {
+          requestId: 'query-unsupported-partition',
+        });
+      } catch (error) {
+        const candidate = error as {
+          message?: string;
+          name?: string;
+          queryError?: unknown;
+        };
+        return {
+          error: {
+            message: String(candidate.message),
+            name: String(candidate.name),
+            queryError: candidate.queryError,
+          },
+          workerEvents,
+        };
+      } finally {
+        client.terminate();
+      }
+
+      throw new Error('expected unsupported partition type to fail');
+    },
+    { runtimeFixtureSizeBytes: BINARY_STRING_INT_PARQUET_SIZE_BYTES },
+  );
 
   expect(result.error).toMatchObject({
     name: 'AxonWorkerError',
@@ -794,7 +785,99 @@ test('preserves cancellation errors from the real browser query worker', async (
     row_count: 3,
     truncated: false,
   });
-  expect(result.workerEvents.join('\n')).toContain('cancellation');
+  const queryEvents = result.workerEvents
+    .map((event) => JSON.parse(event) as Record<string, unknown>)
+    .filter((event) => JSON.stringify(event).includes('query-real-worker-cancellation'));
+  const terminalKinds = queryEvents.flatMap((event) =>
+    ['cancellation', 'terminal_error'].filter((kind) => kind in event),
+  );
+  expect(terminalKinds).toEqual(['cancellation']);
+  expect(Object.keys(queryEvents.at(-1) ?? {})).toEqual(['cancellation']);
+});
+
+test('withholds Arrow publication when actual output exceeds the admitted byte limit', async ({
+  page,
+}) => {
+  await routeBinaryStringIntParquet(page);
+  await page.goto('/');
+
+  const result = await page.evaluate(
+    async ({ runtimeFixtureSizeBytes }: { runtimeFixtureSizeBytes: number }) => {
+      const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+      const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
+        type: 'module',
+      });
+      const workerEvents: unknown[] = [];
+      const client = sdk.createAxonBrowserClient({
+        worker,
+        onEvent: (event: unknown) => workerEvents.push(event),
+      });
+
+      try {
+        await client.openDeltaTable(
+          'bounded_runtime_types',
+          {
+            table_uri: new URL('/fixtures/browser-datafusion-runtime/table', location.href).href,
+            snapshot_version: 0,
+            partition_column_types: { category: 'string' },
+            browser_compatibility: { capabilities: {} },
+            required_capabilities: { capabilities: {} },
+            active_files: [
+              {
+                path: 'category=runtime/part-000.parquet',
+                url: new URL(
+                  '/fixtures/browser-datafusion-runtime/binary-string-int.parquet',
+                  location.href,
+                ).href,
+                size_bytes: runtimeFixtureSizeBytes,
+                partition_values: { category: 'runtime' },
+              },
+            ],
+          },
+          { requestId: 'open-real-worker-output-bound' },
+        );
+
+        let failure: { message: string; queryError?: unknown } | undefined;
+        try {
+          await client.query(
+            'bounded_runtime_types',
+            {
+              table_uri: new URL('/fixtures/browser-datafusion-runtime/table', location.href).href,
+              snapshot_version: 0,
+              sql: 'SELECT payload, category, id FROM bounded_runtime_types ORDER BY id',
+              preferred_target: 'browser_wasm',
+              options: {
+                result_page: { limit: 501, offset: 0 },
+                runtime_limits: {
+                  max_result_rows: 501,
+                  max_arrow_ipc_bytes: 1,
+                  max_preview_string_bytes: 256 * 1024,
+                },
+              },
+            },
+            { requestId: 'query-real-worker-output-bound', delivery: 'single_buffer' },
+          );
+        } catch (error) {
+          const candidate = error as { message?: unknown; queryError?: unknown };
+          failure = { message: String(candidate.message), queryError: candidate.queryError };
+        }
+        return { failure, workerEvents };
+      } finally {
+        client.terminate();
+      }
+    },
+    { runtimeFixtureSizeBytes: BINARY_STRING_INT_PARQUET_SIZE_BYTES },
+  );
+
+  expect(result.failure).toMatchObject({
+    queryError: { code: 'execution_failed', target: 'browser_wasm' },
+  });
+  expect(result.failure?.message).toContain('max_arrow_ipc_bytes');
+  const queryEvents = result.workerEvents.filter((event) =>
+    JSON.stringify(event).includes('query-real-worker-output-bound'),
+  ) as Array<Record<string, unknown>>;
+  expect(queryEvents.some((event) => 'arrow_ipc_chunk' in event)).toBe(false);
+  expect(Object.keys(queryEvents.at(-1) ?? {})).toEqual(['terminal_error']);
 });
 
 test('preserves fallback-required errors from browser worker envelopes', async ({ page }) => {

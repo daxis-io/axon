@@ -8,17 +8,25 @@ import {
   createAxonBrowserClient,
   redactUrlSecrets,
   type AxonBrowserClient,
+  type AxonQueryRequestOptions,
   type AxonQueryResult,
   type BrowserHttpFileDescriptor,
   type BrowserHttpSnapshotDescriptor,
   type BrowserWorkerRangeReadMetricsEvent,
   type BrowserWorkerEventEnvelope,
-  type ExecutionTarget,
   type PartitionColumnType,
   type QueryError,
+  type QueryExecutionOptions,
   type QueryMetricsSummary,
+  type QueryResultPageRequest,
 } from '../axon-browser-sdk.ts';
-import type { CatalogTable, QueryEvent, QueryExecRequest, QueryRunOutcome } from './types.ts';
+import type {
+  CatalogTable,
+  QueryEvent,
+  QueryExecRequest,
+  QueryRunError,
+  QueryRunOutcome,
+} from './types.ts';
 import { loadLocalDeltaRuntime, releaseLocalDeltaObjectUrls } from './local-delta.ts';
 import {
   lookupPublicObjectStorageRuntimeCache,
@@ -35,11 +43,14 @@ import {
   publishQueryRuntimeState,
   publishWorkerEvent,
 } from './query-runtime-state.ts';
+import { isBrowserDataFusionCancellation } from './query-cancellation.ts';
+import { isQuerySessionInvalidation } from './query-session-invalidation.ts';
 import { sameQuerySource, type QueryTableSource } from './query-source.ts';
 import {
   executionCancelSpanId,
   executionOpenSpanId,
   executionRequestId,
+  type ExecutionAdmissionInput,
 } from './execution-lifecycle.ts';
 import type { Catalog } from './types.ts';
 
@@ -111,7 +122,6 @@ let wasmReady: Promise<unknown> | undefined;
 let session: SessionState | undefined;
 let sessionInit: { source: QueryTableSource; promise: Promise<SessionState> } | undefined;
 let sessionGeneration = 0;
-let requestCounter = 0;
 let coldStartMs: number | undefined;
 
 // Returns the wall-clock time from module load to the first successful session
@@ -280,7 +290,9 @@ function createQueryClient(): AxonBrowserClient {
         type: 'module',
         name: 'axon-editor-query-worker',
       }),
-    requestId: () => `editor-request-${++requestCounter}`,
+    requestId: () => {
+      throw new Error('editor worker commands require an execution-scoped request ID');
+    },
     onEvent: (envelope) => {
       publishWorkerEvent(envelope);
       for (const handler of eventListeners) handler(envelope);
@@ -528,13 +540,6 @@ function disposeSession(state: SessionState): void {
 
 // ─── Run a query ────────────────────────────────────────────────────────────
 
-function resolvePreferredTarget(input: QueryExecRequest['preferred_target']): ExecutionTarget {
-  // SDK QueryRequest requires a concrete ExecutionTarget; 'auto' maps to
-  // browser_wasm so the router gets the chance to keep work in-browser first.
-  if (input === 'native') return 'native';
-  return 'browser_wasm';
-}
-
 function ensureTable(state: SessionState, signal: AbortSignal, executionId: string): Promise<void> {
   if (state.tableOpened) return Promise.resolve();
   const requestId = executionOpenSpanId(executionId, 1);
@@ -554,18 +559,58 @@ function throwIfCancelled(signal: AbortSignal): void {
   if (signal.aborted) throw cancellationError();
 }
 
-function waitForExecutionStage<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+function waitForExecutionStage<T>(
+  work: Promise<T>,
+  signal: AbortSignal,
+  deadlineSignal?: AbortSignal,
+): Promise<T> {
+  if (deadlineSignal?.aborted) {
+    return Promise.reject(new ExecutionDeadlineError('execution deadline expired'));
+  }
   if (signal.aborted) return Promise.reject(cancellationError());
   return new Promise<T>((resolve, reject) => {
-    const cancel = () => reject(cancellationError());
+    const cleanup = () => {
+      signal.removeEventListener('abort', cancel);
+      deadlineSignal?.removeEventListener('abort', deadline);
+    };
+    const cancel = () => {
+      cleanup();
+      reject(cancellationError());
+    };
+    const deadline = () => {
+      cleanup();
+      reject(new ExecutionDeadlineError('execution deadline expired'));
+    };
     signal.addEventListener('abort', cancel, { once: true });
+    deadlineSignal?.addEventListener('abort', deadline, { once: true });
     work.then(
       (value) => {
-        signal.removeEventListener('abort', cancel);
+        cleanup();
         resolve(value);
       },
       (error: unknown) => {
-        signal.removeEventListener('abort', cancel);
+        cleanup();
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
+function waitForExecutionDeadline<T>(work: Promise<T>, deadlineSignal?: AbortSignal): Promise<T> {
+  if (!deadlineSignal) return work;
+  if (deadlineSignal.aborted) {
+    return Promise.reject(new ExecutionDeadlineError('execution deadline expired'));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const deadline = () => reject(new ExecutionDeadlineError('execution deadline expired'));
+    deadlineSignal.addEventListener('abort', deadline, { once: true });
+    work.then(
+      (value) => {
+        deadlineSignal.removeEventListener('abort', deadline);
+        resolve(value);
+      },
+      (error: unknown) => {
+        deadlineSignal.removeEventListener('abort', deadline);
         reject(error instanceof Error ? error : new Error(String(error)));
       },
     );
@@ -574,19 +619,47 @@ function waitForExecutionStage<T>(work: Promise<T>, signal: AbortSignal): Promis
 
 export type CancelableQueryStages<TSession, TResult> = {
   signal: AbortSignal;
-  getSession: () => Promise<TSession>;
-  openTable: (session: TSession) => Promise<void>;
-  execute: (session: TSession) => Promise<TResult>;
+  deadlineSignal?: AbortSignal;
+  remainingTime?: () => number;
+  getSession: (remainingMs: number) => Promise<TSession>;
+  openTable: (session: TSession, remainingMs: number) => Promise<void>;
+  execute: (session: TSession, remainingMs: number) => Promise<TResult>;
   cancelQuery: (session: TSession) => void;
 };
+
+class ExecutionDeadlineError extends Error {}
+
+function throwIfExecutionDeadline(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new ExecutionDeadlineError('execution deadline expired');
+}
+
+function stageRemainingTime(remainingTime: (() => number) | undefined): number {
+  if (!remainingTime) return Number.POSITIVE_INFINITY;
+  const remainingMs = remainingTime();
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+    throw new ExecutionDeadlineError('execution deadline expired');
+  }
+  return remainingMs;
+}
 
 export async function runCancelableQueryStages<TSession, TResult>(
   stages: CancelableQueryStages<TSession, TResult>,
 ): Promise<{ session: TSession; result: TResult }> {
+  throwIfExecutionDeadline(stages.deadlineSignal);
   throwIfCancelled(stages.signal);
-  const session = await waitForExecutionStage(stages.getSession(), stages.signal);
+  const session = await waitForExecutionStage(
+    stages.getSession(stageRemainingTime(stages.remainingTime)),
+    stages.signal,
+    stages.deadlineSignal,
+  );
+  throwIfExecutionDeadline(stages.deadlineSignal);
   throwIfCancelled(stages.signal);
-  await waitForExecutionStage(stages.openTable(session), stages.signal);
+  await waitForExecutionStage(
+    stages.openTable(session, stageRemainingTime(stages.remainingTime)),
+    stages.signal,
+    stages.deadlineSignal,
+  );
+  throwIfExecutionDeadline(stages.deadlineSignal);
   throwIfCancelled(stages.signal);
 
   let queryStarted = false;
@@ -595,37 +668,69 @@ export async function runCancelableQueryStages<TSession, TResult>(
     try {
       stages.cancelQuery(session);
     } catch {
-      // The local abort remains authoritative when transport cancellation fails.
+      // The worker outcome or lifecycle deadline remains authoritative.
     }
   };
   stages.signal.addEventListener('abort', cancelStartedQuery);
   try {
+    throwIfExecutionDeadline(stages.deadlineSignal);
     throwIfCancelled(stages.signal);
     queryStarted = true;
-    const result = await waitForExecutionStage(stages.execute(session), stages.signal);
-    throwIfCancelled(stages.signal);
+    const result = await waitForExecutionDeadline(
+      stages.execute(session, stageRemainingTime(stages.remainingTime)),
+      stages.deadlineSignal,
+    );
     return { session, result };
   } finally {
     stages.signal.removeEventListener('abort', cancelStartedQuery);
   }
 }
 
+export function queryExecutionOptionsForAdmission(
+  admission: ExecutionAdmissionInput,
+  resultPage: QueryResultPageRequest,
+): QueryExecutionOptions {
+  return {
+    collect_metrics: true,
+    include_explain: true,
+    result_page: resultPage,
+    runtime_limits: {
+      max_result_rows: admission.budgets.maxResultRows,
+      max_arrow_ipc_bytes: admission.budgets.maxArrowIpcBytes,
+      max_preview_string_bytes: admission.budgets.maxPreviewStringBytes,
+      ...(admission.budgets.maxScanBytes === undefined
+        ? {}
+        : { max_scan_bytes: admission.budgets.maxScanBytes }),
+    },
+  };
+}
+
+export function queryClientOptionsForAdmission(
+  admission: ExecutionAdmissionInput,
+): AxonQueryRequestOptions {
+  return { requestId: executionRequestId(admission.executionId), delivery: 'single_buffer' };
+}
+
 export async function runQuery(
   req: QueryExecRequest,
   onEvent: (event: QueryEvent) => void,
   source: QueryTableSource,
-  executionId: string,
+  admission: ExecutionAdmissionInput,
   signal: AbortSignal = new AbortController().signal,
+  deadlineSignal?: AbortSignal,
 ): Promise<QueryRunOutcome> {
   const startedAt = performance.now();
   const since = () => Math.round(performance.now() - startedAt);
 
   const page = req.page ?? defaultQueryPage();
+  const executionId = admission.executionId;
 
   try {
     const requestId = executionRequestId(executionId);
     const execution = await runCancelableQueryStages({
       signal,
+      deadlineSignal,
+      remainingTime: () => admission.deadlineAt - Date.now(),
       getSession: () => getSession(source),
       openTable: (state) => ensureTable(state, signal, executionId),
       cancelQuery: (state) =>
@@ -667,7 +772,6 @@ export async function runQuery(
         };
         const removeHandler = () => eventListeners.delete(handler);
         eventListeners.add(handler);
-        signal.addEventListener('abort', removeHandler, { once: true });
         try {
           const result: AxonQueryResult = await state.client.query(
             state.source.tableName,
@@ -675,18 +779,13 @@ export async function runQuery(
               table_uri: state.snapshot.table_uri,
               snapshot_version: req.snapshot_version ?? state.snapshot.snapshot_version,
               sql: req.sql,
-              preferred_target: resolvePreferredTarget(req.preferred_target),
-              options: {
-                collect_metrics: true,
-                include_explain: true,
-                result_page: queryResultPageRequest(page),
-              },
+              preferred_target: admission.target,
+              options: queryExecutionOptionsForAdmission(admission, queryResultPageRequest(page)),
             },
-            { requestId },
+            queryClientOptionsForAdmission(admission),
           );
           return { result, setupMetrics };
         } finally {
-          signal.removeEventListener('abort', removeHandler);
           removeHandler();
         }
       },
@@ -705,31 +804,62 @@ export async function runQuery(
     markSessionSetupMetricsEmitted(execution.session);
     return outcome;
   } catch (err) {
-    if (signal.aborted) {
-      return {
-        status: 'error',
-        message: 'Query cancelled',
-        code: 'cancelled',
-        elapsed_ms: since(),
-      };
+    if (queryFailureInvalidatesSession(err)) {
+      discardQuerySession(source);
     }
-    if (err instanceof AxonWorkerError) {
-      const qe: QueryError = err.queryError;
-      return {
-        status: 'error',
-        message: qe.message,
-        code: qe.code,
-        target: qe.target,
-        fallback_reason: qe.fallback_reason,
-        elapsed_ms: since(),
-      };
-    }
+    return queryFailureOutcome(err, since(), admission.target);
+  }
+}
+
+export function queryFailureInvalidatesSession(error: unknown): boolean {
+  return (
+    error instanceof ExecutionDeadlineError ||
+    (error instanceof AxonWorkerError && isQuerySessionInvalidation(error.queryError))
+  );
+}
+
+export function queryFailureOutcome(
+  error: unknown,
+  elapsedMs: number,
+  target: ExecutionAdmissionInput['target'],
+): QueryRunError {
+  if (
+    (error instanceof DOMException && error.name === 'AbortError') ||
+    (error instanceof AxonWorkerError && isBrowserDataFusionCancellation(error.queryError))
+  ) {
     return {
       status: 'error',
-      message: err instanceof Error ? err.message : String(err),
-      elapsed_ms: since(),
+      message: 'Query cancelled',
+      code: 'cancelled',
+      target,
+      elapsed_ms: elapsedMs,
     };
   }
+  if (error instanceof AxonWorkerError) {
+    const queryError: QueryError = error.queryError;
+    return {
+      status: 'error',
+      message: queryError.message,
+      code: queryError.code,
+      target: queryError.target,
+      fallback_reason: queryError.fallback_reason,
+      elapsed_ms: elapsedMs,
+    };
+  }
+  if (error instanceof ExecutionDeadlineError) {
+    return {
+      status: 'error',
+      message: error.message,
+      code: 'deadline',
+      target,
+      elapsed_ms: elapsedMs,
+    };
+  }
+  return {
+    status: 'error',
+    message: error instanceof Error ? error.message : String(error),
+    elapsed_ms: elapsedMs,
+  };
 }
 
 // ─── Catalog derivation ─────────────────────────────────────────────────────

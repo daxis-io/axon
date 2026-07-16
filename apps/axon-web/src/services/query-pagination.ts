@@ -6,19 +6,22 @@ import type {
   ResultCell,
   ResultColumn,
 } from './types.ts';
-import { sameQuerySource, type QueryTableSource } from './query-source.ts';
+import {
+  sameAvailableQuerySourceSelection,
+  type AvailableQuerySourceSelection,
+} from './query-source.ts';
 
 export const QUERY_RESULT_PAGE_SIZE = 500;
 export const MAX_QUERY_RESULT_PAGE_LIMIT = QUERY_RESULT_PAGE_SIZE + 1;
 
 export type QueryResultPageRun = {
   request: Omit<QueryExecRequest, 'page'>;
-  source: QueryTableSource;
+  selection: AvailableQuerySourceSelection;
 };
 
 export function queryResultPageRun(
   request: QueryExecRequest,
-  source: QueryTableSource,
+  selection: AvailableQuerySourceSelection,
 ): QueryResultPageRun {
   return {
     request: {
@@ -27,7 +30,7 @@ export function queryResultPageRun(
       preferred_target: request.preferred_target,
       snapshot_version: request.snapshot_version,
     },
-    source,
+    selection,
   };
 }
 
@@ -36,7 +39,7 @@ export function sameQueryResultPageRun(
   right: QueryResultPageRun,
 ): boolean {
   return (
-    sameQuerySource(left.source, right.source) &&
+    sameAvailableQuerySourceSelection(left.selection, right.selection) &&
     left.request.sql === right.request.sql &&
     left.request.table_name === right.request.table_name &&
     left.request.preferred_target === right.request.preferred_target &&

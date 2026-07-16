@@ -1018,7 +1018,11 @@ export type AxonRequestOptions = {
   requestId?: string;
 };
 
-export type AxonQueryOptions = AxonRequestOptions & {
+export type AxonQueryRequestOptions = AxonRequestOptions & {
+  delivery?: BrowserWorkerSqlDelivery;
+};
+
+export type AxonQueryOptions = AxonQueryRequestOptions & {
   tableUri?: string;
   snapshotVersion?: number;
   preferredTarget?: ExecutionTarget;
@@ -1165,7 +1169,7 @@ export interface AxonBrowserClient {
   query(
     name: string,
     request: QueryRequest,
-    options?: AxonRequestOptions,
+    options?: AxonQueryRequestOptions,
   ): Promise<AxonQueryResult>;
   query(name: string, sql: string, options?: AxonQueryOptions): Promise<AxonQueryResult>;
   cancelQuery(queryId: string, options?: AxonRequestOptions): void;
@@ -1349,6 +1353,7 @@ export function queryCommand(
   requestId: string,
   name: string,
   request: QueryRequest,
+  delivery: BrowserWorkerSqlDelivery = 'chunked_buffers',
 ): BrowserWorkerCommand {
   return {
     sql: {
@@ -1356,7 +1361,7 @@ export function queryCommand(
       name,
       query: request,
       output: 'arrow_ipc_stream',
-      delivery: 'chunked_buffers',
+      delivery,
       browser_safe_defaults: true,
     },
   };
@@ -3920,19 +3925,19 @@ class LazyAxonBrowserClient implements AxonBrowserClient {
   query(
     name: string,
     request: QueryRequest,
-    options?: AxonRequestOptions,
+    options?: AxonQueryRequestOptions,
   ): Promise<AxonQueryResult>;
   query(name: string, sql: string, options?: AxonQueryOptions): Promise<AxonQueryResult>;
   async query(
     name: string,
     request: QueryRequest | string,
-    options: AxonRequestOptions | AxonQueryOptions = {},
+    options: AxonQueryRequestOptions | AxonQueryOptions = {},
   ): Promise<AxonQueryResult> {
     const client = this.workerClient();
     if (typeof request === 'string') {
       return client.query(name, request, options as AxonQueryOptions);
     }
-    return client.query(name, request, options as AxonRequestOptions);
+    return client.query(name, request, options as AxonQueryRequestOptions);
   }
 
   cancelQuery(queryId: string, options?: AxonRequestOptions): void {
@@ -4176,19 +4181,24 @@ class AxonBrowserWorkerClient implements AxonBrowserClient {
   query(
     name: string,
     request: QueryRequest,
-    options?: AxonRequestOptions,
+    options?: AxonQueryRequestOptions,
   ): Promise<AxonQueryResult>;
   query(name: string, sql: string, options?: AxonQueryOptions): Promise<AxonQueryResult>;
   async query(
     name: string,
     request: QueryRequest | string,
-    options: AxonRequestOptions | AxonQueryOptions = {},
+    options: AxonQueryRequestOptions | AxonQueryOptions = {},
   ): Promise<AxonQueryResult> {
     const requestId = options.requestId ?? this.requestId();
     const queryRequest =
       typeof request === 'string' ? this.queryRequestFromSql(name, request, options) : request;
     const response = await this.send(
-      queryCommand(requestId, name, queryRequestWithBrowserSafeDefaults(queryRequest)),
+      queryCommand(
+        requestId,
+        name,
+        queryRequestWithBrowserSafeDefaults(queryRequest),
+        options.delivery,
+      ),
       'success',
     );
     if (!('success' in response)) {

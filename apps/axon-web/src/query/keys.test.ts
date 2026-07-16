@@ -15,16 +15,21 @@ describe('queryKeys', () => {
     rows: 100,
   };
 
-  it('builds stable source identities from the same fields used to compare sources', () => {
+  it('includes every execution-relevant source field while ignoring display summaries', () => {
     expect(
       querySourceIdentity({
         ...manifestSource,
-        storage: 'gs://changed-summary-field',
-        region: 'changed-region',
-        snapshot: 2,
         rows: 200,
       }),
     ).toEqual(querySourceIdentity(manifestSource));
+    expect(
+      querySourceIdentity({
+        ...manifestSource,
+        storage: 'gs://changed-source',
+        region: 'changed-region',
+        snapshot: 2,
+      }),
+    ).not.toEqual(querySourceIdentity(manifestSource));
 
     expect(
       querySourceIdentity({
@@ -36,7 +41,16 @@ describe('queryKeys', () => {
         storage: 'local folder',
         region: 'browser-local',
       }),
-    ).toEqual(['local_delta', 'local', 'main', 'events', 'registry-1']);
+    ).toEqual([
+      'local_delta',
+      'local',
+      'main',
+      'events',
+      'registry-1',
+      'local folder',
+      'browser-local',
+      null,
+    ]);
 
     expect(
       querySourceIdentity({
@@ -49,7 +63,17 @@ describe('queryKeys', () => {
         storage: 'gs://bucket/events',
         region: 'us',
       }),
-    ).toEqual(['object_store_table_root', 'gcs', 'gs://bucket/events']);
+    ).toEqual([
+      'object_store_table_root',
+      'gcs',
+      'public',
+      'main',
+      'events',
+      'gs://bucket/events',
+      'gs://bucket/events',
+      'us',
+      null,
+    ]);
 
     expect(
       querySourceIdentity({
@@ -62,7 +86,17 @@ describe('queryKeys', () => {
         storage: 's3://bucket/events',
         region: 'us-east-2',
       }),
-    ).toEqual(['object_store_table_root', 's3', 's3://bucket/events']);
+    ).toEqual([
+      'object_store_table_root',
+      's3',
+      'public',
+      'main',
+      'events',
+      's3://bucket/events',
+      's3://bucket/events',
+      'us-east-2',
+      null,
+    ]);
   });
 
   it('builds catalog keys under stable source identity prefixes', () => {

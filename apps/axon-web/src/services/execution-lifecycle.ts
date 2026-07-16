@@ -1,6 +1,11 @@
-import type { ExecutionTarget } from '../axon-browser-sdk.ts';
-import { querySourceIdentity, type QuerySourceIdentity } from '../query/keys.ts';
-import type { QueryTableSource } from './query-source.ts';
+import {
+  BROWSER_SAFE_ARROW_IPC_BYTES,
+  BROWSER_SAFE_PREVIEW_STRING_BYTES,
+  BROWSER_SAFE_RESULT_ROW_LIMIT,
+  type ExecutionTarget,
+} from '../axon-browser-sdk.ts';
+import { selectedQuerySourceIdentity, type SelectedQuerySourceIdentity } from '../query/keys.ts';
+import type { AvailableQuerySourceSelection } from './query-source.ts';
 
 export type ExecutionBudgets = Readonly<{
   maxResultRows: number;
@@ -11,7 +16,7 @@ export type ExecutionBudgets = Readonly<{
 
 export type ExecutionAdmissionInput = Readonly<{
   executionId: string;
-  sourceIdentity: QuerySourceIdentity;
+  sourceIdentity: SelectedQuerySourceIdentity;
   sql: string;
   target: ExecutionTarget;
   deadlineAt: number;
@@ -60,6 +65,9 @@ export type ExecutionDelivery = ExecutionFrameDelivery | ExecutionTerminalDelive
 export type ExecutionListener = (delivery: ExecutionDelivery) => void;
 export type ExecutionCancellationHandle = () => void;
 
+const MAX_EXECUTION_LISTENERS = 16;
+const MAX_INVARIANT_VIOLATIONS = 32;
+
 export type ExecutionRegistrationResult =
   | { kind: 'created'; snapshot: ExecutionSnapshot }
   | { kind: 'recorded'; snapshot: ExecutionSnapshot }
@@ -90,7 +98,6 @@ export type ExecutionTerminalResult =
 
 type ExecutionRecord = {
   input: ExecutionAdmissionInput;
-  fingerprint: string;
   state: ExecutionLifecycleState;
   admitted: boolean;
   rejectionReason?: string;
@@ -100,6 +107,7 @@ type ExecutionRecord = {
   cancellationHandle?: ExecutionCancellationHandle;
   cancellationInvoked: boolean;
   sequence: number;
+  deadlineProcessed: boolean;
 };
 
 export type ExecutionLifecycleOptions = {
@@ -125,7 +133,7 @@ export class ExecutionLifecycle {
   create(input: ExecutionAdmissionInput): ExecutionRegistrationResult {
     const existing = this.#records.get(input.executionId);
     if (existing) {
-      if (existing.fingerprint !== admissionFingerprint(input)) {
+      if (!sameAdmissionInput(existing.input, input)) {
         return { kind: 'id_reuse', snapshot: snapshot(existing) };
       }
       return { kind: 'recorded', snapshot: snapshot(existing) };
@@ -138,19 +146,19 @@ export class ExecutionLifecycle {
     const immutableInput = immutableAdmissionInput(input);
     const record: ExecutionRecord = {
       input: immutableInput,
-      fingerprint: admissionFingerprint(immutableInput),
       state: 'created',
       admitted: false,
       invariantViolations: [],
       listeners: new Set(),
       cancellationInvoked: false,
       sequence: 0,
+      deadlineProcessed: false,
     };
     this.#records.set(immutableInput.executionId, record);
     return { kind: 'created', snapshot: snapshot(record) };
   }
 
-  admit(input: ExecutionAdmissionInput): ExecutionAdmissionResult {
+  admit(input: ExecutionAdmissionInput, rejectionReason?: string): ExecutionAdmissionResult {
     const registration = this.create(input);
     if (registration.kind === 'id_reuse') {
       return { kind: 'id_reuse', launch: false, snapshot: registration.snapshot };
@@ -163,6 +171,21 @@ export class ExecutionLifecycle {
     if (!record) throw new Error('execution lifecycle lost a registered admission');
 
     if (record.state === 'created') {
+      if (rejectionReason) {
+        record.state = 'rejected';
+        record.rejectionReason = rejectionReason;
+        record.cancellationHandle = undefined;
+        record.listeners.clear();
+        if (rejectionReason === 'invalid_deadline' || rejectionReason === 'deadline_expired') {
+          record.deadlineProcessed = true;
+        }
+        return {
+          kind: 'rejected',
+          launch: false,
+          reason: rejectionReason,
+          snapshot: snapshot(record),
+        };
+      }
       record.state = 'running';
       record.admitted = true;
       return { kind: 'accepted', launch: true, snapshot: snapshot(record) };
@@ -183,6 +206,19 @@ export class ExecutionLifecycle {
   subscribe(executionId: string, listener: ExecutionListener): () => void {
     const record = this.#records.get(executionId);
     if (!record) return () => undefined;
+    if (
+      record.state === 'rejected' ||
+      record.state === 'completed' ||
+      record.state === 'failed' ||
+      record.state === 'cancelled'
+    ) {
+      recordInvariant(record, `listener attached after ${record.state}`);
+      return () => undefined;
+    }
+    if (record.listeners.size >= MAX_EXECUTION_LISTENERS) {
+      recordInvariant(record, 'execution listener capacity exceeded');
+      return () => undefined;
+    }
     record.listeners.add(listener);
     return () => {
       record.listeners.delete(listener);
@@ -195,6 +231,15 @@ export class ExecutionLifecycle {
   ): ExecutionSnapshot | undefined {
     const record = this.#records.get(executionId);
     if (!record) return undefined;
+    if (
+      record.state === 'rejected' ||
+      record.state === 'completed' ||
+      record.state === 'failed' ||
+      record.state === 'cancelled'
+    ) {
+      recordInvariant(record, `cancellation handle attached after ${record.state}`);
+      return snapshot(record);
+    }
     record.cancellationHandle = handle;
     if (record.state === 'cancel_requested') this.#invokeCancellation(record);
     return snapshot(record);
@@ -207,6 +252,8 @@ export class ExecutionLifecycle {
     if (record.state === 'created') {
       record.state = 'rejected';
       record.rejectionReason = 'cancelled';
+      record.cancellationHandle = undefined;
+      record.listeners.clear();
       return { kind: 'cancelled_before_admit', snapshot: snapshot(record) };
     }
 
@@ -220,7 +267,7 @@ export class ExecutionLifecycle {
       return { kind: 'recorded', snapshot: snapshot(record) };
     }
 
-    record.invariantViolations.push(`cancellation requested after ${record.state}`);
+    recordInvariant(record, `cancellation requested after ${record.state}`);
     return { kind: 'recorded', snapshot: snapshot(record) };
   }
 
@@ -228,7 +275,7 @@ export class ExecutionLifecycle {
     const record = this.#records.get(executionId);
     if (!record) return { kind: 'unknown' };
     if (record.state !== 'running' && record.state !== 'cancel_requested') {
-      record.invariantViolations.push(`frame published after ${record.state}`);
+      recordInvariant(record, `frame published after ${record.state}`);
       return { kind: 'recorded', snapshot: snapshot(record) };
     }
 
@@ -249,6 +296,42 @@ export class ExecutionLifecycle {
     return this.#terminal(executionId, 'cancelled', undefined, payload);
   }
 
+  processDeadline(executionId: string): ExecutionTerminalResult {
+    const record = this.#records.get(executionId);
+    if (!record) return { kind: 'unknown', delivered: false };
+    if (record.deadlineProcessed) {
+      return { kind: 'recorded', delivered: false, snapshot: snapshot(record) };
+    }
+    record.deadlineProcessed = true;
+
+    if (record.state === 'created') {
+      record.state = 'rejected';
+      record.rejectionReason = 'deadline_expired';
+      record.cancellationHandle = undefined;
+      record.listeners.clear();
+      return { kind: 'recorded', delivered: false, snapshot: snapshot(record) };
+    }
+    if (record.state === 'running' || record.state === 'cancel_requested') {
+      return this.#terminal(executionId, 'failed', 'deadline');
+    }
+    return { kind: 'recorded', delivered: false, snapshot: snapshot(record) };
+  }
+
+  sweep(now: number): string[] {
+    const deleted: string[] = [];
+    for (const [executionId, record] of this.#records) {
+      if (!record.deadlineProcessed && record.input.deadlineAt <= now) {
+        this.processDeadline(executionId);
+      }
+      if (!record.deadlineProcessed) continue;
+      record.listeners.clear();
+      record.cancellationHandle = undefined;
+      this.#records.delete(executionId);
+      deleted.push(executionId);
+    }
+    return deleted;
+  }
+
   getSnapshot(executionId: string): ExecutionSnapshot | undefined {
     const record = this.#records.get(executionId);
     return record ? snapshot(record) : undefined;
@@ -264,14 +347,13 @@ export class ExecutionLifecycle {
     if (!record) return { kind: 'unknown', delivered: false };
 
     if (record.state !== 'running' && record.state !== 'cancel_requested') {
-      if (record.state !== state) {
-        record.invariantViolations.push(`late ${state} after ${record.state}`);
-      }
+      recordInvariant(record, `late ${state} after ${record.state}`);
       return { kind: 'recorded', delivered: false, snapshot: snapshot(record) };
     }
 
     record.state = state;
     record.terminalReason = reason;
+    if (reason === 'deadline') this.#invokeCancellation(record);
     const sequence = ++record.sequence;
     const delivery: ExecutionTerminalDelivery = Object.freeze({
       kind: 'terminal',
@@ -292,7 +374,7 @@ export class ExecutionLifecycle {
     try {
       record.cancellationHandle();
     } catch {
-      record.invariantViolations.push('cancellation handle threw');
+      recordInvariant(record, 'cancellation handle threw');
     }
   }
 
@@ -301,14 +383,15 @@ export class ExecutionLifecycle {
       try {
         listener(delivery);
       } catch {
-        record.invariantViolations.push('execution listener threw');
+        recordInvariant(record, 'execution listener threw');
       }
     }
   }
 }
 
 export type PrepareExecutionRequest = Readonly<{
-  source: QueryTableSource;
+  selection: AvailableQuerySourceSelection;
+  snapshotVersion?: number;
   sql: string;
   target: ExecutionTarget;
   timeoutMs: number;
@@ -337,6 +420,7 @@ export class ExecutionController {
   readonly #now: () => number;
   readonly #setTimer: (callback: () => void, delayMs: number) => ExecutionTimerHandle;
   readonly #clearTimer: (handle: ExecutionTimerHandle) => void;
+  readonly #deadlineTimers = new Map<string, ExecutionTimerHandle>();
 
   constructor(dependencies: ExecutionControllerDependencies = {}) {
     this.lifecycle = dependencies.lifecycle ?? new ExecutionLifecycle();
@@ -350,9 +434,14 @@ export class ExecutionController {
   }
 
   prepare(request: PrepareExecutionRequest): PreparedExecutionResult {
+    for (const executionId of this.lifecycle.sweep(this.#now())) {
+      const handle = this.#deadlineTimers.get(executionId);
+      if (handle !== undefined) this.#clearTimer(handle);
+      this.#deadlineTimers.delete(executionId);
+    }
     const input = immutableAdmissionInput({
       executionId: this.#idFactory(),
-      sourceIdentity: querySourceIdentity(request.source),
+      sourceIdentity: selectedQuerySourceIdentity(request.selection, request.snapshotVersion),
       sql: request.sql,
       target: request.target,
       deadlineAt: this.#now() + request.timeoutMs,
@@ -360,11 +449,24 @@ export class ExecutionController {
     });
     const registration = this.lifecycle.create(input);
     if (registration.kind === 'rejected') return registration;
+    this.#ensureDeadlineTimer(input);
     return { ...registration, input };
   }
 
   admit(input: ExecutionAdmissionInput): ExecutionAdmissionResult {
-    return this.lifecycle.admit(input);
+    const registration = this.lifecycle.create(input);
+    if (registration.kind === 'id_reuse') {
+      return { kind: 'id_reuse', launch: false, snapshot: registration.snapshot };
+    }
+    if (registration.kind === 'rejected') {
+      return { kind: 'rejected', launch: false, reason: registration.reason };
+    }
+
+    const rejectionReason = admissionRejectionReason(input, this.#now());
+    if (registration.kind === 'recorded' && rejectionReason === 'deadline_expired') {
+      this.lifecycle.processDeadline(input.executionId);
+    }
+    return this.lifecycle.admit(input, rejectionReason);
   }
 
   subscribe(executionId: string, listener: ExecutionListener): () => void {
@@ -395,12 +497,17 @@ export class ExecutionController {
     return this.lifecycle.confirmCancelled(executionId, payload);
   }
 
-  scheduleDeadline(input: ExecutionAdmissionInput, callback: () => void): ExecutionTimerHandle {
-    return this.#setTimer(callback, Math.max(0, input.deadlineAt - this.#now()));
-  }
-
-  clearScheduled(handle: ExecutionTimerHandle): void {
-    this.#clearTimer(handle);
+  #ensureDeadlineTimer(input: ExecutionAdmissionInput): void {
+    if (this.#deadlineTimers.has(input.executionId)) return;
+    if (!Number.isSafeInteger(input.deadlineAt)) return;
+    const handle = this.#setTimer(
+      () => {
+        this.#deadlineTimers.delete(input.executionId);
+        this.lifecycle.processDeadline(input.executionId);
+      },
+      Math.max(0, input.deadlineAt - this.#now()),
+    );
+    this.#deadlineTimers.set(input.executionId, handle);
   }
 }
 
@@ -423,22 +530,73 @@ export function executionCancelSpanId(executionId: string, ordinal: number): str
 }
 
 function immutableAdmissionInput(input: ExecutionAdmissionInput): ExecutionAdmissionInput {
-  const sourceIdentity = Object.freeze([...input.sourceIdentity]) as QuerySourceIdentity;
+  const sourceIdentity: SelectedQuerySourceIdentity = Object.freeze({
+    kind: input.sourceIdentity.kind,
+    ref: Object.freeze({ ...input.sourceIdentity.ref }),
+    source: Object.freeze([
+      ...input.sourceIdentity.source,
+    ]) as SelectedQuerySourceIdentity['source'],
+    snapshotVersion: input.sourceIdentity.snapshotVersion,
+  });
   const budgets = Object.freeze({ ...input.budgets });
   return Object.freeze({ ...input, sourceIdentity, budgets });
 }
 
-function admissionFingerprint(input: ExecutionAdmissionInput): string {
-  return JSON.stringify([
-    input.sourceIdentity,
-    input.sql,
-    input.target,
-    input.deadlineAt,
-    input.budgets.maxResultRows,
-    input.budgets.maxArrowIpcBytes,
-    input.budgets.maxPreviewStringBytes,
-    input.budgets.maxScanBytes ?? null,
-  ]);
+function sameAdmissionInput(
+  left: ExecutionAdmissionInput,
+  right: ExecutionAdmissionInput,
+): boolean {
+  return (
+    left.executionId === right.executionId &&
+    sameSelectedSourceIdentity(left.sourceIdentity, right.sourceIdentity) &&
+    left.sql === right.sql &&
+    left.target === right.target &&
+    Object.is(left.deadlineAt, right.deadlineAt) &&
+    Object.is(left.budgets.maxResultRows, right.budgets.maxResultRows) &&
+    Object.is(left.budgets.maxArrowIpcBytes, right.budgets.maxArrowIpcBytes) &&
+    Object.is(left.budgets.maxPreviewStringBytes, right.budgets.maxPreviewStringBytes) &&
+    Object.is(left.budgets.maxScanBytes, right.budgets.maxScanBytes)
+  );
+}
+
+function sameSelectedSourceIdentity(
+  left: SelectedQuerySourceIdentity,
+  right: SelectedQuerySourceIdentity,
+): boolean {
+  return (
+    left.kind === right.kind &&
+    left.ref.catalogId === right.ref.catalogId &&
+    left.ref.schemaName === right.ref.schemaName &&
+    left.ref.tableName === right.ref.tableName &&
+    Object.is(left.snapshotVersion, right.snapshotVersion) &&
+    left.source.length === right.source.length &&
+    left.source.every((value, index) => Object.is(value, right.source[index]))
+  );
+}
+
+function admissionRejectionReason(input: ExecutionAdmissionInput, now: number): string | undefined {
+  if (!Number.isSafeInteger(input.deadlineAt)) return 'invalid_deadline';
+  if (input.deadlineAt <= now) return 'deadline_expired';
+
+  const boundedBudgets: Array<[value: number, name: string, browserMaximum: number | undefined]> = [
+    [input.budgets.maxResultRows, 'max_result_rows', BROWSER_SAFE_RESULT_ROW_LIMIT],
+    [input.budgets.maxArrowIpcBytes, 'max_arrow_ipc_bytes', BROWSER_SAFE_ARROW_IPC_BYTES],
+    [
+      input.budgets.maxPreviewStringBytes,
+      'max_preview_string_bytes',
+      BROWSER_SAFE_PREVIEW_STRING_BYTES,
+    ],
+  ];
+  if (input.budgets.maxScanBytes !== undefined) {
+    boundedBudgets.push([input.budgets.maxScanBytes, 'max_scan_bytes', undefined]);
+  }
+  for (const [value, name, browserMaximum] of boundedBudgets) {
+    if (!Number.isSafeInteger(value) || value <= 0) return `invalid_${name}`;
+    if (browserMaximum !== undefined && value > browserMaximum) {
+      return `browser_unsafe_${name}`;
+    }
+  }
+  return undefined;
 }
 
 function snapshot(record: ExecutionRecord): ExecutionSnapshot {
@@ -451,4 +609,9 @@ function snapshot(record: ExecutionRecord): ExecutionSnapshot {
     terminalReason: record.terminalReason,
     invariantViolations: Object.freeze([...record.invariantViolations]),
   });
+}
+
+function recordInvariant(record: ExecutionRecord, violation: string): void {
+  if (record.invariantViolations.length >= MAX_INVARIANT_VIOLATIONS) return;
+  record.invariantViolations.push(violation);
 }

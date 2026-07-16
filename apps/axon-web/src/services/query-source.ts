@@ -55,6 +55,61 @@ export type QueryTableSource =
   | LocalDeltaQueryTableSource
   | ObjectStoreTableRootQueryTableSource;
 
+export type QuerySourceIdentity =
+  | readonly ['manifest', string, string, string, string, string, string, number | null]
+  | readonly ['local_delta', string, string, string, string, string, string, number | null]
+  | readonly [
+      'object_store_table_root',
+      PublicObjectStorageProvider,
+      string,
+      string,
+      string,
+      string,
+      string,
+      string,
+      number | null,
+    ];
+
+export function querySourceIdentity(source: QueryTableSource): QuerySourceIdentity {
+  if (source.kind === 'manifest') {
+    return [
+      'manifest',
+      source.catalogName,
+      source.schemaName,
+      source.tableName,
+      source.manifestUrl,
+      source.storage,
+      source.region,
+      source.snapshot ?? null,
+    ] as const;
+  }
+
+  if (source.kind === 'local_delta') {
+    return [
+      'local_delta',
+      source.catalogName,
+      source.schemaName,
+      source.tableName,
+      source.localRegistryId,
+      source.storage,
+      source.region,
+      source.snapshot ?? null,
+    ] as const;
+  }
+
+  return [
+    'object_store_table_root',
+    source.provider,
+    source.catalogName,
+    source.schemaName,
+    source.tableName,
+    source.tableUri,
+    source.storage,
+    source.region,
+    source.snapshot ?? null,
+  ] as const;
+}
+
 export type QueryCatalogCandidate = {
   id: string;
   alias: string;
@@ -97,6 +152,11 @@ export type QuerySourceSelection =
       reason: 'missing' | 'empty' | 'stale' | 'unqueryable';
       ref?: ActiveConnectedTableRef;
     };
+
+export type AvailableQuerySourceSelection = Extract<
+  QuerySourceSelection,
+  { kind: 'resource' | 'sample' }
+>;
 
 export const SAMPLE_QUERY_SOURCE: ManifestQueryTableSource = {
   kind: 'manifest',
@@ -159,6 +219,17 @@ function sameConnectedTableRef(
   );
 }
 
+export function sameAvailableQuerySourceSelection(
+  left: AvailableQuerySourceSelection,
+  right: AvailableQuerySourceSelection,
+): boolean {
+  return (
+    left.kind === right.kind &&
+    sameConnectedTableRef(left.ref, right.ref) &&
+    sameQuerySource(left.source, right.source)
+  );
+}
+
 export function soleQueryableTableRef(
   catalogs: QueryCatalogCandidate[],
 ): ActiveConnectedTableRef | undefined {
@@ -180,27 +251,11 @@ export function soleQueryableTableRef(
 }
 
 export function sameQuerySource(a: QueryTableSource, b: QueryTableSource): boolean {
-  if (a.kind !== b.kind) return false;
-  if (a.kind === 'manifest' && b.kind === 'manifest') {
-    return (
-      a.catalogName === b.catalogName &&
-      a.schemaName === b.schemaName &&
-      a.tableName === b.tableName &&
-      a.manifestUrl === b.manifestUrl
-    );
-  }
-  if (a.kind === 'local_delta' && b.kind === 'local_delta') {
-    return (
-      a.catalogName === b.catalogName &&
-      a.schemaName === b.schemaName &&
-      a.tableName === b.tableName &&
-      a.localRegistryId === b.localRegistryId
-    );
-  }
-  if (a.kind === 'object_store_table_root' && b.kind === 'object_store_table_root') {
-    return a.provider === b.provider && a.tableUri === b.tableUri;
-  }
-  return false;
+  const left = querySourceIdentity(a);
+  const right = querySourceIdentity(b);
+  return (
+    left.length === right.length && left.every((value, index) => Object.is(value, right[index]))
+  );
 }
 
 export function querySourceForConnectedTableRef(
