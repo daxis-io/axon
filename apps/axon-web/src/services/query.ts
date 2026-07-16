@@ -36,6 +36,7 @@ import {
   publishWorkerEvent,
 } from './query-runtime-state.ts';
 import { sameQuerySource, type QueryTableSource } from './query-source.ts';
+import { executionOpenSpanId, executionRequestId } from './execution-lifecycle.ts';
 import type { Catalog } from './types.ts';
 
 type FixtureObject = {
@@ -530,9 +531,9 @@ function resolvePreferredTarget(input: QueryExecRequest['preferred_target']): Ex
   return 'browser_wasm';
 }
 
-function ensureTable(state: SessionState, signal: AbortSignal): Promise<void> {
+function ensureTable(state: SessionState, signal: AbortSignal, executionId: string): Promise<void> {
   if (state.tableOpened) return Promise.resolve();
-  const requestId = `editor-open-${++requestCounter}`;
+  const requestId = executionOpenSpanId(executionId, 1);
   return state.client
     .openDeltaTable(state.source.tableName, state.descriptor, { requestId })
     .then(() => {
@@ -545,6 +546,7 @@ export async function runQuery(
   req: QueryExecRequest,
   onEvent: (event: QueryEvent) => void,
   source: QueryTableSource,
+  executionId: string,
   signal: AbortSignal = new AbortController().signal,
 ): Promise<QueryRunOutcome> {
   const startedAt = performance.now();
@@ -557,10 +559,10 @@ export async function runQuery(
     const setupMetrics = pendingSessionSetupMetrics(state);
     if (signal.aborted) throw new DOMException('cancelled', 'AbortError');
 
-    await ensureTable(state, signal);
+    await ensureTable(state, signal, executionId);
     if (signal.aborted) throw new DOMException('cancelled', 'AbortError');
 
-    const requestId = `editor-query-${++requestCounter}`;
+    const requestId = executionRequestId(executionId);
     let emittedSetupMetricsEvent = false;
     const setupMetricsForEvent = () => {
       if (emittedSetupMetricsEvent) return undefined;

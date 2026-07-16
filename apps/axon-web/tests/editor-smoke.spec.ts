@@ -1522,7 +1522,7 @@ test.describe('editor (Phase 1 smoke)', () => {
 
     await page.locator('.btn.primary', { hasText: 'Run' }).click();
 
-    await expect(page.locator('.res-meta')).toContainText(/error/i, { timeout: 15_000 });
+    await expect(page.locator('.res-meta')).toContainText(/failed/i, { timeout: 15_000 });
     await expect(page.locator('.results')).toContainText('registry boom');
   });
 
@@ -1657,7 +1657,7 @@ test.describe('editor (Phase 1 smoke)', () => {
 
     await page.locator('.code-input').fill('SELECT * FROM missing_table');
     await page.locator('.btn.primary', { hasText: 'Run' }).click();
-    await expect(page.locator('.res-meta')).toContainText('error', { timeout: 30_000 });
+    await expect(page.locator('.res-meta')).toContainText('failed', { timeout: 30_000 });
     await page.locator('.res-tab', { hasText: 'Plan' }).click();
     await expect(page.locator('.plan-tree')).toHaveCount(0);
 

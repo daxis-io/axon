@@ -172,8 +172,18 @@ src/editor/App.test.ts` exited 1. Vitest ran 32 tests: 16 failed and 16
 
 ### Execution lifecycle and guarded run state
 
-- Red: pending
-- Green: pending
+- Red: `npm exec -- vitest run src/services/execution-lifecycle.test.ts
+  src/state/slices/run.test.ts` exited 1. The lifecycle suite could not load the
+  not-yet-created authority module, and the run-state regression failed because
+  `createRun` did not exist. The seven baseline run tests remained green.
+- Green: the same command exited 0 with 2 files and 21 tests passed. A broader
+  focused run covering lifecycle, guarded run state, App, selection, catalog,
+  and connection behavior exited 0 with 6 files and 54 tests passed;
+  `npm exec -- tsc --noEmit` also exited 0. The controller creates an immutable
+  ID/deadline/budget admission before launch, identical replay is nonlaunching,
+  mismatched reuse preserves the original, records are bounded, UI transitions
+  are execution-ID guarded, every page request receives a new ID, SQL uses the
+  domain ID, and table-open requests use an internal execution span.
 
 ### Cancellation and terminal races
 

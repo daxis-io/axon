@@ -206,7 +206,11 @@ export function Results({
     );
   }
 
-  if (runState.status === 'running') {
+  if (
+    runState.status === 'created' ||
+    runState.status === 'running' ||
+    runState.status === 'cancel_requested'
+  ) {
     return (
       <div className="results">
         <div className="res-tabs">
@@ -216,7 +220,7 @@ export function Results({
           <div className="res-meta">
             <span className="dot" style={{ background: 'var(--warning)' }} />
             <span>
-              Running on{' '}
+              {runState.status === 'cancel_requested' ? 'Cancelling on ' : 'Running on '}
               <b style={{ color: 'var(--ink-2)' }}>
                 {runState.target === 'browser_wasm' ? 'Browser (WASM)' : 'Native'}
               </b>
@@ -249,7 +253,7 @@ export function Results({
   const touchedPct = totalFiles ? ((metrics?.files_touched ?? 0) / totalFiles) * 100 : 0;
   const rgTouchedPct = totalRG ? ((metrics?.row_groups_touched ?? 0) / totalRG) * 100 : 0;
   const fallback =
-    serverFallbackEnabled && runState.status === 'done' ? runState.fallback : undefined;
+    serverFallbackEnabled && runState.status === 'completed' ? runState.fallback : undefined;
   const visibleEvents = serverFallbackEnabled
     ? events
     : events.filter((event) => event.kind !== 'fallback');
@@ -292,7 +296,7 @@ export function Results({
         </div>
 
         <div className="res-meta">
-          {runState.status === 'done' && (
+          {runState.status === 'completed' && (
             <>
               <span
                 className={'tgt ' + (runState.target === 'browser_wasm' ? 'browser' : 'native')}
@@ -313,10 +317,12 @@ export function Results({
               )}
             </>
           )}
-          {runState.status === 'error' && (
+          {(runState.status === 'failed' ||
+            runState.status === 'rejected' ||
+            runState.status === 'cancelled') && (
             <>
               <span className="dot" style={{ background: 'var(--danger)' }} />
-              <span style={{ color: 'var(--danger)' }}>error</span>
+              <span style={{ color: 'var(--danger)' }}>{runState.status}</span>
               <span className="sep" />
               <span className="mono">{runState.ms} ms</span>
             </>
@@ -326,7 +332,7 @@ export function Results({
 
       {fallback && <FallbackBanner code={fallback.code} detail={fallback.detail} />}
 
-      {runState.status === 'error' && tab === 'results' && (
+      {(runState.status === 'failed' || runState.status === 'rejected') && tab === 'results' && (
         <div style={{ padding: 20 }}>
           <div style={{ color: 'var(--danger)', fontWeight: 600, marginBottom: 4 }}>
             {runState.code ?? 'error'}
@@ -337,7 +343,7 @@ export function Results({
         </div>
       )}
 
-      {tab === 'results' && runState.status === 'done' && (
+      {tab === 'results' && runState.status === 'completed' && (
         <>
           <div className="res-toolbar">
             <div className="search">

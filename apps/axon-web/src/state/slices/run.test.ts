@@ -111,6 +111,72 @@ function metricsEvent(summary = metrics()): QueryEvent {
 }
 
 describe('run slice', () => {
+  it('guards created, running, event, and terminal mutations by execution ID', () => {
+    const store = createAxonClientStore({ storage: createMemoryClientStateStorage() });
+    const actions = selectRunActions(store.getState());
+    const rows = result([[1, 'a']]);
+    const run = runFor('select * from events');
+
+    actions.createRun('execution-1', 'browser_wasm');
+    expect(selectRunState(store.getState())).toEqual({
+      status: 'created',
+      executionId: 'execution-1',
+      target: 'browser_wasm',
+      elapsed: 0,
+    });
+
+    actions.startRun('execution-1');
+    actions.updateRunElapsed('stale-execution', 99);
+    actions.appendRunEvent('stale-execution', metricsEvent());
+    expect(selectRunState(store.getState())).toEqual({
+      status: 'running',
+      executionId: 'execution-1',
+      target: 'browser_wasm',
+      elapsed: 0,
+    });
+    expect(selectRunEvents(store.getState())).toEqual([]);
+
+    actions.finishRunSuccess({
+      runState: {
+        status: 'completed',
+        executionId: 'stale-execution',
+        target: 'browser_wasm',
+        ms: 4,
+        rows: 1,
+        fallback: null,
+      },
+      resultData: rows,
+      resultPageRun: run,
+      metrics: metrics(),
+      plan: undefined,
+      capabilities: defaultCapabilityMatrix(),
+    });
+    expect(selectRunState(store.getState())).toMatchObject({
+      status: 'running',
+      executionId: 'execution-1',
+    });
+
+    actions.finishRunSuccess({
+      runState: {
+        status: 'completed',
+        executionId: 'execution-1',
+        target: 'browser_wasm',
+        ms: 5,
+        rows: 1,
+        fallback: null,
+      },
+      resultData: rows,
+      resultPageRun: run,
+      metrics: metrics(),
+      plan: undefined,
+      capabilities: defaultCapabilityMatrix(),
+    });
+    expect(selectRunState(store.getState())).toMatchObject({
+      status: 'completed',
+      executionId: 'execution-1',
+    });
+  });
+
   it('starts with idle run state and default capabilities', () => {
     const store = createAxonClientStore({ storage: createMemoryClientStateStorage() });
 
@@ -129,17 +195,19 @@ describe('run slice', () => {
     const store = createAxonClientStore({ storage: createMemoryClientStateStorage() });
     const summary = metrics({ bytes_fetched: 2048 });
 
-    selectRunActions(store.getState()).startRun('browser_wasm');
-    selectRunActions(store.getState()).updateRunElapsed(160);
-    selectRunActions(store.getState()).appendRunEvent({
+    selectRunActions(store.getState()).createRun('execution-1', 'browser_wasm');
+    selectRunActions(store.getState()).startRun('execution-1');
+    selectRunActions(store.getState()).updateRunElapsed('execution-1', 160);
+    selectRunActions(store.getState()).appendRunEvent('execution-1', {
       kind: 'progress',
       stage: 'planning',
       elapsed_ms: 4,
     });
-    selectRunActions(store.getState()).appendRunEvent(metricsEvent(summary));
+    selectRunActions(store.getState()).appendRunEvent('execution-1', metricsEvent(summary));
 
     expect(selectRunState(store.getState())).toEqual({
       status: 'running',
+      executionId: 'execution-1',
       target: 'browser_wasm',
       elapsed: 160,
     });
@@ -157,9 +225,12 @@ describe('run slice', () => {
       row.key === 'deletion_vectors' ? { ...row, browser: 'supported' } : row,
     );
 
+    selectRunActions(store.getState()).createRun('execution-1', 'browser_wasm');
+    selectRunActions(store.getState()).startRun('execution-1');
     selectRunActions(store.getState()).finishRunSuccess({
       runState: {
-        status: 'done',
+        status: 'completed',
+        executionId: 'execution-1',
         target: 'browser_wasm',
         ms: 42,
         rows: rows.row_count,
@@ -173,7 +244,8 @@ describe('run slice', () => {
     });
 
     expect(selectRunState(store.getState())).toEqual({
-      status: 'done',
+      status: 'completed',
+      executionId: 'execution-1',
       target: 'browser_wasm',
       ms: 42,
       rows: 1,
@@ -192,8 +264,17 @@ describe('run slice', () => {
     const rows = result([[1, 'a']]);
     const run = runFor('select * from events');
 
+    actions.createRun('execution-1', 'native');
+    actions.startRun('execution-1');
     actions.finishRunSuccess({
-      runState: { status: 'done', target: 'native', ms: 20, rows: 1, fallback: null },
+      runState: {
+        status: 'completed',
+        executionId: 'execution-1',
+        target: 'native',
+        ms: 20,
+        rows: 1,
+        fallback: null,
+      },
       resultData: rows,
       resultPageRun: run,
       metrics: metrics(),
@@ -209,30 +290,56 @@ describe('run slice', () => {
     expect(selectRunEvents(store.getState())).toEqual([]);
     expect(selectRunPlan(store.getState())).toBeUndefined();
 
+    actions.createRun('execution-2', 'browser_wasm');
+    actions.startRun('execution-2');
     actions.finishRunError({
-      status: 'error',
+      status: 'failed',
+      executionId: 'execution-2',
       target: 'browser_wasm',
       ms: 15,
       message: 'boom',
       code: 'E_QUERY',
     });
     expect(selectRunState(store.getState())).toEqual({
-      status: 'error',
+      status: 'failed',
+      executionId: 'execution-2',
       target: 'browser_wasm',
       ms: 15,
       message: 'boom',
       code: 'E_QUERY',
     });
 
-    actions.startRun('native');
-    actions.startLoadMoreRows();
-    actions.cancelRun();
-    expect(selectRunState(store.getState())).toEqual({ status: 'idle' });
+    actions.createRun('execution-3', 'native');
+    actions.startRun('execution-3');
+    actions.requestRunCancellation('execution-3');
+    expect(selectRunState(store.getState())).toMatchObject({
+      status: 'cancel_requested',
+      executionId: 'execution-3',
+    });
+    actions.finishRunCancelled({
+      status: 'cancelled',
+      executionId: 'execution-3',
+      target: 'native',
+      ms: 7,
+    });
+    expect(selectRunState(store.getState())).toMatchObject({
+      status: 'cancelled',
+      executionId: 'execution-3',
+    });
     expect(selectRunLoadingMoreRows(store.getState())).toBe(false);
     expect(selectRunResultPageRun(store.getState())).toBeUndefined();
 
+    actions.createRun('execution-4', 'native');
+    actions.startRun('execution-4');
     actions.finishRunSuccess({
-      runState: { status: 'done', target: 'native', ms: 20, rows: 1, fallback: null },
+      runState: {
+        status: 'completed',
+        executionId: 'execution-4',
+        target: 'native',
+        ms: 20,
+        rows: 1,
+        fallback: null,
+      },
       resultData: rows,
       resultPageRun: run,
       metrics: metrics(),
@@ -257,8 +364,17 @@ describe('run slice', () => {
     const run = runFor('select * from events');
     const staleRun = runFor('select * from other_events');
 
+    actions.createRun('execution-1', 'browser_wasm');
+    actions.startRun('execution-1');
     actions.finishRunSuccess({
-      runState: { status: 'done', target: 'browser_wasm', ms: 10, rows: 2, fallback: null },
+      runState: {
+        status: 'completed',
+        executionId: 'execution-1',
+        target: 'browser_wasm',
+        ms: 10,
+        rows: 2,
+        fallback: null,
+      },
       resultData: result(
         [
           [1, 'a'],
@@ -272,10 +388,11 @@ describe('run slice', () => {
       capabilities: defaultCapabilityMatrix(),
     });
 
-    actions.startLoadMoreRows();
+    actions.startLoadMoreRows('page-execution-1');
     expect(selectRunLoadingMoreRows(store.getState())).toBe(true);
 
     const stale = actions.finishLoadMoreRowsSuccess({
+      executionId: 'page-execution-1',
       runForPage: run,
       activeRun: staleRun,
       resultData: pageResult(2, [[3, 'stale']]),
@@ -290,8 +407,9 @@ describe('run slice', () => {
       [2, 'b'],
     ]);
 
-    actions.startLoadMoreRows();
+    actions.startLoadMoreRows('page-execution-2');
     const merged = actions.finishLoadMoreRowsSuccess({
+      executionId: 'page-execution-2',
       runForPage: run,
       activeRun: run,
       resultData: pageResult(2, [[3, 'c']]),
@@ -306,7 +424,11 @@ describe('run slice', () => {
       [2, 'b'],
       [3, 'c'],
     ]);
-    expect(selectRunState(store.getState())).toMatchObject({ status: 'done', ms: 24, rows: 3 });
+    expect(selectRunState(store.getState())).toMatchObject({
+      status: 'completed',
+      ms: 24,
+      rows: 3,
+    });
     expect(selectRunMetrics(store.getState())?.bytes_fetched).toBe(4096);
     expect(selectRunPlan(store.getState())).toEqual({ tree: 'NextPlan' });
   });
@@ -315,8 +437,17 @@ describe('run slice', () => {
     const storage = createMemoryClientStateStorage();
     const first = createAxonClientStore({ storage });
 
+    selectRunActions(first.getState()).createRun('execution-1', 'browser_wasm');
+    selectRunActions(first.getState()).startRun('execution-1');
     selectRunActions(first.getState()).finishRunSuccess({
-      runState: { status: 'done', target: 'browser_wasm', ms: 10, rows: 1, fallback: null },
+      runState: {
+        status: 'completed',
+        executionId: 'execution-1',
+        target: 'browser_wasm',
+        ms: 10,
+        rows: 1,
+        fallback: null,
+      },
       resultData: result([[1, 'a']]),
       resultPageRun: runFor('select * from events'),
       metrics: metrics(),

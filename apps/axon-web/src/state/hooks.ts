@@ -30,7 +30,9 @@ export const selectEngineActions = (state: AxonClientState) => state.engineActio
 export const selectRun = (state: AxonClientState) => state.run;
 export const selectRunState = (state: AxonClientState) => state.run.runState;
 export const selectRunIsRunning = (state: AxonClientState) =>
-  state.run.runState.status === 'running';
+  state.run.runState.status === 'created' ||
+  state.run.runState.status === 'running' ||
+  state.run.runState.status === 'cancel_requested';
 export const selectRunResultData = (state: AxonClientState) => state.run.resultData;
 export const selectRunResultPageRun = (state: AxonClientState) => state.run.resultPageRun;
 export const selectRunLoadingMoreRows = (state: AxonClientState) => state.run.loadingMoreRows;

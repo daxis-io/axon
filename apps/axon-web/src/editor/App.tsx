@@ -27,6 +27,10 @@ import {
 } from '../services/capabilities.ts';
 import { subscribeEngineStatus } from '../services/engine.ts';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
+import {
+  createExecutionController,
+  type ExecutionBudgets,
+} from '../services/execution-lifecycle.ts';
 import { hasLocalDeltaRuntime } from '../services/local-delta-session.ts';
 import {
   queryResultPageRun,
@@ -104,6 +108,19 @@ const TARGET_OPTIONS = SERVER_QUERY_FALLBACK_ENABLED
       { id: 'native' as const, short: 'Native', cls: 'native' },
     ]
   : [{ id: 'browser_wasm' as const, short: 'Browser', cls: 'browser' }];
+
+const EDITOR_EXECUTION_TIMEOUT_MS = 120_000;
+const EDITOR_EXECUTION_BUDGETS: ExecutionBudgets = Object.freeze({
+  maxResultRows: 501,
+  maxArrowIpcBytes: 8 * 1024 * 1024,
+  maxPreviewStringBytes: 256 * 1024,
+});
+const editorExecutionController = createExecutionController();
+
+type ActiveCancellation = {
+  executionId: string;
+  controller: AbortController;
+};
 
 function targetTitle(id: SqlTab['preferred']): string {
   if (!SERVER_QUERY_FALLBACK_ENABLED) {
@@ -197,7 +214,7 @@ export function App() {
   const runIsRunning = useAxonClientStore(selectRunIsRunning);
   const runActions = useAxonClientStore(selectRunActions);
 
-  const cancelRef = useRef<AbortController | null>(null);
+  const cancelRef = useRef<ActiveCancellation | null>(null);
   const runTimer = useRef<number | null>(null);
   const activeConnectedTable = useMemo(
     () => connectedTableForRef(availableConnectedCatalogs, activeTableRef),
@@ -331,17 +348,49 @@ export function App() {
       return;
     }
 
-    cancelRef.current?.abort();
+    cancelRef.current?.controller.abort();
     const ctrl = new AbortController();
-    cancelRef.current = ctrl;
-
     const target = tab.preferred === 'native' ? 'native' : 'browser_wasm';
+    const prepared = editorExecutionController.prepare({
+      source: selectedSource,
+      sql: tab.sql,
+      target,
+      timeoutMs: EDITOR_EXECUTION_TIMEOUT_MS,
+      budgets: EDITOR_EXECUTION_BUDGETS,
+    });
+    if (prepared.kind === 'rejected') {
+      showToast('Execution history is full; wait for prior executions to expire.', 'warn');
+      return;
+    }
 
-    runActions.startRun(target);
+    const { input } = prepared;
+    const executionId = input.executionId;
+    cancelRef.current = { executionId, controller: ctrl };
+    runActions.createRun(executionId, target);
+
+    const admission = editorExecutionController.admit(input);
+    if (admission.kind !== 'accepted' || !admission.launch) {
+      runActions.rejectRun({
+        status: 'rejected',
+        executionId,
+        target,
+        ms: 0,
+        message:
+          admission.kind === 'id_reuse'
+            ? 'Execution ID was already used with different immutable input.'
+            : 'Execution admission was not launchable.',
+        code: admission.kind === 'id_reuse' ? 'execution_id_reuse' : 'admission_rejected',
+      });
+      cancelRef.current = null;
+      showToast('Execution admission rejected.', 'warn');
+      return;
+    }
+
+    runActions.startRun(executionId);
     if (runTimer.current != null) window.clearInterval(runTimer.current);
     const startedAt = performance.now();
     runTimer.current = window.setInterval(() => {
-      runActions.updateRunElapsed(performance.now() - startedAt);
+      runActions.updateRunElapsed(executionId, performance.now() - startedAt);
     }, 80);
 
     const req: QueryExecRequest = {
@@ -359,9 +408,10 @@ export function App() {
           if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') {
             return;
           }
-          runActions.appendRunEvent(event);
+          runActions.appendRunEvent(executionId, event);
         },
         source,
+        executionId,
         ctrl.signal,
       );
     });
@@ -386,7 +436,8 @@ export function App() {
             : null;
       runActions.finishRunSuccess({
         runState: {
-          status: 'done',
+          status: 'completed',
+          executionId,
           target: outcome.executed_on,
           ms: outcome.elapsed_ms,
           rows: outcome.result.row_count,
@@ -423,8 +474,9 @@ export function App() {
       tabActions.markActiveClean(tab.id);
     } else {
       runActions.finishRunError({
-        status: 'error',
-        target: outcome.target,
+        status: 'failed',
+        executionId,
+        target: outcome.target ?? target,
         ms: outcome.elapsed_ms,
         message: outcome.message,
         code: outcome.code,
@@ -472,13 +524,32 @@ export function App() {
     }
 
     const ctrl = new AbortController();
-    cancelRef.current = ctrl;
-    runActions.startLoadMoreRows();
-
     const req = queryResultPageRunRequest(runForPage, {
       offset: page.next_offset,
       size: page.size,
     });
+    const target = req.preferred_target === 'native' ? 'native' : 'browser_wasm';
+    const prepared = editorExecutionController.prepare({
+      source: runForPage.source,
+      sql: req.sql,
+      target,
+      timeoutMs: EDITOR_EXECUTION_TIMEOUT_MS,
+      budgets: EDITOR_EXECUTION_BUDGETS,
+    });
+    if (prepared.kind === 'rejected') {
+      showToast('Execution history is full; wait for prior executions to expire.', 'warn');
+      return;
+    }
+    const { input } = prepared;
+    const executionId = input.executionId;
+    const admission = editorExecutionController.admit(input);
+    if (admission.kind !== 'accepted' || !admission.launch) {
+      showToast('Result-page execution admission rejected.', 'warn');
+      return;
+    }
+
+    cancelRef.current = { executionId, controller: ctrl };
+    runActions.startLoadMoreRows(executionId);
 
     const { runQuery } = await import('../services/query.ts');
     const outcome = await runQuery(
@@ -487,9 +558,10 @@ export function App() {
         if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') {
           return;
         }
-        runActions.appendRunEvent(event);
+        runActions.appendRunEvent(executionId, event);
       },
       runForPage.source,
+      executionId,
       ctrl.signal,
     );
 
@@ -501,13 +573,14 @@ export function App() {
       !sameQueryResultPageRun(latestResultRun, runForPage) ||
       !sameQueryResultPageRun(latestActiveRun, runForPage)
     ) {
-      runActions.finishLoadMoreRows();
+      runActions.finishLoadMoreRows(executionId);
       showToast('Result batch discarded because the query changed.', 'warn');
       return;
     }
 
     if (outcome.status === 'done') {
       const update = runActions.finishLoadMoreRowsSuccess({
+        executionId,
         runForPage,
         activeRun: latestActiveRun,
         resultData: outcome.result,
@@ -523,15 +596,17 @@ export function App() {
       return;
     }
 
-    runActions.finishLoadMoreRows();
+    runActions.finishLoadMoreRows(executionId);
     showToast(outcome.message, 'warn');
   }, [activeResultPageRun, runActions, showToast]);
 
   const cancelRun = useCallback(() => {
-    cancelRef.current?.abort();
+    const activeCancellation = cancelRef.current;
+    if (!activeCancellation) return;
+    runActions.requestRunCancellation(activeCancellation.executionId);
+    activeCancellation.controller.abort();
     if (runTimer.current != null) window.clearInterval(runTimer.current);
-    runActions.cancelRun();
-    showToast('Query cancelled', 'warn');
+    showToast('Cancellation requested', 'warn');
   }, [runActions, showToast]);
 
   const formatSql = useCallback(() => {
