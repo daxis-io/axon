@@ -26,6 +26,18 @@ const BINARY_STRING_INT_PARQUET_BYTES = Buffer.from(BINARY_STRING_INT_PARQUET_BA
 const BINARY_STRING_INT_PARQUET_SIZE_BYTES = BINARY_STRING_INT_PARQUET_BYTES.byteLength;
 const BINARY_STRING_INT_PARQUET_PATH =
   '**/fixtures/browser-datafusion-runtime/binary-string-int.parquet**';
+const CACHE_AND_READAHEAD_METRIC_KEYS = [
+  'range_cache_hits',
+  'range_cache_misses',
+  'range_cache_bytes_reused',
+  'range_cache_bytes_stored',
+  'range_cache_validation_misses',
+  'range_cache_degraded_identity_reads',
+  'range_readahead_requests',
+  'range_readahead_bytes_fetched',
+  'range_readahead_bytes_used',
+  'range_readahead_wasted_bytes',
+] as const;
 
 test('starts a real browser Worker and handles Arrow IPC success envelopes', async ({ page }) => {
   const result = await runWorkerProbe(page, 'success');
@@ -205,6 +217,7 @@ test('opens Delta Sharing URL-mode descriptors through the real browser query wo
           ipcFormat: queryResult.result.format,
           openCommand,
           preview: queryResult.preview,
+          rangeReadMetrics: queryResult.response.metrics,
           runtimeOpenCommand,
           typedOpenedName: openedRuntime.name,
           typedResult: {
@@ -282,6 +295,17 @@ test('opens Delta Sharing URL-mode descriptors through the real browser query wo
   expect(result.commandLog).not.toContain('secret-profile-token');
   expect(result.commandLog).not.toContain('bearerToken');
   expect(result.workerEvents.join('\n')).toContain('range_read_metrics');
+  for (const key of CACHE_AND_READAHEAD_METRIC_KEYS) {
+    const value: unknown = result.rangeReadMetrics[key];
+    expect(value, `${key} should be projected through the real browser worker`).toEqual(
+      expect.any(Number),
+    );
+    if (typeof value !== 'number') {
+      throw new Error(`${key} should be a number`);
+    }
+    expect(Number.isFinite(value), `${key} should be finite`).toBe(true);
+    expect(value, `${key} should be nonnegative`).toBeGreaterThanOrEqual(0);
+  }
 });
 
 test('opens Daxis descriptor-resolver tables through the real browser query worker', async ({

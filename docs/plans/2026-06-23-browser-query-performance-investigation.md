@@ -53,6 +53,15 @@ The original performance sequence is complete through the planned browser-query 
 - `perf(startup): lazy-load startup query paths`
 - `perf(scan): split scan metrics from debug trace`
 - `perf(range): coalesce small-gap Parquet range batches` in the current implementation slice
+- `perf(parquet): use shared range cache`
+- `feat: project cache and readahead metrics`
+- `perf(parquet): add bounded identity-safe readahead`
+- `perf(parquet): admit readahead only after same-object would-have-hit evidence`
+
+Live public-S3 evidence from 2026-07-16 found that the adaptive admission gate
+kept the representative batched scan exact: readahead fetched, used, and wasted
+zero bytes. Physical bytes returned to the 22,677,645-byte pre-cache baseline,
+so the Slice 6 scan-byte and overfetch-budget guardrail gate is open.
 
 Remaining work should be treated as backlog and driven by measured browser telemetry rather than the original sequence order.
 
@@ -62,12 +71,11 @@ Remaining work should be treated as backlog and driven by measured browser telem
 
 Prioritize these only when metrics show they are the next limiting factor:
 
-1. Tune range-coalescing thresholds from real browser telemetry.
-2. Add explicit scan-overfetch budget enforcement if metrics justify it.
-3. Build a shared Delta/Parquet range-cache and readahead substrate.
+1. Add explicit scan-byte and scan-overfetch budget enforcement. The adaptive admission follow-up passed its live prerequisite with zero readahead waste and baseline physical bytes.
+2. Continue row-group/page-index pruning before data-page reads.
+3. Keep representative public-S3 browser UAT evidence current as the fixture, query, or metrics contract changes.
 4. Add physical-vs-logical range request summary metrics if current labels become ambiguous.
-5. Capture browser UAT evidence on a representative public dataset.
-6. Continue row-group/page-index pruning before data-page reads.
+5. Tune range-coalescing or readahead thresholds only if future live telemetry shows a better request-to-byte tradeoff.
 
 Keep future changes small enough that each workstream can prove a specific latency, memory, or byte-read improvement.
 
@@ -98,9 +106,10 @@ shows a narrower improvement. The current policy remains 16 KiB max individual
 gap, 64 KiB max cumulative gap, 512 KiB max physical range, and 25% max gap
 amplification.
 
-Next backlog recommendation: capture live public-GCS browser UAT evidence on a
-representative table before starting a shared Delta/Parquet range-cache and
-readahead substrate or scan-byte budget enforcement.
+Historical recommendation: capture live browser UAT evidence before starting a
+shared Delta/Parquet range cache, bounded readahead, or scan-byte budget
+enforcement. The cache and readahead slices landed, and the 2026-07-16 public-S3
+evidence below supersedes this gate.
 
 ### Live Public-GCS Browser UAT Evidence - 2026-06-28
 
@@ -108,6 +117,67 @@ Live public-GCS browser UAT evidence remained blocked in the implementation
 shell because `AXON_LIVE_PUBLIC_GCS_TABLE_URI` was not set. No live metrics or
 test artifact were collected; this is an external environment gate, not
 product-success evidence.
+
+### Live Public-S3 Cache/Readahead Evidence - 2026-07-16
+
+The CI-forced Chromium run used the public performance fixture and passed all
+four tests. Ports 5173 and 5174 were occupied by other worktrees, so the final
+measured run used an equivalent temporary Playwright config on port 5175 with
+the same spec, fixture, region, and rebuilt WASM:
+
+```bash
+AXON_LIVE_PUBLIC_S3_TABLE_URI=s3://axon-public-s3-fixture-452456948477/fixtures/s3-browser-perf/table \
+AXON_LIVE_PUBLIC_S3_REGION=us-east-2 \
+CI=1 npm run test:browser:public-s3-live -- --reporter=line
+```
+
+Artifact:
+
+```text
+apps/axon-web/test-results/public-s3-live-public-S3-l-0761d--table-root-in-browser-WASM-chromium/public-s3-live-uat-evidence.json
+```
+
+SHA-256: `0dbda0ae8f7018f739fbaf57897aebc1dfa5083927c8bc6691f9a494424a7152`.
+
+`scan_data_range_reads` counts logical scan work. `bytes_fetched` counts
+physical network bytes. `coalesced_range_reads` counts physical requests that
+served multiple logical ranges; it does not count every network request.
+
+| Metric                          |   Pre-cache |    Current | Delta |
+| ------------------------------- | ----------: | ---------: | ----: |
+| `bytes_fetched`                 |  22,677,645 | 22,677,645 |     0 |
+| `scan_data_range_reads`         |         160 |        160 |     0 |
+| `coalesced_range_reads`         |          32 |         32 |     0 |
+| `range_cache_bytes_reused`      | not emitted |          0 |   n/a |
+| `range_readahead_bytes_fetched` | not emitted |          0 |   n/a |
+| `range_readahead_bytes_used`    | not emitted |          0 |   n/a |
+| `range_readahead_wasted_bytes`  | not emitted |          0 |   n/a |
+| `rows_emitted`                  |   1,048,576 |  1,048,576 |     0 |
+| `arrow_ipc_bytes`               |      36,744 |     36,744 |     0 |
+
+Current cache and readahead counters:
+
+| Metric                                |      Value |
+| ------------------------------------- | ---------: |
+| `range_cache_hits`                    |          0 |
+| `range_cache_misses`                  |        128 |
+| `range_cache_bytes_stored`            | 22,677,645 |
+| `range_cache_validation_misses`       |          0 |
+| `range_cache_degraded_identity_reads` |          0 |
+| `range_readahead_requests`            |          0 |
+
+The adaptive gate kept batched and coalesced network reads outside admission
+history, so this workload issued no speculative expansions. Readahead waste is
+therefore no greater than use (`0 <= 0`), and physical bytes are 271,560 below
+the previous 22,949,205-byte ceiling. Logical range count, rows emitted, and
+Arrow IPC size stayed constant. Coalescing still served 160 logical data ranges
+through 32 coalesced requests with zero fetched gap bytes. Cache and readahead
+counters remained finite, nonnegative, and the artifact contains no signed URL
+query material.
+
+Decision: accept the adaptive admission follow-up without changing the 64 KiB
+tail, 512 KiB query budget, or default enablement. Open the Slice 6 scan-byte and
+overfetch-budget guardrail gate.
 
 ---
 
@@ -176,18 +246,18 @@ The connected catalog stores summary state, not an openable read resolution. Fir
 
 Delta log materialization reads `_delta_log` objects through `HttpRangeReader`. Parquet footer inspection reads a trailer range, then a footer payload range in `crates/wasm-parquet-engine/src/lib.rs`.
 
-The active scan path uses `HttpRangeAsyncFileReader`. Single `get_bytes` calls remain exact bounded HTTP range requests. Batched `get_byte_ranges` calls can coalesce nearby ranges only when the scan target has strong object identity and the request can use `If-Range`. The richer extent cache lives in `crates/wasm-http-object-store/src/lib.rs`; a shared Delta/Parquet cache and readahead substrate remains backlog.
+The active scan path uses `HttpRangeAsyncFileReader`. The first eligible single `get_bytes` range for a strong object identity remains exact; a later single range can expand only when the complete logical range would have fit in the prior range's 64 KiB tail. Batched `get_byte_ranges` calls can coalesce nearby ranges only when the scan target has strong object identity and the request can use `If-Range`, and all batched reads stay outside readahead admission history. The shared range cache reuses identity-safe extents across Parquet reads, and bounded readahead records fetched, used, and wasted bytes.
 
 ### Main Gaps
 
 - Range instrumentation, object identity propagation, shared footer metadata reuse, descriptor carryover, and small-gap Parquet range coalescing have landed or are implemented in the current slice.
-- Future cache/readahead work should preserve logical range metrics and avoid weakening strong `ETag`/`If-Range` validation.
+- Scan-byte guardrail work should preserve adaptive admission, logical range metrics, and strong `ETag`/`If-Range` validation.
 - Public connect preflight still checks only the first active file; broader representative-browser UAT remains backlog.
 
 ### Implementation Slices
 
 1. Preserve `object_etag`, object size, and canonical resource identity from snapshot bootstrap into DataFusion scan targets. **Status: landed.**
-2. Put Parquet range reads behind the existing object-store extent cache, or extract a shared range-cache interface used by both object-store reads and Parquet scan reads. **Status: partially addressed by session-scoped footer metadata reuse and small-gap Parquet range coalescing; shared Delta/Parquet cache substrate remains backlog.**
+2. Put Parquet range reads behind the existing object-store extent cache, or extract a shared range-cache interface used by both object-store reads and Parquet scan reads. **Status: landed with an identity-safe shared range cache and adaptive bounded readahead. Live public-S3 evidence passed the prerequisite for scan-byte guardrails.**
 3. Add a Parquet metadata cache keyed by canonical object id plus immutable identity such as `ETag` and size. Cache trailer bytes, footer bytes, and decoded row-group metadata. **Status: landed for footer metadata reuse.**
 4. Add small-gap coalescing for planned Parquet reads. Track coalesced read amplification so the browser does not fetch large gaps to save a small request count. **Status: implemented in the current slice with strict `206`/`Content-Range`/body-length/object-size/ETag validation.**
 5. Carry connect-time descriptor and first-file preflight identity into the E9 read-resolution and query-session runtime cache, with expiration and identity refresh rules. Do not persist read resolutions or openable descriptors in durable catalog state. **Status: landed.**
@@ -214,6 +284,7 @@ The active scan path uses `HttpRangeAsyncFileReader`. Single `get_bytes` calls r
 - Metrics show duplicate footer/trailer ranges drop to zero for open-plus-query on the same table.
 - Scan requests carry identity headers when the provider exposes identity.
 - Tests cover `ETag` present, `ETag` missing, object identity drift, and signed URL refresh.
+- Live public-S3 evidence records cache reuse and readahead fetched, used, and wasted bytes. **Satisfied on 2026-07-16; the scan-byte budget gate is open.**
 
 ---
 
