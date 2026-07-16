@@ -2926,6 +2926,16 @@ pub struct HttpRangeReader {
     client: reqwest::Client,
 }
 
+#[cfg(target_arch = "wasm32")]
+fn bypass_browser_http_cache(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    request.fetch_cache_no_store()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn bypass_browser_http_cache(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    request
+}
+
 impl Default for HttpRangeReader {
     fn default() -> Self {
         Self::new()
@@ -2987,13 +2997,16 @@ impl HttpRangeReader {
             request = request.timeout(timeout);
         }
 
-        let response = request.send().await.map_err(|error| {
-            QueryError::new(
-                QueryErrorCode::ExecutionFailed,
-                format!("http request to '{display_url}' failed: {error}"),
-                supported_target(),
-            )
-        })?;
+        let response = bypass_browser_http_cache(request)
+            .send()
+            .await
+            .map_err(|error| {
+                QueryError::new(
+                    QueryErrorCode::ExecutionFailed,
+                    format!("http request to '{display_url}' failed: {error}"),
+                    supported_target(),
+                )
+            })?;
 
         if let Some(error) = map_status_error(response.status(), &display_url) {
             return Err(error);
@@ -3093,13 +3106,16 @@ impl HttpRangeReader {
         if let Some(timeout) = timeout {
             request = request.timeout(timeout);
         }
-        let response = request.send().await.map_err(|error| {
-            QueryError::new(
-                QueryErrorCode::ExecutionFailed,
-                format!("http request to '{display_url}' failed: {error}"),
-                supported_target(),
-            )
-        })?;
+        let response = bypass_browser_http_cache(request)
+            .send()
+            .await
+            .map_err(|error| {
+                QueryError::new(
+                    QueryErrorCode::ExecutionFailed,
+                    format!("http request to '{display_url}' failed: {error}"),
+                    supported_target(),
+                )
+            })?;
 
         if response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
             let unsatisfied_size =

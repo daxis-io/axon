@@ -7,8 +7,8 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen_test::wasm_bindgen_test;
 use wasm_http_object_store::{
     BrowserCacheMode, BrowserObjectRangeReader, ByteExtent, ExtentCacheEntry, ExtentCacheKey,
-    HttpByteRange, HttpMetadataProbeRequirements, HttpRangeReader, OpfsPersistentExtentCache,
-    PersistentCacheFuture, PersistentExtentCache,
+    HttpByteRange, HttpMetadataProbeRequirements, HttpRangeReader, HttpRangeValidation,
+    OpfsPersistentExtentCache, PersistentCacheFuture, PersistentExtentCache,
 };
 
 #[derive(Default)]
@@ -190,6 +190,47 @@ async fn blob_url_metadata_probe_falls_back_when_browser_ignores_range_header() 
     assert_eq!(metadata.etag, None);
 }
 
+#[wasm_bindgen_test(async)]
+async fn http_requests_bypass_browser_cache_without_changing_range_validation() {
+    install_http_fetch_recorder();
+
+    let reader = HttpRangeReader::new();
+    let metadata = reader
+        .probe_metadata(
+            "https://example.test/object.parquet",
+            HttpMetadataProbeRequirements {
+                require_size: true,
+                require_etag: true,
+            },
+        )
+        .await
+        .expect("metadata probe should accept the mocked 206 response");
+    let result = reader
+        .read_range_with_validation(
+            "https://example.test/object.parquet",
+            HttpByteRange::Bounded {
+                offset: 2,
+                length: 3,
+            },
+            Some(HttpRangeValidation::if_range_etag("\"v1\"".to_string())),
+            None,
+        )
+        .await
+        .expect("bounded range read should preserve If-Range validation");
+
+    let requests = take_http_fetch_requests_and_restore();
+
+    assert_eq!(metadata.size_bytes, Some(6));
+    assert_eq!(metadata.etag.as_deref(), Some("\"v1\""));
+    assert_eq!(result.metadata.size_bytes, Some(6));
+    assert_eq!(result.metadata.etag.as_deref(), Some("\"v1\""));
+    assert_eq!(result.bytes.as_ref(), b"cde");
+    assert_eq!(
+        requests,
+        r#"[{"cache":"no-store","range":"bytes=0-0","ifRange":null},{"cache":"no-store","range":"bytes=2-4","ifRange":"\"v1\""}]"#
+    );
+}
+
 fn mock_opfs_directory() -> JsValue {
     js_sys::Function::new_no_args(
         r#"
@@ -259,6 +300,70 @@ fn install_fetch_that_ignores_blob_range(url: &str) {
     )
     .call1(&JsValue::UNDEFINED, &JsValue::from_str(url))
     .expect("fetch mock should be installed");
+}
+
+fn install_http_fetch_recorder() {
+    js_sys::Function::new_no_args(
+        r#"
+        if (!globalThis.__axonOriginalFetch) {
+          globalThis.__axonOriginalFetch = globalThis.fetch;
+        }
+        globalThis.__axonCapturedHttpRequests = [];
+        globalThis.fetch = async (input, init) => {
+          const request = input instanceof Request ? input : new Request(input, init);
+          globalThis.__axonCapturedHttpRequests.push(request);
+          const range = request.headers.get('range');
+          if (range === 'bytes=0-0') {
+            const response = new Response(new Uint8Array([97]), {
+              status: 206,
+              headers: {
+                'Content-Length': '1',
+                'Content-Range': 'bytes 0-0/6',
+                'ETag': '"v1"',
+              },
+            });
+            Object.defineProperty(response, 'url', { value: request.url });
+            return response;
+          }
+          if (range === 'bytes=2-4' && request.headers.get('if-range') === '"v1"') {
+            const response = new Response(new TextEncoder().encode('cde'), {
+              status: 206,
+              headers: {
+                'Content-Length': '3',
+                'Content-Range': 'bytes 2-4/6',
+                'ETag': '"v1"',
+              },
+            });
+            Object.defineProperty(response, 'url', { value: request.url });
+            return response;
+          }
+          throw new Error(`unexpected request headers: range=${range}, if-range=${request.headers.get('if-range')}`);
+        };
+        "#,
+    )
+    .call0(&JsValue::UNDEFINED)
+    .expect("HTTP fetch recorder should be installed");
+}
+
+fn take_http_fetch_requests_and_restore() -> String {
+    js_sys::Function::new_no_args(
+        r#"
+        const requests = globalThis.__axonCapturedHttpRequests ?? [];
+        const summary = requests.map((request) => ({
+          cache: request.cache,
+          range: request.headers.get('range'),
+          ifRange: request.headers.get('if-range'),
+        }));
+        globalThis.fetch = globalThis.__axonOriginalFetch;
+        delete globalThis.__axonOriginalFetch;
+        delete globalThis.__axonCapturedHttpRequests;
+        return JSON.stringify(summary);
+        "#,
+    )
+    .call0(&JsValue::UNDEFINED)
+    .expect("captured HTTP requests should be summarized")
+    .as_string()
+    .expect("captured HTTP request summary should be a string")
 }
 
 fn restore_fetch_mock() {
