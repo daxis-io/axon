@@ -2,6 +2,7 @@
 
 - Status: Current repo contract
 - Date: 2026-05-19
+- Audit revision: 2026-07-15
 - Scope: browser-safe Delta descriptor production in `apps/axon-web`,
   `query-contract`, `wasm-delta-snapshot`, and broker/runtime contracts
 - Related:
@@ -18,6 +19,20 @@ browser-safe access material
   -> browser reconstructs or materializes the snapshot/descriptor
   -> BrowserHttpSnapshotDescriptor
   -> openDeltaTable()
+  -> local query execution
+```
+
+That diagram describes the current SDK. It passes a bare descriptor to the
+worker and returns expiry, correlation, and resolution metadata through
+source-specific envelopes. The target path preserves the current worker command
+but gives its caller one checked input:
+
+```text
+browser-safe access material
+  -> browser reconstructs or materializes the snapshot/descriptor
+  -> ResolvedBrowserRead binding
+  -> validate selected source and not-after time
+  -> openDeltaTable(binding.descriptor)
   -> local query execution
 ```
 
@@ -44,7 +59,11 @@ Core invariants:
 - Server snapshot mode is an explicit enterprise server snapshot resolver mode.
 - Server query mode is only explicit fallback, such as `sql_fallback_required`.
 - Raw long-lived cloud credentials and provider secrets do not enter browser packages.
-- `openDeltaTable(name, descriptor)` remains the single browser execution handoff.
+- `openDeltaTable(name, descriptor)` remains the current worker handoff; the
+  target execution call validates a `ResolvedBrowserRead` binding before making
+  it.
+- Grants, signed URLs, descriptors, and resolved bindings remain memory-only and
+  never enter browser persistence.
 
 Use these terms consistently:
 
@@ -57,17 +76,53 @@ Use these terms consistently:
 - Server snapshot resolver: optional enterprise mode that returns a descriptor.
 - Server fallback: server-side SQL execution for governed assets.
 
+## Resolved Browser Read Binding
+
+The target runtime represents a successful resolution as one
+`ResolvedBrowserRead` binding. This is the existing descriptor plus the authority and lifetime
+facts that callers already have to carry separately:
+
+| Field             | Meaning                                                                                                                                                                                                    |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `descriptor`      | The `BrowserHttpSnapshotDescriptor` passed to the current worker handoff.                                                                                                                                  |
+| `access_class`    | `local`, `public`, `signed`, or `proxy`; selects the cache and retention policy.                                                                                                                           |
+| `not_after`       | Required earliest expiry of the session, plan, grant, descriptor response, or signed files for signed, proxy, grant-backed, and other expiring access; optional only for non-expiring local/public access. |
+| resource          | The one canonical connection/source and table reference selected by the user. The binding contains no alternate source.                                                                                    |
+| resolved snapshot | Provider table identity and snapshot version represented by the descriptor; these must match the canonical resource and snapshot intent.                                                                   |
+| provenance        | Resolution mode, provider, and policy authority when a remote authority participated. It contains no bearer URL or secret.                                                                                 |
+| `correlation_id`  | Optional service correlation used for broker audit lookup and diagnostics.                                                                                                                                 |
+
+The snapshot resolver or descriptor materializer constructs the binding. It does
+not return a capability-bearing binding if it cannot establish a finite
+`not_after`. The execution path verifies that resource and descriptor identities
+still match, checks the required bound immediately before admission and table
+open, and passes only
+`binding.descriptor` to the current worker command. If the binding has expired,
+the caller discards it and resolves the same source again. It does not refresh a
+descriptor in place, advance an explicitly pinned snapshot, or choose another
+connected source.
+
+Expiry during an accepted execution produces one typed terminal error. The
+runtime does not replay a query after refreshing access because it may already
+have consumed resources or emitted result bytes.
+
+The binding is scoped to one admission/execution. Rejection or terminal execution
+disposes it; a new execution resolves a new binding. No implementation may cache
+or persist the binding, its descriptor, an opaque grant, or a signed URL. Durable
+registries may retain the non-secret source selection needed to resolve a new
+binding.
+
 ## Source Matrix
 
-| Source | Auth Owner | Access Broker | Snapshot Owner | Descriptor Material Source | Query Owner |
-| --- | --- | --- | --- | --- | --- |
-| Local files | Browser/user grant | None | Browser | Local file handles | Browser |
-| Public bucket / HTTP | Browser-readable storage | None | Browser | HTTP table root / `_delta_log` when list/head/range are available | Browser |
-| Private bucket | BFF brokers narrow access | BFF | Browser by default | Object grants, signed URLs, proxy URLs, manifests, or brokered descriptor | Browser |
-| Delta Sharing URL mode | Sharing provider | Sharing server or app broker | Browser descriptor materialization | Sharing query response / file URLs | Browser |
-| Delta Sharing dir mode | Sharing provider / BFF | Sharing server or BFF | Browser by default if safe object grants exist | Temporary directory-scoped grants, object grants, or brokered descriptor | Browser |
-| Unity Catalog | UC/BFF | BFF | Browser by default | `ReadAccessPlan`, object grants, manifests, or descriptors | Browser unless fallback required |
-| Governed UC fallback | UC/BFF | BFF | Server | SQL result batches | Databricks SQL / server fallback |
+| Source                 | Auth Owner                | Access Broker                | Snapshot Owner                                 | Descriptor Material Source                                                | Query Owner                      |
+| ---------------------- | ------------------------- | ---------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------- |
+| Local files            | Browser/user grant        | None                         | Browser                                        | Local file handles                                                        | Browser                          |
+| Public bucket / HTTP   | Browser-readable storage  | None                         | Browser                                        | HTTP table root / `_delta_log` when list/head/range are available         | Browser                          |
+| Private bucket         | BFF brokers narrow access | BFF                          | Browser by default                             | Object grants, signed URLs, proxy URLs, manifests, or brokered descriptor | Browser                          |
+| Delta Sharing URL mode | Sharing provider          | Sharing server or app broker | Browser descriptor materialization             | Sharing query response / file URLs                                        | Browser                          |
+| Delta Sharing dir mode | Sharing provider / BFF    | Sharing server or BFF        | Browser by default if safe object grants exist | Temporary directory-scoped grants, object grants, or brokered descriptor  | Browser                          |
+| Unity Catalog          | Session-proxied UC/BFF    | BFF                          | Browser by default                             | `ReadAccessPlan`, object grants, manifests, or descriptors                | Browser unless fallback required |
+| Governed UC fallback   | UC/BFF                    | BFF                          | Server                                         | SQL result batches                                                        | Databricks SQL / server fallback |
 
 ## Reconstruction Versus Materialization
 
@@ -84,6 +139,24 @@ URL-mode file actions, and trusted descriptors returned by an explicit server
 snapshot resolver. These inputs are not forced back through `_delta_log` listing.
 
 Both paths converge on `BrowserHttpSnapshotDescriptor -> openDeltaTable()`.
+
+In the target contract, both paths first attach access class, lifetime, selected
+resource, and provenance to form the `ResolvedBrowserRead` binding. This avoids
+changing the current worker message while preventing the call site from losing
+security-relevant metadata.
+
+## Source Selection Is Authoritative
+
+Descriptor resolution uses the exact source selected by route or connection
+state. Missing, stale, or mismatched selection returns an error. The runtime
+must not fall back to the first queryable connection or `SAMPLE_QUERY_SOURCE`.
+The sample remains a fixture that the user or a test selects explicitly.
+
+The current route resolver already rejects an invalid table route. The legacy
+`querySourceFromConnectedCatalogs()` path can still select another table or the
+sample when its active reference is absent or invalid. That is current behavior,
+not the target contract. E0 supplies exact selection state and routing; E9 Slice
+1 removes the implicit execution fallback before provider adoption.
 
 ## Public GCS Table-Root Requirements
 
@@ -123,9 +196,37 @@ issue opaque grant IDs, return browser-safe manifests, return short-lived
 object-scoped URLs, or expose narrow list/head/range routes. It does not
 reconstruct snapshots or execute SQL by default.
 
+For Unity Catalog, metadata discovery and read planning go through the
+session-aware BFF. "Browser execution" means the browser executes after the BFF
+has authorized and resolved access; it does not mean that browser code holds UC
+credentials or calls UC with a provider token.
+
+Browser-local policy supports presentation and early decisions. The browser may
+disable an unsupported target or reject expired material, but the broker or
+server enforces remote resource policy and owns audit. The binding only carries
+the correlation and provenance needed to connect browser diagnostics to that
+server record.
+
 The access broker is not a cloud credential pass-through. Browser package APIs
 must not accept raw cloud credentials, UC tokens, Databricks tokens, provider
 bearer tokens, service-account JSON, broad SAS material, or signing secrets.
+
+## Cache And Persistence Policy
+
+The runtime classifies access before any durable cache write:
+
+- Local-file and anonymous public-object bytes may use durable caches when the
+  entry is keyed by stable resource identity and a strong object validator.
+- Governed, signed, Delta Sharing, and grant-backed bytes use memory-only caches
+  by default. Expiry or logout clears the associated in-memory state.
+- A deployment may persist governed bytes only after it implements a
+  principal-and-session namespace plus logout and revocation invalidation. It
+  must also define retention and audit ownership.
+- A rotated signed URL does not create a new durable object identity, and a
+  signed query string never becomes a cache key or persisted value.
+
+These rules govern data bytes only. Resolved bindings, descriptors, grants, and
+signed URLs are never persisted, including for local and public sources.
 
 ## Explicit Server Modes
 
