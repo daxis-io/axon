@@ -36,7 +36,11 @@ import {
   publishWorkerEvent,
 } from './query-runtime-state.ts';
 import { sameQuerySource, type QueryTableSource } from './query-source.ts';
-import { executionOpenSpanId, executionRequestId } from './execution-lifecycle.ts';
+import {
+  executionCancelSpanId,
+  executionOpenSpanId,
+  executionRequestId,
+} from './execution-lifecycle.ts';
 import type { Catalog } from './types.ts';
 
 type FixtureObject = {
@@ -542,6 +546,70 @@ function ensureTable(state: SessionState, signal: AbortSignal, executionId: stri
     });
 }
 
+function cancellationError(): DOMException {
+  return new DOMException('cancelled', 'AbortError');
+}
+
+function throwIfCancelled(signal: AbortSignal): void {
+  if (signal.aborted) throw cancellationError();
+}
+
+function waitForExecutionStage<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(cancellationError());
+  return new Promise<T>((resolve, reject) => {
+    const cancel = () => reject(cancellationError());
+    signal.addEventListener('abort', cancel, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener('abort', cancel);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', cancel);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
+export type CancelableQueryStages<TSession, TResult> = {
+  signal: AbortSignal;
+  getSession: () => Promise<TSession>;
+  openTable: (session: TSession) => Promise<void>;
+  execute: (session: TSession) => Promise<TResult>;
+  cancelQuery: (session: TSession) => void;
+};
+
+export async function runCancelableQueryStages<TSession, TResult>(
+  stages: CancelableQueryStages<TSession, TResult>,
+): Promise<{ session: TSession; result: TResult }> {
+  throwIfCancelled(stages.signal);
+  const session = await waitForExecutionStage(stages.getSession(), stages.signal);
+  throwIfCancelled(stages.signal);
+  await waitForExecutionStage(stages.openTable(session), stages.signal);
+  throwIfCancelled(stages.signal);
+
+  let queryStarted = false;
+  const cancelStartedQuery = () => {
+    if (!queryStarted) return;
+    try {
+      stages.cancelQuery(session);
+    } catch {
+      // The local abort remains authoritative when transport cancellation fails.
+    }
+  };
+  stages.signal.addEventListener('abort', cancelStartedQuery);
+  try {
+    throwIfCancelled(stages.signal);
+    queryStarted = true;
+    const result = await waitForExecutionStage(stages.execute(session), stages.signal);
+    throwIfCancelled(stages.signal);
+    return { session, result };
+  } finally {
+    stages.signal.removeEventListener('abort', cancelStartedQuery);
+  }
+}
+
 export async function runQuery(
   req: QueryExecRequest,
   onEvent: (event: QueryEvent) => void,
@@ -555,80 +623,87 @@ export async function runQuery(
   const page = req.page ?? defaultQueryPage();
 
   try {
-    const state = await getSession(source);
-    const setupMetrics = pendingSessionSetupMetrics(state);
-    if (signal.aborted) throw new DOMException('cancelled', 'AbortError');
-
-    await ensureTable(state, signal, executionId);
-    if (signal.aborted) throw new DOMException('cancelled', 'AbortError');
-
     const requestId = executionRequestId(executionId);
-    let emittedSetupMetricsEvent = false;
-    const setupMetricsForEvent = () => {
-      if (emittedSetupMetricsEvent) return undefined;
-      emittedSetupMetricsEvent = true;
-      return setupMetrics;
-    };
-    const handler: EventHandler = (envelope) => {
-      if ('progress' in envelope) {
-        if (envelope.progress.context.request_id !== requestId) return;
-        onEvent({ kind: 'progress', stage: envelope.progress.stage, elapsed_ms: since() });
-      } else if ('log' in envelope) {
-        if (envelope.log.context.request_id !== requestId) return;
-        onEvent({
-          kind: 'log',
-          level: envelope.log.level,
-          message: redactUrlSecrets(envelope.log.message),
-          elapsed_ms: since(),
-        });
-      } else if ('range_read_metrics' in envelope) {
-        if (envelope.range_read_metrics.context.request_id !== requestId) return;
-        const m = envelope.range_read_metrics;
-        onEvent({
-          kind: 'metrics',
-          metrics: queryMetricsFromRangeReadMetricsEvent(m, since(), setupMetricsForEvent()),
-          elapsed_ms: since(),
-        });
-      } else if ('fallback' in envelope) {
-        if (envelope.fallback.context.request_id !== requestId) return;
-        onEvent({ kind: 'fallback', reason: envelope.fallback.reason, elapsed_ms: since() });
-      }
-    };
-    eventListeners.add(handler);
-
-    try {
-      const result: AxonQueryResult = await state.client.query(
-        state.source.tableName,
-        {
-          table_uri: state.snapshot.table_uri,
-          snapshot_version: req.snapshot_version ?? state.snapshot.snapshot_version,
-          sql: req.sql,
-          preferred_target: resolvePreferredTarget(req.preferred_target),
-          options: {
-            collect_metrics: true,
-            include_explain: true,
-            result_page: queryResultPageRequest(page),
-          },
-        },
-        { requestId },
-      );
-      if (signal.aborted) throw new DOMException('cancelled', 'AbortError');
-
-      const outcome = {
-        status: 'done',
-        result: resultPageFromPreview(result.preview, page),
-        metrics: mergeQueryMetrics(result.response.metrics, setupMetrics),
-        executed_on: result.response.executed_on,
-        capabilities: result.response.capabilities,
-        fallback_reason: result.fallbackReason ?? result.response.fallback_reason,
-        explain: result.response.explain,
-        elapsed_ms: since(),
-      } satisfies QueryRunOutcome;
-      markSessionSetupMetricsEmitted(state);
-      return outcome;
-    } finally {
-      eventListeners.delete(handler);
-    }
+    const execution = await runCancelableQueryStages({
+      signal,
+      getSession: () => getSession(source),
+      openTable: (state) => ensureTable(state, signal, executionId),
+      cancelQuery: (state) =>
+        state.client.cancelQuery(executionId, {
+          requestId: executionCancelSpanId(executionId, 1),
+        }),
+      execute: async (state) => {
+        const setupMetrics = pendingSessionSetupMetrics(state);
+        let emittedSetupMetricsEvent = false;
+        const setupMetricsForEvent = () => {
+          if (emittedSetupMetricsEvent) return undefined;
+          emittedSetupMetricsEvent = true;
+          return setupMetrics;
+        };
+        const handler: EventHandler = (envelope) => {
+          if ('progress' in envelope) {
+            if (envelope.progress.context.request_id !== requestId) return;
+            onEvent({ kind: 'progress', stage: envelope.progress.stage, elapsed_ms: since() });
+          } else if ('log' in envelope) {
+            if (envelope.log.context.request_id !== requestId) return;
+            onEvent({
+              kind: 'log',
+              level: envelope.log.level,
+              message: redactUrlSecrets(envelope.log.message),
+              elapsed_ms: since(),
+            });
+          } else if ('range_read_metrics' in envelope) {
+            if (envelope.range_read_metrics.context.request_id !== requestId) return;
+            const m = envelope.range_read_metrics;
+            onEvent({
+              kind: 'metrics',
+              metrics: queryMetricsFromRangeReadMetricsEvent(m, since(), setupMetricsForEvent()),
+              elapsed_ms: since(),
+            });
+          } else if ('fallback' in envelope) {
+            if (envelope.fallback.context.request_id !== requestId) return;
+            onEvent({ kind: 'fallback', reason: envelope.fallback.reason, elapsed_ms: since() });
+          }
+        };
+        const removeHandler = () => eventListeners.delete(handler);
+        eventListeners.add(handler);
+        signal.addEventListener('abort', removeHandler, { once: true });
+        try {
+          const result: AxonQueryResult = await state.client.query(
+            state.source.tableName,
+            {
+              table_uri: state.snapshot.table_uri,
+              snapshot_version: req.snapshot_version ?? state.snapshot.snapshot_version,
+              sql: req.sql,
+              preferred_target: resolvePreferredTarget(req.preferred_target),
+              options: {
+                collect_metrics: true,
+                include_explain: true,
+                result_page: queryResultPageRequest(page),
+              },
+            },
+            { requestId },
+          );
+          return { result, setupMetrics };
+        } finally {
+          signal.removeEventListener('abort', removeHandler);
+          removeHandler();
+        }
+      },
+    });
+    const { result, setupMetrics } = execution.result;
+    const outcome = {
+      status: 'done',
+      result: resultPageFromPreview(result.preview, page),
+      metrics: mergeQueryMetrics(result.response.metrics, setupMetrics),
+      executed_on: result.response.executed_on,
+      capabilities: result.response.capabilities,
+      fallback_reason: result.fallbackReason ?? result.response.fallback_reason,
+      explain: result.response.explain,
+      elapsed_ms: since(),
+    } satisfies QueryRunOutcome;
+    markSessionSetupMetricsEmitted(execution.session);
+    return outcome;
   } catch (err) {
     if (signal.aborted) {
       return {

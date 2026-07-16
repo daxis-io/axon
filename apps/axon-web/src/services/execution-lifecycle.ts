@@ -27,14 +27,38 @@ export type ExecutionLifecycleState =
   | 'failed'
   | 'cancelled';
 
+export type ExecutionTerminalState = Extract<
+  ExecutionLifecycleState,
+  'completed' | 'failed' | 'cancelled'
+>;
+
 export type ExecutionSnapshot = Readonly<{
   executionId: string;
   state: ExecutionLifecycleState;
   input: ExecutionAdmissionInput;
   admitted: boolean;
   rejectionReason?: string;
+  terminalReason?: string;
   invariantViolations: readonly string[];
 }>;
+
+export type ExecutionFrameDelivery = Readonly<{
+  kind: 'frame';
+  sequence: number;
+  payload: unknown;
+}>;
+
+export type ExecutionTerminalDelivery = Readonly<{
+  kind: 'terminal';
+  sequence: number;
+  state: ExecutionTerminalState;
+  reason?: string;
+  payload?: unknown;
+}>;
+
+export type ExecutionDelivery = ExecutionFrameDelivery | ExecutionTerminalDelivery;
+export type ExecutionListener = (delivery: ExecutionDelivery) => void;
+export type ExecutionCancellationHandle = () => void;
 
 export type ExecutionRegistrationResult =
   | { kind: 'created'; snapshot: ExecutionSnapshot }
@@ -48,13 +72,34 @@ export type ExecutionAdmissionResult =
   | { kind: 'id_reuse'; launch: false; snapshot: ExecutionSnapshot }
   | { kind: 'rejected'; launch: false; reason: 'capacity' };
 
+export type ExecutionCancellationResult =
+  | { kind: 'cancelled_before_admit'; snapshot: ExecutionSnapshot }
+  | { kind: 'cancel_requested'; snapshot: ExecutionSnapshot }
+  | { kind: 'recorded'; snapshot: ExecutionSnapshot }
+  | { kind: 'unknown' };
+
+export type ExecutionPublishResult =
+  | { kind: 'published'; sequence: number; snapshot: ExecutionSnapshot }
+  | { kind: 'recorded'; snapshot: ExecutionSnapshot }
+  | { kind: 'unknown' };
+
+export type ExecutionTerminalResult =
+  | { kind: 'transitioned'; delivered: true; snapshot: ExecutionSnapshot }
+  | { kind: 'recorded'; delivered: false; snapshot: ExecutionSnapshot }
+  | { kind: 'unknown'; delivered: false };
+
 type ExecutionRecord = {
   input: ExecutionAdmissionInput;
   fingerprint: string;
   state: ExecutionLifecycleState;
   admitted: boolean;
   rejectionReason?: string;
+  terminalReason?: string;
   invariantViolations: string[];
+  listeners: Set<ExecutionListener>;
+  cancellationHandle?: ExecutionCancellationHandle;
+  cancellationInvoked: boolean;
+  sequence: number;
 };
 
 export type ExecutionLifecycleOptions = {
@@ -97,6 +142,9 @@ export class ExecutionLifecycle {
       state: 'created',
       admitted: false,
       invariantViolations: [],
+      listeners: new Set(),
+      cancellationInvoked: false,
+      sequence: 0,
     };
     this.#records.set(immutableInput.executionId, record);
     return { kind: 'created', snapshot: snapshot(record) };
@@ -132,9 +180,130 @@ export class ExecutionLifecycle {
     return { kind: 'accepted', launch: false, snapshot: snapshot(record) };
   }
 
+  subscribe(executionId: string, listener: ExecutionListener): () => void {
+    const record = this.#records.get(executionId);
+    if (!record) return () => undefined;
+    record.listeners.add(listener);
+    return () => {
+      record.listeners.delete(listener);
+    };
+  }
+
+  attachCancellation(
+    executionId: string,
+    handle: ExecutionCancellationHandle,
+  ): ExecutionSnapshot | undefined {
+    const record = this.#records.get(executionId);
+    if (!record) return undefined;
+    record.cancellationHandle = handle;
+    if (record.state === 'cancel_requested') this.#invokeCancellation(record);
+    return snapshot(record);
+  }
+
+  requestCancellation(executionId: string): ExecutionCancellationResult {
+    const record = this.#records.get(executionId);
+    if (!record) return { kind: 'unknown' };
+
+    if (record.state === 'created') {
+      record.state = 'rejected';
+      record.rejectionReason = 'cancelled';
+      return { kind: 'cancelled_before_admit', snapshot: snapshot(record) };
+    }
+
+    if (record.state === 'running') {
+      record.state = 'cancel_requested';
+      this.#invokeCancellation(record);
+      return { kind: 'cancel_requested', snapshot: snapshot(record) };
+    }
+
+    if (record.state === 'cancel_requested' || record.state === 'rejected') {
+      return { kind: 'recorded', snapshot: snapshot(record) };
+    }
+
+    record.invariantViolations.push(`cancellation requested after ${record.state}`);
+    return { kind: 'recorded', snapshot: snapshot(record) };
+  }
+
+  publishFrame(executionId: string, payload: unknown): ExecutionPublishResult {
+    const record = this.#records.get(executionId);
+    if (!record) return { kind: 'unknown' };
+    if (record.state !== 'running' && record.state !== 'cancel_requested') {
+      record.invariantViolations.push(`frame published after ${record.state}`);
+      return { kind: 'recorded', snapshot: snapshot(record) };
+    }
+
+    const sequence = ++record.sequence;
+    this.#notify(record, Object.freeze({ kind: 'frame', sequence, payload }));
+    return { kind: 'published', sequence, snapshot: snapshot(record) };
+  }
+
+  complete(executionId: string, payload?: unknown): ExecutionTerminalResult {
+    return this.#terminal(executionId, 'completed', undefined, payload);
+  }
+
+  fail(executionId: string, reason: string, payload?: unknown): ExecutionTerminalResult {
+    return this.#terminal(executionId, 'failed', reason, payload);
+  }
+
+  confirmCancelled(executionId: string, payload?: unknown): ExecutionTerminalResult {
+    return this.#terminal(executionId, 'cancelled', undefined, payload);
+  }
+
   getSnapshot(executionId: string): ExecutionSnapshot | undefined {
     const record = this.#records.get(executionId);
     return record ? snapshot(record) : undefined;
+  }
+
+  #terminal(
+    executionId: string,
+    state: ExecutionTerminalState,
+    reason?: string,
+    payload?: unknown,
+  ): ExecutionTerminalResult {
+    const record = this.#records.get(executionId);
+    if (!record) return { kind: 'unknown', delivered: false };
+
+    if (record.state !== 'running' && record.state !== 'cancel_requested') {
+      if (record.state !== state) {
+        record.invariantViolations.push(`late ${state} after ${record.state}`);
+      }
+      return { kind: 'recorded', delivered: false, snapshot: snapshot(record) };
+    }
+
+    record.state = state;
+    record.terminalReason = reason;
+    const sequence = ++record.sequence;
+    const delivery: ExecutionTerminalDelivery = Object.freeze({
+      kind: 'terminal',
+      sequence,
+      state,
+      ...(reason === undefined ? {} : { reason }),
+      ...(payload === undefined ? {} : { payload }),
+    });
+    this.#notify(record, delivery);
+    record.listeners.clear();
+    record.cancellationHandle = undefined;
+    return { kind: 'transitioned', delivered: true, snapshot: snapshot(record) };
+  }
+
+  #invokeCancellation(record: ExecutionRecord): void {
+    if (record.cancellationInvoked || !record.cancellationHandle) return;
+    record.cancellationInvoked = true;
+    try {
+      record.cancellationHandle();
+    } catch {
+      record.invariantViolations.push('cancellation handle threw');
+    }
+  }
+
+  #notify(record: ExecutionRecord, delivery: ExecutionDelivery): void {
+    for (const listener of [...record.listeners]) {
+      try {
+        listener(delivery);
+      } catch {
+        record.invariantViolations.push('execution listener threw');
+      }
+    }
   }
 }
 
@@ -198,6 +367,34 @@ export class ExecutionController {
     return this.lifecycle.admit(input);
   }
 
+  subscribe(executionId: string, listener: ExecutionListener): () => void {
+    return this.lifecycle.subscribe(executionId, listener);
+  }
+
+  attachCancellation(executionId: string, handle: ExecutionCancellationHandle): void {
+    this.lifecycle.attachCancellation(executionId, handle);
+  }
+
+  requestCancellation(executionId: string): ExecutionCancellationResult {
+    return this.lifecycle.requestCancellation(executionId);
+  }
+
+  publishFrame(executionId: string, payload: unknown): ExecutionPublishResult {
+    return this.lifecycle.publishFrame(executionId, payload);
+  }
+
+  complete(executionId: string, payload?: unknown): ExecutionTerminalResult {
+    return this.lifecycle.complete(executionId, payload);
+  }
+
+  fail(executionId: string, reason: string, payload?: unknown): ExecutionTerminalResult {
+    return this.lifecycle.fail(executionId, reason, payload);
+  }
+
+  confirmCancelled(executionId: string, payload?: unknown): ExecutionTerminalResult {
+    return this.lifecycle.confirmCancelled(executionId, payload);
+  }
+
   scheduleDeadline(input: ExecutionAdmissionInput, callback: () => void): ExecutionTimerHandle {
     return this.#setTimer(callback, Math.max(0, input.deadlineAt - this.#now()));
   }
@@ -251,6 +448,7 @@ function snapshot(record: ExecutionRecord): ExecutionSnapshot {
     input: record.input,
     admitted: record.admitted,
     rejectionReason: record.rejectionReason,
+    terminalReason: record.terminalReason,
     invariantViolations: Object.freeze([...record.invariantViolations]),
   });
 }

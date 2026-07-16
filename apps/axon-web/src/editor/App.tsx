@@ -45,7 +45,7 @@ import {
   type QueryTableSource,
 } from '../services/query-source.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
-import type { QueryExecRequest } from '../services/types.ts';
+import type { QueryEvent, QueryExecRequest } from '../services/types.ts';
 import {
   selectActiveConnectedTableRef,
   selectActiveSqlTab,
@@ -63,6 +63,7 @@ import {
   selectRunLoadingMoreRows,
   selectRunResultData,
   selectRunResultPageRun,
+  selectRunState,
   selectTabActions,
   selectTabs,
   selectUi,
@@ -72,6 +73,7 @@ import {
 import { axonClientStore } from '../state/store.ts';
 import { coerceDefaultTargetForAvailability } from '../state/slices/settings.ts';
 import type { EngineActions } from '../state/slices/engine.ts';
+import type { RunUiState } from '../state/slices/run.ts';
 import type { SqlTab } from '../state/slices/tabs.ts';
 import { CapabilityPopover } from './components/Capabilities.tsx';
 import { Editor } from './components/Editor.tsx';
@@ -156,6 +158,10 @@ export async function executeQuerySelection<T>(
     return { status: 'unavailable', reason: selection.reason };
   }
   return { status: 'executed', value: await execute(selection.source) };
+}
+
+export function executionMayUpdateUi(runState: RunUiState, executionId: string): boolean {
+  return runState.status !== 'idle' && runState.executionId === executionId;
 }
 
 function connectedTableForRef(
@@ -348,7 +354,9 @@ export function App() {
       return;
     }
 
-    cancelRef.current?.controller.abort();
+    if (cancelRef.current) {
+      editorExecutionController.requestCancellation(cancelRef.current.executionId);
+    }
     const ctrl = new AbortController();
     const target = tab.preferred === 'native' ? 'native' : 'browser_wasm';
     const prepared = editorExecutionController.prepare({
@@ -367,6 +375,12 @@ export function App() {
     const executionId = input.executionId;
     cancelRef.current = { executionId, controller: ctrl };
     runActions.createRun(executionId, target);
+    const unsubscribe = editorExecutionController.subscribe(executionId, (delivery) => {
+      if (delivery.kind !== 'frame') return;
+      const event = delivery.payload as QueryEvent;
+      if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') return;
+      runActions.appendRunEvent(executionId, event);
+    });
 
     const admission = editorExecutionController.admit(input);
     if (admission.kind !== 'accepted' || !admission.launch) {
@@ -381,10 +395,12 @@ export function App() {
             : 'Execution admission was not launchable.',
         code: admission.kind === 'id_reuse' ? 'execution_id_reuse' : 'admission_rejected',
       });
+      unsubscribe();
       cancelRef.current = null;
       showToast('Execution admission rejected.', 'warn');
       return;
     }
+    editorExecutionController.attachCancellation(executionId, () => ctrl.abort());
 
     runActions.startRun(executionId);
     if (runTimer.current != null) window.clearInterval(runTimer.current);
@@ -400,79 +416,112 @@ export function App() {
       snapshot_version: tab.pin ?? undefined,
     };
 
-    const execution = await executeQuerySelection(querySelection, async (source) => {
-      const { runQuery } = await import('../services/query.ts');
-      return runQuery(
-        req,
-        (event) => {
-          if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') {
-            return;
-          }
-          runActions.appendRunEvent(executionId, event);
-        },
-        source,
-        executionId,
-        ctrl.signal,
-      );
-    });
-    if (execution.status === 'unavailable') {
-      if (runTimer.current != null) window.clearInterval(runTimer.current);
-      return;
-    }
-    const outcome = execution.value;
-
-    if (runTimer.current != null) window.clearInterval(runTimer.current);
-
-    if (outcome.status === 'done') {
-      const fb = SERVER_QUERY_FALLBACK_ENABLED ? outcome.fallback_reason : undefined;
-      const fallbackPretty =
-        typeof fb === 'string'
-          ? { code: fb, detail: 'rerouted to native runtime' }
-          : fb && 'capability_gate' in fb
-            ? {
-                code: 'capability_gate',
-                detail: `${fb.capability_gate.capability} required (${fb.capability_gate.required_state})`,
-              }
-            : null;
-      runActions.finishRunSuccess({
-        runState: {
-          status: 'completed',
+    try {
+      const execution = await executeQuerySelection(querySelection, async (source) => {
+        const { runQuery } = await import('../services/query.ts');
+        return runQuery(
+          req,
+          (event) => editorExecutionController.publishFrame(executionId, event),
+          source,
           executionId,
-          target: outcome.executed_on,
+          ctrl.signal,
+        );
+      });
+      if (execution.status === 'unavailable') {
+        const terminal = editorExecutionController.fail(executionId, 'source_unavailable');
+        if (terminal.kind === 'transitioned') {
+          runActions.finishRunError({
+            status: 'failed',
+            executionId,
+            target,
+            ms: Math.round(performance.now() - startedAt),
+            message: 'The selected query source became unavailable.',
+            code: 'source_unavailable',
+          });
+        }
+        return;
+      }
+      const outcome = execution.value;
+
+      if (outcome.status === 'done') {
+        const terminal = editorExecutionController.complete(executionId, outcome);
+        if (terminal.kind !== 'transitioned') return;
+        const fb = SERVER_QUERY_FALLBACK_ENABLED ? outcome.fallback_reason : undefined;
+        const fallbackPretty =
+          typeof fb === 'string'
+            ? { code: fb, detail: 'rerouted to native runtime' }
+            : fb && 'capability_gate' in fb
+              ? {
+                  code: 'capability_gate',
+                  detail: `${fb.capability_gate.capability} required (${fb.capability_gate.required_state})`,
+                }
+              : null;
+        runActions.finishRunSuccess({
+          runState: {
+            status: 'completed',
+            executionId,
+            target: outcome.executed_on,
+            ms: outcome.elapsed_ms,
+            rows: outcome.result.row_count,
+            fallback: fallbackPretty,
+          },
+          resultData: outcome.result,
+          resultPageRun: queryResultPageRun(req, selectedSource),
+          metrics: outcome.metrics,
+          plan: outcome.explain ? { tree: outcome.explain } : undefined,
+          capabilities: overlayCapabilityReport(
+            defaultCapabilityMatrix(),
+            outcome.capabilities.capabilities ?? {},
+          ),
+        });
+        await appendHistoryEntry(queryClient, {
           ms: outcome.elapsed_ms,
           rows: outcome.result.row_count,
-          fallback: fallbackPretty,
-        },
-        resultData: outcome.result,
-        resultPageRun: queryResultPageRun(req, selectedSource),
-        metrics: outcome.metrics,
-        plan: outcome.explain ? { tree: outcome.explain } : undefined,
-        capabilities: overlayCapabilityReport(
-          defaultCapabilityMatrix(),
-          outcome.capabilities.capabilities ?? {},
-        ),
-      });
-      await appendHistoryEntry(queryClient, {
-        ms: outcome.elapsed_ms,
-        rows: outcome.result.row_count,
-        status: 'ok',
-        target: outcome.executed_on,
-        fallback: SERVER_QUERY_FALLBACK_ENABLED
-          ? typeof fb === 'string'
-            ? fb
-            : fb
-              ? 'capability_gate'
-              : null
-          : null,
-        sql: tab.sql,
-      });
-      showToast(
-        `Query OK · ${outcome.result.row_count.toLocaleString()} rows · ${outcome.elapsed_ms} ms · ${
-          outcome.executed_on === 'browser_wasm' ? 'browser' : 'native'
-        }`,
+          status: 'ok',
+          target: outcome.executed_on,
+          fallback: SERVER_QUERY_FALLBACK_ENABLED
+            ? typeof fb === 'string'
+              ? fb
+              : fb
+                ? 'capability_gate'
+                : null
+            : null,
+          sql: tab.sql,
+        });
+        if (!executionMayUpdateUi(selectRunState(axonClientStore.getState()), executionId)) return;
+        showToast(
+          `Query OK · ${outcome.result.row_count.toLocaleString()} rows · ${outcome.elapsed_ms} ms · ${
+            outcome.executed_on === 'browser_wasm' ? 'browser' : 'native'
+          }`,
+        );
+        const latestTab = axonClientStore.getState().tabs.items.find((item) => item.id === tab.id);
+        if (latestTab?.kind === 'sql' && latestTab.sql === tab.sql) {
+          tabActions.markActiveClean(tab.id);
+        }
+        return;
+      }
+
+      if (outcome.code === 'cancelled') {
+        const terminal = editorExecutionController.confirmCancelled(executionId, outcome);
+        if (terminal.kind === 'transitioned') {
+          runActions.finishRunCancelled({
+            status: 'cancelled',
+            executionId,
+            target: outcome.target ?? target,
+            ms: outcome.elapsed_ms,
+            message: outcome.message,
+          });
+          showToast('Query cancelled', 'warn');
+        }
+        return;
+      }
+
+      const terminal = editorExecutionController.fail(
+        executionId,
+        outcome.code ?? 'query_error',
+        outcome,
       );
-      tabActions.markActiveClean(tab.id);
-    } else {
+      if (terminal.kind !== 'transitioned') return;
       runActions.finishRunError({
         status: 'failed',
         executionId,
@@ -494,7 +543,29 @@ export function App() {
             : null,
         sql: tab.sql,
       });
+      if (!executionMayUpdateUi(selectRunState(axonClientStore.getState()), executionId)) return;
       showToast(outcome.message, 'warn');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const terminal = editorExecutionController.fail(executionId, 'adapter_error', error);
+      if (terminal.kind === 'transitioned') {
+        runActions.finishRunError({
+          status: 'failed',
+          executionId,
+          target,
+          ms: Math.round(performance.now() - startedAt),
+          message,
+          code: 'adapter_error',
+        });
+        showToast(message, 'warn');
+      }
+    } finally {
+      if (runTimer.current != null) {
+        window.clearInterval(runTimer.current);
+        runTimer.current = null;
+      }
+      unsubscribe();
+      if (cancelRef.current?.executionId === executionId) cancelRef.current = null;
     }
   }, [
     active,
@@ -542,69 +613,96 @@ export function App() {
     }
     const { input } = prepared;
     const executionId = input.executionId;
+    const unsubscribe = editorExecutionController.subscribe(executionId, (delivery) => {
+      if (delivery.kind !== 'frame') return;
+      const event = delivery.payload as QueryEvent;
+      if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') return;
+      runActions.appendRunEvent(executionId, event);
+    });
     const admission = editorExecutionController.admit(input);
     if (admission.kind !== 'accepted' || !admission.launch) {
+      unsubscribe();
       showToast('Result-page execution admission rejected.', 'warn');
       return;
     }
 
     cancelRef.current = { executionId, controller: ctrl };
+    editorExecutionController.attachCancellation(executionId, () => ctrl.abort());
     runActions.startLoadMoreRows(executionId);
 
-    const { runQuery } = await import('../services/query.ts');
-    const outcome = await runQuery(
-      req,
-      (event) => {
-        if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') {
+    try {
+      const { runQuery } = await import('../services/query.ts');
+      const outcome = await runQuery(
+        req,
+        (event) => editorExecutionController.publishFrame(executionId, event),
+        runForPage.source,
+        executionId,
+        ctrl.signal,
+      );
+
+      if (outcome.status === 'done') {
+        const terminal = editorExecutionController.complete(executionId, outcome);
+        if (terminal.kind !== 'transitioned') return;
+        const latestResultRun = selectRunResultPageRun(axonClientStore.getState());
+        const latestActiveRun = activeResultPageRunRef.current;
+        if (
+          !latestResultRun ||
+          !latestActiveRun ||
+          !sameQueryResultPageRun(latestResultRun, runForPage) ||
+          !sameQueryResultPageRun(latestActiveRun, runForPage)
+        ) {
+          runActions.finishLoadMoreRows(executionId);
+          showToast('Result batch discarded because the query changed.', 'warn');
           return;
         }
-        runActions.appendRunEvent(executionId, event);
-      },
-      runForPage.source,
-      executionId,
-      ctrl.signal,
-    );
 
-    const latestResultRun = selectRunResultPageRun(axonClientStore.getState());
-    const latestActiveRun = activeResultPageRunRef.current;
-    if (
-      !latestResultRun ||
-      !latestActiveRun ||
-      !sameQueryResultPageRun(latestResultRun, runForPage) ||
-      !sameQueryResultPageRun(latestActiveRun, runForPage)
-    ) {
-      runActions.finishLoadMoreRows(executionId);
-      showToast('Result batch discarded because the query changed.', 'warn');
-      return;
-    }
-
-    if (outcome.status === 'done') {
-      const update = runActions.finishLoadMoreRowsSuccess({
-        executionId,
-        runForPage,
-        activeRun: latestActiveRun,
-        resultData: outcome.result,
-        metrics: outcome.metrics,
-        plan: outcome.explain ? { tree: outcome.explain } : undefined,
-        elapsedMs: outcome.elapsed_ms,
-      });
-      if (update.discarded) {
-        showToast('Result batch discarded because the query changed.', 'warn');
+        const update = runActions.finishLoadMoreRowsSuccess({
+          executionId,
+          runForPage,
+          activeRun: latestActiveRun,
+          resultData: outcome.result,
+          metrics: outcome.metrics,
+          plan: outcome.explain ? { tree: outcome.explain } : undefined,
+          elapsedMs: outcome.elapsed_ms,
+        });
+        if (update.discarded) {
+          showToast('Result batch discarded because the query changed.', 'warn');
+          return;
+        }
+        showToast(`Loaded ${outcome.result.rows.length.toLocaleString()} more rows`);
         return;
       }
-      showToast(`Loaded ${outcome.result.rows.length.toLocaleString()} more rows`);
-      return;
-    }
 
-    runActions.finishLoadMoreRows(executionId);
-    showToast(outcome.message, 'warn');
+      const terminal =
+        outcome.code === 'cancelled'
+          ? editorExecutionController.confirmCancelled(executionId, outcome)
+          : editorExecutionController.fail(executionId, outcome.code ?? 'query_error', outcome);
+      if (terminal.kind === 'transitioned') {
+        runActions.finishLoadMoreRows(executionId);
+        showToast(outcome.message, 'warn');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const terminal = editorExecutionController.fail(executionId, 'adapter_error', error);
+      if (terminal.kind === 'transitioned') {
+        runActions.finishLoadMoreRows(executionId);
+        showToast(message, 'warn');
+      }
+    } finally {
+      unsubscribe();
+      if (cancelRef.current?.executionId === executionId) cancelRef.current = null;
+    }
   }, [activeResultPageRun, runActions, showToast]);
 
   const cancelRun = useCallback(() => {
     const activeCancellation = cancelRef.current;
     if (!activeCancellation) return;
-    runActions.requestRunCancellation(activeCancellation.executionId);
-    activeCancellation.controller.abort();
+    const cancellation = editorExecutionController.requestCancellation(
+      activeCancellation.executionId,
+    );
+    if (cancellation.kind === 'cancel_requested') {
+      runActions.requestRunCancellation(activeCancellation.executionId);
+    }
     if (runTimer.current != null) window.clearInterval(runTimer.current);
     showToast('Cancellation requested', 'warn');
   }, [runActions, showToast]);

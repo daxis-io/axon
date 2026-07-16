@@ -173,7 +173,7 @@ src/editor/App.test.ts` exited 1. Vitest ran 32 tests: 16 failed and 16
 ### Execution lifecycle and guarded run state
 
 - Red: `npm exec -- vitest run src/services/execution-lifecycle.test.ts
-  src/state/slices/run.test.ts` exited 1. The lifecycle suite could not load the
+src/state/slices/run.test.ts` exited 1. The lifecycle suite could not load the
   not-yet-created authority module, and the run-state regression failed because
   `createRun` did not exist. The seven baseline run tests remained green.
 - Green: the same command exited 0 with 2 files and 21 tests passed. A broader
@@ -187,8 +187,21 @@ src/editor/App.test.ts` exited 1. Vitest ran 32 tests: 16 failed and 16
 
 ### Cancellation and terminal races
 
-- Red: pending
-- Green: pending
+- Red: `npm exec -- vitest run src/services/execution-lifecycle.test.ts
+src/state/slices/run.test.ts` exited 1 with 8 expected lifecycle failures and
+  21 passing admission/run-state tests. The missing controller subscription,
+  cancellation-handle, cancellation-request, and terminal-transition APIs were
+  the failures.
+- Green: `npm exec -- vitest run src/services/execution-lifecycle.test.ts
+src/services/query.test.ts src/state/slices/run.test.ts
+src/editor/App.test.ts` exited 0 with 4 files and 36 tests passed;
+  `npm exec -- tsc --noEmit` also exited 0. Coverage includes response-loss
+  replay, cancel-before-admit, cancellation during session/open/query stages,
+  repeated and post-terminal cancellation, worker failure, all three
+  first-terminal winners, late-frame suppression, and fresh page-execution
+  guards. The editor now publishes worker events and terminal outcomes only
+  through the lifecycle, and controller cancellation aborts local waits while
+  targeting SQL with `query_id = execution_id` once SQL has started.
 
 ### Deadline and Arrow bounds
 

@@ -3,6 +3,7 @@ import type { EngineStatus } from '../services/types.ts';
 import type { QuerySourceSelection, QueryTableSource } from '../services/query-source.ts';
 import { selectEngineActions, selectEngineStatus } from '../state/hooks.ts';
 import { createAxonClientStore, createMemoryClientStateStorage } from '../state/store.ts';
+import type { RunUiState } from '../state/slices/run.ts';
 import * as AppModule from './App.tsx';
 
 type AppEngineStatusModule = {
@@ -17,6 +18,10 @@ type AppQuerySelectionModule = {
     selection: QuerySourceSelection,
     execute: (source: QueryTableSource) => Promise<T>,
   ) => Promise<{ status: 'unavailable'; reason: string } | { status: 'executed'; value: T }>;
+};
+
+type AppExecutionGuardModule = {
+  executionMayUpdateUi?: (runState: RunUiState, executionId: string) => boolean;
 };
 
 function engineStatus(): EngineStatus {
@@ -74,5 +79,38 @@ describe('App authoritative query selection', () => {
       reason: 'missing',
     });
     expect(execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('App execution callback guard', () => {
+  it('allows post-await UI effects only for the current execution ID', () => {
+    const executionMayUpdateUi = (AppModule as AppExecutionGuardModule).executionMayUpdateUi;
+    expect(executionMayUpdateUi).toEqual(expect.any(Function));
+    if (!executionMayUpdateUi) return;
+
+    expect(
+      executionMayUpdateUi(
+        {
+          status: 'completed',
+          executionId: 'execution-1',
+          target: 'browser_wasm',
+          ms: 10,
+          rows: 1,
+        },
+        'execution-1',
+      ),
+    ).toBe(true);
+    expect(
+      executionMayUpdateUi(
+        {
+          status: 'running',
+          executionId: 'execution-2',
+          target: 'browser_wasm',
+          elapsed: 2,
+        },
+        'execution-1',
+      ),
+    ).toBe(false);
+    expect(executionMayUpdateUi({ status: 'idle' }, 'execution-1')).toBe(false);
   });
 });

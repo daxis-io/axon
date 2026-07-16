@@ -199,3 +199,177 @@ describe('execution lifecycle admission', () => {
     expect(executionCancelSpanId('execution-001', 3)).toBe('execution-001:cancel:3');
   });
 });
+
+describe('execution lifecycle cancellation and terminal delivery', () => {
+  it('turns cancel-before-admit into a replayable rejected tombstone', () => {
+    const { controller, lifecycle, input } = prepareInput();
+    const listener = vi.fn();
+    controller.subscribe(input.executionId, listener);
+
+    expect(controller.requestCancellation(input.executionId)).toMatchObject({
+      kind: 'cancelled_before_admit',
+      snapshot: { state: 'rejected', rejectionReason: 'cancelled', admitted: false },
+    });
+    expect(controller.admit(input)).toMatchObject({
+      kind: 'rejected',
+      launch: false,
+      reason: 'cancelled',
+    });
+    expect(lifecycle.admit({ ...input })).toMatchObject({
+      kind: 'rejected',
+      launch: false,
+      reason: 'cancelled',
+    });
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('invokes the registered cancellation handle once and confirms one terminal', () => {
+    const { controller, input } = prepareInput();
+    const cancel = vi.fn();
+    const deliveries: unknown[] = [];
+    controller.attachCancellation(input.executionId, cancel);
+    controller.subscribe(input.executionId, (delivery) => deliveries.push(delivery));
+    controller.admit(input);
+
+    expect(controller.requestCancellation(input.executionId)).toMatchObject({
+      kind: 'cancel_requested',
+      snapshot: { state: 'cancel_requested' },
+    });
+    expect(controller.requestCancellation(input.executionId)).toMatchObject({
+      kind: 'recorded',
+      snapshot: { state: 'cancel_requested' },
+    });
+    expect(cancel).toHaveBeenCalledTimes(1);
+
+    expect(controller.confirmCancelled(input.executionId, { code: 'cancelled' })).toMatchObject({
+      kind: 'transitioned',
+      delivered: true,
+      snapshot: { state: 'cancelled' },
+    });
+    expect(controller.confirmCancelled(input.executionId, { code: 'cancelled' })).toMatchObject({
+      kind: 'recorded',
+      delivered: false,
+      snapshot: { state: 'cancelled' },
+    });
+    expect(deliveries).toEqual([
+      {
+        kind: 'terminal',
+        sequence: 1,
+        state: 'cancelled',
+        payload: { code: 'cancelled' },
+      },
+    ]);
+  });
+
+  it('replays accepted state after an admission response is lost without relaunching', () => {
+    const { controller, input } = prepareInput();
+    const deliveries: unknown[] = [];
+    controller.subscribe(input.executionId, (delivery) => deliveries.push(delivery));
+    controller.admit(input);
+    controller.complete(input.executionId, { rows: 1 });
+
+    expect(controller.admit({ ...input })).toMatchObject({
+      kind: 'accepted',
+      launch: false,
+      snapshot: { state: 'completed' },
+    });
+    expect(controller.complete(input.executionId, { rows: 1 })).toMatchObject({
+      kind: 'recorded',
+      delivered: false,
+    });
+    expect(deliveries).toHaveLength(1);
+  });
+
+  it('ignores post-terminal cancellation without invoking a handle', () => {
+    const { controller, lifecycle, input } = prepareInput();
+    const cancel = vi.fn();
+    controller.attachCancellation(input.executionId, cancel);
+    controller.admit(input);
+    controller.complete(input.executionId, { rows: 1 });
+
+    expect(controller.requestCancellation(input.executionId)).toMatchObject({
+      kind: 'recorded',
+      snapshot: { state: 'completed' },
+    });
+    expect(cancel).not.toHaveBeenCalled();
+    expect(lifecycle.getSnapshot(input.executionId)?.invariantViolations).toContain(
+      'cancellation requested after completed',
+    );
+  });
+
+  it('lets a worker failure win and suppresses late cancellation and result delivery', () => {
+    const { controller, lifecycle, input } = prepareInput();
+    const deliveries: unknown[] = [];
+    controller.subscribe(input.executionId, (delivery) => deliveries.push(delivery));
+    controller.admit(input);
+
+    expect(controller.publishFrame(input.executionId, { kind: 'progress' })).toMatchObject({
+      kind: 'published',
+      sequence: 1,
+    });
+    expect(controller.fail(input.executionId, 'worker_error', { code: 'E_WORKER' })).toMatchObject({
+      kind: 'transitioned',
+      delivered: true,
+      snapshot: { state: 'failed' },
+    });
+    expect(controller.confirmCancelled(input.executionId)).toMatchObject({
+      kind: 'recorded',
+      delivered: false,
+    });
+    expect(controller.complete(input.executionId, { rows: 1 })).toMatchObject({
+      kind: 'recorded',
+      delivered: false,
+    });
+    expect(controller.publishFrame(input.executionId, { kind: 'metrics' })).toMatchObject({
+      kind: 'recorded',
+    });
+    expect(deliveries).toEqual([
+      { kind: 'frame', sequence: 1, payload: { kind: 'progress' } },
+      {
+        kind: 'terminal',
+        sequence: 2,
+        state: 'failed',
+        reason: 'worker_error',
+        payload: { code: 'E_WORKER' },
+      },
+    ]);
+    expect(lifecycle.getSnapshot(input.executionId)?.invariantViolations).toEqual([
+      'late cancelled after failed',
+      'late completed after failed',
+      'frame published after failed',
+    ]);
+  });
+
+  it.each([
+    [
+      'completion',
+      (controller: ReturnType<typeof createExecutionController>, id: string) =>
+        controller.complete(id),
+    ],
+    [
+      'failure',
+      (controller: ReturnType<typeof createExecutionController>, id: string) =>
+        controller.fail(id, 'worker_error'),
+    ],
+    [
+      'cancellation',
+      (controller: ReturnType<typeof createExecutionController>, id: string) =>
+        controller.confirmCancelled(id),
+    ],
+  ])('makes the first %s terminal transition authoritative', (_label, terminate) => {
+    const { controller, input } = prepareInput();
+    const listener = vi.fn();
+    controller.subscribe(input.executionId, listener);
+    controller.admit(input);
+
+    expect(terminate(controller, input.executionId)).toMatchObject({
+      kind: 'transitioned',
+      delivered: true,
+    });
+    controller.complete(input.executionId);
+    controller.fail(input.executionId, 'worker_error');
+    controller.confirmCancelled(input.executionId);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
