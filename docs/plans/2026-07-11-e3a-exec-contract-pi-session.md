@@ -1,6 +1,71 @@
 # E3A Exec Contract PI Session
 
-## Baseline
+## Architecture interpretation after adoption review
+
+- Review date: 2026-07-16
+- Audited baseline: `origin/main` at
+  `7681f1dfa5bdaaae3ff2ccff79cc8be76ec1503a`
+- Landed status: message and code-generation proof complete; runtime adoption
+  has not begun
+
+This document records the historical PI accurately. The review changes how the
+landed surface is classified; it does not rewrite the implementation evidence
+below.
+
+`axon.exec.v1` is the compatibility protocol for Axon's browser runtime and
+browser worker. Its `QueryEngine` service descriptor records the cardinality of
+that boundary. It is not an approved portable remote-execution service. The
+current requests accept directly openable browser descriptors, and the event
+model exposes worker-specific progress, cache, and fallback concepts. A remote
+governed executor has different authority, credential, retry, cache, and audit
+ownership and must start from its first concrete consumer rather than inherit
+this protocol by name.
+
+E9 Slice 1 first establishes selected-source integrity and the execution
+lifecycle without protobuf changes. Its domain `execution_id` maps to the
+existing worker request, query, and cancellation correlation fields. One
+intentional E3A correction PI then updates the unconsumed execution surface
+before E9 Slice 2 adopts it. That correction should establish:
+
+- one `CanonicalResourceRef` with connection ID, versioned provider namespace,
+  resource kind, and exactly one provider-object-ID or canonical-locator arm;
+- fixture-tested, capability-free canonicalization for every locator-based
+  provider;
+- one caller-created execution ID before admission, with idempotent identical
+  retries and mismatched ID reuse rejected;
+- exactly one resource binding per request: a resolved browser binding for
+  browser execution or a logical reference for remote execution, never both;
+- disjoint closed algebras for access resolution, execution admission, and
+  accepted terminal state;
+- access class and mandatory shortest lifetime for capability-bearing browser
+  bindings, each scoped to one admission/execution;
+- idempotent cancellation keyed by execution ID, including cancel-before-admit
+  tombstones;
+- one authoritative terminal state, first-terminal-transition race semantics,
+  and at most one terminal frame on a live stream;
+- one byte-budgeted browser Arrow buffer until explicit credit-based chunking is
+  implemented and tested;
+- explicit deadline and runtime budgets used by the first consumer;
+- no automatic retry after execution is accepted.
+
+Buf `FILE` compatibility remains the default. Any pre-adoption correction must
+be an explicit, reviewed baseline change with regenerated outputs and a recorded
+`buf breaking` report; compatibility resumes immediately from the corrected
+baseline.
+
+The existing Buffa-generated Rust messages are valuable host/WASM proof. The
+later filesystem PI also landed bounded Buffa proof for `axon/fs/v1`; neither PI
+establishes a policy of generating every future package or service into Rust.
+Further Rust output requires a real Rust consumer. Connect clients, servers,
+transports, and remote service stubs remain deferred.
+
+`axon/fs/v1` is now landed as messages-only contract substrate with generated
+TypeScript and Buffa Rust proof. No E8 provider, adapter, UI, or runtime consumer
+has landed. The next sequence is E9 Slice 1, the intentional E3A correction PI,
+and then E9 Slice 2 adoption; E8 runtime adoption waits for its read-only volume
+consumer.
+
+## Historical baseline
 
 - Worktree: `.worktrees/e3a-exec-contract-pi`.
 - Branch: `chore/e3a-exec-contract-pi`.
@@ -26,7 +91,7 @@
   - `cd apps/axon-web && npm test -- src/generated/contracts` (2 files, 8 tests)
   - `cargo test -p axon-contract-proto --locked`
 
-## Scope
+## Historical PI scope
 
 - Add the message and service-descriptor contract for `axon.exec.v1` query execution, worker IPC, previews, errors, metrics, fallback reasons, cancellation, Arrow IPC metadata, and Parquet inspection.
 - Extend `axon.dataaccess.v1` with the reusable `BrowserHttpParquetDatasetDescriptor` required by the existing worker and align reusable descriptor protobuf JSON names with the legacy snake_case worker fields.
@@ -35,7 +100,7 @@
 - Generate and check in Buffa Rust message types only after locked host and wasm checks prove them.
 - Define the `QueryEngine` service descriptor with server-streaming `Execute` and unary `Preview` and `Cancel`, without adding any transport implementation or generated service client/server.
 
-## Public Contract Decisions
+## Landed browser-worker contract decisions
 
 - `ExecuteRequest` contains `request_id`, `axon.common.v1.ObjectRef table_ref`, a directly openable descriptor, and the existing `QueryRequest` shape. It never accepts `TableReadResolution`, fallback, or blocked arms.
 - `ExecuteResponse` contains either an existing worker event envelope or one terminal worker response envelope.
@@ -93,7 +158,7 @@ Representative parity requires explicit boundary normalization rather than byte-
 
 Existing legacy sources and fixtures are test inputs only and are not edited.
 
-## Commit Slices
+## Historical commit slices
 
 1. `docs: plan e3a exec contract pi`
    - Commit this document before source edits.
@@ -118,7 +183,7 @@ Existing legacy sources and fixtures are test inputs only and are not edited.
    - Record final commits, verification evidence, normalization boundaries, Buffa host/wasm status, and any exact environment blockers.
    - Restate the provider ownership boundary and whether `axon/fs/v1` is unblocked.
 
-## Non-Goals
+## Historical non-goals
 
 - Do not add Connect, RPC, HTTP, worker, or provider implementations.
 - Do not add generated clients, servers, transports, production adapters, or migration code.
@@ -128,7 +193,7 @@ Existing legacy sources and fixtures are test inputs only and are not edited.
 - Do not implement E9 adoption or `axon/fs/v1`.
 - Do not push, open a pull request, or modify the root checkout.
 
-## Verification Plan
+## Historical verification plan
 
 Run in this order from the isolated worktree:
 
@@ -160,7 +225,7 @@ git status --short
 git log --oneline --reverse origin/main..HEAD
 ```
 
-## Exit Gates
+## Historical exit gates
 
 - Exactly five correctly ordered local commits exist on top of `origin/main`, and the worktree is clean.
 - Generated TypeScript is deterministic and all config/contract drift gates pass.
@@ -184,7 +249,7 @@ git log --oneline --reverse origin/main..HEAD
 - `74e0b3d chore(contract): generate execution rust contracts`
 - Slice 5 is this execution-contract handoff documentation commit.
 
-## Implemented Contract Surface
+## Implemented browser-worker contract surface
 
 - `axon.dataaccess.v1`
   - Added `BrowserHttpParquetDatasetDescriptor` with the existing worker's `table_uri`, partition metadata, capability reports, and files.
@@ -287,11 +352,16 @@ Environment notes:
 - Buffa generated no `QueryEngine` client, server, or service stub. This PI proves messages only; the TypeScript-generated service descriptor is the sole service artifact.
 - The prost fallback was not needed.
 
-## Ownership and Next Work
+## Ownership and next work
 
 - `CatalogProvider` discovers.
-- `DataAccessResolver` resolves.
-- `ExecutionProvider` runs.
-- E9 adopts these messages into runtime/provider seams later.
-- Connect implementation, clients, servers, and transports remain later work.
-- All execution-contract slices and exit gates completed, so `axon/fs/v1` is unblocked and is the recommended next E3A contract package.
+- `DataAccessResolver` resolves browser access into an execution-local binding.
+- `ExecutionProvider` runs or previews using the binding appropriate to its
+  enforcement location.
+- E9 adopts these messages through vertical slices rather than adding more
+  contract substrate.
+- Connect implementation, clients, servers, and transports remain deferred
+  until a remote consumer proves the boundary.
+- `axon/fs/v1` is landed messages-only substrate. E8 first supplies one
+  read-only volume browse and preview consumer before any provider, adapter, UI,
+  or runtime-adoption claim.
