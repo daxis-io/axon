@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { catalogQueryOptions } from '../query/catalog.ts';
-import { querySourceFromConnectedCatalogs } from '../services/query-source.ts';
+import { resolveQuerySourceSelection } from '../services/query-source.ts';
 import {
   selectActiveConnectedTableRef,
   selectAvailableConnectedCatalogs,
@@ -19,11 +19,11 @@ export function CatalogsPage() {
     () => catalogExplorerModel(availableCatalogs, activeTable),
     [activeTable, availableCatalogs],
   );
-  const querySource = useMemo(
-    () => querySourceFromConnectedCatalogs(availableCatalogs, activeTable),
+  const querySelection = useMemo(
+    () => resolveQuerySourceSelection(availableCatalogs, activeTable),
     [activeTable, availableCatalogs],
   );
-  const { data: activeCatalog } = useQuery(catalogQueryOptions(querySource));
+  const { data: activeCatalog } = useQuery(catalogQueryOptions(querySelection));
 
   return (
     <div className="cc-page catalogs-page">
@@ -65,8 +65,8 @@ export function CatalogsPage() {
           </div>
           <div className="catalogs-active">
             <span className="lbl">Active</span>
-            <span className="mono">{activeCatalog?.name ?? 'sample-lake'}</span>
-            <span className="muted">{activeCatalog?.region ?? 'browser-local'}</span>
+            <span className="mono">{activeCatalog?.name ?? 'none selected'}</span>
+            <span className="muted">{activeCatalog?.region ?? '—'}</span>
           </div>
         </section>
 

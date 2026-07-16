@@ -1,13 +1,13 @@
-import type { QueryClient } from '@tanstack/react-query';
-import { queryOptions } from '@tanstack/react-query';
+import type { QueryClient, UseQueryOptions } from '@tanstack/react-query';
+import { skipToken } from '@tanstack/react-query';
 import { loadCatalog, snapshotCatalog } from '../services/catalog.ts';
 import {
   clearQueryRuntimeState,
   subscribeQueryRuntimeState,
 } from '../services/query-runtime-state.ts';
-import type { QueryTableSource } from '../services/query-source.ts';
+import type { QuerySourceSelection, QueryTableSource } from '../services/query-source.ts';
 import { loadCommits } from '../services/snapshot.ts';
-import type { CommitEntry } from '../services/types.ts';
+import type { Catalog, CommitEntry } from '../services/types.ts';
 import {
   AXON_CATALOG_QUERY_STALE_TIME_MS,
   AXON_COMMITS_QUERY_STALE_TIME_MS,
@@ -24,8 +24,23 @@ type BridgeRegistration = {
 const CATALOG_SOURCE_DISCARD_STATUSES = new Set([401, 403, 419, 440]);
 const catalogBridgeRegistrations = new WeakMap<QueryClient, BridgeRegistration>();
 
-export function catalogQueryOptions(source: QueryTableSource) {
-  return queryOptions({
+type CatalogQueryOptions = UseQueryOptions<Catalog, Error, Catalog>;
+type CommitsQueryOptions = UseQueryOptions<CommitEntry[], Error, CommitEntry[]>;
+
+export function catalogQueryOptions(selection: QuerySourceSelection): CatalogQueryOptions {
+  if (selection.kind === 'unavailable') {
+    return {
+      queryKey: queryKeys.catalog.unavailable(selection, 'catalog'),
+      queryFn: skipToken,
+      enabled: false,
+      staleTime: AXON_CATALOG_QUERY_STALE_TIME_MS,
+      gcTime: AXON_QUERY_GC_TIME_MS,
+      retry: false,
+    };
+  }
+
+  const source = selection.source;
+  return {
     queryKey: queryKeys.catalog.tableDerived(source),
     queryFn: ({ client }) => loadWithCatalogSourcePurge(client, source, () => loadCatalog(source)),
     initialData: snapshotCatalog(source),
@@ -33,11 +48,25 @@ export function catalogQueryOptions(source: QueryTableSource) {
     staleTime: AXON_CATALOG_QUERY_STALE_TIME_MS,
     gcTime: AXON_QUERY_GC_TIME_MS,
     retry: shouldRetryQuery,
-  });
+  };
 }
 
-export function commitsQueryOptions(source: QueryTableSource) {
-  return queryOptions({
+export function commitsQueryOptions(selection: QuerySourceSelection): CommitsQueryOptions {
+  if (selection.kind === 'unavailable') {
+    return {
+      queryKey: queryKeys.catalog.unavailable(selection, 'commits'),
+      queryFn: skipToken,
+      enabled: false,
+      initialData: [] as CommitEntry[],
+      initialDataUpdatedAt: 0,
+      staleTime: AXON_COMMITS_QUERY_STALE_TIME_MS,
+      gcTime: AXON_QUERY_GC_TIME_MS,
+      retry: false,
+    };
+  }
+
+  const source = selection.source;
+  return {
     queryKey: queryKeys.catalog.commits(source),
     queryFn: ({ client }) => loadWithCatalogSourcePurge(client, source, () => loadCommits(source)),
     initialData: [] as CommitEntry[],
@@ -45,7 +74,7 @@ export function commitsQueryOptions(source: QueryTableSource) {
     staleTime: AXON_COMMITS_QUERY_STALE_TIME_MS,
     gcTime: AXON_QUERY_GC_TIME_MS,
     retry: shouldRetryQuery,
-  });
+  };
 }
 
 async function loadWithCatalogSourcePurge<T>(

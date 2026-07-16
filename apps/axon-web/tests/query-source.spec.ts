@@ -1,9 +1,11 @@
 import { expect, test } from '@playwright/test';
 
 import {
-  querySourceFromConnectedCatalogs,
+  resolveQuerySourceSelection,
   sameQuerySource,
+  type ActiveConnectedTableRef,
   type QueryCatalogCandidate,
+  type QueryTableSource,
 } from '../src/services/query-source.ts';
 import { loadCatalog, snapshotCatalog } from '../src/services/catalog.ts';
 import {
@@ -37,6 +39,18 @@ class MemoryStorage implements Pick<Storage, 'getItem' | 'setItem' | 'removeItem
   }
 }
 
+function selectedSource(
+  catalogs: QueryCatalogCandidate[],
+  ref: ActiveConnectedTableRef,
+): QueryTableSource {
+  const selection = resolveQuerySourceSelection(catalogs, ref);
+  expect(selection.kind).not.toBe('unavailable');
+  if (selection.kind === 'unavailable') {
+    throw new Error(`expected selected query source, got ${selection.reason}`);
+  }
+  return selection.source;
+}
+
 test.describe('query source', () => {
   test('selects public GCS object-store table roots without a manifest', () => {
     const catalogs = [
@@ -66,7 +80,13 @@ test.describe('query source', () => {
       },
     ] as QueryCatalogCandidate[];
 
-    expect(querySourceFromConnectedCatalogs(catalogs)).toEqual({
+    expect(
+      selectedSource(catalogs, {
+        catalogId: 'public-gcs',
+        schemaName: 'default',
+        tableName: 'orders',
+      }),
+    ).toEqual({
       kind: 'object_store_table_root',
       provider: 'gcs',
       catalogName: 'public-gcs',
@@ -111,7 +131,13 @@ test.describe('query source', () => {
       },
     ] as QueryCatalogCandidate[];
 
-    expect(querySourceFromConnectedCatalogs(catalogs)).toEqual({
+    expect(
+      selectedSource(catalogs, {
+        catalogId: 'public-s3',
+        schemaName: 'default',
+        tableName: 'orders',
+      }),
+    ).toEqual({
       kind: 'object_store_table_root',
       provider: 's3',
       catalogName: 'public-s3',
@@ -234,7 +260,13 @@ test.describe('query source', () => {
       },
     });
 
-    expect(querySourceFromConnectedCatalogs([catalog])).toMatchObject({
+    expect(
+      selectedSource([catalog], {
+        catalogId: catalog.id,
+        schemaName: 'default',
+        tableName: 'orders',
+      }),
+    ).toMatchObject({
       kind: 'object_store_table_root',
       descriptorResolutionMetrics: {
         descriptor_resolution_count: 1,
@@ -298,7 +330,11 @@ test.describe('query source', () => {
         ],
       },
     ] as QueryCatalogCandidate[];
-    const source = querySourceFromConnectedCatalogs(catalogs);
+    const source = selectedSource(catalogs, {
+      catalogId: 'public-gcs',
+      schemaName: 'default',
+      tableName: 'orders',
+    });
 
     expect(snapshotCatalog(source)).toEqual({
       name: 'public-gcs',
@@ -350,7 +386,11 @@ test.describe('query source', () => {
         ],
       },
     ] as QueryCatalogCandidate[];
-    const source = querySourceFromConnectedCatalogs(catalogs);
+    const source = selectedSource(catalogs, {
+      catalogId: 'public-s3',
+      schemaName: 'default',
+      tableName: 'orders',
+    });
 
     expect(snapshotCatalog(source)).toEqual({
       name: 'public-s3',
@@ -402,7 +442,11 @@ test.describe('query source', () => {
         ],
       },
     ] as QueryCatalogCandidate[];
-    const source = querySourceFromConnectedCatalogs(catalogs);
+    const source = selectedSource(catalogs, {
+      catalogId: 'sample-lake',
+      schemaName: 'prod_like',
+      tableName: 'events',
+    });
 
     expect(source.kind).toBe('manifest');
     expect(snapshotCatalog(source)).toEqual({

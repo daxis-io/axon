@@ -11,10 +11,7 @@ import {
 } from '../src/editor/connect/store.ts';
 import { catalogTablePath, savedQueryPath } from '../src/editor/catalog-navigation.ts';
 import type { ConnectedCatalog, ConnectResult } from '../src/editor/connect/types.ts';
-import {
-  querySourceFromConnectedCatalogs,
-  SAMPLE_QUERY_SOURCE,
-} from '../src/services/query-source.ts';
+import { resolveQuerySourceSelection, SAMPLE_QUERY_SOURCE } from '../src/services/query-source.ts';
 import { connectorFeaturesFromEnv } from '../src/services/connector-features.ts';
 import {
   QUERY_RESULT_PAGE_SIZE,
@@ -142,17 +139,20 @@ test.describe('editor (Phase 1 smoke)', () => {
       result.catalogs[0].schemas.flatMap((schema) => schema.tables.map((table) => table.name)),
     ).toEqual(['orders_local', 'events']);
 
-    const source = querySourceFromConnectedCatalogs(result.catalogs, {
+    const selection = resolveQuerySourceSelection(result.catalogs, {
       catalogId: result.catalogs[0].id,
       schemaName: 'analytics',
       tableName: 'events',
     });
-    expect(source).toMatchObject({
-      catalogName: 'workspace',
-      schemaName: 'analytics',
-      tableName: 'events',
-      storage: 'gs://acme-lake/silver',
-      region: 'us-central1',
+    expect(selection).toMatchObject({
+      kind: 'resource',
+      source: {
+        catalogName: 'workspace',
+        schemaName: 'analytics',
+        tableName: 'events',
+        storage: 'gs://acme-lake/silver',
+        region: 'us-central1',
+      },
     });
   });
 
@@ -285,16 +285,19 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(merged.id).toBe('legacy-workspace-id');
     expect(merged.id).not.toBe(incoming.id);
     expect(
-      querySourceFromConnectedCatalogs(result.catalogs, {
+      resolveQuerySourceSelection(result.catalogs, {
         catalogId: merged.id,
         schemaName: 'analytics',
         tableName: 'events',
       }),
     ).toMatchObject({
-      catalogName: 'workspace',
-      schemaName: 'analytics',
-      tableName: 'events',
-      storage: 'gs://acme-lake/silver',
+      kind: 'resource',
+      source: {
+        catalogName: 'workspace',
+        schemaName: 'analytics',
+        tableName: 'events',
+        storage: 'gs://acme-lake/silver',
+      },
     });
   });
 
@@ -1111,11 +1114,10 @@ test.describe('editor (Phase 1 smoke)', () => {
     }, catalogs);
 
     await page.goto('/');
-    await expect(page.locator('.conn-pill')).toContainText('sample-lake', { timeout: 15_000 });
+    await expect(page.locator('.conn-pill')).toContainText('Select table', { timeout: 15_000 });
+    await expect(page.locator('.btn.primary', { hasText: 'Run' })).toBeDisabled();
 
-    await page.locator('.conn-pill').click();
-    await page.getByRole('button', { name: /Expand second-lake/ }).click();
-    await page.getByRole('button', { name: /Activate second-lake prod_like events/ }).click();
+    await activateConnectedTable(page, 'second-lake', 'prod_like', 'events');
 
     await expect(page.locator('.conn-pill')).toContainText('second-lake');
     await page.locator('.btn.primary', { hasText: 'Run' }).click();
@@ -1137,7 +1139,7 @@ test.describe('editor (Phase 1 smoke)', () => {
     }, catalogs);
 
     await page.goto('/');
-    await expect(page.locator('.conn-pill')).toContainText('sample-lake', { timeout: 15_000 });
+    await expect(page.locator('.conn-pill')).toContainText('Select table', { timeout: 15_000 });
 
     const sidebar = page.locator('.sidebar');
     await expect(sidebar.locator('.sb-section', { hasText: 'Connected catalogs' })).toContainText(
@@ -1172,7 +1174,7 @@ test.describe('editor (Phase 1 smoke)', () => {
     );
 
     await page.goto('/');
-    await expect(page.locator('.conn-pill')).toContainText('sample-lake', { timeout: 15_000 });
+    await expect(page.locator('.conn-pill')).toContainText('Select table', { timeout: 15_000 });
 
     const sidebar = page.locator('.sidebar');
     const publicSidebarRow = sidebar.locator('.sb-row.tbl', { hasText: 'events' }).nth(1);
@@ -1401,7 +1403,8 @@ test.describe('editor (Phase 1 smoke)', () => {
     await panel.locator('[title="Manage connection"]').first().click();
     await panel.getByRole('button', { name: /Disconnect catalog/ }).click();
 
-    await expect(page.locator('.conn-pill')).toContainText('sample-lake');
+    await expect(page.locator('.conn-pill')).toContainText('Select table');
+    await expect(page.locator('.btn.primary', { hasText: 'Run' })).toBeDisabled();
     await expect
       .poll(async () => ({
         activeId: await page.evaluate(
@@ -1421,6 +1424,8 @@ test.describe('editor (Phase 1 smoke)', () => {
     await connectLocalDeltaFolder(page, tableDir, 'local-prod-like');
 
     await page.reload();
+    await expect(page.locator('.conn-pill')).toContainText('Select table', { timeout: 15_000 });
+    await activateConnectedTable(page, 'local-prod-like', 'default', 'axon_prod_like_fixture');
     await expect(page.locator('.conn-pill')).toContainText('local-prod-like', {
       timeout: 15_000,
     });
@@ -1449,6 +1454,8 @@ test.describe('editor (Phase 1 smoke)', () => {
     ).toBe(false);
 
     await page.reload();
+    await expect(page.locator('.conn-pill')).toContainText('Select table', { timeout: 15_000 });
+    await activateConnectedTable(page, 'handle-local', 'default', 'axon_prod_like_fixture');
     await expect(page.locator('.conn-pill')).toContainText('handle-local', {
       timeout: 15_000,
     });
@@ -1781,6 +1788,24 @@ function publicObjectStoreTableRootCatalogFixture(): ConnectedCatalog {
       },
     ],
   });
+}
+
+async function activateConnectedTable(
+  page: Page,
+  catalogAlias: string,
+  schemaName: string,
+  tableName: string,
+): Promise<void> {
+  await page.locator('.conn-pill').click();
+  const panel = page.getByRole('dialog', { name: 'Connected catalogs' });
+  const expand = panel.getByRole('button', { name: `Expand ${catalogAlias}`, exact: true });
+  if ((await expand.count()) > 0) await expand.click();
+  await panel
+    .getByRole('button', {
+      name: `Activate ${catalogAlias} ${schemaName} ${tableName}`,
+      exact: true,
+    })
+    .click();
 }
 
 async function openLocalDeltaConnectDialog(page: Page) {

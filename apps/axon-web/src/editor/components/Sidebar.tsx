@@ -19,6 +19,7 @@ type SidebarTab = 'catalog' | 'saved' | 'history';
 
 type SidebarProps = {
   catalog: Catalog | undefined;
+  sourceUnavailable?: boolean;
   connectedCatalogs?: ConnectedCatalog[];
   activeTable?: ActiveConnectedTableRef;
   saved: SavedQuery[];
@@ -34,6 +35,7 @@ type SidebarProps = {
 
 export function Sidebar({
   catalog,
+  sourceUnavailable = false,
   connectedCatalogs = [],
   activeTable,
   saved,
@@ -115,11 +117,17 @@ export function Sidebar({
           <div className="cat-card">
             <div className="row1">
               <IconDatabase size={11} />
-              <span>{catalog?.name ?? 'loading…'}</span>
-              <span className="pill">{catalog ? '● connected' : '○ resolving'}</span>
+              <span>{catalog?.name ?? (sourceUnavailable ? 'Select a table' : 'loading…')}</span>
+              <span className="pill">
+                {catalog ? '● connected' : sourceUnavailable ? '○ unavailable' : '○ resolving'}
+              </span>
             </div>
             <div className="row2" title={catalog?.storage}>
-              {catalog ? `${catalog.storage} · ${catalog.region}` : 'snapshot bootstrap…'}
+              {catalog
+                ? `${catalog.storage} · ${catalog.region}`
+                : sourceUnavailable
+                  ? 'Choose a queryable connected table.'
+                  : 'snapshot bootstrap…'}
             </div>
           </div>
 

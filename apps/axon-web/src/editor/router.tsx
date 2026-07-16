@@ -10,6 +10,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Suspense, lazy, useEffect, useMemo } from 'react';
 import { catalogQueryOptions, commitsQueryOptions } from '../query/catalog.ts';
 import { savedQueriesQueryOptions } from '../query/local.ts';
+import { resolveQuerySourceSelection } from '../services/query-source.ts';
 import {
   selectActiveConnectedTableRef,
   selectAvailableConnectedCatalogs,
@@ -108,9 +109,11 @@ function CatalogTableRoute() {
       connectionActions.selectTable(nextRef);
     }
 
-    void queryClient.ensureQueryData(catalogQueryOptions(resolution.source));
-    void queryClient.ensureQueryData(commitsQueryOptions(resolution.source));
-  }, [activeTable, connectionActions, queryClient, resolution]);
+    const selection = resolveQuerySourceSelection(availableCatalogs, resolution.ref);
+    if (selection.kind === 'unavailable') return;
+    void queryClient.ensureQueryData(catalogQueryOptions(selection));
+    void queryClient.ensureQueryData(commitsQueryOptions(selection));
+  }, [activeTable, availableCatalogs, connectionActions, queryClient, resolution]);
 
   if (resolution.status !== 'valid') {
     return (

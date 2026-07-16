@@ -89,6 +89,15 @@ export type ActiveConnectedTableRef = {
   tableName: string;
 };
 
+export type QuerySourceSelection =
+  | { kind: 'resource'; ref: ActiveConnectedTableRef; source: QueryTableSource }
+  | { kind: 'sample'; ref: ActiveConnectedTableRef; source: QueryTableSource }
+  | {
+      kind: 'unavailable';
+      reason: 'missing' | 'empty' | 'stale' | 'unqueryable';
+      ref?: ActiveConnectedTableRef;
+    };
+
 export const SAMPLE_QUERY_SOURCE: ManifestQueryTableSource = {
   kind: 'manifest',
   catalogName: 'sample-lake',
@@ -99,48 +108,75 @@ export const SAMPLE_QUERY_SOURCE: ManifestQueryTableSource = {
   region: 'browser-local',
 };
 
-export function querySourceFromConnectedCatalogs(
-  catalogs: QueryCatalogCandidate[],
-  activeTable?: ActiveConnectedTableRef,
-): QueryTableSource {
-  const active = activeTable ? querySourceForConnectedTableRef(catalogs, activeTable) : undefined;
-  if (active) return active;
+export const SAMPLE_QUERY_SOURCE_REF: Readonly<ActiveConnectedTableRef> = Object.freeze({
+  catalogId: 'sample-lake-fixture',
+  schemaName: SAMPLE_QUERY_SOURCE.schemaName,
+  tableName: SAMPLE_QUERY_SOURCE.tableName,
+});
 
-  for (const catalog of catalogs) {
-    for (const schema of catalog.schemas) {
-      const table = schema.tables.find((candidate) => isQueryableTable(catalog, candidate));
-      if (!table) continue;
-      return querySourceForTable(catalog, schema.name, table);
-    }
+export function resolveQuerySourceSelection(
+  catalogs: QueryCatalogCandidate[],
+  selectedRef?: ActiveConnectedTableRef,
+): QuerySourceSelection {
+  if (!selectedRef) {
+    return {
+      kind: 'unavailable',
+      reason: countTables(catalogs) === 0 ? 'empty' : 'missing',
+    };
   }
-  return SAMPLE_QUERY_SOURCE;
+
+  const catalog = catalogs.find((candidate) => candidate.id === selectedRef.catalogId);
+  const schema = catalog?.schemas.find((candidate) => candidate.name === selectedRef.schemaName);
+  const table = schema?.tables.find((candidate) => candidate.name === selectedRef.tableName);
+  if (!catalog || !schema || !table) {
+    return { kind: 'unavailable', reason: 'stale', ref: selectedRef };
+  }
+
+  const source = querySourceForTable(catalog, schema.name, table);
+  if (!source) {
+    return { kind: 'unavailable', reason: 'unqueryable', ref: selectedRef };
+  }
+
+  return {
+    kind:
+      sameConnectedTableRef(selectedRef, SAMPLE_QUERY_SOURCE_REF) &&
+      sameQuerySource(source, SAMPLE_QUERY_SOURCE)
+        ? 'sample'
+        : 'resource',
+    ref: selectedRef,
+    source,
+  };
 }
 
-export function firstQueryableTableRef(
-  catalogs: QueryCatalogCandidate[],
-): ActiveConnectedTableRef | undefined {
-  for (const catalog of catalogs) {
-    for (const schema of catalog.schemas) {
-      const table = schema.tables.find((candidate) => isQueryableTable(catalog, candidate));
-      if (!table) continue;
-      return {
-        catalogId: catalog.id,
-        schemaName: schema.name,
-        tableName: table.name,
-      };
-    }
-  }
-  return undefined;
+function sameConnectedTableRef(
+  left: ActiveConnectedTableRef,
+  right: ActiveConnectedTableRef,
+): boolean {
+  return (
+    left.catalogId === right.catalogId &&
+    left.schemaName === right.schemaName &&
+    left.tableName === right.tableName
+  );
 }
 
-export function resolveActiveTableRef(
+export function soleQueryableTableRef(
   catalogs: QueryCatalogCandidate[],
-  activeTable?: ActiveConnectedTableRef,
 ): ActiveConnectedTableRef | undefined {
-  if (activeTable && querySourceForConnectedTableRef(catalogs, activeTable)) {
-    return activeTable;
+  let selected: ActiveConnectedTableRef | undefined;
+  for (const catalog of catalogs) {
+    for (const schema of catalog.schemas) {
+      for (const table of schema.tables) {
+        if (!isQueryableTable(catalog, table)) continue;
+        if (selected) return undefined;
+        selected = {
+          catalogId: catalog.id,
+          schemaName: schema.name,
+          tableName: table.name,
+        };
+      }
+    }
   }
-  return firstQueryableTableRef(catalogs);
+  return selected;
 }
 
 export function sameQuerySource(a: QueryTableSource, b: QueryTableSource): boolean {
@@ -174,7 +210,7 @@ export function querySourceForConnectedTableRef(
   const catalog = catalogs.find((candidate) => candidate.id === activeTable.catalogId);
   const schema = catalog?.schemas.find((candidate) => candidate.name === activeTable.schemaName);
   const table = schema?.tables.find((candidate) => candidate.name === activeTable.tableName);
-  if (!catalog || !schema || !table || !isQueryableTable(catalog, table)) return undefined;
+  if (!catalog || !schema || !table) return undefined;
   return querySourceForTable(catalog, schema.name, table);
 }
 
@@ -182,8 +218,8 @@ export function querySourcesForCatalog(catalog: QueryCatalogCandidate): QueryTab
   const sources: QueryTableSource[] = [];
   for (const schema of catalog.schemas) {
     for (const table of schema.tables) {
-      if (!isQueryableTable(catalog, table)) continue;
-      sources.push(querySourceForTable(catalog, schema.name, table));
+      const source = querySourceForTable(catalog, schema.name, table);
+      if (source) sources.push(source);
     }
   }
   return sources;
@@ -193,7 +229,7 @@ function querySourceForTable(
   catalog: QueryCatalogCandidate,
   schemaName: string,
   table: QueryCatalogCandidate['schemas'][number]['tables'][number],
-): QueryTableSource {
+): QueryTableSource | undefined {
   if (table.localRegistryId) {
     return {
       kind: 'local_delta',
@@ -219,7 +255,7 @@ function querySourceForTable(
       tableName: table.name,
       manifestUrl: table.manifestUrl,
       storage: table.source?.storage ?? catalog.storage,
-      region: table.source?.region ?? catalog.region ?? SAMPLE_QUERY_SOURCE.region,
+      region: table.source?.region ?? catalog.region ?? 'browser-local',
       snapshot: table.snapshot,
       rows: table.rows,
       files: table.files,
@@ -238,7 +274,7 @@ function querySourceForTable(
       tableName: table.name,
       tableUri: tableRoot.tableUri,
       storage: tableRoot.tableUri,
-      region: table.source?.region ?? catalog.region ?? SAMPLE_QUERY_SOURCE.region,
+      region: table.source?.region ?? catalog.region ?? 'browser-local',
       snapshot: table.snapshot,
       rows: table.rows,
       files: table.files,
@@ -248,7 +284,7 @@ function querySourceForTable(
     };
   }
 
-  return SAMPLE_QUERY_SOURCE;
+  return undefined;
 }
 
 function isQueryableTable(
@@ -276,4 +312,13 @@ function publicObjectStorageProvider(
   provider: string | undefined,
 ): PublicObjectStorageProvider | undefined {
   return provider === 'gcs' || provider === 's3' ? provider : undefined;
+}
+
+function countTables(catalogs: QueryCatalogCandidate[]): number {
+  return catalogs.reduce(
+    (catalogTotal, catalog) =>
+      catalogTotal +
+      catalog.schemas.reduce((schemaTotal, schema) => schemaTotal + schema.tables.length, 0),
+    0,
+  );
 }

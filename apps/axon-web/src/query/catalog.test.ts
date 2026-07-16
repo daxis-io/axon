@@ -5,7 +5,7 @@ import {
   getQueryRuntimeState,
   publishQueryRuntimeState,
 } from '../services/query-runtime-state.ts';
-import type { QueryTableSource } from '../services/query-source.ts';
+import type { QuerySourceSelection, QueryTableSource } from '../services/query-source.ts';
 import { snapshotCatalog } from '../services/catalog.ts';
 import type { Catalog } from '../services/types.ts';
 import {
@@ -67,6 +67,12 @@ const otherSource: QueryTableSource = {
   manifestUrl: '/manifest-other.json',
 };
 
+const selection: QuerySourceSelection = {
+  kind: 'resource',
+  ref: { catalogId: 'catalog-a', schemaName: 'schema-a', tableName: 'table-a' },
+  source,
+};
+
 function runtimeCatalog(name = 'runtime-catalog'): Catalog {
   return {
     name,
@@ -109,8 +115,35 @@ describe('catalog query adapters', () => {
     snapshotServiceMocks.loadCommits.mockReset();
   });
 
+  it.each(['missing', 'empty', 'stale', 'unqueryable'] as const)(
+    'disables catalog and commit queries for %s selection without invoking loaders',
+    async (reason) => {
+      const selection: QuerySourceSelection = {
+        kind: 'unavailable',
+        reason,
+        ...(reason === 'stale' || reason === 'unqueryable'
+          ? { ref: { catalogId: 'gone', schemaName: 'default', tableName: 'events' } }
+          : {}),
+      };
+      const client = new QueryClient();
+      const catalogOptions = catalogQueryOptions(selection);
+      const commitsOptions = commitsQueryOptions(selection);
+
+      expect(catalogOptions.enabled).toBe(false);
+      expect(commitsOptions.enabled).toBe(false);
+      expect(catalogOptions.queryKey).toEqual(queryKeys.catalog.unavailable(selection, 'catalog'));
+      expect(commitsOptions.queryKey).toEqual(queryKeys.catalog.unavailable(selection, 'commits'));
+
+      await client.prefetchQuery(catalogOptions);
+      await client.prefetchQuery(commitsOptions);
+
+      expect(catalogServiceMocks.loadCatalog).not.toHaveBeenCalled();
+      expect(snapshotServiceMocks.loadCommits).not.toHaveBeenCalled();
+    },
+  );
+
   it('builds catalog query options with source-stable table-derived keys and summary initial data', async () => {
-    const options = catalogQueryOptions(source);
+    const options = catalogQueryOptions(selection);
 
     expect(options.queryKey).toEqual(queryKeys.catalog.tableDerived(source));
     expect(options.initialDataUpdatedAt).toBe(0);
@@ -137,7 +170,7 @@ describe('catalog query adapters', () => {
   });
 
   it('builds commits query options under the matching source key', async () => {
-    const options = commitsQueryOptions(source);
+    const options = commitsQueryOptions(selection);
     const client = new QueryClient();
 
     expect(options.queryKey).toEqual(queryKeys.catalog.commits(source));
@@ -233,7 +266,7 @@ describe('catalog query adapters', () => {
     client.setQueryData(queryKeys.catalog.tableDerived(otherSource), otherCatalog);
     publishQueryRuntimeState({ source, catalog: sourceCatalog }, 10);
 
-    const options = catalogQueryOptions(source);
+    const options = catalogQueryOptions(selection);
     if (typeof options.queryFn !== 'function') {
       throw new Error('expected catalog query function');
     }
@@ -265,7 +298,7 @@ describe('catalog query adapters', () => {
     client.setQueryData(queryKeys.catalog.tableDerived(otherSource), otherCatalog);
     publishQueryRuntimeState({ source, catalog: sourceCatalog }, 10);
 
-    const options = commitsQueryOptions(source);
+    const options = commitsQueryOptions(selection);
     if (typeof options.queryFn !== 'function') {
       throw new Error('expected commits query function');
     }

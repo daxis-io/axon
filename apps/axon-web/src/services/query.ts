@@ -35,7 +35,7 @@ import {
   publishQueryRuntimeState,
   publishWorkerEvent,
 } from './query-runtime-state.ts';
-import { SAMPLE_QUERY_SOURCE, sameQuerySource, type QueryTableSource } from './query-source.ts';
+import { sameQuerySource, type QueryTableSource } from './query-source.ts';
 import type { Catalog } from './types.ts';
 
 type FixtureObject = {
@@ -454,9 +454,7 @@ export function queryMetricsFromRangeReadMetricsEvent(
   );
 }
 
-export async function getSession(
-  source: QueryTableSource = SAMPLE_QUERY_SOURCE,
-): Promise<SessionState> {
+export async function getSession(source: QueryTableSource): Promise<SessionState> {
   if (session && sameQuerySource(session.source, source)) return session;
   if (sessionInit && sameQuerySource(sessionInit.source, source)) return sessionInit.promise;
   discardQuerySession();
@@ -494,9 +492,7 @@ export async function getSession(
   return promise;
 }
 
-export function getCurrentSession(
-  source: QueryTableSource = SAMPLE_QUERY_SOURCE,
-): SessionState | undefined {
+export function getCurrentSession(source: QueryTableSource): SessionState | undefined {
   if (!session || !sameQuerySource(session.source, source)) return undefined;
   return session;
 }
@@ -548,8 +544,8 @@ function ensureTable(state: SessionState, signal: AbortSignal): Promise<void> {
 export async function runQuery(
   req: QueryExecRequest,
   onEvent: (event: QueryEvent) => void,
+  source: QueryTableSource,
   signal: AbortSignal = new AbortController().signal,
-  source: QueryTableSource = SAMPLE_QUERY_SOURCE,
 ): Promise<QueryRunOutcome> {
   const startedAt = performance.now();
   const since = () => Math.round(performance.now() - startedAt);

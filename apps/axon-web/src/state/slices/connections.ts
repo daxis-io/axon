@@ -1,8 +1,8 @@
 import { CONNECTOR_FEATURES } from '../../services/connector-features.ts';
 import {
-  firstQueryableTableRef,
+  querySourceForConnectedTableRef,
   querySourcesForCatalog,
-  resolveActiveTableRef,
+  soleQueryableTableRef,
   type ActiveConnectedTableRef,
   type QueryTableSource,
 } from '../../services/query-source.ts';
@@ -57,18 +57,32 @@ export function createConnectionsSlice<TState extends ConnectionsSlice>(
   set: StoreSet<TState>,
   get: StoreGet<TState>,
 ): ConnectionsSlice {
+  const initialCatalogs = loadConnectedCatalogs();
+  const initialAvailableCatalogs = catalogsAvailableForFeatures(
+    initialCatalogs,
+    CONNECTOR_FEATURES,
+  );
   const upsertCatalog = (catalog: ConnectedCatalog): ConnectionMutationResult => {
     const current = get().connections;
     const upsert = upsertConnectedCatalog(current.catalogs, catalog);
     const mergedCatalogId = mergedCatalogIdFor(upsert.catalogs, catalog);
-    const firstIncomingTable = firstQueryableTableRef([catalog]);
-    const selectedTableRef = firstIncomingTable
-      ? { ...firstIncomingTable, catalogId: mergedCatalogId }
-      : current.selectedTableRef;
-    const localRegistryIdsToUnregister = localRegistryIdsForCatalogs(upsert.replaced);
-    const shouldDiscardActiveQuerySession = upsert.replaced.some(
+    const soleIncomingTable = soleQueryableTableRef([catalog]);
+    const activeCatalogWasReplaced = upsert.replaced.some(
       (replaced) => replaced.id === current.selectedTableRef?.catalogId,
     );
+    const retainedSelection =
+      !activeCatalogWasReplaced &&
+      current.selectedTableRef &&
+      querySourceForConnectedTableRef(upsert.catalogs, current.selectedTableRef)
+        ? current.selectedTableRef
+        : undefined;
+    const selectedTableRef = activeCatalogWasReplaced
+      ? undefined
+      : soleIncomingTable
+        ? { ...soleIncomingTable, catalogId: mergedCatalogId }
+        : retainedSelection;
+    const localRegistryIdsToUnregister = localRegistryIdsForCatalogs(upsert.replaced);
+    const shouldDiscardActiveQuerySession = activeCatalogWasReplaced;
 
     saveConnectedCatalogs(upsert.catalogs);
     set((state) => ({
@@ -95,8 +109,8 @@ export function createConnectionsSlice<TState extends ConnectionsSlice>(
 
   return {
     connections: {
-      catalogs: loadConnectedCatalogs(),
-      selectedTableRef: undefined,
+      catalogs: initialCatalogs,
+      selectedTableRef: soleQueryableTableRef(initialAvailableCatalogs),
       freshCatalogId: null,
     },
     connectionActions: {
@@ -115,8 +129,11 @@ export function createConnectionsSlice<TState extends ConnectionsSlice>(
         const availableCatalogs = catalogsAvailableForFeatures(catalogs, CONNECTOR_FEATURES);
         const selectedTableRef =
           current.selectedTableRef?.catalogId === id
-            ? firstQueryableTableRef(availableCatalogs)
-            : resolveActiveTableRef(availableCatalogs, current.selectedTableRef);
+            ? undefined
+            : current.selectedTableRef &&
+                querySourceForConnectedTableRef(availableCatalogs, current.selectedTableRef)
+              ? current.selectedTableRef
+              : undefined;
         const localRegistryIdsToUnregister = localRegistryIdsForCatalogs([removed]);
         const shouldDiscardActiveQuerySession = current.selectedTableRef?.catalogId === id;
 

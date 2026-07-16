@@ -1,6 +1,5 @@
 import { useStore } from 'zustand/react';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
-import { resolveActiveTableRef, type ActiveConnectedTableRef } from '../services/query-source.ts';
 import { catalogsAvailableForFeatures } from '../editor/connect/store.ts';
 import type { ConnectedCatalog } from '../editor/connect/types.ts';
 import { axonClientStore, type AxonClientState } from './store.ts';
@@ -60,27 +59,8 @@ export const selectAvailableConnectedCatalogs = (state: AxonClientState) => {
   return availableCatalogOutput;
 };
 
-let activeCatalogInput: ConnectedCatalog[] | undefined;
-let activeSelectedInput: ActiveConnectedTableRef | undefined;
-let activeTableOutput: ActiveConnectedTableRef | undefined;
-let activeTableOutputCached = false;
-
-export const selectActiveConnectedTableRef = (state: AxonClientState) => {
-  const availableCatalogs = selectAvailableConnectedCatalogs(state);
-  if (
-    activeTableOutputCached &&
-    activeCatalogInput === availableCatalogs &&
-    activeSelectedInput === state.connections.selectedTableRef
-  ) {
-    return activeTableOutput;
-  }
-
-  activeCatalogInput = availableCatalogs;
-  activeSelectedInput = state.connections.selectedTableRef;
-  activeTableOutput = resolveActiveTableRef(availableCatalogs, state.connections.selectedTableRef);
-  activeTableOutputCached = true;
-  return activeTableOutput;
-};
+export const selectActiveConnectedTableRef = (state: AxonClientState) =>
+  state.connections.selectedTableRef;
 
 export function useAxonClientStore<T>(selector: (state: AxonClientState) => T): T {
   return useStore(axonClientStore, selector);

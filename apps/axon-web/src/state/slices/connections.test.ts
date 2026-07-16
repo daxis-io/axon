@@ -88,6 +88,38 @@ function activeRef(catalogId: string, table = catalogId): ActiveConnectedTableRe
   return { catalogId, schemaName: 'default', tableName: table };
 }
 
+function withSecondQueryableTable(
+  connectedCatalog: ConnectedCatalog,
+  tableName = 'second',
+): ConnectedCatalog {
+  const schema = connectedCatalog.schemas[0]!;
+  const first = schema.tables[0]!;
+  return {
+    ...connectedCatalog,
+    schemas: [
+      {
+        ...schema,
+        tables: [
+          first,
+          {
+            ...first,
+            id: `${schema.name}.${tableName}`,
+            name: tableName,
+            manifestUrl: `/manifests/${tableName}.json`,
+            source: first.source
+              ? {
+                  ...first.source,
+                  id: `source-${tableName}`,
+                  canonicalKey: `${first.source.canonicalKey}-${tableName}`,
+                }
+              : undefined,
+          },
+        ],
+      },
+    ],
+  };
+}
+
 describe('connections slice', () => {
   let localStorage: MemoryStorage;
 
@@ -108,6 +140,25 @@ describe('connections slice', () => {
     const store = createAxonClientStore({ storage: createMemoryClientStateStorage() });
 
     expect(store.getState().connections.catalogs.map((item) => item.id)).toEqual(['saved']);
+  });
+
+  it('materializes an exact initial selection only for a sole queryable table', () => {
+    localStorage.setItem(
+      CONNECTED_CATALOGS_STORAGE_KEY,
+      JSON.stringify([catalog({ id: 'saved' })]),
+    );
+
+    const soleStore = createAxonClientStore({ storage: createMemoryClientStateStorage() });
+
+    expect(soleStore.getState().connections.selectedTableRef).toEqual(activeRef('saved'));
+
+    localStorage.setItem(
+      CONNECTED_CATALOGS_STORAGE_KEY,
+      JSON.stringify([withSecondQueryableTable(catalog({ id: 'multiple' }))]),
+    );
+    const multipleStore = createAxonClientStore({ storage: createMemoryClientStateStorage() });
+
+    expect(multipleStore.getState().connections.selectedTableRef).toBeUndefined();
   });
 
   it('persists catalog actions through the legacy key without adding connections to client state', () => {
@@ -148,6 +199,17 @@ describe('connections slice', () => {
       schemaName: 'default',
       tableName: 'orders',
     });
+  });
+
+  it('requires an explicit click when a Connect result contains multiple queryable tables', () => {
+    localStorage.setItem(CONNECTED_CATALOGS_STORAGE_KEY, '[]');
+    const store = createAxonClientStore({ storage: createMemoryClientStateStorage() });
+
+    store
+      .getState()
+      .connectionActions.upsertCatalog(withSecondQueryableTable(catalog({ id: 'incoming' })));
+
+    expect(store.getState().connections.selectedTableRef).toBeUndefined();
   });
 
   it('reports active-query discard when replacing the active catalog', () => {
@@ -214,7 +276,7 @@ describe('connections slice', () => {
     expect(removal.localRegistryIdsToUnregister).toEqual(['local-reg-2']);
   });
 
-  it('selects the next queryable table when removing the active catalog, then clears selection', () => {
+  it('clears selection instead of choosing another table when removing the active catalog', () => {
     localStorage.setItem(
       CONNECTED_CATALOGS_STORAGE_KEY,
       JSON.stringify([catalog({ id: 'first' }), catalog({ id: 'second' })]),
@@ -234,9 +296,45 @@ describe('connections slice', () => {
         manifestUrl: '/manifests/first.json',
       }),
     ]);
-    expect(store.getState().connections.selectedTableRef).toEqual(activeRef('second'));
+    expect(store.getState().connections.selectedTableRef).toBeUndefined();
 
     store.getState().connectionActions.removeCatalog('second');
+
+    expect(store.getState().connections.selectedTableRef).toBeUndefined();
+  });
+
+  it('clears a replaced active resource when the replacement has multiple queryable tables', () => {
+    localStorage.setItem(
+      CONNECTED_CATALOGS_STORAGE_KEY,
+      JSON.stringify([catalog({ id: 'existing', alias: 'workspace', table: 'events' })]),
+    );
+    const store = createAxonClientStore({ storage: createMemoryClientStateStorage() });
+    store.getState().connectionActions.selectTable(activeRef('existing', 'events'));
+
+    store
+      .getState()
+      .connectionActions.upsertCatalog(
+        withSecondQueryableTable(
+          catalog({ id: 'replacement', alias: 'workspace', table: 'events' }),
+        ),
+      );
+
+    expect(store.getState().connections.selectedTableRef).toBeUndefined();
+  });
+
+  it('clears a replaced active resource even when the replacement has one queryable table', () => {
+    localStorage.setItem(
+      CONNECTED_CATALOGS_STORAGE_KEY,
+      JSON.stringify([catalog({ id: 'existing', alias: 'workspace', table: 'events' })]),
+    );
+    const store = createAxonClientStore({ storage: createMemoryClientStateStorage() });
+    store.getState().connectionActions.selectTable(activeRef('existing', 'events'));
+
+    store
+      .getState()
+      .connectionActions.upsertCatalog(
+        catalog({ id: 'replacement', alias: 'workspace', table: 'events' }),
+      );
 
     expect(store.getState().connections.selectedTableRef).toBeUndefined();
   });

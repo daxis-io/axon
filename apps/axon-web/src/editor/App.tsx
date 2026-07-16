@@ -35,8 +35,10 @@ import {
   type QueryResultPageRun,
 } from '../services/query-pagination.ts';
 import {
-  querySourceFromConnectedCatalogs,
+  resolveQuerySourceSelection,
   type ActiveConnectedTableRef,
+  type QuerySourceSelection,
+  type QueryTableSource,
 } from '../services/query-source.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
 import type { QueryExecRequest } from '../services/types.ts';
@@ -123,6 +125,22 @@ export function subscribeAppEngineStatus(
   return subscribe(engineActions.setStatus);
 }
 
+export async function executeQuerySelection<T>(
+  selection: QuerySourceSelection,
+  execute: (source: QueryTableSource) => Promise<T>,
+): Promise<
+  | {
+      status: 'unavailable';
+      reason: Extract<QuerySourceSelection, { kind: 'unavailable' }>['reason'];
+    }
+  | { status: 'executed'; value: T }
+> {
+  if (selection.kind === 'unavailable') {
+    return { status: 'unavailable', reason: selection.reason };
+  }
+  return { status: 'executed', value: await execute(selection.source) };
+}
+
 function connectedTableForRef(
   catalogs: ConnectedCatalog[],
   ref?: ActiveConnectedTableRef,
@@ -164,14 +182,15 @@ export function App() {
   const activeTabId = tabsState.activeTabId;
   const active = activeSqlTab ?? tabs[0]!;
   const queryClient = useQueryClient();
-  const querySource = useMemo(
-    () => querySourceFromConnectedCatalogs(availableConnectedCatalogs, activeTableRef),
+  const querySelection = useMemo(
+    () => resolveQuerySourceSelection(availableConnectedCatalogs, activeTableRef),
     [activeTableRef, availableConnectedCatalogs],
   );
-  const { data: catalog } = useQuery(catalogQueryOptions(querySource));
-  const { data: commits = [] } = useQuery(commitsQueryOptions(querySource));
+  const { data: catalog } = useQuery(catalogQueryOptions(querySelection));
+  const { data: commits = [] } = useQuery(commitsQueryOptions(querySelection));
   const { data: history = [] } = useQuery(historyQueryOptions());
   const { data: saved = [] } = useQuery(savedQueriesQueryOptions());
+  const querySource = querySelection.kind === 'unavailable' ? undefined : querySelection.source;
 
   const tableMeta = catalog?.tables[0];
 
@@ -185,11 +204,12 @@ export function App() {
     [activeTableRef, availableConnectedCatalogs],
   );
   const localAccessNeedsReselect =
-    querySource.kind === 'local_delta' &&
+    querySource?.kind === 'local_delta' &&
     activeConnectedTable?.localPersistence === 'metadata_only_reselect' &&
     !hasLocalDeltaRuntime(querySource.localRegistryId);
 
   const activeResultPageRun = useMemo(() => {
+    if (!querySource) return undefined;
     return queryResultPageRun(
       {
         sql: active.sql,
@@ -299,6 +319,11 @@ export function App() {
   const runActive = useCallback(async () => {
     if (runIsRunning) return;
     const tab = active;
+    if (querySelection.kind === 'unavailable') {
+      showToast('Select a queryable table before running SQL.', 'warn');
+      return;
+    }
+    const selectedSource = querySelection.source;
     if (localAccessNeedsReselect) {
       runActions.clearForLocalAccessReselect();
       reselectLocalFolder();
@@ -321,23 +346,30 @@ export function App() {
 
     const req: QueryExecRequest = {
       sql: tab.sql,
-      table_name: tableMeta?.name ?? querySource.tableName,
+      table_name: tableMeta?.name ?? selectedSource.tableName,
       preferred_target: tab.preferred,
       snapshot_version: tab.pin ?? undefined,
     };
 
-    const { runQuery } = await import('../services/query.ts');
-    const outcome = await runQuery(
-      req,
-      (event) => {
-        if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') {
-          return;
-        }
-        runActions.appendRunEvent(event);
-      },
-      ctrl.signal,
-      querySource,
-    );
+    const execution = await executeQuerySelection(querySelection, async (source) => {
+      const { runQuery } = await import('../services/query.ts');
+      return runQuery(
+        req,
+        (event) => {
+          if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') {
+            return;
+          }
+          runActions.appendRunEvent(event);
+        },
+        source,
+        ctrl.signal,
+      );
+    });
+    if (execution.status === 'unavailable') {
+      if (runTimer.current != null) window.clearInterval(runTimer.current);
+      return;
+    }
+    const outcome = execution.value;
 
     if (runTimer.current != null) window.clearInterval(runTimer.current);
 
@@ -361,7 +393,7 @@ export function App() {
           fallback: fallbackPretty,
         },
         resultData: outcome.result,
-        resultPageRun: queryResultPageRun(req, querySource),
+        resultPageRun: queryResultPageRun(req, selectedSource),
         metrics: outcome.metrics,
         plan: outcome.explain ? { tree: outcome.explain } : undefined,
         capabilities: overlayCapabilityReport(
@@ -416,7 +448,7 @@ export function App() {
     active,
     localAccessNeedsReselect,
     queryClient,
-    querySource,
+    querySelection,
     reselectLocalFolder,
     runIsRunning,
     runActions,
@@ -457,8 +489,8 @@ export function App() {
         }
         runActions.appendRunEvent(event);
       },
-      ctrl.signal,
       runForPage.source,
+      ctrl.signal,
     );
 
     const latestResultRun = selectRunResultPageRun(axonClientStore.getState());
@@ -611,8 +643,19 @@ export function App() {
         >
           <span className="conn-dot" />
           <span className="conn-name">
-            {catalog?.name ?? 'loading'} <span className="sep">/</span>{' '}
-            <span className="db">{catalog?.region ?? '—'} · delta</span>
+            {querySelection.kind === 'unavailable' ? (
+              <>
+                Select table <span className="sep">/</span>{' '}
+                <span className="db">{querySelection.reason}</span>
+              </>
+            ) : (
+              <>
+                {catalog?.name ?? querySelection.source.catalogName} <span className="sep">/</span>{' '}
+                <span className="db">
+                  {catalog?.region ?? querySelection.source.region} · delta
+                </span>
+              </>
+            )}
           </span>
           {availableConnectedCatalogs.length > 0 && (
             <span className="cat-count" title="Connected catalogs">
@@ -691,7 +734,16 @@ export function App() {
             </button>
           ) : (
             <>
-              <button className="btn primary" onClick={runActive}>
+              <button
+                className="btn primary"
+                onClick={runActive}
+                disabled={querySelection.kind === 'unavailable'}
+                title={
+                  querySelection.kind === 'unavailable'
+                    ? 'Select a queryable table before running SQL'
+                    : 'Run query'
+                }
+              >
                 <IconPlay size={11} /> Run
                 <span className="kbd">⌘</span>
                 <span className="kbd">⏎</span>
@@ -717,6 +769,7 @@ export function App() {
       <div className="main">
         <Sidebar
           catalog={catalog}
+          sourceUnavailable={querySelection.kind === 'unavailable'}
           connectedCatalogs={availableConnectedCatalogs}
           activeTable={activeTableRef}
           saved={saved}

@@ -1,4 +1,4 @@
-import type { QueryTableSource } from '../services/query-source.ts';
+import type { QuerySourceSelection, QueryTableSource } from '../services/query-source.ts';
 import type { PublicObjectStorageProvider } from '../services/object-storage.ts';
 
 export type QuerySourceIdentity =
@@ -45,6 +45,19 @@ export const queryKeys = {
     tableDerived: (source: QueryTableSource) =>
       [...catalogSourceKey(source), 'table-derived'] as const,
     commits: (source: QueryTableSource) => [...catalogSourceKey(source), 'commits'] as const,
+    unavailable: (
+      selection: Extract<QuerySourceSelection, { kind: 'unavailable' }>,
+      resource: 'catalog' | 'commits',
+    ) =>
+      [
+        ...catalogRootKey(),
+        'unavailable',
+        resource,
+        selection.reason,
+        selection.ref?.catalogId ?? null,
+        selection.ref?.schemaName ?? null,
+        selection.ref?.tableName ?? null,
+      ] as const,
   },
   local: {
     root: () => ['local'] as const,

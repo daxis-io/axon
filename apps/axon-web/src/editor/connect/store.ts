@@ -5,7 +5,7 @@ import { availabilityForSource, type ObjectStoreProviderId } from './data.ts';
 import type { ConnectResult, ConnectedCatalog, ConnectedCatalogSchema } from './types.ts';
 import { createLocalStorageKeyValueStore } from '../../persistence/key-value.ts';
 import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
-import { SAMPLE_QUERY_SOURCE } from '../../services/query-source.ts';
+import { SAMPLE_QUERY_SOURCE, SAMPLE_QUERY_SOURCE_REF } from '../../services/query-source.ts';
 
 const STORAGE_KEY = 'axon.connect.catalogs.v1';
 export const DEFAULT_AXON_CATALOG_ALIAS = 'workspace';
@@ -17,7 +17,7 @@ export type ConnectedCatalogUpsertResult = {
 };
 
 export const SAMPLE_CONNECTED_CATALOG: ConnectedCatalog = {
-  id: 'sample-lake-fixture',
+  id: SAMPLE_QUERY_SOURCE_REF.catalogId,
   alias: SAMPLE_QUERY_SOURCE.catalogName,
   kind: 'object_store',
   provider: 'gcs',

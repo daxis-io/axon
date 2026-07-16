@@ -1,14 +1,12 @@
 import type { Catalog, CatalogTable } from './types.ts';
 import { getQueryRuntimeState } from './query-runtime-state.ts';
-import { SAMPLE_QUERY_SOURCE, type QueryTableSource } from './query-source.ts';
+import type { QueryTableSource } from './query-source.ts';
 
-export async function loadCatalog(
-  source: QueryTableSource = SAMPLE_QUERY_SOURCE,
-): Promise<Catalog> {
+export async function loadCatalog(source: QueryTableSource): Promise<Catalog> {
   return snapshotCatalog(source);
 }
 
-export function snapshotCatalog(source: QueryTableSource = SAMPLE_QUERY_SOURCE): Catalog {
+export function snapshotCatalog(source: QueryTableSource): Catalog {
   return getQueryRuntimeState(source)?.catalog ?? summaryCatalog(source);
 }
 

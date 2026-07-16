@@ -3,7 +3,7 @@
 // Snapshot tab can render. Lifted from main.ts's parser (originally rendered as
 // flat action rows in the sandbox; here we aggregate per-commit).
 
-import { SAMPLE_QUERY_SOURCE, type QueryTableSource } from './query-source.ts';
+import type { QueryTableSource } from './query-source.ts';
 import { getQueryRuntimeState } from './query-runtime-state.ts';
 import type { CommitEntry, CommitOp } from './types.ts';
 
@@ -23,9 +23,7 @@ type ParsedAction =
 
 const KNOWN_OPS: ReadonlyArray<CommitOp> = ['MERGE', 'WRITE', 'DELETE', 'OPTIMIZE', 'CREATE TABLE'];
 
-export async function loadCommits(
-  source: QueryTableSource = SAMPLE_QUERY_SOURCE,
-): Promise<CommitEntry[]> {
+export async function loadCommits(source: QueryTableSource): Promise<CommitEntry[]> {
   if (source.kind !== 'manifest') return [];
 
   const state = getQueryRuntimeState(source);

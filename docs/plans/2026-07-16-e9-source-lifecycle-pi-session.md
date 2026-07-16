@@ -153,8 +153,22 @@ focused green result before each implementation commit.
 
 ### Authoritative selection
 
-- Red: pending
-- Green: pending
+- Red: `npm exec -- vitest run src/services/query-source.test.ts
+src/query/catalog.test.ts src/state/slices/connections.test.ts
+src/editor/App.test.ts` exited 1. Vitest ran 32 tests: 16 failed and 16
+  passed. The failures were the missing resolver/App guard, absent disabled query
+  options, first-table selection for multi-table Connect, next-table selection
+  after removal, and retained active selection after multi-table replacement.
+- Green: the expanded focused command covering selection, catalog adapters,
+  connections, existing run state, and App exited 0 with 5 files and 40 tests
+  passed. The SDK query-source Playwright contract exited 0 with 11 tests
+  passed. Fresh `tsc --noEmit` and ESLint both exited 0 after generating the
+  missing WASM bindings in the new worktree. The pre-existing Node
+  `--localstorage-file` warning remains non-fatal. A follow-up compatibility
+  case first failed because a sole table loaded at startup had no exact ref; the
+  connection slice now materializes that ref only for exactly one queryable
+  table, and the focused connection suite passed all 11 tests. Multiple-table
+  startup remains unselected.
 
 ### Execution lifecycle and guarded run state
 

@@ -53,9 +53,9 @@ Keep keys stable and route new query key families through this module.
 
 ## Catalog Server State
 
-`catalogQueryOptions(source)` reads the current table-derived catalog through the legacy catalog service and seeds the query with `snapshotCatalog(source)`.
+`catalogQueryOptions(selection)` reads the current table-derived catalog through the legacy catalog service and seeds an available selection with `snapshotCatalog(source)`. Missing, empty, stale, and unqueryable selections use source-free stable keys with `enabled: false` and `skipToken`, so they cannot invoke a catalog loader.
 
-`commitsQueryOptions(source)` wraps commit-log loading. `AppProviders` installs a ref-counted runtime bridge that writes published runtime catalogs to the matching catalog query and invalidates the matching commits query.
+`commitsQueryOptions(selection)` wraps commit-log loading and uses the same disabled behavior for unavailable selection. `AppProviders` installs a ref-counted runtime bridge that writes published runtime catalogs to the matching catalog query and invalidates the matching commits query.
 
 `purgeCatalogSourceCache(queryClient, source)` removes only the `queryKeys.catalog.source(source)` subtree and clears the matching runtime catalog state. It is used when connected sources are removed or replaced. The catalog and commits query adapters also call `purgeCatalogSourceCacheForError` so auth/session-style failures (`401`, `403`, `419`, `440`) discard only that source-scoped catalog cache. These helpers do not purge `queryKeys.local.history()` or `queryKeys.local.saved()`.
 
