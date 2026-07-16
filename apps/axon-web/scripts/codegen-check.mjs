@@ -1,6 +1,10 @@
 import { spawnSync } from 'node:child_process';
 
-for (const script of ['scripts/check-config-codegen.mjs', 'scripts/check-contract-codegen.mjs']) {
+for (const script of [
+  'scripts/check-config-codegen.mjs',
+  'scripts/check-contract-codegen.mjs',
+  'scripts/check-rust-contract-codegen.mjs',
+]) {
   const result = spawnSync(process.execPath, [script], { stdio: 'inherit' });
   if (result.error) {
     throw result.error;

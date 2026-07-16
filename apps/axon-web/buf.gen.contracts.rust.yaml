@@ -1,0 +1,6 @@
+version: v2
+clean: true
+plugins:
+  - remote: buf.build/anthropics/buffa:v0.8.0
+    revision: 1
+    out: .

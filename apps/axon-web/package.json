@@ -13,6 +13,8 @@
     "codegen:config:check": "node scripts/check-config-codegen.mjs",
     "codegen:contracts": "node scripts/generate-contracts.mjs",
     "codegen:contracts:check": "node scripts/check-contract-codegen.mjs",
+    "codegen:contracts:rust": "node scripts/generate-rust-contracts.mjs",
+    "codegen:contracts:rust:check": "node scripts/check-rust-contract-codegen.mjs",
     "codegen:check": "node scripts/codegen-check.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
