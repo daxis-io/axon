@@ -2135,6 +2135,7 @@ impl BrowserRuntimeSession {
         candidate_files: &[&MaterializedBrowserFile],
         scan: &BrowserScanPlan,
         filter: Option<&BrowserFilterExpr>,
+        query_context: &wasm_parquet_engine::ParquetRangeQueryContext,
     ) -> Result<
         (
             Vec<BrowserInputRow>,
@@ -2160,6 +2161,7 @@ impl BrowserRuntimeSession {
                 row_group_predicate.as_ref(),
                 Some(&self.metadata_cache),
                 Some(&self.range_cache),
+                Some(query_context),
             )
             .await?;
             let metrics = scanned.metrics;
@@ -2249,9 +2251,23 @@ impl BrowserRuntimeSession {
         candidate_files: &[&MaterializedBrowserFile],
         operation_started_at: BrowserRuntimeInstant,
     ) -> Result<RuntimeExecutionArtifacts, QueryError> {
-        let (rows, scan_metrics) = self
-            .read_candidate_input_rows(snapshot, candidate_files, plan.scan(), plan.filter())
+        let query_context = self.range_cache.begin_query();
+        let (rows, mut scan_metrics) = self
+            .read_candidate_input_rows(
+                snapshot,
+                candidate_files,
+                plan.scan(),
+                plan.filter(),
+                &query_context,
+            )
             .await?;
+        let readahead_metrics = query_context.finalize()?;
+        if let Some(first_scan) = scan_metrics.first_mut() {
+            first_scan.range_read_metrics = wasm_parquet_engine::merge_parquet_range_read_metrics(
+                &first_scan.range_read_metrics,
+                &readahead_metrics,
+            );
+        }
         let mut result = if plan.aggregation().is_some() {
             execute_aggregate_plan_rows(plan, rows)?
         } else {

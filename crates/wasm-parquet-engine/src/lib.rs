@@ -42,8 +42,8 @@ use query_contract::{
 };
 use wasm_http_object_store::{
     ByteExtent, HttpByteRange, HttpMetadataProbeRequirements, HttpRangeReadResult, HttpRangeReader,
-    HttpRangeValidation, MemoryRangeCache, RangeCacheIdentity, RangeCacheLookup,
-    RangeCacheStoreObservation, RangeCacheStoreOutcome,
+    HttpRangeValidation, MemoryRangeCache, MemoryRangeCacheReservation, RangeCacheIdentity,
+    RangeCacheLookup, RangeCacheStoreObservation, RangeCacheStoreOutcome,
 };
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -58,6 +58,14 @@ const MAX_COALESCED_GAP_AMPLIFICATION_NUMERATOR: u64 = 1;
 const MAX_COALESCED_GAP_AMPLIFICATION_DENOMINATOR: u64 = 4;
 const MAX_COALESCED_PHYSICAL_RANGE_BYTES: u64 = 512 * 1024;
 const DEFAULT_PARQUET_RANGE_CACHE_ENTRIES: usize = 128;
+// Reuse the published coalescing caps for speculative I/O: one request may add
+// at most the 64 KiB cumulative gap allowance, while a query may add at most
+// one 512 KiB physical request. The session byte cap preserves the existing
+// 128-entry bound without allowing 128 independently oversized extents.
+const MAX_PARQUET_READAHEAD_EXTRA_BYTES: u64 = MAX_COALESCED_CUMULATIVE_GAP_BYTES;
+const MAX_PARQUET_READAHEAD_PER_QUERY_BYTES: u64 = MAX_COALESCED_PHYSICAL_RANGE_BYTES;
+const DEFAULT_PARQUET_RANGE_CACHE_BYTES: u64 =
+    DEFAULT_PARQUET_RANGE_CACHE_ENTRIES as u64 * MAX_COALESCED_PHYSICAL_RANGE_BYTES;
 
 pub fn runtime_target() -> ExecutionTarget {
     ExecutionTarget::BrowserWasm
@@ -332,6 +340,287 @@ pub struct ParquetRangeCacheMetrics {
     pub range_cache_identity_drift_misses: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ParquetReadaheadPolicy {
+    max_extra_bytes: u64,
+    max_query_bytes: u64,
+    max_physical_range_bytes: u64,
+}
+
+impl ParquetReadaheadPolicy {
+    const fn new(
+        max_extra_bytes: u64,
+        max_query_bytes: u64,
+        max_physical_range_bytes: u64,
+    ) -> Self {
+        Self {
+            max_extra_bytes,
+            max_query_bytes,
+            max_physical_range_bytes,
+        }
+    }
+
+    fn expanded_range(
+        self,
+        range: &Range<u64>,
+        object_size_bytes: u64,
+    ) -> Option<(Range<u64>, u64)> {
+        if range.start >= range.end || range.end > object_size_bytes {
+            return None;
+        }
+        let extra_bytes = self
+            .max_extra_bytes
+            .min(object_size_bytes.checked_sub(range.end)?);
+        if extra_bytes == 0 {
+            return None;
+        }
+        let expanded_end = range.end.checked_add(extra_bytes)?;
+        let expanded_length = expanded_end.checked_sub(range.start)?;
+        if expanded_length > self.max_physical_range_bytes {
+            return None;
+        }
+        Some((range.start..expanded_end, extra_bytes))
+    }
+}
+
+impl Default for ParquetReadaheadPolicy {
+    fn default() -> Self {
+        Self::new(
+            MAX_PARQUET_READAHEAD_EXTRA_BYTES,
+            MAX_PARQUET_READAHEAD_PER_QUERY_BYTES,
+            MAX_COALESCED_PHYSICAL_RANGE_BYTES,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ParquetReadaheadIdentity {
+    resource: String,
+    object_identity: ParquetObjectIdentity,
+}
+
+#[derive(Debug, Default)]
+struct ParquetRangeQueryState {
+    reserved_bytes: u64,
+    requests: u64,
+    bytes_fetched: u64,
+    bytes_used: u64,
+    prefetched_tails: BTreeMap<ParquetReadaheadIdentity, Vec<Range<u64>>>,
+    used_intervals: BTreeMap<ParquetReadaheadIdentity, Vec<Range<u64>>>,
+    finalized: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ParquetRangeQueryContext {
+    cache: ParquetRangeCache,
+    policy: ParquetReadaheadPolicy,
+    state: Arc<Mutex<ParquetRangeQueryState>>,
+}
+
+impl ParquetRangeQueryContext {
+    fn new(cache: ParquetRangeCache, policy: ParquetReadaheadPolicy) -> Self {
+        Self {
+            cache,
+            policy,
+            state: Arc::new(Mutex::new(ParquetRangeQueryState::default())),
+        }
+    }
+
+    fn try_plan(
+        &self,
+        target: &ScanTarget,
+        phase: ParquetRangeReadPhase,
+        range: &Range<u64>,
+    ) -> Result<Option<ParquetReadaheadRequest>, QueryError> {
+        if phase != ParquetRangeReadPhase::ScanData || target.object_identity().is_none() {
+            return Ok(None);
+        }
+        let Some((expanded_range, extra_bytes)) =
+            self.policy.expanded_range(range, target.size_bytes)
+        else {
+            return Ok(None);
+        };
+        let expanded_length = range_len(&expanded_range)?;
+
+        {
+            let mut state = self.state.lock().map_err(|_| {
+                execution_runtime_error("parquet readahead query state was poisoned")
+            })?;
+            let projected = state
+                .bytes_fetched
+                .checked_add(state.reserved_bytes)
+                .and_then(|bytes| bytes.checked_add(extra_bytes));
+            if state.finalized || projected.is_none_or(|bytes| bytes > self.policy.max_query_bytes)
+            {
+                return Ok(None);
+            }
+            state.reserved_bytes = state.reserved_bytes.saturating_add(extra_bytes);
+        }
+
+        let Some(cache_reservation) = self.cache.extents.try_reserve(expanded_length) else {
+            self.release_budget(extra_bytes)?;
+            return Ok(None);
+        };
+        let identity = readahead_identity(target).ok_or_else(|| {
+            execution_runtime_error("planned parquet readahead lost its strong object identity")
+        })?;
+        Ok(Some(ParquetReadaheadRequest {
+            query: self.clone(),
+            identity,
+            expanded_range,
+            prefetched_tail: range.end..range.end.saturating_add(extra_bytes),
+            extra_bytes,
+            cache_reservation: Some(cache_reservation),
+            committed: false,
+        }))
+    }
+
+    fn record_cache_hit(
+        &self,
+        target: &ScanTarget,
+        phase: ParquetRangeReadPhase,
+        range: &Range<u64>,
+    ) -> Result<(), QueryError> {
+        if phase != ParquetRangeReadPhase::ScanData || range.start >= range.end {
+            return Ok(());
+        }
+        let Some(identity) = readahead_identity(target) else {
+            return Ok(());
+        };
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| execution_runtime_error("parquet readahead query state was poisoned"))?;
+        if state.finalized {
+            return Ok(());
+        }
+        let intersections = state
+            .prefetched_tails
+            .get(&identity)
+            .into_iter()
+            .flatten()
+            .filter_map(|tail| intersect_ranges(tail, range))
+            .collect::<Vec<_>>();
+        if intersections.is_empty() {
+            return Ok(());
+        }
+        let used = state.used_intervals.entry(identity).or_default();
+        let before = interval_bytes(used);
+        used.extend(intersections);
+        normalize_intervals(used);
+        let newly_used = interval_bytes(used).saturating_sub(before);
+        state.bytes_used = state.bytes_used.saturating_add(newly_used);
+        Ok(())
+    }
+
+    fn release_budget(&self, bytes: u64) -> Result<(), QueryError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| execution_runtime_error("parquet readahead query state was poisoned"))?;
+        state.reserved_bytes = state.reserved_bytes.saturating_sub(bytes);
+        Ok(())
+    }
+
+    pub fn finalize(&self) -> Result<ParquetRangeReadMetrics, QueryError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| execution_runtime_error("parquet readahead query state was poisoned"))?;
+        if state.finalized {
+            return Ok(ParquetRangeReadMetrics::default());
+        }
+        state.finalized = true;
+        Ok(ParquetRangeReadMetrics {
+            range_readahead_requests: state.requests,
+            range_readahead_bytes_fetched: state.bytes_fetched,
+            range_readahead_bytes_used: state.bytes_used,
+            range_readahead_wasted_bytes: state.bytes_fetched.saturating_sub(state.bytes_used),
+            ..ParquetRangeReadMetrics::default()
+        })
+    }
+}
+
+#[derive(Debug)]
+struct ParquetReadaheadRequest {
+    query: ParquetRangeQueryContext,
+    identity: ParquetReadaheadIdentity,
+    expanded_range: Range<u64>,
+    prefetched_tail: Range<u64>,
+    extra_bytes: u64,
+    cache_reservation: Option<MemoryRangeCacheReservation>,
+    committed: bool,
+}
+
+impl ParquetReadaheadRequest {
+    fn take_cache_reservation(&mut self) -> Result<MemoryRangeCacheReservation, QueryError> {
+        self.cache_reservation.take().ok_or_else(|| {
+            execution_runtime_error("parquet readahead cache reservation was already consumed")
+        })
+    }
+
+    fn commit(mut self, cache_stored: bool) -> Result<(), QueryError> {
+        let mut state =
+            self.query.state.lock().map_err(|_| {
+                execution_runtime_error("parquet readahead query state was poisoned")
+            })?;
+        state.reserved_bytes = state.reserved_bytes.saturating_sub(self.extra_bytes);
+        state.requests = state.requests.saturating_add(1);
+        state.bytes_fetched = state.bytes_fetched.saturating_add(self.extra_bytes);
+        if cache_stored {
+            state
+                .prefetched_tails
+                .entry(self.identity.clone())
+                .or_default()
+                .push(self.prefetched_tail.clone());
+        }
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for ParquetReadaheadRequest {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = self.query.release_budget(self.extra_bytes);
+        }
+    }
+}
+
+fn readahead_identity(target: &ScanTarget) -> Option<ParquetReadaheadIdentity> {
+    Some(ParquetReadaheadIdentity {
+        resource: canonical_parquet_cache_resource(target),
+        object_identity: target.object_identity()?,
+    })
+}
+
+fn intersect_ranges(left: &Range<u64>, right: &Range<u64>) -> Option<Range<u64>> {
+    let start = left.start.max(right.start);
+    let end = left.end.min(right.end);
+    (start < end).then_some(start..end)
+}
+
+fn normalize_intervals(intervals: &mut Vec<Range<u64>>) {
+    intervals.sort_by_key(|range| (range.start, range.end));
+    let mut merged: Vec<Range<u64>> = Vec::with_capacity(intervals.len());
+    for range in intervals.drain(..) {
+        if let Some(last) = merged.last_mut() {
+            if range.start <= last.end {
+                last.end = last.end.max(range.end);
+                continue;
+            }
+        }
+        merged.push(range);
+    }
+    *intervals = merged;
+}
+
+fn interval_bytes(intervals: &[Range<u64>]) -> u64 {
+    intervals.iter().fold(0_u64, |total, range| {
+        total.saturating_add(range.end.saturating_sub(range.start))
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct ParquetRangeCache {
     extents: Arc<MemoryRangeCache>,
@@ -346,18 +635,37 @@ struct ParquetRangeCacheCompatibilityMetrics {
 
 impl Default for ParquetRangeCache {
     fn default() -> Self {
-        Self::with_max_entries(DEFAULT_PARQUET_RANGE_CACHE_ENTRIES)
+        Self::with_limits(
+            DEFAULT_PARQUET_RANGE_CACHE_ENTRIES,
+            DEFAULT_PARQUET_RANGE_CACHE_BYTES,
+        )
     }
 }
 
 impl ParquetRangeCache {
     pub fn with_max_entries(max_entries: usize) -> Self {
+        Self::with_limits(max_entries, DEFAULT_PARQUET_RANGE_CACHE_BYTES)
+    }
+
+    pub fn with_limits(max_entries: usize, max_retained_bytes: u64) -> Self {
         Self {
-            extents: Arc::new(MemoryRangeCache::with_max_entries(max_entries)),
+            extents: Arc::new(MemoryRangeCache::with_limits(
+                max_entries,
+                max_retained_bytes,
+            )),
             compatibility_metrics: Arc::new(Mutex::new(
                 ParquetRangeCacheCompatibilityMetrics::default(),
             )),
         }
+    }
+
+    pub fn begin_query(&self) -> ParquetRangeQueryContext {
+        ParquetRangeQueryContext::new(self.clone(), ParquetReadaheadPolicy::default())
+    }
+
+    #[cfg(test)]
+    fn begin_query_with_policy(&self, policy: ParquetReadaheadPolicy) -> ParquetRangeQueryContext {
+        ParquetRangeQueryContext::new(self.clone(), policy)
     }
 
     pub fn snapshot(&self) -> ParquetRangeCacheMetrics {
@@ -418,6 +726,25 @@ impl ParquetRangeCache {
             return Ok(None);
         };
         let observation = self.extents.store_observed(&identity, extent, bytes);
+        if observation.outcome == RangeCacheStoreOutcome::Stored {
+            self.record_store()?;
+        }
+        Ok(Some(observation))
+    }
+
+    async fn store_reserved(
+        &self,
+        target: &ScanTarget,
+        range: Range<u64>,
+        bytes: Bytes,
+        reservation: MemoryRangeCacheReservation,
+    ) -> Result<Option<RangeCacheStoreObservation>, QueryError> {
+        let Some((identity, extent)) = self.cache_identity_and_extent(target, &range)? else {
+            return Ok(None);
+        };
+        let observation = self
+            .extents
+            .store_reserved(reservation, &identity, extent, bytes);
         if observation.outcome == RangeCacheStoreOutcome::Stored {
             self.record_store()?;
         }
@@ -1473,6 +1800,7 @@ struct HttpRangeAsyncFileReader {
     request_timeout: Option<Duration>,
     metadata_cache: Option<ParquetMetadataCache>,
     range_cache: Option<ParquetRangeCache>,
+    query_context: Option<ParquetRangeQueryContext>,
     metrics: SharedScanTargetMetricsHandle,
     count_metadata_fetches: bool,
     metadata_probe_round_trips: u64,
@@ -1505,10 +1833,16 @@ impl HttpRangeAsyncFileReader {
             request_timeout,
             metadata_cache,
             range_cache,
+            query_context: None,
             metrics,
             count_metadata_fetches: false,
             metadata_probe_round_trips: 0,
         }
+    }
+
+    fn with_query_context(mut self, query_context: ParquetRangeQueryContext) -> Self {
+        self.query_context = Some(query_context);
+        self
     }
 
     fn validation(&self) -> Option<HttpRangeValidation> {
@@ -1526,78 +1860,8 @@ impl HttpRangeAsyncFileReader {
         request_timeout: Option<Duration>,
         metrics: SharedScanTargetMetricsHandle,
         range_cache: Option<ParquetRangeCache>,
+        query_context: Option<ParquetRangeQueryContext>,
         phase: ParquetRangeReadPhase,
-        range: Range<u64>,
-    ) -> Result<PhysicalRangeRead, QueryError> {
-        let length = range
-            .end
-            .checked_sub(range.start)
-            .ok_or_else(|| execution_runtime_error("parquet byte range underflowed u64"))?;
-        if length == 0 {
-            return Ok(PhysicalRangeRead {
-                bytes: Bytes::new(),
-                source: PhysicalRangeReadSource::Network,
-            });
-        }
-
-        if let Some(cache) = &range_cache {
-            let observation = cache.load(&target, range.clone()).await?;
-            metrics.record_range_cache_lookup(&observation)?;
-            if let Some(bytes) = observation.bytes {
-                metrics.record_range_read(
-                    phase,
-                    target.path.clone(),
-                    target.object_identity(),
-                    range.start,
-                    length,
-                )?;
-                return Ok(PhysicalRangeRead {
-                    bytes,
-                    source: PhysicalRangeReadSource::Cache,
-                });
-            }
-        }
-
-        let read = reader
-            .read_range_with_validation(
-                &target.object_source.url,
-                HttpByteRange::Bounded {
-                    offset: range.start,
-                    length,
-                },
-                validation,
-                request_timeout,
-            )
-            .await?;
-        metrics.record_bytes_fetched(
-            u64::try_from(read.bytes.len())
-                .map_err(|_| execution_runtime_error("scan byte totals overflowed u64"))?,
-        )?;
-        metrics.record_range_read(
-            phase,
-            target.path.clone(),
-            target.object_identity(),
-            range.start,
-            length,
-        )?;
-        if let Some(cache) = &range_cache {
-            if let Some(observation) = cache.store(&target, range, read.bytes.clone()).await? {
-                metrics.record_range_cache_store(&observation)?;
-            }
-        }
-        Ok(PhysicalRangeRead {
-            bytes: read.bytes,
-            source: PhysicalRangeReadSource::Network,
-        })
-    }
-
-    async fn fetch_coalesced_range_owned(
-        reader: HttpRangeReader,
-        target: ScanTarget,
-        validation: HttpRangeValidation,
-        request_timeout: Option<Duration>,
-        metrics: SharedScanTargetMetricsHandle,
-        range_cache: Option<ParquetRangeCache>,
         range: Range<u64>,
     ) -> Result<PhysicalRangeRead, QueryError> {
         let length = range_len(&range)?;
@@ -1607,7 +1871,82 @@ impl HttpRangeAsyncFileReader {
                 source: PhysicalRangeReadSource::Network,
             });
         }
+        let read = Self::fetch_physical_range_owned(
+            reader,
+            target.clone(),
+            validation,
+            request_timeout,
+            metrics.clone(),
+            range_cache,
+            query_context.clone(),
+            phase,
+            range.clone(),
+            false,
+        )
+        .await?;
+        if read.source == PhysicalRangeReadSource::Cache {
+            if let Some(query_context) = &query_context {
+                query_context.record_cache_hit(&target, phase, &range)?;
+            }
+        }
+        metrics.record_range_read(
+            phase,
+            target.path.clone(),
+            target.object_identity(),
+            range.start,
+            length,
+        )?;
+        Ok(read)
+    }
 
+    async fn fetch_coalesced_range_owned(
+        reader: HttpRangeReader,
+        target: ScanTarget,
+        validation: HttpRangeValidation,
+        request_timeout: Option<Duration>,
+        metrics: SharedScanTargetMetricsHandle,
+        range_cache: Option<ParquetRangeCache>,
+        query_context: Option<ParquetRangeQueryContext>,
+        phase: ParquetRangeReadPhase,
+        range: Range<u64>,
+    ) -> Result<PhysicalRangeRead, QueryError> {
+        Self::fetch_physical_range_owned(
+            reader,
+            target,
+            Some(validation),
+            request_timeout,
+            metrics,
+            range_cache,
+            query_context,
+            phase,
+            range,
+            true,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn fetch_physical_range_owned(
+        reader: HttpRangeReader,
+        target: ScanTarget,
+        validation: Option<HttpRangeValidation>,
+        request_timeout: Option<Duration>,
+        metrics: SharedScanTargetMetricsHandle,
+        range_cache: Option<ParquetRangeCache>,
+        query_context: Option<ParquetRangeQueryContext>,
+        phase: ParquetRangeReadPhase,
+        range: Range<u64>,
+        is_coalesced: bool,
+    ) -> Result<PhysicalRangeRead, QueryError> {
+        let length = range_len(&range)?;
+        if length == 0 {
+            return Ok(PhysicalRangeRead {
+                bytes: Bytes::new(),
+                source: PhysicalRangeReadSource::Network,
+            });
+        }
+
+        let mut identity_drift_detected = false;
         if let Some(cache) = &range_cache {
             let observation = cache.load(&target, range.clone()).await?;
             metrics.record_range_cache_lookup(&observation)?;
@@ -1617,39 +1956,85 @@ impl HttpRangeAsyncFileReader {
                     source: PhysicalRangeReadSource::Cache,
                 });
             }
+            identity_drift_detected = observation.validation_misses > 0;
         }
 
+        let mut readahead = if range_cache.is_some() && !identity_drift_detected && !is_coalesced {
+            match &query_context {
+                Some(query_context) => query_context.try_plan(&target, phase, &range)?,
+                None => None,
+            }
+        } else {
+            None
+        };
+        let physical_range = readahead
+            .as_ref()
+            .map(|request| request.expanded_range.clone())
+            .unwrap_or_else(|| range.clone());
+        let physical_length = range_len(&physical_range)?;
         let read = reader
             .read_range_with_validation(
                 &target.object_source.url,
                 HttpByteRange::Bounded {
-                    offset: range.start,
-                    length,
+                    offset: physical_range.start,
+                    length: physical_length,
                 },
-                Some(validation),
+                validation,
                 request_timeout,
             )
             .await?;
-        let observed_object_size = read.metadata.size_bytes.ok_or_else(|| {
-            parquet_protocol_error("coalesced range response did not report object size metadata")
-        })?;
-        if observed_object_size != target.size_bytes {
-            return Err(parquet_protocol_error(format!(
-                "coalesced range response expected object size {} bytes, but the response reported {observed_object_size} bytes",
-                target.size_bytes
-            )));
+        if is_coalesced || identity_drift_detected || readahead.is_some() {
+            let observed_object_size = read.metadata.size_bytes.ok_or_else(|| {
+                parquet_protocol_error(
+                    "validated parquet range response did not report object size metadata",
+                )
+            })?;
+            if observed_object_size != target.size_bytes {
+                return Err(parquet_protocol_error(format!(
+                    "validated parquet range response expected object size {} bytes, but the response reported {observed_object_size} bytes",
+                    target.size_bytes
+                )));
+            }
         }
         metrics.record_bytes_fetched(
             u64::try_from(read.bytes.len())
                 .map_err(|_| execution_runtime_error("scan byte totals overflowed u64"))?,
         )?;
+        let mut cache_stored = false;
         if let Some(cache) = &range_cache {
-            if let Some(observation) = cache.store(&target, range, read.bytes.clone()).await? {
+            let observation = if let Some(request) = &mut readahead {
+                let reservation = request.take_cache_reservation()?;
+                cache
+                    .store_reserved(
+                        &target,
+                        physical_range.clone(),
+                        read.bytes.clone(),
+                        reservation,
+                    )
+                    .await?
+            } else {
+                cache
+                    .store(&target, physical_range.clone(), read.bytes.clone())
+                    .await?
+            };
+            if let Some(observation) = observation {
+                cache_stored = observation.outcome == RangeCacheStoreOutcome::Stored;
                 metrics.record_range_cache_store(&observation)?;
             }
         }
+        if let Some(request) = readahead {
+            request.commit(cache_stored)?;
+        }
+        let logical_end = usize::try_from(length).map_err(|_| {
+            execution_runtime_error("parquet logical range length overflowed usize")
+        })?;
+        if logical_end > read.bytes.len() {
+            return Err(parquet_protocol_error(
+                "expanded parquet response did not cover its logical range",
+            ));
+        }
         Ok(PhysicalRangeRead {
-            bytes: read.bytes,
+            bytes: read.bytes.slice(0..logical_end),
             source: PhysicalRangeReadSource::Network,
         })
     }
@@ -1661,6 +2046,7 @@ impl HttpRangeAsyncFileReader {
         request_timeout: Option<Duration>,
         metrics: SharedScanTargetMetricsHandle,
         range_cache: Option<ParquetRangeCache>,
+        query_context: Option<ParquetRangeQueryContext>,
         phase: ParquetRangeReadPhase,
         ranges: Vec<Range<u64>>,
     ) -> Result<Vec<Bytes>, QueryError> {
@@ -1679,10 +2065,20 @@ impl HttpRangeAsyncFileReader {
                     request_timeout,
                     metrics.clone(),
                     range_cache.clone(),
+                    query_context.clone(),
+                    phase,
                     planned.physical_range.clone(),
                 )
                 .await?;
                 let bytes = read.bytes;
+
+                if read.source == PhysicalRangeReadSource::Cache {
+                    if let Some(query_context) = &query_context {
+                        for logical in &planned.logical_ranges {
+                            query_context.record_cache_hit(&target, phase, &logical.range)?;
+                        }
+                    }
+                }
 
                 let mut slices = Vec::with_capacity(planned.logical_ranges.len());
                 for logical in &planned.logical_ranges {
@@ -1748,6 +2144,7 @@ impl HttpRangeAsyncFileReader {
                     request_timeout,
                     metrics.clone(),
                     range_cache.clone(),
+                    query_context.clone(),
                     phase,
                     logical.range,
                 )
@@ -1887,6 +2284,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
             let request_timeout = self.request_timeout;
             let metrics = self.metrics.clone();
             let range_cache = self.range_cache.clone();
+            let query_context = self.query_context.clone();
             let phase = if self.count_metadata_fetches {
                 ParquetRangeReadPhase::ScanFooter
             } else {
@@ -1900,6 +2298,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
                     request_timeout,
                     metrics,
                     range_cache,
+                    query_context,
                     phase,
                     range,
                 )
@@ -1932,6 +2331,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
                 self.request_timeout,
                 self.metrics.clone(),
                 self.range_cache.clone(),
+                self.query_context.clone(),
                 phase,
                 range,
             )
@@ -1974,6 +2374,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
             let request_timeout = self.request_timeout;
             let metrics = self.metrics.clone();
             let range_cache = self.range_cache.clone();
+            let query_context = self.query_context.clone();
             let (future, handle) = async move {
                 Self::fetch_byte_ranges_owned(
                     reader,
@@ -1982,6 +2383,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
                     request_timeout,
                     metrics,
                     range_cache,
+                    query_context,
                     phase,
                     ranges,
                 )
@@ -2002,6 +2404,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
                 self.request_timeout,
                 self.metrics.clone(),
                 self.range_cache.clone(),
+                self.query_context.clone(),
                 phase,
                 ranges,
             )
@@ -2235,6 +2638,33 @@ pub async fn stream_scan_target_batches_with_row_group_pruning_and_caches(
     range_cache: Option<&ParquetRangeCache>,
 ) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
 {
+    stream_scan_target_batches_with_row_group_pruning_caches_and_query(
+        reader,
+        target,
+        required_columns,
+        partition_column_types,
+        request_timeout,
+        row_group_predicate,
+        metadata_cache,
+        range_cache,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn stream_scan_target_batches_with_row_group_pruning_caches_and_query(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    required_columns: &[String],
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    request_timeout: Option<Duration>,
+    row_group_predicate: Option<&ParquetRowGroupPruningPredicate>,
+    metadata_cache: Option<&ParquetMetadataCache>,
+    range_cache: Option<&ParquetRangeCache>,
+    query_context: Option<&ParquetRangeQueryContext>,
+) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
+{
     let metrics_handle = SharedScanTargetMetricsHandle::new(ScanTargetMetricsSnapshot {
         files_touched: 1,
         files_skipped: 0,
@@ -2247,23 +2677,27 @@ pub async fn stream_scan_target_batches_with_row_group_pruning_and_caches(
         range_read_metrics: ParquetRangeReadMetrics::default(),
     });
     let metrics: Arc<dyn ScanTargetMetricsHandle + Send + Sync> = Arc::new(metrics_handle.clone());
-    let builder = ParquetRecordBatchStreamBuilder::new(HttpRangeAsyncFileReader::new(
+    let mut async_reader = HttpRangeAsyncFileReader::new(
         reader.clone(),
         target.clone(),
         request_timeout,
         metadata_cache.cloned(),
         range_cache.cloned(),
         metrics_handle.clone(),
-    ))
-    .await
-    .map_err(|error| {
-        query_error_from_parquet_error(error, |message| {
-            format!(
+    );
+    if let Some(query_context) = query_context {
+        async_reader = async_reader.with_query_context(query_context.clone());
+    }
+    let builder = ParquetRecordBatchStreamBuilder::new(async_reader)
+        .await
+        .map_err(|error| {
+            query_error_from_parquet_error(error, |message| {
+                format!(
                 "browser runtime could not open parquet file '{}' for batch decoding: {message}",
                 target.path
             )
-        })
-    })?;
+            })
+        })?;
     let row_group_plan = plan_parquet_row_groups(builder.metadata(), row_group_predicate)?;
     {
         let mut snapshot = metrics_handle.snapshot.lock().map_err(|_| {
@@ -3848,7 +4282,7 @@ fn normalize_name(name: &str) -> String {
 
 fn strong_object_etag(etag: &str) -> Option<String> {
     let etag = etag.trim();
-    if etag.starts_with("W/") || etag.starts_with("w/") {
+    if etag.len() <= 2 || etag.starts_with("W/") || etag.starts_with("w/") {
         return None;
     }
     if !(etag.starts_with('"') && etag.ends_with('"')) {
@@ -3873,8 +4307,9 @@ fn execution_runtime_error(message: impl Into<String>) -> QueryError {
 mod tests {
     use super::{
         merge_parquet_range_read_metrics, HttpRangeAsyncFileReader, ObjectSource,
-        ParquetObjectIdentity, ParquetRangeCache, ParquetRangeReadKey, ParquetRangeReadMetrics,
-        ParquetRangeReadPhase, ScanTarget, SharedScanTargetMetricsHandle,
+        ParquetObjectIdentity, ParquetRangeCache, ParquetRangeQueryContext, ParquetRangeReadKey,
+        ParquetRangeReadMetrics, ParquetRangeReadPhase, ParquetReadaheadPolicy, ScanTarget,
+        SharedScanTargetMetricsHandle,
     };
     use crate::{ScanTargetMetricsHandle, ScanTargetMetricsSnapshot};
     use parquet::arrow::async_reader::AsyncFileReader;
@@ -4008,6 +4443,455 @@ mod tests {
         assert_eq!(merged.range_cache_bytes_stored, 2_560);
         assert_eq!(merged.range_readahead_requests, 2);
         assert_eq!(merged.range_readahead_wasted_bytes, 64);
+    }
+
+    #[tokio::test]
+    async fn readahead_sequential_hit_reports_useful_and_wasted_bytes_once() {
+        let body = test_body(128);
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+        let cache = ParquetRangeCache::with_limits(128, 128);
+        let query = cache.begin_query_with_policy(test_readahead_policy());
+        let mut reader = test_async_reader_with_query(
+            &server,
+            body.len(),
+            Some("\"object-v1\""),
+            cache,
+            query.clone(),
+        );
+
+        let first = reader
+            .get_bytes(0..16)
+            .await
+            .expect("first range should read");
+        let second = reader
+            .get_bytes(16..24)
+            .await
+            .expect("prefetched tail should satisfy the second range");
+
+        assert_eq!(first, bytes::Bytes::copy_from_slice(&body[0..16]));
+        assert_eq!(second, bytes::Bytes::copy_from_slice(&body[16..24]));
+        let requests = server.recorded_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].headers.get("range"),
+            Some(&"bytes=0-31".to_string())
+        );
+        assert_eq!(
+            requests[0].headers.get("if-range"),
+            Some(&"\"object-v1\"".to_string())
+        );
+        let operation = reader.metrics.snapshot();
+        assert_eq!(operation.bytes_fetched, 32);
+        assert_eq!(operation.range_read_metrics.range_cache_bytes_stored, 32);
+        assert_eq!(operation.range_read_metrics.range_cache_bytes_reused, 8);
+        let readahead = query.finalize().expect("query metrics should finalize");
+        assert_eq!(readahead.range_readahead_requests, 1);
+        assert_eq!(readahead.range_readahead_bytes_fetched, 16);
+        assert_eq!(readahead.range_readahead_bytes_used, 8);
+        assert_eq!(readahead.range_readahead_wasted_bytes, 8);
+        assert_eq!(
+            readahead.range_readahead_bytes_fetched,
+            readahead.range_readahead_bytes_used + readahead.range_readahead_wasted_bytes
+        );
+        assert_eq!(
+            query
+                .finalize()
+                .expect("a second finalization should be harmless"),
+            ParquetRangeReadMetrics::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn readahead_clamps_only_at_eof_and_never_reads_past_object_size() {
+        let body = test_body(24);
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+        let cache = ParquetRangeCache::with_limits(128, 128);
+        let query = cache.begin_query_with_policy(test_readahead_policy());
+        let mut reader = test_async_reader_with_query(
+            &server,
+            body.len(),
+            Some("\"object-v1\""),
+            cache,
+            query.clone(),
+        );
+
+        let bytes = reader
+            .get_bytes(16..20)
+            .await
+            .expect("EOF-clamped range should read");
+
+        assert_eq!(bytes, bytes::Bytes::copy_from_slice(&body[16..20]));
+        let requests = server.recorded_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].headers.get("range"),
+            Some(&"bytes=16-23".to_string())
+        );
+        let readahead = query.finalize().expect("query metrics should finalize");
+        assert_eq!(readahead.range_readahead_bytes_fetched, 4);
+        assert_eq!(readahead.range_readahead_wasted_bytes, 4);
+    }
+
+    #[tokio::test]
+    async fn readahead_requires_a_strong_identity_and_nonempty_scan_data_range() {
+        for object_etag in [None, Some("W/\"object-v1\""), Some("\"\"")] {
+            let body = test_body(64);
+            let server = RangeCoalescingServer::new(body.clone(), object_etag.map(str::to_string));
+            let cache = ParquetRangeCache::with_limits(128, 128);
+            let query = cache.begin_query_with_policy(test_readahead_policy());
+            let mut reader = test_async_reader_with_query(
+                &server,
+                body.len(),
+                object_etag,
+                cache,
+                query.clone(),
+            );
+
+            assert!(reader
+                .get_bytes(0..0)
+                .await
+                .expect("empty range")
+                .is_empty());
+            assert!(server.recorded_requests().is_empty());
+            let bytes = reader
+                .get_bytes(0..16)
+                .await
+                .expect("exact range should read");
+            assert_eq!(bytes, bytes::Bytes::copy_from_slice(&body[0..16]));
+            let requests = server.recorded_requests();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(
+                requests[0].headers.get("range"),
+                Some(&"bytes=0-15".to_string())
+            );
+            assert!(!requests[0].headers.contains_key("if-range"));
+            let readahead = query.finalize().expect("query metrics should finalize");
+            assert_eq!(readahead.range_readahead_requests, 0);
+            assert_eq!(readahead.range_readahead_bytes_fetched, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn readahead_does_not_expand_coalesced_misses() {
+        let body = test_body(128);
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+        let cache = ParquetRangeCache::with_limits(128, 128);
+        let query = cache.begin_query_with_policy(test_readahead_policy());
+        let mut reader = test_async_reader_with_query(
+            &server,
+            body.len(),
+            Some("\"object-v1\""),
+            cache,
+            query.clone(),
+        );
+        let ranges = vec![0_u64..16, 20..36];
+
+        let chunks = reader
+            .get_byte_ranges(ranges.clone())
+            .await
+            .expect("coalesced ranges should read");
+
+        assert_eq!(chunks, expected_chunks(&body, &ranges));
+        let requests = server.recorded_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].headers.get("range"),
+            Some(&"bytes=0-35".to_string())
+        );
+        assert_eq!(reader.metrics.snapshot().bytes_fetched, 36);
+        let readahead = query.finalize().expect("query metrics should finalize");
+        assert_eq!(readahead.range_readahead_requests, 0);
+        assert_eq!(readahead.range_readahead_bytes_fetched, 0);
+    }
+
+    #[tokio::test]
+    async fn readahead_coalesced_cache_hit_attributes_only_logical_ranges() {
+        let body = test_body(128);
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+        let cache = ParquetRangeCache::with_limits(128, 128);
+        let query = cache.begin_query_with_policy(test_readahead_policy());
+        let mut reader = test_async_reader_with_query(
+            &server,
+            body.len(),
+            Some("\"object-v1\""),
+            cache,
+            query.clone(),
+        );
+        reader
+            .get_bytes(0..16)
+            .await
+            .expect("seed range should read with readahead");
+        let ranges = vec![16_u64..22, 24..32];
+
+        let chunks = reader
+            .get_byte_ranges(ranges.clone())
+            .await
+            .expect("coalesced logical ranges should reuse the prefetched tail");
+
+        assert_eq!(chunks, expected_chunks(&body, &ranges));
+        assert_eq!(server.recorded_requests().len(), 1);
+        assert_eq!(
+            reader
+                .metrics
+                .snapshot()
+                .range_read_metrics
+                .range_cache_bytes_reused,
+            16
+        );
+        let readahead = query.finalize().expect("query metrics should finalize");
+        assert_eq!(readahead.range_readahead_bytes_fetched, 16);
+        assert_eq!(readahead.range_readahead_bytes_used, 14);
+        assert_eq!(readahead.range_readahead_wasted_bytes, 2);
+        assert_eq!(
+            readahead.range_readahead_bytes_fetched,
+            readahead.range_readahead_bytes_used + readahead.range_readahead_wasted_bytes
+        );
+    }
+
+    #[tokio::test]
+    async fn readahead_enforces_physical_cumulative_and_cache_boundaries() {
+        let body = test_body(160);
+
+        for (logical_end, expected_end) in [(48_u64, 64_u64), (49, 49)] {
+            let server =
+                RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+            let cache = ParquetRangeCache::with_limits(128, 160);
+            let query = cache.begin_query_with_policy(test_readahead_policy());
+            let mut reader = test_async_reader_with_query(
+                &server,
+                body.len(),
+                Some("\"object-v1\""),
+                cache,
+                query,
+            );
+            reader
+                .get_bytes(0..logical_end)
+                .await
+                .expect("physical-boundary range should read");
+            assert_eq!(
+                server.recorded_requests()[0].headers.get("range"),
+                Some(&format!("bytes=0-{}", expected_end - 1))
+            );
+        }
+
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+        let cache = ParquetRangeCache::with_limits(128, 160);
+        let query = cache.begin_query_with_policy(test_readahead_policy());
+        let mut reader = test_async_reader_with_query(
+            &server,
+            body.len(),
+            Some("\"object-v1\""),
+            cache,
+            query.clone(),
+        );
+        for range in [0..16, 40..56, 158..159] {
+            reader
+                .get_bytes(range)
+                .await
+                .expect("cumulative-boundary range should read");
+        }
+        let ranges = server
+            .recorded_requests()
+            .iter()
+            .map(|request| request.headers["range"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(ranges, ["bytes=0-31", "bytes=40-71", "bytes=158-158"]);
+        let readahead = query.finalize().expect("query metrics should finalize");
+        assert_eq!(readahead.range_readahead_bytes_fetched, 32);
+
+        for (cap, expected_range) in [(32_u64, "bytes=0-31"), (31, "bytes=0-15")] {
+            let server =
+                RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+            let cache = ParquetRangeCache::with_limits(128, cap);
+            let query = cache.begin_query_with_policy(test_readahead_policy());
+            let mut reader = test_async_reader_with_query(
+                &server,
+                body.len(),
+                Some("\"object-v1\""),
+                cache,
+                query,
+            );
+            reader
+                .get_bytes(0..16)
+                .await
+                .expect("cache-boundary range should read");
+            assert_eq!(
+                server.recorded_requests()[0].headers.get("range"),
+                Some(&expected_range.to_string())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn readahead_used_intervals_are_unique_and_prior_query_hits_are_unattributed() {
+        let body = test_body(64);
+        let server = RangeCoalescingServer::new(body, Some("\"object-v1\"".to_string()));
+        let cache = ParquetRangeCache::with_limits(128, 64);
+        let first_query = cache.begin_query_with_policy(test_readahead_policy());
+        let mut first_reader = test_async_reader_with_query(
+            &server,
+            64,
+            Some("\"object-v1\""),
+            cache.clone(),
+            first_query.clone(),
+        );
+        first_reader.get_bytes(0..16).await.expect("seed range");
+        first_reader.get_bytes(16..24).await.expect("first overlap");
+        first_reader
+            .get_bytes(20..28)
+            .await
+            .expect("second overlap");
+        first_reader
+            .get_bytes(16..28)
+            .await
+            .expect("repeated overlap");
+        let first_metrics = first_query.finalize().expect("first query should finalize");
+        assert_eq!(first_metrics.range_readahead_bytes_used, 12);
+        assert_eq!(first_metrics.range_readahead_wasted_bytes, 4);
+
+        let second_query = cache.begin_query_with_policy(test_readahead_policy());
+        let mut second_reader = test_async_reader_with_query(
+            &server,
+            64,
+            Some("\"object-v1\""),
+            cache,
+            second_query.clone(),
+        );
+        second_reader
+            .get_bytes(16..24)
+            .await
+            .expect("prior-query cache hit should read");
+        assert_eq!(server.recorded_requests().len(), 1);
+        assert_eq!(
+            second_reader
+                .metrics
+                .snapshot()
+                .range_read_metrics
+                .range_cache_bytes_reused,
+            8
+        );
+        assert_eq!(
+            second_query
+                .finalize()
+                .expect("second query should finalize")
+                .range_readahead_bytes_used,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn readahead_identity_drift_is_exact_then_later_misses_may_expand() {
+        let body = test_body(64);
+        let server = RangeCoalescingServer::new(body.clone(), Some("\"object-v1\"".to_string()));
+        let cache = ParquetRangeCache::with_limits(128, 128);
+        let query = cache.begin_query_with_policy(test_readahead_policy());
+        let mut first_reader = test_async_reader_with_query(
+            &server,
+            body.len(),
+            Some("\"object-v1\""),
+            cache.clone(),
+            query.clone(),
+        );
+        first_reader.get_bytes(0..16).await.expect("v1 range");
+
+        server.set_etag(Some("\"object-v2\"".to_string()));
+        let mut second_reader = test_async_reader_with_query(
+            &server,
+            body.len(),
+            Some("\"object-v2\""),
+            cache,
+            query.clone(),
+        );
+        let bytes = second_reader
+            .get_bytes(16..24)
+            .await
+            .expect("v2 range should refetch");
+        let later = second_reader
+            .get_bytes(32..40)
+            .await
+            .expect("later v2 miss should readahead");
+
+        assert_eq!(bytes, bytes::Bytes::copy_from_slice(&body[16..24]));
+        assert_eq!(later, bytes::Bytes::copy_from_slice(&body[32..40]));
+        let requests = server.recorded_requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            requests[1].headers.get("range"),
+            Some(&"bytes=16-23".to_string())
+        );
+        assert_eq!(
+            requests[1].headers.get("if-range"),
+            Some(&"\"object-v2\"".to_string())
+        );
+        assert_eq!(
+            requests[2].headers.get("range"),
+            Some(&"bytes=32-55".to_string())
+        );
+        assert_eq!(
+            second_reader
+                .metrics
+                .snapshot()
+                .range_read_metrics
+                .range_cache_validation_misses,
+            1
+        );
+        let readahead = query.finalize().expect("query metrics should finalize");
+        assert_eq!(readahead.range_readahead_requests, 2);
+        assert_eq!(readahead.range_readahead_bytes_used, 0);
+        assert_eq!(readahead.range_readahead_wasted_bytes, 32);
+    }
+
+    #[tokio::test]
+    async fn readahead_size_drift_is_exact_rejected_and_releases_budget() {
+        let body = test_body(64);
+        let server = RangeCoalescingServer::new(body, Some("\"object-v1\"".to_string()));
+        let cache = ParquetRangeCache::with_limits(128, 128);
+        let query = cache.begin_query_with_policy(test_readahead_policy());
+        let mut first_reader = test_async_reader_with_query(
+            &server,
+            64,
+            Some("\"object-v1\""),
+            cache.clone(),
+            query.clone(),
+        );
+        first_reader.get_bytes(0..16).await.expect("size-64 range");
+
+        let mut drifted_reader = test_async_reader_with_query(
+            &server,
+            65,
+            Some("\"object-v1\""),
+            cache.clone(),
+            query.clone(),
+        );
+        let error = drifted_reader
+            .get_bytes(16..24)
+            .await
+            .expect_err("declared size drift must fail expanded response validation");
+
+        assert!(error.to_string().contains("object size"));
+        let requests = server.recorded_requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[1].headers.get("range"),
+            Some(&"bytes=16-23".to_string())
+        );
+        assert_eq!(
+            requests[1].headers.get("if-range"),
+            Some(&"\"object-v1\"".to_string())
+        );
+        assert_eq!(cache.snapshot().range_cache_stores, 1);
+        assert_eq!(
+            drifted_reader
+                .metrics
+                .snapshot()
+                .range_read_metrics
+                .range_cache_validation_misses,
+            1
+        );
+        let readahead = query.finalize().expect("query metrics should finalize");
+        assert_eq!(readahead.range_readahead_requests, 1);
+        assert_eq!(readahead.range_readahead_bytes_used, 0);
+        assert_eq!(readahead.range_readahead_wasted_bytes, 16);
     }
 
     #[tokio::test]
@@ -4780,6 +5664,26 @@ mod tests {
             object_etag,
             Some(range_cache),
         )
+    }
+
+    fn test_readahead_policy() -> ParquetReadaheadPolicy {
+        ParquetReadaheadPolicy::new(16, 32, 64)
+    }
+
+    fn test_async_reader_with_query(
+        server: &RangeCoalescingServer,
+        object_len: usize,
+        object_etag: Option<&str>,
+        range_cache: ParquetRangeCache,
+        query: ParquetRangeQueryContext,
+    ) -> HttpRangeAsyncFileReader {
+        test_async_reader_with_optional_range_cache(
+            server,
+            object_len,
+            object_etag,
+            Some(range_cache),
+        )
+        .with_query_context(query)
     }
 
     fn test_async_reader_with_optional_range_cache(

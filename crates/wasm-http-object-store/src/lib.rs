@@ -353,13 +353,45 @@ pub struct SharedRangeCacheMetrics {
 #[derive(Debug, Default)]
 struct MemoryRangeCacheState {
     entries: Vec<ExtentCacheEntry>,
+    retained_bytes: u64,
+    reserved_bytes: u64,
     metrics: SharedRangeCacheMetrics,
 }
 
 #[derive(Debug, Default)]
 pub struct MemoryRangeCache {
     max_entries: Option<usize>,
+    max_retained_bytes: Option<u64>,
     state: Mutex<MemoryRangeCacheState>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MemoryRangeCacheCapacity {
+    pub retained_bytes: u64,
+    pub reserved_bytes: u64,
+    pub max_retained_bytes: Option<u64>,
+}
+
+#[derive(Debug)]
+pub struct MemoryRangeCacheReservation {
+    cache: Arc<MemoryRangeCache>,
+    bytes: u64,
+    active: bool,
+}
+
+impl MemoryRangeCacheReservation {
+    pub fn bytes(&self) -> u64 {
+        self.bytes
+    }
+}
+
+impl Drop for MemoryRangeCacheReservation {
+    fn drop(&mut self) {
+        if self.active {
+            self.cache.release_reservation(self.bytes);
+            self.active = false;
+        }
+    }
 }
 
 impl MemoryRangeCache {
@@ -370,7 +402,52 @@ impl MemoryRangeCache {
     pub fn with_max_entries(max_entries: usize) -> Self {
         Self {
             max_entries: Some(max_entries.max(1)),
+            max_retained_bytes: None,
             state: Mutex::new(MemoryRangeCacheState::default()),
+        }
+    }
+
+    pub fn with_limits(max_entries: usize, max_retained_bytes: u64) -> Self {
+        Self {
+            max_entries: Some(max_entries.max(1)),
+            max_retained_bytes: Some(max_retained_bytes),
+            state: Mutex::new(MemoryRangeCacheState::default()),
+        }
+    }
+
+    pub fn try_reserve(self: &Arc<Self>, bytes: u64) -> Option<MemoryRangeCacheReservation> {
+        if bytes == 0 || self.max_retained_bytes.is_none() {
+            return None;
+        }
+        let (mut state, recovered_poison) = self.lock_state();
+        if recovered_poison {
+            state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+            return None;
+        }
+        let projected = state
+            .retained_bytes
+            .checked_add(state.reserved_bytes)?
+            .checked_add(bytes)?;
+        if projected > self.max_retained_bytes? {
+            return None;
+        }
+        state.reserved_bytes = state.reserved_bytes.saturating_add(bytes);
+        Some(MemoryRangeCacheReservation {
+            cache: Arc::clone(self),
+            bytes,
+            active: true,
+        })
+    }
+
+    pub fn capacity(&self) -> MemoryRangeCacheCapacity {
+        let (mut state, recovered_poison) = self.lock_state();
+        if recovered_poison {
+            state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+        }
+        MemoryRangeCacheCapacity {
+            retained_bytes: state.retained_bytes,
+            reserved_bytes: state.reserved_bytes,
+            max_retained_bytes: self.max_retained_bytes,
         }
     }
 
@@ -498,6 +575,49 @@ impl MemoryRangeCache {
         }
     }
 
+    pub fn store_reserved(
+        &self,
+        mut reservation: MemoryRangeCacheReservation,
+        identity: &RangeCacheIdentity,
+        extent: ByteExtent,
+        bytes: Bytes,
+    ) -> RangeCacheStoreObservation {
+        let response_bytes = bytes.len() as u64;
+        if !std::ptr::eq(self, Arc::as_ptr(&reservation.cache))
+            || response_bytes > reservation.bytes
+        {
+            return RangeCacheStoreObservation {
+                outcome: RangeCacheStoreOutcome::CacheError,
+                bytes_stored: 0,
+                validation_misses: 0,
+            };
+        }
+
+        let (mut state, recovered_poison) = self.lock_state();
+        if recovered_poison {
+            state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+            return RangeCacheStoreObservation {
+                outcome: RangeCacheStoreOutcome::CacheError,
+                bytes_stored: 0,
+                validation_misses: 0,
+            };
+        }
+        state.reserved_bytes = state.reserved_bytes.saturating_sub(reservation.bytes);
+        reservation.active = false;
+        match self.store_entry_locked(&mut state, identity, extent, bytes) {
+            Ok((_, validation_misses)) => RangeCacheStoreObservation {
+                outcome: RangeCacheStoreOutcome::Stored,
+                bytes_stored: response_bytes,
+                validation_misses,
+            },
+            Err(()) => RangeCacheStoreObservation {
+                outcome: RangeCacheStoreOutcome::CacheError,
+                bytes_stored: 0,
+                validation_misses: 0,
+            },
+        }
+    }
+
     fn store_entry(
         &self,
         identity: &RangeCacheIdentity,
@@ -509,23 +629,39 @@ impl MemoryRangeCache {
             state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
             return Err(());
         }
+        self.store_entry_locked(&mut state, identity, extent, bytes)
+    }
+
+    fn store_entry_locked(
+        &self,
+        state: &mut MemoryRangeCacheState,
+        identity: &RangeCacheIdentity,
+        extent: ByteExtent,
+        bytes: Bytes,
+    ) -> Result<(ExtentCacheEntry, u64), ()> {
         let key = ExtentCacheKey::from_identity(identity);
-        let validation_misses = evict_stale_memory_entries(&mut state, &key);
+        let validation_misses = evict_stale_memory_entries(state, &key);
         let Ok(mut new_entry) = ExtentCacheEntry::new(key, extent, bytes) else {
             state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
             return Err(());
         };
+        let original_entries = state.entries.clone();
         let mut retained = Vec::with_capacity(state.entries.len() + 1);
         let entries = std::mem::take(&mut state.entries);
 
         for existing in entries {
-            if existing.key == new_entry.key
+            // Byte-capped caches keep physical request extents independently
+            // evictable instead of repeatedly copying one growing merged buffer.
+            if self.max_retained_bytes.is_none()
+                && existing.key == new_entry.key
                 && existing.extent.touches_or_overlaps(new_entry.extent)
             {
                 match existing.merge(new_entry) {
                     Ok(merged) => new_entry = merged,
                     Err(_) => {
                         state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+                        state.entries = original_entries;
+                        state.retained_bytes = retained_bytes(&state.entries);
                         return Err(());
                     }
                 }
@@ -539,9 +675,30 @@ impl MemoryRangeCache {
                 retained.remove(0);
             }
         }
+        if let Some(max_retained_bytes) = self.max_retained_bytes {
+            let available_bytes = max_retained_bytes.saturating_sub(state.reserved_bytes);
+            while retained_bytes(&retained) > available_bytes && retained.len() > 1 {
+                retained.remove(0);
+            }
+            if retained_bytes(&retained) > available_bytes {
+                state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+                state.entries = original_entries;
+                state.retained_bytes = retained_bytes(&state.entries);
+                return Err(());
+            }
+        }
         state.entries = retained;
+        state.retained_bytes = retained_bytes(&state.entries);
 
         Ok((new_entry, validation_misses))
+    }
+
+    fn release_reservation(&self, bytes: u64) {
+        let (mut state, recovered_poison) = self.lock_state();
+        if recovered_poison {
+            state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
+        }
+        state.reserved_bytes = state.reserved_bytes.saturating_sub(bytes);
     }
 
     pub fn metrics(&self) -> SharedRangeCacheMetrics {
@@ -608,8 +765,15 @@ fn evict_stale_memory_entries(state: &mut MemoryRangeCacheState, key: &ExtentCac
     state
         .entries
         .retain(|entry| entry.key.resource != key.resource || entry.key == *key);
+    state.retained_bytes = retained_bytes(&state.entries);
     state.metrics.validation_misses = state.metrics.validation_misses.saturating_add(stale_count);
     stale_count
+}
+
+fn retained_bytes(entries: &[ExtentCacheEntry]) -> u64 {
+    entries.iter().fold(0_u64, |total, entry| {
+        total.saturating_add(entry.bytes.len() as u64)
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

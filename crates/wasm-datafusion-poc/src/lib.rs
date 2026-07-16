@@ -49,8 +49,9 @@ use query_contract::{
 use wasm_bindgen::prelude::*;
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{
-    merge_parquet_range_read_metrics, stream_scan_target_batches_with_row_group_pruning_and_caches,
-    ObjectSource, ParquetIntegerComparison, ParquetMetadataCache, ParquetRangeCache,
+    merge_parquet_range_read_metrics,
+    stream_scan_target_batches_with_row_group_pruning_caches_and_query, ObjectSource,
+    ParquetIntegerComparison, ParquetMetadataCache, ParquetRangeCache, ParquetRangeQueryContext,
     ParquetRangeReadMetrics, ParquetRowGroupPruningPredicate, ScanTarget, ScanTargetMetricsHandle,
     ScanTargetMetricsSnapshot,
 };
@@ -506,7 +507,7 @@ impl TableProvider for AxonDeltaTableProvider {
 
     fn scan<'life0, 'life1, 'life2, 'life3, 'async_trait>(
         &'life0 self,
-        _state: &'life1 dyn Session,
+        state: &'life1 dyn Session,
         projection: Option<&'life2 Vec<usize>>,
         filters: &'life3 [Expr],
         limit: Option<usize>,
@@ -520,6 +521,10 @@ impl TableProvider for AxonDeltaTableProvider {
     {
         Box::pin(async move {
             let schema = self.projected_schema(projection)?;
+            let query_context = state
+                .config()
+                .get_extension::<ParquetRangeQueryContext>()
+                .map(|context| context.as_ref().clone());
             Ok(Arc::new(AxonParquetScanExec::new(
                 Arc::clone(&self.descriptor),
                 schema,
@@ -531,6 +536,7 @@ impl TableProvider for AxonDeltaTableProvider {
                 self.cancellation.clone(),
                 self.metadata_cache.clone(),
                 self.range_cache.clone(),
+                query_context,
             )) as Arc<dyn ExecutionPlan>)
         })
     }
@@ -573,6 +579,7 @@ pub struct AxonParquetScanExec {
     cancellation: BrowserQueryCancellation,
     metadata_cache: ParquetMetadataCache,
     range_cache: ParquetRangeCache,
+    query_context: Option<ParquetRangeQueryContext>,
 }
 
 impl AxonParquetScanExec {
@@ -587,6 +594,7 @@ impl AxonParquetScanExec {
         cancellation: BrowserQueryCancellation,
         metadata_cache: ParquetMetadataCache,
         range_cache: ParquetRangeCache,
+        query_context: Option<ParquetRangeQueryContext>,
     ) -> Self {
         let plan = AxonScanPlan::new(
             descriptor.as_ref(),
@@ -622,6 +630,7 @@ impl AxonParquetScanExec {
             cancellation,
             metadata_cache,
             range_cache,
+            query_context,
         }
     }
 
@@ -717,6 +726,7 @@ impl AxonParquetScanExec {
         let cancellation = self.cancellation.clone();
         let metadata_cache = self.metadata_cache.clone();
         let range_cache = self.range_cache.clone();
+        let query_context = self.query_context.clone();
         let stream_schema = Arc::clone(&self.projected_schema);
         let projected_schema = Arc::clone(&self.projected_schema);
         let parquet_batches = stream::once(async move {
@@ -733,6 +743,7 @@ impl AxonParquetScanExec {
                 cancellation,
                 metadata_cache,
                 range_cache,
+                query_context,
             )
             .await
             .map(|scan| {
@@ -1529,6 +1540,7 @@ struct PlannedScanTargetsState {
     cancellation: BrowserQueryCancellation,
     metadata_cache: ParquetMetadataCache,
     range_cache: ParquetRangeCache,
+    query_context: Option<ParquetRangeQueryContext>,
 }
 
 async fn stream_planned_scan_targets(
@@ -1544,6 +1556,7 @@ async fn stream_planned_scan_targets(
     cancellation: BrowserQueryCancellation,
     metadata_cache: ParquetMetadataCache,
     range_cache: ParquetRangeCache,
+    query_context: Option<ParquetRangeQueryContext>,
 ) -> Result<PlannedScanTargetBatchStream, QueryError> {
     let state = PlannedScanTargetsState {
         reader,
@@ -1562,6 +1575,7 @@ async fn stream_planned_scan_targets(
         cancellation,
         metadata_cache,
         range_cache,
+        query_context,
     };
     let batches = stream::try_unfold(state, |mut state| async move {
         loop {
@@ -1621,7 +1635,7 @@ async fn stream_planned_scan_targets(
             state.cancellation.check_cancelled_at("scan stream")?;
             let target = scan_target_for_planned_index(state.descriptor.as_ref(), file_index)?;
 
-            let scan = stream_scan_target_batches_with_row_group_pruning_and_caches(
+            let scan = stream_scan_target_batches_with_row_group_pruning_caches_and_query(
                 &state.reader,
                 &target,
                 &state.required_columns,
@@ -1630,6 +1644,7 @@ async fn stream_planned_scan_targets(
                 state.row_group_predicate.as_ref(),
                 Some(&state.metadata_cache),
                 Some(&state.range_cache),
+                state.query_context.as_ref(),
             )
             .await?;
             state.cancellation.check_cancelled_at("scan stream")?;
@@ -2321,10 +2336,11 @@ impl WasmDataFusionEngine {
         sql: &str,
     ) -> Result<(SchemaRef, Vec<RecordBatch>, DataFusionScanMetricsSummary), QueryError> {
         self.cancellation.check_cancelled_at("SQL planning")?;
-        let frame = self.ctx.sql(sql).await.map_err(map_datafusion_error)?;
+        let (query_ctx, query_context) = self.begin_query_session();
+        let frame = query_ctx.sql(sql).await.map_err(map_datafusion_error)?;
         self.cancellation.check_cancelled_at("SQL planning")?;
         let output_schema = frame.schema().inner().clone();
-        let task_ctx = self.ctx.task_ctx();
+        let task_ctx = query_ctx.task_ctx();
         let plan = frame
             .create_physical_plan()
             .await
@@ -2341,7 +2357,11 @@ impl WasmDataFusionEngine {
         .await?;
         self.cancellation
             .check_cancelled_at("record batch output")?;
-        let scan_metrics = datafusion_scan_metrics_from_plan(&plan)?;
+        let mut scan_metrics = datafusion_scan_metrics_from_plan(&plan)?;
+        scan_metrics.range_read_metrics = merge_parquet_range_read_metrics(
+            &scan_metrics.range_read_metrics,
+            &query_context.finalize()?,
+        );
         validate_query_budget_value_option_at(
             "max_scan_bytes",
             scan_metrics.bytes_fetched,
@@ -2384,10 +2404,11 @@ impl WasmDataFusionEngine {
         include_physical_plan: bool,
     ) -> Result<DataFusionArrowIpcResult, QueryError> {
         self.cancellation.check_cancelled_at("SQL planning")?;
-        let frame = self.ctx.sql(sql).await.map_err(map_datafusion_error)?;
+        let (query_ctx, query_context) = self.begin_query_session();
+        let frame = query_ctx.sql(sql).await.map_err(map_datafusion_error)?;
         self.cancellation.check_cancelled_at("SQL planning")?;
         let output_schema = frame.schema().inner().clone();
-        let task_ctx = self.ctx.task_ctx();
+        let task_ctx = query_ctx.task_ctx();
         let plan = frame
             .create_physical_plan()
             .await
@@ -2409,7 +2430,11 @@ impl WasmDataFusionEngine {
         )
         .await?;
         self.cancellation.check_cancelled_at("Arrow IPC output")?;
-        let scan_metrics = datafusion_scan_metrics_from_plan(&plan)?;
+        let mut scan_metrics = datafusion_scan_metrics_from_plan(&plan)?;
+        scan_metrics.range_read_metrics = merge_parquet_range_read_metrics(
+            &scan_metrics.range_read_metrics,
+            &query_context.finalize()?,
+        );
         validate_query_budget_value_option_at(
             "max_scan_bytes",
             scan_metrics.bytes_fetched,
@@ -2431,6 +2456,15 @@ impl WasmDataFusionEngine {
             scan_metrics,
             physical_plan,
         })
+    }
+
+    fn begin_query_session(&self) -> (SessionContext, ParquetRangeQueryContext) {
+        let query_context = self.range_cache.begin_query();
+        let mut state = self.ctx.state();
+        state
+            .config_mut()
+            .set_extension(Arc::new(query_context.clone()));
+        (SessionContext::new_with_state(state), query_context)
     }
 }
 
@@ -2970,6 +3004,8 @@ mod tests {
                 },
                 BrowserQueryCancellation::default(),
                 ParquetMetadataCache::default(),
+                ParquetRangeCache::default(),
+                None,
             )
             .await;
             let error = match stream {
@@ -3050,6 +3086,8 @@ mod tests {
                 BrowserQueryBudget::default(),
                 BrowserQueryCancellation::default(),
                 ParquetMetadataCache::default(),
+                ParquetRangeCache::default(),
+                None,
             )
             .await
             .expect("stream construction should not validate later planned files eagerly");

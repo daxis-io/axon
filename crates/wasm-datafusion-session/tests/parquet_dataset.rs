@@ -338,8 +338,36 @@ fn session_reuses_prepared_snapshot_for_repeated_sql_when_identity_matches() {
                 .unwrap_or_default()
                 > 0
         );
+        assert_eq!(
+            first.response.metrics.range_readahead_requests,
+            Some(0),
+            "the coalesced DataFusion read should retain its planned physical boundary"
+        );
+        assert_eq!(
+            first.response.metrics.range_readahead_bytes_fetched,
+            Some(0)
+        );
+        assert_eq!(first.response.metrics.range_readahead_bytes_used, Some(0));
+        assert_eq!(first.response.metrics.range_readahead_wasted_bytes, Some(0));
+        assert_eq!(
+            first.response.metrics.range_readahead_bytes_fetched,
+            Some(
+                first
+                    .response
+                    .metrics
+                    .range_readahead_bytes_used
+                    .unwrap_or_default()
+                    + first
+                        .response
+                        .metrics
+                        .range_readahead_wasted_bytes
+                        .unwrap_or_default()
+            )
+        );
         assert_eq!(second.response.metrics.bytes_fetched, 0);
         assert_eq!(third.response.metrics.bytes_fetched, 0);
+        assert_eq!(second.response.metrics.range_readahead_requests, Some(0));
+        assert_eq!(second.response.metrics.range_readahead_bytes_used, Some(0));
         assert_eq!(
             second.response.metrics.range_cache_hits,
             third.response.metrics.range_cache_hits
@@ -347,6 +375,62 @@ fn session_reuses_prepared_snapshot_for_repeated_sql_when_identity_matches() {
         assert_eq!(
             second.response.metrics.range_cache_bytes_reused,
             third.response.metrics.range_cache_bytes_reused
+        );
+    });
+}
+
+#[test]
+fn session_attributes_useful_readahead_across_sequential_row_group_reads() {
+    let _guard = PARQUET_DATASET_TEST_LOCK
+        .lock()
+        .expect("Parquet dataset tests should serialize local HTTP servers");
+
+    runtime().block_on(async {
+        let object = parquet_bytes_with_i64_row_groups(&[&[1, 2, 3], &[10, 11, 12]]);
+        let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+        let server =
+            RequestCapturingServer::new_with_etag(object, Some("\"part-000-v1\"".to_string()));
+        let dataset = single_identity_dataset(
+            "https://example.invalid/datasets/events",
+            server.url(),
+            object_size,
+            "\"part-000-v1\"",
+        );
+        let mut session = BrowserDataFusionSession::new(browser_safe_http_config(), u64::MAX)
+            .expect("browser DataFusion session should construct");
+        session
+            .open_parquet_dataset("events", dataset)
+            .await
+            .expect("standard Parquet dataset should open");
+
+        let request = QueryRequest::new(
+            "https://example.invalid/datasets/events",
+            "SELECT id FROM events ORDER BY id",
+            ExecutionTarget::BrowserWasm,
+        );
+        let result = session
+            .sql("events", &request)
+            .await
+            .expect("row-group query should execute");
+
+        assert_eq!(result.runtime_result.row_count, 6);
+        assert!(
+            result
+                .response
+                .metrics
+                .range_readahead_bytes_used
+                .unwrap_or_default()
+                > 0,
+            "the later row-group read should consume bytes prefetched by the first"
+        );
+        assert!(
+            result
+                .response
+                .metrics
+                .range_readahead_wasted_bytes
+                .unwrap_or_default()
+                > 0,
+            "bytes beyond the later row-group read should remain wasted"
         );
     });
 }
@@ -1225,6 +1309,40 @@ fn single_identity_dataset(
 
 fn parquet_bytes_with_i64_columns(rows: &[(i64, i64)]) -> Vec<u8> {
     parquet_bytes_with_i64_columns_and_compression(rows, Compression::UNCOMPRESSED)
+}
+
+fn parquet_bytes_with_i64_row_groups(row_groups: &[&[i64]]) -> Vec<u8> {
+    let schema = Arc::new(
+        parse_message_type("message schema { REQUIRED INT64 id; }")
+            .expect("parquet schema should parse"),
+    );
+    let mut bytes = Vec::new();
+    let mut writer = SerializedFileWriter::new(
+        &mut bytes,
+        schema,
+        Arc::new(WriterProperties::builder().build()),
+    )
+    .expect("parquet writer should construct");
+
+    for values in row_groups {
+        let mut row_group = writer
+            .next_row_group()
+            .expect("row-group writer should construct");
+        if let Some(mut column) = row_group
+            .next_column()
+            .expect("column writer should be returned")
+        {
+            column
+                .typed::<Int64Type>()
+                .write_batch(values, None, None)
+                .expect("test parquet rows should write");
+            column.close().expect("column writer should close");
+        }
+        row_group.close().expect("row-group writer should close");
+    }
+
+    writer.close().expect("parquet writer should close");
+    bytes
 }
 
 fn parquet_bytes_with_i64_columns_and_compression(

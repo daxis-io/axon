@@ -81,11 +81,12 @@ pub(super) async fn stream_scan_target_batches(
     row_group_predicate: Option<&parquet_engine::ParquetRowGroupPruningPredicate>,
     metadata_cache: Option<&parquet_engine::ParquetMetadataCache>,
     range_cache: Option<&parquet_engine::ParquetRangeCache>,
+    query_context: Option<&parquet_engine::ParquetRangeQueryContext>,
 ) -> Result<
     parquet_engine::ScanTargetBatchStream<impl Stream<Item = Result<RecordBatch, QueryError>>>,
     QueryError,
 > {
-    parquet_engine::stream_scan_target_batches_with_row_group_pruning_and_caches(
+    parquet_engine::stream_scan_target_batches_with_row_group_pruning_caches_and_query(
         reader,
         target,
         required_columns,
@@ -94,6 +95,7 @@ pub(super) async fn stream_scan_target_batches(
         row_group_predicate,
         metadata_cache,
         range_cache,
+        query_context,
     )
     .await
 }

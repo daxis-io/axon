@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use std::sync::Arc;
 use wasm_http_object_store::{
     coalesce_extents, BrowserLocalObject, BrowserObject, BrowserObjectRangeReader, ByteExtent,
     ExtentCacheEntry, ExtentCacheKey, MemoryRangeCache, RangeCacheIdentity, RangeCacheLookup,
@@ -180,6 +181,210 @@ fn memory_range_cache_with_max_entries_refreshes_recently_used_extents() {
         cache.load(&third_identity, extent),
         RangeCacheLookup::Hit { .. }
     ));
+}
+
+#[test]
+fn capped_memory_range_cache_reserves_exact_capacity_and_releases_on_drop() {
+    let cache = Arc::new(MemoryRangeCache::with_limits(2, 8));
+
+    let reservation = cache
+        .try_reserve(8)
+        .expect("projected retained bytes equal to the cap should be allowed");
+    assert_eq!(reservation.bytes(), 8);
+    assert_eq!(cache.capacity().retained_bytes, 0);
+    assert_eq!(cache.capacity().reserved_bytes, 8);
+    assert!(cache.try_reserve(1).is_none());
+
+    drop(reservation);
+    assert_eq!(cache.capacity().reserved_bytes, 0);
+    assert!(cache.try_reserve(8).is_some());
+}
+
+#[test]
+fn capped_memory_range_cache_converts_reservation_to_retained_bytes_atomically() {
+    let identity = strong_identity("https://example.com/object", "\"v1\"", 8);
+    let cache = Arc::new(MemoryRangeCache::with_limits(2, 8));
+    let reservation = cache
+        .try_reserve(8)
+        .expect("full-cap reservation should succeed");
+
+    let stored = cache.store_reserved(
+        reservation,
+        &identity,
+        ByteExtent::new(0, 8).expect("valid extent"),
+        Bytes::from_static(b"abcdefgh"),
+    );
+
+    assert_eq!(stored.outcome, RangeCacheStoreOutcome::Stored);
+    assert_eq!(cache.capacity().retained_bytes, 8);
+    assert_eq!(cache.capacity().reserved_bytes, 0);
+    assert!(cache.try_reserve(1).is_none());
+}
+
+#[test]
+fn capped_memory_range_cache_counts_retained_and_reserved_bytes_together() {
+    let identity = strong_identity("https://example.com/object", "\"v1\"", 8);
+    let cache = Arc::new(MemoryRangeCache::with_limits(2, 8));
+    assert_eq!(
+        cache.store(
+            &identity,
+            ByteExtent::new(0, 4).expect("valid extent"),
+            Bytes::from_static(b"abcd"),
+        ),
+        RangeCacheStoreOutcome::Stored
+    );
+
+    let reservation = cache
+        .try_reserve(4)
+        .expect("retained plus reserved bytes equal to the cap should be allowed");
+    let capacity = cache.capacity();
+    assert_eq!(capacity.retained_bytes, 4);
+    assert_eq!(capacity.reserved_bytes, 4);
+    assert_eq!(capacity.retained_bytes + capacity.reserved_bytes, 8);
+    assert!(cache.try_reserve(1).is_none());
+    drop(reservation);
+}
+
+#[test]
+fn capped_memory_range_cache_exact_store_evicts_to_stay_under_hard_cap() {
+    let first = strong_identity("https://example.com/first", "\"v1\"", 8);
+    let second = strong_identity("https://example.com/second", "\"v1\"", 8);
+    let cache = MemoryRangeCache::with_limits(2, 8);
+
+    assert_eq!(
+        cache.store(
+            &first,
+            ByteExtent::new(0, 8).expect("valid extent"),
+            Bytes::from_static(b"abcdefgh"),
+        ),
+        RangeCacheStoreOutcome::Stored
+    );
+    assert_eq!(
+        cache.store(
+            &second,
+            ByteExtent::new(0, 1).expect("valid extent"),
+            Bytes::from_static(b"z"),
+        ),
+        RangeCacheStoreOutcome::Stored
+    );
+
+    assert_eq!(cache.capacity().retained_bytes, 1);
+    assert_eq!(
+        cache.load(&first, ByteExtent::new(0, 1).expect("valid extent")),
+        RangeCacheLookup::Miss
+    );
+    assert!(matches!(
+        cache.load(&second, ByteExtent::new(0, 1).expect("valid extent")),
+        RangeCacheLookup::Hit { .. }
+    ));
+}
+
+#[test]
+fn capped_memory_range_cache_adjacent_store_admits_newest_extent() {
+    let identity = strong_identity("https://example.com/object", "\"v1\"", 9);
+    let cache = MemoryRangeCache::with_limits(2, 8);
+
+    assert_eq!(
+        cache.store(
+            &identity,
+            ByteExtent::new(0, 8).expect("valid extent"),
+            Bytes::from_static(b"abcdefgh"),
+        ),
+        RangeCacheStoreOutcome::Stored
+    );
+    assert_eq!(
+        cache.store(
+            &identity,
+            ByteExtent::new(8, 1).expect("valid extent"),
+            Bytes::from_static(b"i"),
+        ),
+        RangeCacheStoreOutcome::Stored
+    );
+
+    assert_eq!(cache.capacity().retained_bytes, 1);
+    assert_eq!(
+        cache.load(&identity, ByteExtent::new(0, 1).expect("valid extent")),
+        RangeCacheLookup::Miss
+    );
+    assert_eq!(
+        cache.load(&identity, ByteExtent::new(8, 1).expect("valid extent")),
+        RangeCacheLookup::Hit {
+            bytes: Bytes::from_static(b"i")
+        }
+    );
+}
+
+#[test]
+fn capped_memory_range_cache_keeps_adjacent_extents_independently_evictable() {
+    let identity = strong_identity("https://example.com/object", "\"v1\"", 12);
+    let cache = MemoryRangeCache::with_limits(2, 8);
+
+    for (offset, bytes) in [
+        (0, Bytes::from_static(b"abcd")),
+        (4, Bytes::from_static(b"efgh")),
+        (8, Bytes::from_static(b"ijkl")),
+    ] {
+        assert_eq!(
+            cache.store(
+                &identity,
+                ByteExtent::new(offset, 4).expect("valid extent"),
+                bytes,
+            ),
+            RangeCacheStoreOutcome::Stored
+        );
+    }
+
+    assert_eq!(cache.capacity().retained_bytes, 8);
+    assert_eq!(
+        cache.load(&identity, ByteExtent::new(0, 4).expect("valid extent")),
+        RangeCacheLookup::Miss
+    );
+    assert_eq!(
+        cache.load(&identity, ByteExtent::new(4, 4).expect("valid extent")),
+        RangeCacheLookup::Hit {
+            bytes: Bytes::from_static(b"efgh")
+        }
+    );
+    assert_eq!(
+        cache.load(&identity, ByteExtent::new(8, 4).expect("valid extent")),
+        RangeCacheLookup::Hit {
+            bytes: Bytes::from_static(b"ijkl")
+        }
+    );
+}
+
+#[test]
+fn capped_memory_range_cache_rejected_exact_store_preserves_retained_entries() {
+    let retained = strong_identity("https://example.com/retained", "\"v1\"", 8);
+    let rejected = strong_identity("https://example.com/rejected", "\"v1\"", 8);
+    let cache = Arc::new(MemoryRangeCache::with_limits(2, 8));
+    let retained_extent = ByteExtent::new(0, 4).expect("valid extent");
+    assert_eq!(
+        cache.store(&retained, retained_extent, Bytes::from_static(b"keep")),
+        RangeCacheStoreOutcome::Stored
+    );
+    let reservation = cache
+        .try_reserve(4)
+        .expect("half-cap reservation should succeed");
+
+    assert_eq!(
+        cache.store(
+            &rejected,
+            ByteExtent::new(0, 5).expect("valid extent"),
+            Bytes::from_static(b"large"),
+        ),
+        RangeCacheStoreOutcome::CacheError
+    );
+    assert_eq!(
+        cache.load(&retained, retained_extent),
+        RangeCacheLookup::Hit {
+            bytes: Bytes::from_static(b"keep")
+        }
+    );
+    let capacity = cache.capacity();
+    assert_eq!(capacity.retained_bytes, 4);
+    assert_eq!(capacity.reserved_bytes, 4);
+    drop(reservation);
 }
 
 #[test]

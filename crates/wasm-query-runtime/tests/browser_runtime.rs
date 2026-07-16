@@ -2029,7 +2029,7 @@ fn runtime_reuses_shared_parquet_range_cache_across_repeated_scans() {
         .expect("first browser execution should succeed");
     let requests_after_first = server.recorded_paths().len();
     assert_eq!(requests_after_first, 4);
-    assert_eq!(first.metrics().bytes_fetched, 59);
+    assert_eq!(first.metrics().bytes_fetched, 440);
     assert_eq!(first.metrics().row_groups_touched, 1);
     assert_eq!(first.metrics().row_groups_skipped, 1);
     assert_eq!(first.metrics().rows_emitted, 3);
@@ -2038,7 +2038,34 @@ fn runtime_reuses_shared_parquet_range_cache_across_repeated_scans() {
     assert_eq!(first.metrics().coalesced_range_reads, Some(0));
     assert_eq!(first.metrics().coalesced_gap_bytes_fetched, Some(0));
     assert_eq!(first.metrics().range_cache_misses, Some(1));
-    assert_eq!(first.metrics().range_cache_bytes_stored, Some(59));
+    assert_eq!(first.metrics().range_cache_bytes_stored, Some(440));
+    assert!(
+        first.metrics().range_readahead_requests.unwrap_or_default() > 0,
+        "the first scan should expand at least one eligible data miss"
+    );
+    assert_eq!(first.metrics().range_readahead_bytes_fetched, Some(381));
+    assert_eq!(first.metrics().range_readahead_bytes_used, Some(0));
+    assert_eq!(first.metrics().range_readahead_wasted_bytes, Some(381));
+    assert!(
+        first
+            .metrics()
+            .range_readahead_bytes_fetched
+            .unwrap_or_default()
+            > 0
+    );
+    assert_eq!(
+        first.metrics().range_readahead_bytes_fetched,
+        Some(
+            first
+                .metrics()
+                .range_readahead_bytes_used
+                .unwrap_or_default()
+                + first
+                    .metrics()
+                    .range_readahead_wasted_bytes
+                    .unwrap_or_default()
+        )
+    );
     let cache_after_first = session.range_cache().snapshot();
     assert!(
         cache_after_first.range_cache_stores > 0,
@@ -2068,6 +2095,8 @@ fn runtime_reuses_shared_parquet_range_cache_across_repeated_scans() {
     assert_eq!(second.metrics().range_cache_hits, Some(1));
     assert_eq!(second.metrics().range_cache_bytes_reused, Some(59));
     assert_eq!(second.metrics().range_cache_bytes_stored, Some(0));
+    assert_eq!(second.metrics().range_readahead_requests, Some(0));
+    assert_eq!(second.metrics().range_readahead_bytes_used, Some(0));
     assert!(
         cache_after_second.range_cache_hits > cache_after_first.range_cache_hits,
         "second scan should be served by the session-owned range cache"
