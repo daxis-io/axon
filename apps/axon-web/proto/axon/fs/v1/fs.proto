@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package axon.fs.v1;
+
+import "axon/common/v1/common.proto";
+import "axon/dataaccess/v1/dataaccess.proto";
+import "google/protobuf/timestamp.proto";
+
+// Identifies the provider backend represented by a filesystem root.
+enum FsBackendKind {
+  FS_BACKEND_KIND_UNSPECIFIED = 0;
+  FS_BACKEND_KIND_UNITY_CATALOG_VOLUME = 1;
+  FS_BACKEND_KIND_OBJECT_STORE_PREFIX = 2;
+  FS_BACKEND_KIND_LOCAL_FOLDER = 3;
+  FS_BACKEND_KIND_DOCUMENT = 4;
+}
+
+// Selects a registered provider root without carrying credentials or handles.
+message FsRootRef {
+  // Identifies a registered filesystem provider.
+  string provider_id = 1;
+  // Opaquely identifies a root registered with the selected provider.
+  string root_id = 2;
+  // Identifies how the provider interprets this root.
+  FsBackendKind backend_kind = 3;
+}
+
+// Classifies a normalized filesystem entry.
+enum FsEntryKind {
+  FS_ENTRY_KIND_UNSPECIFIED = 0;
+  FS_ENTRY_KIND_FILE = 1;
+  FS_ENTRY_KIND_DIRECTORY = 2;
+}
+
+// Describes one normalized file or directory below a filesystem root.
+message FsEntry {
+  // Equals the final segment of path.
+  string name = 1;
+  // Uses non-empty provider-relative slash-separated segments. It has no
+  // leading or trailing slash, backslash, empty segment, `.` or `..` segment,
+  // NUL, or URL encoding.
+  string path = 2;
+  // Identifies whether this entry is a file or directory.
+  FsEntryKind kind = 3;
+  // Preserves presence so an unknown size differs from a known zero-byte file.
+  optional uint64 size_bytes = 4;
+  // Contains provider metadata normalized to a UTC protobuf timestamp.
+  google.protobuf.Timestamp modified_at = 5;
+  // Omits empty provider MIME values.
+  optional string content_type = 6;
+}
+
+// Requests the immediate children of a normalized directory path.
+message ListDirectoryRequest {
+  // Selects the registered provider root.
+  FsRootRef root = 1;
+  // Uses an empty string for the root directory. Other paths have no leading
+  // or trailing slash, backslash, empty segment, `.` or `..` segment, NUL, or
+  // URL encoding.
+  string path = 2;
+  // Carries an opaque root-and-path-scoped cursor and provider page-size hint.
+  axon.common.v1.PageRequest page = 3;
+}
+
+// Returns one page of immediate normalized directory children.
+message ListDirectoryResponse {
+  repeated FsEntry entries = 1;
+  axon.common.v1.PageInfo page = 2;
+}
+
+// Requests metadata for one normalized provider-relative path.
+message StatRequest {
+  // Selects the registered provider root.
+  FsRootRef root = 1;
+  // Uses a non-empty provider-relative path with no leading or trailing slash,
+  // backslash, empty segment, `.` or `..` segment, NUL, or URL encoding.
+  string path = 2;
+}
+
+// Returns one normalized filesystem entry.
+message StatResponse {
+  FsEntry entry = 1;
+}
+
+// Requests a short-lived resolution for reading one file.
+message ResolveReadRequest {
+  // Selects the registered provider root.
+  FsRootRef root = 1;
+  // Uses a non-empty provider-relative path with no leading or trailing slash,
+  // backslash, empty segment, `.` or `..` segment, NUL, or URL encoding.
+  string path = 2;
+  // When present, both endpoints define the half-open range [start, end).
+  optional uint64 start = 3;
+  // When present, both endpoints define the half-open range [start, end).
+  optional uint64 end = 4;
+}
+
+// Resolves a file read to one short-lived grant or a structured denial.
+message ObjectReadResolution {
+  oneof resolution {
+    axon.dataaccess.v1.ObjectGrantSignedUrl signed_url = 1;
+    axon.dataaccess.v1.ObjectGrantRangeRequest proxy_range = 2;
+    axon.common.v1.ProviderError denied = 3;
+  }
+}
