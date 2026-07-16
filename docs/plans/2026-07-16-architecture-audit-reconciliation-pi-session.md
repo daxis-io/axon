@@ -8,16 +8,18 @@
 - Source HEAD: `b11a44bbce3ac2b0299507dc83328baec1f57bba`.
 - Target worktree: `.worktrees/architecture-audit-reconciliation-pi`.
 - Target branch: `docs/architecture-audit-reconciliation-pi`.
-- Refreshed target baseline: `origin/main` at
+- Original replay baseline: `origin/main` at
   `0b255507e4f72dd8746f6c9cb8def7b41c718ef0`.
+- Final integration baseline after fresh-session remediation: `origin/main` at
+  `7681f1dfa5bdaaae3ff2ccff79cc8be76ec1503a`.
 - The dirty root checkout is outside this PI. It is not a source, target, or
   verification workspace and must remain untouched.
-- The source HEAD is an ancestor of the target baseline and is six commits
-  behind it with no source-only commits. None of the 17 tracked source
+- The source HEAD is an ancestor of the final target baseline and is seven
+  commits behind it with no source-only commits. None of the 17 tracked source
   documents changed in that upstream range, and the checksummed tracked patch
   applies cleanly to the target worktree.
 
-The six upstream commits are:
+The seven upstream commits are:
 
 1. `30d7e8bdc729902a7a5f50cd3d30feb7efdd2348 feat: project cache and readahead metrics`
 2. `9baf5fb94159dd229aa833aea48295345f336f54 docs: plan e3a filesystem contract pi`
@@ -25,9 +27,10 @@ The six upstream commits are:
 4. `19f308464f9914fc6fe407b1ef2c66f28dc7c785 test(web): cover filesystem contract parity`
 5. `ceaf8e023d87c89807f245dad5e8a8ce2ec4f846 chore(contract): generate filesystem rust contracts`
 6. `0b255507e4f72dd8746f6c9cb8def7b41c718ef0 docs(contract): document filesystem contract handoff`
+7. `7681f1dfa5bdaaae3ff2ccff79cc8be76ec1503a perf(parquet): add bounded identity-safe readahead`
 
 The five filesystem commits, from `9baf5fb` through `0b25550`, were each
-confirmed as ancestors of the refreshed baseline. Together they landed the
+confirmed as ancestors of both integration baselines. Together they landed the
 `axon/fs/v1` schema, generated TypeScript and Rust contracts, parity and smoke
 tests, code-generation checks, and the final filesystem handoff.
 
@@ -80,10 +83,11 @@ backup checksums must be rechecked after the final target commit.
 The patch applies textually, but three upstream facts require semantic
 reconciliation:
 
-1. `30d7e8b` added cache and bounded-readahead worker metrics. It did not define
-   selected-source integrity, a resolved-binding lifecycle, persistence rules,
-   or E9 adoption sequencing. Those authority and lifecycle decisions remain
-   documentation work in this PI.
+1. `30d7e8b` added cache and bounded-readahead worker metrics, and `7681f1d`
+   later landed bounded, strong-identity Parquet scan readahead. Neither commit
+   defined selected-source integrity, a resolved-binding lifecycle, persistence
+   rules, or E9 adoption sequencing. Those authority and lifecycle decisions
+   remain documentation work in this PI.
 2. The five-commit filesystem chain landed `axon/fs/v1`, deterministic
    TypeScript and Rust output, parity and smoke tests, and its handoff. Current
    guidance must describe that package as landed contract substrate while
@@ -230,7 +234,7 @@ scope skips, not passing checks.
 - The branch diff contains exactly the 18 reconciled source documents plus this
   session document and no other path.
 - ADR statuses and historical implementation evidence remain accurate.
-- All current guidance reflects the `0b255507e4f72dd8746f6c9cb8def7b41c718ef0`
+- All current guidance reflects the `7681f1dfa5bdaaae3ff2ccff79cc8be76ec1503a`
   ancestry and the landed `axon/fs/v1` substrate.
 - Formatting, changed-link checks, stale-language searches, the exact
   allowlist, `git diff --check`, and manual ordering review all pass.
@@ -240,3 +244,169 @@ scope skips, not passing checks.
 
 Passing every gate unblocks E9 Slice 1 only. The intentional E3A correction PI
 remains a mandatory gate between E9 Slice 1 and E9 Slice 2.
+
+## Handoff record
+
+The first four commits are:
+
+1. `ba30d2859749c64246683f0a65fbf811625dd4bd docs: plan architecture audit reconciliation`
+2. `3bceba91060bf02f6932dfd0b1729e24daf7f682 docs(adr): sharpen workbench authority boundaries`
+3. `75617ae68b1ef771903f944dc92665f2ce4fb401 docs(program): tighten workbench execution strategy`
+4. `4089d6c790ffd9f8b1f1cb7471f474de75dddc14 docs(plan): define e9 vertical execution slices`
+
+The handoff commit message is
+`docs: document architecture reconciliation handoff`.
+
+### Reconciled file set
+
+ADR documents:
+
+- `docs/adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md`
+- `docs/adr/ADR-0004-native-runtime-is-correctness-oracle-and-mandatory-fallback.md`
+- `docs/adr/ADR-0008-daxis-browser-read-compute-contract.md`
+- `docs/adr/ADR-0009-axon-is-the-lakehouse-workbench.md`
+- `docs/adr/ADR-0010-pluggable-catalog-providers.md`
+- `docs/adr/README.md`
+
+Program documents:
+
+- `docs/program/axon-workbench-architecture.md`
+- `docs/program/browser-embedding-deployment.md`
+- `docs/program/browser-owned-descriptor-materialization.md`
+- `docs/program/browser-uc-brokered-runtime-contract.md`
+- `docs/program/provider-model.md`
+- `docs/program/rich-lakehouse-workbench-planning-prompts.md`
+- `docs/program/rich-lakehouse-workbench-strategy.md`
+
+Execution plans:
+
+- `docs/plans/2026-06-20-e0-frontend-foundation-execution-plan.md`
+- `docs/plans/2026-06-20-e1-catalog-providers-execution-plan.md`
+- `docs/plans/2026-06-20-e3a-provider-contract-surfaces-execution-plan.md`
+- `docs/plans/2026-07-11-e3a-exec-contract-pi-session.md`
+- `docs/plans/2026-07-15-e9-execution-provider-vertical-slice-plan.md`
+
+Reconciliation record:
+
+- `docs/plans/2026-07-16-architecture-audit-reconciliation-pi-session.md`
+
+That is the exact set of 18 source documents plus this session document.
+
+## Conflict resolution
+
+- **Metrics and readahead:** `30d7e8b` is recorded as landed cache and
+  bounded-readahead observation, while `7681f1d` is recorded as the bounded,
+  strong-identity Parquet scan readahead implementation. The documents do not
+  treat either change as selected-source, capability-lifetime, admission,
+  cancellation, or terminal-state semantics.
+- **Filesystem substrate:** all current reviews list the five landed packages,
+  including `axon/fs/v1` TypeScript and Buffa Rust proof. They classify the
+  filesystem package as messages-only substrate and keep E8 provider, adapter,
+  UI, and runtime adoption behind a real read-only volume consumer.
+- **Historical handoff:** the exec-contract PI retains its original baselines,
+  commit slices, test evidence, and contemporary non-goals as historical
+  sections. Its current interpretation and forward work now reflect the landed
+  filesystem chain and the revised E9 sequence.
+- **Sequencing:** every current ordering reference puts E9 Slice 1 first with no
+  protobuf changes and maps domain `execution_id` to existing worker correlation
+  fields. The intentional E3A correction PI follows and gates E9 Slice 2. Slice
+  2 adopts local/public seams; Slice 3 composes E1 and E6. Remote execution and
+  E8 adoption then remain independently consumer-gated.
+
+## Verification evidence
+
+Pre-handoff evidence:
+
+- `origin/main` was fetched before preflight and again before handoff. It
+  remained `0b255507e4f72dd8746f6c9cb8def7b41c718ef0`; the six-commit upstream
+  range and no-overlap result did not change.
+- The source worktree remained at
+  `b11a44bbce3ac2b0299507dc83328baec1f57bba` with the original 17 modified
+  Markdown files and untracked E9 plan. Its regenerated binary diff and E9 plan
+  compare byte-for-byte with the backup.
+- `shasum -a 256 -c SHA256SUMS` returned `OK` for both backup entries.
+- `npm ci` installed the absent web toolchain without tracked changes. The
+  package-resolved Prettier is 3.8.3.
+- The pinned Prettier with `apps/axon-web/.prettierrc.json` reports all 19 files
+  formatted.
+- The dependency-free Node link checker inspected 80 relative local Markdown
+  targets across all 19 files and found no missing target.
+- The exact-diff allowlist contains 19 Markdown files: the 18 source documents
+  plus this session document.
+- Search gates over the 18 reconciled source documents found no stale
+  architecture-review baseline, obsolete filesystem-package claim, ordering
+  that puts the E3A correction before Slice 1, or positive claim that E8
+  provider, adapter, UI, or runtime adoption has landed.
+- Manual ordering review found every ordering reference in the E3A prompt,
+  strategy, E0/E1/E3A plans, exec handoff, and E9 plan consistent with the same
+  six-step sequence.
+- `git diff --check origin/main...HEAD` passed before the handoff edit.
+
+Post-handoff closure on the initial handoff commit produced:
+
+- the same Prettier result and `markdown_links_ok=80 files=19`;
+- `allowlist_ok=19`, `markdown_only=OK`, and `diff_check=OK`;
+- exactly five commits in the planned order and with the planned messages;
+- an empty `git status --short`; and
+- `OK` for both backup checksums plus byte-for-byte source patch and E9-plan
+  comparison.
+
+The closure bundle was then repeated on the final amend-ready documentation
+tree. The handoff amendment changes only this evidence and verdict text; it does
+not add a sixth commit or alter another document.
+
+Fresh-session review and remediation:
+
+- A later fetch observed `origin/main` advance by one path-disjoint commit from
+  `0b255507e4f72dd8746f6c9cb8def7b41c718ef0` to
+  `7681f1dfa5bdaaae3ff2ccff79cc8be76ec1503a`. The commit changed eight Rust
+  files and none of the 19 branch documents.
+- The five-commit branch rebased cleanly onto `7681f1d`. All five current
+  architecture-review baselines now use the full integration SHA, and the E9
+  current-state section distinguishes the landed readahead implementation from
+  the earlier metrics projection.
+- The fresh review found one outcome-taxonomy contradiction: strategy text
+  incorrectly grouped invalid and expired resolution failures with `denied` and
+  `remote_required`. The strategy now reserves `denied` for policy refusal,
+  limits `remote_required` to a known enforcement owner, and maps invalid,
+  expired, unsafe, or unknown inputs to typed resolution errors.
+- The review also found that the ordering evidence overstated full-sequence
+  repetition in documents that contain only relevant subsets. The evidence now
+  states that every ordering reference is consistent with the six-step
+  sequence.
+- The taxonomy and baseline changes were folded into their original program and
+  plan commits. The evidence correction is recorded in this handoff, which
+  remains the fifth commit.
+
+Intentional scope skips:
+
+- Product, Rust, WASM, code-generation, and browser tests were not run. This PI
+  changes documentation only, so those commands would not validate the changed
+  surface. This is a scope skip, not a passing result.
+- No push, pull request, merge, or root-checkout mutation was attempted.
+
+The two fresh-review findings were resolved. No blocker remains.
+
+## Remaining decisions
+
+- The intentional E3A correction PI must choose the exact wire shape for
+  canonical identity, the one binding arm, resolution/admission/terminal
+  algebras, capability lifetime, and `execution_id` compatibility mapping.
+- A portable remote transport remains undefined until a concrete host supplies
+  identity, admission, backpressure, cancellation, retry, persistence, and audit
+  requirements.
+- Cedar remains deferred until a standalone policy consumer justifies its
+  schema, policy lifecycle, bundle cost, and conformance suite.
+- E8 still needs one read-only volume adapter, UI, and runtime consumer over the
+  landed filesystem messages.
+- Persistent governed-byte caching still needs enforcement-owner policy,
+  principal/session namespacing, revocation behavior, logout invalidation,
+  retention, and audit ownership.
+
+## Readiness verdict
+
+Ready for E9 Slice 1. The five-commit, clean-worktree, formatting, link,
+stale-language, allowlist, diff, source-immutability, and checksum gates passed
+together. This verdict unblocks only the no-protobuf selected-source and
+lifecycle slice. The intentional E3A correction PI remains a mandatory gate
+before E9 Slice 2.
