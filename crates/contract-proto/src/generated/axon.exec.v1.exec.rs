@@ -2843,6 +2843,26 @@ pub struct QueryMetricsSummary {
     pub arrow_ipc_encode_duration_ms: ::core::option::Option<u64>,
     /// Field 43: `preview_duration_ms`
     pub preview_duration_ms: ::core::option::Option<u64>,
+    /// Field 44: `range_cache_hits`
+    pub range_cache_hits: ::core::option::Option<u64>,
+    /// Field 45: `range_cache_misses`
+    pub range_cache_misses: ::core::option::Option<u64>,
+    /// Field 46: `range_cache_bytes_reused`
+    pub range_cache_bytes_reused: ::core::option::Option<u64>,
+    /// Field 47: `range_cache_bytes_stored`
+    pub range_cache_bytes_stored: ::core::option::Option<u64>,
+    /// Field 48: `range_cache_validation_misses`
+    pub range_cache_validation_misses: ::core::option::Option<u64>,
+    /// Field 49: `range_cache_degraded_identity_reads`
+    pub range_cache_degraded_identity_reads: ::core::option::Option<u64>,
+    /// Field 50: `range_readahead_requests`
+    pub range_readahead_requests: ::core::option::Option<u64>,
+    /// Field 51: `range_readahead_bytes_fetched`
+    pub range_readahead_bytes_fetched: ::core::option::Option<u64>,
+    /// Field 52: `range_readahead_bytes_used`
+    pub range_readahead_bytes_used: ::core::option::Option<u64>,
+    /// Field 53: `range_readahead_wasted_bytes`
+    pub range_readahead_wasted_bytes: ::core::option::Option<u64>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
@@ -2901,6 +2921,19 @@ impl ::core::fmt::Debug for QueryMetricsSummary {
             .field("planning_duration_ms", &self.planning_duration_ms)
             .field("arrow_ipc_encode_duration_ms", &self.arrow_ipc_encode_duration_ms)
             .field("preview_duration_ms", &self.preview_duration_ms)
+            .field("range_cache_hits", &self.range_cache_hits)
+            .field("range_cache_misses", &self.range_cache_misses)
+            .field("range_cache_bytes_reused", &self.range_cache_bytes_reused)
+            .field("range_cache_bytes_stored", &self.range_cache_bytes_stored)
+            .field("range_cache_validation_misses", &self.range_cache_validation_misses)
+            .field(
+                "range_cache_degraded_identity_reads",
+                &self.range_cache_degraded_identity_reads,
+            )
+            .field("range_readahead_requests", &self.range_readahead_requests)
+            .field("range_readahead_bytes_fetched", &self.range_readahead_bytes_fetched)
+            .field("range_readahead_bytes_used", &self.range_readahead_bytes_used)
+            .field("range_readahead_wasted_bytes", &self.range_readahead_wasted_bytes)
             .finish()
     }
 }
@@ -3216,6 +3249,76 @@ impl QueryMetricsSummary {
         self.preview_duration_ms = Some(value);
         self
     }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_cache_hits`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_cache_hits(mut self, value: u64) -> Self {
+        self.range_cache_hits = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_cache_misses`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_cache_misses(mut self, value: u64) -> Self {
+        self.range_cache_misses = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_cache_bytes_reused`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_cache_bytes_reused(mut self, value: u64) -> Self {
+        self.range_cache_bytes_reused = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_cache_bytes_stored`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_cache_bytes_stored(mut self, value: u64) -> Self {
+        self.range_cache_bytes_stored = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_cache_validation_misses`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_cache_validation_misses(mut self, value: u64) -> Self {
+        self.range_cache_validation_misses = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_cache_degraded_identity_reads`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_cache_degraded_identity_reads(mut self, value: u64) -> Self {
+        self.range_cache_degraded_identity_reads = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_readahead_requests`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_readahead_requests(mut self, value: u64) -> Self {
+        self.range_readahead_requests = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_readahead_bytes_fetched`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_readahead_bytes_fetched(mut self, value: u64) -> Self {
+        self.range_readahead_bytes_fetched = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_readahead_bytes_used`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_readahead_bytes_used(mut self, value: u64) -> Self {
+        self.range_readahead_bytes_used = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_readahead_wasted_bytes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_readahead_wasted_bytes(mut self, value: u64) -> Self {
+        self.range_readahead_wasted_bytes = Some(value);
+        self
+    }
 }
 ::buffa::impl_default_instance!(QueryMetricsSummary);
 impl ::buffa::MessageName for QueryMetricsSummary {
@@ -3364,6 +3467,36 @@ impl ::buffa::Message for QueryMetricsSummary {
         if let Some(v) = self.preview_duration_ms {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
+        if let Some(v) = self.range_cache_hits {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_cache_misses {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_cache_bytes_reused {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_cache_bytes_stored {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_cache_validation_misses {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_cache_degraded_identity_reads {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_readahead_requests {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_readahead_bytes_fetched {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_readahead_bytes_used {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_readahead_wasted_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
@@ -3502,6 +3635,36 @@ impl ::buffa::Message for QueryMetricsSummary {
         }
         if let Some(v) = self.preview_duration_ms {
             ::buffa::types::put_uint64_field(43u32, v, buf);
+        }
+        if let Some(v) = self.range_cache_hits {
+            ::buffa::types::put_uint64_field(44u32, v, buf);
+        }
+        if let Some(v) = self.range_cache_misses {
+            ::buffa::types::put_uint64_field(45u32, v, buf);
+        }
+        if let Some(v) = self.range_cache_bytes_reused {
+            ::buffa::types::put_uint64_field(46u32, v, buf);
+        }
+        if let Some(v) = self.range_cache_bytes_stored {
+            ::buffa::types::put_uint64_field(47u32, v, buf);
+        }
+        if let Some(v) = self.range_cache_validation_misses {
+            ::buffa::types::put_uint64_field(48u32, v, buf);
+        }
+        if let Some(v) = self.range_cache_degraded_identity_reads {
+            ::buffa::types::put_uint64_field(49u32, v, buf);
+        }
+        if let Some(v) = self.range_readahead_requests {
+            ::buffa::types::put_uint64_field(50u32, v, buf);
+        }
+        if let Some(v) = self.range_readahead_bytes_fetched {
+            ::buffa::types::put_uint64_field(51u32, v, buf);
+        }
+        if let Some(v) = self.range_readahead_bytes_used {
+            ::buffa::types::put_uint64_field(52u32, v, buf);
+        }
+        if let Some(v) = self.range_readahead_wasted_bytes {
+            ::buffa::types::put_uint64_field(53u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -3903,6 +4066,96 @@ impl ::buffa::Message for QueryMetricsSummary {
                     ::buffa::types::decode_uint64(buf)?,
                 );
             }
+            44u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_cache_hits = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            45u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_cache_misses = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            46u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_cache_bytes_reused = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            47u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_cache_bytes_stored = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            48u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_cache_validation_misses = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            49u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_cache_degraded_identity_reads = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            50u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_readahead_requests = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            51u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_readahead_bytes_fetched = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            52u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_readahead_bytes_used = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            53u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_readahead_wasted_bytes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
             _ => {
                 self.__buffa_unknown_fields
                     .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
@@ -3954,6 +4207,16 @@ impl ::buffa::Message for QueryMetricsSummary {
         self.planning_duration_ms = ::core::option::Option::None;
         self.arrow_ipc_encode_duration_ms = ::core::option::Option::None;
         self.preview_duration_ms = ::core::option::Option::None;
+        self.range_cache_hits = ::core::option::Option::None;
+        self.range_cache_misses = ::core::option::Option::None;
+        self.range_cache_bytes_reused = ::core::option::Option::None;
+        self.range_cache_bytes_stored = ::core::option::Option::None;
+        self.range_cache_validation_misses = ::core::option::Option::None;
+        self.range_cache_degraded_identity_reads = ::core::option::Option::None;
+        self.range_readahead_requests = ::core::option::Option::None;
+        self.range_readahead_bytes_fetched = ::core::option::Option::None;
+        self.range_readahead_bytes_used = ::core::option::Option::None;
+        self.range_readahead_wasted_bytes = ::core::option::Option::None;
         self.__buffa_unknown_fields.clear();
     }
 }
@@ -8165,6 +8428,26 @@ pub struct BrowserWorkerRangeReadMetricsEvent {
     pub arrow_ipc_encode_duration_ms: ::core::option::Option<u64>,
     /// Field 43: `preview_duration_ms`
     pub preview_duration_ms: ::core::option::Option<u64>,
+    /// Field 44: `range_cache_hits`
+    pub range_cache_hits: ::core::option::Option<u64>,
+    /// Field 45: `range_cache_misses`
+    pub range_cache_misses: ::core::option::Option<u64>,
+    /// Field 46: `range_cache_bytes_reused`
+    pub range_cache_bytes_reused: ::core::option::Option<u64>,
+    /// Field 47: `range_cache_bytes_stored`
+    pub range_cache_bytes_stored: ::core::option::Option<u64>,
+    /// Field 48: `range_cache_validation_misses`
+    pub range_cache_validation_misses: ::core::option::Option<u64>,
+    /// Field 49: `range_cache_degraded_identity_reads`
+    pub range_cache_degraded_identity_reads: ::core::option::Option<u64>,
+    /// Field 50: `range_readahead_requests`
+    pub range_readahead_requests: ::core::option::Option<u64>,
+    /// Field 51: `range_readahead_bytes_fetched`
+    pub range_readahead_bytes_fetched: ::core::option::Option<u64>,
+    /// Field 52: `range_readahead_bytes_used`
+    pub range_readahead_bytes_used: ::core::option::Option<u64>,
+    /// Field 53: `range_readahead_wasted_bytes`
+    pub range_readahead_wasted_bytes: ::core::option::Option<u64>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
@@ -8223,6 +8506,19 @@ impl ::core::fmt::Debug for BrowserWorkerRangeReadMetricsEvent {
             .field("planning_duration_ms", &self.planning_duration_ms)
             .field("arrow_ipc_encode_duration_ms", &self.arrow_ipc_encode_duration_ms)
             .field("preview_duration_ms", &self.preview_duration_ms)
+            .field("range_cache_hits", &self.range_cache_hits)
+            .field("range_cache_misses", &self.range_cache_misses)
+            .field("range_cache_bytes_reused", &self.range_cache_bytes_reused)
+            .field("range_cache_bytes_stored", &self.range_cache_bytes_stored)
+            .field("range_cache_validation_misses", &self.range_cache_validation_misses)
+            .field(
+                "range_cache_degraded_identity_reads",
+                &self.range_cache_degraded_identity_reads,
+            )
+            .field("range_readahead_requests", &self.range_readahead_requests)
+            .field("range_readahead_bytes_fetched", &self.range_readahead_bytes_fetched)
+            .field("range_readahead_bytes_used", &self.range_readahead_bytes_used)
+            .field("range_readahead_wasted_bytes", &self.range_readahead_wasted_bytes)
             .finish()
     }
 }
@@ -8531,6 +8827,76 @@ impl BrowserWorkerRangeReadMetricsEvent {
         self.preview_duration_ms = Some(value);
         self
     }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_cache_hits`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_cache_hits(mut self, value: u64) -> Self {
+        self.range_cache_hits = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_cache_misses`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_cache_misses(mut self, value: u64) -> Self {
+        self.range_cache_misses = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_cache_bytes_reused`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_cache_bytes_reused(mut self, value: u64) -> Self {
+        self.range_cache_bytes_reused = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_cache_bytes_stored`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_cache_bytes_stored(mut self, value: u64) -> Self {
+        self.range_cache_bytes_stored = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_cache_validation_misses`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_cache_validation_misses(mut self, value: u64) -> Self {
+        self.range_cache_validation_misses = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_cache_degraded_identity_reads`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_cache_degraded_identity_reads(mut self, value: u64) -> Self {
+        self.range_cache_degraded_identity_reads = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_readahead_requests`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_readahead_requests(mut self, value: u64) -> Self {
+        self.range_readahead_requests = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_readahead_bytes_fetched`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_readahead_bytes_fetched(mut self, value: u64) -> Self {
+        self.range_readahead_bytes_fetched = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_readahead_bytes_used`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_readahead_bytes_used(mut self, value: u64) -> Self {
+        self.range_readahead_bytes_used = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::range_readahead_wasted_bytes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_range_readahead_wasted_bytes(mut self, value: u64) -> Self {
+        self.range_readahead_wasted_bytes = Some(value);
+        self
+    }
 }
 ::buffa::impl_default_instance!(BrowserWorkerRangeReadMetricsEvent);
 impl ::buffa::MessageName for BrowserWorkerRangeReadMetricsEvent {
@@ -8684,6 +9050,36 @@ impl ::buffa::Message for BrowserWorkerRangeReadMetricsEvent {
         if let Some(v) = self.preview_duration_ms {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
+        if let Some(v) = self.range_cache_hits {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_cache_misses {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_cache_bytes_reused {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_cache_bytes_stored {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_cache_validation_misses {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_cache_degraded_identity_reads {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_readahead_requests {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_readahead_bytes_fetched {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_readahead_bytes_used {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.range_readahead_wasted_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
@@ -8823,6 +9219,36 @@ impl ::buffa::Message for BrowserWorkerRangeReadMetricsEvent {
         }
         if let Some(v) = self.preview_duration_ms {
             ::buffa::types::put_uint64_field(43u32, v, buf);
+        }
+        if let Some(v) = self.range_cache_hits {
+            ::buffa::types::put_uint64_field(44u32, v, buf);
+        }
+        if let Some(v) = self.range_cache_misses {
+            ::buffa::types::put_uint64_field(45u32, v, buf);
+        }
+        if let Some(v) = self.range_cache_bytes_reused {
+            ::buffa::types::put_uint64_field(46u32, v, buf);
+        }
+        if let Some(v) = self.range_cache_bytes_stored {
+            ::buffa::types::put_uint64_field(47u32, v, buf);
+        }
+        if let Some(v) = self.range_cache_validation_misses {
+            ::buffa::types::put_uint64_field(48u32, v, buf);
+        }
+        if let Some(v) = self.range_cache_degraded_identity_reads {
+            ::buffa::types::put_uint64_field(49u32, v, buf);
+        }
+        if let Some(v) = self.range_readahead_requests {
+            ::buffa::types::put_uint64_field(50u32, v, buf);
+        }
+        if let Some(v) = self.range_readahead_bytes_fetched {
+            ::buffa::types::put_uint64_field(51u32, v, buf);
+        }
+        if let Some(v) = self.range_readahead_bytes_used {
+            ::buffa::types::put_uint64_field(52u32, v, buf);
+        }
+        if let Some(v) = self.range_readahead_wasted_bytes {
+            ::buffa::types::put_uint64_field(53u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -9226,6 +9652,96 @@ impl ::buffa::Message for BrowserWorkerRangeReadMetricsEvent {
                     ::buffa::types::decode_uint64(buf)?,
                 );
             }
+            44u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_cache_hits = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            45u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_cache_misses = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            46u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_cache_bytes_reused = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            47u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_cache_bytes_stored = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            48u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_cache_validation_misses = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            49u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_cache_degraded_identity_reads = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            50u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_readahead_requests = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            51u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_readahead_bytes_fetched = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            52u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_readahead_bytes_used = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            53u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_readahead_wasted_bytes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
             _ => {
                 self.__buffa_unknown_fields
                     .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
@@ -9277,6 +9793,16 @@ impl ::buffa::Message for BrowserWorkerRangeReadMetricsEvent {
         self.planning_duration_ms = ::core::option::Option::None;
         self.arrow_ipc_encode_duration_ms = ::core::option::Option::None;
         self.preview_duration_ms = ::core::option::Option::None;
+        self.range_cache_hits = ::core::option::Option::None;
+        self.range_cache_misses = ::core::option::Option::None;
+        self.range_cache_bytes_reused = ::core::option::Option::None;
+        self.range_cache_bytes_stored = ::core::option::Option::None;
+        self.range_cache_validation_misses = ::core::option::Option::None;
+        self.range_cache_degraded_identity_reads = ::core::option::Option::None;
+        self.range_readahead_requests = ::core::option::Option::None;
+        self.range_readahead_bytes_fetched = ::core::option::Option::None;
+        self.range_readahead_bytes_used = ::core::option::Option::None;
+        self.range_readahead_wasted_bytes = ::core::option::Option::None;
         self.__buffa_unknown_fields.clear();
     }
 }

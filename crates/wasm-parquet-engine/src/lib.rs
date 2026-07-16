@@ -43,7 +43,7 @@ use query_contract::{
 use wasm_http_object_store::{
     ByteExtent, HttpByteRange, HttpMetadataProbeRequirements, HttpRangeReadResult, HttpRangeReader,
     HttpRangeValidation, MemoryRangeCache, RangeCacheIdentity, RangeCacheLookup,
-    RangeCacheStoreOutcome,
+    RangeCacheStoreObservation, RangeCacheStoreOutcome,
 };
 
 pub const OWNER: &str = "Runtime / engine team";
@@ -380,15 +380,31 @@ impl ParquetRangeCache {
         &self,
         target: &ScanTarget,
         range: Range<u64>,
-    ) -> Result<Option<Bytes>, QueryError> {
+    ) -> Result<ParquetRangeCacheLoad, QueryError> {
         let Some((identity, extent)) = self.cache_identity_and_extent(target, &range)? else {
             self.record_degraded_identity_read()?;
-            return Ok(None);
+            return Ok(ParquetRangeCacheLoad {
+                bytes: None,
+                eligible: false,
+                bytes_reused: 0,
+                validation_misses: 0,
+            });
         };
 
-        match self.extents.load(&identity, extent) {
-            RangeCacheLookup::Hit { bytes } => Ok(Some(bytes)),
-            RangeCacheLookup::Miss => Ok(None),
+        let observation = self.extents.load_observed(&identity, extent);
+        match observation.lookup {
+            RangeCacheLookup::Hit { bytes } => Ok(ParquetRangeCacheLoad {
+                bytes: Some(bytes),
+                eligible: true,
+                bytes_reused: observation.bytes_reused,
+                validation_misses: observation.validation_misses,
+            }),
+            RangeCacheLookup::Miss => Ok(ParquetRangeCacheLoad {
+                bytes: None,
+                eligible: true,
+                bytes_reused: 0,
+                validation_misses: observation.validation_misses,
+            }),
         }
     }
 
@@ -397,14 +413,15 @@ impl ParquetRangeCache {
         target: &ScanTarget,
         range: Range<u64>,
         bytes: Bytes,
-    ) -> Result<(), QueryError> {
+    ) -> Result<Option<RangeCacheStoreObservation>, QueryError> {
         let Some((identity, extent)) = self.cache_identity_and_extent(target, &range)? else {
-            return Ok(());
+            return Ok(None);
         };
-        if self.extents.store(&identity, extent, bytes) == RangeCacheStoreOutcome::Stored {
+        let observation = self.extents.store_observed(&identity, extent, bytes);
+        if observation.outcome == RangeCacheStoreOutcome::Stored {
             self.record_store()?;
         }
-        Ok(())
+        Ok(Some(observation))
     }
 
     fn cache_identity_and_extent(
@@ -447,6 +464,13 @@ impl ParquetRangeCache {
         metrics.degraded_identity_reads = metrics.degraded_identity_reads.saturating_add(1);
         Ok(())
     }
+}
+
+struct ParquetRangeCacheLoad {
+    bytes: Option<Bytes>,
+    eligible: bool,
+    bytes_reused: u64,
+    validation_misses: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -519,6 +543,16 @@ pub struct ParquetRangeReadMetrics {
     pub footer_cache_misses: u64,
     pub footer_range_reads_avoided: u64,
     pub footer_cache_degraded_identity_reads: u64,
+    pub range_cache_hits: u64,
+    pub range_cache_misses: u64,
+    pub range_cache_bytes_reused: u64,
+    pub range_cache_bytes_stored: u64,
+    pub range_cache_validation_misses: u64,
+    pub range_cache_degraded_identity_reads: u64,
+    pub range_readahead_requests: u64,
+    pub range_readahead_bytes_fetched: u64,
+    pub range_readahead_bytes_used: u64,
+    pub range_readahead_wasted_bytes: u64,
     pub exact_range_read_keys: BTreeSet<ParquetRangeReadKey>,
 }
 
@@ -615,6 +649,34 @@ pub fn merge_parquet_range_read_metrics(
         footer_cache_degraded_identity_reads: left
             .footer_cache_degraded_identity_reads
             .saturating_add(right.footer_cache_degraded_identity_reads),
+        range_cache_hits: left.range_cache_hits.saturating_add(right.range_cache_hits),
+        range_cache_misses: left
+            .range_cache_misses
+            .saturating_add(right.range_cache_misses),
+        range_cache_bytes_reused: left
+            .range_cache_bytes_reused
+            .saturating_add(right.range_cache_bytes_reused),
+        range_cache_bytes_stored: left
+            .range_cache_bytes_stored
+            .saturating_add(right.range_cache_bytes_stored),
+        range_cache_validation_misses: left
+            .range_cache_validation_misses
+            .saturating_add(right.range_cache_validation_misses),
+        range_cache_degraded_identity_reads: left
+            .range_cache_degraded_identity_reads
+            .saturating_add(right.range_cache_degraded_identity_reads),
+        range_readahead_requests: left
+            .range_readahead_requests
+            .saturating_add(right.range_readahead_requests),
+        range_readahead_bytes_fetched: left
+            .range_readahead_bytes_fetched
+            .saturating_add(right.range_readahead_bytes_fetched),
+        range_readahead_bytes_used: left
+            .range_readahead_bytes_used
+            .saturating_add(right.range_readahead_bytes_used),
+        range_readahead_wasted_bytes: left
+            .range_readahead_wasted_bytes
+            .saturating_add(right.range_readahead_wasted_bytes),
         exact_range_read_keys: left.exact_range_read_keys.clone(),
     };
     for key in &right.exact_range_read_keys {
@@ -934,6 +996,49 @@ impl SharedScanTargetMetricsHandle {
             .bytes_fetched
             .checked_add(bytes_fetched)
             .ok_or_else(|| execution_runtime_error("scan byte totals overflowed u64"))?;
+        Ok(())
+    }
+
+    fn record_range_cache_lookup(
+        &self,
+        observation: &ParquetRangeCacheLoad,
+    ) -> Result<(), QueryError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| {
+            execution_runtime_error("scan target metrics handle was poisoned during execution")
+        })?;
+        let metrics = &mut snapshot.range_read_metrics;
+        metrics.range_cache_validation_misses = metrics
+            .range_cache_validation_misses
+            .saturating_add(observation.validation_misses);
+        if !observation.eligible {
+            metrics.range_cache_degraded_identity_reads = metrics
+                .range_cache_degraded_identity_reads
+                .saturating_add(1);
+        } else if observation.bytes.is_some() {
+            metrics.range_cache_hits = metrics.range_cache_hits.saturating_add(1);
+            metrics.range_cache_bytes_reused = metrics
+                .range_cache_bytes_reused
+                .saturating_add(observation.bytes_reused);
+        } else {
+            metrics.range_cache_misses = metrics.range_cache_misses.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    fn record_range_cache_store(
+        &self,
+        observation: &RangeCacheStoreObservation,
+    ) -> Result<(), QueryError> {
+        let mut snapshot = self.snapshot.lock().map_err(|_| {
+            execution_runtime_error("scan target metrics handle was poisoned during execution")
+        })?;
+        let metrics = &mut snapshot.range_read_metrics;
+        metrics.range_cache_bytes_stored = metrics
+            .range_cache_bytes_stored
+            .saturating_add(observation.bytes_stored);
+        metrics.range_cache_validation_misses = metrics
+            .range_cache_validation_misses
+            .saturating_add(observation.validation_misses);
         Ok(())
     }
 
@@ -1436,7 +1541,9 @@ impl HttpRangeAsyncFileReader {
         }
 
         if let Some(cache) = &range_cache {
-            if let Some(bytes) = cache.load(&target, range.clone()).await? {
+            let observation = cache.load(&target, range.clone()).await?;
+            metrics.record_range_cache_lookup(&observation)?;
+            if let Some(bytes) = observation.bytes {
                 metrics.record_range_read(
                     phase,
                     target.path.clone(),
@@ -1474,7 +1581,9 @@ impl HttpRangeAsyncFileReader {
             length,
         )?;
         if let Some(cache) = &range_cache {
-            cache.store(&target, range, read.bytes.clone()).await?;
+            if let Some(observation) = cache.store(&target, range, read.bytes.clone()).await? {
+                metrics.record_range_cache_store(&observation)?;
+            }
         }
         Ok(PhysicalRangeRead {
             bytes: read.bytes,
@@ -1500,7 +1609,9 @@ impl HttpRangeAsyncFileReader {
         }
 
         if let Some(cache) = &range_cache {
-            if let Some(bytes) = cache.load(&target, range.clone()).await? {
+            let observation = cache.load(&target, range.clone()).await?;
+            metrics.record_range_cache_lookup(&observation)?;
+            if let Some(bytes) = observation.bytes {
                 return Ok(PhysicalRangeRead {
                     bytes,
                     source: PhysicalRangeReadSource::Cache,
@@ -1533,7 +1644,9 @@ impl HttpRangeAsyncFileReader {
                 .map_err(|_| execution_runtime_error("scan byte totals overflowed u64"))?,
         )?;
         if let Some(cache) = &range_cache {
-            cache.store(&target, range, read.bytes.clone()).await?;
+            if let Some(observation) = cache.store(&target, range, read.bytes.clone()).await? {
+                metrics.record_range_cache_store(&observation)?;
+            }
         }
         Ok(PhysicalRangeRead {
             bytes: read.bytes,
@@ -3876,13 +3989,25 @@ mod tests {
     fn range_read_metric_merge_sums_coalesced_physical_counters() {
         let mut left = ParquetRangeReadMetrics::default();
         left.record_coalesced_range_read(32);
+        left.range_cache_hits = 1;
+        left.range_cache_bytes_reused = 800;
+        left.range_readahead_requests = 2;
         let mut right = ParquetRangeReadMetrics::default();
         right.record_coalesced_range_read(48);
+        right.range_cache_misses = 1;
+        right.range_cache_bytes_stored = 2_560;
+        right.range_readahead_wasted_bytes = 64;
 
         let merged = merge_parquet_range_read_metrics(&left, &right);
 
         assert_eq!(merged.coalesced_range_reads, 2);
         assert_eq!(merged.coalesced_gap_bytes_fetched, 80);
+        assert_eq!(merged.range_cache_hits, 1);
+        assert_eq!(merged.range_cache_misses, 1);
+        assert_eq!(merged.range_cache_bytes_reused, 800);
+        assert_eq!(merged.range_cache_bytes_stored, 2_560);
+        assert_eq!(merged.range_readahead_requests, 2);
+        assert_eq!(merged.range_readahead_wasted_bytes, 64);
     }
 
     #[tokio::test]
@@ -3977,6 +4102,21 @@ mod tests {
         assert_eq!(metrics.range_read_metrics.scan_data_range_reads, 3);
         assert_eq!(metrics.range_read_metrics.coalesced_range_reads, 1);
         assert_eq!(metrics.range_read_metrics.coalesced_gap_bytes_fetched, 512);
+        assert_eq!(metrics.range_read_metrics.range_cache_hits, 1);
+        assert_eq!(metrics.range_read_metrics.range_cache_misses, 1);
+        assert_eq!(metrics.range_read_metrics.range_cache_bytes_reused, 800);
+        assert_eq!(metrics.range_read_metrics.range_cache_bytes_stored, 2_560);
+        assert_eq!(metrics.range_read_metrics.range_cache_validation_misses, 0);
+        assert_eq!(
+            metrics
+                .range_read_metrics
+                .range_cache_degraded_identity_reads,
+            0
+        );
+        assert_eq!(metrics.range_read_metrics.range_readahead_requests, 0);
+        assert_eq!(metrics.range_read_metrics.range_readahead_bytes_fetched, 0);
+        assert_eq!(metrics.range_read_metrics.range_readahead_bytes_used, 0);
+        assert_eq!(metrics.range_read_metrics.range_readahead_wasted_bytes, 0);
         let cache_metrics = reader
             .range_cache
             .as_ref()
@@ -4024,6 +4164,52 @@ mod tests {
         assert_eq!(cache_metrics.range_cache_hits, 0);
         assert_eq!(cache_metrics.range_cache_misses, 2);
         assert_eq!(cache_metrics.range_cache_identity_drift_misses, 1);
+        let operation_metrics = second_reader.metrics.snapshot().range_read_metrics;
+        assert_eq!(operation_metrics.range_cache_misses, 1);
+        assert_eq!(operation_metrics.range_cache_validation_misses, 1);
+    }
+
+    #[tokio::test]
+    async fn store_time_identity_rejection_is_attributed_to_operation_metrics() {
+        let cache = ParquetRangeCache::default();
+        let metrics = SharedScanTargetMetricsHandle::default();
+        let target = |object_etag: &str| ScanTarget {
+            object_source: ObjectSource::new("https://example.test/data"),
+            object_etag: Some(object_etag.to_string()),
+            path: "part-000.parquet".to_string(),
+            size_bytes: 4,
+            partition_values: BTreeMap::new(),
+        };
+        let current_target = target("\"v2\"");
+        let stale_target = target("\"v1\"");
+
+        let lookup = cache
+            .load(&current_target, 0..4)
+            .await
+            .expect("current identity lookup should succeed");
+        metrics
+            .record_range_cache_lookup(&lookup)
+            .expect("lookup metrics should record");
+        cache
+            .store(&stale_target, 0..4, bytes::Bytes::from_static(b"old!"))
+            .await
+            .expect("stale identity should seed the cache")
+            .expect("strong identity should be cache eligible");
+
+        let store = cache
+            .store(&current_target, 0..4, bytes::Bytes::from_static(b"new!"))
+            .await
+            .expect("current identity store should succeed")
+            .expect("strong identity should be cache eligible");
+        metrics
+            .record_range_cache_store(&store)
+            .expect("store metrics should record");
+
+        assert_eq!(store.validation_misses, 1);
+        let operation_metrics = metrics.snapshot().range_read_metrics;
+        assert_eq!(operation_metrics.range_cache_misses, 1);
+        assert_eq!(operation_metrics.range_cache_bytes_stored, 4);
+        assert_eq!(operation_metrics.range_cache_validation_misses, 1);
     }
 
     #[tokio::test]
@@ -4093,6 +4279,9 @@ mod tests {
         assert_eq!(cache_metrics.range_cache_misses, 0);
         assert_eq!(cache_metrics.range_cache_stores, 0);
         assert_eq!(cache_metrics.range_cache_degraded_identity_reads, 2);
+        let operation_metrics = reader.metrics.snapshot().range_read_metrics;
+        assert_eq!(operation_metrics.range_cache_degraded_identity_reads, 2);
+        assert_eq!(operation_metrics.range_cache_misses, 0);
     }
 
     #[tokio::test]

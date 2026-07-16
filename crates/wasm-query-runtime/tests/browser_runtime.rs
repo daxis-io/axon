@@ -2037,6 +2037,8 @@ fn runtime_reuses_shared_parquet_range_cache_across_repeated_scans() {
     assert_eq!(first.metrics().footer_range_reads_avoided, Some(2));
     assert_eq!(first.metrics().coalesced_range_reads, Some(0));
     assert_eq!(first.metrics().coalesced_gap_bytes_fetched, Some(0));
+    assert_eq!(first.metrics().range_cache_misses, Some(1));
+    assert_eq!(first.metrics().range_cache_bytes_stored, Some(59));
     let cache_after_first = session.range_cache().snapshot();
     assert!(
         cache_after_first.range_cache_stores > 0,
@@ -2063,9 +2065,25 @@ fn runtime_reuses_shared_parquet_range_cache_across_repeated_scans() {
     assert_eq!(second.metrics().footer_range_reads_avoided, Some(2));
     assert_eq!(second.metrics().coalesced_range_reads, Some(0));
     assert_eq!(second.metrics().coalesced_gap_bytes_fetched, Some(0));
+    assert_eq!(second.metrics().range_cache_hits, Some(1));
+    assert_eq!(second.metrics().range_cache_bytes_reused, Some(59));
+    assert_eq!(second.metrics().range_cache_bytes_stored, Some(0));
     assert!(
         cache_after_second.range_cache_hits > cache_after_first.range_cache_hits,
         "second scan should be served by the session-owned range cache"
+    );
+
+    let third = runtime()
+        .block_on(session.execute_plan(&materialized, prepared.execution_plan()))
+        .expect("third browser execution should succeed");
+    assert_eq!(third.metrics().bytes_fetched, 0);
+    assert_eq!(
+        third.metrics().range_cache_hits,
+        second.metrics().range_cache_hits
+    );
+    assert_eq!(
+        third.metrics().range_cache_bytes_reused,
+        second.metrics().range_cache_bytes_reused
     );
 }
 

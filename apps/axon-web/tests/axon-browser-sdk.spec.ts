@@ -4185,6 +4185,113 @@ test('routes worker runtime events without settling the active request', async (
   });
 });
 
+test('projects cache and dormant readahead metrics through events and final responses', async () => {
+  const worker = new FakeWorker();
+  const events: BrowserWorkerEventEnvelope[] = [];
+  const client = createAxonBrowserClient({
+    worker: worker as unknown as Worker,
+    onEvent: (event) => events.push(event),
+  });
+  const resultPromise = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT 1',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-cache-metrics' },
+  );
+  const counters = {
+    range_cache_hits: 1,
+    range_cache_misses: 0,
+    range_cache_bytes_reused: 800,
+    range_cache_bytes_stored: 0,
+    range_cache_validation_misses: 0,
+    range_cache_degraded_identity_reads: 0,
+    range_readahead_requests: 0,
+    range_readahead_bytes_fetched: 0,
+    range_readahead_bytes_used: 0,
+    range_readahead_wasted_bytes: 0,
+  };
+  worker.emitRawMessage({
+    range_read_metrics: {
+      context: {
+        phase: 'query',
+        request_id: 'req-cache-metrics',
+        query_id: 'req-cache-metrics',
+        table_name: 'events',
+      },
+      bytes_fetched: 0,
+      files_touched: 1,
+      files_skipped: 0,
+      row_groups_touched: 1,
+      row_groups_skipped: 0,
+      rows_emitted: 1,
+      ...counters,
+    },
+  });
+  const response = queryResponse();
+  Object.assign(response.metrics, counters);
+  worker.emitMessage({
+    success: {
+      request_id: 'req-cache-metrics',
+      response,
+      result: { format: 'stream', content_type: 'application/vnd.apache.arrow.stream', bytes: [1] },
+    },
+  });
+  await expect(resultPromise).resolves.toMatchObject({ response: { metrics: counters } });
+  expect(events).toContainEqual({ range_read_metrics: expect.objectContaining(counters) });
+});
+
+for (const field of [
+  'range_cache_hits',
+  'range_cache_misses',
+  'range_cache_bytes_reused',
+  'range_cache_bytes_stored',
+  'range_cache_validation_misses',
+  'range_cache_degraded_identity_reads',
+  'range_readahead_requests',
+  'range_readahead_bytes_fetched',
+  'range_readahead_bytes_used',
+  'range_readahead_wasted_bytes',
+] as const) {
+  test(`rejects non-finite ${field} worker metrics`, async () => {
+    const worker = new FakeWorker();
+    const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+    const resultPromise = client.query(
+      'events',
+      {
+        table_uri: snapshot.table_uri,
+        snapshot_version: snapshot.snapshot_version,
+        sql: 'SELECT 1',
+        preferred_target: 'browser_wasm',
+      },
+      { requestId: `req-invalid-${field}` },
+    );
+    worker.emitRawMessage({
+      range_read_metrics: {
+        context: {
+          phase: 'query',
+          request_id: `req-invalid-${field}`,
+          query_id: `req-invalid-${field}`,
+          table_name: 'events',
+        },
+        bytes_fetched: 0,
+        files_touched: 1,
+        files_skipped: 0,
+        row_groups_touched: 1,
+        row_groups_skipped: 0,
+        rows_emitted: 1,
+        [field]: Number.NaN,
+      },
+    });
+    await expect(resultPromise).rejects.toThrow(
+      `range_read_metrics.${field} must be a finite number`,
+    );
+  });
+}
+
 test('rejects malformed worker runtime events without routing them to the event handler', async () => {
   const worker = new FakeWorker();
   const events: BrowserWorkerEventEnvelope[] = [];

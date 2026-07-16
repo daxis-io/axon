@@ -641,6 +641,16 @@ export type QueryMetricsSummary = {
   footer_cache_degraded_identity_reads?: number;
   identity_present_range_reads?: number;
   identity_missing_range_reads?: number;
+  range_cache_hits?: number;
+  range_cache_misses?: number;
+  range_cache_bytes_reused?: number;
+  range_cache_bytes_stored?: number;
+  range_cache_validation_misses?: number;
+  range_cache_degraded_identity_reads?: number;
+  range_readahead_requests?: number;
+  range_readahead_bytes_fetched?: number;
+  range_readahead_bytes_used?: number;
+  range_readahead_wasted_bytes?: number;
   descriptor_resolution_count?: number;
   delta_log_manifest_list_count?: number;
   delta_log_manifest_list_duration_ms?: number;
@@ -916,6 +926,16 @@ export type BrowserWorkerRangeReadMetricsEvent = {
   footer_cache_degraded_identity_reads?: number;
   identity_present_range_reads?: number;
   identity_missing_range_reads?: number;
+  range_cache_hits?: number;
+  range_cache_misses?: number;
+  range_cache_bytes_reused?: number;
+  range_cache_bytes_stored?: number;
+  range_cache_validation_misses?: number;
+  range_cache_degraded_identity_reads?: number;
+  range_readahead_requests?: number;
+  range_readahead_bytes_fetched?: number;
+  range_readahead_bytes_used?: number;
+  range_readahead_wasted_bytes?: number;
   descriptor_resolution_count?: number;
   delta_log_manifest_list_count?: number;
   delta_log_manifest_list_duration_ms?: number;
@@ -4621,6 +4641,46 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
           identity_missing_range_reads: optionalNumber(
             payload.identity_missing_range_reads,
             'range_read_metrics.identity_missing_range_reads',
+          ),
+          range_cache_hits: optionalNumber(
+            payload.range_cache_hits,
+            'range_read_metrics.range_cache_hits',
+          ),
+          range_cache_misses: optionalNumber(
+            payload.range_cache_misses,
+            'range_read_metrics.range_cache_misses',
+          ),
+          range_cache_bytes_reused: optionalNumber(
+            payload.range_cache_bytes_reused,
+            'range_read_metrics.range_cache_bytes_reused',
+          ),
+          range_cache_bytes_stored: optionalNumber(
+            payload.range_cache_bytes_stored,
+            'range_read_metrics.range_cache_bytes_stored',
+          ),
+          range_cache_validation_misses: optionalNumber(
+            payload.range_cache_validation_misses,
+            'range_read_metrics.range_cache_validation_misses',
+          ),
+          range_cache_degraded_identity_reads: optionalNumber(
+            payload.range_cache_degraded_identity_reads,
+            'range_read_metrics.range_cache_degraded_identity_reads',
+          ),
+          range_readahead_requests: optionalNumber(
+            payload.range_readahead_requests,
+            'range_read_metrics.range_readahead_requests',
+          ),
+          range_readahead_bytes_fetched: optionalNumber(
+            payload.range_readahead_bytes_fetched,
+            'range_read_metrics.range_readahead_bytes_fetched',
+          ),
+          range_readahead_bytes_used: optionalNumber(
+            payload.range_readahead_bytes_used,
+            'range_read_metrics.range_readahead_bytes_used',
+          ),
+          range_readahead_wasted_bytes: optionalNumber(
+            payload.range_readahead_wasted_bytes,
+            'range_read_metrics.range_readahead_wasted_bytes',
           ),
           descriptor_resolution_count: optionalNumber(
             payload.descriptor_resolution_count,

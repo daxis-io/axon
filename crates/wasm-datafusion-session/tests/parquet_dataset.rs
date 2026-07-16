@@ -310,21 +310,43 @@ fn session_reuses_prepared_snapshot_for_repeated_sql_when_identity_matches() {
             "SELECT id FROM events WHERE value > 10 ORDER BY id",
             ExecutionTarget::BrowserWasm,
         );
-        session
+        let first = session
             .sql("events", &request)
             .await
             .expect("first SQL should prepare the table");
-        let result = session
+        let second = session
             .sql("events", &request)
             .await
             .expect("second SQL should reuse the prepared table");
+        let third = session
+            .sql("events", &request)
+            .await
+            .expect("third SQL should reuse the prepared table");
 
-        assert_eq!(result.runtime_result.row_count, 2);
-        assert_eq!(result.response.metrics.session_reuse_count, Some(1));
-        assert_eq!(result.response.metrics.opened_table_reuse_count, Some(1));
+        assert_eq!(second.runtime_result.row_count, 2);
+        assert_eq!(second.response.metrics.session_reuse_count, Some(1));
+        assert_eq!(second.response.metrics.opened_table_reuse_count, Some(1));
         assert_eq!(
-            result.response.metrics.bootstrap_footer_range_reads,
+            second.response.metrics.bootstrap_footer_range_reads,
             Some(0)
+        );
+        assert!(
+            first
+                .response
+                .metrics
+                .range_cache_misses
+                .unwrap_or_default()
+                > 0
+        );
+        assert_eq!(second.response.metrics.bytes_fetched, 0);
+        assert_eq!(third.response.metrics.bytes_fetched, 0);
+        assert_eq!(
+            second.response.metrics.range_cache_hits,
+            third.response.metrics.range_cache_hits
+        );
+        assert_eq!(
+            second.response.metrics.range_cache_bytes_reused,
+            third.response.metrics.range_cache_bytes_reused
         );
     });
 }

@@ -221,6 +221,16 @@ message QueryMetricsSummary {
   optional uint64 planning_duration_ms = 41 [json_name = "planning_duration_ms"];
   optional uint64 arrow_ipc_encode_duration_ms = 42 [json_name = "arrow_ipc_encode_duration_ms"];
   optional uint64 preview_duration_ms = 43 [json_name = "preview_duration_ms"];
+  optional uint64 range_cache_hits = 44 [json_name = "range_cache_hits"];
+  optional uint64 range_cache_misses = 45 [json_name = "range_cache_misses"];
+  optional uint64 range_cache_bytes_reused = 46 [json_name = "range_cache_bytes_reused"];
+  optional uint64 range_cache_bytes_stored = 47 [json_name = "range_cache_bytes_stored"];
+  optional uint64 range_cache_validation_misses = 48 [json_name = "range_cache_validation_misses"];
+  optional uint64 range_cache_degraded_identity_reads = 49 [json_name = "range_cache_degraded_identity_reads"];
+  optional uint64 range_readahead_requests = 50 [json_name = "range_readahead_requests"];
+  optional uint64 range_readahead_bytes_fetched = 51 [json_name = "range_readahead_bytes_fetched"];
+  optional uint64 range_readahead_bytes_used = 52 [json_name = "range_readahead_bytes_used"];
+  optional uint64 range_readahead_wasted_bytes = 53 [json_name = "range_readahead_wasted_bytes"];
 }
 
 // Carries execution metadata shared by full results and previews.
@@ -460,6 +470,16 @@ message BrowserWorkerRangeReadMetricsEvent {
   optional uint64 planning_duration_ms = 41 [json_name = "planning_duration_ms"];
   optional uint64 arrow_ipc_encode_duration_ms = 42 [json_name = "arrow_ipc_encode_duration_ms"];
   optional uint64 preview_duration_ms = 43 [json_name = "preview_duration_ms"];
+  optional uint64 range_cache_hits = 44 [json_name = "range_cache_hits"];
+  optional uint64 range_cache_misses = 45 [json_name = "range_cache_misses"];
+  optional uint64 range_cache_bytes_reused = 46 [json_name = "range_cache_bytes_reused"];
+  optional uint64 range_cache_bytes_stored = 47 [json_name = "range_cache_bytes_stored"];
+  optional uint64 range_cache_validation_misses = 48 [json_name = "range_cache_validation_misses"];
+  optional uint64 range_cache_degraded_identity_reads = 49 [json_name = "range_cache_degraded_identity_reads"];
+  optional uint64 range_readahead_requests = 50 [json_name = "range_readahead_requests"];
+  optional uint64 range_readahead_bytes_fetched = 51 [json_name = "range_readahead_bytes_fetched"];
+  optional uint64 range_readahead_bytes_used = 52 [json_name = "range_readahead_bytes_used"];
+  optional uint64 range_readahead_wasted_bytes = 53 [json_name = "range_readahead_wasted_bytes"];
 }
 
 // Summarizes persistent transport-cache reuse and validation failures.

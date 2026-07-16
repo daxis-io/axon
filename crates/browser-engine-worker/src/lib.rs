@@ -842,6 +842,28 @@ fn emit_open_bootstrap_metrics<F>(
             identity_missing_range_reads: Some(
                 snapshot.range_read_metrics().identity_missing_range_reads,
             ),
+            range_cache_hits: Some(snapshot.range_read_metrics().range_cache_hits),
+            range_cache_misses: Some(snapshot.range_read_metrics().range_cache_misses),
+            range_cache_bytes_reused: Some(snapshot.range_read_metrics().range_cache_bytes_reused),
+            range_cache_bytes_stored: Some(snapshot.range_read_metrics().range_cache_bytes_stored),
+            range_cache_validation_misses: Some(
+                snapshot.range_read_metrics().range_cache_validation_misses,
+            ),
+            range_cache_degraded_identity_reads: Some(
+                snapshot
+                    .range_read_metrics()
+                    .range_cache_degraded_identity_reads,
+            ),
+            range_readahead_requests: Some(snapshot.range_read_metrics().range_readahead_requests),
+            range_readahead_bytes_fetched: Some(
+                snapshot.range_read_metrics().range_readahead_bytes_fetched,
+            ),
+            range_readahead_bytes_used: Some(
+                snapshot.range_read_metrics().range_readahead_bytes_used,
+            ),
+            range_readahead_wasted_bytes: Some(
+                snapshot.range_read_metrics().range_readahead_wasted_bytes,
+            ),
             descriptor_resolution_count: None,
             delta_log_manifest_list_count: None,
             delta_log_manifest_list_duration_ms: None,

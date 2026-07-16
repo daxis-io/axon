@@ -320,10 +320,24 @@ pub enum RangeCacheLookup {
     Miss,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RangeCacheLookupObservation {
+    pub lookup: RangeCacheLookup,
+    pub bytes_reused: u64,
+    pub validation_misses: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RangeCacheStoreOutcome {
     Stored,
     CacheError,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RangeCacheStoreObservation {
+    pub outcome: RangeCacheStoreOutcome,
+    pub bytes_stored: u64,
+    pub validation_misses: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -375,6 +389,14 @@ impl MemoryRangeCache {
         identity: &RangeCacheIdentity,
         requested_extent: ByteExtent,
     ) -> RangeCacheLookup {
+        self.load_observed(identity, requested_extent).lookup
+    }
+
+    pub fn load_observed(
+        &self,
+        identity: &RangeCacheIdentity,
+        requested_extent: ByteExtent,
+    ) -> RangeCacheLookupObservation {
         self.load_internal(identity, requested_extent, true)
     }
 
@@ -383,17 +405,21 @@ impl MemoryRangeCache {
         identity: &RangeCacheIdentity,
         requested_extent: ByteExtent,
         record_miss: bool,
-    ) -> RangeCacheLookup {
+    ) -> RangeCacheLookupObservation {
         let (mut state, recovered_poison) = self.lock_state();
         if recovered_poison {
             state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
             if record_miss {
                 state.metrics.cache_misses = state.metrics.cache_misses.saturating_add(1);
             }
-            return RangeCacheLookup::Miss;
+            return RangeCacheLookupObservation {
+                lookup: RangeCacheLookup::Miss,
+                bytes_reused: 0,
+                validation_misses: 0,
+            };
         }
         let key = ExtentCacheKey::from_identity(identity);
-        evict_stale_memory_entries(&mut state, &key);
+        let validation_misses = evict_stale_memory_entries(&mut state, &key);
 
         let Some(position) = state
             .entries
@@ -403,7 +429,11 @@ impl MemoryRangeCache {
             if record_miss {
                 state.metrics.cache_misses = state.metrics.cache_misses.saturating_add(1);
             }
-            return RangeCacheLookup::Miss;
+            return RangeCacheLookupObservation {
+                lookup: RangeCacheLookup::Miss,
+                bytes_reused: 0,
+                validation_misses,
+            };
         };
         let entry = state.entries[position].clone();
         if self.max_entries.is_some() {
@@ -418,14 +448,22 @@ impl MemoryRangeCache {
                     .metrics
                     .cache_bytes_reused
                     .saturating_add(requested_extent.length);
-                RangeCacheLookup::Hit { bytes }
+                RangeCacheLookupObservation {
+                    lookup: RangeCacheLookup::Hit { bytes },
+                    bytes_reused: requested_extent.length,
+                    validation_misses,
+                }
             }
             Err(_) => {
                 state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
                 if record_miss {
                     state.metrics.cache_misses = state.metrics.cache_misses.saturating_add(1);
                 }
-                RangeCacheLookup::Miss
+                RangeCacheLookupObservation {
+                    lookup: RangeCacheLookup::Miss,
+                    bytes_reused: 0,
+                    validation_misses,
+                }
             }
         }
     }
@@ -436,9 +474,27 @@ impl MemoryRangeCache {
         extent: ByteExtent,
         bytes: Bytes,
     ) -> RangeCacheStoreOutcome {
+        self.store_observed(identity, extent, bytes).outcome
+    }
+
+    pub fn store_observed(
+        &self,
+        identity: &RangeCacheIdentity,
+        extent: ByteExtent,
+        bytes: Bytes,
+    ) -> RangeCacheStoreObservation {
+        let response_bytes = bytes.len() as u64;
         match self.store_entry(identity, extent, bytes) {
-            Ok(_) => RangeCacheStoreOutcome::Stored,
-            Err(()) => RangeCacheStoreOutcome::CacheError,
+            Ok((_, validation_misses)) => RangeCacheStoreObservation {
+                outcome: RangeCacheStoreOutcome::Stored,
+                bytes_stored: response_bytes,
+                validation_misses,
+            },
+            Err(()) => RangeCacheStoreObservation {
+                outcome: RangeCacheStoreOutcome::CacheError,
+                bytes_stored: 0,
+                validation_misses: 0,
+            },
         }
     }
 
@@ -447,14 +503,14 @@ impl MemoryRangeCache {
         identity: &RangeCacheIdentity,
         extent: ByteExtent,
         bytes: Bytes,
-    ) -> Result<ExtentCacheEntry, ()> {
+    ) -> Result<(ExtentCacheEntry, u64), ()> {
         let (mut state, recovered_poison) = self.lock_state();
         if recovered_poison {
             state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
             return Err(());
         }
         let key = ExtentCacheKey::from_identity(identity);
-        evict_stale_memory_entries(&mut state, &key);
+        let validation_misses = evict_stale_memory_entries(&mut state, &key);
         let Ok(mut new_entry) = ExtentCacheEntry::new(key, extent, bytes) else {
             state.metrics.cache_errors = state.metrics.cache_errors.saturating_add(1);
             return Err(());
@@ -485,7 +541,7 @@ impl MemoryRangeCache {
         }
         state.entries = retained;
 
-        Ok(new_entry)
+        Ok((new_entry, validation_misses))
     }
 
     pub fn metrics(&self) -> SharedRangeCacheMetrics {
@@ -539,20 +595,21 @@ impl MemoryRangeCache {
     }
 }
 
-fn evict_stale_memory_entries(state: &mut MemoryRangeCacheState, key: &ExtentCacheKey) {
+fn evict_stale_memory_entries(state: &mut MemoryRangeCacheState, key: &ExtentCacheKey) -> u64 {
     let stale_count = state
         .entries
         .iter()
         .filter(|entry| entry.key.resource == key.resource && entry.key != *key)
         .count() as u64;
     if stale_count == 0 {
-        return;
+        return 0;
     }
 
     state
         .entries
         .retain(|entry| entry.key.resource != key.resource || entry.key == *key);
     state.metrics.validation_misses = state.metrics.validation_misses.saturating_add(stale_count);
+    stale_count
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1214,8 +1271,10 @@ impl SharedRangeCache {
         identity: &RangeCacheIdentity,
         requested_extent: ByteExtent,
     ) -> RangeCacheLookup {
-        if let hit @ RangeCacheLookup::Hit { .. } =
-            self.memory.load_internal(identity, requested_extent, false)
+        if let hit @ RangeCacheLookup::Hit { .. } = self
+            .memory
+            .load_internal(identity, requested_extent, false)
+            .lookup
         {
             return hit;
         }
@@ -1256,7 +1315,7 @@ impl SharedRangeCache {
         extent: ByteExtent,
         bytes: Bytes,
     ) -> RangeCacheStoreOutcome {
-        let Ok(entry) = self.memory.store_entry(identity, extent, bytes) else {
+        let Ok((entry, _)) = self.memory.store_entry(identity, extent, bytes) else {
             return RangeCacheStoreOutcome::CacheError;
         };
 

@@ -345,6 +345,26 @@ pub struct BrowserWorkerRangeReadMetricsEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_missing_range_reads: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_cache_hits: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_cache_misses: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_cache_bytes_reused: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_cache_bytes_stored: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_cache_validation_misses: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_cache_degraded_identity_reads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_readahead_requests: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_readahead_bytes_fetched: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_readahead_bytes_used: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_readahead_wasted_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub descriptor_resolution_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delta_log_manifest_list_count: Option<u64>,
@@ -494,6 +514,16 @@ impl BrowserWorkerEventEnvelope {
             footer_cache_degraded_identity_reads: metrics.footer_cache_degraded_identity_reads,
             identity_present_range_reads: metrics.identity_present_range_reads,
             identity_missing_range_reads: metrics.identity_missing_range_reads,
+            range_cache_hits: metrics.range_cache_hits,
+            range_cache_misses: metrics.range_cache_misses,
+            range_cache_bytes_reused: metrics.range_cache_bytes_reused,
+            range_cache_bytes_stored: metrics.range_cache_bytes_stored,
+            range_cache_validation_misses: metrics.range_cache_validation_misses,
+            range_cache_degraded_identity_reads: metrics.range_cache_degraded_identity_reads,
+            range_readahead_requests: metrics.range_readahead_requests,
+            range_readahead_bytes_fetched: metrics.range_readahead_bytes_fetched,
+            range_readahead_bytes_used: metrics.range_readahead_bytes_used,
+            range_readahead_wasted_bytes: metrics.range_readahead_wasted_bytes,
             descriptor_resolution_count: metrics.descriptor_resolution_count,
             delta_log_manifest_list_count: metrics.delta_log_manifest_list_count,
             delta_log_manifest_list_duration_ms: metrics.delta_log_manifest_list_duration_ms,

@@ -1533,6 +1533,36 @@ pub struct QueryMetricsSummary {
     /// Exact HTTP range reads that ran without stable object identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_missing_range_reads: Option<u64>,
+    /// Eligible physical range-cache lookups served from cached bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_cache_hits: Option<u64>,
+    /// Eligible physical range-cache lookups not served from cached bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_cache_misses: Option<u64>,
+    /// Physical requested bytes served from the range cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_cache_bytes_reused: Option<u64>,
+    /// Physical response bytes successfully accepted by the range cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_cache_bytes_stored: Option<u64>,
+    /// Identity or cached-response validation rejections during eligible cache operations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_cache_validation_misses: Option<u64>,
+    /// Reads that bypassed the range cache because identity was missing, weak, or empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_cache_degraded_identity_reads: Option<u64>,
+    /// Physical speculative range-readahead requests issued when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_readahead_requests: Option<u64>,
+    /// Physical response bytes fetched by speculative range readahead when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_readahead_bytes_fetched: Option<u64>,
+    /// Speculatively fetched range bytes consumed by later logical reads when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_readahead_bytes_used: Option<u64>,
+    /// Speculatively fetched range bytes not consumed by later logical reads when tracked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range_readahead_wasted_bytes: Option<u64>,
     /// Snapshot or descriptor resolution attempts performed before query execution when tracked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub descriptor_resolution_count: Option<u64>,

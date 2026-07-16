@@ -9,6 +9,7 @@ arrow-schema = "=58.3.0"
 query-contract = { path = "../query-contract" }
 sqlparser = { version = "=0.61.0", features = ["visitor"] }
 wasm-datafusion-poc = { path = "../wasm-datafusion-poc" }
+wasm-parquet-engine = { path = "../wasm-parquet-engine" }
 wasm-query-runtime = { path = "../wasm-query-runtime" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

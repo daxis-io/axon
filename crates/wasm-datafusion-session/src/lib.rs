@@ -381,21 +381,7 @@ impl BrowserDataFusionSession {
         let access_mode = prepared.bootstrapped.access_mode();
         let merged_range_read_metrics =
             bootstrap_range_read_metrics.merge(&scan_metrics.range_read_metrics);
-        let range_read_metrics = DataFusionSessionRangeReadMetrics {
-            bootstrap_footer_range_reads: merged_range_read_metrics.bootstrap_footer_range_reads,
-            scan_footer_range_reads: merged_range_read_metrics.scan_footer_range_reads,
-            scan_data_range_reads: merged_range_read_metrics.scan_data_range_reads,
-            duplicate_range_reads: merged_range_read_metrics.duplicate_range_reads,
-            coalesced_range_reads: merged_range_read_metrics.coalesced_range_reads,
-            coalesced_gap_bytes_fetched: merged_range_read_metrics.coalesced_gap_bytes_fetched,
-            footer_cache_hits: merged_range_read_metrics.footer_cache_hits,
-            footer_cache_misses: merged_range_read_metrics.footer_cache_misses,
-            footer_range_reads_avoided: merged_range_read_metrics.footer_range_reads_avoided,
-            footer_cache_degraded_identity_reads: merged_range_read_metrics
-                .footer_cache_degraded_identity_reads,
-            identity_present_range_reads: merged_range_read_metrics.identity_present_range_reads,
-            identity_missing_range_reads: merged_range_read_metrics.identity_missing_range_reads,
-        };
+        let range_read_metrics = merged_range_read_metrics;
         let runtime_result = runtime_result_from_datafusion(datafusion_result);
 
         Ok(BrowserDataFusionSessionQueryResult {
@@ -1156,7 +1142,7 @@ fn datafusion_query_metrics(
     scan_metrics: DataFusionScanMetricsSummary,
     fallback_file_count: u64,
     footer_reads: Option<u64>,
-    range_read_metrics: DataFusionSessionRangeReadMetrics,
+    range_read_metrics: wasm_parquet_engine::ParquetRangeReadMetrics,
     snapshot_bootstrap_duration_ms: Option<u64>,
     access_mode: Option<query_contract::BrowserAccessMode>,
     prebootstrap_pruning: BrowserPrebootstrapPruningSummary,
@@ -1196,6 +1182,18 @@ fn datafusion_query_metrics(
         ),
         identity_present_range_reads: Some(range_read_metrics.identity_present_range_reads),
         identity_missing_range_reads: Some(range_read_metrics.identity_missing_range_reads),
+        range_cache_hits: Some(range_read_metrics.range_cache_hits),
+        range_cache_misses: Some(range_read_metrics.range_cache_misses),
+        range_cache_bytes_reused: Some(range_read_metrics.range_cache_bytes_reused),
+        range_cache_bytes_stored: Some(range_read_metrics.range_cache_bytes_stored),
+        range_cache_validation_misses: Some(range_read_metrics.range_cache_validation_misses),
+        range_cache_degraded_identity_reads: Some(
+            range_read_metrics.range_cache_degraded_identity_reads,
+        ),
+        range_readahead_requests: Some(range_read_metrics.range_readahead_requests),
+        range_readahead_bytes_fetched: Some(range_read_metrics.range_readahead_bytes_fetched),
+        range_readahead_bytes_used: Some(range_read_metrics.range_readahead_bytes_used),
+        range_readahead_wasted_bytes: Some(range_read_metrics.range_readahead_wasted_bytes),
         descriptor_resolution_count: None,
         delta_log_manifest_list_count: None,
         delta_log_manifest_list_duration_ms: None,
@@ -1217,22 +1215,6 @@ fn datafusion_query_metrics(
         arrow_ipc_encode_duration_ms: None,
         preview_duration_ms: None,
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct DataFusionSessionRangeReadMetrics {
-    bootstrap_footer_range_reads: u64,
-    scan_footer_range_reads: u64,
-    scan_data_range_reads: u64,
-    duplicate_range_reads: u64,
-    coalesced_range_reads: u64,
-    coalesced_gap_bytes_fetched: u64,
-    footer_cache_hits: u64,
-    footer_cache_misses: u64,
-    footer_range_reads_avoided: u64,
-    footer_cache_degraded_identity_reads: u64,
-    identity_present_range_reads: u64,
-    identity_missing_range_reads: u64,
 }
 
 fn validate_datafusion_request_match(

@@ -4494,6 +4494,7 @@ dependencies = [
  "sqlparser",
  "tokio",
  "wasm-datafusion-poc",
+ "wasm-parquet-engine",
  "wasm-query-runtime",
 ]
 

@@ -272,3 +272,41 @@ fn memory_range_cache_is_send_and_sync() {
 
     assert_send_sync::<MemoryRangeCache>();
 }
+
+#[test]
+fn observed_lookup_reports_only_this_calls_hit_and_validation_rejections() {
+    let cache = MemoryRangeCache::new();
+    let old = strong_identity("https://example.test/data", "\"old\"", 4);
+    let new = strong_identity("https://example.test/data", "\"new\"", 4);
+    let extent = ByteExtent::new(0, 4).expect("valid extent");
+    cache.store(&old, extent, Bytes::from_static(b"old!"));
+
+    let miss = cache.load_observed(&new, extent);
+    assert_eq!(miss.lookup, RangeCacheLookup::Miss);
+    assert_eq!(miss.validation_misses, 1);
+    assert_eq!(miss.bytes_reused, 0);
+
+    cache.store(&new, extent, Bytes::from_static(b"new!"));
+    let hit = cache.load_observed(&new, extent);
+    assert_eq!(
+        hit.lookup,
+        RangeCacheLookup::Hit {
+            bytes: Bytes::from_static(b"new!")
+        }
+    );
+    assert_eq!(hit.validation_misses, 0);
+    assert_eq!(hit.bytes_reused, 4);
+}
+
+#[test]
+fn observed_store_reports_accepted_response_bytes_for_only_this_call() {
+    let cache = MemoryRangeCache::new();
+    let old_identity = strong_identity("https://example.test/data", "\"v1\"", 4);
+    let new_identity = strong_identity("https://example.test/data", "\"v2\"", 4);
+    let extent = ByteExtent::new(0, 4).expect("valid extent");
+
+    cache.store(&old_identity, extent, Bytes::from_static(b"old!"));
+    let stored = cache.store_observed(&new_identity, extent, Bytes::from_static(b"new!"));
+    assert_eq!(stored.bytes_stored, 4);
+    assert_eq!(stored.validation_misses, 1);
+}
