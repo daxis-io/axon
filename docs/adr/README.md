@@ -9,4 +9,4 @@
 - [ADR-0007: Release Gates Prioritize Range Reads, Conformance, Observability, And Constrained Browser Mode](./ADR-0007-release-gates-range-reads-conformance-observability-browser-mode.md)
 - [ADR-0008: Daxis Browser Read Compute Uses Axon Contracts And Daxis Control Plane](./ADR-0008-daxis-browser-read-compute-contract.md)
 - [ADR-0009: Axon Is The Lakehouse Query Engine And Workbench Runtime](./ADR-0009-axon-is-the-lakehouse-workbench.md)
-- [ADR-0010: Pluggable Catalog Providers And Table Read Resolution Seams](./ADR-0010-pluggable-catalog-providers.md)
+- [ADR-0010: Pluggable Catalog Providers And Separate Access And Execution Seams](./ADR-0010-pluggable-catalog-providers.md)

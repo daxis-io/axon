@@ -2,39 +2,74 @@
 
 - Status: Accepted
 - Date: 2026-06-20
+- Revised: 2026-07-15
 - Decision owner: Runtime / engine team
 
 ## Decision
 
-Axon is the standalone lakehouse query engine and browser/native workbench runtime for inspecting and querying open lakehouse data. The core product model is provider-driven and engine-first: Axon opens lakehouse data through explicit provider contracts, executes supported reads in browser WebAssembly when possible, and preserves native execution as the correctness oracle and fallback target.
+Axon is a standalone lakehouse query engine and browser/native workbench runtime
+for inspecting and querying open lakehouse data. It can also run inside a host
+that supplies identity, governance, or remote execution. Axon does not become the
+host's control plane when embedded.
 
-Axon's architecture uses three separate taxonomy buckets so lakehouse providers, execution targets, and control-plane integrations do not collapse into one product-specific model:
+A source profile composes three core seams:
 
-- **Lakehouse providers** describe where table metadata, object descriptors, and read eligibility come from. Current providers are `LocalDelta`, `ObjectStorage`, `UnityCatalog`, and `DeltaSharing`. Iceberg is reserved for a future provider after a compatibility plan exists.
-- **Execution targets** describe where query work runs. Current targets are the browser DataFusion WebAssembly path and the native DataFusion / delta-rs runtime.
-- **Host/control-plane integrations** describe external systems that provide identity/session context, governed descriptors, approved read plans, rollout policy, release evidence, or hosted deployment context.
+- `CatalogProvider` discovers resources and returns canonical references.
+- `DataAccessResolver` turns a reference into an execution decision for the
+  current principal and session.
+- `ExecutionProvider` executes in a selected browser, native, or remote runtime.
 
-Host products may embed Axon as their analytical read engine while owning product authority such as users, tenants, billing, catalog governance, audit, workflows, dashboards, agents, rollout, and server fallback policy. Those hosts are excluded from Axon's provider taxonomy and are not the organizing model for Axon.
+The profile may also bind identity/session, early authorization decisions, and
+an optional filesystem seam. It is configuration, not another provider
+interface. Local Delta, public object storage, session-proxied Unity Catalog,
+Delta Sharing, and governed hosts compose the seams differently. UI code
+consumes the narrow contracts and does not branch on those source labels.
+
+Authority follows the selected profile. Axon owns local file consent and local
+browser execution. A catalog or governed host owns authorization for its remote
+resources, capability issuance, authoritative audit, and any remote execution.
+Browser policy may make early UI and safety decisions, but it does not replace
+server enforcement. Native execution remains the correctness oracle and the
+explicit fallback target for unsupported browser work.
 
 ## Context
 
-Axon started with a narrow browser query runtime and later grew downstream integration contracts for governed browser reads. Those contracts remain useful, but placing consumer-specific narrative documents in the core program spine made Axon look like a subsystem of a host product instead of a reusable lakehouse query engine/runtime.
+Axon started with a narrow browser query runtime and later added integration
+contracts for governed reads. Consumer-specific language in the core program
+spine made the product appear to be a subsystem of one host. A single generic
+"provider" concept created a different problem: catalog discovery, capability
+issuance, and execution have different owners, lifetimes, and trust boundaries.
 
-The project now needs docs, navigation, and conformance checks that keep the product model clear without renaming stable consumer wire contracts.
+ADR-0010 supersedes the earlier provider taxonomy in this ADR. The terms
+`LocalDelta`, `ObjectStorage`, `UnityCatalog`, and `DeltaSharing` now name source
+profiles or adapters, not interfaces that may combine discovery, access, and
+execution authority.
 
 ## Policy
 
-- Core docs should introduce Axon first as a lakehouse query engine and workbench runtime.
-- Provider docs should name only real lakehouse providers: `LocalDelta`, `ObjectStorage`, `UnityCatalog`, and `DeltaSharing`; Iceberg remains future.
-- Integration docs may describe consumer-specific gateway, rollout, release-gate, and external-proof behavior under `docs/integrations/`.
-- Public consumer contract names remain stable until a separate compatibility plan changes them.
-- Core docs should use generic integration names such as `ControlPlaneIntegration`, `ApprovedReadPlanSource`, and `GovernedDescriptorSource`.
+- Core docs introduce Axon as a lakehouse query engine and workbench runtime.
+- Core interfaces use host-agnostic names. Consumer-specific gateways, rollout
+  rules, and external proof remain under `docs/integrations/`.
+- Catalog discovery never grants byte access or chooses an execution target.
+- An execution request carries one authoritative resource binding: a resolved
+  browser binding for browser execution or a logical resource reference for
+  remote execution.
+- No profile silently substitutes a sample, prior, or default source after the
+  user selects a resource.
+- Public consumer wire names remain stable until a compatibility plan changes
+  them. Internal worker compatibility messages do not become portable service
+  contracts through naming alone.
 
 ## Consequences
 
-The README, program architecture docs, ADR index, conformance tests, and CI checks now enforce the Axon-first taxonomy. Downstream consumer docs and examples live under an integration namespace rather than the core program spine.
+The same workbench can support local, public, catalog-backed, and governed
+deployment profiles without granting every adapter the same authority. Host
+products can embed Axon while retaining identity, tenancy, governance, audit,
+and remote routing. Axon can change browser worker mechanics without requiring a
+remote executor to emulate them.
 
 ## References
 
 - [Axon workbench architecture](../program/axon-workbench-architecture.md)
 - [Provider model](../program/provider-model.md)
+- [ADR-0010: Pluggable catalog providers and table read resolution seams](ADR-0010-pluggable-catalog-providers.md)
