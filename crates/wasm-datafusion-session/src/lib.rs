@@ -22,10 +22,14 @@ use sqlparser::ast::{
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
+pub use wasm_datafusion_poc::{
+    ArrowIpcPhase, IpcCursorMetrics, IpcPreview, IpcStreamLimits, IpcTransportChunk,
+    QueryTerminalStatus,
+};
 use wasm_datafusion_poc::{
-    BrowserQueryCancellation, DataFusionArrowIpcResult, DataFusionScanMetricsSummary,
+    BrowserQueryCancellation, CursorFault, DataFusionIpcCursor, DataFusionScanMetricsSummary,
     DeltaTableDescriptor, DeltaTableFieldDataType, DeltaTableSchema, DeltaTableSchemaField,
-    WasmDataFusionEngine,
+    IpcCursorItem, QueryCancelHandle, QueryTerminal, WasmDataFusionEngine,
 };
 use wasm_query_runtime::{
     runtime_target, BootstrappedBrowserSnapshot, BrowserExecutionBudget,
@@ -66,6 +70,64 @@ pub struct BrowserDataFusionSessionQueryResult {
     pub runtime_result: RuntimeArrowIpcResult,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum BrowserDataFusionIpcCursorItem {
+    Chunk(IpcTransportChunk),
+    Terminal(BrowserDataFusionQueryTerminal),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BrowserDataFusionQueryTerminal {
+    pub status: QueryTerminalStatus,
+    pub error: Option<QueryError>,
+    pub response: Option<QueryResponse>,
+    pub row_count: u64,
+    pub encoded_bytes: u64,
+    pub preview: IpcPreview,
+    pub cursor_metrics: IpcCursorMetrics,
+}
+
+pub struct BrowserDataFusionIpcCursor {
+    cursor: DataFusionIpcCursor,
+    completion: Option<BrowserDataFusionCursorCompletion>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BrowserDataFusionCursorCancellation {
+    cancellation: QueryCancelHandle,
+}
+
+impl BrowserDataFusionCursorCancellation {
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
+    pub fn cancel_for_deadline(&self) {
+        self.cancellation.cancel_for_deadline();
+    }
+}
+
+impl std::fmt::Debug for BrowserDataFusionIpcCursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrowserDataFusionIpcCursor")
+            .field("cursor", &self.cursor)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BrowserDataFusionCursorCompletion {
+    capabilities: CapabilityReport,
+    fallback_file_count: u64,
+    footer_reads: Option<u64>,
+    bootstrap_range_read_metrics: wasm_parquet_engine::ParquetRangeReadMetrics,
+    snapshot_bootstrap_duration_ms: Option<u64>,
+    access_mode: Option<query_contract::BrowserAccessMode>,
+    prebootstrap_pruning: BrowserPrebootstrapPruningSummary,
+    reuse_metrics: DataFusionSessionReuseMetrics,
+    started_at: BrowserRuntimeInstant,
+}
+
 #[derive(Clone, Debug)]
 pub struct BrowserDataFusionSession {
     runtime: BrowserRuntimeSession,
@@ -84,6 +146,73 @@ pub struct BrowserDataFusionCancellation {
 impl BrowserDataFusionCancellation {
     pub fn cancel_running_queries(&self) {
         self.cancellation.cancel();
+    }
+}
+
+impl BrowserDataFusionIpcCursor {
+    pub async fn next(&mut self) -> Result<Option<BrowserDataFusionIpcCursorItem>, CursorFault> {
+        let Some(item) = self.cursor.next().await? else {
+            return Ok(None);
+        };
+        Ok(Some(match item {
+            IpcCursorItem::Chunk(chunk) => BrowserDataFusionIpcCursorItem::Chunk(chunk),
+            IpcCursorItem::Terminal(terminal) => {
+                BrowserDataFusionIpcCursorItem::Terminal(self.complete_terminal(terminal))
+            }
+        }))
+    }
+
+    pub fn cancel_handle(&self) -> BrowserDataFusionCursorCancellation {
+        BrowserDataFusionCursorCancellation {
+            cancellation: self.cursor.cancel_handle(),
+        }
+    }
+
+    pub fn close(&mut self) {
+        self.cursor.close();
+        self.completion = None;
+    }
+
+    fn complete_terminal(&mut self, mut terminal: QueryTerminal) -> BrowserDataFusionQueryTerminal {
+        let response = if terminal.status == QueryTerminalStatus::Succeeded {
+            self.completion.take().and_then(|completion| {
+                let scan_metrics = terminal.scan_metrics.take()?;
+                let range_read_metrics = completion
+                    .bootstrap_range_read_metrics
+                    .merge(&scan_metrics.range_read_metrics);
+                Some(QueryResponse {
+                    executed_on: ExecutionTarget::BrowserWasm,
+                    capabilities: completion.capabilities,
+                    fallback_reason: None,
+                    metrics: datafusion_query_metrics(
+                        scan_metrics,
+                        completion.fallback_file_count,
+                        completion.footer_reads,
+                        range_read_metrics,
+                        completion.snapshot_bootstrap_duration_ms,
+                        completion.access_mode,
+                        completion.prebootstrap_pruning,
+                        completion.reuse_metrics,
+                        completion.started_at,
+                        terminal.encoded_bytes,
+                    ),
+                    explain: terminal.physical_plan.take(),
+                })
+            })
+        } else {
+            self.completion = None;
+            None
+        };
+
+        BrowserDataFusionQueryTerminal {
+            status: terminal.status,
+            error: terminal.error,
+            response,
+            row_count: terminal.row_count,
+            encoded_bytes: terminal.encoded_bytes,
+            preview: terminal.preview,
+            cursor_metrics: terminal.cursor_metrics,
+        }
     }
 }
 
@@ -328,6 +457,84 @@ impl BrowserDataFusionSession {
         name: &str,
         request: &QueryRequest,
     ) -> Result<BrowserDataFusionSessionQueryResult, QueryError> {
+        let query_budget =
+            datafusion_query_budget_for_request(self.query_budget, request.options.runtime_limits);
+        let max_pending_encoded_batch_bytes = query_budget
+            .max_output_ipc_bytes
+            .and_then(|max| usize::try_from(max).ok())
+            .map(|max| max.min(8 * 1024 * 1024))
+            .unwrap_or(8 * 1024 * 1024);
+        let mut cursor = self
+            .start_arrow_ipc_cursor(
+                name,
+                request,
+                IpcStreamLimits {
+                    max_transport_chunk_bytes: 1024 * 1024,
+                    max_pending_encoded_batch_bytes,
+                    max_total_encoded_bytes: query_budget.max_output_ipc_bytes,
+                    preview_rows: 0,
+                    max_preview_string_bytes: None,
+                },
+            )
+            .await?;
+        let mut ipc_bytes = Vec::new();
+
+        while let Some(item) = cursor.next().await.map_err(cursor_fault_error)? {
+            match item {
+                BrowserDataFusionIpcCursorItem::Chunk(chunk) => {
+                    ipc_bytes
+                        .len()
+                        .checked_add(chunk.bytes.len())
+                        .ok_or_else(|| {
+                            session_execution_error(
+                                "browser DataFusion Arrow IPC byte lengths overflowed usize",
+                            )
+                        })?;
+                    ipc_bytes.try_reserve(chunk.bytes.len()).map_err(|_| {
+                        session_execution_error(
+                            "browser DataFusion could not reserve Arrow IPC result bytes",
+                        )
+                    })?;
+                    ipc_bytes.extend_from_slice(&chunk.bytes);
+                }
+                BrowserDataFusionIpcCursorItem::Terminal(terminal) => {
+                    if terminal.status != QueryTerminalStatus::Succeeded {
+                        return Err(terminal.error.unwrap_or_else(|| {
+                            session_execution_error(
+                                "browser DataFusion Arrow IPC cursor stopped without an error",
+                            )
+                        }));
+                    }
+                    let response = terminal.response.ok_or_else(|| {
+                        session_execution_error(
+                            "browser DataFusion Arrow IPC cursor succeeded without metadata",
+                        )
+                    })?;
+                    return Ok(BrowserDataFusionSessionQueryResult {
+                        response,
+                        runtime_result: RuntimeArrowIpcResult {
+                            ipc_bytes: ipc_bytes.into(),
+                            row_count: terminal.row_count,
+                            encoded_bytes: terminal.encoded_bytes,
+                            encode_duration_ms: 0,
+                            scan_metrics: Vec::new(),
+                        },
+                    });
+                }
+            }
+        }
+
+        Err(session_execution_error(
+            "browser DataFusion Arrow IPC cursor closed before a terminal outcome",
+        ))
+    }
+
+    pub async fn start_arrow_ipc_cursor(
+        &mut self,
+        name: &str,
+        request: &QueryRequest,
+        limits: IpcStreamLimits,
+    ) -> Result<BrowserDataFusionIpcCursor, QueryError> {
         let execution_budget = self.runtime.config().execution_budget;
         let capabilities = {
             let table = self.touch_table(name)?;
@@ -356,69 +563,40 @@ impl BrowserDataFusionSession {
                 reuse_metrics.opened_table_reuse_count.saturating_add(1);
         }
 
-        let datafusion_result = if has_request_budget {
-            let result = self
-                .execute_datafusion_sql(sql.as_ref(), request.options.include_explain)
-                .await;
+        let cursor_result = self
+            .datafusion
+            .start_arrow_ipc_cursor(sql.as_ref(), limits, request.options.include_explain)
+            .await;
+        let cursor = if has_request_budget {
             let restore_result = self
                 .register_prepared_datafusion_table(name, &prepared, self.query_budget)
                 .await;
-            match (result, restore_result) {
-                (Ok(datafusion_result), Ok(_)) => datafusion_result,
+            match (cursor_result, restore_result) {
+                (Ok(cursor), Ok(_)) => cursor,
                 (Err(error), Ok(_)) => return Err(error),
                 (Ok(_), Err(error)) => return Err(error),
                 (Err(error), Err(_)) => return Err(error),
             }
         } else {
-            self.execute_datafusion_sql(sql.as_ref(), request.options.include_explain)
-                .await?
+            cursor_result?
         };
-        let explain = datafusion_result.physical_plan.clone();
-        let scan_metrics = datafusion_result.scan_metrics.clone();
-        let footer_reads = prepared.bootstrapped.footer_reads();
-        let bootstrap_range_read_metrics = prepared.bootstrapped.range_read_metrics().clone();
-        let snapshot_bootstrap_duration_ms = prepared.bootstrapped.snapshot_bootstrap_duration_ms();
-        let access_mode = prepared.bootstrapped.access_mode();
-        let merged_range_read_metrics =
-            bootstrap_range_read_metrics.merge(&scan_metrics.range_read_metrics);
-        let range_read_metrics = merged_range_read_metrics;
-        let runtime_result = runtime_result_from_datafusion(datafusion_result);
 
-        Ok(BrowserDataFusionSessionQueryResult {
-            response: QueryResponse {
-                executed_on: ExecutionTarget::BrowserWasm,
+        Ok(BrowserDataFusionIpcCursor {
+            cursor,
+            completion: Some(BrowserDataFusionCursorCompletion {
                 capabilities,
-                fallback_reason: None,
-                metrics: datafusion_query_metrics(
-                    scan_metrics,
-                    prepared.pruning.candidate_files,
-                    footer_reads,
-                    range_read_metrics,
-                    snapshot_bootstrap_duration_ms,
-                    access_mode,
-                    prepared.pruning,
-                    reuse_metrics,
-                    started_at,
-                    &runtime_result,
-                ),
-                explain,
-            },
-            runtime_result,
+                fallback_file_count: prepared.pruning.candidate_files,
+                footer_reads: prepared.bootstrapped.footer_reads(),
+                bootstrap_range_read_metrics: prepared.bootstrapped.range_read_metrics().clone(),
+                snapshot_bootstrap_duration_ms: prepared
+                    .bootstrapped
+                    .snapshot_bootstrap_duration_ms(),
+                access_mode: prepared.bootstrapped.access_mode(),
+                prebootstrap_pruning: prepared.pruning,
+                reuse_metrics,
+                started_at,
+            }),
         })
-    }
-
-    async fn execute_datafusion_sql(
-        &self,
-        sql: &str,
-        include_explain: bool,
-    ) -> Result<DataFusionArrowIpcResult, QueryError> {
-        if include_explain {
-            self.datafusion
-                .sql_to_arrow_ipc_result_with_physical_plan(sql)
-                .await
-        } else {
-            self.datafusion.sql_to_arrow_ipc_result(sql).await
-        }
     }
 
     async fn bootstrap_datafusion_table_for_sql(
@@ -1126,18 +1304,6 @@ fn unsupported_datafusion_parquet_field(field: &BrowserParquetField) -> QueryErr
     )
 }
 
-fn runtime_result_from_datafusion(
-    datafusion_result: DataFusionArrowIpcResult,
-) -> RuntimeArrowIpcResult {
-    RuntimeArrowIpcResult {
-        ipc_bytes: datafusion_result.ipc_bytes.into(),
-        row_count: datafusion_result.row_count,
-        encoded_bytes: datafusion_result.encoded_bytes,
-        encode_duration_ms: 0,
-        scan_metrics: Vec::new(),
-    }
-}
-
 fn datafusion_query_metrics(
     scan_metrics: DataFusionScanMetricsSummary,
     fallback_file_count: u64,
@@ -1148,7 +1314,7 @@ fn datafusion_query_metrics(
     prebootstrap_pruning: BrowserPrebootstrapPruningSummary,
     reuse_metrics: DataFusionSessionReuseMetrics,
     started_at: BrowserRuntimeInstant,
-    runtime_result: &RuntimeArrowIpcResult,
+    encoded_bytes: u64,
 ) -> QueryMetricsSummary {
     QueryMetricsSummary {
         bytes_fetched: scan_metrics.bytes_fetched,
@@ -1207,7 +1373,7 @@ fn datafusion_query_metrics(
         rows_emitted: scan_metrics.rows_emitted,
         snapshot_bootstrap_duration_ms,
         access_mode,
-        arrow_ipc_bytes: Some(runtime_result.encoded_bytes),
+        arrow_ipc_bytes: Some(encoded_bytes),
         arrow_ipc_chunk_count: None,
         preview_rows: None,
         preview_string_bytes: None,
@@ -1215,6 +1381,16 @@ fn datafusion_query_metrics(
         arrow_ipc_encode_duration_ms: None,
         preview_duration_ms: None,
     }
+}
+
+fn cursor_fault_error(error: CursorFault) -> QueryError {
+    session_execution_error(format!(
+        "browser DataFusion Arrow IPC cursor fault: {error}"
+    ))
+}
+
+fn session_execution_error(message: impl Into<String>) -> QueryError {
+    QueryError::new(QueryErrorCode::ExecutionFailed, message, runtime_target())
 }
 
 fn validate_datafusion_request_match(
@@ -1714,6 +1890,56 @@ mod tests {
             assert_eq!(result.response.executed_on, ExecutionTarget::BrowserWasm);
             assert_eq!(result.response.metrics.rows_emitted, 0);
             assert!(result.response.explain.is_none());
+        });
+    }
+
+    #[test]
+    fn cursor_restores_default_registration_before_the_first_pull() {
+        let default_budget = BrowserDataFusionQueryBudget {
+            max_output_ipc_bytes: Some(4096),
+            ..BrowserDataFusionQueryBudget::default()
+        };
+        let mut session = BrowserDataFusionSession::new_with_query_budget(
+            BrowserRuntimeConfig::default(),
+            u64::MAX,
+            default_budget,
+        )
+        .expect("default browser runtime config should be supported");
+        let descriptor = empty_delta_descriptor();
+        let mut request = QueryRequest::new(
+            descriptor.table_uri.clone(),
+            "SELECT COUNT(*) AS rows FROM events",
+            ExecutionTarget::BrowserWasm,
+        );
+        request.options.runtime_limits = Some(QueryRuntimeLimits {
+            max_arrow_ipc_bytes: Some(2048),
+            ..QueryRuntimeLimits::default()
+        });
+
+        test_runtime().block_on(async {
+            session
+                .open_delta_table("events", descriptor)
+                .await
+                .unwrap();
+            let mut cursor = session
+                .start_arrow_ipc_cursor(
+                    "events",
+                    &request,
+                    IpcStreamLimits {
+                        max_transport_chunk_bytes: 64,
+                        max_pending_encoded_batch_bytes: 2048,
+                        max_total_encoded_bytes: Some(2048),
+                        preview_rows: 1,
+                        max_preview_string_bytes: None,
+                    },
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(session.datafusion.query_budget(), default_budget.into());
+            let first = cursor.next().await.unwrap().unwrap();
+            assert!(matches!(first, BrowserDataFusionIpcCursorItem::Chunk(_)));
+            cursor.close();
         });
     }
 

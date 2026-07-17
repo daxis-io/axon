@@ -2,6 +2,13 @@
 //!
 //! This crate is intentionally isolated from Axon's default browser runtime and worker artifact.
 
+mod ipc_cursor;
+
+pub use ipc_cursor::{
+    ArrowIpcPhase, CursorFault, DataFusionIpcCursor, IpcCursorItem, IpcCursorMetrics, IpcPreview,
+    IpcStreamLimits, IpcTransportChunk, QueryCancelHandle, QueryTerminal, QueryTerminalStatus,
+};
+
 #[cfg(test)]
 use std::sync::atomic::AtomicU8;
 use std::{
@@ -30,7 +37,6 @@ use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Expr, Operator, TableProviderFilterPushDown, TableType};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::{
-    displayable,
     execution_plan::{execute_stream, Boundedness, EmissionType},
     stream::RecordBatchStreamAdapter,
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
@@ -2065,90 +2071,6 @@ async fn collect_record_batches_with_controls(
     Ok(batches)
 }
 
-async fn encode_execution_plan_to_arrow_ipc_with_controls(
-    plan: Arc<dyn ExecutionPlan>,
-    task_ctx: Arc<TaskContext>,
-    schema: SchemaRef,
-    query_budget: BrowserQueryBudget,
-    cancellation: &BrowserQueryCancellation,
-) -> Result<(Vec<u8>, u64), QueryError> {
-    if matches!(query_budget.max_batches_in_flight, Some(0)) {
-        return Err(query_budget_exceeded_error_at(
-            "max_batches_in_flight",
-            1,
-            0,
-            "Arrow IPC output",
-        ));
-    }
-
-    cancellation.check_cancelled_at("Arrow IPC output")?;
-    let mut stream = execute_stream(plan, task_ctx).map_err(map_datafusion_error)?;
-    let buffer = BudgetedArrowIpcBuffer::new(query_budget);
-    let mut writer = StreamWriter::try_new(buffer, schema.as_ref()).map_err(|error| {
-        map_arrow_ipc_error(error, |error| {
-            format!("experimental browser DataFusion could not open Arrow IPC writer: {error}")
-        })
-    })?;
-    let mut rows_returned = 0_u64;
-
-    while let Some(batch) = stream.next().await {
-        cancellation.check_cancelled_at("Arrow IPC output")?;
-        let batch = batch.map_err(map_datafusion_error)?;
-        validate_query_budget_value_option_at(
-            "max_batches_in_flight",
-            1,
-            query_budget
-                .max_batches_in_flight
-                .map(|max| u64::try_from(max).unwrap_or(u64::MAX)),
-            "Arrow IPC output",
-        )?;
-
-        let batch_rows = u64::try_from(batch.num_rows()).map_err(|_| {
-            QueryError::new(
-                QueryErrorCode::ExecutionFailed,
-                "experimental browser DataFusion row counts overflowed u64",
-                runtime_target(),
-            )
-        })?;
-        let next_rows_returned = rows_returned.checked_add(batch_rows).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::ExecutionFailed,
-                "experimental browser DataFusion row totals overflowed u64",
-                runtime_target(),
-            )
-        })?;
-        validate_query_budget_value_option_at(
-            "max_rows_returned",
-            next_rows_returned,
-            query_budget.max_rows_returned,
-            "Arrow IPC output",
-        )?;
-
-        writer.write(&batch).map_err(|error| {
-            map_arrow_ipc_error(error, |error| {
-                format!("experimental browser DataFusion could not encode Arrow IPC batch: {error}")
-            })
-        })?;
-        rows_returned = next_rows_returned;
-        cancellation.check_cancelled_at("Arrow IPC batch encoding")?;
-    }
-
-    cancellation.check_cancelled_at("Arrow IPC output")?;
-    writer.finish().map_err(|error| {
-        map_arrow_ipc_error(error, |error| {
-            format!("experimental browser DataFusion could not finish Arrow IPC stream: {error}")
-        })
-    })?;
-    cancellation.check_cancelled_at("Arrow IPC output")?;
-
-    let buffer = writer.into_inner().map_err(|error| {
-        map_arrow_ipc_error(error, |error| {
-            format!("experimental browser DataFusion could not close Arrow IPC stream: {error}")
-        })
-    })?;
-    Ok((buffer.into_inner(), rows_returned))
-}
-
 #[derive(Clone)]
 pub struct WasmDataFusionEngine {
     ctx: SessionContext,
@@ -2403,59 +2325,88 @@ impl WasmDataFusionEngine {
         sql: &str,
         include_physical_plan: bool,
     ) -> Result<DataFusionArrowIpcResult, QueryError> {
-        self.cancellation.check_cancelled_at("SQL planning")?;
-        let (query_ctx, query_context) = self.begin_query_session();
-        let frame = query_ctx.sql(sql).await.map_err(map_datafusion_error)?;
-        self.cancellation.check_cancelled_at("SQL planning")?;
-        let output_schema = frame.schema().inner().clone();
-        let task_ctx = query_ctx.task_ctx();
-        let plan = frame
-            .create_physical_plan()
-            .await
-            .map_err(map_datafusion_error)?;
-        validate_query_budget_for_plan(&plan, self.query_budget)?;
-        let physical_plan = include_physical_plan.then(|| {
-            format!(
-                "DataFusion physical plan\n{}",
-                displayable(plan.as_ref()).indent(false)
+        let max_pending_encoded_batch_bytes = self
+            .query_budget
+            .max_output_ipc_bytes
+            .and_then(|max| usize::try_from(max).ok())
+            .map(|max| max.min(ipc_cursor::DEFAULT_MAX_PENDING_ENCODED_BATCH_BYTES))
+            .unwrap_or(ipc_cursor::DEFAULT_MAX_PENDING_ENCODED_BATCH_BYTES);
+        let mut cursor = self
+            .start_arrow_ipc_cursor(
+                sql,
+                IpcStreamLimits {
+                    max_transport_chunk_bytes: ipc_cursor::DEFAULT_IPC_TRANSPORT_CHUNK_BYTES,
+                    max_pending_encoded_batch_bytes,
+                    max_total_encoded_bytes: self.query_budget.max_output_ipc_bytes,
+                    preview_rows: 0,
+                    max_preview_string_bytes: None,
+                },
+                include_physical_plan,
             )
-        });
-        self.cancellation.check_cancelled_at("Arrow IPC output")?;
-        let (ipc_bytes, row_count) = encode_execution_plan_to_arrow_ipc_with_controls(
-            Arc::clone(&plan),
-            task_ctx,
-            output_schema,
-            self.query_budget,
-            &self.cancellation,
-        )
-        .await?;
-        self.cancellation.check_cancelled_at("Arrow IPC output")?;
-        let mut scan_metrics = datafusion_scan_metrics_from_plan(&plan)?;
-        scan_metrics.range_read_metrics = merge_parquet_range_read_metrics(
-            &scan_metrics.range_read_metrics,
-            &query_context.finalize()?,
-        );
-        validate_query_budget_value_option_at(
-            "max_scan_bytes",
-            scan_metrics.bytes_fetched,
-            self.query_budget.max_scan_bytes,
-            "scan stream",
-        )?;
-        let encoded_bytes = u64::try_from(ipc_bytes.len()).map_err(|_| {
+            .await?;
+        let mut ipc_bytes = Vec::new();
+
+        while let Some(item) = cursor.next().await.map_err(|error| {
             QueryError::new(
                 QueryErrorCode::ExecutionFailed,
-                "experimental browser DataFusion Arrow IPC byte lengths overflowed u64",
+                format!("experimental browser DataFusion Arrow IPC cursor fault: {error}"),
                 runtime_target(),
             )
-        })?;
+        })? {
+            match item {
+                IpcCursorItem::Chunk(chunk) => {
+                    ipc_bytes
+                        .len()
+                        .checked_add(chunk.bytes.len())
+                        .ok_or_else(|| {
+                            QueryError::new(
+                                QueryErrorCode::ExecutionFailed,
+                                "experimental browser DataFusion Arrow IPC byte lengths overflowed usize",
+                                runtime_target(),
+                            )
+                        })?;
+                    ipc_bytes.try_reserve(chunk.bytes.len()).map_err(|_| {
+                        QueryError::new(
+                            QueryErrorCode::ExecutionFailed,
+                            "experimental browser DataFusion could not reserve Arrow IPC result bytes",
+                            runtime_target(),
+                        )
+                    })?;
+                    ipc_bytes.extend_from_slice(&chunk.bytes);
+                }
+                IpcCursorItem::Terminal(terminal) => {
+                    if terminal.status != QueryTerminalStatus::Succeeded {
+                        return Err(terminal.error.unwrap_or_else(|| {
+                            QueryError::new(
+                                QueryErrorCode::ExecutionFailed,
+                                "experimental browser DataFusion Arrow IPC cursor stopped without an error",
+                                runtime_target(),
+                            )
+                        }));
+                    }
+                    let scan_metrics = terminal.scan_metrics.ok_or_else(|| {
+                        QueryError::new(
+                            QueryErrorCode::ExecutionFailed,
+                            "experimental browser DataFusion Arrow IPC cursor succeeded without scan metrics",
+                            runtime_target(),
+                        )
+                    })?;
+                    return Ok(DataFusionArrowIpcResult {
+                        ipc_bytes,
+                        row_count: terminal.row_count,
+                        encoded_bytes: terminal.encoded_bytes,
+                        scan_metrics,
+                        physical_plan: terminal.physical_plan,
+                    });
+                }
+            }
+        }
 
-        Ok(DataFusionArrowIpcResult {
-            ipc_bytes,
-            row_count,
-            encoded_bytes,
-            scan_metrics,
-            physical_plan,
-        })
+        Err(QueryError::new(
+            QueryErrorCode::ExecutionFailed,
+            "experimental browser DataFusion Arrow IPC cursor closed before a terminal outcome",
+            runtime_target(),
+        ))
     }
 
     fn begin_query_session(&self) -> (SessionContext, ParquetRangeQueryContext) {

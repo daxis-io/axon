@@ -5,14 +5,16 @@ import publicGcsLiveConfig from './playwright.public-gcs-live.config';
 const requestedPublicGcsLiveSpec = process.argv.some((arg) =>
   /(^|[/\\])public-gcs-live\.spec\.ts$/.test(arg),
 );
+const browserWorkerBaseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:5173';
+const browserWorkerPort = new URL(browserWorkerBaseURL).port || '443';
 
 const browserWorkerMatrixConfig = defineConfig({
   testDir: './tests',
-  testMatch: /browser-worker-matrix\.spec\.ts/,
+  testMatch: /(?:browser-worker-matrix|internal-arrow-ipc-stream)\.spec\.ts/,
   workers: 1,
   timeout: 60_000,
   use: {
-    baseURL: 'https://127.0.0.1:5173',
+    baseURL: browserWorkerBaseURL,
     ignoreHTTPSErrors: true,
   },
   projects: [
@@ -30,8 +32,8 @@ const browserWorkerMatrixConfig = defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev:server',
-    url: 'https://127.0.0.1:5173',
+    command: `npm run dev:server -- --port ${browserWorkerPort} --strictPort`,
+    url: browserWorkerBaseURL,
     ignoreHTTPSErrors: true,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,

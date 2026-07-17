@@ -1,36 +1,35 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::io::Cursor;
+use std::rc::Rc;
 
-use arrow_array::cast::{
-    as_boolean_array, as_largestring_array, as_primitive_array, as_string_array,
-};
-use arrow_array::types::{
-    Date32Type, Float32Type, Float64Type, Int32Type, Int64Type, TimestampMicrosecondType,
-    TimestampMillisecondType,
-};
-use arrow_array::Array;
-use arrow_ipc::reader::StreamReader;
-use arrow_schema::{DataType as ArrowDataType, TimeUnit};
-use js_sys::{Object, Reflect, Uint8Array};
+use futures_util::lock::Mutex as AsyncMutex;
+use js_sys::{BigInt, Object, Reflect, Uint8Array};
 use query_contract::{
     BrowserHttpParquetDatasetDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget,
-    FallbackReason, QueryError, QueryErrorCode, QueryRequest, QueryResponse,
-    SnapshotResolutionRequest,
+    QueryError, QueryErrorCode, QueryRequest, QueryResponse, SnapshotResolutionRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
-use wasm_datafusion_session::{BrowserDataFusionCancellation, BrowserDataFusionSession};
+use wasm_datafusion_session::{
+    ArrowIpcPhase, BrowserDataFusionCancellation, BrowserDataFusionCursorCancellation,
+    BrowserDataFusionIpcCursor, BrowserDataFusionIpcCursorItem, BrowserDataFusionQueryTerminal,
+    BrowserDataFusionSession, IpcCursorMetrics, IpcPreview, IpcStreamLimits, IpcTransportChunk,
+    QueryTerminalStatus,
+};
 use wasm_delta_snapshot::{
     BrowserDeltaLogManifest, BrowserDeltaLogObject, BrowserHttpDeltaLogStorageHandler,
     DefaultJsonHandler, DefaultParquetHandler, SnapshotResolver,
 };
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{ObjectSource, ParquetMetadataCache, ScanTarget};
-use wasm_query_runtime::{BrowserObjectAccessMode, BrowserRuntimeConfig, BrowserRuntimeInstant};
+use wasm_query_runtime::{BrowserObjectAccessMode, BrowserRuntimeConfig};
 
 const DEFAULT_QUERY_SESSION_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_QUERY_PREVIEW_LIMIT: usize = 501;
+const IPC_METADATA_VERSION: u32 = 1;
+const DEFAULT_IPC_TRANSPORT_CHUNK_BYTES: usize = 1024 * 1024;
+const DEFAULT_MAX_PENDING_ENCODED_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +118,7 @@ struct SandboxOpenTableOutput {
 
 #[derive(Debug, Serialize)]
 struct SandboxSqlMetadata {
+    metadata_version: u32,
     response: QueryResponse,
     preview: QueryPreviewOutput,
     #[serde(serialize_with = "serialize_decimal_string")]
@@ -133,6 +133,39 @@ struct SandboxSqlMetadata {
 }
 
 #[derive(Debug, Serialize)]
+struct SandboxSqlTerminalMetadata {
+    metadata_version: u32,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<QueryError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response: Option<QueryResponse>,
+    preview: QueryPreviewOutput,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    arrow_ipc_byte_length: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    row_count: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    preview_string_bytes: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    preview_duration_ms: u64,
+    cache_metrics: SandboxCacheMetrics,
+    cursor_metrics: SandboxCursorMetrics,
+}
+
+#[derive(Debug, Serialize)]
+struct SandboxCursorMetrics {
+    #[serde(serialize_with = "serialize_decimal_string")]
+    peak_input_batch_bytes: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    peak_pending_encoded_bytes: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    peak_pending_encoded_capacity: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    peak_transport_chunk_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
 struct QueryPreviewOutput {
     columns: Vec<String>,
     rows: Vec<Vec<Value>>,
@@ -142,7 +175,7 @@ struct QueryPreviewOutput {
     truncated: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct SandboxCacheMetrics {
     #[serde(serialize_with = "serialize_decimal_string")]
     session_cached_bytes: u64,
@@ -244,6 +277,73 @@ impl SandboxQueryCancellation {
 }
 
 #[wasm_bindgen]
+pub struct SandboxSqlStream {
+    cursor: Rc<AsyncMutex<Option<BrowserDataFusionIpcCursor>>>,
+    cancellation: BrowserDataFusionCursorCancellation,
+    pull_active: Rc<Cell<bool>>,
+    cache_metrics: SandboxCacheMetrics,
+}
+
+#[wasm_bindgen]
+impl SandboxSqlStream {
+    pub async fn next(&self) -> Result<JsValue, JsValue> {
+        if self.pull_active.replace(true) {
+            return Err(JsValue::from_str(
+                "Arrow IPC cursor fault: only one next() pull may be active",
+            ));
+        }
+        let _pull = ActivePullGuard {
+            active: Rc::clone(&self.pull_active),
+        };
+        let mut cursor = self.cursor.lock().await;
+        let Some(cursor) = cursor.as_mut() else {
+            return Ok(JsValue::NULL);
+        };
+        let item = cursor
+            .next()
+            .await
+            .map_err(|error| JsValue::from_str(&format!("Arrow IPC cursor fault: {error}")))?;
+        let Some(item) = item else {
+            return Ok(JsValue::NULL);
+        };
+
+        match item {
+            BrowserDataFusionIpcCursorItem::Chunk(chunk) => ipc_chunk_js_value(chunk),
+            BrowserDataFusionIpcCursorItem::Terminal(terminal) => {
+                ipc_terminal_js_value(terminal, self.cache_metrics.clone())
+            }
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
+    pub fn cancel_for_deadline(&self) {
+        self.cancellation.cancel_for_deadline();
+    }
+
+    pub async fn close(&self) {
+        self.cancellation.cancel();
+        let mut cursor = self.cursor.lock().await;
+        if let Some(cursor) = cursor.as_mut() {
+            cursor.close();
+        }
+        *cursor = None;
+    }
+}
+
+struct ActivePullGuard {
+    active: Rc<Cell<bool>>,
+}
+
+impl Drop for ActivePullGuard {
+    fn drop(&mut self) {
+        self.active.set(false);
+    }
+}
+
+#[wasm_bindgen]
 pub struct SandboxQuerySession {
     session: BrowserDataFusionSession,
     cancellation: BrowserDataFusionCancellation,
@@ -332,6 +432,27 @@ impl SandboxQuerySession {
         Ok(name)
     }
 
+    pub async fn start_sql_stream(
+        &mut self,
+        name: String,
+        request_json: String,
+        preview_limit: u32,
+    ) -> Result<SandboxSqlStream, JsValue> {
+        let request = serde_json::from_str::<QueryRequest>(&request_json)
+            .map_err(|error| JsValue::from_str(&format!("invalid query request: {error}")))?;
+        let (cursor, cache_metrics) = self
+            .start_browser_sql_cursor(&name, &request, preview_limit)
+            .await
+            .map_err(query_error_to_js_value)?;
+        let cancellation = cursor.cancel_handle();
+        Ok(SandboxSqlStream {
+            cursor: Rc::new(AsyncMutex::new(Some(cursor))),
+            cancellation,
+            pull_active: Rc::new(Cell::new(false)),
+            cache_metrics,
+        })
+    }
+
     pub async fn sql(
         &mut self,
         name: String,
@@ -340,46 +461,93 @@ impl SandboxQuerySession {
     ) -> Result<JsValue, JsValue> {
         let request = serde_json::from_str::<QueryRequest>(&request_json)
             .map_err(|error| JsValue::from_str(&format!("invalid query request: {error}")))?;
-        let result = self
-            .session
-            .sql(&name, &request)
+        let (mut cursor, cache_metrics) = self
+            .start_browser_sql_cursor(&name, &request, preview_limit)
             .await
             .map_err(query_error_to_js_value)?;
-        let arrow_ipc_bytes = result.runtime_result.ipc_bytes;
-        let preview_started_at = BrowserRuntimeInstant::now();
-        let preview = preview_from_arrow_ipc(&arrow_ipc_bytes, preview_limit)
-            .map_err(query_error_to_js_value)?;
-        let preview_duration_ms = preview_started_at.elapsed_ms();
-        let preview_string_bytes =
-            preview_string_bytes(&preview).map_err(query_error_to_js_value)?;
-        if let Some(max_preview_string_bytes) = request
-            .options
-            .runtime_limits
-            .and_then(|limits| limits.max_preview_string_bytes)
+        let mut arrow_ipc_bytes = Vec::new();
+
+        while let Some(item) = cursor
+            .next()
+            .await
+            .map_err(|error| JsValue::from_str(&format!("Arrow IPC cursor fault: {error}")))?
         {
-            if preview_string_bytes > max_preview_string_bytes {
-                return Err(query_error_to_js_value(preview_budget_exceeded_error(
-                    preview_string_bytes,
-                    max_preview_string_bytes,
-                )));
+            match item {
+                BrowserDataFusionIpcCursorItem::Chunk(chunk) => {
+                    arrow_ipc_bytes
+                        .len()
+                        .checked_add(chunk.bytes.len())
+                        .ok_or_else(|| JsValue::from_str("Arrow IPC byte length overflow"))?;
+                    arrow_ipc_bytes
+                        .try_reserve(chunk.bytes.len())
+                        .map_err(|_| JsValue::from_str("Arrow IPC byte reservation failed"))?;
+                    arrow_ipc_bytes.extend_from_slice(&chunk.bytes);
+                }
+                BrowserDataFusionIpcCursorItem::Terminal(terminal) => {
+                    if terminal.status != QueryTerminalStatus::Succeeded {
+                        return Err(query_error_to_js_value(terminal.error.unwrap_or_else(
+                            || {
+                                preview_runtime_error(
+                                    "Arrow IPC cursor stopped without a query error",
+                                )
+                            },
+                        )));
+                    }
+                    let metadata = sandbox_sql_metadata(terminal, cache_metrics)?;
+                    let expected_length = usize::try_from(metadata.arrow_ipc_byte_length)
+                        .map_err(|_| JsValue::from_str("Arrow IPC byte length overflow"))?;
+                    if arrow_ipc_bytes.len() != expected_length {
+                        return Err(JsValue::from_str(
+                            "Arrow IPC cursor byte count did not match terminal metadata",
+                        ));
+                    }
+                    return sql_bridge_value(&metadata, &arrow_ipc_bytes);
+                }
             }
         }
-        let mut response = result.response;
-        response.metrics.arrow_ipc_bytes = Some(result.runtime_result.encoded_bytes);
-        response.metrics.preview_rows = Some(u64::try_from(preview.rows.len()).unwrap_or(u64::MAX));
-        response.metrics.preview_string_bytes = Some(preview_string_bytes);
-        response.metrics.preview_duration_ms = Some(preview_duration_ms);
-        let metadata = SandboxSqlMetadata {
-            response,
-            row_count: result.runtime_result.row_count,
-            arrow_ipc_byte_length: result.runtime_result.encoded_bytes,
-            preview,
-            preview_string_bytes,
-            preview_duration_ms,
-            cache_metrics: cache_metrics(&self.session),
-        };
 
-        sql_bridge_value(&metadata, &arrow_ipc_bytes)
+        Err(JsValue::from_str(
+            "Arrow IPC cursor closed before a terminal outcome",
+        ))
+    }
+}
+
+impl SandboxQuerySession {
+    async fn start_browser_sql_cursor(
+        &mut self,
+        name: &str,
+        request: &QueryRequest,
+        preview_limit: u32,
+    ) -> Result<(BrowserDataFusionIpcCursor, SandboxCacheMetrics), QueryError> {
+        let preview_rows = usize::try_from(preview_limit)
+            .unwrap_or(DEFAULT_QUERY_PREVIEW_LIMIT)
+            .min(DEFAULT_QUERY_PREVIEW_LIMIT);
+        let max_total_encoded_bytes = request
+            .options
+            .runtime_limits
+            .and_then(|limits| limits.max_arrow_ipc_bytes);
+        let max_pending_encoded_batch_bytes = max_total_encoded_bytes
+            .and_then(|max| usize::try_from(max).ok())
+            .map(|max| max.min(DEFAULT_MAX_PENDING_ENCODED_BATCH_BYTES))
+            .unwrap_or(DEFAULT_MAX_PENDING_ENCODED_BATCH_BYTES);
+        let cursor = self
+            .session
+            .start_arrow_ipc_cursor(
+                name,
+                request,
+                IpcStreamLimits {
+                    max_transport_chunk_bytes: DEFAULT_IPC_TRANSPORT_CHUNK_BYTES,
+                    max_pending_encoded_batch_bytes,
+                    max_total_encoded_bytes,
+                    preview_rows,
+                    max_preview_string_bytes: request
+                        .options
+                        .runtime_limits
+                        .and_then(|limits| limits.max_preview_string_bytes),
+                },
+            )
+            .await?;
+        Ok((cursor, cache_metrics(&self.session)))
     }
 }
 
@@ -597,50 +765,159 @@ fn sql_bridge_value(metadata: &SandboxSqlMetadata, bytes: &[u8]) -> Result<JsVal
     Ok(object.into())
 }
 
-fn preview_from_arrow_ipc(
-    bytes: &[u8],
-    requested_limit: u32,
-) -> Result<QueryPreviewOutput, QueryError> {
-    let preview_row_limit = usize::try_from(requested_limit).unwrap_or(DEFAULT_QUERY_PREVIEW_LIMIT);
-    let preview_row_limit = preview_row_limit.min(DEFAULT_QUERY_PREVIEW_LIMIT);
-    let cursor = Cursor::new(bytes);
-    let mut reader = StreamReader::try_new(cursor, None).map_err(preview_error)?;
-    let schema = reader.schema();
-    let columns = schema
-        .fields()
-        .iter()
-        .map(|field| field.name().to_string())
-        .collect::<Vec<_>>();
-    let mut rows = Vec::new();
-    let mut row_count = 0_u64;
-
-    for batch in &mut reader {
-        let batch = batch.map_err(preview_error)?;
-        for row_index in 0..batch.num_rows() {
-            row_count = row_count
-                .checked_add(1)
-                .ok_or_else(|| preview_runtime_error("preview row count overflowed u64"))?;
-            if rows.len() >= preview_row_limit {
-                continue;
-            }
-
-            rows.push(
-                batch
-                    .columns()
-                    .iter()
-                    .map(|array| preview_value(array.as_ref(), row_index))
-                    .collect(),
-            );
-        }
-    }
-
-    Ok(QueryPreviewOutput {
-        columns,
-        rows,
-        row_count,
-        preview_row_limit,
-        truncated: row_count > u64::try_from(preview_row_limit).unwrap_or(u64::MAX),
+fn sandbox_sql_metadata(
+    terminal: BrowserDataFusionQueryTerminal,
+    cache_metrics: SandboxCacheMetrics,
+) -> Result<SandboxSqlMetadata, JsValue> {
+    let preview = query_preview_output(terminal.preview);
+    let preview_string_bytes = preview_string_bytes(&preview).map_err(query_error_to_js_value)?;
+    let mut response = terminal.response.ok_or_else(|| {
+        JsValue::from_str("Arrow IPC cursor succeeded without query response metadata")
+    })?;
+    response.metrics.arrow_ipc_bytes = Some(terminal.encoded_bytes);
+    response.metrics.preview_rows = Some(u64::try_from(preview.rows.len()).unwrap_or(u64::MAX));
+    response.metrics.preview_string_bytes = Some(preview_string_bytes);
+    response.metrics.preview_duration_ms = Some(0);
+    Ok(SandboxSqlMetadata {
+        metadata_version: IPC_METADATA_VERSION,
+        response,
+        row_count: terminal.row_count,
+        arrow_ipc_byte_length: terminal.encoded_bytes,
+        preview,
+        preview_string_bytes,
+        preview_duration_ms: 0,
+        cache_metrics,
     })
+}
+
+fn ipc_chunk_js_value(chunk: IpcTransportChunk) -> Result<JsValue, JsValue> {
+    let bytes = Uint8Array::from(chunk.bytes.as_ref());
+    if bytes.byte_offset() != 0 || bytes.byte_length() != bytes.buffer().byte_length() {
+        return Err(JsValue::from_str(
+            "Arrow IPC cursor fault: transport buffer was not exact-sized",
+        ));
+    }
+    let value = Object::new();
+    Reflect::set(
+        &value,
+        &JsValue::from_str("sequence"),
+        BigInt::from(chunk.sequence).as_ref(),
+    )?;
+    Reflect::set(
+        &value,
+        &JsValue::from_str("phase"),
+        &JsValue::from_str(match chunk.phase {
+            ArrowIpcPhase::Schema => "schema",
+            ArrowIpcPhase::Data => "data",
+            ArrowIpcPhase::EndOfStream => "end_of_stream",
+        }),
+    )?;
+    let logical_batch_sequence = chunk
+        .logical_batch_sequence
+        .map(BigInt::from)
+        .map(JsValue::from)
+        .unwrap_or(JsValue::NULL);
+    Reflect::set(
+        &value,
+        &JsValue::from_str("logical_batch_sequence"),
+        &logical_batch_sequence,
+    )?;
+    Reflect::set(
+        &value,
+        &JsValue::from_str("fragment_index"),
+        BigInt::from(chunk.fragment_index).as_ref(),
+    )?;
+    Reflect::set(
+        &value,
+        &JsValue::from_str("end_of_logical_batch"),
+        &JsValue::from_bool(chunk.end_of_logical_batch),
+    )?;
+    Reflect::set(
+        &value,
+        &JsValue::from_str("rows_completed"),
+        BigInt::from(chunk.rows_completed).as_ref(),
+    )?;
+    Reflect::set(
+        &value,
+        &JsValue::from_str("byte_length"),
+        BigInt::from(u64::from(bytes.byte_length())).as_ref(),
+    )?;
+    Reflect::set(&value, &JsValue::from_str("bytes"), bytes.as_ref())?;
+
+    let envelope = Object::new();
+    Reflect::set(&envelope, &JsValue::from_str("chunk"), value.as_ref())?;
+    Ok(envelope.into())
+}
+
+fn ipc_terminal_js_value(
+    terminal: BrowserDataFusionQueryTerminal,
+    cache_metrics: SandboxCacheMetrics,
+) -> Result<JsValue, JsValue> {
+    let preview_string_bytes = terminal.preview.string_bytes;
+    let preview = query_preview_output(terminal.preview);
+    let cursor_metrics = sandbox_cursor_metrics(&terminal.cursor_metrics);
+    let mut response = terminal.response;
+    if let Some(response) = response.as_mut() {
+        response.metrics.arrow_ipc_bytes = Some(terminal.encoded_bytes);
+        response.metrics.preview_rows = Some(u64::try_from(preview.rows.len()).unwrap_or(u64::MAX));
+        response.metrics.preview_string_bytes = Some(preview_string_bytes);
+        response.metrics.preview_duration_ms = Some(0);
+    }
+    let metadata = SandboxSqlTerminalMetadata {
+        metadata_version: IPC_METADATA_VERSION,
+        status: terminal_status_name(terminal.status),
+        error: terminal.error,
+        response,
+        preview,
+        arrow_ipc_byte_length: terminal.encoded_bytes,
+        row_count: terminal.row_count,
+        preview_string_bytes,
+        preview_duration_ms: 0,
+        cache_metrics,
+        cursor_metrics,
+    };
+    let metadata_json = serde_json::to_string(&metadata).map_err(|error| {
+        JsValue::from_str(&format!(
+            "Arrow IPC terminal metadata serialization failed: {error}"
+        ))
+    })?;
+    let value = Object::new();
+    Reflect::set(
+        &value,
+        &JsValue::from_str("metadata_json"),
+        &JsValue::from_str(&metadata_json),
+    )?;
+    let envelope = Object::new();
+    Reflect::set(&envelope, &JsValue::from_str("terminal"), value.as_ref())?;
+    Ok(envelope.into())
+}
+
+fn query_preview_output(preview: IpcPreview) -> QueryPreviewOutput {
+    QueryPreviewOutput {
+        columns: preview.columns,
+        rows: preview.rows,
+        row_count: preview.row_count,
+        preview_row_limit: preview.preview_row_limit,
+        truncated: preview.truncated,
+    }
+}
+
+fn sandbox_cursor_metrics(metrics: &IpcCursorMetrics) -> SandboxCursorMetrics {
+    SandboxCursorMetrics {
+        peak_input_batch_bytes: metrics.peak_input_batch_bytes,
+        peak_pending_encoded_bytes: metrics.peak_pending_encoded_bytes,
+        peak_pending_encoded_capacity: metrics.peak_pending_encoded_capacity,
+        peak_transport_chunk_bytes: metrics.peak_transport_chunk_bytes,
+    }
+}
+
+fn terminal_status_name(status: QueryTerminalStatus) -> &'static str {
+    match status {
+        QueryTerminalStatus::Succeeded => "succeeded",
+        QueryTerminalStatus::Cancelled => "cancelled",
+        QueryTerminalStatus::DeadlineExceeded => "deadline_exceeded",
+        QueryTerminalStatus::Failed => "failed",
+    }
 }
 
 fn preview_string_bytes(preview: &QueryPreviewOutput) -> Result<u64, QueryError> {
@@ -652,81 +929,6 @@ fn preview_string_bytes(preview: &QueryPreviewOutput) -> Result<u64, QueryError>
                 .ok_or_else(|| preview_runtime_error("preview string byte totals overflowed u64"))
         })
     })
-}
-
-fn preview_budget_exceeded_error(observed: u64, max_allowed: u64) -> QueryError {
-    QueryError::new(
-        QueryErrorCode::FallbackRequired,
-        format!(
-            "browser execution exceeded the configured max_preview_string_bytes budget ({observed} > {max_allowed})"
-        ),
-        ExecutionTarget::BrowserWasm,
-    )
-    .with_fallback_reason(FallbackReason::BrowserRuntimeConstraint)
-}
-
-fn preview_value(array: &dyn Array, row_index: usize) -> Value {
-    if array.is_null(row_index) {
-        return Value::Null;
-    }
-
-    match array.data_type() {
-        ArrowDataType::Boolean => json!(as_boolean_array(array).value(row_index)),
-        ArrowDataType::Int32 => json!(as_primitive_array::<Int32Type>(array).value(row_index)),
-        ArrowDataType::Int64 => json!(as_primitive_array::<Int64Type>(array)
-            .value(row_index)
-            .to_string()),
-        ArrowDataType::Float32 => json!(as_primitive_array::<Float32Type>(array).value(row_index)),
-        ArrowDataType::Float64 => {
-            let value = as_primitive_array::<Float64Type>(array).value(row_index);
-            serde_json::Number::from_f64(value)
-                .map(Value::Number)
-                .unwrap_or(Value::Null)
-        }
-        ArrowDataType::Date32 => preview_date32_value(array, row_index),
-        ArrowDataType::Timestamp(TimeUnit::Millisecond, Some(timezone))
-            if is_utc_timezone(timezone.as_ref()) =>
-        {
-            preview_timestamp_millisecond_value(array, row_index)
-        }
-        ArrowDataType::Timestamp(TimeUnit::Microsecond, Some(timezone))
-            if is_utc_timezone(timezone.as_ref()) =>
-        {
-            preview_timestamp_microsecond_value(array, row_index)
-        }
-        ArrowDataType::Utf8 => json!(as_string_array(array).value(row_index)),
-        ArrowDataType::LargeUtf8 => json!(as_largestring_array(array).value(row_index)),
-        other => json!(format!("<unsupported {other}>")),
-    }
-}
-
-fn preview_date32_value(array: &dyn Array, row_index: usize) -> Value {
-    as_primitive_array::<Date32Type>(array)
-        .value_as_date(row_index)
-        .map(|value| json!(value.to_string()))
-        .unwrap_or(Value::Null)
-}
-
-fn preview_timestamp_millisecond_value(array: &dyn Array, row_index: usize) -> Value {
-    as_primitive_array::<TimestampMillisecondType>(array)
-        .value_as_datetime(row_index)
-        .map(|value| json!(format!("{}Z", value.format("%Y-%m-%dT%H:%M:%S%.3f"))))
-        .unwrap_or(Value::Null)
-}
-
-fn preview_timestamp_microsecond_value(array: &dyn Array, row_index: usize) -> Value {
-    as_primitive_array::<TimestampMicrosecondType>(array)
-        .value_as_datetime(row_index)
-        .map(|value| json!(format!("{}Z", value.format("%Y-%m-%dT%H:%M:%S%.6f"))))
-        .unwrap_or(Value::Null)
-}
-
-fn is_utc_timezone(timezone: &str) -> bool {
-    matches!(timezone, "UTC" | "Z" | "+00:00" | "-00:00")
-}
-
-fn preview_error(error: impl std::fmt::Display) -> QueryError {
-    preview_runtime_error(format!("Arrow IPC preview decode failed: {error}"))
 }
 
 fn preview_runtime_error(message: impl Into<String>) -> QueryError {
@@ -758,16 +960,8 @@ fn query_error_to_js_value(error: QueryError) -> JsValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use std::sync::Arc;
-
-    use arrow_array::{
-        ArrayRef, Date32Array, Int64Array, RecordBatch, TimestampMicrosecondArray,
-        TimestampMillisecondArray,
-    };
-    use arrow_ipc::writer::StreamWriter;
-    use arrow_schema::{Field, Schema, TimeUnit};
     use serde_json::json;
+    use std::path::PathBuf;
 
     #[test]
     fn parquet_preflight_output_serializes_large_numeric_fields_as_decimal_strings() {
@@ -804,60 +998,6 @@ mod tests {
                 "max_i64": "9007199254740997",
                 "null_count": "9007199254740998"
             })
-        );
-    }
-
-    #[test]
-    fn arrow_ipc_preview_formats_date32_and_utc_timestamp_values() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", ArrowDataType::Int64, false),
-            Field::new("event_date", ArrowDataType::Date32, true),
-            Field::new(
-                "event_ts_micros",
-                ArrowDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-                true,
-            ),
-            Field::new(
-                "event_ts_millis",
-                ArrowDataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
-                true,
-            ),
-        ]));
-        let batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![
-                Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef,
-                Arc::new(Date32Array::from(vec![Some(20_209), None])) as ArrayRef,
-                Arc::new(
-                    TimestampMicrosecondArray::from(vec![Some(1_746_057_600_000_000), None])
-                        .with_timezone("UTC"),
-                ) as ArrayRef,
-                Arc::new(
-                    TimestampMillisecondArray::from(vec![Some(1_746_057_600_000), None])
-                        .with_timezone("UTC"),
-                ) as ArrayRef,
-            ],
-        )
-        .expect("record batch should construct");
-        let ipc = arrow_ipc_bytes(batch);
-
-        let preview = preview_from_arrow_ipc(&ipc, 10).expect("preview should decode Arrow IPC");
-
-        assert_eq!(
-            preview.columns,
-            vec!["id", "event_date", "event_ts_micros", "event_ts_millis"]
-        );
-        assert_eq!(
-            preview.rows,
-            vec![
-                vec![
-                    json!("1"),
-                    json!("2025-05-01"),
-                    json!("2025-05-01T00:00:00.000000Z"),
-                    json!("2025-05-01T00:00:00.000Z")
-                ],
-                vec![json!("2"), Value::Null, Value::Null, Value::Null],
-            ]
         );
     }
 
@@ -915,18 +1055,5 @@ mod tests {
         let example: Value = serde_json::from_str(&example).expect("example report should parse");
 
         assert_eq!(example, generated);
-    }
-
-    fn arrow_ipc_bytes(batch: RecordBatch) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        {
-            let mut writer = StreamWriter::try_new(&mut bytes, batch.schema().as_ref())
-                .expect("Arrow IPC writer should construct");
-            writer
-                .write(&batch)
-                .expect("record batch should write to Arrow IPC stream");
-            writer.finish().expect("Arrow IPC stream should finish");
-        }
-        bytes
     }
 }

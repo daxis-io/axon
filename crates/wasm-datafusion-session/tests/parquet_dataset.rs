@@ -380,7 +380,7 @@ fn session_reuses_prepared_snapshot_for_repeated_sql_when_identity_matches() {
 }
 
 #[test]
-fn session_attributes_useful_readahead_across_sequential_row_group_reads() {
+fn session_keeps_batched_row_group_reads_outside_readahead_admission() {
     let _guard = PARQUET_DATASET_TEST_LOCK
         .lock()
         .expect("Parquet dataset tests should serialize local HTTP servers");
@@ -414,23 +414,20 @@ fn session_attributes_useful_readahead_across_sequential_row_group_reads() {
             .expect("row-group query should execute");
 
         assert_eq!(result.runtime_result.row_count, 6);
-        assert!(
-            result
-                .response
-                .metrics
-                .range_readahead_bytes_used
-                .unwrap_or_default()
-                > 0,
-            "the later row-group read should consume bytes prefetched by the first"
+        assert_eq!(result.response.metrics.scan_data_range_reads, Some(2));
+        assert_eq!(
+            result.response.metrics.range_readahead_requests,
+            Some(0),
+            "DataFusion row-group batches must not seed single-read admission history"
         );
-        assert!(
-            result
-                .response
-                .metrics
-                .range_readahead_wasted_bytes
-                .unwrap_or_default()
-                > 0,
-            "bytes beyond the later row-group read should remain wasted"
+        assert_eq!(
+            result.response.metrics.range_readahead_bytes_fetched,
+            Some(0)
+        );
+        assert_eq!(result.response.metrics.range_readahead_bytes_used, Some(0));
+        assert_eq!(
+            result.response.metrics.range_readahead_wasted_bytes,
+            Some(0)
         );
     });
 }

@@ -1,32 +1,32 @@
-import init, { SandboxQueryCancellation, SandboxQuerySession } from './wasm/axon_web_wasm';
 import {
-  BROWSER_SAFE_ARROW_IPC_BYTES,
-  BROWSER_SAFE_PREVIEW_STRING_BYTES,
-  BROWSER_SAFE_RESULT_ROW_LIMIT,
   ARROW_IPC_STREAM_CONTENT_TYPE,
+  BROWSER_SAFE_ARROW_IPC_BYTES,
   type BrowserWorkerCancelCommand,
   type BrowserWorkerCommand,
   type BrowserWorkerEventContext,
   type BrowserWorkerEventEnvelope,
-  type BrowserWorkerInspectParquetCommand,
   type BrowserWorkerLogLevel,
-  type BrowserWorkerOpenDeltaTableCommand,
-  type BrowserWorkerOpenParquetDatasetCommand,
   type BrowserWorkerProgressStage,
   type BrowserWorkerResultPreview,
   type BrowserWorkerSqlDelivery,
   type BrowserWorkerSqlCommand,
   type FallbackReason,
-  type ParquetInspectionSummary,
   type QueryError,
   type QueryMetricsSummary,
-  type QueryResultPageRequest,
   type QueryResponse,
-  type QueryRuntimeLimits,
   type WireBrowserWorkerResponseEnvelope,
   redactUrlSecrets,
 } from './axon-browser-sdk';
-import { QUERY_RESULT_PAGE_SIZE } from './services/query-pagination.ts';
+import {
+  PRIVATE_STREAM_PROTOCOL_VERSION,
+  QueryStage,
+  requireProtocolVersion,
+  requireTerminalMetadata,
+  type PrivateChildMessage,
+  type PrivateCoordinatorMessage,
+  type PrivateTerminalMetadata,
+  type PrivateTerminalStatus,
+} from './sandbox-query-stream-protocol';
 
 type DecimalString = string;
 
@@ -36,30 +36,19 @@ type SandboxCacheMetrics = {
   max_session_cached_bytes: DecimalString;
 };
 
-type SandboxOpenTableOutput = {
-  cache_metrics: SandboxCacheMetrics;
-};
-
-type SandboxSqlMetadata = {
-  response: QueryResponse;
-  preview: SandboxWireResultPreview;
-  arrow_ipc_byte_length: DecimalString;
-  row_count: DecimalString;
-  preview_string_bytes: DecimalString;
-  preview_duration_ms: DecimalString;
-  cache_metrics: SandboxCacheMetrics;
-};
-
 type SandboxWireResultPreview = Omit<BrowserWorkerResultPreview, 'row_count'> & {
   row_count: DecimalString;
 };
 
-type SandboxSqlBridgeValue = {
-  metadata_json: string;
-  arrow_ipc_bytes: Uint8Array;
+type SandboxTerminalMetadata = PrivateTerminalMetadata & {
+  response?: QueryResponse;
+  preview?: SandboxWireResultPreview;
+  preview_string_bytes?: DecimalString;
+  preview_duration_ms?: DecimalString;
+  cache_metrics?: SandboxCacheMetrics;
 };
 
-type SandboxWorkerScope = {
+type PublicWorkerScope = {
   addEventListener(
     type: 'message',
     listener: (event: MessageEvent<BrowserWorkerCommand>) => void,
@@ -70,403 +59,311 @@ type SandboxWorkerScope = {
   ): void;
 };
 
-const QUERY_PREVIEW_LIMIT = QUERY_RESULT_PAGE_SIZE + 1;
-const DEFAULT_ARROW_IPC_CHUNK_BYTES = 1024 * 1024;
-const workerScope = self as unknown as SandboxWorkerScope;
+type ActiveCoordinatorQuery = {
+  command: BrowserWorkerSqlCommand;
+  context: BrowserWorkerEventContext;
+  delivery: BrowserWorkerSqlDelivery;
+  stage: QueryStage;
+  maxBytes: number;
+  deadline: ReturnType<typeof setTimeout>;
+};
 
-let sessionPromise: Promise<SandboxQuerySession> | undefined;
-let cancellationToken: SandboxQueryCancellation | undefined;
-let activeQueryId: string | undefined;
-let commandQueue = Promise.resolve();
+type PendingForwardedCommand = {
+  context: BrowserWorkerEventContext;
+};
 
-workerScope.addEventListener('message', (event: MessageEvent<BrowserWorkerCommand>) => {
-  if ('cancel' in event.data) {
-    void handleCancel(event.data.cancel);
+const PRIVATE_QUERY_DEADLINE_MS = 120_000;
+const workerScope = self as unknown as PublicWorkerScope;
+const activeQueries = new Map<string, ActiveCoordinatorQuery>();
+const pendingForwardedCommands = new Map<string, PendingForwardedCommand>();
+let child = createChild();
+
+workerScope.addEventListener('message', (event) => {
+  const command = event.data;
+  if ('cancel' in command) {
+    handleCancel(command.cancel);
     return;
   }
-
-  commandQueue = commandQueue.catch(() => undefined).then(() => handleCommand(event.data));
+  if ('sql' in command) {
+    startCoordinatedQuery(command.sql);
+    return;
+  }
+  forwardCommand(command);
 });
 
-async function handleCommand(command: BrowserWorkerCommand): Promise<void> {
+function forwardCommand(command: BrowserWorkerCommand): void {
+  const requestId = commandRequestId(command);
   const context = commandContext(command);
-  try {
-    if ('open_delta_table' in command) {
-      await handleOpenDeltaTable(command.open_delta_table, context);
-      return;
-    }
-    if ('open_parquet_dataset' in command) {
-      await handleOpenParquetDataset(command.open_parquet_dataset, context);
-      return;
-    }
-    if ('inspect_parquet' in command) {
-      await handleInspectParquet(command.inspect_parquet, context);
-      return;
-    }
-    if ('sql' in command) {
-      await handleSql(command.sql, context);
-      return;
-    }
-    if ('dispose' in command) {
-      const session = await ensureSession(context);
-      await session.dispose_table(command.dispose.name);
-      postResponse({
-        disposed: {
-          request_id: command.dispose.request_id,
-          name: command.dispose.name,
-        },
-      });
-      return;
-    }
-
-    throw queryError('invalid_request', 'unknown sandbox worker command');
-  } catch (error) {
-    const normalizedError = normalizeQueryError(error);
-    emitErrorEvents(context, normalizedError);
-    postResponse({
-      error: {
-        request_id: requestId(command),
-        error: normalizedError,
-      },
-    });
+  if (activeQueries.has(requestId) || pendingForwardedCommands.has(requestId)) {
+    postQueryError(
+      requestId,
+      context,
+      queryError('invalid_request', `request '${requestId}' is already active in the coordinator`),
+    );
+    return;
   }
-}
-
-async function handleOpenDeltaTable(
-  command: BrowserWorkerOpenDeltaTableCommand,
-  context: BrowserWorkerEventContext,
-): Promise<void> {
-  emitProgress(context, 'started');
-  emitLog(context, 'info', 'sandbox worker opening Delta table descriptor');
-  const session = await ensureSession(context);
-  const output = JSON.parse(
-    await session.open_delta_table(command.name, JSON.stringify(command.snapshot)),
-  ) as SandboxOpenTableOutput;
-
-  emitCacheMetrics(context, output.cache_metrics);
-  emitProgress(context, 'finished');
-  postResponse({
-    opened: {
-      request_id: command.request_id,
-      name: command.name,
-    },
+  pendingForwardedCommands.set(requestId, { context });
+  postToChild({
+    kind: 'command',
+    version: PRIVATE_STREAM_PROTOCOL_VERSION,
+    command,
   });
 }
 
-async function handleOpenParquetDataset(
-  command: BrowserWorkerOpenParquetDatasetCommand,
-  context: BrowserWorkerEventContext,
-): Promise<void> {
-  emitProgress(context, 'started');
-  emitLog(context, 'info', 'sandbox worker opening Parquet dataset descriptor');
-  const session = await ensureSession(context);
-  const output = JSON.parse(
-    await session.open_parquet_dataset(command.name, JSON.stringify(command.dataset)),
-  ) as SandboxOpenTableOutput;
-
-  emitCacheMetrics(context, output.cache_metrics);
-  emitProgress(context, 'finished');
-  postResponse({
-    opened: {
-      request_id: command.request_id,
-      name: command.name,
-    },
+function createChild(): Worker {
+  const next = new Worker(new URL('./sandbox-query-child-worker.ts', import.meta.url), {
+    type: 'module',
+    name: 'axon-sandbox-query-child',
   });
+  next.addEventListener('message', (event: MessageEvent<PrivateChildMessage>) => {
+    if (child !== next) return;
+    handleChildMessage(event.data);
+  });
+  next.addEventListener('error', (event) => {
+    if (child !== next) return;
+    handleChildCrash(event.message || 'sandbox query child worker crashed');
+  });
+  next.addEventListener('messageerror', () => {
+    if (child !== next) return;
+    handleChildCrash('sandbox query child worker emitted an invalid structured-clone message');
+  });
+  return next;
 }
 
-async function handleInspectParquet(
-  command: BrowserWorkerInspectParquetCommand,
-  context: BrowserWorkerEventContext,
-): Promise<void> {
-  emitProgress(context, 'started');
-  emitLog(context, 'info', 'sandbox worker inspecting Parquet metadata');
-  emitProgress(context, 'executing');
-  const session = await ensureSession(context);
-  const summary = JSON.parse(
-    await session.inspect_parquet(command.name, command.path),
-  ) as ParquetInspectionSummary;
-
-  emitProgress(context, 'finished');
-  postResponse({
-    parquet_inspection: {
-      request_id: command.request_id,
-      summary,
-    },
-  });
-}
-
-async function handleSql(
-  command: BrowserWorkerSqlCommand,
-  context: BrowserWorkerEventContext,
-): Promise<void> {
-  if (command.output !== undefined && command.output !== 'arrow_ipc_stream') {
-    throw queryError('invalid_request', 'sandbox worker only supports Arrow IPC stream output');
+function startCoordinatedQuery(command: BrowserWorkerSqlCommand): void {
+  const queryId = command.request_id;
+  const context = commandContext({ sql: command });
+  if (activeQueries.has(queryId) || pendingForwardedCommands.has(queryId)) {
+    postQueryError(
+      queryId,
+      context,
+      queryError('invalid_request', `query '${queryId}' is already active in the coordinator`),
+    );
+    return;
   }
   const delivery = command.delivery ?? 'single_buffer';
   if (delivery !== 'single_buffer' && delivery !== 'chunked_buffers') {
-    throw queryError('invalid_request', `unsupported Arrow IPC delivery '${String(delivery)}'`);
-  }
-  const query = queryWithBrowserSafeLimits(command);
-
-  activeQueryId = command.request_id;
-  try {
-    emitProgress(context, 'started');
-    emitLog(context, 'info', 'sandbox worker executing SQL query');
-    emitProgress(context, 'planning');
-    const session = await ensureSession(context);
-    emitProgress(context, 'executing');
-
-    const bridgeValue = (await session.sql(
-      command.name,
-      JSON.stringify(query),
-      QUERY_PREVIEW_LIMIT,
-    )) as SandboxSqlBridgeValue;
-    const metadata = JSON.parse(bridgeValue.metadata_json) as SandboxSqlMetadata;
-    const preview = normalizePreview(metadata.preview);
-    const arrowIpcByteLength = decimalNumber(metadata.arrow_ipc_byte_length);
-    const previewStringBytes = decimalNumber(metadata.preview_string_bytes);
-    const previewDurationMs = decimalNumber(metadata.preview_duration_ms);
-    const arrowIpcChunkCount = arrowIpcChunkCountForDelivery(
-      delivery,
-      bridgeValue.arrow_ipc_bytes.byteLength,
+    postQueryError(
+      queryId,
+      context,
+      queryError('invalid_request', `unsupported Arrow IPC delivery '${String(delivery)}'`),
     );
-    const response = {
-      ...metadata.response,
-      metrics: {
-        ...metadata.response.metrics,
-        arrow_ipc_bytes: arrowIpcByteLength,
-        arrow_ipc_chunk_count: arrowIpcChunkCount,
-        preview_rows: preview.rows.length,
-        preview_string_bytes: previewStringBytes,
-        preview_duration_ms: previewDurationMs,
-      },
-    };
-
-    emitRangeReadMetrics(context, response.metrics);
-    if (response.fallback_reason) {
-      emitFallback(context, response.fallback_reason);
-    }
-    emitCacheMetrics(context, metadata.cache_metrics);
-    emitProgress(context, 'arrow_ipc_ready');
-    if (delivery === 'chunked_buffers') {
-      postArrowIpcChunks(context, command.request_id, bridgeValue.arrow_ipc_bytes);
-    }
-    emitProgress(context, 'finished');
-
-    if (delivery === 'chunked_buffers') {
-      postResponse({
-        success: {
-          request_id: command.request_id,
-          response,
-          result: {
-            format: 'stream',
-            content_type: ARROW_IPC_STREAM_CONTENT_TYPE,
-            delivery: 'chunked_buffers',
-            byte_length: arrowIpcByteLength,
-            chunk_count: arrowIpcChunkCount,
-          },
-          preview,
-        },
-      });
-    } else {
-      postResponse(
-        {
-          success: {
-            request_id: command.request_id,
-            response,
-            result: {
-              format: 'stream',
-              content_type: ARROW_IPC_STREAM_CONTENT_TYPE,
-              delivery: 'single_buffer',
-              bytes: bridgeValue.arrow_ipc_bytes,
-              byte_length: arrowIpcByteLength,
-              chunk_count: arrowIpcChunkCount,
-            },
-            preview,
-          },
-        },
-        [bridgeValue.arrow_ipc_bytes.buffer],
-      );
-    }
-  } finally {
-    if (activeQueryId === command.request_id) {
-      activeQueryId = undefined;
-    }
+    return;
   }
+  const requestedMax = command.query.options?.runtime_limits?.max_arrow_ipc_bytes;
+  const maxBytes =
+    typeof requestedMax === 'number' && Number.isSafeInteger(requestedMax) && requestedMax > 0
+      ? Math.min(requestedMax, BROWSER_SAFE_ARROW_IPC_BYTES)
+      : BROWSER_SAFE_ARROW_IPC_BYTES;
+  const deadline = setTimeout(() => {
+    if (!activeQueries.has(queryId)) return;
+    postToChild({
+      kind: 'cancel',
+      version: PRIVATE_STREAM_PROTOCOL_VERSION,
+      query_id: queryId,
+      reason: 'deadline_exceeded',
+    });
+  }, PRIVATE_QUERY_DEADLINE_MS);
+  activeQueries.set(queryId, {
+    command,
+    context,
+    delivery,
+    stage: new QueryStage(queryId),
+    maxBytes,
+    deadline,
+  });
+  postToChild({
+    kind: 'command',
+    version: PRIVATE_STREAM_PROTOCOL_VERSION,
+    command: { sql: command },
+  });
 }
 
-async function handleCancel(command: BrowserWorkerCancelCommand): Promise<void> {
+function handleCancel(command: BrowserWorkerCancelCommand): void {
   const queryId = command.query_id ?? command.request_id;
-  const context: BrowserWorkerEventContext = {
-    phase: 'query',
-    request_id: command.request_id,
+  if (!activeQueries.has(queryId)) return;
+  postToChild({
+    kind: 'cancel',
+    version: PRIVATE_STREAM_PROTOCOL_VERSION,
     query_id: queryId,
-  };
+    reason: 'cancelled',
+  });
+}
 
+function handleChildMessage(message: PrivateChildMessage): void {
   try {
-    if (activeQueryId !== queryId) {
-      emitLog(context, 'debug', 'sandbox worker ignored cancellation for inactive query');
+    requireProtocolVersion(message.version);
+    if (message.kind === 'ready') return;
+    if (message.kind === 'public') {
+      workerScope.postMessage(message.envelope);
+      const requestId = responseRequestId(message.envelope);
+      if (requestId) pendingForwardedCommands.delete(requestId);
       return;
     }
-    const token = await ensureCancellationToken(context);
-    token.cancel();
-    emitLog(context, 'info', 'sandbox worker cancelled running browser DataFusion queries');
+    const active = activeQueries.get(message.query_id);
+    if (!active) return;
+
+    if (message.kind === 'stream_chunk') {
+      const credit = active.stage.stage(message);
+      if (active.stage.stagedByteLength > active.maxBytes) {
+        throw queryError(
+          'fallback_required',
+          `browser coordinator exceeded max_arrow_ipc_bytes (${active.stage.stagedByteLength} > ${active.maxBytes})`,
+          'browser_runtime_constraint',
+        );
+      }
+      postToChild({
+        kind: 'credit',
+        version: PRIVATE_STREAM_PROTOCOL_VERSION,
+        query_id: message.query_id,
+        sequence: message.sequence,
+        credit_class: credit.credit_class,
+        bytes: credit.byte_length,
+      });
+      return;
+    }
+    if (message.kind === 'stream_terminal') {
+      finishFromTerminal(active, message.metadata);
+      return;
+    }
+    active.stage.discard();
+    postQueryError(message.query_id, active.context, message.error);
+    finishActiveQuery(message.query_id);
   } catch (error) {
-    emitErrorEvents(context, normalizeQueryError(error));
+    const queryId = 'query_id' in message ? message.query_id : undefined;
+    if (!queryId) return;
+    const active = activeQueries.get(queryId);
+    if (!active) return;
+    active.stage.discard();
+    postToChild({
+      kind: 'cancel',
+      version: PRIVATE_STREAM_PROTOCOL_VERSION,
+      query_id: queryId,
+      reason: 'cancelled',
+    });
+    postQueryError(queryId, active.context, normalizeQueryError(error));
+    finishActiveQuery(queryId);
   }
 }
 
-function ensureSession(commandContext: BrowserWorkerEventContext): Promise<SandboxQuerySession> {
-  if (sessionPromise) {
-    return sessionPromise;
+function finishFromTerminal(
+  active: ActiveCoordinatorQuery,
+  metadataValue: PrivateTerminalMetadata,
+): void {
+  requireTerminalMetadata(metadataValue);
+  const metadata = metadataValue as SandboxTerminalMetadata;
+  if (metadata.status !== 'succeeded') {
+    active.stage.discard();
+    const error =
+      metadata.error ??
+      queryError(
+        'execution_failed',
+        metadata.status === 'deadline_exceeded'
+          ? 'browser DataFusion query deadline exceeded'
+          : metadata.status === 'cancelled'
+            ? 'experimental browser DataFusion query cancelled during Arrow IPC cursor pull'
+            : 'browser DataFusion query failed without structured error metadata',
+      );
+    postQueryError(active.command.request_id, active.context, error, metadata.status);
+    finishActiveQuery(active.command.request_id);
+    return;
   }
 
-  const context: BrowserWorkerEventContext = {
-    ...commandContext,
-    phase: 'instantiate',
-  };
-  emitProgress(context, 'started');
-  emitLog(context, 'info', 'sandbox worker instantiating query bridge');
-  const nextSession = init().then(() => {
-    const session = new SandboxQuerySession();
-    cancellationToken = session.cancellation();
-    emitProgress(context, 'finished');
-    return session;
-  });
-  sessionPromise = nextSession;
-  return nextSession;
-}
-
-async function ensureCancellationToken(
-  commandContext: BrowserWorkerEventContext,
-): Promise<SandboxQueryCancellation> {
-  await ensureSession(commandContext);
-  if (!cancellationToken) {
-    throw queryError('execution_failed', 'sandbox worker cancellation handle was not initialized');
+  let chunks: Uint8Array[];
+  try {
+    chunks = active.stage.commit(metadata);
+    commitSuccessfulQuery(active, metadata, chunks);
+  } catch (error) {
+    active.stage.discard();
+    postQueryError(active.command.request_id, active.context, normalizeQueryError(error));
+  } finally {
+    finishActiveQuery(active.command.request_id);
   }
-  return cancellationToken;
 }
 
-function normalizePreview(preview: SandboxWireResultPreview): BrowserWorkerResultPreview {
-  return {
-    ...preview,
-    row_count: decimalNumber(preview.row_count),
+function commitSuccessfulQuery(
+  active: ActiveCoordinatorQuery,
+  metadata: SandboxTerminalMetadata,
+  chunks: Uint8Array[],
+): void {
+  if (!metadata.response || !metadata.preview || !metadata.cache_metrics) {
+    throw queryError('execution_failed', 'successful child terminal omitted response metadata');
+  }
+  const arrowIpcByteLength = decimalNumber(metadata.arrow_ipc_byte_length);
+  const preview = normalizePreview(metadata.preview);
+  const previewStringBytes = decimalNumber(metadata.preview_string_bytes ?? '0');
+  const previewDurationMs = decimalNumber(metadata.preview_duration_ms ?? '0');
+  const publicChunkCount =
+    active.delivery === 'chunked_buffers' ? chunks.length : arrowIpcByteLength === 0 ? 0 : 1;
+  const response: QueryResponse = {
+    ...metadata.response,
+    metrics: {
+      ...metadata.response.metrics,
+      arrow_ipc_bytes: arrowIpcByteLength,
+      arrow_ipc_chunk_count: publicChunkCount,
+      preview_rows: preview.rows.length,
+      preview_string_bytes: previewStringBytes,
+      preview_duration_ms: previewDurationMs,
+    },
   };
-}
 
-function queryWithBrowserSafeLimits(
-  command: BrowserWorkerSqlCommand,
-): BrowserWorkerSqlCommand['query'] {
-  const options = {
-    include_explain: false,
-    collect_metrics: true,
-    ...(command.query.options ?? {}),
-  };
+  emitRangeReadMetrics(active.context, response.metrics);
+  if (response.fallback_reason) emitFallback(active.context, response.fallback_reason);
+  emitCacheMetrics(active.context, metadata.cache_metrics);
+  emitProgress(active.context, 'arrow_ipc_ready');
 
-  if (command.browser_safe_defaults === true) {
-    return {
-      ...command.query,
-      options: {
-        ...options,
-        result_page: resultPageWithBrowserSafeDefaults(options.result_page),
-        runtime_limits: runtimeLimitsWithBrowserSafeDefaults(options.runtime_limits),
+  if (active.delivery === 'chunked_buffers') {
+    postCommittedChunks(active.context, active.command.request_id, chunks);
+    emitProgress(active.context, 'finished');
+    postResponse({
+      success: {
+        request_id: active.command.request_id,
+        response,
+        result: {
+          format: 'stream',
+          content_type: ARROW_IPC_STREAM_CONTENT_TYPE,
+          delivery: 'chunked_buffers',
+          byte_length: arrowIpcByteLength,
+          chunk_count: publicChunkCount,
+        },
+        preview,
       },
-    };
+    });
+    return;
   }
 
-  if (!options.result_page || !options.runtime_limits) {
-    throw queryError(
-      'invalid_request',
-      'raw sandbox SQL commands must provide result_page plus runtime_limits or set browser_safe_defaults',
-    );
-  }
-  requirePositiveInteger(options.result_page.limit, 'result_page.limit');
-  requireNonNegativeInteger(options.result_page.offset, 'result_page.offset');
-  requirePositiveInteger(options.runtime_limits.max_result_rows, 'runtime_limits.max_result_rows');
-  requirePositiveInteger(
-    options.runtime_limits.max_arrow_ipc_bytes,
-    'runtime_limits.max_arrow_ipc_bytes',
+  const bytes = checkedSingleBuffer(chunks, arrowIpcByteLength);
+  emitProgress(active.context, 'finished');
+  postResponse(
+    {
+      success: {
+        request_id: active.command.request_id,
+        response,
+        result: {
+          format: 'stream',
+          content_type: ARROW_IPC_STREAM_CONTENT_TYPE,
+          delivery: 'single_buffer',
+          bytes,
+          byte_length: arrowIpcByteLength,
+          chunk_count: publicChunkCount,
+        },
+        preview,
+      },
+    },
+    [bytes.buffer],
   );
-  requirePositiveInteger(
-    options.runtime_limits.max_preview_string_bytes,
-    'runtime_limits.max_preview_string_bytes',
-  );
-
-  return {
-    ...command.query,
-    options,
-  };
 }
 
-function resultPageWithBrowserSafeDefaults(
-  page: QueryResultPageRequest | undefined,
-): QueryResultPageRequest {
-  if (!page) {
-    return {
-      limit: BROWSER_SAFE_RESULT_ROW_LIMIT,
-      offset: 0,
-    };
-  }
-  return {
-    limit: Math.min(
-      requirePositiveInteger(page.limit, 'result_page.limit'),
-      BROWSER_SAFE_RESULT_ROW_LIMIT,
-    ),
-    offset: requireNonNegativeInteger(page.offset, 'result_page.offset'),
-  };
-}
-
-function runtimeLimitsWithBrowserSafeDefaults(
-  limits: QueryRuntimeLimits | undefined,
-): QueryRuntimeLimits {
-  return {
-    ...(limits ?? {}),
-    max_result_rows: Math.min(
-      optionalPositiveInteger(
-        limits?.max_result_rows,
-        BROWSER_SAFE_RESULT_ROW_LIMIT,
-        'runtime_limits.max_result_rows',
-      ),
-      BROWSER_SAFE_RESULT_ROW_LIMIT,
-    ),
-    max_arrow_ipc_bytes: Math.min(
-      optionalPositiveInteger(
-        limits?.max_arrow_ipc_bytes,
-        BROWSER_SAFE_ARROW_IPC_BYTES,
-        'runtime_limits.max_arrow_ipc_bytes',
-      ),
-      BROWSER_SAFE_ARROW_IPC_BYTES,
-    ),
-    max_preview_string_bytes: Math.min(
-      optionalPositiveInteger(
-        limits?.max_preview_string_bytes,
-        BROWSER_SAFE_PREVIEW_STRING_BYTES,
-        'runtime_limits.max_preview_string_bytes',
-      ),
-      BROWSER_SAFE_PREVIEW_STRING_BYTES,
-    ),
-  };
-}
-
-function arrowIpcChunkCountForDelivery(
-  delivery: BrowserWorkerSqlDelivery,
-  byteLength: number,
-): number {
-  if (delivery === 'single_buffer') {
-    return byteLength === 0 ? 0 : 1;
-  }
-  return byteLength === 0 ? 0 : Math.ceil(byteLength / DEFAULT_ARROW_IPC_CHUNK_BYTES);
-}
-
-function postArrowIpcChunks(
+function postCommittedChunks(
   context: BrowserWorkerEventContext,
   requestId: string,
-  bytes: Uint8Array,
+  chunks: Uint8Array[],
 ): void {
-  let sequence = 0;
-  for (let byteOffset = 0; byteOffset < bytes.byteLength; ) {
-    const chunkLength = Math.min(DEFAULT_ARROW_IPC_CHUNK_BYTES, bytes.byteLength - byteOffset);
-    const chunk = exactSizedChunk(bytes, byteOffset, chunkLength);
+  let byteOffset = 0;
+  for (let sequence = 0; sequence < chunks.length; sequence += 1) {
+    const chunk = chunks[sequence];
+    requireExactSizedChunk(chunk);
+    const chunkByteLength = chunk.byteLength;
     workerScope.postMessage(
       {
         arrow_ipc_chunk: {
@@ -474,32 +371,87 @@ function postArrowIpcChunks(
           request_id: requestId,
           sequence,
           byte_offset: byteOffset,
-          byte_length: chunk.byteLength,
+          byte_length: chunkByteLength,
           bytes: chunk,
         },
       },
       [chunk.buffer],
     );
-    sequence += 1;
-    byteOffset += chunkLength;
+    byteOffset += chunkByteLength;
   }
 }
 
-function exactSizedChunk(source: Uint8Array, byteOffset: number, byteLength: number): Uint8Array {
-  const chunk = source.slice(byteOffset, byteOffset + byteLength);
-  if (chunk.byteOffset !== 0 || chunk.byteLength !== chunk.buffer.byteLength) {
-    throw queryError('execution_failed', 'Arrow IPC chunk buffer was not exact-sized');
+function checkedSingleBuffer(chunks: Uint8Array[], expectedLength: number): Uint8Array {
+  if (!Number.isSafeInteger(expectedLength) || expectedLength < 0) {
+    throw queryError('execution_failed', 'Arrow IPC terminal length was not a safe integer');
   }
-  return chunk;
+  const output = new Uint8Array(expectedLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    requireExactSizedChunk(chunk);
+    const next = offset + chunk.byteLength;
+    if (!Number.isSafeInteger(next) || next > output.byteLength) {
+      throw queryError('execution_failed', 'Arrow IPC staged chunks exceeded terminal length');
+    }
+    output.set(chunk, offset);
+    offset = next;
+  }
+  if (offset !== output.byteLength) {
+    throw queryError('execution_failed', 'Arrow IPC staged chunks did not fill terminal length');
+  }
+  return output;
+}
+
+function requireExactSizedChunk(chunk: Uint8Array): void {
+  if (chunk.byteOffset !== 0 || chunk.byteLength !== chunk.buffer.byteLength) {
+    throw queryError('execution_failed', 'Arrow IPC staged chunk was not exact-sized');
+  }
+}
+
+function finishActiveQuery(queryId: string): void {
+  const active = activeQueries.get(queryId);
+  if (!active) return;
+  clearTimeout(active.deadline);
+  activeQueries.delete(queryId);
+}
+
+function handleChildCrash(message: string): void {
+  const error = queryError('execution_failed', message);
+  for (const [queryId, active] of activeQueries) {
+    active.stage.discard();
+    postQueryError(queryId, active.context, error);
+    clearTimeout(active.deadline);
+  }
+  activeQueries.clear();
+  for (const [requestId, pending] of pendingForwardedCommands) {
+    postQueryError(requestId, pending.context, error);
+  }
+  pendingForwardedCommands.clear();
+  child.terminate();
+  child = createChild();
+}
+
+function postQueryError(
+  requestId: string,
+  context: BrowserWorkerEventContext,
+  error: QueryError,
+  status?: PrivateTerminalStatus,
+): void {
+  const normalized = redactQueryError(error);
+  emitErrorEvents(context, normalized, status);
+  postResponse({ error: { request_id: requestId, error: normalized } });
+}
+
+function postToChild(message: PrivateCoordinatorMessage): void {
+  child.postMessage(message);
+}
+
+function normalizePreview(preview: SandboxWireResultPreview): BrowserWorkerResultPreview {
+  return { ...preview, row_count: decimalNumber(preview.row_count) };
 }
 
 function emitProgress(context: BrowserWorkerEventContext, stage: BrowserWorkerProgressStage): void {
-  postEvent({
-    progress: {
-      context,
-      stage,
-    },
-  });
+  postEvent({ progress: { context, stage } });
 }
 
 function emitLog(
@@ -507,13 +459,7 @@ function emitLog(
   level: BrowserWorkerLogLevel,
   message: string,
 ): void {
-  postEvent({
-    log: {
-      context,
-      level,
-      message,
-    },
-  });
+  postEvent({ log: { context, level, message } });
 }
 
 function emitRangeReadMetrics(
@@ -591,39 +537,26 @@ function emitCacheMetrics(context: BrowserWorkerEventContext, metrics: SandboxCa
 }
 
 function emitFallback(context: BrowserWorkerEventContext, reason: FallbackReason): void {
-  postEvent({
-    fallback: {
-      context,
-      reason,
-    },
-  });
+  postEvent({ fallback: { context, reason } });
 }
 
-function emitErrorEvents(context: BrowserWorkerEventContext, error: QueryError): void {
-  if (error.fallback_reason) {
-    emitFallback(context, error.fallback_reason);
-  }
-  if (isBrowserDataFusionCancellation(error)) {
-    postEvent({
-      cancellation: {
-        context,
-        error,
-      },
-    });
+function emitErrorEvents(
+  context: BrowserWorkerEventContext,
+  error: QueryError,
+  status?: PrivateTerminalStatus,
+): void {
+  if (error.fallback_reason) emitFallback(context, error.fallback_reason);
+  if (status === 'cancelled' || status === 'deadline_exceeded' || isCancellation(error)) {
+    postEvent({ cancellation: { context, error } });
   }
   emitLog(context, 'error', error.message);
-  postEvent({
-    terminal_error: {
-      context,
-      error,
-    },
-  });
+  postEvent({ terminal_error: { context, error } });
 }
 
-function isBrowserDataFusionCancellation(error: QueryError): boolean {
+function isCancellation(error: QueryError): boolean {
   return (
     error.code === 'execution_failed' &&
-    error.message.startsWith('experimental browser DataFusion query cancelled')
+    (error.message.includes('cancelled') || error.message.includes('deadline'))
   );
 }
 
@@ -633,12 +566,27 @@ function postEvent(event: BrowserWorkerEventEnvelope): void {
 
 function postResponse(
   response: WireBrowserWorkerResponseEnvelope,
-  transfer?: Transferable[],
+  transfer: Transferable[] = [],
 ): void {
-  workerScope.postMessage(response, transfer ?? []);
+  workerScope.postMessage(response, transfer);
 }
 
 function commandContext(command: BrowserWorkerCommand): BrowserWorkerEventContext {
+  if ('sql' in command) {
+    return {
+      phase: 'query',
+      request_id: command.sql.request_id,
+      query_id: command.sql.request_id,
+      table_name: command.sql.name,
+    };
+  }
+  if ('cancel' in command) {
+    return {
+      phase: 'query',
+      request_id: command.cancel.request_id,
+      query_id: command.cancel.query_id ?? command.cancel.request_id,
+    };
+  }
   if ('open_delta_table' in command) {
     return {
       phase: 'open',
@@ -660,21 +608,6 @@ function commandContext(command: BrowserWorkerCommand): BrowserWorkerEventContex
       table_name: command.inspect_parquet.name,
     };
   }
-  if ('sql' in command) {
-    return {
-      phase: 'query',
-      request_id: command.sql.request_id,
-      query_id: command.sql.request_id,
-      table_name: command.sql.name,
-    };
-  }
-  if ('cancel' in command) {
-    return {
-      phase: 'query',
-      request_id: command.cancel.request_id,
-      query_id: command.cancel.query_id ?? command.cancel.request_id,
-    };
-  }
   if ('open_table' in command) {
     return {
       phase: 'open',
@@ -689,63 +622,35 @@ function commandContext(command: BrowserWorkerCommand): BrowserWorkerEventContex
   };
 }
 
-function requestId(command: BrowserWorkerCommand): string {
-  if ('open_delta_table' in command) {
-    return command.open_delta_table.request_id;
-  }
-  if ('open_parquet_dataset' in command) {
-    return command.open_parquet_dataset.request_id;
-  }
-  if ('inspect_parquet' in command) {
-    return command.inspect_parquet.request_id;
-  }
-  if ('sql' in command) {
-    return command.sql.request_id;
-  }
-  if ('cancel' in command) {
-    return command.cancel.request_id;
-  }
-  if ('open_table' in command) {
-    return command.open_table.request_id;
-  }
+function commandRequestId(command: BrowserWorkerCommand): string {
+  if ('open_delta_table' in command) return command.open_delta_table.request_id;
+  if ('open_parquet_dataset' in command) return command.open_parquet_dataset.request_id;
+  if ('inspect_parquet' in command) return command.inspect_parquet.request_id;
+  if ('sql' in command) return command.sql.request_id;
+  if ('cancel' in command) return command.cancel.request_id;
+  if ('open_table' in command) return command.open_table.request_id;
   return command.dispose.request_id;
 }
 
-function normalizeQueryError(error: unknown): QueryError {
-  if (isQueryError(error)) {
-    return redactQueryError(error);
-  }
-  if (typeof error === 'string') {
-    const parsed = parseQueryErrorJson(error);
-    if (parsed) {
-      return redactQueryError(parsed);
-    }
-    return queryError('execution_failed', error);
-  }
-  if (error instanceof Error) {
-    const parsed = parseQueryErrorJson(error.message);
-    if (parsed) {
-      return redactQueryError(parsed);
-    }
-    return queryError('execution_failed', error.message);
-  }
+function responseRequestId(
+  envelope: WireBrowserWorkerResponseEnvelope | BrowserWorkerEventEnvelope,
+): string | undefined {
+  if ('opened' in envelope) return envelope.opened.request_id;
+  if ('success' in envelope) return envelope.success.request_id;
+  if ('parquet_inspection' in envelope) return envelope.parquet_inspection.request_id;
+  if ('disposed' in envelope) return envelope.disposed.request_id;
+  if ('error' in envelope) return envelope.error.request_id;
+  return undefined;
+}
 
+function normalizeQueryError(error: unknown): QueryError {
+  if (isQueryError(error)) return redactQueryError(error);
+  if (error instanceof Error) return queryError('execution_failed', error.message);
   return queryError('execution_failed', String(error));
 }
 
-function parseQueryErrorJson(value: string): QueryError | undefined {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return isQueryError(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function isQueryError(value: unknown): value is QueryError {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
+  if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<QueryError>;
   return (
     typeof candidate.code === 'string' &&
@@ -755,38 +660,26 @@ function isQueryError(value: unknown): value is QueryError {
 }
 
 function redactQueryError(error: QueryError): QueryError {
-  return {
-    ...error,
-    message: redactUrlSecrets(error.message),
-  };
+  return { ...error, message: redactUrlSecrets(error.message) };
 }
 
-function queryError(code: QueryError['code'], message: string): QueryError {
+function queryError(
+  code: QueryError['code'],
+  message: string,
+  fallbackReason?: FallbackReason,
+): QueryError {
   return {
     code,
     message: redactUrlSecrets(message),
     target: 'browser_wasm',
+    ...(fallbackReason ? { fallback_reason: fallbackReason } : {}),
   };
 }
 
 function decimalNumber(value: DecimalString | number): number {
-  return typeof value === 'number' ? value : Number.parseInt(value, 10);
-}
-
-function requirePositiveInteger(value: unknown, path: string): number {
-  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
-    return value;
+  const parsed = typeof value === 'number' ? value : Number.parseInt(value, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw queryError('execution_failed', 'child terminal decimal exceeded a safe integer');
   }
-  throw queryError('invalid_request', `${path} must be a positive integer`);
-}
-
-function requireNonNegativeInteger(value: unknown, path: string): number {
-  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
-    return value;
-  }
-  throw queryError('invalid_request', `${path} must be a non-negative integer`);
-}
-
-function optionalPositiveInteger(value: unknown, defaultValue: number, path: string): number {
-  return value === undefined ? defaultValue : requirePositiveInteger(value, path);
+  return parsed;
 }

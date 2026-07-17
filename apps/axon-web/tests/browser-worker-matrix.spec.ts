@@ -511,6 +511,9 @@ test('surfaces unsupported feature errors from the real browser query worker', a
       await client.openDeltaTable('unsupported_partition', snapshot, {
         requestId: 'open-unsupported-partition',
       });
+      await client.query('unsupported_partition', 'SELECT * FROM unsupported_partition', {
+        requestId: 'query-unsupported-partition',
+      });
     } catch (error) {
       const candidate = error as {
         message?: string;
@@ -587,6 +590,7 @@ test('dispose removes the DataFusion table from the real browser worker session'
             request_id: 'query-disposed-real-worker-table',
             name: 'disposed_runtime_types',
             output: 'arrow_ipc_stream',
+            browser_safe_defaults: true,
             query: {
               table_uri: snapshot.table_uri,
               snapshot_version: snapshot.snapshot_version,

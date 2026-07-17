@@ -396,6 +396,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "deltalake",
+ "futures-util",
  "js-sys",
  "query-contract",
  "serde",

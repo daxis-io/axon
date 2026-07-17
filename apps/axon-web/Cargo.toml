@@ -23,6 +23,7 @@ required-features = ["fixture-generator"]
 arrow-array = "=58.3.0"
 arrow-ipc = "=58.3.0"
 arrow-schema = "=58.3.0"
+futures-util = "=0.3.32"
 js-sys = "=0.3.91"
 query-contract = { path = "../../crates/query-contract" }
 serde = { workspace = true }
