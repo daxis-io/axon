@@ -18,34 +18,28 @@ message SchemaNode {
 }
 
 message TableNode {
-  axon.common.v1.ObjectRef ref = 1;
+  axon.common.v1.CanonicalResourceRef resource = 1;
   TableType table_type = 2;
   string comment = 3;
+  string name = 4;
 }
 
 message ColumnNode {
+  reserved 4;
+  reserved "partition";
+
   string name = 1;
   string type = 2;
   bool nullable = 3;
-  bool partition = 4;
   string comment = 5;
 }
 
 message VolumeNode {
-  axon.common.v1.ObjectRef ref = 1;
+  axon.common.v1.CanonicalResourceRef resource = 1;
   VolumeType volume_type = 2;
   string storage_location = 3;
   string comment = 4;
-}
-
-message FunctionNode {
-  axon.common.v1.ObjectRef ref = 1;
-  string comment = 2;
-}
-
-message ModelNode {
-  axon.common.v1.ObjectRef ref = 1;
-  string comment = 2;
+  string name = 5;
 }
 
 message TableMetadata {
@@ -96,16 +90,6 @@ message ListColumnsResponse {
 
 message ListVolumesResponse {
   repeated VolumeNode volumes = 1;
-  axon.common.v1.PageInfo page = 2;
-}
-
-message ListFunctionsResponse {
-  repeated FunctionNode functions = 1;
-  axon.common.v1.PageInfo page = 2;
-}
-
-message ListModelsResponse {
-  repeated ModelNode models = 1;
   axon.common.v1.PageInfo page = 2;
 }
 

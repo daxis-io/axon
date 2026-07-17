@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file axon/common/v1/common.proto.
  */
 export const file_axon_common_v1_common: GenFile = /*@__PURE__*/
-  fileDesc("ChtheG9uL2NvbW1vbi92MS9jb21tb24ucHJvdG8SDmF4b24uY29tbW9uLnYxIlEKCU9iamVjdFJlZhIVCg1jb25uZWN0aW9uX2lkGAEgASgJEg8KB2NhdGFsb2cYAiABKAkSDgoGc2NoZW1hGAMgASgJEgwKBG5hbWUYBCABKAkiMAoLUGFnZVJlcXVlc3QSDgoGY3Vyc29yGAEgASgJEhEKCXBhZ2Vfc2l6ZRgCIAEoDSIxCghQYWdlSW5mbxITCgtuZXh0X2N1cnNvchgBIAEoCRIQCghoYXNfbW9yZRgCIAEoCCL7AQoUUHJvdmlkZXJDYXBhYmlsaXRpZXMSEQoJYnJvd3NhYmxlGAEgASgIEhEKCXBhZ2luYXRlZBgCIAEoCBIWCg5zdXBwb3J0c192aWV3cxgDIAEoCBIYChBzdXBwb3J0c192b2x1bWVzGAQgASgIEhoKEnN1cHBvcnRzX2Z1bmN0aW9ucxgFIAEoCBIXCg9zdXBwb3J0c19tb2RlbHMYBiABKAgSIAoYc3VwcG9ydHNfY29sdW1uX21ldGFkYXRhGAcgASgIEjQKCWF1dGhvcml0eRgIIAEoDjIhLmF4b24uY29tbW9uLnYxLlByb3ZpZGVyQXV0aG9yaXR5ImkKDVByb3ZpZGVyRXJyb3ISLwoEY29kZRgBIAEoDjIhLmF4b24uY29tbW9uLnYxLlByb3ZpZGVyRXJyb3JDb2RlEg8KB21lc3NhZ2UYAiABKAkSFgoOY29ycmVsYXRpb25faWQYAyABKAkqlQEKEVByb3ZpZGVyQXV0aG9yaXR5EiIKHlBST1ZJREVSX0FVVEhPUklUWV9VTlNQRUNJRklFRBAAEh4KGlBST1ZJREVSX0FVVEhPUklUWV9CUk9XU0VSEAESHwobUFJPVklERVJfQVVUSE9SSVRZX0JST0tFUkVEEAISGwoXUFJPVklERVJfQVVUSE9SSVRZX0hPU1QQAyrrAQoRUHJvdmlkZXJFcnJvckNvZGUSIwofUFJPVklERVJfRVJST1JfQ09ERV9VTlNQRUNJRklFRBAAEicKI1BST1ZJREVSX0VSUk9SX0NPREVfU0VTU0lPTl9FWFBJUkVEEAESHwobUFJPVklERVJfRVJST1JfQ09ERV9CTE9DS0VEEAISIQodUFJPVklERVJfRVJST1JfQ09ERV9OT1RfRk9VTkQQAxIjCh9QUk9WSURFUl9FUlJPUl9DT0RFX1VOQVZBSUxBQkxFEAQSHwobUFJPVklERVJfRVJST1JfQ09ERV9JTlZBTElEEAViBnByb3RvMw");
+  fileDesc("ChtheG9uL2NvbW1vbi92MS9jb21tb24ucHJvdG8SDmF4b24uY29tbW9uLnYxIlEKCU9iamVjdFJlZhIVCg1jb25uZWN0aW9uX2lkGAEgASgJEg8KB2NhdGFsb2cYAiABKAkSDgoGc2NoZW1hGAMgASgJEgwKBG5hbWUYBCABKAkivAEKFENhbm9uaWNhbFJlc291cmNlUmVmEhUKDWNvbm5lY3Rpb25faWQYASABKAkSGgoScHJvdmlkZXJfbmFtZXNwYWNlGAIgASgJEioKBGtpbmQYAyABKA4yHC5heG9uLmNvbW1vbi52MS5SZXNvdXJjZUtpbmQSHAoScHJvdmlkZXJfb2JqZWN0X2lkGAQgASgJSAASGwoRY2Fub25pY2FsX2xvY2F0b3IYBSABKAlIAEIKCghpZGVudGl0eSIwCgtQYWdlUmVxdWVzdBIOCgZjdXJzb3IYASABKAkSEQoJcGFnZV9zaXplGAIgASgNIkQKCFBhZ2VJbmZvEhgKC25leHRfY3Vyc29yGAEgASgJSACIAQFCDgoMX25leHRfY3Vyc29ySgQIAhADUghoYXNfbW9yZSJpCg1Qcm92aWRlckVycm9yEi8KBGNvZGUYASABKA4yIS5heG9uLmNvbW1vbi52MS5Qcm92aWRlckVycm9yQ29kZRIPCgdtZXNzYWdlGAIgASgJEhYKDmNvcnJlbGF0aW9uX2lkGAMgASgJKmAKDFJlc291cmNlS2luZBIdChlSRVNPVVJDRV9LSU5EX1VOU1BFQ0lGSUVEEAASFwoTUkVTT1VSQ0VfS0lORF9UQUJMRRABEhgKFFJFU09VUkNFX0tJTkRfVk9MVU1FEAIq6wEKEVByb3ZpZGVyRXJyb3JDb2RlEiMKH1BST1ZJREVSX0VSUk9SX0NPREVfVU5TUEVDSUZJRUQQABInCiNQUk9WSURFUl9FUlJPUl9DT0RFX1NFU1NJT05fRVhQSVJFRBABEh8KG1BST1ZJREVSX0VSUk9SX0NPREVfQkxPQ0tFRBACEiEKHVBST1ZJREVSX0VSUk9SX0NPREVfTk9UX0ZPVU5EEAMSIwofUFJPVklERVJfRVJST1JfQ09ERV9VTkFWQUlMQUJMRRAEEh8KG1BST1ZJREVSX0VSUk9SX0NPREVfSU5WQUxJRBAFYgZwcm90bzM");
 
 /**
  * @generated from message axon.common.v1.ObjectRef
@@ -45,6 +45,50 @@ export const ObjectRefSchema: GenMessage<ObjectRef> = /*@__PURE__*/
   messageDesc(file_axon_common_v1_common, 0);
 
 /**
+ * @generated from message axon.common.v1.CanonicalResourceRef
+ */
+export type CanonicalResourceRef = Message<"axon.common.v1.CanonicalResourceRef"> & {
+  /**
+   * @generated from field: string connection_id = 1;
+   */
+  connectionId: string;
+
+  /**
+   * @generated from field: string provider_namespace = 2;
+   */
+  providerNamespace: string;
+
+  /**
+   * @generated from field: axon.common.v1.ResourceKind kind = 3;
+   */
+  kind: ResourceKind;
+
+  /**
+   * @generated from oneof axon.common.v1.CanonicalResourceRef.identity
+   */
+  identity: {
+    /**
+     * @generated from field: string provider_object_id = 4;
+     */
+    value: string;
+    case: "providerObjectId";
+  } | {
+    /**
+     * @generated from field: string canonical_locator = 5;
+     */
+    value: string;
+    case: "canonicalLocator";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message axon.common.v1.CanonicalResourceRef.
+ * Use `create(CanonicalResourceRefSchema)` to create a new message.
+ */
+export const CanonicalResourceRefSchema: GenMessage<CanonicalResourceRef> = /*@__PURE__*/
+  messageDesc(file_axon_common_v1_common, 1);
+
+/**
  * @generated from message axon.common.v1.PageRequest
  */
 export type PageRequest = Message<"axon.common.v1.PageRequest"> & {
@@ -64,21 +108,16 @@ export type PageRequest = Message<"axon.common.v1.PageRequest"> & {
  * Use `create(PageRequestSchema)` to create a new message.
  */
 export const PageRequestSchema: GenMessage<PageRequest> = /*@__PURE__*/
-  messageDesc(file_axon_common_v1_common, 1);
+  messageDesc(file_axon_common_v1_common, 2);
 
 /**
  * @generated from message axon.common.v1.PageInfo
  */
 export type PageInfo = Message<"axon.common.v1.PageInfo"> & {
   /**
-   * @generated from field: string next_cursor = 1;
+   * @generated from field: optional string next_cursor = 1;
    */
-  nextCursor: string;
-
-  /**
-   * @generated from field: bool has_more = 2;
-   */
-  hasMore: boolean;
+  nextCursor?: string | undefined;
 };
 
 /**
@@ -86,58 +125,6 @@ export type PageInfo = Message<"axon.common.v1.PageInfo"> & {
  * Use `create(PageInfoSchema)` to create a new message.
  */
 export const PageInfoSchema: GenMessage<PageInfo> = /*@__PURE__*/
-  messageDesc(file_axon_common_v1_common, 2);
-
-/**
- * @generated from message axon.common.v1.ProviderCapabilities
- */
-export type ProviderCapabilities = Message<"axon.common.v1.ProviderCapabilities"> & {
-  /**
-   * @generated from field: bool browsable = 1;
-   */
-  browsable: boolean;
-
-  /**
-   * @generated from field: bool paginated = 2;
-   */
-  paginated: boolean;
-
-  /**
-   * @generated from field: bool supports_views = 3;
-   */
-  supportsViews: boolean;
-
-  /**
-   * @generated from field: bool supports_volumes = 4;
-   */
-  supportsVolumes: boolean;
-
-  /**
-   * @generated from field: bool supports_functions = 5;
-   */
-  supportsFunctions: boolean;
-
-  /**
-   * @generated from field: bool supports_models = 6;
-   */
-  supportsModels: boolean;
-
-  /**
-   * @generated from field: bool supports_column_metadata = 7;
-   */
-  supportsColumnMetadata: boolean;
-
-  /**
-   * @generated from field: axon.common.v1.ProviderAuthority authority = 8;
-   */
-  authority: ProviderAuthority;
-};
-
-/**
- * Describes the message axon.common.v1.ProviderCapabilities.
- * Use `create(ProviderCapabilitiesSchema)` to create a new message.
- */
-export const ProviderCapabilitiesSchema: GenMessage<ProviderCapabilities> = /*@__PURE__*/
   messageDesc(file_axon_common_v1_common, 3);
 
 /**
@@ -168,34 +155,29 @@ export const ProviderErrorSchema: GenMessage<ProviderError> = /*@__PURE__*/
   messageDesc(file_axon_common_v1_common, 4);
 
 /**
- * @generated from enum axon.common.v1.ProviderAuthority
+ * @generated from enum axon.common.v1.ResourceKind
  */
-export enum ProviderAuthority {
+export enum ResourceKind {
   /**
-   * @generated from enum value: PROVIDER_AUTHORITY_UNSPECIFIED = 0;
+   * @generated from enum value: RESOURCE_KIND_UNSPECIFIED = 0;
    */
   UNSPECIFIED = 0,
 
   /**
-   * @generated from enum value: PROVIDER_AUTHORITY_BROWSER = 1;
+   * @generated from enum value: RESOURCE_KIND_TABLE = 1;
    */
-  BROWSER = 1,
+  TABLE = 1,
 
   /**
-   * @generated from enum value: PROVIDER_AUTHORITY_BROKERED = 2;
+   * @generated from enum value: RESOURCE_KIND_VOLUME = 2;
    */
-  BROKERED = 2,
-
-  /**
-   * @generated from enum value: PROVIDER_AUTHORITY_HOST = 3;
-   */
-  HOST = 3,
+  VOLUME = 2,
 }
 
 /**
- * Describes the enum axon.common.v1.ProviderAuthority.
+ * Describes the enum axon.common.v1.ResourceKind.
  */
-export const ProviderAuthoritySchema: GenEnum<ProviderAuthority> = /*@__PURE__*/
+export const ResourceKindSchema: GenEnum<ResourceKind> = /*@__PURE__*/
   enumDesc(file_axon_common_v1_common, 0);
 
 /**

@@ -130,7 +130,7 @@ describe('filesystem contract codegen', () => {
     });
     const empty = create(ListDirectoryResponseSchema, {
       entries: [],
-      page: create(PageInfoSchema, { nextCursor: '', hasMore: false }),
+      page: create(PageInfoSchema, { nextCursor: '' }),
     });
     const nextPage = create(ListDirectoryResponseSchema, {
       entries: [
@@ -140,16 +140,16 @@ describe('filesystem contract codegen', () => {
           kind: FsEntryKind.FILE,
         }),
       ],
-      page: create(PageInfoSchema, { nextCursor: 'opaque-page-2', hasMore: true }),
+      page: create(PageInfoSchema, { nextCursor: 'opaque-page-2' }),
     });
 
     expect(request.path).toBe('');
     expect(request.page).toMatchObject({ cursor: '', pageSize: 0 });
     expect(empty.entries).toEqual([]);
-    expect(empty.page).toMatchObject({ nextCursor: '', hasMore: false });
+    expect(empty.page).toMatchObject({ nextCursor: '' });
     expect(toJson(ListDirectoryResponseSchema, nextPage)).toMatchObject({
       entries: [{ name: 'part-000.parquet', path: 'part-000.parquet' }],
-      page: { nextCursor: 'opaque-page-2', hasMore: true },
+      page: { nextCursor: 'opaque-page-2' },
     });
   });
 

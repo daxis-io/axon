@@ -19,12 +19,26 @@ pub mod __buffa {
         #[allow(unused_imports)]
         use super::*;
         include!("axon.common.v1.common.__view.rs");
+        pub mod oneof {
+            #[allow(unused_imports)]
+            use super::*;
+            include!("axon.common.v1.common.__view_oneof.rs");
+        }
+    }
+    pub mod oneof {
+        #[allow(unused_imports)]
+        use super::*;
+        include!("axon.common.v1.common.__oneof.rs");
     }
 }
 #[doc(inline)]
 pub use self::__buffa::view::ObjectRefView;
 #[doc(inline)]
 pub use self::__buffa::view::ObjectRefOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::CanonicalResourceRefView;
+#[doc(inline)]
+pub use self::__buffa::view::CanonicalResourceRefOwnedView;
 #[doc(inline)]
 pub use self::__buffa::view::PageRequestView;
 #[doc(inline)]
@@ -33,10 +47,6 @@ pub use self::__buffa::view::PageRequestOwnedView;
 pub use self::__buffa::view::PageInfoView;
 #[doc(inline)]
 pub use self::__buffa::view::PageInfoOwnedView;
-#[doc(inline)]
-pub use self::__buffa::view::ProviderCapabilitiesView;
-#[doc(inline)]
-pub use self::__buffa::view::ProviderCapabilitiesOwnedView;
 #[doc(inline)]
 pub use self::__buffa::view::ProviderErrorView;
 #[doc(inline)]

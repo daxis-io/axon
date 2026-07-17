@@ -60,8 +60,7 @@ fn entries_pagination_and_timestamp_survive_binary_round_trips() {
     let response = axon_fs_v1::ListDirectoryResponse {
         entries: vec![file.clone(), directory],
         page: axon::common::v1::PageInfo {
-            next_cursor: "opaque-page-2".into(),
-            has_more: true,
+            next_cursor: Some("opaque-page-2".into()),
             ..Default::default()
         }
         .into(),
@@ -104,8 +103,7 @@ fn entries_pagination_and_timestamp_survive_binary_round_trips() {
         .page
         .as_option()
         .expect("response page should be present");
-    assert_eq!(decoded_page.next_cursor, "opaque-page-2");
-    assert!(decoded_page.has_more);
+    assert_eq!(decoded_page.next_cursor.as_deref(), Some("opaque-page-2"));
 
     let stat = axon_fs_v1::StatResponse {
         entry: file.into(),

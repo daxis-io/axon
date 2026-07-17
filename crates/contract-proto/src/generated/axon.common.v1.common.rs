@@ -3,38 +3,33 @@
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[repr(i32)]
-pub enum ProviderAuthority {
-    PROVIDER_AUTHORITY_UNSPECIFIED = 0i32,
-    PROVIDER_AUTHORITY_BROWSER = 1i32,
-    PROVIDER_AUTHORITY_BROKERED = 2i32,
-    PROVIDER_AUTHORITY_HOST = 3i32,
+pub enum ResourceKind {
+    RESOURCE_KIND_UNSPECIFIED = 0i32,
+    RESOURCE_KIND_TABLE = 1i32,
+    RESOURCE_KIND_VOLUME = 2i32,
 }
-impl ProviderAuthority {
-    ///Idiomatic alias for [`Self::PROVIDER_AUTHORITY_UNSPECIFIED`]; `Debug` prints the variant name.
+impl ResourceKind {
+    ///Idiomatic alias for [`Self::RESOURCE_KIND_UNSPECIFIED`]; `Debug` prints the variant name.
     #[allow(non_upper_case_globals)]
-    pub const Unspecified: Self = Self::PROVIDER_AUTHORITY_UNSPECIFIED;
-    ///Idiomatic alias for [`Self::PROVIDER_AUTHORITY_BROWSER`]; `Debug` prints the variant name.
+    pub const Unspecified: Self = Self::RESOURCE_KIND_UNSPECIFIED;
+    ///Idiomatic alias for [`Self::RESOURCE_KIND_TABLE`]; `Debug` prints the variant name.
     #[allow(non_upper_case_globals)]
-    pub const Browser: Self = Self::PROVIDER_AUTHORITY_BROWSER;
-    ///Idiomatic alias for [`Self::PROVIDER_AUTHORITY_BROKERED`]; `Debug` prints the variant name.
+    pub const Table: Self = Self::RESOURCE_KIND_TABLE;
+    ///Idiomatic alias for [`Self::RESOURCE_KIND_VOLUME`]; `Debug` prints the variant name.
     #[allow(non_upper_case_globals)]
-    pub const Brokered: Self = Self::PROVIDER_AUTHORITY_BROKERED;
-    ///Idiomatic alias for [`Self::PROVIDER_AUTHORITY_HOST`]; `Debug` prints the variant name.
-    #[allow(non_upper_case_globals)]
-    pub const Host: Self = Self::PROVIDER_AUTHORITY_HOST;
+    pub const Volume: Self = Self::RESOURCE_KIND_VOLUME;
 }
-impl ::core::default::Default for ProviderAuthority {
+impl ::core::default::Default for ResourceKind {
     fn default() -> Self {
-        Self::PROVIDER_AUTHORITY_UNSPECIFIED
+        Self::RESOURCE_KIND_UNSPECIFIED
     }
 }
-impl ::buffa::Enumeration for ProviderAuthority {
+impl ::buffa::Enumeration for ResourceKind {
     fn from_i32(value: i32) -> ::core::option::Option<Self> {
         match value {
-            0i32 => ::core::option::Option::Some(Self::PROVIDER_AUTHORITY_UNSPECIFIED),
-            1i32 => ::core::option::Option::Some(Self::PROVIDER_AUTHORITY_BROWSER),
-            2i32 => ::core::option::Option::Some(Self::PROVIDER_AUTHORITY_BROKERED),
-            3i32 => ::core::option::Option::Some(Self::PROVIDER_AUTHORITY_HOST),
+            0i32 => ::core::option::Option::Some(Self::RESOURCE_KIND_UNSPECIFIED),
+            1i32 => ::core::option::Option::Some(Self::RESOURCE_KIND_TABLE),
+            2i32 => ::core::option::Option::Some(Self::RESOURCE_KIND_VOLUME),
             _ => ::core::option::Option::None,
         }
     }
@@ -43,35 +38,30 @@ impl ::buffa::Enumeration for ProviderAuthority {
     }
     fn proto_name(&self) -> &'static str {
         match self {
-            Self::PROVIDER_AUTHORITY_UNSPECIFIED => "PROVIDER_AUTHORITY_UNSPECIFIED",
-            Self::PROVIDER_AUTHORITY_BROWSER => "PROVIDER_AUTHORITY_BROWSER",
-            Self::PROVIDER_AUTHORITY_BROKERED => "PROVIDER_AUTHORITY_BROKERED",
-            Self::PROVIDER_AUTHORITY_HOST => "PROVIDER_AUTHORITY_HOST",
+            Self::RESOURCE_KIND_UNSPECIFIED => "RESOURCE_KIND_UNSPECIFIED",
+            Self::RESOURCE_KIND_TABLE => "RESOURCE_KIND_TABLE",
+            Self::RESOURCE_KIND_VOLUME => "RESOURCE_KIND_VOLUME",
         }
     }
     fn from_proto_name(name: &str) -> ::core::option::Option<Self> {
         match name {
-            "PROVIDER_AUTHORITY_UNSPECIFIED" => {
-                ::core::option::Option::Some(Self::PROVIDER_AUTHORITY_UNSPECIFIED)
+            "RESOURCE_KIND_UNSPECIFIED" => {
+                ::core::option::Option::Some(Self::RESOURCE_KIND_UNSPECIFIED)
             }
-            "PROVIDER_AUTHORITY_BROWSER" => {
-                ::core::option::Option::Some(Self::PROVIDER_AUTHORITY_BROWSER)
+            "RESOURCE_KIND_TABLE" => {
+                ::core::option::Option::Some(Self::RESOURCE_KIND_TABLE)
             }
-            "PROVIDER_AUTHORITY_BROKERED" => {
-                ::core::option::Option::Some(Self::PROVIDER_AUTHORITY_BROKERED)
-            }
-            "PROVIDER_AUTHORITY_HOST" => {
-                ::core::option::Option::Some(Self::PROVIDER_AUTHORITY_HOST)
+            "RESOURCE_KIND_VOLUME" => {
+                ::core::option::Option::Some(Self::RESOURCE_KIND_VOLUME)
             }
             _ => ::core::option::Option::None,
         }
     }
     fn values() -> &'static [Self] {
         &[
-            Self::PROVIDER_AUTHORITY_UNSPECIFIED,
-            Self::PROVIDER_AUTHORITY_BROWSER,
-            Self::PROVIDER_AUTHORITY_BROKERED,
-            Self::PROVIDER_AUTHORITY_HOST,
+            Self::RESOURCE_KIND_UNSPECIFIED,
+            Self::RESOURCE_KIND_TABLE,
+            Self::RESOURCE_KIND_VOLUME,
         ]
     }
 }
@@ -322,6 +312,209 @@ impl ::buffa::ExtensionSet for ObjectRef {
     }
 }
 #[derive(Clone, PartialEq, Default)]
+pub struct CanonicalResourceRef {
+    /// Field 1: `connection_id`
+    pub connection_id: ::buffa::alloc::string::String,
+    /// Field 2: `provider_namespace`
+    pub provider_namespace: ::buffa::alloc::string::String,
+    /// Field 3: `kind`
+    pub kind: ::buffa::EnumValue<ResourceKind>,
+    pub identity: ::core::option::Option<
+        __buffa::oneof::canonical_resource_ref::Identity,
+    >,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
+}
+impl ::core::fmt::Debug for CanonicalResourceRef {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("CanonicalResourceRef")
+            .field("connection_id", &self.connection_id)
+            .field("provider_namespace", &self.provider_namespace)
+            .field("kind", &self.kind)
+            .field("identity", &self.identity)
+            .finish()
+    }
+}
+impl CanonicalResourceRef {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/axon.common.v1.CanonicalResourceRef";
+}
+::buffa::impl_default_instance!(CanonicalResourceRef);
+impl ::buffa::MessageName for CanonicalResourceRef {
+    const PACKAGE: &'static str = "axon.common.v1";
+    const NAME: &'static str = "CanonicalResourceRef";
+    const FULL_NAME: &'static str = "axon.common.v1.CanonicalResourceRef";
+    const TYPE_URL: &'static str = "type.googleapis.com/axon.common.v1.CanonicalResourceRef";
+}
+impl ::buffa::Message for CanonicalResourceRef {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if !self.connection_id.is_empty() {
+            size
+                += 1u32 + ::buffa::types::string_encoded_len(&self.connection_id) as u32;
+        }
+        if !self.provider_namespace.is_empty() {
+            size
+                += 1u32
+                    + ::buffa::types::string_encoded_len(&self.provider_namespace)
+                        as u32;
+        }
+        {
+            let val = self.kind.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        if let ::core::option::Option::Some(ref v) = self.identity {
+            match v {
+                __buffa::oneof::canonical_resource_ref::Identity::ProviderObjectId(
+                    x,
+                ) => {
+                    size += 1u32 + ::buffa::types::string_encoded_len(x) as u32;
+                }
+                __buffa::oneof::canonical_resource_ref::Identity::CanonicalLocator(
+                    x,
+                ) => {
+                    size += 1u32 + ::buffa::types::string_encoded_len(x) as u32;
+                }
+            }
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if !self.connection_id.is_empty() {
+            ::buffa::types::put_string_field(1u32, &self.connection_id, buf);
+        }
+        if !self.provider_namespace.is_empty() {
+            ::buffa::types::put_string_field(2u32, &self.provider_namespace, buf);
+        }
+        {
+            let val = self.kind.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(3u32, val, buf);
+            }
+        }
+        if let ::core::option::Option::Some(ref v) = self.identity {
+            match v {
+                __buffa::oneof::canonical_resource_ref::Identity::ProviderObjectId(
+                    x,
+                ) => {
+                    ::buffa::types::put_string_field(4u32, x, buf);
+                }
+                __buffa::oneof::canonical_resource_ref::Identity::CanonicalLocator(
+                    x,
+                ) => {
+                    ::buffa::types::put_string_field(5u32, x, buf);
+                }
+            }
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::types::merge_string(&mut self.connection_id, buf)?;
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::types::merge_string(&mut self.provider_namespace, buf)?;
+            }
+            3u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.kind = ::buffa::EnumValue::from(::buffa::types::decode_int32(buf)?);
+            }
+            4u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                self.identity = ::core::option::Option::Some(
+                    __buffa::oneof::canonical_resource_ref::Identity::ProviderObjectId(
+                        ::buffa::types::decode_string(buf)?,
+                    ),
+                );
+            }
+            5u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                self.identity = ::core::option::Option::Some(
+                    __buffa::oneof::canonical_resource_ref::Identity::CanonicalLocator(
+                        ::buffa::types::decode_string(buf)?,
+                    ),
+                );
+            }
+            _ => {
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.connection_id.clear();
+        self.provider_namespace.clear();
+        self.kind = ::buffa::EnumValue::from(0);
+        self.identity = ::core::option::Option::None;
+        self.__buffa_unknown_fields.clear();
+    }
+}
+impl ::buffa::ExtensionSet for CanonicalResourceRef {
+    const PROTO_FQN: &'static str = "axon.common.v1.CanonicalResourceRef";
+    fn unknown_fields(&self) -> &::buffa::UnknownFields {
+        &self.__buffa_unknown_fields
+    }
+    fn unknown_fields_mut(&mut self) -> &mut ::buffa::UnknownFields {
+        &mut self.__buffa_unknown_fields
+    }
+}
+pub mod canonical_resource_ref {
+    #[allow(unused_imports)]
+    use super::*;
+    #[doc(inline)]
+    pub use super::__buffa::oneof::canonical_resource_ref::Identity;
+    #[doc(inline)]
+    pub use super::__buffa::view::oneof::canonical_resource_ref::Identity as IdentityView;
+}
+#[derive(Clone, PartialEq, Default)]
 pub struct PageRequest {
     /// Field 1: `cursor`
     pub cursor: ::buffa::alloc::string::String,
@@ -437,18 +630,13 @@ impl ::buffa::ExtensionSet for PageRequest {
 #[derive(Clone, PartialEq, Default)]
 pub struct PageInfo {
     /// Field 1: `next_cursor`
-    pub next_cursor: ::buffa::alloc::string::String,
-    /// Field 2: `has_more`
-    pub has_more: bool,
+    pub next_cursor: ::core::option::Option<::buffa::alloc::string::String>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
 impl ::core::fmt::Debug for PageInfo {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-        f.debug_struct("PageInfo")
-            .field("next_cursor", &self.next_cursor)
-            .field("has_more", &self.has_more)
-            .finish()
+        f.debug_struct("PageInfo").field("next_cursor", &self.next_cursor).finish()
     }
 }
 impl PageInfo {
@@ -457,6 +645,18 @@ impl PageInfo {
     ///
     /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
     pub const TYPE_URL: &'static str = "type.googleapis.com/axon.common.v1.PageInfo";
+}
+impl PageInfo {
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::next_cursor`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_next_cursor(
+        mut self,
+        value: impl Into<::buffa::alloc::string::String>,
+    ) -> Self {
+        self.next_cursor = Some(value.into());
+        self
+    }
 }
 ::buffa::impl_default_instance!(PageInfo);
 impl ::buffa::MessageName for PageInfo {
@@ -476,11 +676,8 @@ impl ::buffa::Message for PageInfo {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
         let mut size = 0u32;
-        if !self.next_cursor.is_empty() {
-            size += 1u32 + ::buffa::types::string_encoded_len(&self.next_cursor) as u32;
-        }
-        if self.has_more {
-            size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
+        if let Some(ref v) = self.next_cursor {
+            size += 1u32 + ::buffa::types::string_encoded_len(v) as u32;
         }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
@@ -492,11 +689,8 @@ impl ::buffa::Message for PageInfo {
     ) {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
-        if !self.next_cursor.is_empty() {
-            ::buffa::types::put_string_field(1u32, &self.next_cursor, buf);
-        }
-        if self.has_more {
-            ::buffa::types::put_bool_field(2u32, self.has_more, buf);
+        if let Some(ref v) = self.next_cursor {
+            ::buffa::types::put_string_field(1u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -516,14 +710,12 @@ impl ::buffa::Message for PageInfo {
                     tag,
                     ::buffa::encoding::WireType::LengthDelimited,
                 )?;
-                ::buffa::types::merge_string(&mut self.next_cursor, buf)?;
-            }
-            2u32 => {
-                ::buffa::encoding::check_wire_type(
-                    tag,
-                    ::buffa::encoding::WireType::Varint,
+                ::buffa::types::merge_string(
+                    self
+                        .next_cursor
+                        .get_or_insert_with(::buffa::alloc::string::String::new),
+                    buf,
                 )?;
-                self.has_more = ::buffa::types::decode_bool(buf)?;
             }
             _ => {
                 self.__buffa_unknown_fields
@@ -533,236 +725,12 @@ impl ::buffa::Message for PageInfo {
         ::core::result::Result::Ok(())
     }
     fn clear(&mut self) {
-        self.next_cursor.clear();
-        self.has_more = false;
+        self.next_cursor = ::core::option::Option::None;
         self.__buffa_unknown_fields.clear();
     }
 }
 impl ::buffa::ExtensionSet for PageInfo {
     const PROTO_FQN: &'static str = "axon.common.v1.PageInfo";
-    fn unknown_fields(&self) -> &::buffa::UnknownFields {
-        &self.__buffa_unknown_fields
-    }
-    fn unknown_fields_mut(&mut self) -> &mut ::buffa::UnknownFields {
-        &mut self.__buffa_unknown_fields
-    }
-}
-#[derive(Clone, PartialEq, Default)]
-pub struct ProviderCapabilities {
-    /// Field 1: `browsable`
-    pub browsable: bool,
-    /// Field 2: `paginated`
-    pub paginated: bool,
-    /// Field 3: `supports_views`
-    pub supports_views: bool,
-    /// Field 4: `supports_volumes`
-    pub supports_volumes: bool,
-    /// Field 5: `supports_functions`
-    pub supports_functions: bool,
-    /// Field 6: `supports_models`
-    pub supports_models: bool,
-    /// Field 7: `supports_column_metadata`
-    pub supports_column_metadata: bool,
-    /// Field 8: `authority`
-    pub authority: ::buffa::EnumValue<ProviderAuthority>,
-    #[doc(hidden)]
-    pub __buffa_unknown_fields: ::buffa::UnknownFields,
-}
-impl ::core::fmt::Debug for ProviderCapabilities {
-    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-        f.debug_struct("ProviderCapabilities")
-            .field("browsable", &self.browsable)
-            .field("paginated", &self.paginated)
-            .field("supports_views", &self.supports_views)
-            .field("supports_volumes", &self.supports_volumes)
-            .field("supports_functions", &self.supports_functions)
-            .field("supports_models", &self.supports_models)
-            .field("supports_column_metadata", &self.supports_column_metadata)
-            .field("authority", &self.authority)
-            .finish()
-    }
-}
-impl ProviderCapabilities {
-    /// Protobuf type URL for this message, for use with `Any::pack` and
-    /// `Any::unpack_if`.
-    ///
-    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
-    pub const TYPE_URL: &'static str = "type.googleapis.com/axon.common.v1.ProviderCapabilities";
-}
-::buffa::impl_default_instance!(ProviderCapabilities);
-impl ::buffa::MessageName for ProviderCapabilities {
-    const PACKAGE: &'static str = "axon.common.v1";
-    const NAME: &'static str = "ProviderCapabilities";
-    const FULL_NAME: &'static str = "axon.common.v1.ProviderCapabilities";
-    const TYPE_URL: &'static str = "type.googleapis.com/axon.common.v1.ProviderCapabilities";
-}
-impl ::buffa::Message for ProviderCapabilities {
-    /// Returns the total encoded size in bytes.
-    ///
-    /// The result is a `u32`; the protobuf specification requires all
-    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
-    /// compliant message will never overflow this type.
-    #[allow(clippy::let_and_return)]
-    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
-        #[allow(unused_imports)]
-        use ::buffa::Enumeration as _;
-        let mut size = 0u32;
-        if self.browsable {
-            size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
-        }
-        if self.paginated {
-            size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
-        }
-        if self.supports_views {
-            size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
-        }
-        if self.supports_volumes {
-            size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
-        }
-        if self.supports_functions {
-            size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
-        }
-        if self.supports_models {
-            size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
-        }
-        if self.supports_column_metadata {
-            size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
-        }
-        {
-            let val = self.authority.to_i32();
-            if val != 0 {
-                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
-            }
-        }
-        size += self.__buffa_unknown_fields.encoded_len() as u32;
-        size
-    }
-    fn write_to(
-        &self,
-        _cache: &mut ::buffa::SizeCache,
-        buf: &mut impl ::buffa::bytes::BufMut,
-    ) {
-        #[allow(unused_imports)]
-        use ::buffa::Enumeration as _;
-        if self.browsable {
-            ::buffa::types::put_bool_field(1u32, self.browsable, buf);
-        }
-        if self.paginated {
-            ::buffa::types::put_bool_field(2u32, self.paginated, buf);
-        }
-        if self.supports_views {
-            ::buffa::types::put_bool_field(3u32, self.supports_views, buf);
-        }
-        if self.supports_volumes {
-            ::buffa::types::put_bool_field(4u32, self.supports_volumes, buf);
-        }
-        if self.supports_functions {
-            ::buffa::types::put_bool_field(5u32, self.supports_functions, buf);
-        }
-        if self.supports_models {
-            ::buffa::types::put_bool_field(6u32, self.supports_models, buf);
-        }
-        if self.supports_column_metadata {
-            ::buffa::types::put_bool_field(7u32, self.supports_column_metadata, buf);
-        }
-        {
-            let val = self.authority.to_i32();
-            if val != 0 {
-                ::buffa::types::put_int32_field(8u32, val, buf);
-            }
-        }
-        self.__buffa_unknown_fields.write_to(buf);
-    }
-    fn merge_field(
-        &mut self,
-        tag: ::buffa::encoding::Tag,
-        buf: &mut impl ::buffa::bytes::Buf,
-        ctx: ::buffa::DecodeContext<'_>,
-    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
-        #[allow(unused_imports)]
-        use ::buffa::bytes::Buf as _;
-        #[allow(unused_imports)]
-        use ::buffa::Enumeration as _;
-        match tag.field_number() {
-            1u32 => {
-                ::buffa::encoding::check_wire_type(
-                    tag,
-                    ::buffa::encoding::WireType::Varint,
-                )?;
-                self.browsable = ::buffa::types::decode_bool(buf)?;
-            }
-            2u32 => {
-                ::buffa::encoding::check_wire_type(
-                    tag,
-                    ::buffa::encoding::WireType::Varint,
-                )?;
-                self.paginated = ::buffa::types::decode_bool(buf)?;
-            }
-            3u32 => {
-                ::buffa::encoding::check_wire_type(
-                    tag,
-                    ::buffa::encoding::WireType::Varint,
-                )?;
-                self.supports_views = ::buffa::types::decode_bool(buf)?;
-            }
-            4u32 => {
-                ::buffa::encoding::check_wire_type(
-                    tag,
-                    ::buffa::encoding::WireType::Varint,
-                )?;
-                self.supports_volumes = ::buffa::types::decode_bool(buf)?;
-            }
-            5u32 => {
-                ::buffa::encoding::check_wire_type(
-                    tag,
-                    ::buffa::encoding::WireType::Varint,
-                )?;
-                self.supports_functions = ::buffa::types::decode_bool(buf)?;
-            }
-            6u32 => {
-                ::buffa::encoding::check_wire_type(
-                    tag,
-                    ::buffa::encoding::WireType::Varint,
-                )?;
-                self.supports_models = ::buffa::types::decode_bool(buf)?;
-            }
-            7u32 => {
-                ::buffa::encoding::check_wire_type(
-                    tag,
-                    ::buffa::encoding::WireType::Varint,
-                )?;
-                self.supports_column_metadata = ::buffa::types::decode_bool(buf)?;
-            }
-            8u32 => {
-                ::buffa::encoding::check_wire_type(
-                    tag,
-                    ::buffa::encoding::WireType::Varint,
-                )?;
-                self.authority = ::buffa::EnumValue::from(
-                    ::buffa::types::decode_int32(buf)?,
-                );
-            }
-            _ => {
-                self.__buffa_unknown_fields
-                    .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
-            }
-        }
-        ::core::result::Result::Ok(())
-    }
-    fn clear(&mut self) {
-        self.browsable = false;
-        self.paginated = false;
-        self.supports_views = false;
-        self.supports_volumes = false;
-        self.supports_functions = false;
-        self.supports_models = false;
-        self.supports_column_metadata = false;
-        self.authority = ::buffa::EnumValue::from(0);
-        self.__buffa_unknown_fields.clear();
-    }
-}
-impl ::buffa::ExtensionSet for ProviderCapabilities {
-    const PROTO_FQN: &'static str = "axon.common.v1.ProviderCapabilities";
     fn unknown_fields(&self) -> &::buffa::UnknownFields {
         &self.__buffa_unknown_fields
     }

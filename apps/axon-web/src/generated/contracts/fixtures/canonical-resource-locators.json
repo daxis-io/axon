@@ -1,0 +1,45 @@
+{
+  "accepted": [
+    {
+      "providerNamespace": "axon.public-gcs/v1",
+      "provider": "gcs",
+      "input": "  gs://axon-fixtures/tables/events///  ",
+      "expected": "gs://axon-fixtures/tables/events"
+    },
+    {
+      "providerNamespace": "axon.public-s3/v1",
+      "provider": "s3",
+      "input": "s3://axon-fixtures/tables/events/",
+      "region": "us-east-1",
+      "expected": "s3://axon-fixtures/tables/events"
+    },
+    {
+      "providerNamespace": "axon.sample-fixture/v1",
+      "provider": "sample",
+      "input": "/fixtures/prod-like/delta-log-manifest.json",
+      "expected": "axon-fixture://sample-lake/prod_like/events"
+    }
+  ],
+  "rejected": [
+    {
+      "providerNamespace": "axon.public-gcs/v1",
+      "provider": "gcs",
+      "input": "https://storage.googleapis.com/axon-fixtures/tables/events"
+    },
+    {
+      "providerNamespace": "axon.public-gcs/v1",
+      "provider": "gcs",
+      "input": "gs://axon-fixtures/tables/events?token=secret"
+    },
+    {
+      "providerNamespace": "axon.public-s3/v1",
+      "provider": "s3",
+      "input": "s3://access-key:secret@axon-fixtures/tables/events"
+    },
+    {
+      "providerNamespace": "axon.sample-fixture/v1",
+      "provider": "sample",
+      "input": "/fixtures/prod-like/delta-log-manifest.json?grant=secret"
+    }
+  ]
+}

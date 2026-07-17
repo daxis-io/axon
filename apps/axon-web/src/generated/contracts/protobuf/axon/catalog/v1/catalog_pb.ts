@@ -4,7 +4,7 @@
 
 import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { ObjectRef, PageInfo } from "../../common/v1/common_pb.ts";
+import type { CanonicalResourceRef, PageInfo } from "../../common/v1/common_pb.ts";
 import { file_axon_common_v1_common } from "../../common/v1/common_pb.ts";
 import type { Message } from "@bufbuild/protobuf";
 
@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file axon/catalog/v1/catalog.proto.
  */
 export const file_axon_catalog_v1_catalog: GenFile = /*@__PURE__*/
-  fileDesc("Ch1heG9uL2NhdGFsb2cvdjEvY2F0YWxvZy5wcm90bxIPYXhvbi5jYXRhbG9nLnYxIkMKC0NhdGFsb2dOb2RlEhUKDWNvbm5lY3Rpb25faWQYASABKAkSDAoEbmFtZRgCIAEoCRIPCgdjb21tZW50GAMgASgJIlMKClNjaGVtYU5vZGUSFQoNY29ubmVjdGlvbl9pZBgBIAEoCRIPCgdjYXRhbG9nGAIgASgJEgwKBG5hbWUYAyABKAkSDwoHY29tbWVudBgEIAEoCSJ0CglUYWJsZU5vZGUSJgoDcmVmGAEgASgLMhkuYXhvbi5jb21tb24udjEuT2JqZWN0UmVmEi4KCnRhYmxlX3R5cGUYAiABKA4yGi5heG9uLmNhdGFsb2cudjEuVGFibGVUeXBlEg8KB2NvbW1lbnQYAyABKAkiXgoKQ29sdW1uTm9kZRIMCgRuYW1lGAEgASgJEgwKBHR5cGUYAiABKAkSEAoIbnVsbGFibGUYAyABKAgSEQoJcGFydGl0aW9uGAQgASgIEg8KB2NvbW1lbnQYBSABKAkikQEKClZvbHVtZU5vZGUSJgoDcmVmGAEgASgLMhkuYXhvbi5jb21tb24udjEuT2JqZWN0UmVmEjAKC3ZvbHVtZV90eXBlGAIgASgOMhsuYXhvbi5jYXRhbG9nLnYxLlZvbHVtZVR5cGUSGAoQc3RvcmFnZV9sb2NhdGlvbhgDIAEoCRIPCgdjb21tZW50GAQgASgJIkcKDEZ1bmN0aW9uTm9kZRImCgNyZWYYASABKAsyGS5heG9uLmNvbW1vbi52MS5PYmplY3RSZWYSDwoHY29tbWVudBgCIAEoCSJECglNb2RlbE5vZGUSJgoDcmVmGAEgASgLMhkuYXhvbi5jb21tb24udjEuT2JqZWN0UmVmEg8KB2NvbW1lbnQYAiABKAki/gQKDVRhYmxlTWV0YWRhdGESKQoFdGFibGUYASABKAsyGi5heG9uLmNhdGFsb2cudjEuVGFibGVOb2RlEiwKB2NvbHVtbnMYAiADKAsyGy5heG9uLmNhdGFsb2cudjEuQ29sdW1uTm9kZRIZChFwYXJ0aXRpb25fY29sdW1ucxgDIAMoCRJCCgpwcm9wZXJ0aWVzGAQgAygLMi4uYXhvbi5jYXRhbG9nLnYxLlRhYmxlTWV0YWRhdGEuUHJvcGVydGllc0VudHJ5EhYKCXJvd19jb3VudBgFIAEoBEgAiAEBEhcKCnNpemVfYnl0ZXMYBiABKARIAYgBARIXCgpmaWxlX2NvdW50GAcgASgESAKIAQESJAoXbGF0ZXN0X3NuYXBzaG90X3ZlcnNpb24YCCABKANIA4gBARIfChJtaW5fcmVhZGVyX3ZlcnNpb24YCSABKA1IBIgBARIfChJtaW5fd3JpdGVyX3ZlcnNpb24YCiABKA1IBYgBARJAChFwcm90b2NvbF9mZWF0dXJlcxgLIAMoCzIlLmF4b24uY2F0YWxvZy52MS5EZWx0YVByb3RvY29sRmVhdHVyZRIYChBzdG9yYWdlX2xvY2F0aW9uGAwgASgJGjEKD1Byb3BlcnRpZXNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBQgwKCl9yb3dfY291bnRCDQoLX3NpemVfYnl0ZXNCDQoLX2ZpbGVfY291bnRCGgoYX2xhdGVzdF9zbmFwc2hvdF92ZXJzaW9uQhUKE19taW5fcmVhZGVyX3ZlcnNpb25CFQoTX21pbl93cml0ZXJfdmVyc2lvbiK1AQoOVm9sdW1lTWV0YWRhdGESKwoGdm9sdW1lGAEgASgLMhsuYXhvbi5jYXRhbG9nLnYxLlZvbHVtZU5vZGUSQwoKcHJvcGVydGllcxgCIAMoCzIvLmF4b24uY2F0YWxvZy52MS5Wb2x1bWVNZXRhZGF0YS5Qcm9wZXJ0aWVzRW50cnkaMQoPUHJvcGVydGllc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiRAoURGVsdGFQcm90b2NvbEZlYXR1cmUSDAoEbmFtZRgBIAEoCRIOCgZyZWFkZXIYAiABKAgSDgoGd3JpdGVyGAMgASgIIm4KFExpc3RDYXRhbG9nc1Jlc3BvbnNlEi4KCGNhdGFsb2dzGAEgAygLMhwuYXhvbi5jYXRhbG9nLnYxLkNhdGFsb2dOb2RlEiYKBHBhZ2UYAiABKAsyGC5heG9uLmNvbW1vbi52MS5QYWdlSW5mbyJrChNMaXN0U2NoZW1hc1Jlc3BvbnNlEiwKB3NjaGVtYXMYASADKAsyGy5heG9uLmNhdGFsb2cudjEuU2NoZW1hTm9kZRImCgRwYWdlGAIgASgLMhguYXhvbi5jb21tb24udjEuUGFnZUluZm8iaAoSTGlzdFRhYmxlc1Jlc3BvbnNlEioKBnRhYmxlcxgBIAMoCzIaLmF4b24uY2F0YWxvZy52MS5UYWJsZU5vZGUSJgoEcGFnZRgCIAEoCzIYLmF4b24uY29tbW9uLnYxLlBhZ2VJbmZvImsKE0xpc3RDb2x1bW5zUmVzcG9uc2USLAoHY29sdW1ucxgBIAMoCzIbLmF4b24uY2F0YWxvZy52MS5Db2x1bW5Ob2RlEiYKBHBhZ2UYAiABKAsyGC5heG9uLmNvbW1vbi52MS5QYWdlSW5mbyJrChNMaXN0Vm9sdW1lc1Jlc3BvbnNlEiwKB3ZvbHVtZXMYASADKAsyGy5heG9uLmNhdGFsb2cudjEuVm9sdW1lTm9kZRImCgRwYWdlGAIgASgLMhguYXhvbi5jb21tb24udjEuUGFnZUluZm8icQoVTGlzdEZ1bmN0aW9uc1Jlc3BvbnNlEjAKCWZ1bmN0aW9ucxgBIAMoCzIdLmF4b24uY2F0YWxvZy52MS5GdW5jdGlvbk5vZGUSJgoEcGFnZRgCIAEoCzIYLmF4b24uY29tbW9uLnYxLlBhZ2VJbmZvImgKEkxpc3RNb2RlbHNSZXNwb25zZRIqCgZtb2RlbHMYASADKAsyGi5heG9uLmNhdGFsb2cudjEuTW9kZWxOb2RlEiYKBHBhZ2UYAiABKAsyGC5heG9uLmNvbW1vbi52MS5QYWdlSW5mbyJJChhHZXRUYWJsZU1ldGFkYXRhUmVzcG9uc2USLQoFdGFibGUYASABKAsyHi5heG9uLmNhdGFsb2cudjEuVGFibGVNZXRhZGF0YSJMChlHZXRWb2x1bWVNZXRhZGF0YVJlc3BvbnNlEi8KBnZvbHVtZRgBIAEoCzIfLmF4b24uY2F0YWxvZy52MS5Wb2x1bWVNZXRhZGF0YSqUAQoJVGFibGVUeXBlEhoKFlRBQkxFX1RZUEVfVU5TUEVDSUZJRUQQABIUChBUQUJMRV9UWVBFX1RBQkxFEAESEwoPVEFCTEVfVFlQRV9WSUVXEAISIAocVEFCTEVfVFlQRV9NQVRFUklBTElaRURfVklFVxADEh4KGlRBQkxFX1RZUEVfU1RSRUFNSU5HX1RBQkxFEAQqXAoKVm9sdW1lVHlwZRIbChdWT0xVTUVfVFlQRV9VTlNQRUNJRklFRBAAEhcKE1ZPTFVNRV9UWVBFX01BTkFHRUQQARIYChRWT0xVTUVfVFlQRV9FWFRFUk5BTBACYgZwcm90bzM", [file_axon_common_v1_common]);
+  fileDesc("Ch1heG9uL2NhdGFsb2cvdjEvY2F0YWxvZy5wcm90bxIPYXhvbi5jYXRhbG9nLnYxIkMKC0NhdGFsb2dOb2RlEhUKDWNvbm5lY3Rpb25faWQYASABKAkSDAoEbmFtZRgCIAEoCRIPCgdjb21tZW50GAMgASgJIlMKClNjaGVtYU5vZGUSFQoNY29ubmVjdGlvbl9pZBgBIAEoCRIPCgdjYXRhbG9nGAIgASgJEgwKBG5hbWUYAyABKAkSDwoHY29tbWVudBgEIAEoCSKSAQoJVGFibGVOb2RlEjYKCHJlc291cmNlGAEgASgLMiQuYXhvbi5jb21tb24udjEuQ2Fub25pY2FsUmVzb3VyY2VSZWYSLgoKdGFibGVfdHlwZRgCIAEoDjIaLmF4b24uY2F0YWxvZy52MS5UYWJsZVR5cGUSDwoHY29tbWVudBgDIAEoCRIMCgRuYW1lGAQgASgJIlwKCkNvbHVtbk5vZGUSDAoEbmFtZRgBIAEoCRIMCgR0eXBlGAIgASgJEhAKCG51bGxhYmxlGAMgASgIEg8KB2NvbW1lbnQYBSABKAlKBAgEEAVSCXBhcnRpdGlvbiKvAQoKVm9sdW1lTm9kZRI2CghyZXNvdXJjZRgBIAEoCzIkLmF4b24uY29tbW9uLnYxLkNhbm9uaWNhbFJlc291cmNlUmVmEjAKC3ZvbHVtZV90eXBlGAIgASgOMhsuYXhvbi5jYXRhbG9nLnYxLlZvbHVtZVR5cGUSGAoQc3RvcmFnZV9sb2NhdGlvbhgDIAEoCRIPCgdjb21tZW50GAQgASgJEgwKBG5hbWUYBSABKAki/gQKDVRhYmxlTWV0YWRhdGESKQoFdGFibGUYASABKAsyGi5heG9uLmNhdGFsb2cudjEuVGFibGVOb2RlEiwKB2NvbHVtbnMYAiADKAsyGy5heG9uLmNhdGFsb2cudjEuQ29sdW1uTm9kZRIZChFwYXJ0aXRpb25fY29sdW1ucxgDIAMoCRJCCgpwcm9wZXJ0aWVzGAQgAygLMi4uYXhvbi5jYXRhbG9nLnYxLlRhYmxlTWV0YWRhdGEuUHJvcGVydGllc0VudHJ5EhYKCXJvd19jb3VudBgFIAEoBEgAiAEBEhcKCnNpemVfYnl0ZXMYBiABKARIAYgBARIXCgpmaWxlX2NvdW50GAcgASgESAKIAQESJAoXbGF0ZXN0X3NuYXBzaG90X3ZlcnNpb24YCCABKANIA4gBARIfChJtaW5fcmVhZGVyX3ZlcnNpb24YCSABKA1IBIgBARIfChJtaW5fd3JpdGVyX3ZlcnNpb24YCiABKA1IBYgBARJAChFwcm90b2NvbF9mZWF0dXJlcxgLIAMoCzIlLmF4b24uY2F0YWxvZy52MS5EZWx0YVByb3RvY29sRmVhdHVyZRIYChBzdG9yYWdlX2xvY2F0aW9uGAwgASgJGjEKD1Byb3BlcnRpZXNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBQgwKCl9yb3dfY291bnRCDQoLX3NpemVfYnl0ZXNCDQoLX2ZpbGVfY291bnRCGgoYX2xhdGVzdF9zbmFwc2hvdF92ZXJzaW9uQhUKE19taW5fcmVhZGVyX3ZlcnNpb25CFQoTX21pbl93cml0ZXJfdmVyc2lvbiK1AQoOVm9sdW1lTWV0YWRhdGESKwoGdm9sdW1lGAEgASgLMhsuYXhvbi5jYXRhbG9nLnYxLlZvbHVtZU5vZGUSQwoKcHJvcGVydGllcxgCIAMoCzIvLmF4b24uY2F0YWxvZy52MS5Wb2x1bWVNZXRhZGF0YS5Qcm9wZXJ0aWVzRW50cnkaMQoPUHJvcGVydGllc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiRAoURGVsdGFQcm90b2NvbEZlYXR1cmUSDAoEbmFtZRgBIAEoCRIOCgZyZWFkZXIYAiABKAgSDgoGd3JpdGVyGAMgASgIIm4KFExpc3RDYXRhbG9nc1Jlc3BvbnNlEi4KCGNhdGFsb2dzGAEgAygLMhwuYXhvbi5jYXRhbG9nLnYxLkNhdGFsb2dOb2RlEiYKBHBhZ2UYAiABKAsyGC5heG9uLmNvbW1vbi52MS5QYWdlSW5mbyJrChNMaXN0U2NoZW1hc1Jlc3BvbnNlEiwKB3NjaGVtYXMYASADKAsyGy5heG9uLmNhdGFsb2cudjEuU2NoZW1hTm9kZRImCgRwYWdlGAIgASgLMhguYXhvbi5jb21tb24udjEuUGFnZUluZm8iaAoSTGlzdFRhYmxlc1Jlc3BvbnNlEioKBnRhYmxlcxgBIAMoCzIaLmF4b24uY2F0YWxvZy52MS5UYWJsZU5vZGUSJgoEcGFnZRgCIAEoCzIYLmF4b24uY29tbW9uLnYxLlBhZ2VJbmZvImsKE0xpc3RDb2x1bW5zUmVzcG9uc2USLAoHY29sdW1ucxgBIAMoCzIbLmF4b24uY2F0YWxvZy52MS5Db2x1bW5Ob2RlEiYKBHBhZ2UYAiABKAsyGC5heG9uLmNvbW1vbi52MS5QYWdlSW5mbyJrChNMaXN0Vm9sdW1lc1Jlc3BvbnNlEiwKB3ZvbHVtZXMYASADKAsyGy5heG9uLmNhdGFsb2cudjEuVm9sdW1lTm9kZRImCgRwYWdlGAIgASgLMhguYXhvbi5jb21tb24udjEuUGFnZUluZm8iSQoYR2V0VGFibGVNZXRhZGF0YVJlc3BvbnNlEi0KBXRhYmxlGAEgASgLMh4uYXhvbi5jYXRhbG9nLnYxLlRhYmxlTWV0YWRhdGEiTAoZR2V0Vm9sdW1lTWV0YWRhdGFSZXNwb25zZRIvCgZ2b2x1bWUYASABKAsyHy5heG9uLmNhdGFsb2cudjEuVm9sdW1lTWV0YWRhdGEqlAEKCVRhYmxlVHlwZRIaChZUQUJMRV9UWVBFX1VOU1BFQ0lGSUVEEAASFAoQVEFCTEVfVFlQRV9UQUJMRRABEhMKD1RBQkxFX1RZUEVfVklFVxACEiAKHFRBQkxFX1RZUEVfTUFURVJJQUxJWkVEX1ZJRVcQAxIeChpUQUJMRV9UWVBFX1NUUkVBTUlOR19UQUJMRRAEKlwKClZvbHVtZVR5cGUSGwoXVk9MVU1FX1RZUEVfVU5TUEVDSUZJRUQQABIXChNWT0xVTUVfVFlQRV9NQU5BR0VEEAESGAoUVk9MVU1FX1RZUEVfRVhURVJOQUwQAmIGcHJvdG8z", [file_axon_common_v1_common]);
 
 /**
  * @generated from message axon.catalog.v1.CatalogNode
@@ -78,9 +78,9 @@ export const SchemaNodeSchema: GenMessage<SchemaNode> = /*@__PURE__*/
  */
 export type TableNode = Message<"axon.catalog.v1.TableNode"> & {
   /**
-   * @generated from field: axon.common.v1.ObjectRef ref = 1;
+   * @generated from field: axon.common.v1.CanonicalResourceRef resource = 1;
    */
-  ref?: ObjectRef | undefined;
+  resource?: CanonicalResourceRef | undefined;
 
   /**
    * @generated from field: axon.catalog.v1.TableType table_type = 2;
@@ -91,6 +91,11 @@ export type TableNode = Message<"axon.catalog.v1.TableNode"> & {
    * @generated from field: string comment = 3;
    */
   comment: string;
+
+  /**
+   * @generated from field: string name = 4;
+   */
+  name: string;
 };
 
 /**
@@ -120,11 +125,6 @@ export type ColumnNode = Message<"axon.catalog.v1.ColumnNode"> & {
   nullable: boolean;
 
   /**
-   * @generated from field: bool partition = 4;
-   */
-  partition: boolean;
-
-  /**
    * @generated from field: string comment = 5;
    */
   comment: string;
@@ -142,9 +142,9 @@ export const ColumnNodeSchema: GenMessage<ColumnNode> = /*@__PURE__*/
  */
 export type VolumeNode = Message<"axon.catalog.v1.VolumeNode"> & {
   /**
-   * @generated from field: axon.common.v1.ObjectRef ref = 1;
+   * @generated from field: axon.common.v1.CanonicalResourceRef resource = 1;
    */
-  ref?: ObjectRef | undefined;
+  resource?: CanonicalResourceRef | undefined;
 
   /**
    * @generated from field: axon.catalog.v1.VolumeType volume_type = 2;
@@ -160,6 +160,11 @@ export type VolumeNode = Message<"axon.catalog.v1.VolumeNode"> & {
    * @generated from field: string comment = 4;
    */
   comment: string;
+
+  /**
+   * @generated from field: string name = 5;
+   */
+  name: string;
 };
 
 /**
@@ -168,50 +173,6 @@ export type VolumeNode = Message<"axon.catalog.v1.VolumeNode"> & {
  */
 export const VolumeNodeSchema: GenMessage<VolumeNode> = /*@__PURE__*/
   messageDesc(file_axon_catalog_v1_catalog, 4);
-
-/**
- * @generated from message axon.catalog.v1.FunctionNode
- */
-export type FunctionNode = Message<"axon.catalog.v1.FunctionNode"> & {
-  /**
-   * @generated from field: axon.common.v1.ObjectRef ref = 1;
-   */
-  ref?: ObjectRef | undefined;
-
-  /**
-   * @generated from field: string comment = 2;
-   */
-  comment: string;
-};
-
-/**
- * Describes the message axon.catalog.v1.FunctionNode.
- * Use `create(FunctionNodeSchema)` to create a new message.
- */
-export const FunctionNodeSchema: GenMessage<FunctionNode> = /*@__PURE__*/
-  messageDesc(file_axon_catalog_v1_catalog, 5);
-
-/**
- * @generated from message axon.catalog.v1.ModelNode
- */
-export type ModelNode = Message<"axon.catalog.v1.ModelNode"> & {
-  /**
-   * @generated from field: axon.common.v1.ObjectRef ref = 1;
-   */
-  ref?: ObjectRef | undefined;
-
-  /**
-   * @generated from field: string comment = 2;
-   */
-  comment: string;
-};
-
-/**
- * Describes the message axon.catalog.v1.ModelNode.
- * Use `create(ModelNodeSchema)` to create a new message.
- */
-export const ModelNodeSchema: GenMessage<ModelNode> = /*@__PURE__*/
-  messageDesc(file_axon_catalog_v1_catalog, 6);
 
 /**
  * @generated from message axon.catalog.v1.TableMetadata
@@ -283,7 +244,7 @@ export type TableMetadata = Message<"axon.catalog.v1.TableMetadata"> & {
  * Use `create(TableMetadataSchema)` to create a new message.
  */
 export const TableMetadataSchema: GenMessage<TableMetadata> = /*@__PURE__*/
-  messageDesc(file_axon_catalog_v1_catalog, 7);
+  messageDesc(file_axon_catalog_v1_catalog, 5);
 
 /**
  * @generated from message axon.catalog.v1.VolumeMetadata
@@ -305,7 +266,7 @@ export type VolumeMetadata = Message<"axon.catalog.v1.VolumeMetadata"> & {
  * Use `create(VolumeMetadataSchema)` to create a new message.
  */
 export const VolumeMetadataSchema: GenMessage<VolumeMetadata> = /*@__PURE__*/
-  messageDesc(file_axon_catalog_v1_catalog, 8);
+  messageDesc(file_axon_catalog_v1_catalog, 6);
 
 /**
  * @generated from message axon.catalog.v1.DeltaProtocolFeature
@@ -332,7 +293,7 @@ export type DeltaProtocolFeature = Message<"axon.catalog.v1.DeltaProtocolFeature
  * Use `create(DeltaProtocolFeatureSchema)` to create a new message.
  */
 export const DeltaProtocolFeatureSchema: GenMessage<DeltaProtocolFeature> = /*@__PURE__*/
-  messageDesc(file_axon_catalog_v1_catalog, 9);
+  messageDesc(file_axon_catalog_v1_catalog, 7);
 
 /**
  * @generated from message axon.catalog.v1.ListCatalogsResponse
@@ -354,7 +315,7 @@ export type ListCatalogsResponse = Message<"axon.catalog.v1.ListCatalogsResponse
  * Use `create(ListCatalogsResponseSchema)` to create a new message.
  */
 export const ListCatalogsResponseSchema: GenMessage<ListCatalogsResponse> = /*@__PURE__*/
-  messageDesc(file_axon_catalog_v1_catalog, 10);
+  messageDesc(file_axon_catalog_v1_catalog, 8);
 
 /**
  * @generated from message axon.catalog.v1.ListSchemasResponse
@@ -376,7 +337,7 @@ export type ListSchemasResponse = Message<"axon.catalog.v1.ListSchemasResponse">
  * Use `create(ListSchemasResponseSchema)` to create a new message.
  */
 export const ListSchemasResponseSchema: GenMessage<ListSchemasResponse> = /*@__PURE__*/
-  messageDesc(file_axon_catalog_v1_catalog, 11);
+  messageDesc(file_axon_catalog_v1_catalog, 9);
 
 /**
  * @generated from message axon.catalog.v1.ListTablesResponse
@@ -398,7 +359,7 @@ export type ListTablesResponse = Message<"axon.catalog.v1.ListTablesResponse"> &
  * Use `create(ListTablesResponseSchema)` to create a new message.
  */
 export const ListTablesResponseSchema: GenMessage<ListTablesResponse> = /*@__PURE__*/
-  messageDesc(file_axon_catalog_v1_catalog, 12);
+  messageDesc(file_axon_catalog_v1_catalog, 10);
 
 /**
  * @generated from message axon.catalog.v1.ListColumnsResponse
@@ -420,7 +381,7 @@ export type ListColumnsResponse = Message<"axon.catalog.v1.ListColumnsResponse">
  * Use `create(ListColumnsResponseSchema)` to create a new message.
  */
 export const ListColumnsResponseSchema: GenMessage<ListColumnsResponse> = /*@__PURE__*/
-  messageDesc(file_axon_catalog_v1_catalog, 13);
+  messageDesc(file_axon_catalog_v1_catalog, 11);
 
 /**
  * @generated from message axon.catalog.v1.ListVolumesResponse
@@ -442,51 +403,7 @@ export type ListVolumesResponse = Message<"axon.catalog.v1.ListVolumesResponse">
  * Use `create(ListVolumesResponseSchema)` to create a new message.
  */
 export const ListVolumesResponseSchema: GenMessage<ListVolumesResponse> = /*@__PURE__*/
-  messageDesc(file_axon_catalog_v1_catalog, 14);
-
-/**
- * @generated from message axon.catalog.v1.ListFunctionsResponse
- */
-export type ListFunctionsResponse = Message<"axon.catalog.v1.ListFunctionsResponse"> & {
-  /**
-   * @generated from field: repeated axon.catalog.v1.FunctionNode functions = 1;
-   */
-  functions: FunctionNode[];
-
-  /**
-   * @generated from field: axon.common.v1.PageInfo page = 2;
-   */
-  page?: PageInfo | undefined;
-};
-
-/**
- * Describes the message axon.catalog.v1.ListFunctionsResponse.
- * Use `create(ListFunctionsResponseSchema)` to create a new message.
- */
-export const ListFunctionsResponseSchema: GenMessage<ListFunctionsResponse> = /*@__PURE__*/
-  messageDesc(file_axon_catalog_v1_catalog, 15);
-
-/**
- * @generated from message axon.catalog.v1.ListModelsResponse
- */
-export type ListModelsResponse = Message<"axon.catalog.v1.ListModelsResponse"> & {
-  /**
-   * @generated from field: repeated axon.catalog.v1.ModelNode models = 1;
-   */
-  models: ModelNode[];
-
-  /**
-   * @generated from field: axon.common.v1.PageInfo page = 2;
-   */
-  page?: PageInfo | undefined;
-};
-
-/**
- * Describes the message axon.catalog.v1.ListModelsResponse.
- * Use `create(ListModelsResponseSchema)` to create a new message.
- */
-export const ListModelsResponseSchema: GenMessage<ListModelsResponse> = /*@__PURE__*/
-  messageDesc(file_axon_catalog_v1_catalog, 16);
+  messageDesc(file_axon_catalog_v1_catalog, 12);
 
 /**
  * @generated from message axon.catalog.v1.GetTableMetadataResponse
@@ -503,7 +420,7 @@ export type GetTableMetadataResponse = Message<"axon.catalog.v1.GetTableMetadata
  * Use `create(GetTableMetadataResponseSchema)` to create a new message.
  */
 export const GetTableMetadataResponseSchema: GenMessage<GetTableMetadataResponse> = /*@__PURE__*/
-  messageDesc(file_axon_catalog_v1_catalog, 17);
+  messageDesc(file_axon_catalog_v1_catalog, 13);
 
 /**
  * @generated from message axon.catalog.v1.GetVolumeMetadataResponse
@@ -520,7 +437,7 @@ export type GetVolumeMetadataResponse = Message<"axon.catalog.v1.GetVolumeMetada
  * Use `create(GetVolumeMetadataResponseSchema)` to create a new message.
  */
 export const GetVolumeMetadataResponseSchema: GenMessage<GetVolumeMetadataResponse> = /*@__PURE__*/
-  messageDesc(file_axon_catalog_v1_catalog, 18);
+  messageDesc(file_axon_catalog_v1_catalog, 14);
 
 /**
  * @generated from enum axon.catalog.v1.TableType
