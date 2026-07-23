@@ -281,7 +281,7 @@ struct DrainableIpcSink {
 impl DrainableIpcSink {
     fn new(max_pending: usize, max_total: Option<u64>, faults: Arc<SinkFaultState>) -> Self {
         Self {
-            pending: BytesMut::with_capacity(max_pending),
+            pending: BytesMut::new(),
             max_pending,
             max_total,
             total_encoded: 0,
@@ -307,9 +307,25 @@ impl DrainableIpcSink {
     }
 
     fn reset_if_empty(&mut self) {
-        if self.pending.is_empty() && self.pending.capacity() != self.max_pending {
-            self.pending = BytesMut::with_capacity(self.max_pending);
+        if self.pending.is_empty() && self.pending.capacity() > 0 {
+            self.pending = BytesMut::new();
         }
+    }
+
+    fn grow_for(&mut self, next_pending: usize) {
+        if next_pending <= self.pending.capacity() {
+            return;
+        }
+        let target = self
+            .pending
+            .capacity()
+            .max(64)
+            .saturating_mul(2)
+            .max(next_pending)
+            .min(self.max_pending);
+        let mut pending = BytesMut::with_capacity(target);
+        pending.extend_from_slice(&self.pending);
+        self.pending = pending;
     }
 
     fn reject(&self, error: QueryError) -> io::Error {
@@ -354,6 +370,7 @@ impl Write for DrainableIpcSink {
             )));
         }
 
+        self.grow_for(next_pending);
         self.pending.extend_from_slice(buf);
         self.total_encoded = next_total;
         Ok(buf.len())
@@ -975,14 +992,15 @@ impl PreviewBuilder {
     }
 
     fn append(&mut self, batch: &RecordBatch) -> Result<(), QueryError> {
-        for row_index in 0..batch.num_rows() {
-            self.row_count = self
-                .row_count
-                .checked_add(1)
-                .ok_or_else(|| cursor_execution_error("preview row count overflowed u64"))?;
-            if self.rows.len() >= self.row_limit {
-                continue;
-            }
+        let batch_rows = u64::try_from(batch.num_rows())
+            .map_err(|_| cursor_execution_error("preview batch row count overflowed u64"))?;
+        let next_row_count = self
+            .row_count
+            .checked_add(batch_rows)
+            .ok_or_else(|| cursor_execution_error("preview row count overflowed u64"))?;
+        let preview_prefix_len =
+            preview_prefix_len(batch.num_rows(), self.rows.len(), self.row_limit);
+        for row_index in 0..preview_prefix_len {
             let row = batch
                 .columns()
                 .iter()
@@ -1018,6 +1036,7 @@ impl PreviewBuilder {
             self.string_bytes = next_string_bytes;
             self.rows.push(row);
         }
+        self.row_count = next_row_count;
         Ok(())
     }
 
@@ -1031,6 +1050,10 @@ impl PreviewBuilder {
             string_bytes: self.string_bytes,
         }
     }
+}
+
+fn preview_prefix_len(batch_rows: usize, materialized_rows: usize, row_limit: usize) -> usize {
+    row_limit.saturating_sub(materialized_rows).min(batch_rows)
 }
 
 fn preview_value(array: &dyn Array, row_index: usize) -> Value {
@@ -1093,4 +1116,33 @@ fn cursor_execution_error(message: impl Into<String>) -> QueryError {
         message,
         super::runtime_target(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow_schema::{DataType, Field, Fields};
+
+    use super::{contains_dictionary, preview_prefix_len};
+
+    #[test]
+    fn preview_prefix_covers_only_rows_remaining_under_the_limit() {
+        assert_eq!(preview_prefix_len(10, 0, 2), 2);
+        assert_eq!(preview_prefix_len(10, 1, 2), 1);
+        assert_eq!(preview_prefix_len(10, 2, 2), 0);
+        assert_eq!(preview_prefix_len(1, 0, usize::MAX), 1);
+    }
+
+    #[test]
+    fn dictionary_detection_descends_through_nested_output_types() {
+        let dictionary = DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::Utf8));
+        let nested = DataType::Struct(Fields::from(vec![Field::new(
+            "items",
+            DataType::List(Arc::new(Field::new("item", dictionary, true))),
+            true,
+        )]));
+
+        assert!(contains_dictionary(&nested));
+    }
 }

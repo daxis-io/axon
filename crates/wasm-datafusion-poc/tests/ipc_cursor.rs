@@ -255,6 +255,37 @@ async fn cursor_rejects_oversized_retained_batch_before_data_encoding() {
 }
 
 #[tokio::test]
+async fn cursor_grows_pending_storage_lazily_under_separate_total_and_batch_caps() {
+    const PENDING_CAP: usize = 8 * 1024 * 1024;
+    const TOTAL_CAP: u64 = 16 * 1024 * 1024;
+    let engine = engine_with_string_rows(vec!["small".to_string()]).await;
+    let mut stream_limits = limits(1024 * 1024);
+    stream_limits.max_pending_encoded_batch_bytes = PENDING_CAP;
+    stream_limits.max_total_encoded_bytes = Some(TOTAL_CAP);
+    let mut cursor = engine
+        .start_arrow_ipc_cursor("SELECT value FROM events", stream_limits, false)
+        .await
+        .unwrap();
+    let mut terminal = None;
+
+    while let Some(item) = cursor.next().await.unwrap() {
+        if let IpcCursorItem::Terminal(value) = item {
+            terminal = Some(value);
+        }
+    }
+
+    let terminal = terminal.expect("cursor should report one terminal outcome");
+    assert_eq!(terminal.status, QueryTerminalStatus::Succeeded);
+    assert!(terminal.encoded_bytes <= TOTAL_CAP);
+    assert!(terminal.cursor_metrics.peak_pending_encoded_bytes <= PENDING_CAP as u64);
+    assert!(terminal.cursor_metrics.peak_pending_encoded_capacity <= PENDING_CAP as u64);
+    assert!(
+        terminal.cursor_metrics.peak_pending_encoded_capacity < PENDING_CAP as u64,
+        "a small query must not reserve the entire per-batch cap"
+    );
+}
+
+#[tokio::test]
 async fn cursor_rejects_all_dictionary_modes_before_writer_creation() {
     let modes = [
         ("static", vec![vec!["alpha", "beta"]]),
