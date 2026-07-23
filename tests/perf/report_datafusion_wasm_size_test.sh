@@ -4,7 +4,10 @@ set -euo pipefail
 
 bash -n tests/perf/report_datafusion_wasm_size.sh
 bash -n tests/perf/browser_datafusion_engine_smoke.sh
+rg -q '^opt-level = "z"$' Cargo.toml
 rg -q 'AXON_DF_SIZE_PACKAGE' tests/perf/report_datafusion_wasm_size.sh
+rg -F -q 'package="${AXON_DF_SIZE_PACKAGE:-axon-web-wasm}"' tests/perf/report_datafusion_wasm_size.sh
+rg -F -q 'default_brotli_budget_bytes="6291456"' tests/perf/report_datafusion_wasm_size.sh
 rg -q 'twiggy monos' tests/perf/report_datafusion_wasm_size.sh
 rg -F -q 'target/df-size/${package}' tests/perf/report_datafusion_wasm_size.sh
 rg -q 'wasm-opt -Oz generated wasm' tests/perf/report_datafusion_wasm_size.sh
@@ -19,6 +22,19 @@ rg -q 'first Parquet metadata query' tests/perf/browser_datafusion_engine_smoke.
 rg -q 'first real Delta/Parquet query' tests/perf/browser_datafusion_engine_smoke.sh
 rg -q 'scan metrics' tests/perf/browser_datafusion_engine_smoke.sh
 rg -q 'AXON_DF_REPEATED_TINY_QUERY_RUNS' tests/perf/browser_datafusion_engine_smoke.sh
+
+rg -q 'name: Browser DataFusion WASM size budget' .github/workflows/ci.yml
+rg -q 'AXON_DF_SIZE_PACKAGE: axon-web-wasm' .github/workflows/ci.yml
+rg -q 'AXON_DF_SIZE_WASM_STEM: axon_web_wasm' .github/workflows/ci.yml
+rg -q 'AXON_DF_BROTLI_BUDGET_BYTES: 6291456' .github/workflows/ci.yml
+if rg -q 'Experimental browser DataFusion WASM size report' .github/workflows/ci.yml; then
+  echo "default browser DataFusion size gate must not remain experimental" >&2
+  exit 1
+fi
+if rg -q "github.event_name == 'workflow_dispatch' && inputs.report_datafusion_wasm_size" .github/workflows/ci.yml; then
+  echo "default browser DataFusion size gate must run on pull requests and main" >&2
+  exit 1
+fi
 
 dangerous_out_dirs=(
   ""

@@ -6,17 +6,6 @@ on:
     branches:
       - main
   workflow_dispatch:
-    inputs:
-      report_datafusion_wasm_size:
-        description: "Run browser DataFusion engine WASM size reporting"
-        required: false
-        default: false
-        type: boolean
-      datafusion_brotli_budget_bytes:
-        description: "Optional Brotli budget for the browser DataFusion engine SKU; leave empty for report-only"
-        required: false
-        default: ""
-        type: string
 
 jobs:
   rust:
@@ -249,8 +238,7 @@ jobs:
         run: cargo test -p native-query-runtime --locked execute_query_supports_env_gated_partitioned_gcs_snapshot_version_smoke -- --exact --nocapture
 
   browser-datafusion-wasm-size:
-    name: Experimental browser DataFusion WASM size report
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.report_datafusion_wasm_size }}
+    name: Browser DataFusion WASM size budget
     runs-on: ubuntu-latest
 
     steps:
@@ -277,11 +265,10 @@ jobs:
 
       - name: Run browser DataFusion engine size report
         env:
-          AXON_DF_BROTLI_BUDGET_BYTES: ${{ inputs.datafusion_brotli_budget_bytes }}
+          AXON_DF_SIZE_PACKAGE: axon-web-wasm
+          AXON_DF_SIZE_WASM_STEM: axon_web_wasm
+          AXON_DF_BROTLI_BUDGET_BYTES: 6291456
         run: bash tests/perf/report_datafusion_wasm_size.sh
-
-      - name: Run browser DataFusion engine smoke report
-        run: bash tests/perf/browser_datafusion_engine_smoke.sh
 
       - name: Upload browser DataFusion engine size artifacts
         if: ${{ always() }}

@@ -34,17 +34,23 @@ Useful local commands:
 - `cargo test -p browser-engine-worker --locked report_worker_artifact_baseline -- --exact --nocapture`
 - `cargo test -p browser-engine-worker --locked report_worker_memory_baseline -- --exact --nocapture`
 
-## DataFusion WASM size reporting
+## Browser DataFusion worker size
 
 The repeatable DataFusion size report requires local `cargo`, `wasm-bindgen`, `wasm-opt`, `gzip`,
 `brotli`, and `twiggy` tools. It writes generated artifacts under `target/df-size`.
 
+The shipped `axon-web-wasm` worker and its 6 MiB Brotli budget are the defaults:
+
 ```bash
 bash tests/perf/report_datafusion_wasm_size.sh
-AXON_DF_SIZE_PACKAGE=axon-web-wasm \
-  AXON_DF_SIZE_WASM_STEM=axon_web_wasm \
-  AXON_DF_BROTLI_BUDGET_BYTES=6291456 \
-  bash tests/perf/report_datafusion_wasm_size.sh
+```
+
+CI runs that exact default-SKU gate for pull requests and `main`. Set
+`AXON_DF_SIZE_PACKAGE` and `AXON_DF_SIZE_WASM_STEM` only for exploratory
+non-default reports; those reports are report-only unless they also provide an
+explicit `AXON_DF_BROTLI_BUDGET_BYTES`.
+
+```bash
 AXON_DF_SIZE_PACKAGE=wasm-datafusion-planner-poc \
   bash tests/perf/report_datafusion_wasm_size.sh
 AXON_DF_SIZE_PACKAGE=wasm-datafusion-planner-poc \
