@@ -13,7 +13,8 @@
 - [ADR-0009: Axon Is The Lakehouse Query Engine And Workbench Runtime](../adr/ADR-0009-axon-is-the-lakehouse-workbench.md)
 - [ADR-0010: Pluggable Catalog Providers And Table Read Resolution Seams](../adr/ADR-0010-pluggable-catalog-providers.md)
 
-**Read-only status:** This investigation did not edit runtime code. The checkout had existing local changes in:
+**Historical read-only status (2026-06-23):** The original investigation did
+not edit runtime code. Its checkout had existing local changes in:
 
 - `crates/wasm-datafusion-session/Cargo.toml`
 - `crates/wasm-datafusion-session/tests/parquet_dataset.rs`
@@ -40,30 +41,31 @@ Performance work can cache resolved descriptors, access envelopes, and footer me
 
 ## Current Status
 
-The original performance sequence is complete through the planned browser-query hot-path slices:
+The remote baseline for the 2026-07-23 audit is `origin/main` at
+`6cca364465fc4fa714ff7403b6df7e3f229c6e8f`. It includes the original
+instrumentation, identity propagation, footer and shared range caches,
+prebootstrap pruning, descriptor carryover, lazy startup, scan-trace split,
+small-gap coalescing, bounded readahead, and the private Arrow IPC
+cursor/coordinator path.
 
-- `perf(range): instrument duplicate descriptor/footer/range reads`
-- `perf(range): preserve object identity in scans`
-- `perf(range): share parquet metadata cache`
-- `perf(pruning): prune active files before DataFusion footer bootstrap`
-- `perf(pruning): fail open on zero-candidate prebootstrap pruning`
-- `perf(pruning): normalize partition pruning across DataFusion and legacy runtime`
-- `perf(snapshot): carry descriptors through E9/query-session runtime cache`
-- `perf(ipc): stream Arrow IPC chunks from worker`
-- `perf(startup): lazy-load startup query paths`
-- `perf(scan): split scan metrics from debug trace`
-- `perf(range): coalesce small-gap Parquet range batches` in the current implementation slice
-- `perf(parquet): use shared range cache`
-- `feat: project cache and readahead metrics`
-- `perf(parquet): add bounded identity-safe readahead`
-- `perf(parquet): admit readahead only after same-object would-have-hit evidence`
+The local-only `perf/resolve-performance-audit` branch closes the remaining
+audit findings as follows:
 
-Live public-S3 evidence from 2026-07-16 found that the adaptive admission gate
-kept the representative batched scan exact: readahead fetched, used, and wasted
-zero bytes. Physical bytes returned to the 22,677,645-byte pre-cache baseline,
-so the Slice 6 scan-byte and overfetch-budget guardrail gate is open.
+| Finding | Current resolution |
+| --- | --- |
+| Default worker size | Cargo release now uses `opt-level = "z"`. The current default worker is 3,932,092 Brotli bytes against the 6,291,456-byte gate, which runs on pull requests and `main`. |
+| Browser performance evidence | `bash tests/perf/browser_query_performance.sh` runs the shipped WASM in Chromium against the checked-in prod-like Delta/Parquet fixture. It records startup, cold/warm query milestones, IPC bytes/chunks, exact cursor/coordinator peaks, 20-query post-GC user-agent memory, and atomic over-limit behavior. The host smoke is diagnostic-only. |
+| IPC lifecycle and memory | Rust emits exact-sized private schema/data/EOS chunks under 1 MiB credit. Pending encoded storage grows lazily and is capped at 8 MiB per logical batch; total output follows the separate 16 MiB Daxis profile. The coordinator stages at most the browser-safe 8 MiB cap, rejects before retaining an excess chunk, and publishes public chunks only after a successful private terminal. |
+| Cancellation and recovery | Coordinator cancellation/deadline state is authoritative, request IDs remain reserved while draining, unresponsive children are replaced, and engine-wide cancellation uses query-generation snapshots. Chromium, Firefox, and WebKit cover late failure, output-budget failure, crash, hang, and recovery without partial public results. |
+| Scan budgets | Planned and realized `max_scan_bytes` enforcement is complete. `scan_overfetch_bytes` now saturating-adds fetched coalescing gaps and unused speculative readahead, with optional terminal enforcement; the Daxis profile allows 1 MiB. |
+| Page-index API | Metadata loading preserves explicit Parquet column-index and offset-index policies independently. This is correctness/compatibility work; no page-level browser byte saving is claimed without new evidence. |
+| Public-S3 reproducibility | `s3-browser-perf-v1` now has a deterministic seeded generator, committed manifest/checksums/provenance, staging validator, and documented upload/live commands. No credentials or generated data objects are committed. |
+| Worker pool | Current main can run two disjoint coordinator shards and merge exact aggregates. Historical timings justify bounded research only; production value is inconclusive and WCRPC is not justified. |
 
-Remaining work should be treated as backlog and driven by measured browser telemetry rather than the original sequence order.
+The 2026-07-16 public-S3 artifact remains honest historical evidence: adaptive
+readahead fetched, used, and wasted zero bytes, while physical bytes returned
+to the 22,677,645-byte pre-cache baseline. It proves no overfetch regression,
+not a latency win.
 
 ---
 
@@ -71,11 +73,18 @@ Remaining work should be treated as backlog and driven by measured browser telem
 
 Prioritize these only when metrics show they are the next limiting factor:
 
-1. Add explicit scan-byte and scan-overfetch budget enforcement. The adaptive admission follow-up passed its live prerequisite with zero readahead waste and baseline physical bytes.
-2. Continue row-group/page-index pruning before data-page reads.
-3. Keep representative public-S3 browser UAT evidence current as the fixture, query, or metrics contract changes.
-4. Add physical-vs-logical range request summary metrics if current labels become ambiguous.
-5. Tune range-coalescing or readahead thresholds only if future live telemetry shows a better request-to-byte tradeoff.
+1. Prove page-index pruning changes browser bytes before claiming or tuning
+   page-level savings.
+2. Refresh representative public-S3 browser UAT when the pinned fixture,
+   query, or metrics contract changes. Validate provenance before upload or
+   execution.
+3. Add physical-vs-logical range request summary metrics only if the current
+   labels become operationally ambiguous.
+4. Tune range-coalescing or readahead thresholds only if future live telemetry
+   shows a better request-to-byte tradeoff.
+5. Revisit worker pools only after the documented process-cold S/P2/P4,
+   process-tree-memory, skew, output-heavy, and unique-cache-identity evidence
+   gate is satisfied.
 
 Keep future changes small enough that each workstream can prove a specific latency, memory, or byte-read improvement.
 
@@ -119,6 +128,26 @@ test artifact were collected; this is an external environment gate, not
 product-success evidence.
 
 ### Live Public-S3 Cache/Readahead Evidence - 2026-07-16
+
+The current resolution pins the live fixture as `s3-browser-perf-v1` through:
+
+- `apps/axon-web/public/fixtures/s3-perf/S3_ACCESS.md`
+- `apps/axon-web/public/fixtures/s3-perf/s3-perf-fixture-manifest.json`
+- `apps/axon-web/public/fixtures/s3-perf/s3-perf-object-sha256.txt`
+- `apps/axon-web/public/fixtures/s3-perf/s3-perf-provenance.json`
+
+The provenance records the table URI
+`s3://axon-public-s3-fixture-452456948477/fixtures/s3-browser-perf/table`,
+region `us-east-2`, manifest SHA-256
+`18d1c4c3b5e1ce78ce156ce51247a94a46e44401cad9688ec0d14ceaa01b6ab3`,
+checksum-inventory SHA-256
+`05f6c5823a88c49559eef70072165b584dfe3c320ae8a435c6f6f82f30d719a9`,
+21 required objects, 8 active Parquet files, and 82,057,700 active data
+bytes. The deterministic validator successfully staged and checked the
+anonymous fixture during the 2026-07-23 resolution. The live browser suite was
+not rerun because its environment variables were absent and this local-only
+audit did not authorize cloud mutation. The artifact below therefore remains
+the only live performance verdict.
 
 The CI-forced Chromium run used the public performance fixture and passed all
 four tests. Ports 5173 and 5174 were occupied by other worktrees, so the final
@@ -301,6 +330,10 @@ The legacy runtime can prune files before opening Parquet metadata. The DataFusi
 
 After registration, `crates/wasm-datafusion-poc/src/lib.rs` prunes planned files and row groups. Row-group pruning happens after the engine has opened Parquet metadata in `crates/wasm-parquet-engine/src/lib.rs`.
 
+Parquet metadata loading now preserves explicit column-index and offset-index
+policies independently. This resolves the deprecated combined-policy API
+without implying that the browser reads fewer bytes.
+
 ### Existing Pruning
 
 - Partition pruning handles equality, non-null `IN`, `IS NULL`, `AND`, and same-column `OR` in the DataFusion path.
@@ -317,6 +350,7 @@ After registration, `crates/wasm-datafusion-poc/src/lib.rs` prunes planned files
 - File and row-group stats do not use null counts for `IS NULL` and `IS NOT NULL`.
 - Stats pruning does not cover string, bool, float, decimal, date, timestamp, `BETWEEN`, `NOT IN`, or compound compatible predicates.
 - Row-group pruning uses the first compatible integer predicate rather than composing ranges.
+- Page-index policy is explicit, but browser byte savings remain unproven.
 
 ### Implementation Slices
 
@@ -326,6 +360,9 @@ After registration, `crates/wasm-datafusion-poc/src/lib.rs` prunes planned files
 4. Normalize partition pruning across legacy and DataFusion paths, including `IS NOT NULL`.
 5. Add null-count pruning for Delta stats, Parquet file stats, and row-group stats.
 6. Compose multiple compatible integer predicates into one range constraint.
+7. Preserve explicit Parquet column-index and offset-index policies
+   independently. **Status: complete for compatibility; performance evidence
+   remains backlog.**
 
 ### Correctness Constraints
 
@@ -415,33 +452,46 @@ The shipped app worker uses `BrowserDataFusionSession`. UI queries request 500 v
 
 The DataFusion scan path streams internally. `AxonParquetScanExec` returns a `SendableRecordBatchStream`, and Parquet uses `ParquetRecordBatchStreamBuilder`.
 
-The JS/WASM boundary still materializes one Arrow IPC buffer. `execute_stream` writes into `BudgetedArrowIpcBuffer { bytes: Vec<u8> }`, and the worker posts one `Uint8Array` after `session.sql()` returns.
+The private Rust cursor emits exact-sized Arrow IPC schema, data, and
+end-of-stream chunks under 1 MiB transport credit. It grows pending encoded
+storage lazily, caps one logical batch at 8 MiB, and keeps the separate Daxis
+total-output limit at 16 MiB. Preview rows are built while batches are encoded;
+exact row counts use `RecordBatch::num_rows()` without revisiting every row.
 
-The bridge copies IPC bytes with `.to_vec()` and `Uint8Array::from(bytes)`. Preview decoding then walks the full IPC stream to compute row count, even after it captures the preview rows.
+The worker coordinator stages chunks atomically under the browser-safe 8 MiB
+cap and rejects an excess chunk before retaining it. The public SDK receives
+and reassembles chunks only after the private child reports a successful
+terminal. Coordinator, pending-encoded, and transport-chunk peaks are projected
+as query metrics.
 
 ### Main Gaps
 
-- Internal batch streaming stops at the WASM boundary.
-- The bridge copies the full IPC output before sending it to JS.
-- Preview generation decodes completed IPC instead of consuming batches during encoding.
-- Direct SDK or worker callers can request unpaged results unless they set `result_page` or runtime budgets.
-- Default browser runtime config has no execution budget.
+- The atomic public contract still entails result-sized coordinator staging up
+  to its 8 MiB browser-safe cap.
+- The public SDK does not expose a progressive cursor.
 - UI auto-load stops at 10,000 rows, but manual loading can keep appending pages into one array.
 - Legacy row-map runtime still has full-result materialization paths.
+- Cursor and coordinator metrics do not bound every DataFusion operator or
+  total browser-process memory.
 
 ### Implementation Slices
 
-1. Add chunked Arrow IPC worker delivery with transferable chunks or batch messages.
-2. Remove the `.to_vec()` and `Uint8Array::from` double-copy by transferring or consuming an owned output buffer.
-3. Build preview rows while encoding DataFusion batches.
-4. Set default app query budgets for IPC bytes, result rows, scan bytes, and preview string bytes.
+1. Add chunked Arrow IPC worker delivery with transferable chunks or batch
+   messages. **Status: complete through the private cursor/coordinator path.**
+2. Remove the `.to_vec()` and `Uint8Array::from` double-copy by transferring or
+   consuming exact-sized owned chunks. **Status: complete.**
+3. Build preview rows while encoding DataFusion batches. **Status: complete.**
+4. Set default app query budgets for IPC bytes, result rows, scan bytes, and
+   preview string bytes. **Status: complete, including coordinator and cursor
+   memory bounds.**
 5. Add a hard loaded-row or loaded-byte cap in UI state.
 6. Quarantine the legacy row-map runtime from production query paths, or wrap it with strict budgets.
 
 ### Correctness Constraints
 
 - Preserve Arrow IPC stream framing and schema delivery across chunks.
-- Surface partial-output and budget errors as structured query errors.
+- Do not publish partial output through the atomic public SDK. Surface budget,
+  cancellation, deadline, and child-fault failures as structured query errors.
 - Keep result-page SQL rewriting before expensive execution for UI queries.
 - Keep SDK behavior explicit: require `result_page` or apply a default browser-safe budget.
 
@@ -455,9 +505,17 @@ The bridge copies IPC bytes with `.to_vec()` and `Uint8Array::from(bytes)`. Prev
 
 ### Exit Criteria
 
-- Worker can emit output before the full result IPC buffer exists.
-- Peak memory drops for wide/string-heavy page queries.
-- Default app and SDK paths enforce output limits without relying on UI helpers.
+- The private worker can emit output before the complete result exists.
+  **Satisfied.**
+- Cursor and coordinator component peaks remain inside their explicit limits,
+  and repeated-query browser memory stays within the regression gate.
+  **Satisfied for the current fixture; this is not a full-process/operator
+  peak claim.**
+- Default app and SDK paths enforce output limits without relying on UI
+  helpers. **Satisfied.**
+- The public SDK remains atomic and exposes no partial output on late failure,
+  cancellation, deadline, child fault, or output-budget failure.
+  **Satisfied across Chromium, Firefox, and WebKit.**
 
 ---
 
@@ -623,11 +681,18 @@ This step addresses Area 3 and strengthens Area 1.
 
 ### Step 4: Stream IPC And Set Browser Budgets
 
-Chunk IPC across the worker boundary, remove the full-buffer copy where possible, build preview during encoding, and enforce browser defaults for result output.
+Use the private cursor/coordinator to emit exact-sized credit-bounded IPC
+chunks, build preview during encoding, and enforce separate pending-batch,
+coordinator-staging, total-output, row, scan, and speculative-overfetch
+budgets. Keep the public SDK atomic by committing staged chunks only after a
+successful terminal.
 
 This step addresses Area 4.
 
-**Status: complete for chunked IPC, exact-sized transferable buffers, and browser-safe output defaults.**
+**Status: complete for private chunked IPC, exact-sized transferable buffers,
+authoritative cancellation/recovery, atomic public delivery, browser-safe
+defaults, and projected component peaks. Progressive public delivery remains
+out of scope.**
 
 ### Step 5: Lazy-Load Startup Paths
 
