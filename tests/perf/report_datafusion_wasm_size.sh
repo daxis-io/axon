@@ -120,10 +120,16 @@ Additional outputs:
 - \`${out_dir}/twiggy-top.txt\`
 - \`${out_dir}/twiggy-monos.txt\`
 
-Optional companion smoke report:
+Release companion browser performance report:
 
-- \`bash tests/perf/browser_datafusion_engine_smoke.sh\` records streaming init, first tiny query,
-  repeated tiny query, first Parquet metadata query, first real Delta/Parquet query, and scan metrics.
+- \`bash tests/perf/browser_query_performance.sh\` records browser startup, cold and warm
+  Delta/Parquet query milestones, result bytes, atomic over-limit behavior, exact cursor and
+  coordinator memory bounds, and the post-GC public-SDK heap delta.
+
+Host-only diagnostic:
+
+- \`bash tests/perf/browser_datafusion_engine_smoke.sh\` records Rust-side streaming init, tiny
+  query, Parquet metadata, Delta/Parquet query, and scan metrics without claiming browser timing.
 SUMMARY
 
 cat "${out_dir}/summary.md"

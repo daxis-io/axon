@@ -28,6 +28,7 @@
     "test:browser:editor-smoke": "playwright test --config=playwright.editor-smoke.config.ts",
     "test:browser:public-gcs-live": "playwright test --config=playwright.public-gcs-live.config.ts",
     "test:browser:public-s3-live": "playwright test --config=playwright.public-s3-live.config.ts",
+    "test:browser:query-performance": "playwright test --config=playwright.browser-query-performance.config.ts",
     "test:browser:worker-pool-compatibility": "playwright test --config=playwright.worker-pool-compatibility.config.ts",
     "test:s3-perf-fixture": "bash scripts/verify-s3-perf-fixture.test.sh",
     "verify:s3-perf-fixture": "bash scripts/verify-s3-perf-fixture.sh --metadata-only",

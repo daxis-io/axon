@@ -58,10 +58,31 @@ AXON_DF_SIZE_PACKAGE=wasm-datafusion-planner-poc \
   bash tests/perf/report_datafusion_wasm_size.sh
 ```
 
-Benchmark work that should live here once the repo grows a stable browser bundle:
+## Browser query performance
 
-- warm-start latency for the browser worker entrypoint after instantiation
-- cold and warm query-path latency
+The release-facing browser probe builds the shipped WASM worker and runs a deterministic
+Chromium query against the checked-in prod-like Delta/Parquet fixture:
+
+```bash
+bash tests/perf/browser_query_performance.sh
+```
+
+It writes `target/perf/browser-query-performance.json` with:
+
+- worker/open startup duration;
+- cold, warm, and five repeated query durations plus `arrow_ipc_ready`;
+- result byte and chunk counts;
+- exact coordinator staging and Rust cursor/transport peaks;
+- a post-GC retained-heap delta for the page and public SDK;
+- an over-limit query proving that no public Arrow IPC chunk escapes before failure.
+
+The browser probe does not assert that the warm query is faster than the cold query. It records
+both and applies independent checked-in ceilings, because the current public-storage evidence
+does not prove a cache or readahead latency win. `browser_datafusion_engine_smoke.sh` remains a
+Rust host diagnostic and is not browser-performance evidence.
+
+Further benchmark work:
+
 - bytes fetched versus bytes reused for extent-cache hit ratio
 - validation-miss rate when object identity drifts underneath cached extents
 - candidate-file pruning effectiveness

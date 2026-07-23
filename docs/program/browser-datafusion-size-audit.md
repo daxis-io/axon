@@ -241,9 +241,12 @@ The current POC proves:
   writes batches as DataFusion yields them instead of collecting the full output first. Budget
   failures return structured `QueryError` values with `FallbackReason::BrowserRuntimeConstraint`;
   cancellation returns a structured browser DataFusion cancellation error.
-- `tests/perf/browser_datafusion_engine_smoke.sh` records optional smoke timings for streaming init,
-  first and repeated tiny queries, first Parquet metadata query, first real Delta/Parquet query, and
-  scan metrics. `tests/perf/report_datafusion_wasm_size.sh` remains the Brotli-size source of truth.
+- `tests/perf/browser_query_performance.sh` records the release-facing Chromium startup, cold and
+  warm Delta/Parquet query milestones, result bytes, atomic over-limit behavior, component-memory
+  counters, and post-GC public-SDK heap delta.
+  `tests/perf/browser_datafusion_engine_smoke.sh` retains the equivalent Rust host probes as
+  diagnostic-only timings. `tests/perf/report_datafusion_wasm_size.sh` remains the Brotli-size
+  source of truth.
 - `wasm-query-runtime` can opt into a compiler-boundary lowering spike through its
   `datafusion-planner-poc` feature. That spike is useful scaffolding and a corpus harness, but it is
   no longer the product destination.

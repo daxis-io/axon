@@ -547,6 +547,117 @@ test('one-child coordinator discards staged data after a late failure', async ({
   });
 });
 
+test('one-child coordinator publishes no partial result after an output-budget failure', async ({
+  page,
+}) => {
+  await routeCursorParquet(page);
+  await page.goto('/');
+
+  const result = await page.evaluate(
+    async ({ fixtureBytes }: { fixtureBytes: number }) => {
+      type PublicMessage = {
+        arrow_ipc_chunk?: { request_id?: string };
+        error?: { request_id?: string };
+        success?: { request_id?: string };
+      };
+      type CapturedError = {
+        message: string;
+        name: string;
+        queryError?: unknown;
+      };
+
+      const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+      const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
+        type: 'module',
+      });
+      const rawMessages: PublicMessage[] = [];
+      worker.addEventListener('message', (event: MessageEvent<PublicMessage>) => {
+        rawMessages.push(event.data);
+      });
+      const client = sdk.createAxonBrowserClient({ worker });
+      const requestId = 'query-coordinator-output-budget';
+
+      try {
+        await client.openDeltaTable(
+          'budget_events',
+          {
+            table_uri: new URL('/fixtures/browser-datafusion-runtime/output-budget', location.href)
+              .href,
+            snapshot_version: 0,
+            partition_column_types: { category: 'string' },
+            browser_compatibility: { capabilities: {} },
+            required_capabilities: { capabilities: {} },
+            active_files: [
+              {
+                path: 'category=budget/part-000.parquet',
+                url: new URL(
+                  '/fixtures/browser-datafusion-runtime/internal-cursor.parquet',
+                  location.href,
+                ).href,
+                size_bytes: fixtureBytes,
+                partition_values: { category: 'budget' },
+              },
+            ],
+          },
+          { requestId: 'open-coordinator-output-budget' },
+        );
+
+        let capturedError: CapturedError | undefined;
+        try {
+          await client.query(
+            'budget_events',
+            'SELECT payload, category, id FROM budget_events ORDER BY id',
+            {
+              requestId,
+              queryOptions: {
+                runtime_limits: { max_arrow_ipc_bytes: 1 },
+              },
+            },
+          );
+        } catch (error) {
+          const candidate = error as Partial<CapturedError>;
+          capturedError = {
+            message: String(candidate.message),
+            name: String(candidate.name),
+            queryError: candidate.queryError,
+          };
+        }
+        if (!capturedError) throw new Error('over-budget coordinator query unexpectedly succeeded');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        return {
+          error: capturedError,
+          publicArrowChunks: rawMessages.filter(
+            (message) => message.arrow_ipc_chunk?.request_id === requestId,
+          ).length,
+          publicErrors: rawMessages.filter((message) => message.error?.request_id === requestId)
+            .length,
+          publicSuccesses: rawMessages.filter(
+            (message) => message.success?.request_id === requestId,
+          ).length,
+        };
+      } finally {
+        client.terminate();
+      }
+    },
+    { fixtureBytes: BINARY_STRING_INT_PARQUET_BYTES.byteLength },
+  );
+
+  expect(result).toMatchObject({
+    error: {
+      name: 'AxonWorkerError',
+      queryError: {
+        code: 'fallback_required',
+        fallback_reason: 'browser_runtime_constraint',
+        target: 'browser_wasm',
+      },
+    },
+    publicArrowChunks: 0,
+    publicErrors: 1,
+    publicSuccesses: 0,
+  });
+});
+
 test('one-child coordinator fails a forwarded command once when the child crashes', async ({
   page,
 }) => {
