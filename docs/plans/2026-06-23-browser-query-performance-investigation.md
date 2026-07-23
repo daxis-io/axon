@@ -53,7 +53,7 @@ audit findings as follows:
 
 | Finding | Current resolution |
 | --- | --- |
-| Default worker size | Cargo release now uses `opt-level = "z"`. The current default worker is 3,932,092 Brotli bytes against the 6,291,456-byte gate, which runs on pull requests and `main`. |
+| Default worker size | Cargo release now uses `opt-level = "z"`. The current default worker is 3,932,517 Brotli bytes against the 6,291,456-byte gate, which runs on pull requests and `main`. |
 | Browser performance evidence | `bash tests/perf/browser_query_performance.sh` runs the shipped WASM in Chromium against the checked-in prod-like Delta/Parquet fixture. It records startup, cold/warm query milestones, IPC bytes/chunks, exact cursor/coordinator peaks, 20-query post-GC user-agent memory, and atomic over-limit behavior. The host smoke is diagnostic-only. |
 | IPC lifecycle and memory | Rust emits exact-sized private schema/data/EOS chunks under 1 MiB credit. Pending encoded storage grows lazily and is capped at 8 MiB per logical batch; total output follows the separate 16 MiB Daxis profile. The coordinator stages at most the browser-safe 8 MiB cap, rejects before retaining an excess chunk, and publishes public chunks only after a successful private terminal. |
 | Cancellation and recovery | Coordinator cancellation/deadline state is authoritative, request IDs remain reserved while draining, unresponsive children are replaced, and engine-wide cancellation uses query-generation snapshots. Chromium, Firefox, and WebKit cover late failure, output-budget failure, crash, hang, and recovery without partial public results. |

@@ -173,4 +173,97 @@
 - `git diff --check origin/main...HEAD`
 - `git status --short --branch`
 
-Record exact command results, residual limitations, branch, commit range, and publication status in this plan.
+## Execution Record - 2026-07-23
+
+### Boundary And Refs
+
+- Worktree:
+  `/Users/ethanurbanski/axon/.worktrees/perf-audit-resolution`
+- Branch: `perf/resolve-performance-audit`
+- Remote base:
+  `6cca364465fc4fa714ff7403b6df7e3f229c6e8f`
+- Verified implementation and reconciliation range:
+  `6cca364..d19f316`
+- Publication status: local commits only; no push or pull request.
+- The dirty root checkout and all pre-existing dirty worktrees were left
+  untouched. Their disposition is recorded in
+  `docs/research/browser-query-performance-workstream-inventory.md`.
+
+### Resolved Findings
+
+| Finding | Resolution |
+| --- | --- |
+| Coordinator lifecycle races | `52b740c` makes the coordinator authoritative for admission, terminal publication, draining request IDs, deadline/cancellation tombstones, watchdog replacement, and bounded capacity. |
+| Cancel-all interference | `c3aec8e` replaces the shared resettable latch with query-generation snapshots so cancellation reaches every cursor that was live at the snapshot without poisoning later work. |
+| Cursor allocation and preview cost | `62d8225` grows pending storage lazily, releases empty capacity, counts rows in O(1) per batch, materializes only the preview prefix, and rejects dictionary modes before writer construction. |
+| Coordinator staging and observability | `8d64d44` rejects before retaining an excess chunk and projects coordinator, pending-encoded, and transport-chunk peaks through Rust, protobuf, TypeScript, and the SDK. |
+| Total-output versus pending-memory ambiguity | `4b39e4a` proves a valid result above 8 MiB can succeed under the separate 16 MiB total-output limit while each logical batch stays under the 8 MiB pending cap. |
+| Cross-browser fault and atomicity gaps | `a02c346` covers coordinator-authored cancellation, late failure, output-budget failure, crash, hang, and recovery without partial public output in Chromium, Firefox, and WebKit. |
+| Current-main host fixture | `7d02686` supplies and serializes the required `object_etag`. |
+| Broader performance audit | `ddd53f1`, `f20acb7`, `9178eab`, `a021672`, `10f3e61`, `af42ede`, and `4b39e4a` close the worker-size, public-S3 reproducibility, worker-pool decision, page-index compatibility, speculative-overfetch, component-memory, and full browser-memory evidence findings. |
+| Canonical records and format gate | `ab7a61a` reconciles the workstream and parity records. `d19f316` applies the six mechanical Prettier rewrites required for the repository-wide format check. |
+
+### Final Verification
+
+| Command or suite | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | Passed. |
+| `cargo test -p query-contract --locked` | Passed: 3 unit, 58 contract, and 13 release-handoff tests. |
+| `cargo test -p wasm-parquet-engine --locked` | Passed: 53 host tests after rerunning outside the port sandbox. The first sandboxed attempt failed only because 26 tests could not bind ephemeral loopback ports. |
+| `cargo test -p wasm-datafusion-poc --locked --tests` | Passed: 88 tests, including 11 cursor, 11 budget, and 21 pushdown tests. |
+| `cargo test -p wasm-datafusion-session --locked` | Passed: 42 tests. |
+| `cargo test -p axon-web-wasm --locked` | Passed: 3 tests. |
+| `cargo check -p axon-web-wasm --target wasm32-unknown-unknown --locked` | Passed. |
+| `npm test` | Passed: 173 tests in 32 files. |
+| `npm run format:check` | Passed after the six Prettier-only baseline rewrites in `d19f316`. |
+| `npm run lint` and `npm exec -- tsc --noEmit` | Passed. |
+| `npm run test:s3-perf-fixture` and `npm run verify:s3-perf-fixture` | Passed, including the intentional checksum-mismatch negative case and 21-object pinned metadata validation. |
+| `npm run build:wasm` | Passed. |
+| `bash tests/perf/report_datafusion_wasm_size_test.sh` | Passed. |
+| `AXON_DF_SIZE_OUT_DIR=target/df-size/axon-web-wasm-resolution bash tests/perf/report_datafusion_wasm_size.sh` | Passed. Raw: 45,397,475; bindgen: 40,081,640; optimized: 23,450,156; gzip: 6,232,474; Brotli: 3,932,517 bytes. The Brotli artifact has 2,358,939 bytes of headroom under the 6,291,456-byte gate. |
+| `npm run test:sdk -- --reporter=line` | Passed: 151 tests. |
+| `AXON_BROWSER_QUERY_PERF_SKIP_BUILD=1 bash tests/perf/browser_query_performance.sh --reporter=line` | Passed: 1 Chromium test using the already verified shipped WASM and checked-in Delta/Parquet fixture. The release wrapper recorded implementation head `d19f316279e634f2888c54b8481271b31545a803`. |
+| `npm run test:browser:worker-pool-compatibility -- --reporter=line` | Passed: 1 Chromium two-coordinator compatibility test. This does not change the research-only worker-pool verdict. |
+| `npx playwright test tests/internal-arrow-ipc-stream.spec.ts --config=playwright.config.ts --reporter=line` | Passed: 18 tests across Chromium, Firefox, and WebKit. |
+| `npx playwright test tests/browser-worker-matrix.spec.ts --config=playwright.config.ts --reporter=line` | Passed: 21 tests across Chromium, Firefox, and WebKit. |
+
+The final ignored browser artifact at
+`target/perf/browser-query-performance.json` records:
+
+| Measurement | Value |
+| --- | ---: |
+| Startup total | 124.72 ms |
+| Cold query / Arrow IPC ready | 72.13 / 71.87 ms |
+| Warm query / Arrow IPC ready | 10.04 / 9.98 ms |
+| Five repeated queries | 98.05 ms total |
+| Public result | 968 bytes in 3 chunks |
+| Coordinator peak / cap | 968 / 8,388,608 bytes |
+| Cursor pending / transport peak | 704 / 704 bytes |
+| Post-GC memory before / after 20 queries | 27,320,276 / 27,532,536 bytes |
+| Retained post-GC delta / gate | 212,260 / 16,777,216 bytes |
+| One-byte output-budget case | 0 chunks, 1 structured error, 0 successes |
+
+### Residual Boundaries, Not Blockers
+
+- `measureUserAgentSpecificMemory()` is Chromium-only and requires a
+  cross-origin-isolated page. Lifecycle and atomicity remain covered in all
+  three browser engines.
+- The 16 MiB memory gate bounds retained post-GC user-agent memory delta, not
+  total RSS or every DataFusion operator's transient peak.
+- The public SDK remains atomic. The coordinator may retain a successful result
+  up to its 8 MiB browser-safe staging cap; progressive public delivery is out
+  of scope.
+- The pinned public-S3 fixture was anonymously staged and checksum-validated,
+  but the live browser S3 suite was not rerun because its environment variables
+  were absent and this local-only audit did not authorize cloud mutation. The
+  2026-07-16 artifact remains the only live performance verdict.
+- `npm run codegen:check` was not run because the checked-in Buf configuration
+  uses remote plugins. This execution did not authorize uploading contract
+  sources to that service. The changed generated surfaces are covered by the
+  Rust contract tests, TypeScript codegen tests, TypeScript compilation, and
+  exact local generation used during implementation.
+- Explicit Parquet column-index and offset-index policies are now independently
+  preserved. No page-level browser byte reduction is claimed without new
+  evidence.
+- Worker pools remain a bounded research direction. Current-main two-shard
+  compatibility passes, but production value and WCRPC remain unjustified.

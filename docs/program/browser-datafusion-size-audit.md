@@ -289,7 +289,7 @@ Current default-worker measurement on July 23, 2026:
 | Variant | Raw wasm | wasm-bindgen | wasm-opt | gzip | Brotli | Budget result |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | inherited speed profile | 97,931,254 | 90,595,008 | 61,742,191 | 13,038,823 | 6,591,104 | Fail by 299,648 bytes (4.76%) |
-| release `opt-level = "z"` | 45,393,038 | 40,077,732 | 23,447,562 | 6,230,907 | 3,932,092 | Pass with 2,359,364 bytes (37.50%) headroom |
+| release `opt-level = "z"` final resolution rerun | 45,397,475 | 40,081,640 | 23,450,156 | 6,232,474 | 3,932,517 | Pass with 2,358,939 bytes (37.50%) headroom |
 
 The size-oriented release profile is now the shipped default and the
 `axon-web-wasm` 6,291,456-byte Brotli budget is a recurring pull-request and
