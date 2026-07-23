@@ -31,10 +31,12 @@
   "memoryBudget": {
     "sessionStructBytes": 1048576,
     "coordinatorStagingBytes": 8388608,
+    "coordinatorAggregateStagingBytes": 33554432,
     "cursorPendingEncodedBytes": 8388608,
     "transportChunkBytes": 1048576,
     "postGcRetainedHeapDeltaBytes": 16777216,
-    "profileScope": "The Chromium release probe bounds the post-GC user-agent memory delta across the cross-origin-isolated page and workers and records exact Rust cursor and coordinator counters. Full browser-process RSS and production fleet memory dashboards remain M4 Daxis operations work.",
+    "datafusionOperatorPoolBytes": 67108864,
+    "profileScope": "Bounds per-query and aggregate coordinator Arrow IPC staging, DataFusion-registered operator reservations, cursor buffers, and the Chromium post-GC user-agent memory delta. It does not bound every Rust, Arrow, Wasm, JavaScript, cache, or browser allocation; full browser-process RSS and production fleet dashboards remain M4 Daxis operations work.",
     "reportCommand": "bash tests/perf/browser_query_performance.sh"
   },
   "verificationCommands": [

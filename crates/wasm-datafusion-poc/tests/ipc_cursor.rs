@@ -10,6 +10,7 @@ use arrow_schema::{Field, Schema};
 use query_contract::QueryErrorCode;
 use wasm_datafusion_poc::{
     ArrowIpcPhase, IpcCursorItem, IpcStreamLimits, QueryTerminalStatus, WasmDataFusionEngine,
+    DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES,
 };
 
 #[tokio::test]
@@ -100,6 +101,12 @@ async fn cursor_streams_schema_data_and_eos_before_success() {
     assert_eq!(terminal.status, QueryTerminalStatus::Succeeded);
     assert_eq!(terminal.row_count, 6);
     assert_eq!(terminal.preview.rows.len(), 2);
+    assert_eq!(
+        terminal.memory_metrics.limit_bytes,
+        u64::try_from(DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES).unwrap(),
+    );
+    assert_eq!(terminal.memory_metrics.reserved_bytes, 0);
+    assert!(terminal.memory_metrics.peak_bytes <= terminal.memory_metrics.limit_bytes);
     assert!(cursor.next().await.unwrap().is_none());
 }
 

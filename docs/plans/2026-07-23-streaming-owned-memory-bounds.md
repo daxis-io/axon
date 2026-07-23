@@ -136,6 +136,7 @@ git commit -m "feat: bound aggregate coordinator staging"
 - Modify: `crates/wasm-datafusion-session/src/lib.rs`
 - Modify: `apps/axon-web/src/lib.rs`
 - Modify: `docs/release-gates/daxis-browser-datafusion-budget-profile.json`
+- Modify: `docs/program/browser-lakehouse-release-handoff-examples/browser-worker-artifact-report.datafusion.json`
 - Modify: `crates/wasm-datafusion-poc/tests/daxis_budget_profile.rs`
 
 **Step 1: Write failing pool and error-contract tests**
@@ -179,10 +180,12 @@ cargo test -p axon-web-wasm --locked
 
 Expected: all tests pass, resource exhaustion has the structured fallback category, and successful terminal snapshots report zero current DataFusion reservations.
 
+The pool handle adds one pointer to `BrowserDataFusionSession`, so refresh the mechanically checked artifact report's host struct baseline from 376 to 384 bytes. `cargo test -p axon-web-wasm --locked` must prove that the checked-in report again exactly matches generated output.
+
 **Step 5: Commit**
 
 ```bash
-git add crates/wasm-datafusion-poc/src/lib.rs crates/wasm-datafusion-poc/src/ipc_cursor.rs crates/wasm-datafusion-poc/tests/custom_scan_exec.rs crates/wasm-datafusion-poc/tests/ipc_cursor.rs crates/wasm-datafusion-session/src/lib.rs apps/axon-web/src/lib.rs docs/release-gates/daxis-browser-datafusion-budget-profile.json crates/wasm-datafusion-poc/tests/daxis_budget_profile.rs
+git add crates/wasm-datafusion-poc/src/lib.rs crates/wasm-datafusion-poc/src/ipc_cursor.rs crates/wasm-datafusion-poc/tests/custom_scan_exec.rs crates/wasm-datafusion-poc/tests/ipc_cursor.rs crates/wasm-datafusion-session/src/lib.rs apps/axon-web/src/lib.rs docs/release-gates/daxis-browser-datafusion-budget-profile.json docs/program/browser-lakehouse-release-handoff-examples/browser-worker-artifact-report.datafusion.json crates/wasm-datafusion-poc/tests/daxis_budget_profile.rs
 git commit -m "feat: bound datafusion operator memory"
 ```
 
@@ -313,4 +316,3 @@ Expected: clean branch with the plan and implementation commits only.
 git add docs/plans/2026-07-23-streaming-owned-memory-bounds.md
 git commit -m "docs: record streaming memory verification"
 ```
-

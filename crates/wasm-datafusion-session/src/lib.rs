@@ -23,8 +23,8 @@ use sqlparser::ast::{
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 pub use wasm_datafusion_poc::{
-    ArrowIpcPhase, IpcCursorMetrics, IpcPreview, IpcStreamLimits, IpcTransportChunk,
-    QueryTerminalStatus,
+    ArrowIpcPhase, BrowserDataFusionMemoryMetrics, IpcCursorMetrics, IpcPreview, IpcStreamLimits,
+    IpcTransportChunk, QueryTerminalStatus,
 };
 use wasm_datafusion_poc::{
     BrowserQueryCancellation, CursorFault, DataFusionIpcCursor, DataFusionScanMetricsSummary,
@@ -87,6 +87,7 @@ pub struct BrowserDataFusionQueryTerminal {
     pub encoded_bytes: u64,
     pub preview: IpcPreview,
     pub cursor_metrics: IpcCursorMetrics,
+    pub memory_metrics: BrowserDataFusionMemoryMetrics,
 }
 
 pub struct BrowserDataFusionIpcCursor {
@@ -214,6 +215,7 @@ impl BrowserDataFusionIpcCursor {
             encoded_bytes: terminal.encoded_bytes,
             preview: terminal.preview,
             cursor_metrics: terminal.cursor_metrics,
+            memory_metrics: terminal.memory_metrics,
         }
     }
 }
@@ -1951,7 +1953,15 @@ mod tests {
             assert_eq!(session.datafusion.query_budget(), default_budget.into());
             let first = cursor.next().await.unwrap().unwrap();
             assert!(matches!(first, BrowserDataFusionIpcCursorItem::Chunk(_)));
-            cursor.close();
+            let terminal = loop {
+                match cursor.next().await.unwrap().unwrap() {
+                    BrowserDataFusionIpcCursorItem::Chunk(_) => {}
+                    BrowserDataFusionIpcCursorItem::Terminal(terminal) => break terminal,
+                }
+            };
+            assert!(terminal.memory_metrics.limit_bytes > 0);
+            assert_eq!(terminal.memory_metrics.reserved_bytes, 0);
+            assert!(terminal.memory_metrics.peak_bytes <= terminal.memory_metrics.limit_bytes);
         });
     }
 

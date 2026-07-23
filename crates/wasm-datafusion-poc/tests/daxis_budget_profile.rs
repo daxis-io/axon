@@ -1,9 +1,10 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use serde_json::Value;
-use wasm_datafusion_poc::BrowserQueryBudget;
+use wasm_datafusion_poc::{BrowserQueryBudget, DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES};
 
 const DAXIS_DEFAULT_WORKER_BROTLI_BUDGET_BYTES: u64 = 6 * 1024 * 1024;
+const DAXIS_COORDINATOR_AGGREGATE_STAGING_BYTES: u64 = 32 * 1024 * 1024;
 const DAXIS_DEFAULT_WORKER_SIZE_COMMAND: &str = "AXON_DF_SIZE_PACKAGE=axon-web-wasm AXON_DF_SIZE_WASM_STEM=axon_web_wasm AXON_DF_BROTLI_BUDGET_BYTES=6291456 bash tests/perf/report_datafusion_wasm_size.sh";
 
 #[test]
@@ -66,7 +67,16 @@ fn daxis_browser_datafusion_budget_profile_is_release_gate_ready() {
         DAXIS_DEFAULT_WORKER_SIZE_COMMAND
     );
     assert!(unsigned(&profile["startupBudget"], "firstRealDeltaParquetQueryMs") > 0);
-    assert!(unsigned(&profile["memoryBudget"], "sessionStructBytes") > 0);
+    let memory = &profile["memoryBudget"];
+    assert!(unsigned(memory, "sessionStructBytes") > 0);
+    assert_eq!(
+        unsigned(memory, "datafusionOperatorPoolBytes"),
+        u64::try_from(DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES).unwrap()
+    );
+    assert_eq!(
+        unsigned(memory, "coordinatorAggregateStagingBytes"),
+        DAXIS_COORDINATOR_AGGREGATE_STAGING_BYTES
+    );
 
     let commands = profile["verificationCommands"]
         .as_array()

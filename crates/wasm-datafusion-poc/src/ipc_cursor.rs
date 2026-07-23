@@ -29,8 +29,9 @@ use super::{
     datafusion_metric_from_usize, datafusion_scan_metrics_from_plan, is_query_cancelled_error,
     map_arrow_ipc_error, map_datafusion_error, query_budget_exceeded_error_at,
     validate_query_budget_for_plan, validate_query_budget_value_option_at,
-    validate_scan_overfetch_budget, BrowserQueryBudget, BrowserQueryCancellation,
-    DataFusionScanMetricsSummary, ParquetRangeQueryContext, WasmDataFusionEngine,
+    validate_scan_overfetch_budget, BrowserDataFusionMemoryMetrics, BrowserDataFusionMemoryPool,
+    BrowserQueryBudget, BrowserQueryCancellation, DataFusionScanMetricsSummary,
+    ParquetRangeQueryContext, WasmDataFusionEngine,
 };
 
 pub const DEFAULT_IPC_TRANSPORT_CHUNK_BYTES: usize = 1024 * 1024;
@@ -111,6 +112,7 @@ pub struct QueryTerminal {
     pub physical_plan: Option<String>,
     pub preview: IpcPreview,
     pub cursor_metrics: IpcCursorMetrics,
+    pub memory_metrics: BrowserDataFusionMemoryMetrics,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -399,6 +401,7 @@ pub struct DataFusionIpcCursor {
     physical_plan: Option<String>,
     preview: PreviewBuilder,
     cursor_metrics: IpcCursorMetrics,
+    memory_pool: Arc<BrowserDataFusionMemoryPool>,
 }
 
 impl fmt::Debug for DataFusionIpcCursor {
@@ -691,19 +694,24 @@ impl DataFusionIpcCursor {
         let result = self.finalize_scan_metrics();
         match result {
             Ok(scan_metrics) => {
-                let terminal = QueryTerminal {
-                    status: QueryTerminalStatus::Succeeded,
-                    error: None,
-                    row_count: self.rows_completed,
-                    encoded_bytes: self.encoded_bytes(),
-                    scan_metrics: Some(scan_metrics),
-                    physical_plan: self.physical_plan.take(),
-                    preview: self.preview.finish(),
-                    cursor_metrics: self.cursor_metrics.clone(),
-                };
+                let row_count = self.rows_completed;
+                let encoded_bytes = self.encoded_bytes();
+                let physical_plan = self.physical_plan.take();
+                let preview = self.preview.finish();
+                let cursor_metrics = self.cursor_metrics.clone();
                 self.state = CursorState::Terminal;
                 self.drop_execution_state();
-                terminal
+                QueryTerminal {
+                    status: QueryTerminalStatus::Succeeded,
+                    error: None,
+                    row_count,
+                    encoded_bytes,
+                    scan_metrics: Some(scan_metrics),
+                    physical_plan,
+                    preview,
+                    cursor_metrics,
+                    memory_metrics: self.memory_pool.metrics(),
+                }
             }
             Err(error) => self.finish_failed(error),
         }
@@ -738,19 +746,24 @@ impl DataFusionIpcCursor {
         status: QueryTerminalStatus,
         error: Option<QueryError>,
     ) -> QueryTerminal {
-        let terminal = QueryTerminal {
-            status,
-            error,
-            row_count: self.rows_completed,
-            encoded_bytes: self.encoded_bytes(),
-            scan_metrics: None,
-            physical_plan: self.physical_plan.take(),
-            preview: self.preview.finish(),
-            cursor_metrics: self.cursor_metrics.clone(),
-        };
+        let row_count = self.rows_completed;
+        let encoded_bytes = self.encoded_bytes();
+        let physical_plan = self.physical_plan.take();
+        let preview = self.preview.finish();
+        let cursor_metrics = self.cursor_metrics.clone();
         self.state = CursorState::Terminal;
         self.drop_execution_state();
-        terminal
+        QueryTerminal {
+            status,
+            error,
+            row_count,
+            encoded_bytes,
+            scan_metrics: None,
+            physical_plan,
+            preview,
+            cursor_metrics,
+            memory_metrics: self.memory_pool.metrics(),
+        }
     }
 
     fn finalize_scan_metrics(&mut self) -> Result<DataFusionScanMetricsSummary, QueryError> {
@@ -901,6 +914,7 @@ impl WasmDataFusionEngine {
             physical_plan,
             preview: PreviewBuilder::new(output_schema, limits),
             cursor_metrics: IpcCursorMetrics::default(),
+            memory_pool: Arc::clone(&self.memory_pool),
         };
         cursor.record_pending_metrics();
         Ok(cursor)

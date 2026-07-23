@@ -18,9 +18,10 @@ use std::{
     fmt,
     future::Future,
     io::{self, Write},
+    num::NonZeroUsize,
     pin::Pin,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
@@ -33,6 +34,10 @@ use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::ScalarValue;
 use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
+use datafusion::execution::memory_pool::{
+    GreedyMemoryPool, MemoryLimit, MemoryPool, MemoryReservation, TrackConsumersPool,
+};
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Expr, Operator, TableProviderFilterPushDown, TableType};
 use datafusion::physical_expr::EquivalenceProperties;
@@ -42,7 +47,7 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
     SendableRecordBatchStream,
 };
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use futures_util::{
     stream::{self, BoxStream},
     StreamExt, TryStreamExt,
@@ -74,6 +79,7 @@ pub const RESPONSIBILITY: &str =
 pub const DEFAULT_TABLE_NAME: &str = "t";
 pub const SMOKE_SQL: &str =
     "SELECT id, value FROM t WHERE category = 'B' AND value > 10 ORDER BY id";
+pub const DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn runtime_target() -> ExecutionTarget {
     ExecutionTarget::BrowserWasm
@@ -119,6 +125,83 @@ pub struct BrowserQueryBudget {
     pub max_output_ipc_bytes: Option<u64>,
     pub max_batches_in_flight: Option<usize>,
     pub max_rows_returned: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BrowserDataFusionMemoryMetrics {
+    pub limit_bytes: u64,
+    pub reserved_bytes: u64,
+    pub peak_bytes: u64,
+}
+
+#[derive(Debug)]
+struct BrowserDataFusionMemoryPool {
+    inner: TrackConsumersPool<GreedyMemoryPool>,
+    limit_bytes: usize,
+    peak_bytes: AtomicUsize,
+}
+
+impl BrowserDataFusionMemoryPool {
+    fn new(limit_bytes: NonZeroUsize) -> Self {
+        Self {
+            inner: TrackConsumersPool::new(
+                GreedyMemoryPool::new(limit_bytes.get()),
+                NonZeroUsize::new(5).expect("tracked consumer count is non-zero"),
+            ),
+            limit_bytes: limit_bytes.get(),
+            peak_bytes: AtomicUsize::new(0),
+        }
+    }
+
+    fn metrics(&self) -> BrowserDataFusionMemoryMetrics {
+        BrowserDataFusionMemoryMetrics {
+            limit_bytes: usize_metric(self.limit_bytes),
+            reserved_bytes: usize_metric(self.reserved()),
+            peak_bytes: usize_metric(self.peak_bytes.load(Ordering::Relaxed)),
+        }
+    }
+
+    fn record_peak(&self) {
+        self.peak_bytes
+            .fetch_max(self.inner.reserved(), Ordering::Relaxed);
+    }
+}
+
+impl MemoryPool for BrowserDataFusionMemoryPool {
+    fn register(&self, consumer: &datafusion::execution::memory_pool::MemoryConsumer) {
+        self.inner.register(consumer);
+    }
+
+    fn unregister(&self, consumer: &datafusion::execution::memory_pool::MemoryConsumer) {
+        self.inner.unregister(consumer);
+    }
+
+    fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+        self.inner.grow(reservation, additional);
+        self.record_peak();
+    }
+
+    fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
+        self.inner.shrink(reservation, shrink);
+    }
+
+    fn try_grow(&self, reservation: &MemoryReservation, additional: usize) -> DataFusionResult<()> {
+        self.inner.try_grow(reservation, additional)?;
+        self.record_peak();
+        Ok(())
+    }
+
+    fn reserved(&self) -> usize {
+        self.inner.reserved()
+    }
+
+    fn memory_limit(&self) -> MemoryLimit {
+        self.inner.memory_limit()
+    }
+}
+
+fn usize_metric(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 #[derive(Clone, Debug)]
@@ -2097,6 +2180,7 @@ async fn collect_record_batches_with_controls(
 #[derive(Clone)]
 pub struct WasmDataFusionEngine {
     ctx: SessionContext,
+    memory_pool: Arc<BrowserDataFusionMemoryPool>,
     query_budget: BrowserQueryBudget,
     cancellation: BrowserQueryCancellation,
     metadata_cache: ParquetMetadataCache,
@@ -2117,6 +2201,26 @@ impl WasmDataFusionEngine {
 
     pub fn with_budget(query_budget: BrowserQueryBudget) -> Self {
         Self::with_budget_and_cancellation(query_budget, BrowserQueryCancellation::default())
+    }
+
+    pub fn with_budget_and_memory_limit(
+        query_budget: BrowserQueryBudget,
+        memory_limit_bytes: usize,
+    ) -> Result<Self, QueryError> {
+        let memory_limit_bytes = NonZeroUsize::new(memory_limit_bytes).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InvalidRequest,
+                "browser DataFusion memory pool limit must be positive",
+                runtime_target(),
+            )
+        })?;
+        Ok(Self::with_budget_cancellation_caches_and_memory_limit(
+            query_budget,
+            BrowserQueryCancellation::default(),
+            ParquetMetadataCache::default(),
+            ParquetRangeCache::default(),
+            memory_limit_bytes,
+        ))
     }
 
     pub fn with_budget_and_cancellation(
@@ -2149,8 +2253,32 @@ impl WasmDataFusionEngine {
         metadata_cache: ParquetMetadataCache,
         range_cache: ParquetRangeCache,
     ) -> Self {
+        Self::with_budget_cancellation_caches_and_memory_limit(
+            query_budget,
+            cancellation,
+            metadata_cache,
+            range_cache,
+            NonZeroUsize::new(DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES)
+                .expect("default browser DataFusion memory pool limit is non-zero"),
+        )
+    }
+
+    fn with_budget_cancellation_caches_and_memory_limit(
+        query_budget: BrowserQueryBudget,
+        cancellation: BrowserQueryCancellation,
+        metadata_cache: ParquetMetadataCache,
+        range_cache: ParquetRangeCache,
+        memory_limit_bytes: NonZeroUsize,
+    ) -> Self {
+        let memory_pool = Arc::new(BrowserDataFusionMemoryPool::new(memory_limit_bytes));
+        let runtime_memory_pool: Arc<dyn MemoryPool> = memory_pool.clone();
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(runtime_memory_pool)
+            .build()
+            .expect("browser DataFusion runtime with an in-memory pool should construct");
         Self {
-            ctx: SessionContext::new(),
+            ctx: SessionContext::new_with_config_rt(SessionConfig::new(), Arc::new(runtime)),
+            memory_pool,
             query_budget,
             cancellation,
             metadata_cache,
@@ -2160,6 +2288,10 @@ impl WasmDataFusionEngine {
 
     pub fn query_budget(&self) -> BrowserQueryBudget {
         self.query_budget
+    }
+
+    pub fn memory_metrics(&self) -> BrowserDataFusionMemoryMetrics {
+        self.memory_pool.metrics()
     }
 
     pub fn set_query_budget(&mut self, query_budget: BrowserQueryBudget) -> BrowserQueryBudget {
@@ -2730,6 +2862,12 @@ fn map_datafusion_error(error: datafusion::error::DataFusionError) -> QueryError
             message,
             runtime_target(),
         ),
+        DataFusionError::ResourcesExhausted(message) => QueryError::new(
+            QueryErrorCode::FallbackRequired,
+            format!("browser DataFusion operator memory pool exhausted: {message}"),
+            runtime_target(),
+        )
+        .with_fallback_reason(FallbackReason::BrowserRuntimeConstraint),
         other => QueryError::new(
             QueryErrorCode::ExecutionFailed,
             format!("experimental browser DataFusion query failed: {other}"),
@@ -2762,6 +2900,34 @@ mod tests {
 
     use parquet::data_type::Int64Type;
     use parquet::file::properties::WriterProperties;
+
+    #[test]
+    fn browser_datafusion_memory_pool_tracks_current_and_peak_reservations() {
+        let pool = Arc::new(BrowserDataFusionMemoryPool::new(
+            NonZeroUsize::new(100).unwrap(),
+        ));
+        let runtime_pool: Arc<dyn MemoryPool> = pool.clone();
+        let reservation =
+            datafusion::execution::memory_pool::MemoryConsumer::new("memory-metrics-test")
+                .register(&runtime_pool);
+
+        reservation.try_grow(60).unwrap();
+        assert_eq!(
+            pool.metrics(),
+            BrowserDataFusionMemoryMetrics {
+                limit_bytes: 100,
+                reserved_bytes: 60,
+                peak_bytes: 60,
+            }
+        );
+
+        reservation.shrink(20);
+        assert_eq!(pool.metrics().reserved_bytes, 40);
+        assert_eq!(pool.metrics().peak_bytes, 60);
+        drop(reservation);
+        assert_eq!(pool.metrics().reserved_bytes, 0);
+        assert_eq!(pool.metrics().peak_bytes, 60);
+    }
     use parquet::file::writer::SerializedFileWriter;
     use parquet::schema::parser::parse_message_type;
 

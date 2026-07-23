@@ -4,7 +4,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use arrow_array::{cast::AsArray, Int32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use wasm_datafusion_poc::{DeltaActiveFile, DeltaTableDescriptor, WasmDataFusionEngine};
+use query_contract::{FallbackReason, QueryErrorCode};
+use wasm_datafusion_poc::{
+    BrowserQueryBudget, DeltaActiveFile, DeltaTableDescriptor, WasmDataFusionEngine,
+};
 
 #[tokio::test]
 async fn datafusion_executes_filter_order_and_limit_above_custom_scan() {
@@ -63,6 +66,52 @@ async fn datafusion_executes_aggregate_above_custom_scan() {
     assert_eq!(utf8_values(result, 0), vec!["A", "B", "C"]);
     assert_eq!(int64_values(result, 1), vec![1, 3, 1]);
     assert_eq!(int64_values(result, 2), vec![5, 45, 20]);
+}
+
+#[tokio::test]
+async fn datafusion_operator_memory_exhaustion_requires_structured_fallback() {
+    let invalid =
+        WasmDataFusionEngine::with_budget_and_memory_limit(BrowserQueryBudget::default(), 0)
+            .expect_err("a zero-byte DataFusion memory pool must be rejected");
+    assert_eq!(invalid.code, QueryErrorCode::InvalidRequest);
+
+    let mut engine =
+        WasmDataFusionEngine::with_budget_and_memory_limit(BrowserQueryBudget::default(), 1)
+            .expect("one byte is a valid non-zero test memory limit");
+    let schema = descriptor_schema();
+
+    engine
+        .open_delta_table_with_record_batch_partitions(
+            delta_descriptor("events", Arc::clone(&schema)),
+            controlled_partitions(schema),
+        )
+        .await
+        .expect("descriptor-backed table should register");
+
+    let error = engine
+        .sql_to_record_batches(
+            "SELECT category, COUNT(*) AS rows, SUM(value) AS total_value \
+             FROM events \
+             GROUP BY category \
+             ORDER BY category",
+        )
+        .await
+        .expect_err("a one-byte DataFusion memory pool must reject the aggregate");
+
+    assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+    assert_eq!(
+        error.fallback_reason,
+        Some(FallbackReason::BrowserRuntimeConstraint)
+    );
+    assert!(
+        error
+            .message
+            .contains("browser DataFusion operator memory pool exhausted"),
+        "{error:?}"
+    );
+    assert_eq!(engine.memory_metrics().limit_bytes, 1);
+    assert_eq!(engine.memory_metrics().reserved_bytes, 0);
+    assert!(engine.memory_metrics().peak_bytes <= 1);
 }
 
 #[tokio::test]

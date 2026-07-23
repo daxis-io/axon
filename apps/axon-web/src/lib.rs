@@ -13,9 +13,9 @@ use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
 use wasm_datafusion_session::{
     ArrowIpcPhase, BrowserDataFusionCancellation, BrowserDataFusionCursorCancellation,
-    BrowserDataFusionIpcCursor, BrowserDataFusionIpcCursorItem, BrowserDataFusionQueryTerminal,
-    BrowserDataFusionSession, IpcCursorMetrics, IpcPreview, IpcStreamLimits, IpcTransportChunk,
-    QueryTerminalStatus,
+    BrowserDataFusionIpcCursor, BrowserDataFusionIpcCursorItem, BrowserDataFusionMemoryMetrics,
+    BrowserDataFusionQueryTerminal, BrowserDataFusionSession, IpcCursorMetrics, IpcPreview,
+    IpcStreamLimits, IpcTransportChunk, QueryTerminalStatus,
 };
 use wasm_delta_snapshot::{
     BrowserDeltaLogManifest, BrowserDeltaLogObject, BrowserHttpDeltaLogStorageHandler,
@@ -151,6 +151,7 @@ struct SandboxSqlTerminalMetadata {
     preview_duration_ms: u64,
     cache_metrics: SandboxCacheMetrics,
     cursor_metrics: SandboxCursorMetrics,
+    datafusion_memory: SandboxDataFusionMemoryMetrics,
 }
 
 #[derive(Debug, Serialize)]
@@ -163,6 +164,16 @@ struct SandboxCursorMetrics {
     peak_pending_encoded_capacity: u64,
     #[serde(serialize_with = "serialize_decimal_string")]
     peak_transport_chunk_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct SandboxDataFusionMemoryMetrics {
+    #[serde(serialize_with = "serialize_decimal_string")]
+    limit_bytes: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    reserved_bytes: u64,
+    #[serde(serialize_with = "serialize_decimal_string")]
+    peak_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -858,6 +869,7 @@ fn ipc_terminal_js_value(
     let preview_string_bytes = terminal.preview.string_bytes;
     let preview = query_preview_output(terminal.preview);
     let cursor_metrics = sandbox_cursor_metrics(&terminal.cursor_metrics);
+    let datafusion_memory = sandbox_datafusion_memory_metrics(&terminal.memory_metrics);
     let mut response = terminal.response;
     if let Some(response) = response.as_mut() {
         response.metrics.arrow_ipc_bytes = Some(terminal.encoded_bytes);
@@ -877,6 +889,7 @@ fn ipc_terminal_js_value(
         preview_duration_ms: 0,
         cache_metrics,
         cursor_metrics,
+        datafusion_memory,
     };
     let metadata_json = serde_json::to_string(&metadata).map_err(|error| {
         JsValue::from_str(&format!(
@@ -910,6 +923,16 @@ fn sandbox_cursor_metrics(metrics: &IpcCursorMetrics) -> SandboxCursorMetrics {
         peak_pending_encoded_bytes: metrics.peak_pending_encoded_bytes,
         peak_pending_encoded_capacity: metrics.peak_pending_encoded_capacity,
         peak_transport_chunk_bytes: metrics.peak_transport_chunk_bytes,
+    }
+}
+
+fn sandbox_datafusion_memory_metrics(
+    metrics: &BrowserDataFusionMemoryMetrics,
+) -> SandboxDataFusionMemoryMetrics {
+    SandboxDataFusionMemoryMetrics {
+        limit_bytes: metrics.limit_bytes,
+        reserved_bytes: metrics.reserved_bytes,
+        peak_bytes: metrics.peak_bytes,
     }
 }
 
@@ -964,6 +987,27 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::path::PathBuf;
+
+    #[test]
+    fn sandbox_datafusion_memory_metrics_serialize_as_decimal_strings() {
+        let serialized = serde_json::to_value(sandbox_datafusion_memory_metrics(
+            &wasm_datafusion_session::BrowserDataFusionMemoryMetrics {
+                limit_bytes: 9_007_199_254_740_993,
+                reserved_bytes: 9_007_199_254_740_994,
+                peak_bytes: 9_007_199_254_740_995,
+            },
+        ))
+        .expect("sandbox DataFusion memory metrics should serialize");
+
+        assert_eq!(
+            serialized,
+            json!({
+                "limit_bytes": "9007199254740993",
+                "reserved_bytes": "9007199254740994",
+                "peak_bytes": "9007199254740995"
+            })
+        );
+    }
 
     #[test]
     fn parquet_preflight_output_serializes_large_numeric_fields_as_decimal_strings() {
