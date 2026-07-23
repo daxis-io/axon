@@ -128,6 +128,53 @@ async fn cursor_cancellation_discards_pending_bytes_and_terminates_once() {
 }
 
 #[tokio::test]
+async fn engine_cancel_generation_reaches_every_live_cursor_and_not_later_queries() {
+    let engine = engine_with_string_rows(vec!["payload".repeat(1024)]).await;
+    let mut first = engine
+        .start_arrow_ipc_cursor("SELECT value FROM events", limits(64), false)
+        .await
+        .unwrap();
+    let mut second = engine
+        .start_arrow_ipc_cursor("SELECT value FROM events", limits(64), false)
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        first.next().await.unwrap().unwrap(),
+        IpcCursorItem::Chunk(ref chunk) if chunk.phase == ArrowIpcPhase::Schema
+    ));
+    assert!(matches!(
+        second.next().await.unwrap().unwrap(),
+        IpcCursorItem::Chunk(ref chunk) if chunk.phase == ArrowIpcPhase::Schema
+    ));
+
+    engine.cancel_running_queries();
+
+    let first_terminal = match first.next().await.unwrap().unwrap() {
+        IpcCursorItem::Terminal(terminal) => terminal,
+        item => panic!("first live cursor missed cancel-all: {item:?}"),
+    };
+    let second_terminal = match second.next().await.unwrap().unwrap() {
+        IpcCursorItem::Terminal(terminal) => terminal,
+        item => panic!("second live cursor missed cancel-all: {item:?}"),
+    };
+    assert_eq!(first_terminal.status, QueryTerminalStatus::Cancelled);
+    assert_eq!(second_terminal.status, QueryTerminalStatus::Cancelled);
+
+    let mut later = engine
+        .start_arrow_ipc_cursor("SELECT value FROM events", limits(64), false)
+        .await
+        .expect("a later query must capture the new cancellation generation");
+    let later_terminal = loop {
+        match later.next().await.unwrap().unwrap() {
+            IpcCursorItem::Chunk(_) => {}
+            IpcCursorItem::Terminal(terminal) => break terminal,
+        }
+    };
+    assert_eq!(later_terminal.status, QueryTerminalStatus::Succeeded);
+}
+
+#[tokio::test]
 async fn cursor_total_budget_counts_end_of_stream_and_terminates_once() {
     let engine = engine_with_string_rows(Vec::new()).await;
     let mut measuring_cursor = engine

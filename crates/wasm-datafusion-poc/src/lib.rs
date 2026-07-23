@@ -10,7 +10,7 @@ pub use ipc_cursor::{
 };
 
 #[cfg(test)]
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicBool, AtomicU8};
 use std::{
     any::Any,
     collections::{BTreeMap, BTreeSet},
@@ -20,7 +20,7 @@ use std::{
     io::{self, Write},
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
 };
@@ -122,7 +122,8 @@ pub struct BrowserQueryBudget {
 
 #[derive(Clone, Debug)]
 pub struct BrowserQueryCancellation {
-    cancelled: Arc<AtomicBool>,
+    generation: Arc<AtomicU64>,
+    observed_generation: u64,
     #[cfg(test)]
     cancel_at_checkpoint: Arc<AtomicU8>,
 }
@@ -130,25 +131,28 @@ pub struct BrowserQueryCancellation {
 impl BrowserQueryCancellation {
     pub fn new() -> Self {
         Self {
-            cancelled: Arc::new(AtomicBool::new(false)),
+            generation: Arc::new(AtomicU64::new(0)),
+            observed_generation: 0,
             #[cfg(test)]
             cancel_at_checkpoint: Arc::new(AtomicU8::new(CANCEL_AT_NO_CHECKPOINT)),
         }
     }
 
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
+        self.generation.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
+        self.generation.load(Ordering::SeqCst) != self.observed_generation
     }
 
-    fn reset(&self) {
-        self.cancelled.store(false, Ordering::SeqCst);
-        #[cfg(test)]
-        self.cancel_at_checkpoint
-            .store(CANCEL_AT_NO_CHECKPOINT, Ordering::SeqCst);
+    fn snapshot(&self) -> Self {
+        Self {
+            generation: Arc::clone(&self.generation),
+            observed_generation: self.generation.load(Ordering::SeqCst),
+            #[cfg(test)]
+            cancel_at_checkpoint: Arc::clone(&self.cancel_at_checkpoint),
+        }
     }
 
     fn check_cancelled(&self) -> Result<(), QueryError> {
@@ -158,7 +162,7 @@ impl BrowserQueryCancellation {
     fn check_cancelled_at(&self, point: &str) -> Result<(), QueryError> {
         #[cfg(test)]
         if self.should_cancel_at_checkpoint(point) {
-            self.cancelled.store(true, Ordering::SeqCst);
+            self.cancel();
         }
 
         if self.is_cancelled() {
@@ -531,6 +535,11 @@ impl TableProvider for AxonDeltaTableProvider {
                 .config()
                 .get_extension::<ParquetRangeQueryContext>()
                 .map(|context| context.as_ref().clone());
+            let cancellation = state
+                .config()
+                .get_extension::<BrowserQueryCancellation>()
+                .map(|cancellation| cancellation.as_ref().clone())
+                .unwrap_or_else(|| self.cancellation.snapshot());
             Ok(Arc::new(AxonParquetScanExec::new(
                 Arc::clone(&self.descriptor),
                 schema,
@@ -539,7 +548,7 @@ impl TableProvider for AxonDeltaTableProvider {
                 limit,
                 self.in_memory_partitions.clone(),
                 self.query_budget,
-                self.cancellation.clone(),
+                cancellation,
                 self.metadata_cache.clone(),
                 self.range_cache.clone(),
                 query_context,
@@ -2246,21 +2255,18 @@ impl WasmDataFusionEngine {
         &self,
         sql: &str,
     ) -> Result<(SchemaRef, Vec<RecordBatch>, DataFusionScanMetricsSummary), QueryError> {
-        let result = self.sql_to_record_batches_with_metrics_inner(sql).await;
-        if matches!(result.as_ref(), Err(error) if is_query_cancelled_error(error)) {
-            self.cancellation.reset();
-        }
-        result
+        self.sql_to_record_batches_with_metrics_inner(sql).await
     }
 
     async fn sql_to_record_batches_with_metrics_inner(
         &self,
         sql: &str,
     ) -> Result<(SchemaRef, Vec<RecordBatch>, DataFusionScanMetricsSummary), QueryError> {
-        self.cancellation.check_cancelled_at("SQL planning")?;
-        let (query_ctx, query_context) = self.begin_query_session();
+        let cancellation = self.cancellation.snapshot();
+        cancellation.check_cancelled_at("SQL planning")?;
+        let (query_ctx, query_context) = self.begin_query_session(&cancellation);
         let frame = query_ctx.sql(sql).await.map_err(map_datafusion_error)?;
-        self.cancellation.check_cancelled_at("SQL planning")?;
+        cancellation.check_cancelled_at("SQL planning")?;
         let output_schema = frame.schema().inner().clone();
         let task_ctx = query_ctx.task_ctx();
         let plan = frame
@@ -2268,17 +2274,15 @@ impl WasmDataFusionEngine {
             .await
             .map_err(map_datafusion_error)?;
         validate_query_budget_for_plan(&plan, self.query_budget)?;
-        self.cancellation
-            .check_cancelled_at("record batch output")?;
+        cancellation.check_cancelled_at("record batch output")?;
         let batches = collect_record_batches_with_controls(
             Arc::clone(&plan),
             task_ctx,
             self.query_budget,
-            &self.cancellation,
+            &cancellation,
         )
         .await?;
-        self.cancellation
-            .check_cancelled_at("record batch output")?;
+        cancellation.check_cancelled_at("record batch output")?;
         let mut scan_metrics = datafusion_scan_metrics_from_plan(&plan)?;
         scan_metrics.range_read_metrics = merge_parquet_range_read_metrics(
             &scan_metrics.range_read_metrics,
@@ -2302,22 +2306,14 @@ impl WasmDataFusionEngine {
         &self,
         sql: &str,
     ) -> Result<DataFusionArrowIpcResult, QueryError> {
-        let result = self.sql_to_arrow_ipc_result_inner(sql, false).await;
-        if matches!(result.as_ref(), Err(error) if is_query_cancelled_error(error)) {
-            self.cancellation.reset();
-        }
-        result
+        self.sql_to_arrow_ipc_result_inner(sql, false).await
     }
 
     pub async fn sql_to_arrow_ipc_result_with_physical_plan(
         &self,
         sql: &str,
     ) -> Result<DataFusionArrowIpcResult, QueryError> {
-        let result = self.sql_to_arrow_ipc_result_inner(sql, true).await;
-        if matches!(result.as_ref(), Err(error) if is_query_cancelled_error(error)) {
-            self.cancellation.reset();
-        }
-        result
+        self.sql_to_arrow_ipc_result_inner(sql, true).await
     }
 
     async fn sql_to_arrow_ipc_result_inner(
@@ -2409,12 +2405,18 @@ impl WasmDataFusionEngine {
         ))
     }
 
-    fn begin_query_session(&self) -> (SessionContext, ParquetRangeQueryContext) {
+    fn begin_query_session(
+        &self,
+        cancellation: &BrowserQueryCancellation,
+    ) -> (SessionContext, ParquetRangeQueryContext) {
         let query_context = self.range_cache.begin_query();
         let mut state = self.ctx.state();
         state
             .config_mut()
             .set_extension(Arc::new(query_context.clone()));
+        state
+            .config_mut()
+            .set_extension(Arc::new(cancellation.clone()));
         (SessionContext::new_with_state(state), query_context)
     }
 }

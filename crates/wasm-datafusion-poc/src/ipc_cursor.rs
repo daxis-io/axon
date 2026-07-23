@@ -374,7 +374,7 @@ pub struct DataFusionIpcCursor {
     limits: IpcStreamLimits,
     query_budget: BrowserQueryBudget,
     cancel_handle: QueryCancelHandle,
-    legacy_cancellation: BrowserQueryCancellation,
+    query_cancellation: BrowserQueryCancellation,
     pending: PendingLogicalChunk,
     next_sequence: u64,
     next_logical_batch_sequence: u64,
@@ -408,7 +408,7 @@ impl DataFusionIpcCursor {
                 return Ok(Some(IpcCursorItem::Terminal(self.finish_cancelled(status))));
             }
             if let Err(error) = self
-                .legacy_cancellation
+                .query_cancellation
                 .check_cancelled_at("Arrow IPC output")
             {
                 return Ok(Some(IpcCursorItem::Terminal(self.finish_failed(error))));
@@ -614,7 +614,7 @@ impl DataFusionIpcCursor {
         if let Err(error) = writer.write(&batch) {
             return Err(self.take_sink_or_arrow_error(error, "encode Arrow IPC batch"));
         }
-        self.legacy_cancellation
+        self.query_cancellation
             .check_cancelled_at("Arrow IPC batch encoding")?;
         self.record_pending_metrics();
         self.pending = PendingLogicalChunk {
@@ -694,7 +694,6 @@ impl DataFusionIpcCursor {
 
     fn finish_failed(&mut self, error: QueryError) -> QueryTerminal {
         let status = if is_query_cancelled_error(&error) {
-            self.legacy_cancellation.reset();
             QueryTerminalStatus::Cancelled
         } else {
             QueryTerminalStatus::Failed
@@ -703,7 +702,6 @@ impl DataFusionIpcCursor {
     }
 
     fn finish_cancelled(&mut self, status: QueryTerminalStatus) -> QueryTerminal {
-        self.legacy_cancellation.reset();
         let message = match status {
             QueryTerminalStatus::DeadlineExceeded => {
                 "experimental browser DataFusion query deadline exceeded during Arrow IPC cursor pull"
@@ -821,16 +819,11 @@ impl WasmDataFusionEngine {
             ));
         }
 
-        if let Err(error) = self.cancellation_token().check_cancelled_at("SQL planning") {
-            self.cancellation_token().reset();
-            return Err(error);
-        }
-        let (query_ctx, query_context) = self.begin_query_session();
+        let query_cancellation = self.cancellation_token().snapshot();
+        query_cancellation.check_cancelled_at("SQL planning")?;
+        let (query_ctx, query_context) = self.begin_query_session(&query_cancellation);
         let frame = query_ctx.sql(sql).await.map_err(map_datafusion_error)?;
-        if let Err(error) = self.cancellation_token().check_cancelled_at("SQL planning") {
-            self.cancellation_token().reset();
-            return Err(error);
-        }
+        query_cancellation.check_cancelled_at("SQL planning")?;
         let output_schema = frame.schema().inner().clone();
         reject_dictionary_schema(&output_schema)?;
         let task_ctx = query_ctx.task_ctx();
@@ -873,7 +866,7 @@ impl WasmDataFusionEngine {
             limits,
             query_budget: self.query_budget(),
             cancel_handle: QueryCancelHandle::new(),
-            legacy_cancellation: self.cancellation_token(),
+            query_cancellation,
             pending: PendingLogicalChunk {
                 phase: ArrowIpcPhase::Schema,
                 logical_batch_sequence: None,

@@ -11,7 +11,8 @@ use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
 use query_contract::{ExecutionTarget, FallbackReason, QueryError, QueryErrorCode};
 use wasm_datafusion_poc::{
-    BrowserQueryBudget, DeltaActiveFile, DeltaTableDescriptor, WasmDataFusionEngine,
+    ArrowIpcPhase, BrowserQueryBudget, DeltaActiveFile, DeltaTableDescriptor, IpcCursorItem,
+    IpcStreamLimits, QueryTerminalStatus, WasmDataFusionEngine,
 };
 
 mod support;
@@ -266,7 +267,6 @@ async fn query_budget_rejects_row_budget_before_scanning_later_files() {
 #[tokio::test]
 async fn query_cancellation_reports_structured_shape() {
     let mut engine = WasmDataFusionEngine::with_budget(BrowserQueryBudget::default());
-    let cancellation = engine.cancellation_token();
     let batch = controlled_batch();
     let schema = batch.schema();
 
@@ -274,12 +274,33 @@ async fn query_cancellation_reports_structured_shape() {
         .register_record_batches("events", schema, vec![batch])
         .await
         .expect("record batches should register");
-    cancellation.cancel();
-
-    let error = engine
-        .sql_to_arrow_ipc("SELECT id FROM events ORDER BY id")
+    let mut cursor = engine
+        .start_arrow_ipc_cursor(
+            "SELECT id FROM events ORDER BY id",
+            IpcStreamLimits {
+                max_transport_chunk_bytes: 64,
+                max_pending_encoded_batch_bytes: 1024 * 1024,
+                max_total_encoded_bytes: None,
+                preview_rows: 0,
+                max_preview_string_bytes: None,
+            },
+            false,
+        )
         .await
-        .expect_err("cancelled query should fail");
+        .expect("cursor should start before cancellation");
+    assert!(matches!(
+        cursor.next().await.unwrap().unwrap(),
+        IpcCursorItem::Chunk(ref chunk) if chunk.phase == ArrowIpcPhase::Schema
+    ));
+    engine.cancel_running_queries();
+    let terminal = match cursor.next().await.unwrap().unwrap() {
+        IpcCursorItem::Terminal(terminal) => terminal,
+        item => panic!("cancelled query should terminate, got {item:?}"),
+    };
+    assert_eq!(terminal.status, QueryTerminalStatus::Cancelled);
+    let error = terminal
+        .error
+        .expect("cancellation must carry a query error");
 
     assert_eq!(error.code, QueryErrorCode::ExecutionFailed);
     assert_eq!(error.fallback_reason, None);
