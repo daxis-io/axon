@@ -1102,6 +1102,7 @@ fn execute_query_rejects_browser_runtime_limits() {
             max_arrow_ipc_bytes: None,
             max_preview_string_bytes: None,
             max_scan_bytes: None,
+            max_scan_overfetch_bytes: None,
         }),
         ..QueryExecutionOptions::default()
     });

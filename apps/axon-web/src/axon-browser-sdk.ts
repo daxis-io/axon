@@ -91,6 +91,7 @@ export type QueryRuntimeLimits = {
   max_arrow_ipc_bytes?: number;
   max_preview_string_bytes?: number;
   max_scan_bytes?: number;
+  max_scan_overfetch_bytes?: number;
 };
 
 export type QueryRequest = {
@@ -404,8 +405,7 @@ export type DeltaLocationBrowserSourceOpenOptions = AxonRequestOptions & {
 };
 
 export type DeltaLocationOpenOptions =
-  | DeltaLocationServerSnapshotOpenOptions
-  | DeltaLocationBrowserSourceOpenOptions;
+  DeltaLocationServerSnapshotOpenOptions | DeltaLocationBrowserSourceOpenOptions;
 
 export type DeltaLocationServerSnapshotOpenMetadata = Omit<
   DeltaLocationResolveResponse,
@@ -421,8 +421,7 @@ export type DeltaLocationBrowserOpenMetadata = {
 };
 
 export type DeltaLocationOpenMetadata =
-  | DeltaLocationServerSnapshotOpenMetadata
-  | DeltaLocationBrowserOpenMetadata;
+  DeltaLocationServerSnapshotOpenMetadata | DeltaLocationBrowserOpenMetadata;
 
 export type DeltaLocationServerSnapshotOpenedEnvelope = BrowserWorkerOpenedEnvelope & {
   location: DeltaLocationServerSnapshotOpenMetadata;
@@ -433,8 +432,7 @@ export type DeltaLocationBrowserOpenedEnvelope = BrowserWorkerOpenedEnvelope & {
 };
 
 export type DeltaLocationOpenedEnvelope =
-  | DeltaLocationServerSnapshotOpenedEnvelope
-  | DeltaLocationBrowserOpenedEnvelope;
+  DeltaLocationServerSnapshotOpenedEnvelope | DeltaLocationBrowserOpenedEnvelope;
 
 export type ResolvedFileDescriptor = {
   path: string;
@@ -635,6 +633,7 @@ export type QueryMetricsSummary = {
   duplicate_range_reads?: number;
   coalesced_range_reads?: number;
   coalesced_gap_bytes_fetched?: number;
+  scan_overfetch_bytes?: number;
   footer_cache_hits?: number;
   footer_cache_misses?: number;
   footer_range_reads_avoided?: number;
@@ -883,11 +882,7 @@ export type BrowserWorkerEventContext = {
 };
 
 export type BrowserWorkerProgressStage =
-  | 'started'
-  | 'planning'
-  | 'executing'
-  | 'arrow_ipc_ready'
-  | 'finished';
+  'started' | 'planning' | 'executing' | 'arrow_ipc_ready' | 'finished';
 
 export type BrowserWorkerLogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -920,6 +915,7 @@ export type BrowserWorkerRangeReadMetricsEvent = {
   duplicate_range_reads?: number;
   coalesced_range_reads?: number;
   coalesced_gap_bytes_fetched?: number;
+  scan_overfetch_bytes?: number;
   footer_cache_hits?: number;
   footer_cache_misses?: number;
   footer_range_reads_avoided?: number;
@@ -1007,8 +1003,7 @@ export type BrowserWorkerEventEnvelope =
   | { arrow_ipc_chunk: BrowserWorkerArrowIpcChunkEvent };
 
 export type WireBrowserWorkerMessageEnvelope =
-  | WireBrowserWorkerResponseEnvelope
-  | BrowserWorkerEventEnvelope;
+  WireBrowserWorkerResponseEnvelope | BrowserWorkerEventEnvelope;
 
 export type AxonQueryResult = BrowserWorkerSuccessEnvelope & {
   fallbackReason?: FallbackReason;
@@ -4617,6 +4612,10 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
           coalesced_gap_bytes_fetched: optionalNumber(
             payload.coalesced_gap_bytes_fetched,
             'range_read_metrics.coalesced_gap_bytes_fetched',
+          ),
+          scan_overfetch_bytes: optionalNumber(
+            payload.scan_overfetch_bytes,
+            'range_read_metrics.scan_overfetch_bytes',
           ),
           footer_cache_hits: optionalNumber(
             payload.footer_cache_hits,

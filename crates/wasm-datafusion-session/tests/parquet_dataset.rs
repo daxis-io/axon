@@ -485,6 +485,7 @@ fn session_runtime_limit_changes_reuse_immutable_prepared_state() {
                 max_arrow_ipc_bytes: None,
                 max_preview_string_bytes: None,
                 max_scan_bytes: None,
+                max_scan_overfetch_bytes: None,
             }),
             ..QueryExecutionOptions::default()
         });

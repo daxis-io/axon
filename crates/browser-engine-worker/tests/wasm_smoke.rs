@@ -423,6 +423,7 @@ fn query_with_explicit_browser_limits(request: QueryRequest) -> QueryRequest {
             max_arrow_ipc_bytes: Some(8 * 1024 * 1024),
             max_preview_string_bytes: Some(256 * 1024),
             max_scan_bytes: None,
+            max_scan_overfetch_bytes: None,
         }),
         ..QueryExecutionOptions::default()
     })

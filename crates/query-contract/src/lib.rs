@@ -151,6 +151,9 @@ pub struct QueryRuntimeLimits {
     pub max_preview_string_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_scan_bytes: Option<u64>,
+    /// Maximum physical bytes fetched only for coalescing gaps or unused speculative readahead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_scan_overfetch_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1515,6 +1518,9 @@ pub struct QueryMetricsSummary {
     /// Gap bytes fetched only because nearby logical Parquet ranges were coalesced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coalesced_gap_bytes_fetched: Option<u64>,
+    /// Physical bytes fetched only for coalescing gaps or unused speculative readahead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_overfetch_bytes: Option<u64>,
     /// Parquet footer metadata cache hits observed across bootstrap, inspect, or scan paths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footer_cache_hits: Option<u64>,

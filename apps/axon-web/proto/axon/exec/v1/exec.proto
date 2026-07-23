@@ -126,6 +126,7 @@ message QueryRuntimeLimits {
   optional uint64 max_arrow_ipc_bytes = 2 [json_name = "max_arrow_ipc_bytes"];
   optional uint64 max_preview_string_bytes = 3 [json_name = "max_preview_string_bytes"];
   optional uint64 max_scan_bytes = 4 [json_name = "max_scan_bytes"];
+  optional uint64 max_scan_overfetch_bytes = 5 [json_name = "max_scan_overfetch_bytes"];
 }
 
 // Controls optional query output, metrics, paging, and runtime budgets.
@@ -231,6 +232,7 @@ message QueryMetricsSummary {
   optional uint64 range_readahead_bytes_fetched = 51 [json_name = "range_readahead_bytes_fetched"];
   optional uint64 range_readahead_bytes_used = 52 [json_name = "range_readahead_bytes_used"];
   optional uint64 range_readahead_wasted_bytes = 53 [json_name = "range_readahead_wasted_bytes"];
+  optional uint64 scan_overfetch_bytes = 54 [json_name = "scan_overfetch_bytes"];
 }
 
 // Carries execution metadata shared by full results and previews.
@@ -480,6 +482,7 @@ message BrowserWorkerRangeReadMetricsEvent {
   optional uint64 range_readahead_bytes_fetched = 51 [json_name = "range_readahead_bytes_fetched"];
   optional uint64 range_readahead_bytes_used = 52 [json_name = "range_readahead_bytes_used"];
   optional uint64 range_readahead_wasted_bytes = 53 [json_name = "range_readahead_wasted_bytes"];
+  optional uint64 scan_overfetch_bytes = 54 [json_name = "scan_overfetch_bytes"];
 }
 
 // Summarizes persistent transport-cache reuse and validation failures.

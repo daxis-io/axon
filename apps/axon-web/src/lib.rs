@@ -227,6 +227,7 @@ struct SandboxWorkerStartupReport {
 #[derive(Debug, Serialize)]
 struct SandboxWorkerQueryBudgetReport {
     max_scan_bytes: Option<u64>,
+    max_scan_overfetch_bytes: Option<u64>,
     max_output_ipc_bytes: Option<u64>,
     max_batches_in_flight: Option<usize>,
     max_rows_returned: Option<u64>,
@@ -702,6 +703,7 @@ fn build_sandbox_query_worker_artifact_report() -> Result<SandboxWorkerArtifactR
             default_preview_limit: DEFAULT_QUERY_PREVIEW_LIMIT,
             datafusion_query_budget: SandboxWorkerQueryBudgetReport {
                 max_scan_bytes: query_budget.max_scan_bytes,
+                max_scan_overfetch_bytes: query_budget.max_scan_overfetch_bytes,
                 max_output_ipc_bytes: query_budget.max_output_ipc_bytes,
                 max_batches_in_flight: query_budget.max_batches_in_flight,
                 max_rows_returned: query_budget.max_rows_returned,

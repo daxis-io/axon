@@ -28,9 +28,9 @@ use wasm_parquet_engine::merge_parquet_range_read_metrics;
 use super::{
     datafusion_metric_from_usize, datafusion_scan_metrics_from_plan, is_query_cancelled_error,
     map_arrow_ipc_error, map_datafusion_error, query_budget_exceeded_error_at,
-    validate_query_budget_for_plan, validate_query_budget_value_option_at, BrowserQueryBudget,
-    BrowserQueryCancellation, DataFusionScanMetricsSummary, ParquetRangeQueryContext,
-    WasmDataFusionEngine,
+    validate_query_budget_for_plan, validate_query_budget_value_option_at,
+    validate_scan_overfetch_budget, BrowserQueryBudget, BrowserQueryCancellation,
+    DataFusionScanMetricsSummary, ParquetRangeQueryContext, WasmDataFusionEngine,
 };
 
 pub const DEFAULT_IPC_TRANSPORT_CHUNK_BYTES: usize = 1024 * 1024;
@@ -752,6 +752,11 @@ impl DataFusionIpcCursor {
             "max_scan_bytes",
             scan_metrics.bytes_fetched,
             self.query_budget.max_scan_bytes,
+            "scan stream",
+        )?;
+        validate_scan_overfetch_budget(
+            &scan_metrics.range_read_metrics,
+            self.query_budget,
             "scan stream",
         )?;
         Ok(scan_metrics)

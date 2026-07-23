@@ -19,6 +19,34 @@ mod support;
 use support::RequestCapturingServer;
 
 #[tokio::test]
+async fn zero_overfetch_budget_allows_queries_without_speculative_reads() {
+    let mut engine = WasmDataFusionEngine::with_budget(BrowserQueryBudget {
+        max_scan_overfetch_bytes: Some(0),
+        ..Default::default()
+    });
+    let batch = controlled_batch();
+    let schema = batch.schema();
+
+    engine
+        .register_record_batches("events", schema, vec![batch])
+        .await
+        .expect("record batches should register");
+
+    let result = engine
+        .sql_to_arrow_ipc_result("SELECT id FROM events ORDER BY id")
+        .await
+        .expect("zero-overfetch in-memory query should satisfy a zero-byte budget");
+
+    assert_eq!(
+        result
+            .scan_metrics
+            .range_read_metrics
+            .scan_overfetch_bytes(),
+        0
+    );
+}
+
+#[tokio::test]
 async fn query_budget_rejects_output_ipc_over_limit() {
     let mut engine = WasmDataFusionEngine::with_budget(BrowserQueryBudget {
         max_output_ipc_bytes: Some(128),

@@ -25,6 +25,7 @@ fn daxis_browser_datafusion_budget_profile_is_release_gate_ready() {
     let query = &profile["queryBudget"];
     let budget = BrowserQueryBudget {
         max_scan_bytes: Some(unsigned(query, "maxScanBytes")),
+        max_scan_overfetch_bytes: Some(unsigned(query, "maxScanOverfetchBytes")),
         max_output_ipc_bytes: Some(unsigned(query, "maxOutputIpcBytes")),
         max_batches_in_flight: Some(usize_unsigned(query, "maxBatchesInFlight")),
         max_rows_returned: Some(unsigned(query, "maxRowsReturned")),
@@ -33,6 +34,11 @@ fn daxis_browser_datafusion_budget_profile_is_release_gate_ready() {
     assert!(
         budget.max_scan_bytes.unwrap() <= 64 * 1024 * 1024,
         "M3 Daxis scan budget should stay inside the documented interactive envelope"
+    );
+    assert_eq!(
+        budget.max_scan_overfetch_bytes,
+        Some(1024 * 1024),
+        "Daxis should bound speculative scan overfetch while admitting the 512 KiB readahead cap"
     );
     assert!(
         budget.max_output_ipc_bytes.unwrap() <= 16 * 1024 * 1024,

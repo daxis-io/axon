@@ -585,6 +585,8 @@ pub struct QueryRuntimeLimitsView<'a> {
     pub max_preview_string_bytes: ::core::option::Option<u64>,
     /// Field 4: `max_scan_bytes`
     pub max_scan_bytes: ::core::option::Option<u64>,
+    /// Field 5: `max_scan_overfetch_bytes`
+    pub max_scan_overfetch_bytes: ::core::option::Option<u64>,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ::buffa::MessageView<'a> for QueryRuntimeLimitsView<'a> {
@@ -646,6 +648,15 @@ impl<'a> ::buffa::MessageView<'a> for QueryRuntimeLimitsView<'a> {
                 )?;
                 view.max_scan_bytes = Some(::buffa::types::decode_uint64(&mut cur)?);
             }
+            5u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.max_scan_overfetch_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
             _ => {
                 ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
                 let span_len = before_tag.len() - cur.len();
@@ -672,6 +683,7 @@ impl<'a> ::buffa::MessageView<'a> for QueryRuntimeLimitsView<'a> {
             max_arrow_ipc_bytes: self.max_arrow_ipc_bytes,
             max_preview_string_bytes: self.max_preview_string_bytes,
             max_scan_bytes: self.max_scan_bytes,
+            max_scan_overfetch_bytes: self.max_scan_overfetch_bytes,
             __buffa_unknown_fields: self.__buffa_unknown_fields.to_owned()?.into(),
             ..::core::default::Default::default()
         })
@@ -693,6 +705,9 @@ impl<'a> ::buffa::ViewEncode<'a> for QueryRuntimeLimitsView<'a> {
             size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
         if let Some(v) = self.max_scan_bytes {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.max_scan_overfetch_bytes {
             size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
@@ -717,6 +732,9 @@ impl<'a> ::buffa::ViewEncode<'a> for QueryRuntimeLimitsView<'a> {
         }
         if let Some(v) = self.max_scan_bytes {
             ::buffa::types::put_uint64_field(4u32, v, buf);
+        }
+        if let Some(v) = self.max_scan_overfetch_bytes {
+            ::buffa::types::put_uint64_field(5u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -830,6 +848,11 @@ impl QueryRuntimeLimitsOwnedView {
     #[must_use]
     pub fn max_scan_bytes(&self) -> ::core::option::Option<u64> {
         self.0.reborrow().max_scan_bytes
+    }
+    /// Field 5: `max_scan_overfetch_bytes`
+    #[must_use]
+    pub fn max_scan_overfetch_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().max_scan_overfetch_bytes
     }
 }
 impl ::core::convert::From<::buffa::OwnedView<QueryRuntimeLimitsView<'static>>>
@@ -3139,6 +3162,8 @@ pub struct QueryMetricsSummaryView<'a> {
     pub range_readahead_bytes_used: ::core::option::Option<u64>,
     /// Field 53: `range_readahead_wasted_bytes`
     pub range_readahead_wasted_bytes: ::core::option::Option<u64>,
+    /// Field 54: `scan_overfetch_bytes`
+    pub scan_overfetch_bytes: ::core::option::Option<u64>,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
@@ -3619,6 +3644,15 @@ impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
                     ::buffa::types::decode_uint64(&mut cur)?,
                 );
             }
+            54u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.scan_overfetch_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
             _ => {
                 ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
                 let span_len = before_tag.len() - cur.len();
@@ -3703,6 +3737,7 @@ impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
             range_readahead_bytes_fetched: self.range_readahead_bytes_fetched,
             range_readahead_bytes_used: self.range_readahead_bytes_used,
             range_readahead_wasted_bytes: self.range_readahead_wasted_bytes,
+            scan_overfetch_bytes: self.scan_overfetch_bytes,
             __buffa_unknown_fields: self.__buffa_unknown_fields.to_owned()?.into(),
             ..::core::default::Default::default()
         })
@@ -3871,6 +3906,9 @@ impl<'a> ::buffa::ViewEncode<'a> for QueryMetricsSummaryView<'a> {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
         if let Some(v) = self.range_readahead_wasted_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.scan_overfetch_bytes {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
@@ -4042,6 +4080,9 @@ impl<'a> ::buffa::ViewEncode<'a> for QueryMetricsSummaryView<'a> {
         }
         if let Some(v) = self.range_readahead_wasted_bytes {
             ::buffa::types::put_uint64_field(53u32, v, buf);
+        }
+        if let Some(v) = self.scan_overfetch_bytes {
+            ::buffa::types::put_uint64_field(54u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -4405,6 +4446,11 @@ impl QueryMetricsSummaryOwnedView {
     #[must_use]
     pub fn range_readahead_wasted_bytes(&self) -> ::core::option::Option<u64> {
         self.0.reborrow().range_readahead_wasted_bytes
+    }
+    /// Field 54: `scan_overfetch_bytes`
+    #[must_use]
+    pub fn scan_overfetch_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().scan_overfetch_bytes
     }
 }
 impl ::core::convert::From<::buffa::OwnedView<QueryMetricsSummaryView<'static>>>
@@ -11841,6 +11887,8 @@ pub struct BrowserWorkerRangeReadMetricsEventView<'a> {
     pub range_readahead_bytes_used: ::core::option::Option<u64>,
     /// Field 53: `range_readahead_wasted_bytes`
     pub range_readahead_wasted_bytes: ::core::option::Option<u64>,
+    /// Field 54: `scan_overfetch_bytes`
+    pub scan_overfetch_bytes: ::core::option::Option<u64>,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ::buffa::MessageView<'a> for BrowserWorkerRangeReadMetricsEventView<'a> {
@@ -12335,6 +12383,15 @@ impl<'a> ::buffa::MessageView<'a> for BrowserWorkerRangeReadMetricsEventView<'a>
                     ::buffa::types::decode_uint64(&mut cur)?,
                 );
             }
+            54u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.scan_overfetch_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
             _ => {
                 ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
                 let span_len = before_tag.len() - cur.len();
@@ -12426,6 +12483,7 @@ impl<'a> ::buffa::MessageView<'a> for BrowserWorkerRangeReadMetricsEventView<'a>
             range_readahead_bytes_fetched: self.range_readahead_bytes_fetched,
             range_readahead_bytes_used: self.range_readahead_bytes_used,
             range_readahead_wasted_bytes: self.range_readahead_wasted_bytes,
+            scan_overfetch_bytes: self.scan_overfetch_bytes,
             __buffa_unknown_fields: self.__buffa_unknown_fields.to_owned()?.into(),
             ..::core::default::Default::default()
         })
@@ -12601,6 +12659,9 @@ impl<'a> ::buffa::ViewEncode<'a> for BrowserWorkerRangeReadMetricsEventView<'a> 
         if let Some(v) = self.range_readahead_wasted_bytes {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
+        if let Some(v) = self.scan_overfetch_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
@@ -12771,6 +12832,9 @@ impl<'a> ::buffa::ViewEncode<'a> for BrowserWorkerRangeReadMetricsEventView<'a> 
         }
         if let Some(v) = self.range_readahead_wasted_bytes {
             ::buffa::types::put_uint64_field(53u32, v, buf);
+        }
+        if let Some(v) = self.scan_overfetch_bytes {
+            ::buffa::types::put_uint64_field(54u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -13142,6 +13206,11 @@ impl BrowserWorkerRangeReadMetricsEventOwnedView {
     #[must_use]
     pub fn range_readahead_wasted_bytes(&self) -> ::core::option::Option<u64> {
         self.0.reborrow().range_readahead_wasted_bytes
+    }
+    /// Field 54: `scan_overfetch_bytes`
+    #[must_use]
+    pub fn scan_overfetch_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().scan_overfetch_bytes
     }
 }
 impl ::core::convert::From<

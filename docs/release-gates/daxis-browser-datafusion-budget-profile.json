@@ -6,6 +6,7 @@
   "owner": "Runtime / engine team",
   "queryBudget": {
     "maxScanBytes": 67108864,
+    "maxScanOverfetchBytes": 1048576,
     "maxOutputIpcBytes": 16777216,
     "maxBatchesInFlight": 1,
     "maxRowsReturned": 100000

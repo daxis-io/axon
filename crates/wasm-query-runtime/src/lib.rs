@@ -2639,6 +2639,7 @@ fn execution_metrics(
         duplicate_range_reads: Some(range_read_metrics.duplicate_range_reads),
         coalesced_range_reads: Some(range_read_metrics.coalesced_range_reads),
         coalesced_gap_bytes_fetched: Some(range_read_metrics.coalesced_gap_bytes_fetched),
+        scan_overfetch_bytes: Some(range_read_metrics.scan_overfetch_bytes()),
         footer_cache_hits: Some(range_read_metrics.footer_cache_hits),
         footer_cache_misses: Some(range_read_metrics.footer_cache_misses),
         footer_range_reads_avoided: Some(range_read_metrics.footer_range_reads_avoided),

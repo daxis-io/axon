@@ -934,6 +934,12 @@ pub struct ParquetRangeReadMetrics {
 }
 
 impl ParquetRangeReadMetrics {
+    /// Returns physical bytes fetched only for coalescing gaps or unused speculative readahead.
+    pub fn scan_overfetch_bytes(&self) -> u64 {
+        self.coalesced_gap_bytes_fetched
+            .saturating_add(self.range_readahead_wasted_bytes)
+    }
+
     pub fn record(&mut self, phase: ParquetRangeReadPhase, key: ParquetRangeReadKey) {
         if key.object_identity.is_some() {
             self.identity_present_range_reads = self.identity_present_range_reads.saturating_add(1);
@@ -4563,6 +4569,31 @@ mod tests {
         assert_eq!(merged.range_cache_bytes_stored, 2_560);
         assert_eq!(merged.range_readahead_requests, 2);
         assert_eq!(merged.range_readahead_wasted_bytes, 64);
+    }
+
+    #[test]
+    fn scan_overfetch_counts_only_coalescing_gaps_and_unused_readahead() {
+        let metrics = ParquetRangeReadMetrics {
+            coalesced_gap_bytes_fetched: 12_288,
+            range_cache_bytes_reused: 800,
+            range_readahead_bytes_fetched: 4_096,
+            range_readahead_bytes_used: 3_072,
+            range_readahead_wasted_bytes: 1_024,
+            ..ParquetRangeReadMetrics::default()
+        };
+
+        assert_eq!(metrics.scan_overfetch_bytes(), 13_312);
+    }
+
+    #[test]
+    fn scan_overfetch_saturates_if_metric_inputs_overflow() {
+        let metrics = ParquetRangeReadMetrics {
+            coalesced_gap_bytes_fetched: u64::MAX,
+            range_readahead_wasted_bytes: 1,
+            ..ParquetRangeReadMetrics::default()
+        };
+
+        assert_eq!(metrics.scan_overfetch_bytes(), u64::MAX);
     }
 
     #[tokio::test]

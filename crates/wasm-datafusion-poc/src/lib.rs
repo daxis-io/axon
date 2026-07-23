@@ -115,6 +115,7 @@ pub struct DataFusionArrowIpcResult {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BrowserQueryBudget {
     pub max_scan_bytes: Option<u64>,
+    pub max_scan_overfetch_bytes: Option<u64>,
     pub max_output_ipc_bytes: Option<u64>,
     pub max_batches_in_flight: Option<usize>,
     pub max_rows_returned: Option<u64>,
@@ -1968,6 +1969,19 @@ fn validate_query_budget_value_option_at(
     }
 }
 
+fn validate_scan_overfetch_budget(
+    metrics: &ParquetRangeReadMetrics,
+    query_budget: BrowserQueryBudget,
+    point: &str,
+) -> Result<(), QueryError> {
+    validate_query_budget_value_option_at(
+        "max_scan_overfetch_bytes",
+        metrics.scan_overfetch_bytes(),
+        query_budget.max_scan_overfetch_bytes,
+        point,
+    )
+}
+
 fn validate_query_budget_for_plan(
     plan: &Arc<dyn ExecutionPlan>,
     query_budget: BrowserQueryBudget,
@@ -2292,6 +2306,11 @@ impl WasmDataFusionEngine {
             "max_scan_bytes",
             scan_metrics.bytes_fetched,
             self.query_budget.max_scan_bytes,
+            "scan stream",
+        )?;
+        validate_scan_overfetch_budget(
+            &scan_metrics.range_read_metrics,
+            self.query_budget,
             "scan stream",
         )?;
 
@@ -2915,6 +2934,53 @@ mod tests {
                 .expect("a cancelled Arrow IPC output should not poison later queries");
             assert!(!result.is_empty());
         });
+    }
+
+    #[test]
+    fn terminal_scan_overfetch_budget_accepts_exact_bound_and_rejects_one_byte_over() {
+        let no_overfetch = ParquetRangeReadMetrics::default();
+        validate_scan_overfetch_budget(
+            &no_overfetch,
+            BrowserQueryBudget {
+                max_scan_overfetch_bytes: Some(0),
+                ..BrowserQueryBudget::default()
+            },
+            "scan stream",
+        )
+        .expect("a zero budget should admit a query with no overfetch");
+
+        let metrics = ParquetRangeReadMetrics {
+            coalesced_gap_bytes_fetched: 12_288,
+            range_readahead_wasted_bytes: 1_024,
+            ..ParquetRangeReadMetrics::default()
+        };
+        validate_scan_overfetch_budget(
+            &metrics,
+            BrowserQueryBudget {
+                max_scan_overfetch_bytes: Some(13_312),
+                ..BrowserQueryBudget::default()
+            },
+            "scan stream",
+        )
+        .expect("the exact overfetch bound should pass");
+
+        let error = validate_scan_overfetch_budget(
+            &metrics,
+            BrowserQueryBudget {
+                max_scan_overfetch_bytes: Some(13_311),
+                ..BrowserQueryBudget::default()
+            },
+            "scan stream",
+        )
+        .expect_err("one byte above the overfetch budget should fail");
+        assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+        assert_eq!(
+            error.fallback_reason,
+            Some(FallbackReason::BrowserRuntimeConstraint)
+        );
+        assert!(error.message.contains("max_scan_overfetch_bytes"));
+        assert!(error.message.contains("13312"));
+        assert!(error.message.contains("13311"));
     }
 
     #[test]
