@@ -971,6 +971,7 @@ mod tests {
             path: "part-000.parquet".to_string(),
             url: "https://example.com/part-000.parquet".to_string(),
             size_bytes: 9_007_199_254_740_993,
+            object_etag: None,
             partition_values: BTreeMap::new(),
             delta_stats: None,
             footer_length_bytes: u32::MAX,
