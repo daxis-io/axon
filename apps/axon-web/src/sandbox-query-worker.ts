@@ -25,6 +25,7 @@ import {
 import {
   PRIVATE_STREAM_PROTOCOL_VERSION,
   QueryStage,
+  QueryStageLimitError,
   requireProtocolVersion,
   requireTerminalMetadata,
   type PrivateChildMessage,
@@ -51,6 +52,12 @@ type SandboxTerminalMetadata = PrivateTerminalMetadata & {
   preview_string_bytes?: DecimalString;
   preview_duration_ms?: DecimalString;
   cache_metrics?: SandboxCacheMetrics;
+  cursor_metrics?: {
+    peak_input_batch_bytes: DecimalString;
+    peak_pending_encoded_bytes: DecimalString;
+    peak_pending_encoded_capacity: DecimalString;
+    peak_transport_chunk_bytes: DecimalString;
+  };
 };
 
 type PublicWorkerScope = {
@@ -70,7 +77,6 @@ type ActiveCoordinatorQuery = {
   delivery: BrowserWorkerSqlDelivery;
   lifecycle: CoordinatorQueryLifecycle;
   stage: QueryStage;
-  maxBytes: number;
   deadline: ReturnType<typeof setTimeout>;
   watchdog?: ReturnType<typeof setTimeout>;
 };
@@ -244,8 +250,7 @@ function startCoordinatedQuery(command: BrowserWorkerSqlCommand): void {
     context,
     delivery,
     lifecycle: new CoordinatorQueryLifecycle(),
-    stage: new QueryStage(queryId),
-    maxBytes,
+    stage: new QueryStage(queryId, maxBytes),
     deadline,
   };
   activeQueries.set(queryId, active);
@@ -290,13 +295,6 @@ function handleChildMessage(message: PrivateChildMessage): void {
 
     if (message.kind === 'stream_chunk') {
       const credit = active.stage.stage(message);
-      if (active.stage.stagedByteLength > active.maxBytes) {
-        throw queryError(
-          'fallback_required',
-          `browser coordinator exceeded max_arrow_ipc_bytes (${active.stage.stagedByteLength} > ${active.maxBytes})`,
-          'browser_runtime_constraint',
-        );
-      }
       postToChild({
         kind: 'credit',
         version: PRIVATE_STREAM_PROTOCOL_VERSION,
@@ -320,7 +318,14 @@ function handleChildMessage(message: PrivateChildMessage): void {
     if (!queryId) return;
     const active = activeQueries.get(queryId);
     if (!active) return;
-    beginAuthoritativeDrain(active, 'failed', normalizeQueryError(error), 'cancelled');
+    beginAuthoritativeDrain(
+      active,
+      'failed',
+      error instanceof QueryStageLimitError
+        ? queryError('fallback_required', error.message, 'browser_runtime_constraint')
+        : normalizeQueryError(error),
+      'cancelled',
+    );
   }
 }
 
@@ -367,7 +372,12 @@ function commitSuccessfulQuery(
   metadata: SandboxTerminalMetadata,
   chunks: Uint8Array[],
 ): void {
-  if (!metadata.response || !metadata.preview || !metadata.cache_metrics) {
+  if (
+    !metadata.response ||
+    !metadata.preview ||
+    !metadata.cache_metrics ||
+    !metadata.cursor_metrics
+  ) {
     throw queryError('execution_failed', 'successful child terminal omitted response metadata');
   }
   const arrowIpcByteLength = decimalNumber(metadata.arrow_ipc_byte_length);
@@ -385,6 +395,14 @@ function commitSuccessfulQuery(
       preview_rows: preview.rows.length,
       preview_string_bytes: previewStringBytes,
       preview_duration_ms: previewDurationMs,
+      coordinator_peak_staged_bytes: active.stage.peakStagedByteLength,
+      coordinator_staging_limit_bytes: active.stage.stagingLimitBytes,
+      cursor_peak_pending_encoded_bytes: decimalNumber(
+        metadata.cursor_metrics.peak_pending_encoded_bytes,
+      ),
+      cursor_peak_transport_chunk_bytes: decimalNumber(
+        metadata.cursor_metrics.peak_transport_chunk_bytes,
+      ),
     },
   };
 
@@ -667,6 +685,10 @@ function emitRangeReadMetrics(
       planning_duration_ms: metrics.planning_duration_ms,
       arrow_ipc_encode_duration_ms: metrics.arrow_ipc_encode_duration_ms,
       preview_duration_ms: metrics.preview_duration_ms,
+      coordinator_peak_staged_bytes: metrics.coordinator_peak_staged_bytes,
+      coordinator_staging_limit_bytes: metrics.coordinator_staging_limit_bytes,
+      cursor_peak_pending_encoded_bytes: metrics.cursor_peak_pending_encoded_bytes,
+      cursor_peak_transport_chunk_bytes: metrics.cursor_peak_transport_chunk_bytes,
     },
   });
 }

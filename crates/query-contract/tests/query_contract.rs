@@ -214,6 +214,10 @@ fn query_response_serializes_without_absent_fallback_reason() {
             planning_duration_ms: None,
             arrow_ipc_encode_duration_ms: None,
             preview_duration_ms: None,
+            coordinator_peak_staged_bytes: None,
+            coordinator_staging_limit_bytes: None,
+            cursor_peak_pending_encoded_bytes: None,
+            cursor_peak_transport_chunk_bytes: None,
         },
         explain: None,
     };
@@ -367,6 +371,10 @@ fn query_response_serializes_browser_telemetry_when_present() {
             planning_duration_ms: None,
             arrow_ipc_encode_duration_ms: None,
             preview_duration_ms: None,
+            coordinator_peak_staged_bytes: None,
+            coordinator_staging_limit_bytes: None,
+            cursor_peak_pending_encoded_bytes: None,
+            cursor_peak_transport_chunk_bytes: None,
         },
         explain: None,
     };
@@ -1171,6 +1179,24 @@ fn query_request_serializes_runtime_execution_limits() {
 }
 
 #[test]
+fn query_metrics_serialize_cursor_and_coordinator_memory_bounds() {
+    let metrics = QueryMetricsSummary {
+        coordinator_peak_staged_bytes: Some(4_096),
+        coordinator_staging_limit_bytes: Some(8_388_608),
+        cursor_peak_pending_encoded_bytes: Some(2_048),
+        cursor_peak_transport_chunk_bytes: Some(1_048_576),
+        ..QueryMetricsSummary::default()
+    };
+
+    let json = serde_json::to_value(metrics).expect("query metrics should serialize");
+
+    assert_eq!(json["coordinator_peak_staged_bytes"], 4_096);
+    assert_eq!(json["coordinator_staging_limit_bytes"], 8_388_608);
+    assert_eq!(json["cursor_peak_pending_encoded_bytes"], 2_048);
+    assert_eq!(json["cursor_peak_transport_chunk_bytes"], 1_048_576);
+}
+
+#[test]
 fn query_response_serializes_arrow_ipc_preview_and_phase_metrics() {
     let response = QueryResponse {
         executed_on: ExecutionTarget::BrowserWasm,
@@ -1231,6 +1257,10 @@ fn query_response_serializes_arrow_ipc_preview_and_phase_metrics() {
             planning_duration_ms: Some(2),
             arrow_ipc_encode_duration_ms: Some(5),
             preview_duration_ms: Some(1),
+            coordinator_peak_staged_bytes: None,
+            coordinator_staging_limit_bytes: None,
+            cursor_peak_pending_encoded_bytes: None,
+            cursor_peak_transport_chunk_bytes: None,
         },
         explain: None,
     };

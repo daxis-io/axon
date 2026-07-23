@@ -801,6 +801,10 @@ fn execution_metrics(
         planning_duration_ms: None,
         arrow_ipc_encode_duration_ms: Some(runtime_result.encode_duration_ms),
         preview_duration_ms: None,
+        coordinator_peak_staged_bytes: None,
+        coordinator_staging_limit_bytes: None,
+        cursor_peak_pending_encoded_bytes: None,
+        cursor_peak_transport_chunk_bytes: None,
     })
 }
 

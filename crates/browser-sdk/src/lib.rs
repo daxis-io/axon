@@ -335,6 +335,14 @@ pub struct BrowserWorkerRangeReadMetricsEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scan_overfetch_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_peak_staged_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_staging_limit_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_peak_pending_encoded_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_peak_transport_chunk_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footer_cache_hits: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footer_cache_misses: Option<u64>,
@@ -511,6 +519,10 @@ impl BrowserWorkerEventEnvelope {
             coalesced_range_reads: metrics.coalesced_range_reads,
             coalesced_gap_bytes_fetched: metrics.coalesced_gap_bytes_fetched,
             scan_overfetch_bytes: metrics.scan_overfetch_bytes,
+            coordinator_peak_staged_bytes: metrics.coordinator_peak_staged_bytes,
+            coordinator_staging_limit_bytes: metrics.coordinator_staging_limit_bytes,
+            cursor_peak_pending_encoded_bytes: metrics.cursor_peak_pending_encoded_bytes,
+            cursor_peak_transport_chunk_bytes: metrics.cursor_peak_transport_chunk_bytes,
             footer_cache_hits: metrics.footer_cache_hits,
             footer_cache_misses: metrics.footer_cache_misses,
             footer_range_reads_avoided: metrics.footer_range_reads_avoided,

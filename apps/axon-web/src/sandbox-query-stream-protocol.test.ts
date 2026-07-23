@@ -91,6 +91,28 @@ describe('private Arrow IPC query staging', () => {
       /exact-sized/i,
     );
   });
+
+  it('rejects an over-limit chunk before retaining its ownership', () => {
+    const stage = new QueryStage('query-1', 3);
+
+    expect(stage.stage(chunk())).toEqual({ credit_class: 'control', byte_length: 3 });
+    expect(stage.stagedByteLength).toBe(3);
+    expect(stage.peakStagedByteLength).toBe(3);
+    expect(stage.stagingLimitBytes).toBe(3);
+
+    expect(() =>
+      stage.stage(
+        chunk({
+          sequence: 1n,
+          phase: 'end_of_stream',
+          bytes: new Uint8Array([4]),
+          byte_length: 1n,
+        }),
+      ),
+    ).toThrow(/staging limit/i);
+    expect(stage.stagedByteLength).toBe(3);
+    expect(stage.peakStagedByteLength).toBe(3);
+  });
 });
 
 describe('private Arrow IPC credit gate', () => {

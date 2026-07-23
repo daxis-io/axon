@@ -3164,6 +3164,14 @@ pub struct QueryMetricsSummaryView<'a> {
     pub range_readahead_wasted_bytes: ::core::option::Option<u64>,
     /// Field 54: `scan_overfetch_bytes`
     pub scan_overfetch_bytes: ::core::option::Option<u64>,
+    /// Field 55: `coordinator_peak_staged_bytes`
+    pub coordinator_peak_staged_bytes: ::core::option::Option<u64>,
+    /// Field 56: `coordinator_staging_limit_bytes`
+    pub coordinator_staging_limit_bytes: ::core::option::Option<u64>,
+    /// Field 57: `cursor_peak_pending_encoded_bytes`
+    pub cursor_peak_pending_encoded_bytes: ::core::option::Option<u64>,
+    /// Field 58: `cursor_peak_transport_chunk_bytes`
+    pub cursor_peak_transport_chunk_bytes: ::core::option::Option<u64>,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
@@ -3653,6 +3661,42 @@ impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
                     ::buffa::types::decode_uint64(&mut cur)?,
                 );
             }
+            55u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.coordinator_peak_staged_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            56u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.coordinator_staging_limit_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            57u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.cursor_peak_pending_encoded_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            58u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.cursor_peak_transport_chunk_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
             _ => {
                 ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
                 let span_len = before_tag.len() - cur.len();
@@ -3738,6 +3782,10 @@ impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
             range_readahead_bytes_used: self.range_readahead_bytes_used,
             range_readahead_wasted_bytes: self.range_readahead_wasted_bytes,
             scan_overfetch_bytes: self.scan_overfetch_bytes,
+            coordinator_peak_staged_bytes: self.coordinator_peak_staged_bytes,
+            coordinator_staging_limit_bytes: self.coordinator_staging_limit_bytes,
+            cursor_peak_pending_encoded_bytes: self.cursor_peak_pending_encoded_bytes,
+            cursor_peak_transport_chunk_bytes: self.cursor_peak_transport_chunk_bytes,
             __buffa_unknown_fields: self.__buffa_unknown_fields.to_owned()?.into(),
             ..::core::default::Default::default()
         })
@@ -3909,6 +3957,18 @@ impl<'a> ::buffa::ViewEncode<'a> for QueryMetricsSummaryView<'a> {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
         if let Some(v) = self.scan_overfetch_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.coordinator_peak_staged_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.coordinator_staging_limit_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.cursor_peak_pending_encoded_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.cursor_peak_transport_chunk_bytes {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
@@ -4083,6 +4143,18 @@ impl<'a> ::buffa::ViewEncode<'a> for QueryMetricsSummaryView<'a> {
         }
         if let Some(v) = self.scan_overfetch_bytes {
             ::buffa::types::put_uint64_field(54u32, v, buf);
+        }
+        if let Some(v) = self.coordinator_peak_staged_bytes {
+            ::buffa::types::put_uint64_field(55u32, v, buf);
+        }
+        if let Some(v) = self.coordinator_staging_limit_bytes {
+            ::buffa::types::put_uint64_field(56u32, v, buf);
+        }
+        if let Some(v) = self.cursor_peak_pending_encoded_bytes {
+            ::buffa::types::put_uint64_field(57u32, v, buf);
+        }
+        if let Some(v) = self.cursor_peak_transport_chunk_bytes {
+            ::buffa::types::put_uint64_field(58u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -4451,6 +4523,26 @@ impl QueryMetricsSummaryOwnedView {
     #[must_use]
     pub fn scan_overfetch_bytes(&self) -> ::core::option::Option<u64> {
         self.0.reborrow().scan_overfetch_bytes
+    }
+    /// Field 55: `coordinator_peak_staged_bytes`
+    #[must_use]
+    pub fn coordinator_peak_staged_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().coordinator_peak_staged_bytes
+    }
+    /// Field 56: `coordinator_staging_limit_bytes`
+    #[must_use]
+    pub fn coordinator_staging_limit_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().coordinator_staging_limit_bytes
+    }
+    /// Field 57: `cursor_peak_pending_encoded_bytes`
+    #[must_use]
+    pub fn cursor_peak_pending_encoded_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().cursor_peak_pending_encoded_bytes
+    }
+    /// Field 58: `cursor_peak_transport_chunk_bytes`
+    #[must_use]
+    pub fn cursor_peak_transport_chunk_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().cursor_peak_transport_chunk_bytes
     }
 }
 impl ::core::convert::From<::buffa::OwnedView<QueryMetricsSummaryView<'static>>>
@@ -11889,6 +11981,14 @@ pub struct BrowserWorkerRangeReadMetricsEventView<'a> {
     pub range_readahead_wasted_bytes: ::core::option::Option<u64>,
     /// Field 54: `scan_overfetch_bytes`
     pub scan_overfetch_bytes: ::core::option::Option<u64>,
+    /// Field 55: `coordinator_peak_staged_bytes`
+    pub coordinator_peak_staged_bytes: ::core::option::Option<u64>,
+    /// Field 56: `coordinator_staging_limit_bytes`
+    pub coordinator_staging_limit_bytes: ::core::option::Option<u64>,
+    /// Field 57: `cursor_peak_pending_encoded_bytes`
+    pub cursor_peak_pending_encoded_bytes: ::core::option::Option<u64>,
+    /// Field 58: `cursor_peak_transport_chunk_bytes`
+    pub cursor_peak_transport_chunk_bytes: ::core::option::Option<u64>,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ::buffa::MessageView<'a> for BrowserWorkerRangeReadMetricsEventView<'a> {
@@ -12392,6 +12492,42 @@ impl<'a> ::buffa::MessageView<'a> for BrowserWorkerRangeReadMetricsEventView<'a>
                     ::buffa::types::decode_uint64(&mut cur)?,
                 );
             }
+            55u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.coordinator_peak_staged_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            56u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.coordinator_staging_limit_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            57u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.cursor_peak_pending_encoded_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            58u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.cursor_peak_transport_chunk_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
             _ => {
                 ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
                 let span_len = before_tag.len() - cur.len();
@@ -12484,6 +12620,10 @@ impl<'a> ::buffa::MessageView<'a> for BrowserWorkerRangeReadMetricsEventView<'a>
             range_readahead_bytes_used: self.range_readahead_bytes_used,
             range_readahead_wasted_bytes: self.range_readahead_wasted_bytes,
             scan_overfetch_bytes: self.scan_overfetch_bytes,
+            coordinator_peak_staged_bytes: self.coordinator_peak_staged_bytes,
+            coordinator_staging_limit_bytes: self.coordinator_staging_limit_bytes,
+            cursor_peak_pending_encoded_bytes: self.cursor_peak_pending_encoded_bytes,
+            cursor_peak_transport_chunk_bytes: self.cursor_peak_transport_chunk_bytes,
             __buffa_unknown_fields: self.__buffa_unknown_fields.to_owned()?.into(),
             ..::core::default::Default::default()
         })
@@ -12662,6 +12802,18 @@ impl<'a> ::buffa::ViewEncode<'a> for BrowserWorkerRangeReadMetricsEventView<'a> 
         if let Some(v) = self.scan_overfetch_bytes {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
+        if let Some(v) = self.coordinator_peak_staged_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.coordinator_staging_limit_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.cursor_peak_pending_encoded_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.cursor_peak_transport_chunk_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
@@ -12835,6 +12987,18 @@ impl<'a> ::buffa::ViewEncode<'a> for BrowserWorkerRangeReadMetricsEventView<'a> 
         }
         if let Some(v) = self.scan_overfetch_bytes {
             ::buffa::types::put_uint64_field(54u32, v, buf);
+        }
+        if let Some(v) = self.coordinator_peak_staged_bytes {
+            ::buffa::types::put_uint64_field(55u32, v, buf);
+        }
+        if let Some(v) = self.coordinator_staging_limit_bytes {
+            ::buffa::types::put_uint64_field(56u32, v, buf);
+        }
+        if let Some(v) = self.cursor_peak_pending_encoded_bytes {
+            ::buffa::types::put_uint64_field(57u32, v, buf);
+        }
+        if let Some(v) = self.cursor_peak_transport_chunk_bytes {
+            ::buffa::types::put_uint64_field(58u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -13211,6 +13375,26 @@ impl BrowserWorkerRangeReadMetricsEventOwnedView {
     #[must_use]
     pub fn scan_overfetch_bytes(&self) -> ::core::option::Option<u64> {
         self.0.reborrow().scan_overfetch_bytes
+    }
+    /// Field 55: `coordinator_peak_staged_bytes`
+    #[must_use]
+    pub fn coordinator_peak_staged_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().coordinator_peak_staged_bytes
+    }
+    /// Field 56: `coordinator_staging_limit_bytes`
+    #[must_use]
+    pub fn coordinator_staging_limit_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().coordinator_staging_limit_bytes
+    }
+    /// Field 57: `cursor_peak_pending_encoded_bytes`
+    #[must_use]
+    pub fn cursor_peak_pending_encoded_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().cursor_peak_pending_encoded_bytes
+    }
+    /// Field 58: `cursor_peak_transport_chunk_bytes`
+    #[must_use]
+    pub fn cursor_peak_transport_chunk_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().cursor_peak_transport_chunk_bytes
     }
 }
 impl ::core::convert::From<

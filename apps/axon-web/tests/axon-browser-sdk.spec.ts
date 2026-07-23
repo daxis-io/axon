@@ -4214,6 +4214,10 @@ test('projects cache and dormant readahead metrics through events and final resp
     range_readahead_bytes_used: 0,
     range_readahead_wasted_bytes: 0,
     scan_overfetch_bytes: 0,
+    coordinator_peak_staged_bytes: 4_096,
+    coordinator_staging_limit_bytes: 8_388_608,
+    cursor_peak_pending_encoded_bytes: 2_048,
+    cursor_peak_transport_chunk_bytes: 1_048_576,
   };
   worker.emitRawMessage({
     range_read_metrics: {
@@ -4257,6 +4261,10 @@ for (const field of [
   'range_readahead_bytes_used',
   'range_readahead_wasted_bytes',
   'scan_overfetch_bytes',
+  'coordinator_peak_staged_bytes',
+  'coordinator_staging_limit_bytes',
+  'cursor_peak_pending_encoded_bytes',
+  'cursor_peak_transport_chunk_bytes',
 ] as const) {
   test(`rejects non-finite ${field} worker metrics`, async () => {
     const worker = new FakeWorker();

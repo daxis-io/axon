@@ -562,6 +562,10 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
                 planning_duration_ms: Some(2),
                 arrow_ipc_encode_duration_ms: Some(1),
                 preview_duration_ms: Some(1),
+                coordinator_peak_staged_bytes: Some(4),
+                coordinator_staging_limit_bytes: Some(8_388_608),
+                cursor_peak_pending_encoded_bytes: Some(2),
+                cursor_peak_transport_chunk_bytes: Some(1_048_576),
             },
             explain: None,
         },
@@ -598,6 +602,10 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
     assert_eq!(metrics.identity_refresh_count, Some(4));
     assert_eq!(metrics.access_envelope_refresh_count, Some(5));
     assert_eq!(metrics.snapshot_bootstrap_duration_ms, Some(6));
+    assert_eq!(metrics.coordinator_peak_staged_bytes, Some(4));
+    assert_eq!(metrics.coordinator_staging_limit_bytes, Some(8_388_608));
+    assert_eq!(metrics.cursor_peak_pending_encoded_bytes, Some(2));
+    assert_eq!(metrics.cursor_peak_transport_chunk_bytes, Some(1_048_576));
     assert_eq!(
         metrics.access_mode,
         Some(BrowserAccessMode::BrowserSafeHttp)
@@ -671,6 +679,10 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             planning_duration_ms: Some(2),
             arrow_ipc_encode_duration_ms: Some(3),
             preview_duration_ms: Some(1),
+            coordinator_peak_staged_bytes: Some(1_024),
+            coordinator_staging_limit_bytes: Some(8_388_608),
+            cursor_peak_pending_encoded_bytes: Some(512),
+            cursor_peak_transport_chunk_bytes: Some(256),
         },
     );
 
@@ -731,6 +743,10 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             assert_eq!(event.coalesced_range_reads, Some(1));
             assert_eq!(event.coalesced_gap_bytes_fetched, Some(12_288));
             assert_eq!(event.scan_overfetch_bytes, Some(13_312));
+            assert_eq!(event.coordinator_peak_staged_bytes, Some(1_024));
+            assert_eq!(event.coordinator_staging_limit_bytes, Some(8_388_608));
+            assert_eq!(event.cursor_peak_pending_encoded_bytes, Some(512));
+            assert_eq!(event.cursor_peak_transport_chunk_bytes, Some(256));
             assert_eq!(event.footer_cache_hits, Some(1));
             assert_eq!(event.footer_cache_misses, Some(3));
             assert_eq!(event.footer_range_reads_avoided, Some(2));
@@ -1052,6 +1068,10 @@ fn sample_query_response(
             planning_duration_ms: None,
             arrow_ipc_encode_duration_ms: None,
             preview_duration_ms: None,
+            coordinator_peak_staged_bytes: None,
+            coordinator_staging_limit_bytes: None,
+            cursor_peak_pending_encoded_bytes: None,
+            cursor_peak_transport_chunk_bytes: None,
         },
         explain: None,
     }

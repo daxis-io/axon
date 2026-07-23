@@ -1629,6 +1629,18 @@ pub struct QueryMetricsSummary {
     /// Wall-clock duration of preview construction when tracked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_duration_ms: Option<u64>,
+    /// Peak Arrow IPC bytes retained by the atomic coordinator stage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_peak_staged_bytes: Option<u64>,
+    /// Maximum Arrow IPC bytes the atomic coordinator stage may retain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_staging_limit_bytes: Option<u64>,
+    /// Peak encoded Arrow IPC bytes awaiting transport from the Rust cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_peak_pending_encoded_bytes: Option<u64>,
+    /// Peak single transport chunk emitted by the Rust cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_peak_transport_chunk_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

@@ -233,6 +233,10 @@ message QueryMetricsSummary {
   optional uint64 range_readahead_bytes_used = 52 [json_name = "range_readahead_bytes_used"];
   optional uint64 range_readahead_wasted_bytes = 53 [json_name = "range_readahead_wasted_bytes"];
   optional uint64 scan_overfetch_bytes = 54 [json_name = "scan_overfetch_bytes"];
+  optional uint64 coordinator_peak_staged_bytes = 55 [json_name = "coordinator_peak_staged_bytes"];
+  optional uint64 coordinator_staging_limit_bytes = 56 [json_name = "coordinator_staging_limit_bytes"];
+  optional uint64 cursor_peak_pending_encoded_bytes = 57 [json_name = "cursor_peak_pending_encoded_bytes"];
+  optional uint64 cursor_peak_transport_chunk_bytes = 58 [json_name = "cursor_peak_transport_chunk_bytes"];
 }
 
 // Carries execution metadata shared by full results and previews.
@@ -483,6 +487,10 @@ message BrowserWorkerRangeReadMetricsEvent {
   optional uint64 range_readahead_bytes_used = 52 [json_name = "range_readahead_bytes_used"];
   optional uint64 range_readahead_wasted_bytes = 53 [json_name = "range_readahead_wasted_bytes"];
   optional uint64 scan_overfetch_bytes = 54 [json_name = "scan_overfetch_bytes"];
+  optional uint64 coordinator_peak_staged_bytes = 55 [json_name = "coordinator_peak_staged_bytes"];
+  optional uint64 coordinator_staging_limit_bytes = 56 [json_name = "coordinator_staging_limit_bytes"];
+  optional uint64 cursor_peak_pending_encoded_bytes = 57 [json_name = "cursor_peak_pending_encoded_bytes"];
+  optional uint64 cursor_peak_transport_chunk_bytes = 58 [json_name = "cursor_peak_transport_chunk_bytes"];
 }
 
 // Summarizes persistent transport-cache reuse and validation failures.

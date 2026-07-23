@@ -2891,6 +2891,14 @@ pub struct QueryMetricsSummary {
     pub range_readahead_wasted_bytes: ::core::option::Option<u64>,
     /// Field 54: `scan_overfetch_bytes`
     pub scan_overfetch_bytes: ::core::option::Option<u64>,
+    /// Field 55: `coordinator_peak_staged_bytes`
+    pub coordinator_peak_staged_bytes: ::core::option::Option<u64>,
+    /// Field 56: `coordinator_staging_limit_bytes`
+    pub coordinator_staging_limit_bytes: ::core::option::Option<u64>,
+    /// Field 57: `cursor_peak_pending_encoded_bytes`
+    pub cursor_peak_pending_encoded_bytes: ::core::option::Option<u64>,
+    /// Field 58: `cursor_peak_transport_chunk_bytes`
+    pub cursor_peak_transport_chunk_bytes: ::core::option::Option<u64>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
@@ -2963,6 +2971,19 @@ impl ::core::fmt::Debug for QueryMetricsSummary {
             .field("range_readahead_bytes_used", &self.range_readahead_bytes_used)
             .field("range_readahead_wasted_bytes", &self.range_readahead_wasted_bytes)
             .field("scan_overfetch_bytes", &self.scan_overfetch_bytes)
+            .field("coordinator_peak_staged_bytes", &self.coordinator_peak_staged_bytes)
+            .field(
+                "coordinator_staging_limit_bytes",
+                &self.coordinator_staging_limit_bytes,
+            )
+            .field(
+                "cursor_peak_pending_encoded_bytes",
+                &self.cursor_peak_pending_encoded_bytes,
+            )
+            .field(
+                "cursor_peak_transport_chunk_bytes",
+                &self.cursor_peak_transport_chunk_bytes,
+            )
             .finish()
     }
 }
@@ -3355,6 +3376,34 @@ impl QueryMetricsSummary {
         self.scan_overfetch_bytes = Some(value);
         self
     }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::coordinator_peak_staged_bytes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_coordinator_peak_staged_bytes(mut self, value: u64) -> Self {
+        self.coordinator_peak_staged_bytes = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::coordinator_staging_limit_bytes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_coordinator_staging_limit_bytes(mut self, value: u64) -> Self {
+        self.coordinator_staging_limit_bytes = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::cursor_peak_pending_encoded_bytes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_cursor_peak_pending_encoded_bytes(mut self, value: u64) -> Self {
+        self.cursor_peak_pending_encoded_bytes = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::cursor_peak_transport_chunk_bytes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_cursor_peak_transport_chunk_bytes(mut self, value: u64) -> Self {
+        self.cursor_peak_transport_chunk_bytes = Some(value);
+        self
+    }
 }
 ::buffa::impl_default_instance!(QueryMetricsSummary);
 impl ::buffa::MessageName for QueryMetricsSummary {
@@ -3536,6 +3585,18 @@ impl ::buffa::Message for QueryMetricsSummary {
         if let Some(v) = self.scan_overfetch_bytes {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
+        if let Some(v) = self.coordinator_peak_staged_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.coordinator_staging_limit_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.cursor_peak_pending_encoded_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.cursor_peak_transport_chunk_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
@@ -3707,6 +3768,18 @@ impl ::buffa::Message for QueryMetricsSummary {
         }
         if let Some(v) = self.scan_overfetch_bytes {
             ::buffa::types::put_uint64_field(54u32, v, buf);
+        }
+        if let Some(v) = self.coordinator_peak_staged_bytes {
+            ::buffa::types::put_uint64_field(55u32, v, buf);
+        }
+        if let Some(v) = self.coordinator_staging_limit_bytes {
+            ::buffa::types::put_uint64_field(56u32, v, buf);
+        }
+        if let Some(v) = self.cursor_peak_pending_encoded_bytes {
+            ::buffa::types::put_uint64_field(57u32, v, buf);
+        }
+        if let Some(v) = self.cursor_peak_transport_chunk_bytes {
+            ::buffa::types::put_uint64_field(58u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -4207,6 +4280,42 @@ impl ::buffa::Message for QueryMetricsSummary {
                     ::buffa::types::decode_uint64(buf)?,
                 );
             }
+            55u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.coordinator_peak_staged_bytes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            56u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.coordinator_staging_limit_bytes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            57u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.cursor_peak_pending_encoded_bytes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            58u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.cursor_peak_transport_chunk_bytes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
             _ => {
                 self.__buffa_unknown_fields
                     .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
@@ -4269,6 +4378,10 @@ impl ::buffa::Message for QueryMetricsSummary {
         self.range_readahead_bytes_used = ::core::option::Option::None;
         self.range_readahead_wasted_bytes = ::core::option::Option::None;
         self.scan_overfetch_bytes = ::core::option::Option::None;
+        self.coordinator_peak_staged_bytes = ::core::option::Option::None;
+        self.coordinator_staging_limit_bytes = ::core::option::Option::None;
+        self.cursor_peak_pending_encoded_bytes = ::core::option::Option::None;
+        self.cursor_peak_transport_chunk_bytes = ::core::option::Option::None;
         self.__buffa_unknown_fields.clear();
     }
 }
@@ -8502,6 +8615,14 @@ pub struct BrowserWorkerRangeReadMetricsEvent {
     pub range_readahead_wasted_bytes: ::core::option::Option<u64>,
     /// Field 54: `scan_overfetch_bytes`
     pub scan_overfetch_bytes: ::core::option::Option<u64>,
+    /// Field 55: `coordinator_peak_staged_bytes`
+    pub coordinator_peak_staged_bytes: ::core::option::Option<u64>,
+    /// Field 56: `coordinator_staging_limit_bytes`
+    pub coordinator_staging_limit_bytes: ::core::option::Option<u64>,
+    /// Field 57: `cursor_peak_pending_encoded_bytes`
+    pub cursor_peak_pending_encoded_bytes: ::core::option::Option<u64>,
+    /// Field 58: `cursor_peak_transport_chunk_bytes`
+    pub cursor_peak_transport_chunk_bytes: ::core::option::Option<u64>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
@@ -8574,6 +8695,19 @@ impl ::core::fmt::Debug for BrowserWorkerRangeReadMetricsEvent {
             .field("range_readahead_bytes_used", &self.range_readahead_bytes_used)
             .field("range_readahead_wasted_bytes", &self.range_readahead_wasted_bytes)
             .field("scan_overfetch_bytes", &self.scan_overfetch_bytes)
+            .field("coordinator_peak_staged_bytes", &self.coordinator_peak_staged_bytes)
+            .field(
+                "coordinator_staging_limit_bytes",
+                &self.coordinator_staging_limit_bytes,
+            )
+            .field(
+                "cursor_peak_pending_encoded_bytes",
+                &self.cursor_peak_pending_encoded_bytes,
+            )
+            .field(
+                "cursor_peak_transport_chunk_bytes",
+                &self.cursor_peak_transport_chunk_bytes,
+            )
             .finish()
     }
 }
@@ -8959,6 +9093,34 @@ impl BrowserWorkerRangeReadMetricsEvent {
         self.scan_overfetch_bytes = Some(value);
         self
     }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::coordinator_peak_staged_bytes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_coordinator_peak_staged_bytes(mut self, value: u64) -> Self {
+        self.coordinator_peak_staged_bytes = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::coordinator_staging_limit_bytes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_coordinator_staging_limit_bytes(mut self, value: u64) -> Self {
+        self.coordinator_staging_limit_bytes = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::cursor_peak_pending_encoded_bytes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_cursor_peak_pending_encoded_bytes(mut self, value: u64) -> Self {
+        self.cursor_peak_pending_encoded_bytes = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::cursor_peak_transport_chunk_bytes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_cursor_peak_transport_chunk_bytes(mut self, value: u64) -> Self {
+        self.cursor_peak_transport_chunk_bytes = Some(value);
+        self
+    }
 }
 ::buffa::impl_default_instance!(BrowserWorkerRangeReadMetricsEvent);
 impl ::buffa::MessageName for BrowserWorkerRangeReadMetricsEvent {
@@ -9145,6 +9307,18 @@ impl ::buffa::Message for BrowserWorkerRangeReadMetricsEvent {
         if let Some(v) = self.scan_overfetch_bytes {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
+        if let Some(v) = self.coordinator_peak_staged_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.coordinator_staging_limit_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.cursor_peak_pending_encoded_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.cursor_peak_transport_chunk_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
@@ -9317,6 +9491,18 @@ impl ::buffa::Message for BrowserWorkerRangeReadMetricsEvent {
         }
         if let Some(v) = self.scan_overfetch_bytes {
             ::buffa::types::put_uint64_field(54u32, v, buf);
+        }
+        if let Some(v) = self.coordinator_peak_staged_bytes {
+            ::buffa::types::put_uint64_field(55u32, v, buf);
+        }
+        if let Some(v) = self.coordinator_staging_limit_bytes {
+            ::buffa::types::put_uint64_field(56u32, v, buf);
+        }
+        if let Some(v) = self.cursor_peak_pending_encoded_bytes {
+            ::buffa::types::put_uint64_field(57u32, v, buf);
+        }
+        if let Some(v) = self.cursor_peak_transport_chunk_bytes {
+            ::buffa::types::put_uint64_field(58u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -9819,6 +10005,42 @@ impl ::buffa::Message for BrowserWorkerRangeReadMetricsEvent {
                     ::buffa::types::decode_uint64(buf)?,
                 );
             }
+            55u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.coordinator_peak_staged_bytes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            56u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.coordinator_staging_limit_bytes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            57u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.cursor_peak_pending_encoded_bytes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            58u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.cursor_peak_transport_chunk_bytes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
             _ => {
                 self.__buffa_unknown_fields
                     .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
@@ -9881,6 +10103,10 @@ impl ::buffa::Message for BrowserWorkerRangeReadMetricsEvent {
         self.range_readahead_bytes_used = ::core::option::Option::None;
         self.range_readahead_wasted_bytes = ::core::option::Option::None;
         self.scan_overfetch_bytes = ::core::option::Option::None;
+        self.coordinator_peak_staged_bytes = ::core::option::Option::None;
+        self.coordinator_staging_limit_bytes = ::core::option::Option::None;
+        self.cursor_peak_pending_encoded_bytes = ::core::option::Option::None;
+        self.cursor_peak_transport_chunk_bytes = ::core::option::Option::None;
         self.__buffa_unknown_fields.clear();
     }
 }
