@@ -904,6 +904,92 @@ test('one-child coordinator fails active SQL atomically when the child crashes',
   });
 });
 
+test('coordinator rejects declared output beyond aggregate staging before child execution', async ({
+  page,
+}) => {
+  await page.goto('/');
+
+  const result = await page.evaluate(async () => {
+    type PublicMessage = {
+      coordinator_test_ready?: boolean;
+      error?: {
+        request_id?: string;
+        error?: {
+          code?: string;
+          fallback_reason?: string;
+          message?: string;
+          target?: string;
+        };
+      };
+    };
+    const worker = new Worker(
+      new URL(
+        '/src/sandbox-query-worker-test-harness.ts?first_child=hang&deadline_ms=5000&watchdog_ms=200&max_requests=4&max_staged_bytes=8388608',
+        location.href,
+      ),
+      { type: 'module' },
+    );
+    const inbox: PublicMessage[] = [];
+    worker.addEventListener('message', (event: MessageEvent<PublicMessage>) => {
+      inbox.push(event.data);
+    });
+    const waitFor = async (
+      predicate: (message: PublicMessage) => boolean,
+    ): Promise<PublicMessage> => {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const message = inbox.find(predicate);
+        if (message) return message;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error(`timed out waiting for coordinator response: ${JSON.stringify(inbox)}`);
+    };
+    const postSql = (requestId: string): void => {
+      worker.postMessage({
+        sql: {
+          request_id: requestId,
+          name: 'aggregate_staging',
+          query: {
+            table_uri: new URL(
+              '/fixtures/browser-datafusion-runtime/aggregate-staging',
+              location.href,
+            ).href,
+            snapshot_version: 0,
+            sql: 'SELECT * FROM aggregate_staging',
+            preferred_target: 'browser_wasm',
+            options: {
+              runtime_limits: {
+                max_arrow_ipc_bytes: 8 * 1024 * 1024,
+              },
+            },
+          },
+          output: 'arrow_ipc_stream',
+          delivery: 'chunked_buffers',
+          browser_safe_defaults: true,
+        },
+      });
+    };
+
+    try {
+      await waitFor((message) => message.coordinator_test_ready === true);
+      postSql('query-holding-aggregate-staging');
+      postSql('query-over-aggregate-staging');
+      const rejected = await waitFor(
+        (message) => message.error?.request_id === 'query-over-aggregate-staging',
+      );
+      return rejected.error?.error;
+    } finally {
+      worker.terminate();
+    }
+  });
+
+  expect(result).toMatchObject({
+    code: 'fallback_required',
+    fallback_reason: 'browser_runtime_constraint',
+    target: 'browser_wasm',
+  });
+  expect(result?.message).toContain('aggregate staging capacity');
+});
+
 test('coordinator deadline owns the terminal and replaces a hung child', async ({ page }) => {
   await page.goto('/');
 

@@ -17,8 +17,10 @@ import {
   redactUrlSecrets,
 } from './axon-browser-sdk';
 import {
+  CoordinatorMemoryBudget,
   CoordinatorQueryLifecycle,
   MAX_COORDINATOR_REQUESTS,
+  MAX_COORDINATOR_STAGED_ARROW_IPC_BYTES,
   coordinatorHasCapacity,
   coordinatorMaxArrowIpcBytes,
 } from './sandbox-query-coordinator-policy';
@@ -79,6 +81,7 @@ type ActiveCoordinatorQuery = {
   delivery: BrowserWorkerSqlDelivery;
   lifecycle: CoordinatorQueryLifecycle;
   stage: QueryStage;
+  memoryReleased: boolean;
   deadline: ReturnType<typeof setTimeout>;
   watchdog?: ReturnType<typeof setTimeout>;
 };
@@ -91,6 +94,7 @@ type CoordinatorRuntimeConfig = {
   deadlineMs: number;
   watchdogMs: number;
   maxRequests: number;
+  maxStagedBytes: number;
   crashOnCommandNumber?: number;
   firstChildUrl?: string;
 };
@@ -103,6 +107,7 @@ const DEFAULT_PRIVATE_QUERY_DEADLINE_MS = 120_000;
 const DEFAULT_PRIVATE_QUERY_WATCHDOG_MS = 5_000;
 const workerScope = self as unknown as PublicWorkerScope;
 const runtimeConfig = coordinatorRuntimeConfig(self as unknown as CoordinatorConfiguredScope);
+const memoryBudget = new CoordinatorMemoryBudget(runtimeConfig.maxStagedBytes);
 const activeQueries = new Map<string, ActiveCoordinatorQuery>();
 const pendingForwardedCommands = new Map<string, PendingForwardedCommand>();
 let childCreationCount = 0;
@@ -235,6 +240,19 @@ function startCoordinatedQuery(command: BrowserWorkerSqlCommand): void {
     );
     return;
   }
+  if (!memoryBudget.tryReserve(queryId, maxBytes)) {
+    const memory = memoryBudget.snapshot();
+    postQueryError(
+      queryId,
+      context,
+      queryError(
+        'fallback_required',
+        `browser coordinator aggregate staging capacity (${memory.currentReservedBytes} of ${memory.limitBytes} bytes reserved) cannot admit ${maxBytes} bytes`,
+        'browser_runtime_constraint',
+      ),
+    );
+    return;
+  }
   const deadline = setTimeout(() => {
     const active = activeQueries.get(queryId);
     if (!active) return;
@@ -254,6 +272,7 @@ function startCoordinatedQuery(command: BrowserWorkerSqlCommand): void {
     delivery,
     lifecycle: new CoordinatorQueryLifecycle(),
     stage: new QueryStage(queryId, maxBytes),
+    memoryReleased: false,
     deadline,
   };
   activeQueries.set(queryId, active);
@@ -298,6 +317,7 @@ function handleChildMessage(message: PrivateChildMessage): void {
 
     if (message.kind === 'stream_chunk') {
       const credit = active.stage.stage(message);
+      memoryBudget.recordStaged(message.query_id, credit.byte_length);
       postToChild({
         kind: 'credit',
         version: PRIVATE_STREAM_PROTOCOL_VERSION,
@@ -541,6 +561,7 @@ function finishActiveQuery(queryId: string): void {
   clearTimeout(active.deadline);
   if (active.watchdog) clearTimeout(active.watchdog);
   if (active.lifecycle.state === 'draining') active.lifecycle.finishDrain();
+  releaseActiveMemory(active);
   activeQueries.delete(queryId);
 }
 
@@ -561,6 +582,7 @@ function recycleChild(invalidationReason: string): void {
     clearTimeout(active.deadline);
     if (active.watchdog) clearTimeout(active.watchdog);
     if (active.lifecycle.state === 'draining') active.lifecycle.finishDrain();
+    releaseActiveMemory(active);
   }
   activeQueries.clear();
   for (const [requestId, pending] of pendingForwardedCommands) {
@@ -584,6 +606,10 @@ function coordinatorRuntimeConfig(scope: CoordinatorConfiguredScope): Coordinato
       DEFAULT_PRIVATE_QUERY_WATCHDOG_MS,
     ),
     maxRequests: configuredPositiveInteger(configured?.maxRequests, MAX_COORDINATOR_REQUESTS),
+    maxStagedBytes: configuredPositiveInteger(
+      configured?.maxStagedBytes,
+      MAX_COORDINATOR_STAGED_ARROW_IPC_BYTES,
+    ),
     ...(typeof configured?.crashOnCommandNumber === 'number'
       ? {
           crashOnCommandNumber: configuredPositiveInteger(configured.crashOnCommandNumber, 1),
@@ -593,6 +619,12 @@ function coordinatorRuntimeConfig(scope: CoordinatorConfiguredScope): Coordinato
       ? { firstChildUrl: configured.firstChildUrl }
       : {}),
   };
+}
+
+function releaseActiveMemory(active: ActiveCoordinatorQuery): void {
+  if (active.memoryReleased) return;
+  memoryBudget.release(active.command.request_id);
+  active.memoryReleased = true;
 }
 
 function configuredPositiveInteger(value: number | undefined, fallback: number): number {

@@ -2,6 +2,7 @@ type CoordinatorTestConfig = {
   deadlineMs?: number;
   watchdogMs?: number;
   maxRequests?: number;
+  maxStagedBytes?: number;
   crashOnCommandNumber?: number;
   firstChildUrl?: string;
 };
@@ -24,6 +25,7 @@ scope.__AXON_SANDBOX_QUERY_COORDINATOR_TEST_CONFIG__ = {
   ...positiveIntegerParameter(parameters, 'deadline_ms', 'deadlineMs'),
   ...positiveIntegerParameter(parameters, 'watchdog_ms', 'watchdogMs'),
   ...positiveIntegerParameter(parameters, 'max_requests', 'maxRequests'),
+  ...positiveIntegerParameter(parameters, 'max_staged_bytes', 'maxStagedBytes'),
   ...(firstChild === 'crash-on-command' ? { crashOnCommandNumber: 1 } : {}),
   ...positiveIntegerParameter(parameters, 'crash_on_command', 'crashOnCommandNumber'),
   ...(firstChildUrl ? { firstChildUrl } : {}),
@@ -35,7 +37,7 @@ scope.postMessage({ coordinator_test_ready: true });
 function positiveIntegerParameter(
   parameters: URLSearchParams,
   parameter: string,
-  property: 'deadlineMs' | 'watchdogMs' | 'maxRequests' | 'crashOnCommandNumber',
+  property: 'deadlineMs' | 'watchdogMs' | 'maxRequests' | 'maxStagedBytes' | 'crashOnCommandNumber',
 ): Partial<CoordinatorTestConfig> {
   const raw = parameters.get(parameter);
   if (raw === null) return {};
