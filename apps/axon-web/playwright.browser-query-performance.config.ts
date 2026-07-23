@@ -12,9 +12,20 @@ export default defineConfig({
     baseURL,
     ignoreHTTPSErrors: true,
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        channel: 'chromium',
+        launchOptions: {
+          args: ['--enable-blink-features=ForceEagerMeasureMemory'],
+        },
+      },
+    },
+  ],
   webServer: {
-    command: `npm run dev:server -- --port ${port} --strictPort`,
+    command: `AXON_BROWSER_MEMORY_EVIDENCE=1 npm run dev:server -- --port ${port} --strictPort`,
     url: baseURL,
     ignoreHTTPSErrors: true,
     reuseExistingServer: !process.env.CI,

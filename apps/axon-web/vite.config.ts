@@ -3,10 +3,18 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 
+const browserMemoryEvidence = process.env.AXON_BROWSER_MEMORY_EVIDENCE === '1';
+
 export default defineConfig({
   plugins: [blockLegacySandboxRoute(), basicSsl(), react()],
   server: {
     host: '127.0.0.1',
+    headers: browserMemoryEvidence
+      ? {
+          'Cross-Origin-Embedder-Policy': 'require-corp',
+          'Cross-Origin-Opener-Policy': 'same-origin',
+        }
+      : undefined,
     port: 5173,
     strictPort: true,
   },

@@ -1,9 +1,10 @@
-import { expect, test, type CDPSession, type Page } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
 const MIB = 1024 * 1024;
 const REPEATED_QUERY_RUNS = 5;
+const MEMORY_RETENTION_QUERY_RUNS = 20;
 
 type QueryMeasurement = {
   requestId: string;
@@ -68,6 +69,11 @@ type PerformanceBudgets = {
   postGcRetainedHeapDeltaBytes: number;
 };
 
+type MemoryMeasurement = {
+  bytes: number;
+  breakdown: unknown[];
+};
+
 test('records real browser query timing, atomicity, and component memory bounds', async ({
   browser,
   page,
@@ -96,25 +102,45 @@ test('records real browser query timing, atomicity, and component memory bounds'
   };
 
   await page.goto('/');
+  const memoryMeasurementSupported = await page.evaluate(
+    () =>
+      crossOriginIsolated &&
+      typeof (
+        performance as Performance & {
+          measureUserAgentSpecificMemory?: () => Promise<unknown>;
+        }
+      ).measureUserAgentSpecificMemory === 'function',
+  );
+  expect(
+    memoryMeasurementSupported,
+    'browser query performance requires cross-origin-isolated user-agent memory measurement',
+  ).toBe(true);
   const setup = await installProbe(page);
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send('HeapProfiler.enable');
 
   let cold: QueryMeasurement;
   let warm: QueryMeasurement;
   let repeated: QueryMeasurement[];
+  let memoryRetentionRuns: QueryMeasurement[];
   let overLimit: OverLimitMeasurement;
-  let heapBeforeBytes: number;
-  let heapAfterBytes: number;
+  let memoryBefore: MemoryMeasurement;
+  let memoryAfter: MemoryMeasurement;
   try {
     cold = await runQuery(page, 'browser-query-performance-cold');
     warm = await runQuery(page, 'browser-query-performance-warm');
-    heapBeforeBytes = await collectPageHeap(cdp);
+    await page.requestGC();
+    memoryBefore = await measureUserAgentMemory(page);
     repeated = [];
     for (let index = 0; index < REPEATED_QUERY_RUNS; index += 1) {
       repeated.push(await runQuery(page, `browser-query-performance-repeat-${index + 1}`));
     }
-    heapAfterBytes = await collectPageHeap(cdp);
+    memoryRetentionRuns = [...repeated];
+    for (let index = REPEATED_QUERY_RUNS; index < MEMORY_RETENTION_QUERY_RUNS; index += 1) {
+      memoryRetentionRuns.push(
+        await runQuery(page, `browser-query-performance-memory-${index + 1}`),
+      );
+    }
+    await page.requestGC();
+    memoryAfter = await measureUserAgentMemory(page);
     overLimit = await runOverLimit(page, 'browser-query-performance-over-limit', 1);
   } finally {
     await page.evaluate(() => {
@@ -122,10 +148,9 @@ test('records real browser query timing, atomicity, and component memory bounds'
       harness?.terminate();
       delete (globalThis as BrowserProbeGlobal).__axonBrowserQueryPerformance;
     });
-    await cdp.detach();
   }
 
-  const rawHeapDeltaBytes = heapAfterBytes - heapBeforeBytes;
+  const rawHeapDeltaBytes = memoryAfter.bytes - memoryBefore.bytes;
   const retainedHeapDeltaBytes = Math.max(0, rawHeapDeltaBytes);
   const repeatedTotalDurationMs = repeated.reduce(
     (total, measurement) => total + measurement.totalDurationMs,
@@ -164,11 +189,14 @@ test('records real browser query timing, atomicity, and component memory bounds'
     },
     memory: {
       scope:
-        'Chromium page and public SDK heap after GC; worker cursor and coordinator are covered by exact query counters',
-      postGcBeforeBytes: heapBeforeBytes,
-      postGcAfterBytes: heapAfterBytes,
+        'Chromium measureUserAgentSpecificMemory after explicit GC; includes the cross-origin-isolated page and workers',
+      queryRuns: memoryRetentionRuns.length,
+      postGcBeforeBytes: memoryBefore.bytes,
+      postGcAfterBytes: memoryAfter.bytes,
       rawDeltaBytes: rawHeapDeltaBytes,
       retainedDeltaBytes: retainedHeapDeltaBytes,
+      beforeBreakdown: memoryBefore.breakdown,
+      afterBreakdown: memoryAfter.breakdown,
     },
     atomicOverLimit: overLimit,
   };
@@ -185,6 +213,10 @@ test('records real browser query timing, atomicity, and component memory bounds'
   for (const measurement of repeated) {
     assertQueryMeasurement(measurement, budgets, budgets.warmQueryMs);
   }
+  for (const measurement of memoryRetentionRuns.slice(REPEATED_QUERY_RUNS)) {
+    assertQueryMeasurement(measurement, budgets, budgets.warmQueryMs);
+  }
+  expect(memoryRetentionRuns).toHaveLength(MEMORY_RETENTION_QUERY_RUNS);
   expect(repeatedTotalDurationMs).toBeLessThanOrEqual(budgets.repeatedFiveRunsMs);
   expect(retainedHeapDeltaBytes).toBeLessThanOrEqual(budgets.postGcRetainedHeapDeltaBytes);
   expect(overLimit).toMatchObject({
@@ -453,10 +485,15 @@ async function runOverLimit(
   );
 }
 
-async function collectPageHeap(cdp: CDPSession): Promise<number> {
-  await cdp.send('HeapProfiler.collectGarbage');
-  const usage = await cdp.send('Runtime.getHeapUsage');
-  return usage.usedSize;
+async function measureUserAgentMemory(page: Page): Promise<MemoryMeasurement> {
+  return page.evaluate(async () => {
+    const measure = (
+      performance as Performance & {
+        measureUserAgentSpecificMemory: () => Promise<MemoryMeasurement>;
+      }
+    ).measureUserAgentSpecificMemory;
+    return measure.call(performance);
+  });
 }
 
 function environmentBudget(name: string, fallback: number): number {

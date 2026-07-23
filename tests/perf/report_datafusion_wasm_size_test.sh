@@ -34,6 +34,9 @@ rg -q '"postGcRetainedHeapDeltaBytes": 16777216' \
 rg -q 'AXON_BROWSER_QUERY_PERF_ARTIFACT' tests/perf/browser_query_performance.sh
 rg -q 'npm run build:wasm' tests/perf/browser_query_performance.sh
 rg -q 'test:browser:query-performance' tests/perf/browser_query_performance.sh
+rg -q 'AXON_BROWSER_MEMORY_EVIDENCE=1' \
+  apps/axon-web/playwright.browser-query-performance.config.ts
+rg -q 'measureUserAgentSpecificMemory' apps/axon-web/tests/browser-query-performance.spec.ts
 
 rg -q 'name: Browser DataFusion WASM size budget' .github/workflows/ci.yml
 rg -q 'AXON_DF_SIZE_PACKAGE: axon-web-wasm' .github/workflows/ci.yml

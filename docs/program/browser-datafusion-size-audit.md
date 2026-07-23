@@ -243,7 +243,7 @@ The current POC proves:
   cancellation returns a structured browser DataFusion cancellation error.
 - `tests/perf/browser_query_performance.sh` records the release-facing Chromium startup, cold and
   warm Delta/Parquet query milestones, result bytes, atomic over-limit behavior, component-memory
-  counters, and post-GC public-SDK heap delta.
+  counters, and post-GC user-agent memory delta across the page and workers.
   `tests/perf/browser_datafusion_engine_smoke.sh` retains the equivalent Rust host probes as
   diagnostic-only timings. `tests/perf/report_datafusion_wasm_size.sh` remains the Brotli-size
   source of truth.

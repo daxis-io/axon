@@ -286,6 +286,55 @@ async fn cursor_grows_pending_storage_lazily_under_separate_total_and_batch_caps
 }
 
 #[tokio::test]
+async fn cursor_allows_output_above_pending_cap_when_each_batch_stays_bounded() {
+    const BATCH_COUNT: usize = 18;
+    const PAYLOAD_BYTES: usize = 512 * 1024;
+    const PENDING_CAP: usize = 8 * 1024 * 1024;
+    const TOTAL_CAP: u64 = 16 * 1024 * 1024;
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "value",
+        arrow_schema::DataType::Utf8,
+        false,
+    )]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(vec!["x".repeat(PAYLOAD_BYTES)]))],
+    )
+    .unwrap();
+    let mut engine = WasmDataFusionEngine::new();
+    engine
+        .register_record_batches("events", schema, vec![batch; BATCH_COUNT])
+        .await
+        .unwrap();
+    let mut cursor = engine
+        .start_arrow_ipc_cursor(
+            "SELECT value FROM events",
+            IpcStreamLimits {
+                max_transport_chunk_bytes: 1024 * 1024,
+                max_pending_encoded_batch_bytes: PENDING_CAP,
+                max_total_encoded_bytes: Some(TOTAL_CAP),
+                preview_rows: 0,
+                max_preview_string_bytes: None,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    let terminal = loop {
+        match cursor.next().await.unwrap().unwrap() {
+            IpcCursorItem::Chunk(_) => {}
+            IpcCursorItem::Terminal(terminal) => break terminal,
+        }
+    };
+
+    assert_eq!(terminal.status, QueryTerminalStatus::Succeeded);
+    assert!(terminal.encoded_bytes > PENDING_CAP as u64);
+    assert!(terminal.encoded_bytes <= TOTAL_CAP);
+    assert!(terminal.cursor_metrics.peak_pending_encoded_bytes <= PENDING_CAP as u64);
+    assert!(terminal.cursor_metrics.peak_pending_encoded_capacity <= PENDING_CAP as u64);
+}
+
+#[tokio::test]
 async fn cursor_rejects_all_dictionary_modes_before_writer_creation() {
     let modes = [
         ("static", vec![vec!["alpha", "beta"]]),

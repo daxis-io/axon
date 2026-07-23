@@ -73,7 +73,7 @@ It writes `target/perf/browser-query-performance.json` with:
 - cold, warm, and five repeated query durations plus `arrow_ipc_ready`;
 - result byte and chunk counts;
 - exact coordinator staging and Rust cursor/transport peaks;
-- a post-GC retained-heap delta for the page and public SDK;
+- a post-GC retained user-agent memory delta across the page and workers;
 - an over-limit query proving that no public Arrow IPC chunk escapes before failure.
 
 The browser probe does not assert that the warm query is faster than the cold query. It records

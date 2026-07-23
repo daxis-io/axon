@@ -124,7 +124,7 @@ Release companion browser performance report:
 
 - \`bash tests/perf/browser_query_performance.sh\` records browser startup, cold and warm
   Delta/Parquet query milestones, result bytes, atomic over-limit behavior, exact cursor and
-  coordinator memory bounds, and the post-GC public-SDK heap delta.
+  coordinator memory bounds, and the post-GC user-agent memory delta across the page and workers.
 
 Host-only diagnostic:
 
