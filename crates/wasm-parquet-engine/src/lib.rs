@@ -2338,10 +2338,10 @@ impl HttpRangeAsyncFileReader {
         self.metadata_probe_round_trips = 0;
         let file_size = self.target.size_bytes;
         let metadata_options = options.map(|option| option.metadata_options().clone());
+        let (column_index_policy, offset_index_policy) = page_index_policies(options);
         let metadata = ParquetMetaDataReader::new()
-            .with_page_index_policy(PageIndexPolicy::from(
-                options.is_some_and(|option| option.page_index()),
-            ))
+            .with_column_index_policy(column_index_policy)
+            .with_offset_index_policy(offset_index_policy)
             .with_metadata_options(metadata_options)
             .load_and_finish(&mut *self, file_size)
             .await;
@@ -2352,6 +2352,12 @@ impl HttpRangeAsyncFileReader {
             .map_err(parquet_error_from_query_error)?;
         Ok(Arc::new(metadata))
     }
+}
+
+fn page_index_policies(options: Option<&ArrowReaderOptions>) -> (PageIndexPolicy, PageIndexPolicy) {
+    options.map_or((PageIndexPolicy::Skip, PageIndexPolicy::Skip), |option| {
+        (option.column_index_policy(), option.offset_index_policy())
+    })
 }
 
 impl AsyncFileReader for HttpRangeAsyncFileReader {
@@ -4394,13 +4400,15 @@ fn execution_runtime_error(message: impl Into<String>) -> QueryError {
 #[cfg(test)]
 mod tests {
     use super::{
-        merge_parquet_range_read_metrics, HttpRangeAsyncFileReader, ObjectSource,
-        ParquetObjectIdentity, ParquetRangeCache, ParquetRangeQueryContext, ParquetRangeReadKey,
-        ParquetRangeReadMetrics, ParquetRangeReadPhase, ParquetReadaheadPolicy, ScanTarget,
-        SharedScanTargetMetricsHandle,
+        merge_parquet_range_read_metrics, page_index_policies, HttpRangeAsyncFileReader,
+        ObjectSource, ParquetObjectIdentity, ParquetRangeCache, ParquetRangeQueryContext,
+        ParquetRangeReadKey, ParquetRangeReadMetrics, ParquetRangeReadPhase,
+        ParquetReadaheadPolicy, ScanTarget, SharedScanTargetMetricsHandle,
     };
     use crate::{ScanTargetMetricsHandle, ScanTargetMetricsSnapshot};
+    use parquet::arrow::arrow_reader::ArrowReaderOptions;
     use parquet::arrow::async_reader::AsyncFileReader;
+    use parquet::file::metadata::PageIndexPolicy;
     use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -4409,6 +4417,30 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread::{self, JoinHandle};
     use wasm_http_object_store::HttpRangeReader;
+
+    #[test]
+    fn metadata_page_index_policies_preserve_independent_reader_options() {
+        assert_eq!(
+            page_index_policies(None),
+            (PageIndexPolicy::Skip, PageIndexPolicy::Skip)
+        );
+
+        let column_only = ArrowReaderOptions::new()
+            .with_column_index_policy(PageIndexPolicy::Optional)
+            .with_offset_index_policy(PageIndexPolicy::Skip);
+        assert_eq!(
+            page_index_policies(Some(&column_only)),
+            (PageIndexPolicy::Optional, PageIndexPolicy::Skip)
+        );
+
+        let offset_required = ArrowReaderOptions::new()
+            .with_column_index_policy(PageIndexPolicy::Skip)
+            .with_offset_index_policy(PageIndexPolicy::Required);
+        assert_eq!(
+            page_index_policies(Some(&offset_required)),
+            (PageIndexPolicy::Skip, PageIndexPolicy::Required)
+        );
+    }
 
     #[test]
     fn range_read_metrics_store_compact_keys_without_signed_url_material() {
