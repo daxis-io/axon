@@ -13,7 +13,8 @@
 ## Preflight and fixed boundaries
 
 - Root checkout: dirty and divergent; read-only for this PI.
-- Live `origin/main`: `f8e530c0d9422b8e970e397472147fbf965aa6ef`.
+- Historical plan-session `origin/main`:
+  `f8e530c0d9422b8e970e397472147fbf965aa6ef`.
 - Required predecessor: E9 Slice 1 branch `feat/e9-source-lifecycle-pi` at
   `d9a5ffb7edd914bfc46b13ffa1d090e991cc0cee`, exactly six commits above
   `origin/main` with a clean worktree.
@@ -536,3 +537,234 @@ capability lifetime and execution budgets are explicit, browser execution can
 carry only one byte-budgeted buffer, every intentional Buf break is recorded,
 generated TS/Rust drift checks pass, and the five-commit correction stack is
 clean. Only then is E9 Slice 2 unblocked.
+
+## Final local handoff evidence (2026-07-23)
+
+### Refs, starting state, and rewritten history
+
+The fetched `origin/main` and final merge base are both
+`6cca364465fc4fa714ff7403b6df7e3f229c6e8f`. The pre-rebase committed head plus
+the completed dirty Task 3 work was protected by the uniquely named local ref
+`safety/e3a-pre-adoption-correction-pre-rebase-20260723-926fbb9`, which remains
+at `926fbb93a0f6d301033e7f1f59e390d9a2314da5`.
+
+The continuation started with exactly these ten modified Task 3 files:
+
+1. `apps/axon-web/proto/axon/dataaccess/v1/dataaccess.proto`
+2. `apps/axon-web/src/generated/contracts/dataaccess-codegen.test.ts`
+3. `apps/axon-web/src/generated/contracts/exec-codegen.test.ts`
+4. `apps/axon-web/src/generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts`
+5. `crates/contract-proto/src/generated/axon.dataaccess.v1.dataaccess.__oneof.rs`
+6. `crates/contract-proto/src/generated/axon.dataaccess.v1.dataaccess.__view.rs`
+7. `crates/contract-proto/src/generated/axon.dataaccess.v1.dataaccess.__view_oneof.rs`
+8. `crates/contract-proto/src/generated/axon.dataaccess.v1.dataaccess.rs`
+9. `crates/contract-proto/src/generated/axon.dataaccess.v1.mod.rs`
+10. `crates/contract-proto/tests/exec_smoke.rs`
+
+No provider adoption, E8 work, remote execution, or unrelated runtime change
+was present. The current rewritten commits before this self-referential handoff
+commit are:
+
+1. `59df620` — `docs: plan e9 source lifecycle pi`
+2. `d2fc39e` — `fix(web): require authoritative query selection`
+3. `8424e6d` — `refactor(web): model one execution lifecycle`
+4. `4519d42` — `fix(web): route cancellation through execution lifecycle`
+5. `b78deb5` — `fix(web): enforce execution deadline and buffer bounds`
+6. `0572b32` — `docs: document e9 slice one handoff`
+7. `1a57235` — `docs: plan e3a pre-adoption contract correction`
+8. `fe15caf` — `fix(contract): define canonical resource identity`
+9. `0569dce` — `fix(contract): close data access resolution`
+10. `51873a3` — `fix(contract): align execution lifecycle wire shape`
+
+The eleventh subject is `docs: document e3a correction handoff`; its SHA is
+necessarily obtained from `git rev-parse HEAD` after committing this section.
+
+### Current-main conflict integration
+
+The autosquash replay conflicted only in
+`apps/axon-web/src/sandbox-query-worker.ts` and
+`apps/axon-web/tests/browser-worker-matrix.spec.ts`, matching the preflight
+simulation.
+
+The worker resolution preserves `6cca364`'s one-child coordinator and its
+private schema/data/end-of-stream chunks, fixed data/control credit windows,
+and staged atomic commit. It also preserves E9's admitted Arrow byte maximum,
+execution-scoped cancellation, first-terminal-wins lifecycle, and single-buffer
+editor delivery. Oversize staged output is discarded and reported as
+`execution_failed`; cancellation or a private deadline discards the stage; and
+the private 120-second upper bound cannot override a shorter lifecycle deadline
+or publish a second terminal outcome.
+
+The matrix resolution retains both the private-stream coordinator cases and the
+E9 cancellation/output-bound cases. Focused integration found two
+cross-browser gaps after the textual conflicts were resolved: Firefox promoted
+a handled child-worker error into an outer-worker error, and the child-crash
+probe depended on one browser's module-request interception. The repaired E9
+fixup calls `preventDefault()` for the handled child error and uses Firefox
+worker instrumentation or Chromium/WebKit request routing as appropriate.
+Those repairs were autosquashed into `b78deb5`; no integration change was
+hidden in an E3A contract commit.
+
+### Task 3 and Task 4 result
+
+Task 3 closes `ReadResolution` to exactly `browser_read`,
+`remote_required`, `denied`, or typed `error`. `ResolvedBrowserRead` carries its
+canonical resource, descriptor, access class, correlation, provenance, and
+conditional expiry. Capability reports are repeated typed entries with
+duplicate/unspecified rejection fixtures. Capability-bearing access requires
+`not_after` equal to the earliest finite capability expiry; public access may
+omit it. Object-grant audit correlation is `execution_id`. The old nested
+resolution-plan hierarchy remained only until Task 4, and no live runtime or
+provider interface adopted the new values.
+
+Task 4 removes `ObjectRef`, the temporary plan hierarchy, duplicate exec
+capability/fallback declarations, public chunk delivery, and table URI/snapshot
+binding fields. `ExecuteRequest` has one caller-created `execution_id`, exactly
+one `ResolvedBrowserRead` or `CanonicalResourceRef` binding, one query, and an
+absolute protobuf timestamp deadline. Existing explicitly present runtime
+limits are the budgets. Admission is accepted or rejected; the lifecycle enum
+has seven states; `ExecutionTerminalState` has exactly completed, failed, or
+cancelled; `ExecuteResponse` carries admission, a nonterminal event, or one
+terminal frame; and domain cancellation is keyed only by `execution_id`.
+`ArrowIpcResult` contains one optional byte buffer plus its explicit byte
+length. Private chunks, credits, stages, and child topology remain absent from
+protobuf and generated public output.
+
+### Reviewed intentional Buf break set
+
+The final structured command exits 100 with exactly 95 accepted pre-adoption
+findings. They are confined to four reviewed files:
+
+| File               | Findings | Accepted correction                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------ | -------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `catalog.proto`    |       11 | Delete the four unused function/model messages; change `TableNode.ref` and `VolumeNode.ref` to canonical `resource` (name, JSON name, and type for each); delete the redundant `ColumnNode.partition` field.                                                                                                                                                                                                                                                                          |
+| `common.proto`     |        5 | Delete `ProviderAuthority`, `ObjectRef`, and `ProviderCapabilities`; delete `PageInfo.has_more`; change `next_cursor` to explicit presence.                                                                                                                                                                                                                                                                                                                                           |
+| `dataaccess.proto` |       18 | Delete four obsolete access-plan enums, eight plan/hierarchy messages, and the synthetic map-entry message; change capability map cardinality and value type to typed entries; delete audit `request_id`; rename audit `query_id` to `execution_id` in field and JSON names.                                                                                                                                                                                                          |
+| `exec.proto`       |       61 | Delete three duplicate/chunk delivery enums, eight fallback/chunk/descriptor messages, and the fallback enum value; delete 16 legacy binding/fallback/chunk/cancel fields; apply three cancel-command identity cardinality/name changes, two event-context identity name changes, ten execute-request binding changes, six execute-response arm changes, five preview identity/binding changes, two cancel-request identity changes, and five cancel-response identity/state changes. |
+
+The rule totals are `ENUM_NO_DELETE=8`, `ENUM_VALUE_NO_DELETE=1`,
+`FIELD_NO_DELETE=19`, `FIELD_SAME_CARDINALITY=3`,
+`FIELD_SAME_JSON_NAME=15`, `FIELD_SAME_NAME=15`,
+`FIELD_SAME_ONEOF=2`, `FIELD_SAME_TYPE=9`, and
+`MESSAGE_NO_DELETE=23`. There is no `axon/fs/v1`, unrelated-package,
+service-cardinality, filesystem, or unreviewed field-type finding.
+
+This report closes the one authorized compatibility window. Future Buf `FILE`
+compatibility comparisons must use the corrected contract commit as their
+baseline, not `origin/main`'s historical pre-correction schema. Further schema
+evolution is additive unless a new break receives separate explicit review.
+
+### Verification record
+
+Focused correction and integration evidence:
+
+- Task 3 contract Vitest: 2 files and 23 tests passed.
+- Task 3/4 `cargo test -p axon-contract-proto --locked`: 9 tests passed
+  (6 exec and 3 filesystem).
+- Task 4 generated-contract Vitest: 4 files and 44 tests passed.
+- The fresh-review focused Vitest bundle passed 11 files and 123 tests.
+- E9 focused browser integration passed 37 tests across Chromium, Firefox,
+  and WebKit and skipped only the 2 injected nested-worker routing cases that
+  Firefox cannot intercept.
+- Buf lint/format, TypeScript and Rust contract generation/drift checks,
+  contract wasm check, `tsc --noEmit`, Rust formatting, and `git diff --check`
+  passed on the final source/generated state.
+
+Final web matrix:
+
+- `npm run build:fixture` and `npm run build:wasm` passed; both emitted only the
+  existing `ArrowReaderOptions::page_index` deprecation warning.
+- `buf lint` and `buf format --diff --exit-code` passed.
+- `npm run codegen:config:check`,
+  `npm run codegen:contracts:check`,
+  `npm run codegen:contracts:rust:check`, and `npm run codegen:check` passed.
+  Repeat remote-plugin attempts intermittently returned
+  `resource_exhausted: too many requests`; successful retries used the same
+  pinned configurations and produced no drift.
+- `npm exec -- vitest run src/generated/contracts` passed 4 files and 44 tests.
+- `npm test` passed 33 files and 258 tests.
+- `npm run test:sdk` passed 147 tests.
+- `npm exec -- playwright test --config=playwright.config.ts` passed 37 tests
+  and skipped 2 injected nested-worker routing cases in Firefox. Chromium and
+  WebKit both exercise the non-settling-child and crash-after-open probes; the
+  existing real-worker crash path remains covered in all three engines.
+- `npm exec -- tsc --noEmit`, `npm run lint`, and `npm run format:check`
+  passed.
+
+Final Rust, artifact, and security matrix:
+
+- `cargo test -p axon-contract-proto --locked`: 9 tests passed.
+- `cargo check -p axon-contract-proto --target wasm32-unknown-unknown --locked`
+  passed.
+- `cargo test -p browser-sdk --locked`: 27 tests passed.
+- `cargo test -p browser-engine-worker --locked`: 14 tests passed.
+- `cargo check -p browser-engine-worker --target wasm32-unknown-unknown --locked`
+  and `cargo fmt --check` passed.
+- `bash tests/perf/report_browser_worker_artifact.sh` passed at 622,354 bytes
+  against the 750,000-byte budget.
+- `bash tests/security/verify_browser_dependency_guardrails.sh` passed. Its
+  first parallel attempt correctly reported the artifact missing while the
+  artifact build still held the Cargo lock; the required sequential rerun
+  passed.
+- `git diff --check origin/main...HEAD` passed.
+
+Live public-cloud inputs were not configured. The skip-safe GCS command passed
+its redaction test and skipped 2 live cases because
+`AXON_LIVE_PUBLIC_GCS_TABLE_URI` is missing. The S3 command passed 3
+evidence-validation tests and skipped 3 live cases because
+`AXON_LIVE_PUBLIC_S3_TABLE_URI` and `AXON_LIVE_PUBLIC_S3_REGION` are missing.
+No live-cloud product claim is made.
+
+### Final audit and gate
+
+The complete `origin/main...HEAD` audit found no hidden table/sample source
+fallback, alternate domain identity, fourth terminal state, accepted-work
+retry, private stream leakage into public contracts, capability/credential
+persistence, signed URL or SQL logging, speculative provider/E8/remote
+transport adoption, unused generated Rust, or unbounded lifecycle collection.
+Lifecycle records, listeners, invariant history, timers, worker queries,
+private stages, and public output bytes all have explicit limits and cleanup.
+
+The correction and E9 Slice 1 are therefore complete as one clean local
+eleven-commit stack once this handoff commit is created. E9 Slice 2
+implementation has not started; planning Slice 2 is unblocked. Nothing in this
+handoff authorizes a push, PR, merge to `main`, worktree removal, or safety-ref
+deletion.
+
+### Fresh independent review closure (2026-07-23)
+
+The pre-fix reviewed head is retained at
+`safety/e3a-correction-review-feedback-pre-fix-20260723-681c276`
+(`681c27687f245623805122877c93c5386df34d11`) in addition to the original
+pre-rebase safety ref. The independent review found two runtime lifecycle
+blockers, two contract-validation gaps, and one cold-start harness issue; all
+five are closed in the rewritten commits above.
+
+The coordinator now admits at most 32 outstanding forwarded or SQL commands.
+Cancellation and the private deadline send one child cancellation and wait a
+one-second confirmation grace. If the child does not settle, the coordinator
+discards every stage, settles every SDK request exactly once, terminates the
+child, and creates a fresh child without retrying accepted work. The error is
+marked as an internal query-session invalidation; the editor disposes that
+session, and the next execution rebuilds and reopens the descriptor. An
+authoritative E9 deadline also disposes the session immediately because its
+domain terminal may win before the late child response arrives. Fixed
+non-sensitive failure categories replace arbitrary child error text.
+
+Chromium and WebKit regressions inject a child whose SQL never settles and
+prove the 33rd request is rejected, all 32 admitted SDK requests are released,
+and the child is recycled. A second injected-child regression proves
+open-then-crash fails that execution once and that the next execution reopens
+and succeeds. Firefox retains the real child-crash regression but skips only
+those two source-routing probes because Playwright cannot intercept its nested
+module-worker request.
+
+The contract tests now reject empty canonical tuple members, unspecified
+resource/access/capability enums, missing resource/descriptor/correlation or
+provenance, unset nested binding arms, duplicate capability keys, rejected
+admission followed by an event or terminal, and unset response/admission
+oneofs. Equivalent negative Buffa fixtures exercise the generated Rust values.
+No validator was adopted by a provider or live application seam. The two
+synchronous codegen subprocess tests now have a 20-second child-process bound
+and a 30-second test budget, preventing cold tool startup from tripping the
+generic five-second Vitest timeout while retaining a deterministic hang bound.

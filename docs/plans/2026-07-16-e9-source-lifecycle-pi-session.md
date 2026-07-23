@@ -324,7 +324,8 @@ Slice 1 passes only if all of the following are proved:
 - the worktree is clean and the branch has exactly the six named commits.
 
 Only if every gate passes should the next PI be the mandatory E3A correction.
-E9 Slice 2 remains blocked until that correction lands.
+At this 2026-07-16 handoff, E9 Slice 2 remained blocked until that correction;
+the 2026-07-23 addendum records that the gate is now satisfied.
 
 ## Final evidence
 
@@ -459,5 +460,59 @@ completed, failed, or cancelled terminal outcome. The worker path uses the
 admitted single-buffer maximum and withholds oversized Arrow output, while the
 generic SDK retains its chunked default.
 
-The mandatory E3A correction PI is therefore the recommended next slice. E9
-Slice 2 remains blocked until that correction lands.
+This was the Slice 1 handoff verdict on 2026-07-16. The 2026-07-23 integration
+addendum below supersedes its correction gate.
+
+## Current-main and E3A correction integration addendum (2026-07-23)
+
+The fetched `origin/main`, final merge base, and first rewritten parent are all
+`6cca364465fc4fa714ff7403b6df7e3f229c6e8f`
+(`perf(ipc): stream browser query results through coordinator`). The E9 stack
+was replayed from its historical `f8e530c` base and now has these six commit
+identities:
+
+1. `59df620` — `docs: plan e9 source lifecycle pi`
+2. `d2fc39e` — `fix(web): require authoritative query selection`
+3. `8424e6d` — `refactor(web): model one execution lifecycle`
+4. `4519d42` — `fix(web): route cancellation through execution lifecycle`
+5. `b78deb5` — `fix(web): enforce execution deadline and buffer bounds`
+6. `0572b32` — `docs: document e9 slice one handoff`
+
+The replay conflicted only in `sandbox-query-worker.ts` and
+`browser-worker-matrix.spec.ts`. The worker resolution keeps `6cca364`'s
+one-child, credit-controlled private stream and atomic `QueryStage` commit,
+while retaining Slice 1's admitted byte maximum, execution-scoped cancellation,
+absolute lifecycle deadline, and public single-buffer result. A private
+`deadline_exceeded` remains a domain `failed(deadline)` outcome. The test
+resolution keeps both the coordinator-stream coverage and Slice 1's
+cancellation/output-limit assertions. The integration repair also makes child
+crash injection browser-neutral and prevents Firefox from promoting a handled
+child error into a second outer-worker error.
+
+The fresh-review focused bundle passed 123 Vitest tests. The final full web
+matrix passed 258 Vitest tests, 147 generic SDK Playwright tests, and 37 worker
+tests with only 2 Firefox nested-worker routing probes skipped. The generic SDK
+retains its hand-written chunked behavior; private stream chunks, credits,
+stages, and child-worker topology are absent from protobuf and generated public
+contracts.
+
+The mandatory correction now follows the six commits as four implementation
+commits plus this final documentation commit. It establishes canonical
+resource identity, the four-arm read-resolution algebra, caller-created
+execution admission and cancellation, three authoritative terminal outcomes,
+and one byte-budgeted public Arrow buffer. No E9 Slice 2 provider interface or
+runtime adoption was started. Once the final documentation commit is present
+and the worktree/history gates are clean, E9 Slice 2 planning is unblocked.
+
+### Fresh-review lifecycle hardening (2026-07-23)
+
+The correction review found that a child blocked inside stream advancement
+could outlive a cancellation, and that replacing a crashed child left the
+editor's cached `tableOpened` state referring to the old child. The rewritten
+fifth Slice 1 commit now caps the coordinator at 32 outstanding commands,
+waits one bounded confirmation grace, discards staged bytes, settles pending
+requests once, and recycles a nonresponsive child. Child replacement is marked
+as an internal session invalidation, so the editor terminates the stale session
+and the next execution reopens. Authoritative deadline cleanup also disposes
+the session immediately. No accepted execution retries, no private frame enters
+protobuf, and the domain terminal remains completed, failed, or cancelled.

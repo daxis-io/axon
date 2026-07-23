@@ -1,10 +1,12 @@
 # E9 — Execution Provider and Data-Access Vertical Slices
 
 - Date: 2026-07-15
-- Audit revision: 2026-07-16
-- Status: Proposed
+- Audit revision: 2026-07-23
+- Status: Slice 1 and mandatory E3A correction complete locally; Slice 2 planning unblocked
 - Audited baseline: `origin/main` at
   `7681f1dfa5bdaaae3ff2ccff79cc8be76ec1503a`
+- Current local integration base: `origin/main` at
+  `6cca364465fc4fa714ff7403b6df7e3f229c6e8f`
 - Per-slice dependencies: Slice 1 needs E0 state; one intentional E3A correction
   PI follows Slice 1 and gates Slice 2; Slice 3 needs E1 logical table references
   and E6 session-proxied access
@@ -342,13 +344,13 @@ Exit gate: Axon cannot return correct-looking results from the wrong table, one
 execution has one observable lifecycle, and the slice has no protobuf or
 generated-contract diff.
 
-### Mandatory E3A correction PI between Slices 1 and 2
+### Mandatory E3A correction PI between Slices 1 and 2 (complete locally)
 
-The current `axon.exec.v1.ExecuteRequest` combines a `table_ref` and openable
-descriptor, while worker messages use request and query identifiers in several
-places. After Slice 1 proves the domain lifecycle, one intentional E3A PI may
-correct the unadopted compatibility surface. That correction is a mandatory gate
-before Slice 2.
+The pre-correction `axon.exec.v1.ExecuteRequest` combined a `table_ref` and
+openable descriptor, while worker messages used request and query identifiers
+in several places. After Slice 1 proved the domain lifecycle, the one
+intentional E3A PI corrected that unadopted compatibility surface. The
+2026-07-23 local handoff below records completion of this mandatory gate.
 
 The correction is limited to:
 
@@ -371,6 +373,37 @@ Run `buf breaking`, document every accepted break, update generated TypeScript
 and Rust output still used by consumers, and establish the corrected files as
 the new Buf `FILE` baseline. Do not use the correction window for speculative
 remote-service or E8 fields.
+
+Completion evidence: the stack was replayed directly onto `origin/main`
+`6cca364465fc4fa714ff7403b6df7e3f229c6e8f`. The six rewritten Slice 1 commits
+are `59df620`, `d2fc39e`, `8424e6d`, `4519d42`, `b78deb5`, and `0572b32`.
+The four correction commits before the documentation handoff are `1a57235`,
+`fe15caf`, `0569dce`, and `51873a3`.
+
+The correction removes the ambiguous identity/fallback/resolution hierarchy,
+defines the four read outcomes and accepted-execution lifecycle, keeps the
+private `6cca364` stream coordinator out of protobuf, and preserves one bounded
+public Arrow buffer. The intentional Buf report is exactly 95 findings confined
+to catalog (11), common (5), data-access (18), and exec (61); there is no
+filesystem, unrelated-package, service-cardinality, or unreviewed field-type
+break. Buf `FILE` compatibility resumes from the corrected commit for every
+future schema change.
+
+The full deterministic matrix passes on the local stack, with GCS and S3 live
+query cases skipped only because
+`AXON_LIVE_PUBLIC_GCS_TABLE_URI`,
+`AXON_LIVE_PUBLIC_S3_TABLE_URI`, and `AXON_LIVE_PUBLIC_S3_REGION` are absent.
+No Slice 2 provider seam or adoption code is included. Slice 2 planning is
+unblocked; implementation remains the next PI.
+
+The fresh independent review closed the remaining Slice 1 operational gaps:
+the private coordinator has a 32-command admission cap and a bounded
+cancellation-confirmation grace, recycles a nonresponsive child without
+retrying accepted work, and invalidates the editor session so the next
+execution reopens. Contract negatives now reject incomplete nested bindings
+and invalid response order in both generated TypeScript and Buffa consumers.
+These changes remain inside Slice 1 and the mandatory pre-adoption correction;
+Slice 2 implementation has not started.
 
 ### Slice 2 — Local Delta and public-object browser providers
 

@@ -1,10 +1,12 @@
 # E3A — Provider Contract Surfaces — Revised Execution Plan
 
 - Original date: 2026-06-20
-- Revised: 2026-07-16
-- Status: Substrate landed; consumer adoption remains
+- Revised: 2026-07-23
+- Status: Pre-adoption correction complete locally; consumer adoption remains
 - Audited baseline: `origin/main` at
   `7681f1dfa5bdaaae3ff2ccff79cc8be76ec1503a`
+- Current local integration base: `origin/main` at
+  `6cca364465fc4fa714ff7403b6df7e3f229c6e8f`
 - Related: [workbench strategy](../program/rich-lakehouse-workbench-strategy.md),
   [provider ADR](../adr/ADR-0010-pluggable-catalog-providers.md), and
   [E9 vertical slices](./2026-07-15-e9-execution-provider-vertical-slice-plan.md)
@@ -50,10 +52,11 @@ filesystem messages are not complete provider implementations, and the
 `QueryEngine` declaration is not a deployed remote execution API. No E8
 provider, adapter, UI, or runtime consumer has landed.
 
-`axon.common.v1.ProviderCapabilities` currently includes a generic `authority`
-field. It is unadopted and too broad: discovery capability does not establish
-who decides access or who enforces it. Do not carry that field into the E1
-catalog seam.
+On the historical audited baseline,
+`axon.common.v1.ProviderCapabilities` included a generic `authority` field. It
+was unadopted and too broad: discovery capability does not establish who
+decides access or who enforces it. The 2026-07-23 correction removes that
+message and field before E1 or E9 adoption.
 
 ## Contract classification
 
@@ -72,11 +75,11 @@ callers:
 These messages must not contain browser-held cloud credentials, refresh tokens,
 signing material, or provider-specific SDK objects.
 
-The landed `ObjectRef`, resolution variants, and execution lifecycle are not yet
-in that category. E9 Slice 1 first establishes the domain identity and lifecycle
-without protobuf changes. The following intentional E3A correction PI aligns
-their wire identity, result algebra, access lifetime, and cancellation semantics
-before E9 Slice 2 adoption.
+The historical `ObjectRef`, resolution variants, and execution lifecycle were
+not yet in that category. E9 Slice 1 first established the domain identity and
+lifecycle without protobuf changes. The 2026-07-23 intentional E3A correction
+then aligned their wire identity, result algebra, access lifetime, and
+cancellation semantics before E9 Slice 2 adoption.
 
 ### Browser-worker compatibility protocol
 
@@ -115,9 +118,10 @@ correlation ID, resolution provenance, and `not_after` whenever the access class
 is capability-bearing. It is passed directly to one admission attempt, discarded
 after rejection or terminal execution, and never becomes a catalog-cache entry.
 
-The existing `ExecuteRequest` contains both `table_ref` and `descriptor`. E9 has
-one pre-adoption correction window to replace that ambiguous pairing with one
-binding arm before production consumers depend on it.
+The pre-correction `ExecuteRequest` contained both `table_ref` and
+`descriptor`. The completed pre-adoption correction replaces that ambiguous
+pairing with exactly one `browser_read` or `logical_resource` binding arm
+before production consumers depend on it.
 
 Authority is contextual rather than a catalog capability. The source profile
 identifies the access-decision owner and enforcement owner. If those values do
@@ -159,7 +163,7 @@ Rust before those consumers exist.
 
 ## Remaining work
 
-### M0 — E9 Slice 1 establishes the domain lifecycle
+### M0 — E9 Slice 1 establishes the domain lifecycle (complete)
 
 Before changing protobuf, E9 Slice 1 removes implicit first-table and sample
 fallback, makes the selected resource authoritative, and establishes one
@@ -170,7 +174,7 @@ worker request, query, and cancellation correlation fields.
 Gate: selected-source and lifecycle tests pass without proto, generated-output,
 or compatibility-baseline changes.
 
-### M1 — Intentional pre-adoption contract correction
+### M1 — Intentional pre-adoption contract correction (complete locally)
 
 One intentional E3A correction PI follows E9 Slice 1 and aligns the execution
 binding and lifecycle wire shape:
@@ -292,3 +296,46 @@ values, Buf `FILE` compatibility is enforced from the corrected baseline, and no
 additional unused package or transport remains on the roadmap merely to make
 the contract tree look complete. Landed `axon/fs/v1` remains messages-only until
 the separately gated E8 consumer adopts it.
+
+## 2026-07-23 correction handoff
+
+The completed local stack is based directly on
+`6cca364465fc4fa714ff7403b6df7e3f229c6e8f`. Its rewritten E9 commits are
+`59df620`, `d2fc39e`, `8424e6d`, `4519d42`, `b78deb5`, and `0572b32`; the
+correction commits before this documentation handoff are `1a57235`, `fe15caf`,
+`0569dce`, and `51873a3`.
+
+M1 now supplies the corrected value substrate:
+
+- `CanonicalResourceRef` is the sole cross-seam resource identity;
+- `ReadResolution` has exactly four disjoint outcomes and
+  `ResolvedBrowserRead` is self-identifying;
+- capability reports use typed unique entries, and capability-bearing browser
+  access expires at the earliest finite capability boundary;
+- `ExecuteRequest` has one binding, one caller-created `execution_id`, one
+  absolute deadline, and explicit runtime budgets;
+- admission is accepted or rejected, accepted execution has seven lifecycle
+  states and exactly three authoritative terminal outcomes, and cancellation is
+  keyed only by `execution_id`; and
+- the public contract carries one bounded Arrow IPC buffer. The landed private
+  child/coordinator chunk protocol remains an internal TypeScript/Rust detail.
+
+The reviewed `buf breaking` report contains exactly 95 pre-adoption findings:
+11 catalog, 5 common, 18 data-access, and 61 execution. There is no filesystem,
+unrelated package, service-cardinality, or unreviewed field-type break. This is
+the one authorized compatibility window. Future protobuf changes must run Buf
+`FILE` compatibility against the corrected commit, not against the historical
+pre-correction schema, and must be additive unless separately reviewed.
+
+M2/E9 Slice 2 planning is now unblocked, but M2 implementation has not started.
+The correction adds no provider interface, remote executor, Connect/Tauri/Cedar
+transport, E8 consumer, or application-layer generated-message adoption. The
+branch remains local-only until separately reviewed.
+
+The fresh independent review added semantic-negative TypeScript and Buffa
+fixtures for incomplete resource tuples, nested browser-read bindings,
+capability enums/duplicates, response oneofs, and rejected-admission ordering.
+It also hardened the existing internal E9 worker lifecycle with bounded
+nonresponsive-child cleanup and editor-session invalidation. These are contract
+proof and existing-runtime corrections only; they do not begin M2 provider
+adoption.
