@@ -100,11 +100,7 @@ export type QueryPageRequest = {
 export type QueryRunStatus = 'idle' | 'running' | 'done' | 'error';
 
 export type QueryProgressStage =
-  | 'started'
-  | 'planning'
-  | 'executing'
-  | 'arrow_ipc_ready'
-  | 'finished';
+  'started' | 'planning' | 'executing' | 'arrow_ipc_ready' | 'finished';
 
 export type QueryProgressEvent = {
   kind: 'progress';
@@ -132,10 +128,7 @@ export type QueryFallbackEvent = {
 };
 
 export type QueryEvent =
-  | QueryProgressEvent
-  | QueryLogEvent
-  | QueryMetricsEvent
-  | QueryFallbackEvent;
+  QueryProgressEvent | QueryLogEvent | QueryMetricsEvent | QueryFallbackEvent;
 
 export type QueryRunResult = {
   status: 'done';

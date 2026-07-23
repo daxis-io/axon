@@ -9,8 +9,7 @@ import {
 } from '../state/slices/settings.ts';
 
 export type ParseSettingsPatchJsonResult =
-  | { ok: true; settings: SettingsState }
-  | { ok: false; error: string };
+  { ok: true; settings: SettingsState } | { ok: false; error: string };
 
 type ParseSettingsPatchJsonOptions = {
   serverFallbackEnabled: boolean;

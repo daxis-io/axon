@@ -56,8 +56,7 @@ export type PublicObjectStorageDescriptorResolutionMetrics = {
 };
 
 export type PublicObjectStorageRuntimeCacheSnapshot =
-  | { kind: 'latest' }
-  | { kind: 'version'; version: number };
+  { kind: 'latest' } | { kind: 'version'; version: number };
 
 export type PublicObjectStoragePreflightResult = Array<{
   path: string;
@@ -257,15 +256,13 @@ export async function resolvePublicObjectStorageDescriptor(input: {
     partition_column_types: snapshot.partition_column_types ?? {},
     browser_compatibility: snapshot.browser_compatibility ?? { capabilities: {} },
     required_capabilities: snapshot.required_capabilities ?? { capabilities: {} },
-    active_files: snapshot.active_files.map(
-      (file): BrowserHttpFileDescriptor => ({
-        path: file.path,
-        url: publicObjectUrl(root, file.path),
-        size_bytes: file.size_bytes,
-        partition_values: file.partition_values ?? {},
-        stats: file.stats,
-      }),
-    ),
+    active_files: snapshot.active_files.map((file): BrowserHttpFileDescriptor => ({
+      path: file.path,
+      url: publicObjectUrl(root, file.path),
+      size_bytes: file.size_bytes,
+      partition_values: file.partition_values ?? {},
+      stats: file.stats,
+    })),
   };
 }
 

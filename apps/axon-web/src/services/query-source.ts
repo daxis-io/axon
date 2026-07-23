@@ -51,9 +51,7 @@ export type ObjectStoreTableRootQueryTableSource = {
 };
 
 export type QueryTableSource =
-  | ManifestQueryTableSource
-  | LocalDeltaQueryTableSource
-  | ObjectStoreTableRootQueryTableSource;
+  ManifestQueryTableSource | LocalDeltaQueryTableSource | ObjectStoreTableRootQueryTableSource;
 
 export type QueryCatalogCandidate = {
   id: string;

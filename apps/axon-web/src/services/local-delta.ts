@@ -83,9 +83,7 @@ export type LocalDeltaRuntime = {
 };
 
 export type LocalDeltaPersistenceMode =
-  | 'session_handles'
-  | 'persisted_directory_handle'
-  | 'metadata_only_reselect';
+  'session_handles' | 'persisted_directory_handle' | 'metadata_only_reselect';
 
 export type OpenLocalDeltaOptions = {
   schemaName?: string;

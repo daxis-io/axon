@@ -39,12 +39,7 @@ export const editorRouteTemplates = {
 } as const;
 
 export type EditorRouteHref =
-  | '/'
-  | '/connect'
-  | '/catalogs'
-  | '/settings'
-  | CatalogTableHref
-  | SavedQueryHref;
+  '/' | '/connect' | '/catalogs' | '/settings' | CatalogTableHref | SavedQueryHref;
 
 const App = lazy(() => import('./App.tsx').then((module) => ({ default: module.App })));
 const ConnectPage = lazy(() =>
