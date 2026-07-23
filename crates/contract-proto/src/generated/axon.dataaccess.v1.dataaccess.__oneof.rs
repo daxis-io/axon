@@ -11,6 +11,110 @@ pub mod partition_value {
     }
     impl ::buffa::Oneof for Value {}
 }
+pub mod browser_read_descriptor {
+    #[allow(unused_imports)]
+    use super::*;
+    #[derive(Clone, PartialEq, Debug)]
+    pub enum Descriptor {
+        Snapshot(
+            ::buffa::alloc::boxed::Box<
+                super::super::super::BrowserHttpSnapshotDescriptor,
+            >,
+        ),
+        ParquetDataset(
+            ::buffa::alloc::boxed::Box<
+                super::super::super::BrowserHttpParquetDatasetDescriptor,
+            >,
+        ),
+    }
+    impl ::buffa::Oneof for Descriptor {}
+    impl From<super::super::super::BrowserHttpSnapshotDescriptor> for Descriptor {
+        fn from(v: super::super::super::BrowserHttpSnapshotDescriptor) -> Self {
+            Self::Snapshot(::buffa::alloc::boxed::Box::new(v))
+        }
+    }
+    impl From<super::super::super::BrowserHttpSnapshotDescriptor>
+    for ::core::option::Option<Descriptor> {
+        fn from(v: super::super::super::BrowserHttpSnapshotDescriptor) -> Self {
+            Self::Some(Descriptor::from(v))
+        }
+    }
+    impl From<super::super::super::BrowserHttpParquetDatasetDescriptor> for Descriptor {
+        fn from(v: super::super::super::BrowserHttpParquetDatasetDescriptor) -> Self {
+            Self::ParquetDataset(::buffa::alloc::boxed::Box::new(v))
+        }
+    }
+    impl From<super::super::super::BrowserHttpParquetDatasetDescriptor>
+    for ::core::option::Option<Descriptor> {
+        fn from(v: super::super::super::BrowserHttpParquetDatasetDescriptor) -> Self {
+            Self::Some(Descriptor::from(v))
+        }
+    }
+}
+pub mod read_resolution {
+    #[allow(unused_imports)]
+    use super::*;
+    #[derive(Clone, PartialEq, Debug)]
+    pub enum Outcome {
+        BrowserRead(
+            ::buffa::alloc::boxed::Box<super::super::super::ResolvedBrowserRead>,
+        ),
+        RemoteRequired(::buffa::alloc::boxed::Box<super::super::super::RemoteRequired>),
+        Denied(::buffa::alloc::boxed::Box<super::super::super::ReadDenied>),
+        Error(
+            ::buffa::alloc::boxed::Box<
+                super::super::super::super::super::common::v1::ProviderError,
+            >,
+        ),
+    }
+    impl ::buffa::Oneof for Outcome {}
+    impl From<super::super::super::ResolvedBrowserRead> for Outcome {
+        fn from(v: super::super::super::ResolvedBrowserRead) -> Self {
+            Self::BrowserRead(::buffa::alloc::boxed::Box::new(v))
+        }
+    }
+    impl From<super::super::super::ResolvedBrowserRead>
+    for ::core::option::Option<Outcome> {
+        fn from(v: super::super::super::ResolvedBrowserRead) -> Self {
+            Self::Some(Outcome::from(v))
+        }
+    }
+    impl From<super::super::super::RemoteRequired> for Outcome {
+        fn from(v: super::super::super::RemoteRequired) -> Self {
+            Self::RemoteRequired(::buffa::alloc::boxed::Box::new(v))
+        }
+    }
+    impl From<super::super::super::RemoteRequired> for ::core::option::Option<Outcome> {
+        fn from(v: super::super::super::RemoteRequired) -> Self {
+            Self::Some(Outcome::from(v))
+        }
+    }
+    impl From<super::super::super::ReadDenied> for Outcome {
+        fn from(v: super::super::super::ReadDenied) -> Self {
+            Self::Denied(::buffa::alloc::boxed::Box::new(v))
+        }
+    }
+    impl From<super::super::super::ReadDenied> for ::core::option::Option<Outcome> {
+        fn from(v: super::super::super::ReadDenied) -> Self {
+            Self::Some(Outcome::from(v))
+        }
+    }
+    impl From<super::super::super::super::super::common::v1::ProviderError> for Outcome {
+        fn from(
+            v: super::super::super::super::super::common::v1::ProviderError,
+        ) -> Self {
+            Self::Error(::buffa::alloc::boxed::Box::new(v))
+        }
+    }
+    impl From<super::super::super::super::super::common::v1::ProviderError>
+    for ::core::option::Option<Outcome> {
+        fn from(
+            v: super::super::super::super::super::common::v1::ProviderError,
+        ) -> Self {
+            Self::Some(Outcome::from(v))
+        }
+    }
+}
 pub mod read_access_plan {
     #[allow(unused_imports)]
     use super::*;

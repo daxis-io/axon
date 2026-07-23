@@ -36,6 +36,10 @@ pub use self::__buffa::view::CapabilityReportView;
 #[doc(inline)]
 pub use self::__buffa::view::CapabilityReportOwnedView;
 #[doc(inline)]
+pub use self::__buffa::view::CapabilityEntryView;
+#[doc(inline)]
+pub use self::__buffa::view::CapabilityEntryOwnedView;
+#[doc(inline)]
 pub use self::__buffa::view::PartitionValueView;
 #[doc(inline)]
 pub use self::__buffa::view::PartitionValueOwnedView;
@@ -51,6 +55,30 @@ pub use self::__buffa::view::BrowserHttpSnapshotDescriptorOwnedView;
 pub use self::__buffa::view::BrowserHttpParquetDatasetDescriptorView;
 #[doc(inline)]
 pub use self::__buffa::view::BrowserHttpParquetDatasetDescriptorOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::BrowserReadDescriptorView;
+#[doc(inline)]
+pub use self::__buffa::view::BrowserReadDescriptorOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ResolutionProvenanceView;
+#[doc(inline)]
+pub use self::__buffa::view::ResolutionProvenanceOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ResolvedBrowserReadView;
+#[doc(inline)]
+pub use self::__buffa::view::ResolvedBrowserReadOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::RemoteRequiredView;
+#[doc(inline)]
+pub use self::__buffa::view::RemoteRequiredOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ReadDeniedView;
+#[doc(inline)]
+pub use self::__buffa::view::ReadDeniedOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ReadResolutionView;
+#[doc(inline)]
+pub use self::__buffa::view::ReadResolutionOwnedView;
 #[doc(inline)]
 pub use self::__buffa::view::BrokeredObjectAccessView;
 #[doc(inline)]

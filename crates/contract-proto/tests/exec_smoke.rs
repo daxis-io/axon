@@ -64,6 +64,77 @@ fn worker_and_service_oneofs_construct_and_round_trip() {
 }
 
 #[test]
+fn resolved_browser_read_and_typed_capabilities_round_trip() {
+    let resource = axon::common::v1::CanonicalResourceRef {
+        connection_id: "connection-public-gcs".into(),
+        provider_namespace: "axon.public-gcs/v1".into(),
+        kind: axon::common::v1::ResourceKind::Table.into(),
+        identity: Some(
+            axon::common::v1::canonical_resource_ref::Identity::CanonicalLocator(
+                "gs://axon-fixtures/tables/events".into(),
+            ),
+        ),
+        ..Default::default()
+    };
+    let capabilities = axon::dataaccess::v1::CapabilityReport {
+        capabilities: vec![axon::dataaccess::v1::CapabilityEntry {
+            key: axon::dataaccess::v1::CapabilityKey::RangeReads.into(),
+            state: axon::dataaccess::v1::CapabilityState::Supported.into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let binding = axon::dataaccess::v1::ResolvedBrowserRead {
+        resource: resource.into(),
+        descriptor: axon::dataaccess::v1::BrowserReadDescriptor {
+            descriptor: axon::dataaccess::v1::BrowserHttpSnapshotDescriptor {
+                table_uri: "gs://axon-fixtures/tables/events".into(),
+                browser_compatibility: capabilities.into(),
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        }
+        .into(),
+        access_class: axon::dataaccess::v1::BrowserAccessClass::Public.into(),
+        correlation_id: "correlation-001".into(),
+        provenance: axon::dataaccess::v1::ResolutionProvenance {
+            resolver_id: "public-object-storage".into(),
+            resolution_id: "resolution-001".into(),
+            ..Default::default()
+        }
+        .into(),
+        ..Default::default()
+    };
+    let resolution = axon::dataaccess::v1::ReadResolution {
+        outcome: binding.into(),
+        ..Default::default()
+    };
+    let decoded =
+        axon::dataaccess::v1::ReadResolution::decode_from_slice(&resolution.encode_to_vec())
+            .expect("read resolution should decode");
+
+    match decoded.outcome {
+        Some(axon::dataaccess::v1::read_resolution::Outcome::BrowserRead(read)) => {
+            let resource = read
+                .resource
+                .as_option()
+                .expect("canonical resource should be present");
+            assert_eq!(resource.provider_namespace, "axon.public-gcs/v1");
+            let descriptor = read
+                .descriptor
+                .as_option()
+                .expect("browser descriptor should be present");
+            assert!(matches!(
+                descriptor.descriptor,
+                Some(axon::dataaccess::v1::browser_read_descriptor::Descriptor::Snapshot(_))
+            ));
+        }
+        other => panic!("expected browser-read resolution, got {other:?}"),
+    }
+}
+
+#[test]
 fn arrow_bytes_and_explicit_zero_presence_survive_binary_round_trips() {
     let arrow = axon_exec_v1::ArrowIpcResult {
         format: axon_exec_v1::ArrowIpcFormat::Stream.into(),

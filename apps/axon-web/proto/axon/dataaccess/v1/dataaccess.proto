@@ -4,9 +4,15 @@ package axon.dataaccess.v1;
 
 import "axon/common/v1/common.proto";
 import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
 
 message CapabilityReport {
-  map<string, CapabilityState> capabilities = 1;
+  repeated CapabilityEntry capabilities = 1;
+}
+
+message CapabilityEntry {
+  CapabilityKey key = 1;
+  CapabilityState state = 2;
 }
 
 message PartitionValue {
@@ -41,6 +47,49 @@ message BrowserHttpParquetDatasetDescriptor {
   CapabilityReport browser_compatibility = 3 [json_name = "browser_compatibility"];
   CapabilityReport required_capabilities = 4 [json_name = "required_capabilities"];
   repeated BrowserHttpFileDescriptor files = 5;
+}
+
+message BrowserReadDescriptor {
+  oneof descriptor {
+    BrowserHttpSnapshotDescriptor snapshot = 1;
+    BrowserHttpParquetDatasetDescriptor parquet_dataset = 2 [json_name = "parquet_dataset"];
+  }
+}
+
+message ResolutionProvenance {
+  string resolver_id = 1;
+  string resolution_id = 2;
+}
+
+message ResolvedBrowserRead {
+  axon.common.v1.CanonicalResourceRef resource = 1;
+  BrowserReadDescriptor descriptor = 2;
+  BrowserAccessClass access_class = 3;
+  google.protobuf.Timestamp not_after = 4;
+  string correlation_id = 5;
+  ResolutionProvenance provenance = 6;
+}
+
+message RemoteRequired {
+  axon.common.v1.CanonicalResourceRef resource = 1;
+  string enforcement_owner = 2;
+  ReadResolutionReason reason = 3;
+  string message = 4;
+}
+
+message ReadDenied {
+  axon.common.v1.CanonicalResourceRef resource = 1;
+  ReadResolutionReason reason = 2;
+  string message = 3;
+}
+
+message ReadResolution {
+  oneof outcome {
+    ResolvedBrowserRead browser_read = 1;
+    RemoteRequired remote_required = 2;
+    ReadDenied denied = 3;
+    axon.common.v1.ProviderError error = 4;
+  }
 }
 
 message BrokeredObjectAccess {
@@ -172,6 +221,9 @@ message ObjectGrantAuditRange {
 }
 
 message ObjectGrantAuditEvent {
+  reserved 11;
+  reserved "query_id", "request_id";
+
   string event_id = 1 [json_name = "eventId"];
   string event_type = 2 [json_name = "eventType"];
   uint64 occurred_at_epoch_ms = 3 [json_name = "occurredAtEpochMs"];
@@ -181,13 +233,26 @@ message ObjectGrantAuditEvent {
   string table_id = 7 [json_name = "tableId"];
   string full_name = 8 [json_name = "fullName"];
   string grant_id = 9 [json_name = "grantId"];
-  string query_id = 10 [json_name = "queryId"];
-  string request_id = 11 [json_name = "requestId"];
+  string execution_id = 10 [json_name = "executionId"];
   string correlation_id = 12 [json_name = "correlationId"];
   ObjectGrantAuditAction action = 13;
   string object_path = 14 [json_name = "objectPath"];
   ObjectGrantAuditRange range = 15;
   ObjectGrantAuditOutcome outcome = 16;
+}
+
+enum CapabilityKey {
+  CAPABILITY_KEY_UNSPECIFIED = 0;
+  CAPABILITY_KEY_CHANGE_DATA_FEED = 1;
+  CAPABILITY_KEY_COLUMN_MAPPING = 2;
+  CAPABILITY_KEY_DELETION_VECTORS = 3;
+  CAPABILITY_KEY_MULTI_PARTITION_EXECUTION = 4;
+  CAPABILITY_KEY_PROXY_ACCESS = 5;
+  CAPABILITY_KEY_RANGE_READS = 6;
+  CAPABILITY_KEY_SIGNED_URL_ACCESS = 7;
+  CAPABILITY_KEY_TIME_TRAVEL = 8;
+  CAPABILITY_KEY_TIMESTAMP_NTZ = 9;
+  CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES = 10;
 }
 
 enum CapabilityState {
@@ -196,6 +261,24 @@ enum CapabilityState {
   CAPABILITY_STATE_NATIVE_ONLY = 2;
   CAPABILITY_STATE_UNSUPPORTED = 3;
   CAPABILITY_STATE_EXPERIMENTAL = 4;
+}
+
+enum BrowserAccessClass {
+  BROWSER_ACCESS_CLASS_UNSPECIFIED = 0;
+  BROWSER_ACCESS_CLASS_PUBLIC = 1;
+  BROWSER_ACCESS_CLASS_LOCAL_HANDLE = 2;
+  BROWSER_ACCESS_CLASS_SIGNED_URL = 3;
+  BROWSER_ACCESS_CLASS_SESSION_PROXY = 4;
+}
+
+enum ReadResolutionReason {
+  READ_RESOLUTION_REASON_UNSPECIFIED = 0;
+  READ_RESOLUTION_REASON_POLICY_ENFORCEMENT_REQUIRED = 1;
+  READ_RESOLUTION_REASON_BROWSER_UNSUPPORTED = 2;
+  READ_RESOLUTION_REASON_ACCESS_DENIED = 3;
+  READ_RESOLUTION_REASON_SESSION_REQUIRED = 4;
+  READ_RESOLUTION_REASON_EXPIRED_CAPABILITY = 5;
+  READ_RESOLUTION_REASON_UNSAFE_DESCRIPTOR = 6;
 }
 
 enum PartitionColumnType {

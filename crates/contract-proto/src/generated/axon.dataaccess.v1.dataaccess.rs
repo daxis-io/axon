@@ -3,6 +3,166 @@
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[repr(i32)]
+pub enum CapabilityKey {
+    CAPABILITY_KEY_UNSPECIFIED = 0i32,
+    CAPABILITY_KEY_CHANGE_DATA_FEED = 1i32,
+    CAPABILITY_KEY_COLUMN_MAPPING = 2i32,
+    CAPABILITY_KEY_DELETION_VECTORS = 3i32,
+    CAPABILITY_KEY_MULTI_PARTITION_EXECUTION = 4i32,
+    CAPABILITY_KEY_PROXY_ACCESS = 5i32,
+    CAPABILITY_KEY_RANGE_READS = 6i32,
+    CAPABILITY_KEY_SIGNED_URL_ACCESS = 7i32,
+    CAPABILITY_KEY_TIME_TRAVEL = 8i32,
+    CAPABILITY_KEY_TIMESTAMP_NTZ = 9i32,
+    CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES = 10i32,
+}
+impl CapabilityKey {
+    ///Idiomatic alias for [`Self::CAPABILITY_KEY_UNSPECIFIED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Unspecified: Self = Self::CAPABILITY_KEY_UNSPECIFIED;
+    ///Idiomatic alias for [`Self::CAPABILITY_KEY_CHANGE_DATA_FEED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const ChangeDataFeed: Self = Self::CAPABILITY_KEY_CHANGE_DATA_FEED;
+    ///Idiomatic alias for [`Self::CAPABILITY_KEY_COLUMN_MAPPING`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const ColumnMapping: Self = Self::CAPABILITY_KEY_COLUMN_MAPPING;
+    ///Idiomatic alias for [`Self::CAPABILITY_KEY_DELETION_VECTORS`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const DeletionVectors: Self = Self::CAPABILITY_KEY_DELETION_VECTORS;
+    ///Idiomatic alias for [`Self::CAPABILITY_KEY_MULTI_PARTITION_EXECUTION`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const MultiPartitionExecution: Self = Self::CAPABILITY_KEY_MULTI_PARTITION_EXECUTION;
+    ///Idiomatic alias for [`Self::CAPABILITY_KEY_PROXY_ACCESS`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const ProxyAccess: Self = Self::CAPABILITY_KEY_PROXY_ACCESS;
+    ///Idiomatic alias for [`Self::CAPABILITY_KEY_RANGE_READS`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const RangeReads: Self = Self::CAPABILITY_KEY_RANGE_READS;
+    ///Idiomatic alias for [`Self::CAPABILITY_KEY_SIGNED_URL_ACCESS`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const SignedUrlAccess: Self = Self::CAPABILITY_KEY_SIGNED_URL_ACCESS;
+    ///Idiomatic alias for [`Self::CAPABILITY_KEY_TIME_TRAVEL`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const TimeTravel: Self = Self::CAPABILITY_KEY_TIME_TRAVEL;
+    ///Idiomatic alias for [`Self::CAPABILITY_KEY_TIMESTAMP_NTZ`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const TimestampNtz: Self = Self::CAPABILITY_KEY_TIMESTAMP_NTZ;
+    ///Idiomatic alias for [`Self::CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const UnknownProtocolFeatures: Self = Self::CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES;
+}
+impl ::core::default::Default for CapabilityKey {
+    fn default() -> Self {
+        Self::CAPABILITY_KEY_UNSPECIFIED
+    }
+}
+impl ::buffa::Enumeration for CapabilityKey {
+    fn from_i32(value: i32) -> ::core::option::Option<Self> {
+        match value {
+            0i32 => ::core::option::Option::Some(Self::CAPABILITY_KEY_UNSPECIFIED),
+            1i32 => ::core::option::Option::Some(Self::CAPABILITY_KEY_CHANGE_DATA_FEED),
+            2i32 => ::core::option::Option::Some(Self::CAPABILITY_KEY_COLUMN_MAPPING),
+            3i32 => ::core::option::Option::Some(Self::CAPABILITY_KEY_DELETION_VECTORS),
+            4i32 => {
+                ::core::option::Option::Some(
+                    Self::CAPABILITY_KEY_MULTI_PARTITION_EXECUTION,
+                )
+            }
+            5i32 => ::core::option::Option::Some(Self::CAPABILITY_KEY_PROXY_ACCESS),
+            6i32 => ::core::option::Option::Some(Self::CAPABILITY_KEY_RANGE_READS),
+            7i32 => ::core::option::Option::Some(Self::CAPABILITY_KEY_SIGNED_URL_ACCESS),
+            8i32 => ::core::option::Option::Some(Self::CAPABILITY_KEY_TIME_TRAVEL),
+            9i32 => ::core::option::Option::Some(Self::CAPABILITY_KEY_TIMESTAMP_NTZ),
+            10i32 => {
+                ::core::option::Option::Some(
+                    Self::CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES,
+                )
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn to_i32(&self) -> i32 {
+        *self as i32
+    }
+    fn proto_name(&self) -> &'static str {
+        match self {
+            Self::CAPABILITY_KEY_UNSPECIFIED => "CAPABILITY_KEY_UNSPECIFIED",
+            Self::CAPABILITY_KEY_CHANGE_DATA_FEED => "CAPABILITY_KEY_CHANGE_DATA_FEED",
+            Self::CAPABILITY_KEY_COLUMN_MAPPING => "CAPABILITY_KEY_COLUMN_MAPPING",
+            Self::CAPABILITY_KEY_DELETION_VECTORS => "CAPABILITY_KEY_DELETION_VECTORS",
+            Self::CAPABILITY_KEY_MULTI_PARTITION_EXECUTION => {
+                "CAPABILITY_KEY_MULTI_PARTITION_EXECUTION"
+            }
+            Self::CAPABILITY_KEY_PROXY_ACCESS => "CAPABILITY_KEY_PROXY_ACCESS",
+            Self::CAPABILITY_KEY_RANGE_READS => "CAPABILITY_KEY_RANGE_READS",
+            Self::CAPABILITY_KEY_SIGNED_URL_ACCESS => "CAPABILITY_KEY_SIGNED_URL_ACCESS",
+            Self::CAPABILITY_KEY_TIME_TRAVEL => "CAPABILITY_KEY_TIME_TRAVEL",
+            Self::CAPABILITY_KEY_TIMESTAMP_NTZ => "CAPABILITY_KEY_TIMESTAMP_NTZ",
+            Self::CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES => {
+                "CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES"
+            }
+        }
+    }
+    fn from_proto_name(name: &str) -> ::core::option::Option<Self> {
+        match name {
+            "CAPABILITY_KEY_UNSPECIFIED" => {
+                ::core::option::Option::Some(Self::CAPABILITY_KEY_UNSPECIFIED)
+            }
+            "CAPABILITY_KEY_CHANGE_DATA_FEED" => {
+                ::core::option::Option::Some(Self::CAPABILITY_KEY_CHANGE_DATA_FEED)
+            }
+            "CAPABILITY_KEY_COLUMN_MAPPING" => {
+                ::core::option::Option::Some(Self::CAPABILITY_KEY_COLUMN_MAPPING)
+            }
+            "CAPABILITY_KEY_DELETION_VECTORS" => {
+                ::core::option::Option::Some(Self::CAPABILITY_KEY_DELETION_VECTORS)
+            }
+            "CAPABILITY_KEY_MULTI_PARTITION_EXECUTION" => {
+                ::core::option::Option::Some(
+                    Self::CAPABILITY_KEY_MULTI_PARTITION_EXECUTION,
+                )
+            }
+            "CAPABILITY_KEY_PROXY_ACCESS" => {
+                ::core::option::Option::Some(Self::CAPABILITY_KEY_PROXY_ACCESS)
+            }
+            "CAPABILITY_KEY_RANGE_READS" => {
+                ::core::option::Option::Some(Self::CAPABILITY_KEY_RANGE_READS)
+            }
+            "CAPABILITY_KEY_SIGNED_URL_ACCESS" => {
+                ::core::option::Option::Some(Self::CAPABILITY_KEY_SIGNED_URL_ACCESS)
+            }
+            "CAPABILITY_KEY_TIME_TRAVEL" => {
+                ::core::option::Option::Some(Self::CAPABILITY_KEY_TIME_TRAVEL)
+            }
+            "CAPABILITY_KEY_TIMESTAMP_NTZ" => {
+                ::core::option::Option::Some(Self::CAPABILITY_KEY_TIMESTAMP_NTZ)
+            }
+            "CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES" => {
+                ::core::option::Option::Some(
+                    Self::CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES,
+                )
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn values() -> &'static [Self] {
+        &[
+            Self::CAPABILITY_KEY_UNSPECIFIED,
+            Self::CAPABILITY_KEY_CHANGE_DATA_FEED,
+            Self::CAPABILITY_KEY_COLUMN_MAPPING,
+            Self::CAPABILITY_KEY_DELETION_VECTORS,
+            Self::CAPABILITY_KEY_MULTI_PARTITION_EXECUTION,
+            Self::CAPABILITY_KEY_PROXY_ACCESS,
+            Self::CAPABILITY_KEY_RANGE_READS,
+            Self::CAPABILITY_KEY_SIGNED_URL_ACCESS,
+            Self::CAPABILITY_KEY_TIME_TRAVEL,
+            Self::CAPABILITY_KEY_TIMESTAMP_NTZ,
+            Self::CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES,
+        ]
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(i32)]
 pub enum CapabilityState {
     CAPABILITY_STATE_UNSPECIFIED = 0i32,
     CAPABILITY_STATE_SUPPORTED = 1i32,
@@ -82,6 +242,248 @@ impl ::buffa::Enumeration for CapabilityState {
             Self::CAPABILITY_STATE_NATIVE_ONLY,
             Self::CAPABILITY_STATE_UNSUPPORTED,
             Self::CAPABILITY_STATE_EXPERIMENTAL,
+        ]
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(i32)]
+pub enum BrowserAccessClass {
+    BROWSER_ACCESS_CLASS_UNSPECIFIED = 0i32,
+    BROWSER_ACCESS_CLASS_PUBLIC = 1i32,
+    BROWSER_ACCESS_CLASS_LOCAL_HANDLE = 2i32,
+    BROWSER_ACCESS_CLASS_SIGNED_URL = 3i32,
+    BROWSER_ACCESS_CLASS_SESSION_PROXY = 4i32,
+}
+impl BrowserAccessClass {
+    ///Idiomatic alias for [`Self::BROWSER_ACCESS_CLASS_UNSPECIFIED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Unspecified: Self = Self::BROWSER_ACCESS_CLASS_UNSPECIFIED;
+    ///Idiomatic alias for [`Self::BROWSER_ACCESS_CLASS_PUBLIC`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Public: Self = Self::BROWSER_ACCESS_CLASS_PUBLIC;
+    ///Idiomatic alias for [`Self::BROWSER_ACCESS_CLASS_LOCAL_HANDLE`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const LocalHandle: Self = Self::BROWSER_ACCESS_CLASS_LOCAL_HANDLE;
+    ///Idiomatic alias for [`Self::BROWSER_ACCESS_CLASS_SIGNED_URL`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const SignedUrl: Self = Self::BROWSER_ACCESS_CLASS_SIGNED_URL;
+    ///Idiomatic alias for [`Self::BROWSER_ACCESS_CLASS_SESSION_PROXY`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const SessionProxy: Self = Self::BROWSER_ACCESS_CLASS_SESSION_PROXY;
+}
+impl ::core::default::Default for BrowserAccessClass {
+    fn default() -> Self {
+        Self::BROWSER_ACCESS_CLASS_UNSPECIFIED
+    }
+}
+impl ::buffa::Enumeration for BrowserAccessClass {
+    fn from_i32(value: i32) -> ::core::option::Option<Self> {
+        match value {
+            0i32 => ::core::option::Option::Some(Self::BROWSER_ACCESS_CLASS_UNSPECIFIED),
+            1i32 => ::core::option::Option::Some(Self::BROWSER_ACCESS_CLASS_PUBLIC),
+            2i32 => ::core::option::Option::Some(Self::BROWSER_ACCESS_CLASS_LOCAL_HANDLE),
+            3i32 => ::core::option::Option::Some(Self::BROWSER_ACCESS_CLASS_SIGNED_URL),
+            4i32 => {
+                ::core::option::Option::Some(Self::BROWSER_ACCESS_CLASS_SESSION_PROXY)
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn to_i32(&self) -> i32 {
+        *self as i32
+    }
+    fn proto_name(&self) -> &'static str {
+        match self {
+            Self::BROWSER_ACCESS_CLASS_UNSPECIFIED => "BROWSER_ACCESS_CLASS_UNSPECIFIED",
+            Self::BROWSER_ACCESS_CLASS_PUBLIC => "BROWSER_ACCESS_CLASS_PUBLIC",
+            Self::BROWSER_ACCESS_CLASS_LOCAL_HANDLE => {
+                "BROWSER_ACCESS_CLASS_LOCAL_HANDLE"
+            }
+            Self::BROWSER_ACCESS_CLASS_SIGNED_URL => "BROWSER_ACCESS_CLASS_SIGNED_URL",
+            Self::BROWSER_ACCESS_CLASS_SESSION_PROXY => {
+                "BROWSER_ACCESS_CLASS_SESSION_PROXY"
+            }
+        }
+    }
+    fn from_proto_name(name: &str) -> ::core::option::Option<Self> {
+        match name {
+            "BROWSER_ACCESS_CLASS_UNSPECIFIED" => {
+                ::core::option::Option::Some(Self::BROWSER_ACCESS_CLASS_UNSPECIFIED)
+            }
+            "BROWSER_ACCESS_CLASS_PUBLIC" => {
+                ::core::option::Option::Some(Self::BROWSER_ACCESS_CLASS_PUBLIC)
+            }
+            "BROWSER_ACCESS_CLASS_LOCAL_HANDLE" => {
+                ::core::option::Option::Some(Self::BROWSER_ACCESS_CLASS_LOCAL_HANDLE)
+            }
+            "BROWSER_ACCESS_CLASS_SIGNED_URL" => {
+                ::core::option::Option::Some(Self::BROWSER_ACCESS_CLASS_SIGNED_URL)
+            }
+            "BROWSER_ACCESS_CLASS_SESSION_PROXY" => {
+                ::core::option::Option::Some(Self::BROWSER_ACCESS_CLASS_SESSION_PROXY)
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn values() -> &'static [Self] {
+        &[
+            Self::BROWSER_ACCESS_CLASS_UNSPECIFIED,
+            Self::BROWSER_ACCESS_CLASS_PUBLIC,
+            Self::BROWSER_ACCESS_CLASS_LOCAL_HANDLE,
+            Self::BROWSER_ACCESS_CLASS_SIGNED_URL,
+            Self::BROWSER_ACCESS_CLASS_SESSION_PROXY,
+        ]
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(i32)]
+pub enum ReadResolutionReason {
+    READ_RESOLUTION_REASON_UNSPECIFIED = 0i32,
+    READ_RESOLUTION_REASON_POLICY_ENFORCEMENT_REQUIRED = 1i32,
+    READ_RESOLUTION_REASON_BROWSER_UNSUPPORTED = 2i32,
+    READ_RESOLUTION_REASON_ACCESS_DENIED = 3i32,
+    READ_RESOLUTION_REASON_SESSION_REQUIRED = 4i32,
+    READ_RESOLUTION_REASON_EXPIRED_CAPABILITY = 5i32,
+    READ_RESOLUTION_REASON_UNSAFE_DESCRIPTOR = 6i32,
+}
+impl ReadResolutionReason {
+    ///Idiomatic alias for [`Self::READ_RESOLUTION_REASON_UNSPECIFIED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Unspecified: Self = Self::READ_RESOLUTION_REASON_UNSPECIFIED;
+    ///Idiomatic alias for [`Self::READ_RESOLUTION_REASON_POLICY_ENFORCEMENT_REQUIRED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const PolicyEnforcementRequired: Self = Self::READ_RESOLUTION_REASON_POLICY_ENFORCEMENT_REQUIRED;
+    ///Idiomatic alias for [`Self::READ_RESOLUTION_REASON_BROWSER_UNSUPPORTED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const BrowserUnsupported: Self = Self::READ_RESOLUTION_REASON_BROWSER_UNSUPPORTED;
+    ///Idiomatic alias for [`Self::READ_RESOLUTION_REASON_ACCESS_DENIED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const AccessDenied: Self = Self::READ_RESOLUTION_REASON_ACCESS_DENIED;
+    ///Idiomatic alias for [`Self::READ_RESOLUTION_REASON_SESSION_REQUIRED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const SessionRequired: Self = Self::READ_RESOLUTION_REASON_SESSION_REQUIRED;
+    ///Idiomatic alias for [`Self::READ_RESOLUTION_REASON_EXPIRED_CAPABILITY`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const ExpiredCapability: Self = Self::READ_RESOLUTION_REASON_EXPIRED_CAPABILITY;
+    ///Idiomatic alias for [`Self::READ_RESOLUTION_REASON_UNSAFE_DESCRIPTOR`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const UnsafeDescriptor: Self = Self::READ_RESOLUTION_REASON_UNSAFE_DESCRIPTOR;
+}
+impl ::core::default::Default for ReadResolutionReason {
+    fn default() -> Self {
+        Self::READ_RESOLUTION_REASON_UNSPECIFIED
+    }
+}
+impl ::buffa::Enumeration for ReadResolutionReason {
+    fn from_i32(value: i32) -> ::core::option::Option<Self> {
+        match value {
+            0i32 => {
+                ::core::option::Option::Some(Self::READ_RESOLUTION_REASON_UNSPECIFIED)
+            }
+            1i32 => {
+                ::core::option::Option::Some(
+                    Self::READ_RESOLUTION_REASON_POLICY_ENFORCEMENT_REQUIRED,
+                )
+            }
+            2i32 => {
+                ::core::option::Option::Some(
+                    Self::READ_RESOLUTION_REASON_BROWSER_UNSUPPORTED,
+                )
+            }
+            3i32 => {
+                ::core::option::Option::Some(Self::READ_RESOLUTION_REASON_ACCESS_DENIED)
+            }
+            4i32 => {
+                ::core::option::Option::Some(
+                    Self::READ_RESOLUTION_REASON_SESSION_REQUIRED,
+                )
+            }
+            5i32 => {
+                ::core::option::Option::Some(
+                    Self::READ_RESOLUTION_REASON_EXPIRED_CAPABILITY,
+                )
+            }
+            6i32 => {
+                ::core::option::Option::Some(
+                    Self::READ_RESOLUTION_REASON_UNSAFE_DESCRIPTOR,
+                )
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn to_i32(&self) -> i32 {
+        *self as i32
+    }
+    fn proto_name(&self) -> &'static str {
+        match self {
+            Self::READ_RESOLUTION_REASON_UNSPECIFIED => {
+                "READ_RESOLUTION_REASON_UNSPECIFIED"
+            }
+            Self::READ_RESOLUTION_REASON_POLICY_ENFORCEMENT_REQUIRED => {
+                "READ_RESOLUTION_REASON_POLICY_ENFORCEMENT_REQUIRED"
+            }
+            Self::READ_RESOLUTION_REASON_BROWSER_UNSUPPORTED => {
+                "READ_RESOLUTION_REASON_BROWSER_UNSUPPORTED"
+            }
+            Self::READ_RESOLUTION_REASON_ACCESS_DENIED => {
+                "READ_RESOLUTION_REASON_ACCESS_DENIED"
+            }
+            Self::READ_RESOLUTION_REASON_SESSION_REQUIRED => {
+                "READ_RESOLUTION_REASON_SESSION_REQUIRED"
+            }
+            Self::READ_RESOLUTION_REASON_EXPIRED_CAPABILITY => {
+                "READ_RESOLUTION_REASON_EXPIRED_CAPABILITY"
+            }
+            Self::READ_RESOLUTION_REASON_UNSAFE_DESCRIPTOR => {
+                "READ_RESOLUTION_REASON_UNSAFE_DESCRIPTOR"
+            }
+        }
+    }
+    fn from_proto_name(name: &str) -> ::core::option::Option<Self> {
+        match name {
+            "READ_RESOLUTION_REASON_UNSPECIFIED" => {
+                ::core::option::Option::Some(Self::READ_RESOLUTION_REASON_UNSPECIFIED)
+            }
+            "READ_RESOLUTION_REASON_POLICY_ENFORCEMENT_REQUIRED" => {
+                ::core::option::Option::Some(
+                    Self::READ_RESOLUTION_REASON_POLICY_ENFORCEMENT_REQUIRED,
+                )
+            }
+            "READ_RESOLUTION_REASON_BROWSER_UNSUPPORTED" => {
+                ::core::option::Option::Some(
+                    Self::READ_RESOLUTION_REASON_BROWSER_UNSUPPORTED,
+                )
+            }
+            "READ_RESOLUTION_REASON_ACCESS_DENIED" => {
+                ::core::option::Option::Some(Self::READ_RESOLUTION_REASON_ACCESS_DENIED)
+            }
+            "READ_RESOLUTION_REASON_SESSION_REQUIRED" => {
+                ::core::option::Option::Some(
+                    Self::READ_RESOLUTION_REASON_SESSION_REQUIRED,
+                )
+            }
+            "READ_RESOLUTION_REASON_EXPIRED_CAPABILITY" => {
+                ::core::option::Option::Some(
+                    Self::READ_RESOLUTION_REASON_EXPIRED_CAPABILITY,
+                )
+            }
+            "READ_RESOLUTION_REASON_UNSAFE_DESCRIPTOR" => {
+                ::core::option::Option::Some(
+                    Self::READ_RESOLUTION_REASON_UNSAFE_DESCRIPTOR,
+                )
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn values() -> &'static [Self] {
+        &[
+            Self::READ_RESOLUTION_REASON_UNSPECIFIED,
+            Self::READ_RESOLUTION_REASON_POLICY_ENFORCEMENT_REQUIRED,
+            Self::READ_RESOLUTION_REASON_BROWSER_UNSUPPORTED,
+            Self::READ_RESOLUTION_REASON_ACCESS_DENIED,
+            Self::READ_RESOLUTION_REASON_SESSION_REQUIRED,
+            Self::READ_RESOLUTION_REASON_EXPIRED_CAPABILITY,
+            Self::READ_RESOLUTION_REASON_UNSAFE_DESCRIPTOR,
         ]
     }
 }
@@ -798,10 +1200,7 @@ impl ::buffa::Enumeration for ObjectGrantAuditOutcome {
 #[derive(Clone, PartialEq, Default)]
 pub struct CapabilityReport {
     /// Field 1: `capabilities`
-    pub capabilities: ::buffa::__private::HashMap<
-        ::buffa::alloc::string::String,
-        ::buffa::EnumValue<CapabilityState>,
-    >,
+    pub capabilities: ::buffa::alloc::vec::Vec<CapabilityEntry>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
@@ -833,31 +1232,32 @@ impl ::buffa::Message for CapabilityReport {
     /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
     /// compliant message will never overflow this type.
     #[allow(clippy::let_and_return)]
-    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
         let mut size = 0u32;
-        size
-            += ::buffa::map_codec::field_len::<
-                ::buffa::map_codec::Str,
-                ::buffa::map_codec::OpenEnum<_>,
-                _,
-            >(&self.capabilities, 1u32);
+        for v in &self.capabilities {
+            let __slot = __cache.reserve();
+            let inner_size = v.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
     fn write_to(
         &self,
-        _cache: &mut ::buffa::SizeCache,
+        __cache: &mut ::buffa::SizeCache,
         buf: &mut impl ::buffa::bytes::BufMut,
     ) {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
-        ::buffa::map_codec::write_field::<
-            ::buffa::map_codec::Str,
-            ::buffa::map_codec::OpenEnum<_>,
-            _,
-        >(&self.capabilities, 1u32, buf);
+        for v in &self.capabilities {
+            ::buffa::types::put_len_delimited_header(1u32, __cache.consume_next(), buf);
+            v.write_to(__cache, buf);
+        }
         self.__buffa_unknown_fields.write_to(buf);
     }
     fn merge_field(
@@ -876,11 +1276,9 @@ impl ::buffa::Message for CapabilityReport {
                     tag,
                     ::buffa::encoding::WireType::LengthDelimited,
                 )?;
-                ::buffa::map_codec::merge_entry::<
-                    ::buffa::map_codec::Str,
-                    ::buffa::map_codec::OpenEnum<_>,
-                    _,
-                >(&mut self.capabilities, buf, ctx)?;
+                let mut elem = ::core::default::Default::default();
+                ::buffa::Message::merge_length_delimited(&mut elem, buf, ctx)?;
+                self.capabilities.push(elem);
             }
             _ => {
                 self.__buffa_unknown_fields
@@ -896,6 +1294,133 @@ impl ::buffa::Message for CapabilityReport {
 }
 impl ::buffa::ExtensionSet for CapabilityReport {
     const PROTO_FQN: &'static str = "axon.dataaccess.v1.CapabilityReport";
+    fn unknown_fields(&self) -> &::buffa::UnknownFields {
+        &self.__buffa_unknown_fields
+    }
+    fn unknown_fields_mut(&mut self) -> &mut ::buffa::UnknownFields {
+        &mut self.__buffa_unknown_fields
+    }
+}
+#[derive(Clone, PartialEq, Default)]
+pub struct CapabilityEntry {
+    /// Field 1: `key`
+    pub key: ::buffa::EnumValue<CapabilityKey>,
+    /// Field 2: `state`
+    pub state: ::buffa::EnumValue<CapabilityState>,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
+}
+impl ::core::fmt::Debug for CapabilityEntry {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("CapabilityEntry")
+            .field("key", &self.key)
+            .field("state", &self.state)
+            .finish()
+    }
+}
+impl CapabilityEntry {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.CapabilityEntry";
+}
+::buffa::impl_default_instance!(CapabilityEntry);
+impl ::buffa::MessageName for CapabilityEntry {
+    const PACKAGE: &'static str = "axon.dataaccess.v1";
+    const NAME: &'static str = "CapabilityEntry";
+    const FULL_NAME: &'static str = "axon.dataaccess.v1.CapabilityEntry";
+    const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.CapabilityEntry";
+}
+impl ::buffa::Message for CapabilityEntry {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        {
+            let val = self.key.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        {
+            let val = self.state.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        {
+            let val = self.key.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(1u32, val, buf);
+            }
+        }
+        {
+            let val = self.state.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(2u32, val, buf);
+            }
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.key = ::buffa::EnumValue::from(::buffa::types::decode_int32(buf)?);
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.state = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            _ => {
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.key = ::buffa::EnumValue::from(0);
+        self.state = ::buffa::EnumValue::from(0);
+        self.__buffa_unknown_fields.clear();
+    }
+}
+impl ::buffa::ExtensionSet for CapabilityEntry {
+    const PROTO_FQN: &'static str = "axon.dataaccess.v1.CapabilityEntry";
     fn unknown_fields(&self) -> &::buffa::UnknownFields {
         &self.__buffa_unknown_fields
     }
@@ -1692,6 +2217,1090 @@ impl ::buffa::ExtensionSet for BrowserHttpParquetDatasetDescriptor {
     fn unknown_fields_mut(&mut self) -> &mut ::buffa::UnknownFields {
         &mut self.__buffa_unknown_fields
     }
+}
+#[derive(Clone, PartialEq, Default)]
+pub struct BrowserReadDescriptor {
+    pub descriptor: ::core::option::Option<
+        __buffa::oneof::browser_read_descriptor::Descriptor,
+    >,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
+}
+impl ::core::fmt::Debug for BrowserReadDescriptor {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("BrowserReadDescriptor")
+            .field("descriptor", &self.descriptor)
+            .finish()
+    }
+}
+impl BrowserReadDescriptor {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.BrowserReadDescriptor";
+}
+::buffa::impl_default_instance!(BrowserReadDescriptor);
+impl ::buffa::MessageName for BrowserReadDescriptor {
+    const PACKAGE: &'static str = "axon.dataaccess.v1";
+    const NAME: &'static str = "BrowserReadDescriptor";
+    const FULL_NAME: &'static str = "axon.dataaccess.v1.BrowserReadDescriptor";
+    const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.BrowserReadDescriptor";
+}
+impl ::buffa::Message for BrowserReadDescriptor {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if let ::core::option::Option::Some(ref v) = self.descriptor {
+            match v {
+                __buffa::oneof::browser_read_descriptor::Descriptor::Snapshot(x) => {
+                    let __slot = __cache.reserve();
+                    let inner = x.compute_size(__cache);
+                    __cache.set(__slot, inner);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner as u64) as u32
+                            + inner;
+                }
+                __buffa::oneof::browser_read_descriptor::Descriptor::ParquetDataset(
+                    x,
+                ) => {
+                    let __slot = __cache.reserve();
+                    let inner = x.compute_size(__cache);
+                    __cache.set(__slot, inner);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner as u64) as u32
+                            + inner;
+                }
+            }
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        size
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if let ::core::option::Option::Some(ref v) = self.descriptor {
+            match v {
+                __buffa::oneof::browser_read_descriptor::Descriptor::Snapshot(x) => {
+                    ::buffa::types::put_len_delimited_header(
+                        1u32,
+                        __cache.consume_next(),
+                        buf,
+                    );
+                    x.write_to(__cache, buf);
+                }
+                __buffa::oneof::browser_read_descriptor::Descriptor::ParquetDataset(
+                    x,
+                ) => {
+                    ::buffa::types::put_len_delimited_header(
+                        2u32,
+                        __cache.consume_next(),
+                        buf,
+                    );
+                    x.write_to(__cache, buf);
+                }
+            }
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                if let ::core::option::Option::Some(
+                    __buffa::oneof::browser_read_descriptor::Descriptor::Snapshot(
+                        ref mut existing,
+                    ),
+                ) = self.descriptor
+                {
+                    ::buffa::Message::merge_length_delimited(&mut **existing, buf, ctx)?;
+                } else {
+                    let mut val = ::core::default::Default::default();
+                    ::buffa::Message::merge_length_delimited(&mut val, buf, ctx)?;
+                    self.descriptor = ::core::option::Option::Some(
+                        __buffa::oneof::browser_read_descriptor::Descriptor::Snapshot(
+                            ::buffa::alloc::boxed::Box::new(val),
+                        ),
+                    );
+                }
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                if let ::core::option::Option::Some(
+                    __buffa::oneof::browser_read_descriptor::Descriptor::ParquetDataset(
+                        ref mut existing,
+                    ),
+                ) = self.descriptor
+                {
+                    ::buffa::Message::merge_length_delimited(&mut **existing, buf, ctx)?;
+                } else {
+                    let mut val = ::core::default::Default::default();
+                    ::buffa::Message::merge_length_delimited(&mut val, buf, ctx)?;
+                    self.descriptor = ::core::option::Option::Some(
+                        __buffa::oneof::browser_read_descriptor::Descriptor::ParquetDataset(
+                            ::buffa::alloc::boxed::Box::new(val),
+                        ),
+                    );
+                }
+            }
+            _ => {
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.descriptor = ::core::option::Option::None;
+        self.__buffa_unknown_fields.clear();
+    }
+}
+impl ::buffa::ExtensionSet for BrowserReadDescriptor {
+    const PROTO_FQN: &'static str = "axon.dataaccess.v1.BrowserReadDescriptor";
+    fn unknown_fields(&self) -> &::buffa::UnknownFields {
+        &self.__buffa_unknown_fields
+    }
+    fn unknown_fields_mut(&mut self) -> &mut ::buffa::UnknownFields {
+        &mut self.__buffa_unknown_fields
+    }
+}
+pub mod browser_read_descriptor {
+    #[allow(unused_imports)]
+    use super::*;
+    #[doc(inline)]
+    pub use super::__buffa::oneof::browser_read_descriptor::Descriptor;
+    #[doc(inline)]
+    pub use super::__buffa::view::oneof::browser_read_descriptor::Descriptor as DescriptorView;
+}
+#[derive(Clone, PartialEq, Default)]
+pub struct ResolutionProvenance {
+    /// Field 1: `resolver_id`
+    pub resolver_id: ::buffa::alloc::string::String,
+    /// Field 2: `resolution_id`
+    pub resolution_id: ::buffa::alloc::string::String,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
+}
+impl ::core::fmt::Debug for ResolutionProvenance {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("ResolutionProvenance")
+            .field("resolver_id", &self.resolver_id)
+            .field("resolution_id", &self.resolution_id)
+            .finish()
+    }
+}
+impl ResolutionProvenance {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.ResolutionProvenance";
+}
+::buffa::impl_default_instance!(ResolutionProvenance);
+impl ::buffa::MessageName for ResolutionProvenance {
+    const PACKAGE: &'static str = "axon.dataaccess.v1";
+    const NAME: &'static str = "ResolutionProvenance";
+    const FULL_NAME: &'static str = "axon.dataaccess.v1.ResolutionProvenance";
+    const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.ResolutionProvenance";
+}
+impl ::buffa::Message for ResolutionProvenance {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if !self.resolver_id.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.resolver_id) as u32;
+        }
+        if !self.resolution_id.is_empty() {
+            size
+                += 1u32 + ::buffa::types::string_encoded_len(&self.resolution_id) as u32;
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if !self.resolver_id.is_empty() {
+            ::buffa::types::put_string_field(1u32, &self.resolver_id, buf);
+        }
+        if !self.resolution_id.is_empty() {
+            ::buffa::types::put_string_field(2u32, &self.resolution_id, buf);
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::types::merge_string(&mut self.resolver_id, buf)?;
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::types::merge_string(&mut self.resolution_id, buf)?;
+            }
+            _ => {
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.resolver_id.clear();
+        self.resolution_id.clear();
+        self.__buffa_unknown_fields.clear();
+    }
+}
+impl ::buffa::ExtensionSet for ResolutionProvenance {
+    const PROTO_FQN: &'static str = "axon.dataaccess.v1.ResolutionProvenance";
+    fn unknown_fields(&self) -> &::buffa::UnknownFields {
+        &self.__buffa_unknown_fields
+    }
+    fn unknown_fields_mut(&mut self) -> &mut ::buffa::UnknownFields {
+        &mut self.__buffa_unknown_fields
+    }
+}
+#[derive(Clone, PartialEq, Default)]
+pub struct ResolvedBrowserRead {
+    /// Field 1: `resource`
+    pub resource: ::buffa::MessageField<super::super::common::v1::CanonicalResourceRef>,
+    /// Field 2: `descriptor`
+    pub descriptor: ::buffa::MessageField<BrowserReadDescriptor>,
+    /// Field 3: `access_class`
+    pub access_class: ::buffa::EnumValue<BrowserAccessClass>,
+    /// Field 4: `not_after`
+    pub not_after: ::buffa::MessageField<::buffa_types::google::protobuf::Timestamp>,
+    /// Field 5: `correlation_id`
+    pub correlation_id: ::buffa::alloc::string::String,
+    /// Field 6: `provenance`
+    pub provenance: ::buffa::MessageField<ResolutionProvenance>,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
+}
+impl ::core::fmt::Debug for ResolvedBrowserRead {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("ResolvedBrowserRead")
+            .field("resource", &self.resource)
+            .field("descriptor", &self.descriptor)
+            .field("access_class", &self.access_class)
+            .field("not_after", &self.not_after)
+            .field("correlation_id", &self.correlation_id)
+            .field("provenance", &self.provenance)
+            .finish()
+    }
+}
+impl ResolvedBrowserRead {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.ResolvedBrowserRead";
+}
+::buffa::impl_default_instance!(ResolvedBrowserRead);
+impl ::buffa::MessageName for ResolvedBrowserRead {
+    const PACKAGE: &'static str = "axon.dataaccess.v1";
+    const NAME: &'static str = "ResolvedBrowserRead";
+    const FULL_NAME: &'static str = "axon.dataaccess.v1.ResolvedBrowserRead";
+    const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.ResolvedBrowserRead";
+}
+impl ::buffa::Message for ResolvedBrowserRead {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if self.resource.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.resource.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        if self.descriptor.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.descriptor.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        {
+            let val = self.access_class.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        if self.not_after.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.not_after.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        if !self.correlation_id.is_empty() {
+            size
+                += 1u32
+                    + ::buffa::types::string_encoded_len(&self.correlation_id) as u32;
+        }
+        if self.provenance.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.provenance.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        size
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if self.resource.is_set() {
+            ::buffa::types::put_len_delimited_header(1u32, __cache.consume_next(), buf);
+            self.resource.write_to(__cache, buf);
+        }
+        if self.descriptor.is_set() {
+            ::buffa::types::put_len_delimited_header(2u32, __cache.consume_next(), buf);
+            self.descriptor.write_to(__cache, buf);
+        }
+        {
+            let val = self.access_class.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(3u32, val, buf);
+            }
+        }
+        if self.not_after.is_set() {
+            ::buffa::types::put_len_delimited_header(4u32, __cache.consume_next(), buf);
+            self.not_after.write_to(__cache, buf);
+        }
+        if !self.correlation_id.is_empty() {
+            ::buffa::types::put_string_field(5u32, &self.correlation_id, buf);
+        }
+        if self.provenance.is_set() {
+            ::buffa::types::put_len_delimited_header(6u32, __cache.consume_next(), buf);
+            self.provenance.write_to(__cache, buf);
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::Message::merge_length_delimited(
+                    self.resource.get_or_insert_default(),
+                    buf,
+                    ctx,
+                )?;
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::Message::merge_length_delimited(
+                    self.descriptor.get_or_insert_default(),
+                    buf,
+                    ctx,
+                )?;
+            }
+            3u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.access_class = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            4u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::Message::merge_length_delimited(
+                    self.not_after.get_or_insert_default(),
+                    buf,
+                    ctx,
+                )?;
+            }
+            5u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::types::merge_string(&mut self.correlation_id, buf)?;
+            }
+            6u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::Message::merge_length_delimited(
+                    self.provenance.get_or_insert_default(),
+                    buf,
+                    ctx,
+                )?;
+            }
+            _ => {
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.resource = ::buffa::MessageField::none();
+        self.descriptor = ::buffa::MessageField::none();
+        self.access_class = ::buffa::EnumValue::from(0);
+        self.not_after = ::buffa::MessageField::none();
+        self.correlation_id.clear();
+        self.provenance = ::buffa::MessageField::none();
+        self.__buffa_unknown_fields.clear();
+    }
+}
+impl ::buffa::ExtensionSet for ResolvedBrowserRead {
+    const PROTO_FQN: &'static str = "axon.dataaccess.v1.ResolvedBrowserRead";
+    fn unknown_fields(&self) -> &::buffa::UnknownFields {
+        &self.__buffa_unknown_fields
+    }
+    fn unknown_fields_mut(&mut self) -> &mut ::buffa::UnknownFields {
+        &mut self.__buffa_unknown_fields
+    }
+}
+#[derive(Clone, PartialEq, Default)]
+pub struct RemoteRequired {
+    /// Field 1: `resource`
+    pub resource: ::buffa::MessageField<super::super::common::v1::CanonicalResourceRef>,
+    /// Field 2: `enforcement_owner`
+    pub enforcement_owner: ::buffa::alloc::string::String,
+    /// Field 3: `reason`
+    pub reason: ::buffa::EnumValue<ReadResolutionReason>,
+    /// Field 4: `message`
+    pub message: ::buffa::alloc::string::String,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
+}
+impl ::core::fmt::Debug for RemoteRequired {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("RemoteRequired")
+            .field("resource", &self.resource)
+            .field("enforcement_owner", &self.enforcement_owner)
+            .field("reason", &self.reason)
+            .field("message", &self.message)
+            .finish()
+    }
+}
+impl RemoteRequired {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.RemoteRequired";
+}
+::buffa::impl_default_instance!(RemoteRequired);
+impl ::buffa::MessageName for RemoteRequired {
+    const PACKAGE: &'static str = "axon.dataaccess.v1";
+    const NAME: &'static str = "RemoteRequired";
+    const FULL_NAME: &'static str = "axon.dataaccess.v1.RemoteRequired";
+    const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.RemoteRequired";
+}
+impl ::buffa::Message for RemoteRequired {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if self.resource.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.resource.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        if !self.enforcement_owner.is_empty() {
+            size
+                += 1u32
+                    + ::buffa::types::string_encoded_len(&self.enforcement_owner) as u32;
+        }
+        {
+            let val = self.reason.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        if !self.message.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.message) as u32;
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        size
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if self.resource.is_set() {
+            ::buffa::types::put_len_delimited_header(1u32, __cache.consume_next(), buf);
+            self.resource.write_to(__cache, buf);
+        }
+        if !self.enforcement_owner.is_empty() {
+            ::buffa::types::put_string_field(2u32, &self.enforcement_owner, buf);
+        }
+        {
+            let val = self.reason.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(3u32, val, buf);
+            }
+        }
+        if !self.message.is_empty() {
+            ::buffa::types::put_string_field(4u32, &self.message, buf);
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::Message::merge_length_delimited(
+                    self.resource.get_or_insert_default(),
+                    buf,
+                    ctx,
+                )?;
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::types::merge_string(&mut self.enforcement_owner, buf)?;
+            }
+            3u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.reason = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            4u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::types::merge_string(&mut self.message, buf)?;
+            }
+            _ => {
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.resource = ::buffa::MessageField::none();
+        self.enforcement_owner.clear();
+        self.reason = ::buffa::EnumValue::from(0);
+        self.message.clear();
+        self.__buffa_unknown_fields.clear();
+    }
+}
+impl ::buffa::ExtensionSet for RemoteRequired {
+    const PROTO_FQN: &'static str = "axon.dataaccess.v1.RemoteRequired";
+    fn unknown_fields(&self) -> &::buffa::UnknownFields {
+        &self.__buffa_unknown_fields
+    }
+    fn unknown_fields_mut(&mut self) -> &mut ::buffa::UnknownFields {
+        &mut self.__buffa_unknown_fields
+    }
+}
+#[derive(Clone, PartialEq, Default)]
+pub struct ReadDenied {
+    /// Field 1: `resource`
+    pub resource: ::buffa::MessageField<super::super::common::v1::CanonicalResourceRef>,
+    /// Field 2: `reason`
+    pub reason: ::buffa::EnumValue<ReadResolutionReason>,
+    /// Field 3: `message`
+    pub message: ::buffa::alloc::string::String,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
+}
+impl ::core::fmt::Debug for ReadDenied {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("ReadDenied")
+            .field("resource", &self.resource)
+            .field("reason", &self.reason)
+            .field("message", &self.message)
+            .finish()
+    }
+}
+impl ReadDenied {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.ReadDenied";
+}
+::buffa::impl_default_instance!(ReadDenied);
+impl ::buffa::MessageName for ReadDenied {
+    const PACKAGE: &'static str = "axon.dataaccess.v1";
+    const NAME: &'static str = "ReadDenied";
+    const FULL_NAME: &'static str = "axon.dataaccess.v1.ReadDenied";
+    const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.ReadDenied";
+}
+impl ::buffa::Message for ReadDenied {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if self.resource.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.resource.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
+        {
+            let val = self.reason.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        if !self.message.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.message) as u32;
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        size
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if self.resource.is_set() {
+            ::buffa::types::put_len_delimited_header(1u32, __cache.consume_next(), buf);
+            self.resource.write_to(__cache, buf);
+        }
+        {
+            let val = self.reason.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(2u32, val, buf);
+            }
+        }
+        if !self.message.is_empty() {
+            ::buffa::types::put_string_field(3u32, &self.message, buf);
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::Message::merge_length_delimited(
+                    self.resource.get_or_insert_default(),
+                    buf,
+                    ctx,
+                )?;
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.reason = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            3u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::types::merge_string(&mut self.message, buf)?;
+            }
+            _ => {
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.resource = ::buffa::MessageField::none();
+        self.reason = ::buffa::EnumValue::from(0);
+        self.message.clear();
+        self.__buffa_unknown_fields.clear();
+    }
+}
+impl ::buffa::ExtensionSet for ReadDenied {
+    const PROTO_FQN: &'static str = "axon.dataaccess.v1.ReadDenied";
+    fn unknown_fields(&self) -> &::buffa::UnknownFields {
+        &self.__buffa_unknown_fields
+    }
+    fn unknown_fields_mut(&mut self) -> &mut ::buffa::UnknownFields {
+        &mut self.__buffa_unknown_fields
+    }
+}
+#[derive(Clone, PartialEq, Default)]
+pub struct ReadResolution {
+    pub outcome: ::core::option::Option<__buffa::oneof::read_resolution::Outcome>,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
+}
+impl ::core::fmt::Debug for ReadResolution {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("ReadResolution").field("outcome", &self.outcome).finish()
+    }
+}
+impl ReadResolution {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.ReadResolution";
+}
+::buffa::impl_default_instance!(ReadResolution);
+impl ::buffa::MessageName for ReadResolution {
+    const PACKAGE: &'static str = "axon.dataaccess.v1";
+    const NAME: &'static str = "ReadResolution";
+    const FULL_NAME: &'static str = "axon.dataaccess.v1.ReadResolution";
+    const TYPE_URL: &'static str = "type.googleapis.com/axon.dataaccess.v1.ReadResolution";
+}
+impl ::buffa::Message for ReadResolution {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        if let ::core::option::Option::Some(ref v) = self.outcome {
+            match v {
+                __buffa::oneof::read_resolution::Outcome::BrowserRead(x) => {
+                    let __slot = __cache.reserve();
+                    let inner = x.compute_size(__cache);
+                    __cache.set(__slot, inner);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner as u64) as u32
+                            + inner;
+                }
+                __buffa::oneof::read_resolution::Outcome::RemoteRequired(x) => {
+                    let __slot = __cache.reserve();
+                    let inner = x.compute_size(__cache);
+                    __cache.set(__slot, inner);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner as u64) as u32
+                            + inner;
+                }
+                __buffa::oneof::read_resolution::Outcome::Denied(x) => {
+                    let __slot = __cache.reserve();
+                    let inner = x.compute_size(__cache);
+                    __cache.set(__slot, inner);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner as u64) as u32
+                            + inner;
+                }
+                __buffa::oneof::read_resolution::Outcome::Error(x) => {
+                    let __slot = __cache.reserve();
+                    let inner = x.compute_size(__cache);
+                    __cache.set(__slot, inner);
+                    size
+                        += 1u32 + ::buffa::encoding::varint_len(inner as u64) as u32
+                            + inner;
+                }
+            }
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        size
+    }
+    fn write_to(
+        &self,
+        __cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        if let ::core::option::Option::Some(ref v) = self.outcome {
+            match v {
+                __buffa::oneof::read_resolution::Outcome::BrowserRead(x) => {
+                    ::buffa::types::put_len_delimited_header(
+                        1u32,
+                        __cache.consume_next(),
+                        buf,
+                    );
+                    x.write_to(__cache, buf);
+                }
+                __buffa::oneof::read_resolution::Outcome::RemoteRequired(x) => {
+                    ::buffa::types::put_len_delimited_header(
+                        2u32,
+                        __cache.consume_next(),
+                        buf,
+                    );
+                    x.write_to(__cache, buf);
+                }
+                __buffa::oneof::read_resolution::Outcome::Denied(x) => {
+                    ::buffa::types::put_len_delimited_header(
+                        3u32,
+                        __cache.consume_next(),
+                        buf,
+                    );
+                    x.write_to(__cache, buf);
+                }
+                __buffa::oneof::read_resolution::Outcome::Error(x) => {
+                    ::buffa::types::put_len_delimited_header(
+                        4u32,
+                        __cache.consume_next(),
+                        buf,
+                    );
+                    x.write_to(__cache, buf);
+                }
+            }
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                if let ::core::option::Option::Some(
+                    __buffa::oneof::read_resolution::Outcome::BrowserRead(
+                        ref mut existing,
+                    ),
+                ) = self.outcome
+                {
+                    ::buffa::Message::merge_length_delimited(&mut **existing, buf, ctx)?;
+                } else {
+                    let mut val = ::core::default::Default::default();
+                    ::buffa::Message::merge_length_delimited(&mut val, buf, ctx)?;
+                    self.outcome = ::core::option::Option::Some(
+                        __buffa::oneof::read_resolution::Outcome::BrowserRead(
+                            ::buffa::alloc::boxed::Box::new(val),
+                        ),
+                    );
+                }
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                if let ::core::option::Option::Some(
+                    __buffa::oneof::read_resolution::Outcome::RemoteRequired(
+                        ref mut existing,
+                    ),
+                ) = self.outcome
+                {
+                    ::buffa::Message::merge_length_delimited(&mut **existing, buf, ctx)?;
+                } else {
+                    let mut val = ::core::default::Default::default();
+                    ::buffa::Message::merge_length_delimited(&mut val, buf, ctx)?;
+                    self.outcome = ::core::option::Option::Some(
+                        __buffa::oneof::read_resolution::Outcome::RemoteRequired(
+                            ::buffa::alloc::boxed::Box::new(val),
+                        ),
+                    );
+                }
+            }
+            3u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                if let ::core::option::Option::Some(
+                    __buffa::oneof::read_resolution::Outcome::Denied(ref mut existing),
+                ) = self.outcome
+                {
+                    ::buffa::Message::merge_length_delimited(&mut **existing, buf, ctx)?;
+                } else {
+                    let mut val = ::core::default::Default::default();
+                    ::buffa::Message::merge_length_delimited(&mut val, buf, ctx)?;
+                    self.outcome = ::core::option::Option::Some(
+                        __buffa::oneof::read_resolution::Outcome::Denied(
+                            ::buffa::alloc::boxed::Box::new(val),
+                        ),
+                    );
+                }
+            }
+            4u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                if let ::core::option::Option::Some(
+                    __buffa::oneof::read_resolution::Outcome::Error(ref mut existing),
+                ) = self.outcome
+                {
+                    ::buffa::Message::merge_length_delimited(&mut **existing, buf, ctx)?;
+                } else {
+                    let mut val = ::core::default::Default::default();
+                    ::buffa::Message::merge_length_delimited(&mut val, buf, ctx)?;
+                    self.outcome = ::core::option::Option::Some(
+                        __buffa::oneof::read_resolution::Outcome::Error(
+                            ::buffa::alloc::boxed::Box::new(val),
+                        ),
+                    );
+                }
+            }
+            _ => {
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.outcome = ::core::option::Option::None;
+        self.__buffa_unknown_fields.clear();
+    }
+}
+impl ::buffa::ExtensionSet for ReadResolution {
+    const PROTO_FQN: &'static str = "axon.dataaccess.v1.ReadResolution";
+    fn unknown_fields(&self) -> &::buffa::UnknownFields {
+        &self.__buffa_unknown_fields
+    }
+    fn unknown_fields_mut(&mut self) -> &mut ::buffa::UnknownFields {
+        &mut self.__buffa_unknown_fields
+    }
+}
+pub mod read_resolution {
+    #[allow(unused_imports)]
+    use super::*;
+    #[doc(inline)]
+    pub use super::__buffa::oneof::read_resolution::Outcome;
+    #[doc(inline)]
+    pub use super::__buffa::view::oneof::read_resolution::Outcome as OutcomeView;
 }
 #[derive(Clone, PartialEq, Default)]
 pub struct BrokeredObjectAccess {
@@ -4696,10 +6305,8 @@ pub struct ObjectGrantAuditEvent {
     pub full_name: ::buffa::alloc::string::String,
     /// Field 9: `grant_id`
     pub grant_id: ::buffa::alloc::string::String,
-    /// Field 10: `query_id`
-    pub query_id: ::buffa::alloc::string::String,
-    /// Field 11: `request_id`
-    pub request_id: ::buffa::alloc::string::String,
+    /// Field 10: `execution_id`
+    pub execution_id: ::buffa::alloc::string::String,
     /// Field 12: `correlation_id`
     pub correlation_id: ::buffa::alloc::string::String,
     /// Field 13: `action`
@@ -4725,8 +6332,7 @@ impl ::core::fmt::Debug for ObjectGrantAuditEvent {
             .field("table_id", &self.table_id)
             .field("full_name", &self.full_name)
             .field("grant_id", &self.grant_id)
-            .field("query_id", &self.query_id)
-            .field("request_id", &self.request_id)
+            .field("execution_id", &self.execution_id)
             .field("correlation_id", &self.correlation_id)
             .field("action", &self.action)
             .field("object_path", &self.object_path)
@@ -4790,11 +6396,8 @@ impl ::buffa::Message for ObjectGrantAuditEvent {
         if !self.grant_id.is_empty() {
             size += 1u32 + ::buffa::types::string_encoded_len(&self.grant_id) as u32;
         }
-        if !self.query_id.is_empty() {
-            size += 1u32 + ::buffa::types::string_encoded_len(&self.query_id) as u32;
-        }
-        if !self.request_id.is_empty() {
-            size += 1u32 + ::buffa::types::string_encoded_len(&self.request_id) as u32;
+        if !self.execution_id.is_empty() {
+            size += 1u32 + ::buffa::types::string_encoded_len(&self.execution_id) as u32;
         }
         if !self.correlation_id.is_empty() {
             size
@@ -4861,11 +6464,8 @@ impl ::buffa::Message for ObjectGrantAuditEvent {
         if !self.grant_id.is_empty() {
             ::buffa::types::put_string_field(9u32, &self.grant_id, buf);
         }
-        if !self.query_id.is_empty() {
-            ::buffa::types::put_string_field(10u32, &self.query_id, buf);
-        }
-        if !self.request_id.is_empty() {
-            ::buffa::types::put_string_field(11u32, &self.request_id, buf);
+        if !self.execution_id.is_empty() {
+            ::buffa::types::put_string_field(10u32, &self.execution_id, buf);
         }
         if !self.correlation_id.is_empty() {
             ::buffa::types::put_string_field(12u32, &self.correlation_id, buf);
@@ -4970,14 +6570,7 @@ impl ::buffa::Message for ObjectGrantAuditEvent {
                     tag,
                     ::buffa::encoding::WireType::LengthDelimited,
                 )?;
-                ::buffa::types::merge_string(&mut self.query_id, buf)?;
-            }
-            11u32 => {
-                ::buffa::encoding::check_wire_type(
-                    tag,
-                    ::buffa::encoding::WireType::LengthDelimited,
-                )?;
-                ::buffa::types::merge_string(&mut self.request_id, buf)?;
+                ::buffa::types::merge_string(&mut self.execution_id, buf)?;
             }
             12u32 => {
                 ::buffa::encoding::check_wire_type(
@@ -5039,8 +6632,7 @@ impl ::buffa::Message for ObjectGrantAuditEvent {
         self.table_id.clear();
         self.full_name.clear();
         self.grant_id.clear();
-        self.query_id.clear();
-        self.request_id.clear();
+        self.execution_id.clear();
         self.correlation_id.clear();
         self.action = ::buffa::EnumValue::from(0);
         self.object_path.clear();

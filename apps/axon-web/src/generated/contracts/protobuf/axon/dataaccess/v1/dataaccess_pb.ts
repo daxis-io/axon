@@ -4,26 +4,26 @@
 
 import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { ObjectRef } from "../../common/v1/common_pb.ts";
+import type { CanonicalResourceRef, ObjectRef, ProviderError } from "../../common/v1/common_pb.ts";
 import { file_axon_common_v1_common } from "../../common/v1/common_pb.ts";
-import type { NullValue } from "@bufbuild/protobuf/wkt";
-import { file_google_protobuf_struct } from "@bufbuild/protobuf/wkt";
+import type { NullValue, Timestamp } from "@bufbuild/protobuf/wkt";
+import { file_google_protobuf_struct, file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file axon/dataaccess/v1/dataaccess.proto.
  */
 export const file_axon_dataaccess_v1_dataaccess: GenFile = /*@__PURE__*/
-  fileDesc("CiNheG9uL2RhdGFhY2Nlc3MvdjEvZGF0YWFjY2Vzcy5wcm90bxISYXhvbi5kYXRhYWNjZXNzLnYxIroBChBDYXBhYmlsaXR5UmVwb3J0EkwKDGNhcGFiaWxpdGllcxgBIAMoCzI2LmF4b24uZGF0YWFjY2Vzcy52MS5DYXBhYmlsaXR5UmVwb3J0LkNhcGFiaWxpdGllc0VudHJ5GlgKEUNhcGFiaWxpdGllc0VudHJ5EgsKA2tleRgBIAEoCRIyCgV2YWx1ZRgCIAEoDjIjLmF4b24uZGF0YWFjY2Vzcy52MS5DYXBhYmlsaXR5U3RhdGU6AjgBImMKDlBhcnRpdGlvblZhbHVlEhYKDHN0cmluZ192YWx1ZRgBIAEoCUgAEjAKCm51bGxfdmFsdWUYAiABKA4yGi5nb29nbGUucHJvdG9idWYuTnVsbFZhbHVlSABCBwoFdmFsdWUi9wIKGUJyb3dzZXJIdHRwRmlsZURlc2NyaXB0b3ISDAoEcGF0aBgBIAEoCRILCgN1cmwYAiABKAkSHgoKc2l6ZV9ieXRlcxgDIAEoBFIKc2l6ZV9ieXRlcxJuChBwYXJ0aXRpb25fdmFsdWVzGAQgAygLMkIuYXhvbi5kYXRhYWNjZXNzLnYxLkJyb3dzZXJIdHRwRmlsZURlc2NyaXB0b3IuUGFydGl0aW9uVmFsdWVzRW50cnlSEHBhcnRpdGlvbl92YWx1ZXMSEgoFc3RhdHMYBSABKAlIAIgBARIlCgtvYmplY3RfZXRhZxgGIAEoCUgBUgtvYmplY3RfZXRhZ4gBARpaChRQYXJ0aXRpb25WYWx1ZXNFbnRyeRILCgNrZXkYASABKAkSMQoFdmFsdWUYAiABKAsyIi5heG9uLmRhdGFhY2Nlc3MudjEuUGFydGl0aW9uVmFsdWU6AjgBQggKBl9zdGF0c0IOCgxfb2JqZWN0X2V0YWci+gQKHUJyb3dzZXJIdHRwU25hcHNob3REZXNjcmlwdG9yEhwKCXRhYmxlX3VyaRgBIAEoCVIJdGFibGVfdXJpEi8KEHNuYXBzaG90X3ZlcnNpb24YAiABKANIAFIQc25hcHNob3RfdmVyc2lvbogBARKDAQoWcGFydGl0aW9uX2NvbHVtbl90eXBlcxgDIAMoCzJLLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cFNuYXBzaG90RGVzY3JpcHRvci5QYXJ0aXRpb25Db2x1bW5UeXBlc0VudHJ5UhZwYXJ0aXRpb25fY29sdW1uX3R5cGVzEloKFWJyb3dzZXJfY29tcGF0aWJpbGl0eRgEIAEoCzIkLmF4b24uZGF0YWFjY2Vzcy52MS5DYXBhYmlsaXR5UmVwb3J0UhVicm93c2VyX2NvbXBhdGliaWxpdHkSWgoVcmVxdWlyZWRfY2FwYWJpbGl0aWVzGAUgASgLMiQuYXhvbi5kYXRhYWNjZXNzLnYxLkNhcGFiaWxpdHlSZXBvcnRSFXJlcXVpcmVkX2NhcGFiaWxpdGllcxJRCgxhY3RpdmVfZmlsZXMYBiADKAsyLS5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3Nlckh0dHBGaWxlRGVzY3JpcHRvclIMYWN0aXZlX2ZpbGVzGmQKGVBhcnRpdGlvbkNvbHVtblR5cGVzRW50cnkSCwoDa2V5GAEgASgJEjYKBXZhbHVlGAIgASgOMicuYXhvbi5kYXRhYWNjZXNzLnYxLlBhcnRpdGlvbkNvbHVtblR5cGU6AjgBQhMKEV9zbmFwc2hvdF92ZXJzaW9uIqsECiNCcm93c2VySHR0cFBhcnF1ZXREYXRhc2V0RGVzY3JpcHRvchIcCgl0YWJsZV91cmkYASABKAlSCXRhYmxlX3VyaRKJAQoWcGFydGl0aW9uX2NvbHVtbl90eXBlcxgCIAMoCzJRLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cFBhcnF1ZXREYXRhc2V0RGVzY3JpcHRvci5QYXJ0aXRpb25Db2x1bW5UeXBlc0VudHJ5UhZwYXJ0aXRpb25fY29sdW1uX3R5cGVzEloKFWJyb3dzZXJfY29tcGF0aWJpbGl0eRgDIAEoCzIkLmF4b24uZGF0YWFjY2Vzcy52MS5DYXBhYmlsaXR5UmVwb3J0UhVicm93c2VyX2NvbXBhdGliaWxpdHkSWgoVcmVxdWlyZWRfY2FwYWJpbGl0aWVzGAQgASgLMiQuYXhvbi5kYXRhYWNjZXNzLnYxLkNhcGFiaWxpdHlSZXBvcnRSFXJlcXVpcmVkX2NhcGFiaWxpdGllcxI8CgVmaWxlcxgFIAMoCzItLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cEZpbGVEZXNjcmlwdG9yGmQKGVBhcnRpdGlvbkNvbHVtblR5cGVzRW50cnkSCwoDa2V5GAEgASgJEjYKBXZhbHVlGAIgASgOMicuYXhvbi5kYXRhYWNjZXNzLnYxLlBhcnRpdGlvbkNvbHVtblR5cGU6AjgBInsKFEJyb2tlcmVkT2JqZWN0QWNjZXNzEgwKBGxpc3QYASABKAgSDAoEaGVhZBgCIAEoCBILCgNnZXQYAyABKAgSEQoJcmFuZ2VfZ2V0GAQgASgIEhIKCmJhdGNoX3NpZ24YBSABKAgSEwoLcHJveHlfcmFuZ2UYBiABKAgirwEKF0Jyb2tlcmVkUG9saWN5QXV0aG9yaXR5EjoKCWF1dGhvcml0eRgBIAEoDjInLmF4b24uZGF0YWFjY2Vzcy52MS5Qb2xpY3lBdXRob3JpdHlLaW5kElgKG2RpcmVjdF9leHRlcm5hbF9lbmdpbmVfcmVhZBgCIAEoDjIzLmF4b24uZGF0YWFjY2Vzcy52MS5EaXJlY3RFeHRlcm5hbEVuZ2luZVJlYWRTdXBwb3J0ItUCChtCcm9rZXJlZERlbHRhUmVhZEFjY2Vzc1BsYW4SEAoIdGFibGVfaWQYASABKAkSEQoJZnVsbF9uYW1lGAIgASgJEhIKCnRhYmxlX3Jvb3QYAyABKAkSEAoIZ3JhbnRfaWQYBCABKAkSGwoTZXhwaXJlc19hdF9lcG9jaF9tcxgFIAEoBBJGChFkZWx0YV9hY2Nlc3NfbW9kZRgGIAEoDjIrLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm9rZXJlZERlbHRhQWNjZXNzTW9kZRJFChBwb2xpY3lfYXV0aG9yaXR5GAcgASgLMisuYXhvbi5kYXRhYWNjZXNzLnYxLkJyb2tlcmVkUG9saWN5QXV0aG9yaXR5Ej8KDW9iamVjdF9hY2Nlc3MYCCABKAsyKC5heG9uLmRhdGFhY2Nlc3MudjEuQnJva2VyZWRPYmplY3RBY2Nlc3MitgEKGkRlbHRhU2hhcmluZ1JlYWRBY2Nlc3NQbGFuEhAKCHRhYmxlX2lkGAEgASgJEhEKCWZ1bGxfbmFtZRgCIAEoCRIYChBzaGFyaW5nX2VuZHBvaW50GAMgASgJEhsKE2V4cGlyZXNfYXRfZXBvY2hfbXMYBCABKAQSPAoFZmlsZXMYBSADKAsyLS5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3Nlckh0dHBGaWxlRGVzY3JpcHRvciLLAQohU3FsRmFsbGJhY2tSZXF1aXJlZFJlYWRBY2Nlc3NQbGFuEhAKCHRhYmxlX2lkGAEgASgJEhEKCWZ1bGxfbmFtZRgCIAEoCRI4CgZyZWFzb24YAyABKA4yKC5heG9uLmRhdGFhY2Nlc3MudjEuUmVhZEFjY2Vzc1BsYW5SZWFzb24SDwoHbWVzc2FnZRgEIAEoCRIaChJzdGF0ZW1lbnRfZW5kcG9pbnQYBSABKAkSGgoSd2FyZWhvdXNlX3JlcXVpcmVkGAYgASgIIocBChVCbG9ja2VkUmVhZEFjY2Vzc1BsYW4SEAoIdGFibGVfaWQYASABKAkSEQoJZnVsbF9uYW1lGAIgASgJEjgKBnJlYXNvbhgDIAEoDjIoLmF4b24uZGF0YWFjY2Vzcy52MS5SZWFkQWNjZXNzUGxhblJlYXNvbhIPCgdtZXNzYWdlGAQgASgJIsICCg5SZWFkQWNjZXNzUGxhbhJJCg5icm9rZXJlZF9kZWx0YRgBIAEoCzIvLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm9rZXJlZERlbHRhUmVhZEFjY2Vzc1BsYW5IABJHCg1kZWx0YV9zaGFyaW5nGAIgASgLMi4uYXhvbi5kYXRhYWNjZXNzLnYxLkRlbHRhU2hhcmluZ1JlYWRBY2Nlc3NQbGFuSAASVgoVc3FsX2ZhbGxiYWNrX3JlcXVpcmVkGAMgASgLMjUuYXhvbi5kYXRhYWNjZXNzLnYxLlNxbEZhbGxiYWNrUmVxdWlyZWRSZWFkQWNjZXNzUGxhbkgAEjwKB2Jsb2NrZWQYBCABKAsyKS5heG9uLmRhdGFhY2Nlc3MudjEuQmxvY2tlZFJlYWRBY2Nlc3NQbGFuSABCBgoEcGxhbiLjAgoTVGFibGVSZWFkUmVzb2x1dGlvbhIsCgl0YWJsZV9yZWYYASABKAsyGS5heG9uLmNvbW1vbi52MS5PYmplY3RSZWYSRwoKZGVzY3JpcHRvchgCIAEoCzIxLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cFNuYXBzaG90RGVzY3JpcHRvckgAEj4KEHJlYWRfYWNjZXNzX3BsYW4YAyABKAsyIi5heG9uLmRhdGFhY2Nlc3MudjEuUmVhZEFjY2Vzc1BsYW5IABJJCghmYWxsYmFjaxgEIAEoCzI1LmF4b24uZGF0YWFjY2Vzcy52MS5TcWxGYWxsYmFja1JlcXVpcmVkUmVhZEFjY2Vzc1BsYW5IABI8CgdibG9ja2VkGAUgASgLMikuYXhvbi5kYXRhYWNjZXNzLnYxLkJsb2NrZWRSZWFkQWNjZXNzUGxhbkgAQgwKCnJlc29sdXRpb24iKAoWT2JqZWN0R3JhbnRMaXN0UmVxdWVzdBIOCgZwcmVmaXgYASABKAkiUQoXT2JqZWN0R3JhbnRMaXN0UmVzcG9uc2USNgoHb2JqZWN0cxgBIAMoCzIlLmF4b24uZGF0YWFjY2Vzcy52MS5PYmplY3RHcmFudE9iamVjdCImChZPYmplY3RHcmFudEhlYWRSZXF1ZXN0EgwKBHBhdGgYASABKAkiVwoXT2JqZWN0R3JhbnRIZWFkUmVzcG9uc2USDAoEcGF0aBgBIAEoCRISCgpzaXplX2J5dGVzGAIgASgEEhEKBGV0YWcYAyABKAlIAIgBAUIHCgVfZXRhZyJRChFPYmplY3RHcmFudE9iamVjdBIMCgRwYXRoGAEgASgJEhIKCnNpemVfYnl0ZXMYAiABKAQSEQoEZXRhZxgDIAEoCUgAiAEBQgcKBV9ldGFnIiwKG09iamVjdEdyYW50QmF0Y2hTaWduUmVxdWVzdBINCgVwYXRocxgBIAMoCSJdChxPYmplY3RHcmFudEJhdGNoU2lnblJlc3BvbnNlEj0KC3NpZ25lZF91cmxzGAEgAygLMiguYXhvbi5kYXRhYWNjZXNzLnYxLk9iamVjdEdyYW50U2lnbmVkVXJsIk4KFE9iamVjdEdyYW50U2lnbmVkVXJsEgwKBHBhdGgYASABKAkSCwoDdXJsGAIgASgJEhsKE2V4cGlyZXNfYXRfZXBvY2hfbXMYAyABKAQiXwoXT2JqZWN0R3JhbnRSYW5nZVJlcXVlc3QSDAoEcGF0aBgBIAEoCRISCgVzdGFydBgCIAEoBEgAiAEBEhAKA2VuZBgDIAEoBEgBiAEBQggKBl9zdGFydEIGCgRfZW5kIoYBChhPYmplY3RHcmFudFJhbmdlUmVzcG9uc2USDAoEZGF0YRgBIAEoDBIaCg1jb250ZW50X3JhbmdlGAIgASgJSACIAQESEQoEZXRhZxgDIAEoCUgBiAEBEhIKCnNpemVfYnl0ZXMYBCABKARCEAoOX2NvbnRlbnRfcmFuZ2VCBwoFX2V0YWciTwoVT2JqZWN0R3JhbnRBdWRpdFJhbmdlEhIKBXN0YXJ0GAEgASgESACIAQESEAoDZW5kGAIgASgESAGIAQFCCAoGX3N0YXJ0QgYKBF9lbmQi2AMKFU9iamVjdEdyYW50QXVkaXRFdmVudBIQCghldmVudF9pZBgBIAEoCRISCgpldmVudF90eXBlGAIgASgJEhwKFG9jY3VycmVkX2F0X2Vwb2NoX21zGAMgASgEEhEKCXRlbmFudF9pZBgEIAEoCRIUCgx3b3Jrc3BhY2VfaWQYBSABKAkSFAoMdXNlcl9zdWJqZWN0GAYgASgJEhAKCHRhYmxlX2lkGAcgASgJEhEKCWZ1bGxfbmFtZRgIIAEoCRIQCghncmFudF9pZBgJIAEoCRIQCghxdWVyeV9pZBgKIAEoCRISCgpyZXF1ZXN0X2lkGAsgASgJEhYKDmNvcnJlbGF0aW9uX2lkGAwgASgJEjoKBmFjdGlvbhgNIAEoDjIqLmF4b24uZGF0YWFjY2Vzcy52MS5PYmplY3RHcmFudEF1ZGl0QWN0aW9uEhMKC29iamVjdF9wYXRoGA4gASgJEjgKBXJhbmdlGA8gASgLMikuYXhvbi5kYXRhYWNjZXNzLnYxLk9iamVjdEdyYW50QXVkaXRSYW5nZRI8CgdvdXRjb21lGBAgASgOMisuYXhvbi5kYXRhYWNjZXNzLnYxLk9iamVjdEdyYW50QXVkaXRPdXRjb21lKroBCg9DYXBhYmlsaXR5U3RhdGUSIAocQ0FQQUJJTElUWV9TVEFURV9VTlNQRUNJRklFRBAAEh4KGkNBUEFCSUxJVFlfU1RBVEVfU1VQUE9SVEVEEAESIAocQ0FQQUJJTElUWV9TVEFURV9OQVRJVkVfT05MWRACEiAKHENBUEFCSUxJVFlfU1RBVEVfVU5TVVBQT1JURUQQAxIhCh1DQVBBQklMSVRZX1NUQVRFX0VYUEVSSU1FTlRBTBAEKskBChNQYXJ0aXRpb25Db2x1bW5UeXBlEiUKIVBBUlRJVElPTl9DT0xVTU5fVFlQRV9VTlNQRUNJRklFRBAAEiAKHFBBUlRJVElPTl9DT0xVTU5fVFlQRV9TVFJJTkcQARIfChtQQVJUSVRJT05fQ09MVU1OX1RZUEVfSU5UNjQQAhIhCh1QQVJUSVRJT05fQ09MVU1OX1RZUEVfQk9PTEVBThADEiUKIVBBUlRJVElPTl9DT0xVTU5fVFlQRV9VTlNVUFBPUlRFRBAEKukDChRSZWFkQWNjZXNzUGxhblJlYXNvbhInCiNSRUFEX0FDQ0VTU19QTEFOX1JFQVNPTl9VTlNQRUNJRklFRBAAEiYKIlJFQURfQUNDRVNTX1BMQU5fUkVBU09OX1JPV19GSUxURVIQARInCiNSRUFEX0FDQ0VTU19QTEFOX1JFQVNPTl9DT0xVTU5fTUFTSxACEiAKHFJFQURfQUNDRVNTX1BMQU5fUkVBU09OX1ZJRVcQAxIwCixSRUFEX0FDQ0VTU19QTEFOX1JFQVNPTl9VTktOT1dOX1BPTElDWV9TVEFURRAEEkIKPlJFQURfQUNDRVNTX1BMQU5fUkVBU09OX05PX0RJUkVDVF9FWFRFUk5BTF9FTkdJTkVfUkVBRF9TVVBQT1JUEAUSMgouUkVBRF9BQ0NFU1NfUExBTl9SRUFTT05fVU5TVVBQT1JURURfVEFCTEVfVFlQRRAGEikKJVJFQURfQUNDRVNTX1BMQU5fUkVBU09OX0dSQU5UX0VYUElSRUQQBxIwCixSRUFEX0FDQ0VTU19QTEFOX1JFQVNPTl9TVE9SQUdFX0NPUlNfQkxPQ0tFRBAIEi4KKlJFQURfQUNDRVNTX1BMQU5fUkVBU09OX0JST0tFUl9VTkFWQUlMQUJMRRAJKp8BChdCcm9rZXJlZERlbHRhQWNjZXNzTW9kZRIqCiZCUk9LRVJFRF9ERUxUQV9BQ0NFU1NfTU9ERV9VTlNQRUNJRklFRBAAEigKJEJST0tFUkVEX0RFTFRBX0FDQ0VTU19NT0RFX0RFTFRBX0xPRxABEi4KKkJST0tFUkVEX0RFTFRBX0FDQ0VTU19NT0RFX1BSRVNJR05FRF9GSUxFUxACKrUBChNQb2xpY3lBdXRob3JpdHlLaW5kEiUKIVBPTElDWV9BVVRIT1JJVFlfS0lORF9VTlNQRUNJRklFRBAAEicKI1BPTElDWV9BVVRIT1JJVFlfS0lORF9VTklUWV9DQVRBTE9HEAESJwojUE9MSUNZX0FVVEhPUklUWV9LSU5EX0RFTFRBX1NIQVJJTkcQAhIlCiFQT0xJQ1lfQVVUSE9SSVRZX0tJTkRfTU9DS19CUk9LRVIQAyrAAQofRGlyZWN0RXh0ZXJuYWxFbmdpbmVSZWFkU3VwcG9ydBIzCi9ESVJFQ1RfRVhURVJOQUxfRU5HSU5FX1JFQURfU1VQUE9SVF9VTlNQRUNJRklFRBAAEjEKLURJUkVDVF9FWFRFUk5BTF9FTkdJTkVfUkVBRF9TVVBQT1JUX0NPTkZJUk1FRBABEjUKMURJUkVDVF9FWFRFUk5BTF9FTkdJTkVfUkVBRF9TVVBQT1JUX05PVF9DT05GSVJNRUQQAiraAQoWT2JqZWN0R3JhbnRBdWRpdEFjdGlvbhIpCiVPQkpFQ1RfR1JBTlRfQVVESVRfQUNUSU9OX1VOU1BFQ0lGSUVEEAASIgoeT0JKRUNUX0dSQU5UX0FVRElUX0FDVElPTl9MSVNUEAESIgoeT0JKRUNUX0dSQU5UX0FVRElUX0FDVElPTl9IRUFEEAISKAokT0JKRUNUX0dSQU5UX0FVRElUX0FDVElPTl9CQVRDSF9TSUdOEAMSIwofT0JKRUNUX0dSQU5UX0FVRElUX0FDVElPTl9SQU5HRRAEKpQBChdPYmplY3RHcmFudEF1ZGl0T3V0Y29tZRIqCiZPQkpFQ1RfR1JBTlRfQVVESVRfT1VUQ09NRV9VTlNQRUNJRklFRBAAEiYKIk9CSkVDVF9HUkFOVF9BVURJVF9PVVRDT01FX0FMTE9XRUQQARIlCiFPQkpFQ1RfR1JBTlRfQVVESVRfT1VUQ09NRV9ERU5JRUQQAmIGcHJvdG8z", [file_axon_common_v1_common, file_google_protobuf_struct]);
+  fileDesc("CiNheG9uL2RhdGFhY2Nlc3MvdjEvZGF0YWFjY2Vzcy5wcm90bxISYXhvbi5kYXRhYWNjZXNzLnYxIk0KEENhcGFiaWxpdHlSZXBvcnQSOQoMY2FwYWJpbGl0aWVzGAEgAygLMiMuYXhvbi5kYXRhYWNjZXNzLnYxLkNhcGFiaWxpdHlFbnRyeSJ1Cg9DYXBhYmlsaXR5RW50cnkSLgoDa2V5GAEgASgOMiEuYXhvbi5kYXRhYWNjZXNzLnYxLkNhcGFiaWxpdHlLZXkSMgoFc3RhdGUYAiABKA4yIy5heG9uLmRhdGFhY2Nlc3MudjEuQ2FwYWJpbGl0eVN0YXRlImMKDlBhcnRpdGlvblZhbHVlEhYKDHN0cmluZ192YWx1ZRgBIAEoCUgAEjAKCm51bGxfdmFsdWUYAiABKA4yGi5nb29nbGUucHJvdG9idWYuTnVsbFZhbHVlSABCBwoFdmFsdWUi9wIKGUJyb3dzZXJIdHRwRmlsZURlc2NyaXB0b3ISDAoEcGF0aBgBIAEoCRILCgN1cmwYAiABKAkSHgoKc2l6ZV9ieXRlcxgDIAEoBFIKc2l6ZV9ieXRlcxJuChBwYXJ0aXRpb25fdmFsdWVzGAQgAygLMkIuYXhvbi5kYXRhYWNjZXNzLnYxLkJyb3dzZXJIdHRwRmlsZURlc2NyaXB0b3IuUGFydGl0aW9uVmFsdWVzRW50cnlSEHBhcnRpdGlvbl92YWx1ZXMSEgoFc3RhdHMYBSABKAlIAIgBARIlCgtvYmplY3RfZXRhZxgGIAEoCUgBUgtvYmplY3RfZXRhZ4gBARpaChRQYXJ0aXRpb25WYWx1ZXNFbnRyeRILCgNrZXkYASABKAkSMQoFdmFsdWUYAiABKAsyIi5heG9uLmRhdGFhY2Nlc3MudjEuUGFydGl0aW9uVmFsdWU6AjgBQggKBl9zdGF0c0IOCgxfb2JqZWN0X2V0YWci+gQKHUJyb3dzZXJIdHRwU25hcHNob3REZXNjcmlwdG9yEhwKCXRhYmxlX3VyaRgBIAEoCVIJdGFibGVfdXJpEi8KEHNuYXBzaG90X3ZlcnNpb24YAiABKANIAFIQc25hcHNob3RfdmVyc2lvbogBARKDAQoWcGFydGl0aW9uX2NvbHVtbl90eXBlcxgDIAMoCzJLLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cFNuYXBzaG90RGVzY3JpcHRvci5QYXJ0aXRpb25Db2x1bW5UeXBlc0VudHJ5UhZwYXJ0aXRpb25fY29sdW1uX3R5cGVzEloKFWJyb3dzZXJfY29tcGF0aWJpbGl0eRgEIAEoCzIkLmF4b24uZGF0YWFjY2Vzcy52MS5DYXBhYmlsaXR5UmVwb3J0UhVicm93c2VyX2NvbXBhdGliaWxpdHkSWgoVcmVxdWlyZWRfY2FwYWJpbGl0aWVzGAUgASgLMiQuYXhvbi5kYXRhYWNjZXNzLnYxLkNhcGFiaWxpdHlSZXBvcnRSFXJlcXVpcmVkX2NhcGFiaWxpdGllcxJRCgxhY3RpdmVfZmlsZXMYBiADKAsyLS5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3Nlckh0dHBGaWxlRGVzY3JpcHRvclIMYWN0aXZlX2ZpbGVzGmQKGVBhcnRpdGlvbkNvbHVtblR5cGVzRW50cnkSCwoDa2V5GAEgASgJEjYKBXZhbHVlGAIgASgOMicuYXhvbi5kYXRhYWNjZXNzLnYxLlBhcnRpdGlvbkNvbHVtblR5cGU6AjgBQhMKEV9zbmFwc2hvdF92ZXJzaW9uIqsECiNCcm93c2VySHR0cFBhcnF1ZXREYXRhc2V0RGVzY3JpcHRvchIcCgl0YWJsZV91cmkYASABKAlSCXRhYmxlX3VyaRKJAQoWcGFydGl0aW9uX2NvbHVtbl90eXBlcxgCIAMoCzJRLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cFBhcnF1ZXREYXRhc2V0RGVzY3JpcHRvci5QYXJ0aXRpb25Db2x1bW5UeXBlc0VudHJ5UhZwYXJ0aXRpb25fY29sdW1uX3R5cGVzEloKFWJyb3dzZXJfY29tcGF0aWJpbGl0eRgDIAEoCzIkLmF4b24uZGF0YWFjY2Vzcy52MS5DYXBhYmlsaXR5UmVwb3J0UhVicm93c2VyX2NvbXBhdGliaWxpdHkSWgoVcmVxdWlyZWRfY2FwYWJpbGl0aWVzGAQgASgLMiQuYXhvbi5kYXRhYWNjZXNzLnYxLkNhcGFiaWxpdHlSZXBvcnRSFXJlcXVpcmVkX2NhcGFiaWxpdGllcxI8CgVmaWxlcxgFIAMoCzItLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cEZpbGVEZXNjcmlwdG9yGmQKGVBhcnRpdGlvbkNvbHVtblR5cGVzRW50cnkSCwoDa2V5GAEgASgJEjYKBXZhbHVlGAIgASgOMicuYXhvbi5kYXRhYWNjZXNzLnYxLlBhcnRpdGlvbkNvbHVtblR5cGU6AjgBItEBChVCcm93c2VyUmVhZERlc2NyaXB0b3ISRQoIc25hcHNob3QYASABKAsyMS5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3Nlckh0dHBTbmFwc2hvdERlc2NyaXB0b3JIABJjCg9wYXJxdWV0X2RhdGFzZXQYAiABKAsyNy5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3Nlckh0dHBQYXJxdWV0RGF0YXNldERlc2NyaXB0b3JIAFIPcGFycXVldF9kYXRhc2V0QgwKCmRlc2NyaXB0b3IiQgoUUmVzb2x1dGlvblByb3ZlbmFuY2USEwoLcmVzb2x2ZXJfaWQYASABKAkSFQoNcmVzb2x1dGlvbl9pZBgCIAEoCSLPAgoTUmVzb2x2ZWRCcm93c2VyUmVhZBI2CghyZXNvdXJjZRgBIAEoCzIkLmF4b24uY29tbW9uLnYxLkNhbm9uaWNhbFJlc291cmNlUmVmEj0KCmRlc2NyaXB0b3IYAiABKAsyKS5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3NlclJlYWREZXNjcmlwdG9yEjwKDGFjY2Vzc19jbGFzcxgDIAEoDjImLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VyQWNjZXNzQ2xhc3MSLQoJbm90X2FmdGVyGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIWCg5jb3JyZWxhdGlvbl9pZBgFIAEoCRI8Cgpwcm92ZW5hbmNlGAYgASgLMiguYXhvbi5kYXRhYWNjZXNzLnYxLlJlc29sdXRpb25Qcm92ZW5hbmNlIq4BCg5SZW1vdGVSZXF1aXJlZBI2CghyZXNvdXJjZRgBIAEoCzIkLmF4b24uY29tbW9uLnYxLkNhbm9uaWNhbFJlc291cmNlUmVmEhkKEWVuZm9yY2VtZW50X293bmVyGAIgASgJEjgKBnJlYXNvbhgDIAEoDjIoLmF4b24uZGF0YWFjY2Vzcy52MS5SZWFkUmVzb2x1dGlvblJlYXNvbhIPCgdtZXNzYWdlGAQgASgJIo8BCgpSZWFkRGVuaWVkEjYKCHJlc291cmNlGAEgASgLMiQuYXhvbi5jb21tb24udjEuQ2Fub25pY2FsUmVzb3VyY2VSZWYSOAoGcmVhc29uGAIgASgOMiguYXhvbi5kYXRhYWNjZXNzLnYxLlJlYWRSZXNvbHV0aW9uUmVhc29uEg8KB21lc3NhZ2UYAyABKAki/QEKDlJlYWRSZXNvbHV0aW9uEj8KDGJyb3dzZXJfcmVhZBgBIAEoCzInLmF4b24uZGF0YWFjY2Vzcy52MS5SZXNvbHZlZEJyb3dzZXJSZWFkSAASPQoPcmVtb3RlX3JlcXVpcmVkGAIgASgLMiIuYXhvbi5kYXRhYWNjZXNzLnYxLlJlbW90ZVJlcXVpcmVkSAASMAoGZGVuaWVkGAMgASgLMh4uYXhvbi5kYXRhYWNjZXNzLnYxLlJlYWREZW5pZWRIABIuCgVlcnJvchgEIAEoCzIdLmF4b24uY29tbW9uLnYxLlByb3ZpZGVyRXJyb3JIAEIJCgdvdXRjb21lInsKFEJyb2tlcmVkT2JqZWN0QWNjZXNzEgwKBGxpc3QYASABKAgSDAoEaGVhZBgCIAEoCBILCgNnZXQYAyABKAgSEQoJcmFuZ2VfZ2V0GAQgASgIEhIKCmJhdGNoX3NpZ24YBSABKAgSEwoLcHJveHlfcmFuZ2UYBiABKAgirwEKF0Jyb2tlcmVkUG9saWN5QXV0aG9yaXR5EjoKCWF1dGhvcml0eRgBIAEoDjInLmF4b24uZGF0YWFjY2Vzcy52MS5Qb2xpY3lBdXRob3JpdHlLaW5kElgKG2RpcmVjdF9leHRlcm5hbF9lbmdpbmVfcmVhZBgCIAEoDjIzLmF4b24uZGF0YWFjY2Vzcy52MS5EaXJlY3RFeHRlcm5hbEVuZ2luZVJlYWRTdXBwb3J0ItUCChtCcm9rZXJlZERlbHRhUmVhZEFjY2Vzc1BsYW4SEAoIdGFibGVfaWQYASABKAkSEQoJZnVsbF9uYW1lGAIgASgJEhIKCnRhYmxlX3Jvb3QYAyABKAkSEAoIZ3JhbnRfaWQYBCABKAkSGwoTZXhwaXJlc19hdF9lcG9jaF9tcxgFIAEoBBJGChFkZWx0YV9hY2Nlc3NfbW9kZRgGIAEoDjIrLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm9rZXJlZERlbHRhQWNjZXNzTW9kZRJFChBwb2xpY3lfYXV0aG9yaXR5GAcgASgLMisuYXhvbi5kYXRhYWNjZXNzLnYxLkJyb2tlcmVkUG9saWN5QXV0aG9yaXR5Ej8KDW9iamVjdF9hY2Nlc3MYCCABKAsyKC5heG9uLmRhdGFhY2Nlc3MudjEuQnJva2VyZWRPYmplY3RBY2Nlc3MitgEKGkRlbHRhU2hhcmluZ1JlYWRBY2Nlc3NQbGFuEhAKCHRhYmxlX2lkGAEgASgJEhEKCWZ1bGxfbmFtZRgCIAEoCRIYChBzaGFyaW5nX2VuZHBvaW50GAMgASgJEhsKE2V4cGlyZXNfYXRfZXBvY2hfbXMYBCABKAQSPAoFZmlsZXMYBSADKAsyLS5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3Nlckh0dHBGaWxlRGVzY3JpcHRvciLLAQohU3FsRmFsbGJhY2tSZXF1aXJlZFJlYWRBY2Nlc3NQbGFuEhAKCHRhYmxlX2lkGAEgASgJEhEKCWZ1bGxfbmFtZRgCIAEoCRI4CgZyZWFzb24YAyABKA4yKC5heG9uLmRhdGFhY2Nlc3MudjEuUmVhZEFjY2Vzc1BsYW5SZWFzb24SDwoHbWVzc2FnZRgEIAEoCRIaChJzdGF0ZW1lbnRfZW5kcG9pbnQYBSABKAkSGgoSd2FyZWhvdXNlX3JlcXVpcmVkGAYgASgIIocBChVCbG9ja2VkUmVhZEFjY2Vzc1BsYW4SEAoIdGFibGVfaWQYASABKAkSEQoJZnVsbF9uYW1lGAIgASgJEjgKBnJlYXNvbhgDIAEoDjIoLmF4b24uZGF0YWFjY2Vzcy52MS5SZWFkQWNjZXNzUGxhblJlYXNvbhIPCgdtZXNzYWdlGAQgASgJIsICCg5SZWFkQWNjZXNzUGxhbhJJCg5icm9rZXJlZF9kZWx0YRgBIAEoCzIvLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm9rZXJlZERlbHRhUmVhZEFjY2Vzc1BsYW5IABJHCg1kZWx0YV9zaGFyaW5nGAIgASgLMi4uYXhvbi5kYXRhYWNjZXNzLnYxLkRlbHRhU2hhcmluZ1JlYWRBY2Nlc3NQbGFuSAASVgoVc3FsX2ZhbGxiYWNrX3JlcXVpcmVkGAMgASgLMjUuYXhvbi5kYXRhYWNjZXNzLnYxLlNxbEZhbGxiYWNrUmVxdWlyZWRSZWFkQWNjZXNzUGxhbkgAEjwKB2Jsb2NrZWQYBCABKAsyKS5heG9uLmRhdGFhY2Nlc3MudjEuQmxvY2tlZFJlYWRBY2Nlc3NQbGFuSABCBgoEcGxhbiLjAgoTVGFibGVSZWFkUmVzb2x1dGlvbhIsCgl0YWJsZV9yZWYYASABKAsyGS5heG9uLmNvbW1vbi52MS5PYmplY3RSZWYSRwoKZGVzY3JpcHRvchgCIAEoCzIxLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cFNuYXBzaG90RGVzY3JpcHRvckgAEj4KEHJlYWRfYWNjZXNzX3BsYW4YAyABKAsyIi5heG9uLmRhdGFhY2Nlc3MudjEuUmVhZEFjY2Vzc1BsYW5IABJJCghmYWxsYmFjaxgEIAEoCzI1LmF4b24uZGF0YWFjY2Vzcy52MS5TcWxGYWxsYmFja1JlcXVpcmVkUmVhZEFjY2Vzc1BsYW5IABI8CgdibG9ja2VkGAUgASgLMikuYXhvbi5kYXRhYWNjZXNzLnYxLkJsb2NrZWRSZWFkQWNjZXNzUGxhbkgAQgwKCnJlc29sdXRpb24iKAoWT2JqZWN0R3JhbnRMaXN0UmVxdWVzdBIOCgZwcmVmaXgYASABKAkiUQoXT2JqZWN0R3JhbnRMaXN0UmVzcG9uc2USNgoHb2JqZWN0cxgBIAMoCzIlLmF4b24uZGF0YWFjY2Vzcy52MS5PYmplY3RHcmFudE9iamVjdCImChZPYmplY3RHcmFudEhlYWRSZXF1ZXN0EgwKBHBhdGgYASABKAkiVwoXT2JqZWN0R3JhbnRIZWFkUmVzcG9uc2USDAoEcGF0aBgBIAEoCRISCgpzaXplX2J5dGVzGAIgASgEEhEKBGV0YWcYAyABKAlIAIgBAUIHCgVfZXRhZyJRChFPYmplY3RHcmFudE9iamVjdBIMCgRwYXRoGAEgASgJEhIKCnNpemVfYnl0ZXMYAiABKAQSEQoEZXRhZxgDIAEoCUgAiAEBQgcKBV9ldGFnIiwKG09iamVjdEdyYW50QmF0Y2hTaWduUmVxdWVzdBINCgVwYXRocxgBIAMoCSJdChxPYmplY3RHcmFudEJhdGNoU2lnblJlc3BvbnNlEj0KC3NpZ25lZF91cmxzGAEgAygLMiguYXhvbi5kYXRhYWNjZXNzLnYxLk9iamVjdEdyYW50U2lnbmVkVXJsIk4KFE9iamVjdEdyYW50U2lnbmVkVXJsEgwKBHBhdGgYASABKAkSCwoDdXJsGAIgASgJEhsKE2V4cGlyZXNfYXRfZXBvY2hfbXMYAyABKAQiXwoXT2JqZWN0R3JhbnRSYW5nZVJlcXVlc3QSDAoEcGF0aBgBIAEoCRISCgVzdGFydBgCIAEoBEgAiAEBEhAKA2VuZBgDIAEoBEgBiAEBQggKBl9zdGFydEIGCgRfZW5kIoYBChhPYmplY3RHcmFudFJhbmdlUmVzcG9uc2USDAoEZGF0YRgBIAEoDBIaCg1jb250ZW50X3JhbmdlGAIgASgJSACIAQESEQoEZXRhZxgDIAEoCUgBiAEBEhIKCnNpemVfYnl0ZXMYBCABKARCEAoOX2NvbnRlbnRfcmFuZ2VCBwoFX2V0YWciTwoVT2JqZWN0R3JhbnRBdWRpdFJhbmdlEhIKBXN0YXJ0GAEgASgESACIAQESEAoDZW5kGAIgASgESAGIAQFCCAoGX3N0YXJ0QgYKBF9lbmQi5AMKFU9iamVjdEdyYW50QXVkaXRFdmVudBIQCghldmVudF9pZBgBIAEoCRISCgpldmVudF90eXBlGAIgASgJEhwKFG9jY3VycmVkX2F0X2Vwb2NoX21zGAMgASgEEhEKCXRlbmFudF9pZBgEIAEoCRIUCgx3b3Jrc3BhY2VfaWQYBSABKAkSFAoMdXNlcl9zdWJqZWN0GAYgASgJEhAKCHRhYmxlX2lkGAcgASgJEhEKCWZ1bGxfbmFtZRgIIAEoCRIQCghncmFudF9pZBgJIAEoCRIUCgxleGVjdXRpb25faWQYCiABKAkSFgoOY29ycmVsYXRpb25faWQYDCABKAkSOgoGYWN0aW9uGA0gASgOMiouYXhvbi5kYXRhYWNjZXNzLnYxLk9iamVjdEdyYW50QXVkaXRBY3Rpb24SEwoLb2JqZWN0X3BhdGgYDiABKAkSOAoFcmFuZ2UYDyABKAsyKS5heG9uLmRhdGFhY2Nlc3MudjEuT2JqZWN0R3JhbnRBdWRpdFJhbmdlEjwKB291dGNvbWUYECABKA4yKy5heG9uLmRhdGFhY2Nlc3MudjEuT2JqZWN0R3JhbnRBdWRpdE91dGNvbWVKBAgLEAxSCHF1ZXJ5X2lkUgpyZXF1ZXN0X2lkKqEDCg1DYXBhYmlsaXR5S2V5Eh4KGkNBUEFCSUxJVFlfS0VZX1VOU1BFQ0lGSUVEEAASIwofQ0FQQUJJTElUWV9LRVlfQ0hBTkdFX0RBVEFfRkVFRBABEiEKHUNBUEFCSUxJVFlfS0VZX0NPTFVNTl9NQVBQSU5HEAISIwofQ0FQQUJJTElUWV9LRVlfREVMRVRJT05fVkVDVE9SUxADEiwKKENBUEFCSUxJVFlfS0VZX01VTFRJX1BBUlRJVElPTl9FWEVDVVRJT04QBBIfChtDQVBBQklMSVRZX0tFWV9QUk9YWV9BQ0NFU1MQBRIeChpDQVBBQklMSVRZX0tFWV9SQU5HRV9SRUFEUxAGEiQKIENBUEFCSUxJVFlfS0VZX1NJR05FRF9VUkxfQUNDRVNTEAcSHgoaQ0FQQUJJTElUWV9LRVlfVElNRV9UUkFWRUwQCBIgChxDQVBBQklMSVRZX0tFWV9USU1FU1RBTVBfTlRaEAkSLAooQ0FQQUJJTElUWV9LRVlfVU5LTk9XTl9QUk9UT0NPTF9GRUFUVVJFUxAKKroBCg9DYXBhYmlsaXR5U3RhdGUSIAocQ0FQQUJJTElUWV9TVEFURV9VTlNQRUNJRklFRBAAEh4KGkNBUEFCSUxJVFlfU1RBVEVfU1VQUE9SVEVEEAESIAocQ0FQQUJJTElUWV9TVEFURV9OQVRJVkVfT05MWRACEiAKHENBUEFCSUxJVFlfU1RBVEVfVU5TVVBQT1JURUQQAxIhCh1DQVBBQklMSVRZX1NUQVRFX0VYUEVSSU1FTlRBTBAEKs8BChJCcm93c2VyQWNjZXNzQ2xhc3MSJAogQlJPV1NFUl9BQ0NFU1NfQ0xBU1NfVU5TUEVDSUZJRUQQABIfChtCUk9XU0VSX0FDQ0VTU19DTEFTU19QVUJMSUMQARIlCiFCUk9XU0VSX0FDQ0VTU19DTEFTU19MT0NBTF9IQU5ETEUQAhIjCh9CUk9XU0VSX0FDQ0VTU19DTEFTU19TSUdORURfVVJMEAMSJgoiQlJPV1NFUl9BQ0NFU1NfQ0xBU1NfU0VTU0lPTl9QUk9YWRAEKtoCChRSZWFkUmVzb2x1dGlvblJlYXNvbhImCiJSRUFEX1JFU09MVVRJT05fUkVBU09OX1VOU1BFQ0lGSUVEEAASNgoyUkVBRF9SRVNPTFVUSU9OX1JFQVNPTl9QT0xJQ1lfRU5GT1JDRU1FTlRfUkVRVUlSRUQQARIuCipSRUFEX1JFU09MVVRJT05fUkVBU09OX0JST1dTRVJfVU5TVVBQT1JURUQQAhIoCiRSRUFEX1JFU09MVVRJT05fUkVBU09OX0FDQ0VTU19ERU5JRUQQAxIrCidSRUFEX1JFU09MVVRJT05fUkVBU09OX1NFU1NJT05fUkVRVUlSRUQQBBItCilSRUFEX1JFU09MVVRJT05fUkVBU09OX0VYUElSRURfQ0FQQUJJTElUWRAFEiwKKFJFQURfUkVTT0xVVElPTl9SRUFTT05fVU5TQUZFX0RFU0NSSVBUT1IQBirJAQoTUGFydGl0aW9uQ29sdW1uVHlwZRIlCiFQQVJUSVRJT05fQ09MVU1OX1RZUEVfVU5TUEVDSUZJRUQQABIgChxQQVJUSVRJT05fQ09MVU1OX1RZUEVfU1RSSU5HEAESHwobUEFSVElUSU9OX0NPTFVNTl9UWVBFX0lOVDY0EAISIQodUEFSVElUSU9OX0NPTFVNTl9UWVBFX0JPT0xFQU4QAxIlCiFQQVJUSVRJT05fQ09MVU1OX1RZUEVfVU5TVVBQT1JURUQQBCrpAwoUUmVhZEFjY2Vzc1BsYW5SZWFzb24SJwojUkVBRF9BQ0NFU1NfUExBTl9SRUFTT05fVU5TUEVDSUZJRUQQABImCiJSRUFEX0FDQ0VTU19QTEFOX1JFQVNPTl9ST1dfRklMVEVSEAESJwojUkVBRF9BQ0NFU1NfUExBTl9SRUFTT05fQ09MVU1OX01BU0sQAhIgChxSRUFEX0FDQ0VTU19QTEFOX1JFQVNPTl9WSUVXEAMSMAosUkVBRF9BQ0NFU1NfUExBTl9SRUFTT05fVU5LTk9XTl9QT0xJQ1lfU1RBVEUQBBJCCj5SRUFEX0FDQ0VTU19QTEFOX1JFQVNPTl9OT19ESVJFQ1RfRVhURVJOQUxfRU5HSU5FX1JFQURfU1VQUE9SVBAFEjIKLlJFQURfQUNDRVNTX1BMQU5fUkVBU09OX1VOU1VQUE9SVEVEX1RBQkxFX1RZUEUQBhIpCiVSRUFEX0FDQ0VTU19QTEFOX1JFQVNPTl9HUkFOVF9FWFBJUkVEEAcSMAosUkVBRF9BQ0NFU1NfUExBTl9SRUFTT05fU1RPUkFHRV9DT1JTX0JMT0NLRUQQCBIuCipSRUFEX0FDQ0VTU19QTEFOX1JFQVNPTl9CUk9LRVJfVU5BVkFJTEFCTEUQCSqfAQoXQnJva2VyZWREZWx0YUFjY2Vzc01vZGUSKgomQlJPS0VSRURfREVMVEFfQUNDRVNTX01PREVfVU5TUEVDSUZJRUQQABIoCiRCUk9LRVJFRF9ERUxUQV9BQ0NFU1NfTU9ERV9ERUxUQV9MT0cQARIuCipCUk9LRVJFRF9ERUxUQV9BQ0NFU1NfTU9ERV9QUkVTSUdORURfRklMRVMQAiq1AQoTUG9saWN5QXV0aG9yaXR5S2luZBIlCiFQT0xJQ1lfQVVUSE9SSVRZX0tJTkRfVU5TUEVDSUZJRUQQABInCiNQT0xJQ1lfQVVUSE9SSVRZX0tJTkRfVU5JVFlfQ0FUQUxPRxABEicKI1BPTElDWV9BVVRIT1JJVFlfS0lORF9ERUxUQV9TSEFSSU5HEAISJQohUE9MSUNZX0FVVEhPUklUWV9LSU5EX01PQ0tfQlJPS0VSEAMqwAEKH0RpcmVjdEV4dGVybmFsRW5naW5lUmVhZFN1cHBvcnQSMwovRElSRUNUX0VYVEVSTkFMX0VOR0lORV9SRUFEX1NVUFBPUlRfVU5TUEVDSUZJRUQQABIxCi1ESVJFQ1RfRVhURVJOQUxfRU5HSU5FX1JFQURfU1VQUE9SVF9DT05GSVJNRUQQARI1CjFESVJFQ1RfRVhURVJOQUxfRU5HSU5FX1JFQURfU1VQUE9SVF9OT1RfQ09ORklSTUVEEAIq2gEKFk9iamVjdEdyYW50QXVkaXRBY3Rpb24SKQolT0JKRUNUX0dSQU5UX0FVRElUX0FDVElPTl9VTlNQRUNJRklFRBAAEiIKHk9CSkVDVF9HUkFOVF9BVURJVF9BQ1RJT05fTElTVBABEiIKHk9CSkVDVF9HUkFOVF9BVURJVF9BQ1RJT05fSEVBRBACEigKJE9CSkVDVF9HUkFOVF9BVURJVF9BQ1RJT05fQkFUQ0hfU0lHThADEiMKH09CSkVDVF9HUkFOVF9BVURJVF9BQ1RJT05fUkFOR0UQBCqUAQoXT2JqZWN0R3JhbnRBdWRpdE91dGNvbWUSKgomT0JKRUNUX0dSQU5UX0FVRElUX09VVENPTUVfVU5TUEVDSUZJRUQQABImCiJPQkpFQ1RfR1JBTlRfQVVESVRfT1VUQ09NRV9BTExPV0VEEAESJQohT0JKRUNUX0dSQU5UX0FVRElUX09VVENPTUVfREVOSUVEEAJiBnByb3RvMw", [file_axon_common_v1_common, file_google_protobuf_struct, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message axon.dataaccess.v1.CapabilityReport
  */
 export type CapabilityReport = Message<"axon.dataaccess.v1.CapabilityReport"> & {
   /**
-   * @generated from field: map<string, axon.dataaccess.v1.CapabilityState> capabilities = 1;
+   * @generated from field: repeated axon.dataaccess.v1.CapabilityEntry capabilities = 1;
    */
-  capabilities: { [key: string]: CapabilityState };
+  capabilities: CapabilityEntry[];
 };
 
 /**
@@ -32,6 +32,28 @@ export type CapabilityReport = Message<"axon.dataaccess.v1.CapabilityReport"> & 
  */
 export const CapabilityReportSchema: GenMessage<CapabilityReport> = /*@__PURE__*/
   messageDesc(file_axon_dataaccess_v1_dataaccess, 0);
+
+/**
+ * @generated from message axon.dataaccess.v1.CapabilityEntry
+ */
+export type CapabilityEntry = Message<"axon.dataaccess.v1.CapabilityEntry"> & {
+  /**
+   * @generated from field: axon.dataaccess.v1.CapabilityKey key = 1;
+   */
+  key: CapabilityKey;
+
+  /**
+   * @generated from field: axon.dataaccess.v1.CapabilityState state = 2;
+   */
+  state: CapabilityState;
+};
+
+/**
+ * Describes the message axon.dataaccess.v1.CapabilityEntry.
+ * Use `create(CapabilityEntrySchema)` to create a new message.
+ */
+export const CapabilityEntrySchema: GenMessage<CapabilityEntry> = /*@__PURE__*/
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 1);
 
 /**
  * @generated from message axon.dataaccess.v1.PartitionValue
@@ -60,7 +82,7 @@ export type PartitionValue = Message<"axon.dataaccess.v1.PartitionValue"> & {
  * Use `create(PartitionValueSchema)` to create a new message.
  */
 export const PartitionValueSchema: GenMessage<PartitionValue> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 1);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 2);
 
 /**
  * @generated from message axon.dataaccess.v1.BrowserHttpFileDescriptor
@@ -102,7 +124,7 @@ export type BrowserHttpFileDescriptor = Message<"axon.dataaccess.v1.BrowserHttpF
  * Use `create(BrowserHttpFileDescriptorSchema)` to create a new message.
  */
 export const BrowserHttpFileDescriptorSchema: GenMessage<BrowserHttpFileDescriptor> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 2);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 3);
 
 /**
  * @generated from message axon.dataaccess.v1.BrowserHttpSnapshotDescriptor
@@ -144,7 +166,7 @@ export type BrowserHttpSnapshotDescriptor = Message<"axon.dataaccess.v1.BrowserH
  * Use `create(BrowserHttpSnapshotDescriptorSchema)` to create a new message.
  */
 export const BrowserHttpSnapshotDescriptorSchema: GenMessage<BrowserHttpSnapshotDescriptor> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 3);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 4);
 
 /**
  * Carries a directly openable Parquet dataset and its browser capability reports.
@@ -183,7 +205,200 @@ export type BrowserHttpParquetDatasetDescriptor = Message<"axon.dataaccess.v1.Br
  * Use `create(BrowserHttpParquetDatasetDescriptorSchema)` to create a new message.
  */
 export const BrowserHttpParquetDatasetDescriptorSchema: GenMessage<BrowserHttpParquetDatasetDescriptor> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 4);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 5);
+
+/**
+ * @generated from message axon.dataaccess.v1.BrowserReadDescriptor
+ */
+export type BrowserReadDescriptor = Message<"axon.dataaccess.v1.BrowserReadDescriptor"> & {
+  /**
+   * @generated from oneof axon.dataaccess.v1.BrowserReadDescriptor.descriptor
+   */
+  descriptor: {
+    /**
+     * @generated from field: axon.dataaccess.v1.BrowserHttpSnapshotDescriptor snapshot = 1;
+     */
+    value: BrowserHttpSnapshotDescriptor;
+    case: "snapshot";
+  } | {
+    /**
+     * @generated from field: axon.dataaccess.v1.BrowserHttpParquetDatasetDescriptor parquet_dataset = 2 [json_name = "parquet_dataset"];
+     */
+    value: BrowserHttpParquetDatasetDescriptor;
+    case: "parquetDataset";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message axon.dataaccess.v1.BrowserReadDescriptor.
+ * Use `create(BrowserReadDescriptorSchema)` to create a new message.
+ */
+export const BrowserReadDescriptorSchema: GenMessage<BrowserReadDescriptor> = /*@__PURE__*/
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 6);
+
+/**
+ * @generated from message axon.dataaccess.v1.ResolutionProvenance
+ */
+export type ResolutionProvenance = Message<"axon.dataaccess.v1.ResolutionProvenance"> & {
+  /**
+   * @generated from field: string resolver_id = 1;
+   */
+  resolverId: string;
+
+  /**
+   * @generated from field: string resolution_id = 2;
+   */
+  resolutionId: string;
+};
+
+/**
+ * Describes the message axon.dataaccess.v1.ResolutionProvenance.
+ * Use `create(ResolutionProvenanceSchema)` to create a new message.
+ */
+export const ResolutionProvenanceSchema: GenMessage<ResolutionProvenance> = /*@__PURE__*/
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 7);
+
+/**
+ * @generated from message axon.dataaccess.v1.ResolvedBrowserRead
+ */
+export type ResolvedBrowserRead = Message<"axon.dataaccess.v1.ResolvedBrowserRead"> & {
+  /**
+   * @generated from field: axon.common.v1.CanonicalResourceRef resource = 1;
+   */
+  resource?: CanonicalResourceRef | undefined;
+
+  /**
+   * @generated from field: axon.dataaccess.v1.BrowserReadDescriptor descriptor = 2;
+   */
+  descriptor?: BrowserReadDescriptor | undefined;
+
+  /**
+   * @generated from field: axon.dataaccess.v1.BrowserAccessClass access_class = 3;
+   */
+  accessClass: BrowserAccessClass;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp not_after = 4;
+   */
+  notAfter?: Timestamp | undefined;
+
+  /**
+   * @generated from field: string correlation_id = 5;
+   */
+  correlationId: string;
+
+  /**
+   * @generated from field: axon.dataaccess.v1.ResolutionProvenance provenance = 6;
+   */
+  provenance?: ResolutionProvenance | undefined;
+};
+
+/**
+ * Describes the message axon.dataaccess.v1.ResolvedBrowserRead.
+ * Use `create(ResolvedBrowserReadSchema)` to create a new message.
+ */
+export const ResolvedBrowserReadSchema: GenMessage<ResolvedBrowserRead> = /*@__PURE__*/
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 8);
+
+/**
+ * @generated from message axon.dataaccess.v1.RemoteRequired
+ */
+export type RemoteRequired = Message<"axon.dataaccess.v1.RemoteRequired"> & {
+  /**
+   * @generated from field: axon.common.v1.CanonicalResourceRef resource = 1;
+   */
+  resource?: CanonicalResourceRef | undefined;
+
+  /**
+   * @generated from field: string enforcement_owner = 2;
+   */
+  enforcementOwner: string;
+
+  /**
+   * @generated from field: axon.dataaccess.v1.ReadResolutionReason reason = 3;
+   */
+  reason: ReadResolutionReason;
+
+  /**
+   * @generated from field: string message = 4;
+   */
+  message: string;
+};
+
+/**
+ * Describes the message axon.dataaccess.v1.RemoteRequired.
+ * Use `create(RemoteRequiredSchema)` to create a new message.
+ */
+export const RemoteRequiredSchema: GenMessage<RemoteRequired> = /*@__PURE__*/
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 9);
+
+/**
+ * @generated from message axon.dataaccess.v1.ReadDenied
+ */
+export type ReadDenied = Message<"axon.dataaccess.v1.ReadDenied"> & {
+  /**
+   * @generated from field: axon.common.v1.CanonicalResourceRef resource = 1;
+   */
+  resource?: CanonicalResourceRef | undefined;
+
+  /**
+   * @generated from field: axon.dataaccess.v1.ReadResolutionReason reason = 2;
+   */
+  reason: ReadResolutionReason;
+
+  /**
+   * @generated from field: string message = 3;
+   */
+  message: string;
+};
+
+/**
+ * Describes the message axon.dataaccess.v1.ReadDenied.
+ * Use `create(ReadDeniedSchema)` to create a new message.
+ */
+export const ReadDeniedSchema: GenMessage<ReadDenied> = /*@__PURE__*/
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 10);
+
+/**
+ * @generated from message axon.dataaccess.v1.ReadResolution
+ */
+export type ReadResolution = Message<"axon.dataaccess.v1.ReadResolution"> & {
+  /**
+   * @generated from oneof axon.dataaccess.v1.ReadResolution.outcome
+   */
+  outcome: {
+    /**
+     * @generated from field: axon.dataaccess.v1.ResolvedBrowserRead browser_read = 1;
+     */
+    value: ResolvedBrowserRead;
+    case: "browserRead";
+  } | {
+    /**
+     * @generated from field: axon.dataaccess.v1.RemoteRequired remote_required = 2;
+     */
+    value: RemoteRequired;
+    case: "remoteRequired";
+  } | {
+    /**
+     * @generated from field: axon.dataaccess.v1.ReadDenied denied = 3;
+     */
+    value: ReadDenied;
+    case: "denied";
+  } | {
+    /**
+     * @generated from field: axon.common.v1.ProviderError error = 4;
+     */
+    value: ProviderError;
+    case: "error";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message axon.dataaccess.v1.ReadResolution.
+ * Use `create(ReadResolutionSchema)` to create a new message.
+ */
+export const ReadResolutionSchema: GenMessage<ReadResolution> = /*@__PURE__*/
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 11);
 
 /**
  * @generated from message axon.dataaccess.v1.BrokeredObjectAccess
@@ -225,7 +440,7 @@ export type BrokeredObjectAccess = Message<"axon.dataaccess.v1.BrokeredObjectAcc
  * Use `create(BrokeredObjectAccessSchema)` to create a new message.
  */
 export const BrokeredObjectAccessSchema: GenMessage<BrokeredObjectAccess> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 5);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 12);
 
 /**
  * @generated from message axon.dataaccess.v1.BrokeredPolicyAuthority
@@ -247,7 +462,7 @@ export type BrokeredPolicyAuthority = Message<"axon.dataaccess.v1.BrokeredPolicy
  * Use `create(BrokeredPolicyAuthoritySchema)` to create a new message.
  */
 export const BrokeredPolicyAuthoritySchema: GenMessage<BrokeredPolicyAuthority> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 6);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 13);
 
 /**
  * @generated from message axon.dataaccess.v1.BrokeredDeltaReadAccessPlan
@@ -299,7 +514,7 @@ export type BrokeredDeltaReadAccessPlan = Message<"axon.dataaccess.v1.BrokeredDe
  * Use `create(BrokeredDeltaReadAccessPlanSchema)` to create a new message.
  */
 export const BrokeredDeltaReadAccessPlanSchema: GenMessage<BrokeredDeltaReadAccessPlan> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 7);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 14);
 
 /**
  * @generated from message axon.dataaccess.v1.DeltaSharingReadAccessPlan
@@ -336,7 +551,7 @@ export type DeltaSharingReadAccessPlan = Message<"axon.dataaccess.v1.DeltaSharin
  * Use `create(DeltaSharingReadAccessPlanSchema)` to create a new message.
  */
 export const DeltaSharingReadAccessPlanSchema: GenMessage<DeltaSharingReadAccessPlan> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 8);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 15);
 
 /**
  * @generated from message axon.dataaccess.v1.SqlFallbackRequiredReadAccessPlan
@@ -378,7 +593,7 @@ export type SqlFallbackRequiredReadAccessPlan = Message<"axon.dataaccess.v1.SqlF
  * Use `create(SqlFallbackRequiredReadAccessPlanSchema)` to create a new message.
  */
 export const SqlFallbackRequiredReadAccessPlanSchema: GenMessage<SqlFallbackRequiredReadAccessPlan> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 9);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 16);
 
 /**
  * @generated from message axon.dataaccess.v1.BlockedReadAccessPlan
@@ -410,7 +625,7 @@ export type BlockedReadAccessPlan = Message<"axon.dataaccess.v1.BlockedReadAcces
  * Use `create(BlockedReadAccessPlanSchema)` to create a new message.
  */
 export const BlockedReadAccessPlanSchema: GenMessage<BlockedReadAccessPlan> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 10);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 17);
 
 /**
  * @generated from message axon.dataaccess.v1.ReadAccessPlan
@@ -451,7 +666,7 @@ export type ReadAccessPlan = Message<"axon.dataaccess.v1.ReadAccessPlan"> & {
  * Use `create(ReadAccessPlanSchema)` to create a new message.
  */
 export const ReadAccessPlanSchema: GenMessage<ReadAccessPlan> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 11);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 18);
 
 /**
  * @generated from message axon.dataaccess.v1.TableReadResolution
@@ -497,7 +712,7 @@ export type TableReadResolution = Message<"axon.dataaccess.v1.TableReadResolutio
  * Use `create(TableReadResolutionSchema)` to create a new message.
  */
 export const TableReadResolutionSchema: GenMessage<TableReadResolution> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 12);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 19);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantListRequest
@@ -514,7 +729,7 @@ export type ObjectGrantListRequest = Message<"axon.dataaccess.v1.ObjectGrantList
  * Use `create(ObjectGrantListRequestSchema)` to create a new message.
  */
 export const ObjectGrantListRequestSchema: GenMessage<ObjectGrantListRequest> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 13);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 20);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantListResponse
@@ -531,7 +746,7 @@ export type ObjectGrantListResponse = Message<"axon.dataaccess.v1.ObjectGrantLis
  * Use `create(ObjectGrantListResponseSchema)` to create a new message.
  */
 export const ObjectGrantListResponseSchema: GenMessage<ObjectGrantListResponse> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 14);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 21);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantHeadRequest
@@ -548,7 +763,7 @@ export type ObjectGrantHeadRequest = Message<"axon.dataaccess.v1.ObjectGrantHead
  * Use `create(ObjectGrantHeadRequestSchema)` to create a new message.
  */
 export const ObjectGrantHeadRequestSchema: GenMessage<ObjectGrantHeadRequest> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 15);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 22);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantHeadResponse
@@ -575,7 +790,7 @@ export type ObjectGrantHeadResponse = Message<"axon.dataaccess.v1.ObjectGrantHea
  * Use `create(ObjectGrantHeadResponseSchema)` to create a new message.
  */
 export const ObjectGrantHeadResponseSchema: GenMessage<ObjectGrantHeadResponse> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 16);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 23);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantObject
@@ -602,7 +817,7 @@ export type ObjectGrantObject = Message<"axon.dataaccess.v1.ObjectGrantObject"> 
  * Use `create(ObjectGrantObjectSchema)` to create a new message.
  */
 export const ObjectGrantObjectSchema: GenMessage<ObjectGrantObject> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 17);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 24);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantBatchSignRequest
@@ -619,7 +834,7 @@ export type ObjectGrantBatchSignRequest = Message<"axon.dataaccess.v1.ObjectGran
  * Use `create(ObjectGrantBatchSignRequestSchema)` to create a new message.
  */
 export const ObjectGrantBatchSignRequestSchema: GenMessage<ObjectGrantBatchSignRequest> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 18);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 25);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantBatchSignResponse
@@ -636,7 +851,7 @@ export type ObjectGrantBatchSignResponse = Message<"axon.dataaccess.v1.ObjectGra
  * Use `create(ObjectGrantBatchSignResponseSchema)` to create a new message.
  */
 export const ObjectGrantBatchSignResponseSchema: GenMessage<ObjectGrantBatchSignResponse> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 19);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 26);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantSignedUrl
@@ -663,7 +878,7 @@ export type ObjectGrantSignedUrl = Message<"axon.dataaccess.v1.ObjectGrantSigned
  * Use `create(ObjectGrantSignedUrlSchema)` to create a new message.
  */
 export const ObjectGrantSignedUrlSchema: GenMessage<ObjectGrantSignedUrl> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 20);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 27);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantRangeRequest
@@ -690,7 +905,7 @@ export type ObjectGrantRangeRequest = Message<"axon.dataaccess.v1.ObjectGrantRan
  * Use `create(ObjectGrantRangeRequestSchema)` to create a new message.
  */
 export const ObjectGrantRangeRequestSchema: GenMessage<ObjectGrantRangeRequest> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 21);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 28);
 
 /**
  * Protobuf transports use this envelope for range bytes and metadata. The
@@ -726,7 +941,7 @@ export type ObjectGrantRangeResponse = Message<"axon.dataaccess.v1.ObjectGrantRa
  * Use `create(ObjectGrantRangeResponseSchema)` to create a new message.
  */
 export const ObjectGrantRangeResponseSchema: GenMessage<ObjectGrantRangeResponse> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 22);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 29);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantAuditRange
@@ -748,7 +963,7 @@ export type ObjectGrantAuditRange = Message<"axon.dataaccess.v1.ObjectGrantAudit
  * Use `create(ObjectGrantAuditRangeSchema)` to create a new message.
  */
 export const ObjectGrantAuditRangeSchema: GenMessage<ObjectGrantAuditRange> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 23);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 30);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantAuditEvent
@@ -800,14 +1015,9 @@ export type ObjectGrantAuditEvent = Message<"axon.dataaccess.v1.ObjectGrantAudit
   grantId: string;
 
   /**
-   * @generated from field: string query_id = 10;
+   * @generated from field: string execution_id = 10;
    */
-  queryId: string;
-
-  /**
-   * @generated from field: string request_id = 11;
-   */
-  requestId: string;
+  executionId: string;
 
   /**
    * @generated from field: string correlation_id = 12;
@@ -840,7 +1050,73 @@ export type ObjectGrantAuditEvent = Message<"axon.dataaccess.v1.ObjectGrantAudit
  * Use `create(ObjectGrantAuditEventSchema)` to create a new message.
  */
 export const ObjectGrantAuditEventSchema: GenMessage<ObjectGrantAuditEvent> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 24);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 31);
+
+/**
+ * @generated from enum axon.dataaccess.v1.CapabilityKey
+ */
+export enum CapabilityKey {
+  /**
+   * @generated from enum value: CAPABILITY_KEY_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: CAPABILITY_KEY_CHANGE_DATA_FEED = 1;
+   */
+  CHANGE_DATA_FEED = 1,
+
+  /**
+   * @generated from enum value: CAPABILITY_KEY_COLUMN_MAPPING = 2;
+   */
+  COLUMN_MAPPING = 2,
+
+  /**
+   * @generated from enum value: CAPABILITY_KEY_DELETION_VECTORS = 3;
+   */
+  DELETION_VECTORS = 3,
+
+  /**
+   * @generated from enum value: CAPABILITY_KEY_MULTI_PARTITION_EXECUTION = 4;
+   */
+  MULTI_PARTITION_EXECUTION = 4,
+
+  /**
+   * @generated from enum value: CAPABILITY_KEY_PROXY_ACCESS = 5;
+   */
+  PROXY_ACCESS = 5,
+
+  /**
+   * @generated from enum value: CAPABILITY_KEY_RANGE_READS = 6;
+   */
+  RANGE_READS = 6,
+
+  /**
+   * @generated from enum value: CAPABILITY_KEY_SIGNED_URL_ACCESS = 7;
+   */
+  SIGNED_URL_ACCESS = 7,
+
+  /**
+   * @generated from enum value: CAPABILITY_KEY_TIME_TRAVEL = 8;
+   */
+  TIME_TRAVEL = 8,
+
+  /**
+   * @generated from enum value: CAPABILITY_KEY_TIMESTAMP_NTZ = 9;
+   */
+  TIMESTAMP_NTZ = 9,
+
+  /**
+   * @generated from enum value: CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES = 10;
+   */
+  UNKNOWN_PROTOCOL_FEATURES = 10,
+}
+
+/**
+ * Describes the enum axon.dataaccess.v1.CapabilityKey.
+ */
+export const CapabilityKeySchema: GenEnum<CapabilityKey> = /*@__PURE__*/
+  enumDesc(file_axon_dataaccess_v1_dataaccess, 0);
 
 /**
  * @generated from enum axon.dataaccess.v1.CapabilityState
@@ -876,7 +1152,89 @@ export enum CapabilityState {
  * Describes the enum axon.dataaccess.v1.CapabilityState.
  */
 export const CapabilityStateSchema: GenEnum<CapabilityState> = /*@__PURE__*/
-  enumDesc(file_axon_dataaccess_v1_dataaccess, 0);
+  enumDesc(file_axon_dataaccess_v1_dataaccess, 1);
+
+/**
+ * @generated from enum axon.dataaccess.v1.BrowserAccessClass
+ */
+export enum BrowserAccessClass {
+  /**
+   * @generated from enum value: BROWSER_ACCESS_CLASS_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: BROWSER_ACCESS_CLASS_PUBLIC = 1;
+   */
+  PUBLIC = 1,
+
+  /**
+   * @generated from enum value: BROWSER_ACCESS_CLASS_LOCAL_HANDLE = 2;
+   */
+  LOCAL_HANDLE = 2,
+
+  /**
+   * @generated from enum value: BROWSER_ACCESS_CLASS_SIGNED_URL = 3;
+   */
+  SIGNED_URL = 3,
+
+  /**
+   * @generated from enum value: BROWSER_ACCESS_CLASS_SESSION_PROXY = 4;
+   */
+  SESSION_PROXY = 4,
+}
+
+/**
+ * Describes the enum axon.dataaccess.v1.BrowserAccessClass.
+ */
+export const BrowserAccessClassSchema: GenEnum<BrowserAccessClass> = /*@__PURE__*/
+  enumDesc(file_axon_dataaccess_v1_dataaccess, 2);
+
+/**
+ * @generated from enum axon.dataaccess.v1.ReadResolutionReason
+ */
+export enum ReadResolutionReason {
+  /**
+   * @generated from enum value: READ_RESOLUTION_REASON_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: READ_RESOLUTION_REASON_POLICY_ENFORCEMENT_REQUIRED = 1;
+   */
+  POLICY_ENFORCEMENT_REQUIRED = 1,
+
+  /**
+   * @generated from enum value: READ_RESOLUTION_REASON_BROWSER_UNSUPPORTED = 2;
+   */
+  BROWSER_UNSUPPORTED = 2,
+
+  /**
+   * @generated from enum value: READ_RESOLUTION_REASON_ACCESS_DENIED = 3;
+   */
+  ACCESS_DENIED = 3,
+
+  /**
+   * @generated from enum value: READ_RESOLUTION_REASON_SESSION_REQUIRED = 4;
+   */
+  SESSION_REQUIRED = 4,
+
+  /**
+   * @generated from enum value: READ_RESOLUTION_REASON_EXPIRED_CAPABILITY = 5;
+   */
+  EXPIRED_CAPABILITY = 5,
+
+  /**
+   * @generated from enum value: READ_RESOLUTION_REASON_UNSAFE_DESCRIPTOR = 6;
+   */
+  UNSAFE_DESCRIPTOR = 6,
+}
+
+/**
+ * Describes the enum axon.dataaccess.v1.ReadResolutionReason.
+ */
+export const ReadResolutionReasonSchema: GenEnum<ReadResolutionReason> = /*@__PURE__*/
+  enumDesc(file_axon_dataaccess_v1_dataaccess, 3);
 
 /**
  * @generated from enum axon.dataaccess.v1.PartitionColumnType
@@ -912,7 +1270,7 @@ export enum PartitionColumnType {
  * Describes the enum axon.dataaccess.v1.PartitionColumnType.
  */
 export const PartitionColumnTypeSchema: GenEnum<PartitionColumnType> = /*@__PURE__*/
-  enumDesc(file_axon_dataaccess_v1_dataaccess, 1);
+  enumDesc(file_axon_dataaccess_v1_dataaccess, 4);
 
 /**
  * @generated from enum axon.dataaccess.v1.ReadAccessPlanReason
@@ -973,7 +1331,7 @@ export enum ReadAccessPlanReason {
  * Describes the enum axon.dataaccess.v1.ReadAccessPlanReason.
  */
 export const ReadAccessPlanReasonSchema: GenEnum<ReadAccessPlanReason> = /*@__PURE__*/
-  enumDesc(file_axon_dataaccess_v1_dataaccess, 2);
+  enumDesc(file_axon_dataaccess_v1_dataaccess, 5);
 
 /**
  * @generated from enum axon.dataaccess.v1.BrokeredDeltaAccessMode
@@ -999,7 +1357,7 @@ export enum BrokeredDeltaAccessMode {
  * Describes the enum axon.dataaccess.v1.BrokeredDeltaAccessMode.
  */
 export const BrokeredDeltaAccessModeSchema: GenEnum<BrokeredDeltaAccessMode> = /*@__PURE__*/
-  enumDesc(file_axon_dataaccess_v1_dataaccess, 3);
+  enumDesc(file_axon_dataaccess_v1_dataaccess, 6);
 
 /**
  * @generated from enum axon.dataaccess.v1.PolicyAuthorityKind
@@ -1030,7 +1388,7 @@ export enum PolicyAuthorityKind {
  * Describes the enum axon.dataaccess.v1.PolicyAuthorityKind.
  */
 export const PolicyAuthorityKindSchema: GenEnum<PolicyAuthorityKind> = /*@__PURE__*/
-  enumDesc(file_axon_dataaccess_v1_dataaccess, 4);
+  enumDesc(file_axon_dataaccess_v1_dataaccess, 7);
 
 /**
  * @generated from enum axon.dataaccess.v1.DirectExternalEngineReadSupport
@@ -1056,7 +1414,7 @@ export enum DirectExternalEngineReadSupport {
  * Describes the enum axon.dataaccess.v1.DirectExternalEngineReadSupport.
  */
 export const DirectExternalEngineReadSupportSchema: GenEnum<DirectExternalEngineReadSupport> = /*@__PURE__*/
-  enumDesc(file_axon_dataaccess_v1_dataaccess, 5);
+  enumDesc(file_axon_dataaccess_v1_dataaccess, 8);
 
 /**
  * @generated from enum axon.dataaccess.v1.ObjectGrantAuditAction
@@ -1095,7 +1453,7 @@ export enum ObjectGrantAuditAction {
  * Describes the enum axon.dataaccess.v1.ObjectGrantAuditAction.
  */
 export const ObjectGrantAuditActionSchema: GenEnum<ObjectGrantAuditAction> = /*@__PURE__*/
-  enumDesc(file_axon_dataaccess_v1_dataaccess, 6);
+  enumDesc(file_axon_dataaccess_v1_dataaccess, 9);
 
 /**
  * @generated from enum axon.dataaccess.v1.ObjectGrantAuditOutcome
@@ -1124,4 +1482,4 @@ export enum ObjectGrantAuditOutcome {
  * Describes the enum axon.dataaccess.v1.ObjectGrantAuditOutcome.
  */
 export const ObjectGrantAuditOutcomeSchema: GenEnum<ObjectGrantAuditOutcome> = /*@__PURE__*/
-  enumDesc(file_axon_dataaccess_v1_dataaccess, 7);
+  enumDesc(file_axon_dataaccess_v1_dataaccess, 10);

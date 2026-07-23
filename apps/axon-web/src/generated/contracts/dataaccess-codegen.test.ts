@@ -1,11 +1,26 @@
 import { create, fromJson, toJson, type JsonValue } from '@bufbuild/protobuf';
+import { timestampFromMs } from '@bufbuild/protobuf/wkt';
 import { describe, expect, it } from 'vitest';
 import {
+  CanonicalResourceRefSchema,
+  ProviderErrorCode,
+  ProviderErrorSchema,
+  ResourceKind,
+} from './protobuf/axon/common/v1/common_pb.ts';
+import {
   BlockedReadAccessPlanSchema,
+  BrowserAccessClass,
   BrokeredDeltaAccessMode,
   BrokeredDeltaReadAccessPlanSchema,
   BrokeredObjectAccessSchema,
   BrokeredPolicyAuthoritySchema,
+  BrowserHttpParquetDatasetDescriptorSchema,
+  BrowserHttpSnapshotDescriptorSchema,
+  BrowserReadDescriptorSchema,
+  CapabilityEntrySchema,
+  CapabilityKey,
+  CapabilityReportSchema,
+  CapabilityState,
   BrowserHttpFileDescriptorSchema,
   DirectExternalEngineReadSupport,
   ObjectGrantBatchSignResponseSchema,
@@ -20,10 +35,264 @@ import {
   PartitionValueSchema,
   PolicyAuthorityKind,
   ReadAccessPlanSchema,
+  ReadDeniedSchema,
+  ReadResolutionReason,
+  ReadResolutionSchema,
+  RemoteRequiredSchema,
+  ResolvedBrowserReadSchema,
+  ResolutionProvenanceSchema,
+  type CapabilityReport,
+  type ResolvedBrowserRead,
   ReadAccessPlanReason,
 } from './protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 
 describe('dataaccess contract codegen', () => {
+  it('round-trips all four disjoint read-resolution outcomes', () => {
+    expect(ReadResolutionSchema.oneofs[0]?.fields.map((field) => field.name)).toEqual([
+      'browser_read',
+      'remote_required',
+      'denied',
+      'error',
+    ]);
+    expect(ResolvedBrowserReadSchema.fields.map((field) => field.name)).toEqual([
+      'resource',
+      'descriptor',
+      'access_class',
+      'not_after',
+      'correlation_id',
+      'provenance',
+    ]);
+
+    const resource = create(CanonicalResourceRefSchema, {
+      connectionId: 'connection-public-gcs',
+      providerNamespace: 'axon.public-gcs/v1',
+      kind: ResourceKind.TABLE,
+      identity: {
+        case: 'canonicalLocator',
+        value: 'gs://axon-fixtures/tables/events',
+      },
+    });
+    const descriptor = create(BrowserReadDescriptorSchema, {
+      descriptor: {
+        case: 'snapshot',
+        value: create(BrowserHttpSnapshotDescriptorSchema, {
+          tableUri: 'gs://axon-fixtures/tables/events',
+        }),
+      },
+    });
+    const browserRead = create(ResolvedBrowserReadSchema, {
+      resource,
+      descriptor,
+      accessClass: BrowserAccessClass.PUBLIC,
+      correlationId: 'correlation-001',
+      provenance: create(ResolutionProvenanceSchema, {
+        resolverId: 'public-object-storage',
+        resolutionId: 'resolution-001',
+      }),
+    });
+    const outcomes = [
+      create(ReadResolutionSchema, {
+        outcome: { case: 'browserRead', value: browserRead },
+      }),
+      create(ReadResolutionSchema, {
+        outcome: {
+          case: 'remoteRequired',
+          value: create(RemoteRequiredSchema, {
+            resource,
+            enforcementOwner: 'unity-catalog-host',
+            reason: ReadResolutionReason.POLICY_ENFORCEMENT_REQUIRED,
+            message: 'row filter must be enforced by the host',
+          }),
+        },
+      }),
+      create(ReadResolutionSchema, {
+        outcome: {
+          case: 'denied',
+          value: create(ReadDeniedSchema, {
+            resource,
+            reason: ReadResolutionReason.ACCESS_DENIED,
+            message: 'table access denied',
+          }),
+        },
+      }),
+      create(ReadResolutionSchema, {
+        outcome: {
+          case: 'error',
+          value: create(ProviderErrorSchema, {
+            code: ProviderErrorCode.SESSION_EXPIRED,
+            message: 'session expired',
+            correlationId: 'correlation-001',
+          }),
+        },
+      }),
+    ];
+
+    expect(outcomes.map((resolution) => resolution.outcome.case)).toEqual([
+      'browserRead',
+      'remoteRequired',
+      'denied',
+      'error',
+    ]);
+    for (const resolution of outcomes) {
+      const json = toJson(ReadResolutionSchema, resolution);
+      expect(toJson(ReadResolutionSchema, fromJson(ReadResolutionSchema, json))).toEqual(json);
+    }
+    expect(toJson(ReadResolutionSchema, outcomes[0]!)).toMatchObject({
+      browserRead: {
+        resource: {
+          providerNamespace: 'axon.public-gcs/v1',
+          canonicalLocator: 'gs://axon-fixtures/tables/events',
+        },
+        accessClass: 'BROWSER_ACCESS_CLASS_PUBLIC',
+        correlationId: 'correlation-001',
+        provenance: {
+          resolverId: 'public-object-storage',
+          resolutionId: 'resolution-001',
+        },
+      },
+    });
+  });
+
+  it('uses one directly openable descriptor and typed unique capability entries', () => {
+    expect(BrowserReadDescriptorSchema.oneofs[0]?.fields.map((field) => field.name)).toEqual([
+      'snapshot',
+      'parquet_dataset',
+    ]);
+
+    const report = create(CapabilityReportSchema, {
+      capabilities: [
+        create(CapabilityEntrySchema, {
+          key: CapabilityKey.RANGE_READS,
+          state: CapabilityState.SUPPORTED,
+        }),
+        create(CapabilityEntrySchema, {
+          key: CapabilityKey.DELETION_VECTORS,
+          state: CapabilityState.UNSUPPORTED,
+        }),
+      ],
+    });
+    expect(validatedCapabilityStates(report)).toEqual(
+      new Map([
+        [CapabilityKey.RANGE_READS, CapabilityState.SUPPORTED],
+        [CapabilityKey.DELETION_VECTORS, CapabilityState.UNSUPPORTED],
+      ]),
+    );
+    expect(() =>
+      validatedCapabilityStates(
+        create(CapabilityReportSchema, {
+          capabilities: [
+            create(CapabilityEntrySchema, {
+              key: CapabilityKey.RANGE_READS,
+              state: CapabilityState.SUPPORTED,
+            }),
+            create(CapabilityEntrySchema, {
+              key: CapabilityKey.RANGE_READS,
+              state: CapabilityState.NATIVE_ONLY,
+            }),
+          ],
+        }),
+      ),
+    ).toThrow('duplicate capability key');
+    expect(() =>
+      validatedCapabilityStates(
+        create(CapabilityReportSchema, {
+          capabilities: [
+            create(CapabilityEntrySchema, {
+              state: CapabilityState.SUPPORTED,
+            }),
+          ],
+        }),
+      ),
+    ).toThrow('unspecified capability key');
+    expect(() =>
+      validatedCapabilityStates(
+        create(CapabilityReportSchema, {
+          capabilities: [
+            create(CapabilityEntrySchema, {
+              key: CapabilityKey.RANGE_READS,
+            }),
+          ],
+        }),
+      ),
+    ).toThrow('unspecified capability state');
+
+    const parquet = create(BrowserReadDescriptorSchema, {
+      descriptor: {
+        case: 'parquetDataset',
+        value: create(BrowserHttpParquetDatasetDescriptorSchema, {
+          tableUri: 's3://axon-fixtures/parquet/events',
+          browserCompatibility: report,
+        }),
+      },
+    });
+    expect(parquet.descriptor.case).toBe('parquetDataset');
+  });
+
+  it('requires the earliest finite expiry for capability-bearing browser access', () => {
+    const base = create(ResolvedBrowserReadSchema, {
+      resource: create(CanonicalResourceRefSchema, {
+        connectionId: 'connection-signed',
+        providerNamespace: 'axon.signed-object/v1',
+        kind: ResourceKind.TABLE,
+        identity: { case: 'providerObjectId', value: 'table-123' },
+      }),
+      descriptor: create(BrowserReadDescriptorSchema, {
+        descriptor: {
+          case: 'snapshot',
+          value: create(BrowserHttpSnapshotDescriptorSchema, {
+            tableUri: 'https://signed.example.test/table-123',
+          }),
+        },
+      }),
+      accessClass: BrowserAccessClass.SIGNED_URL,
+      correlationId: 'correlation-002',
+      provenance: create(ResolutionProvenanceSchema, {
+        resolverId: 'signed-object-resolver',
+        resolutionId: 'resolution-002',
+      }),
+    });
+    const nowMs = 1_800_000_000_000;
+
+    expect(() => validateBrowserRead(base, nowMs, [nowMs + 120_000])).toThrow(
+      'capability-bearing browser access requires not_after',
+    );
+    expect(() =>
+      validateBrowserRead(
+        create(ResolvedBrowserReadSchema, {
+          ...base,
+          notAfter: timestampFromMs(nowMs),
+        }),
+        nowMs,
+        [nowMs],
+      ),
+    ).toThrow('browser access is expired');
+
+    const valid = create(ResolvedBrowserReadSchema, {
+      ...base,
+      notAfter: timestampFromMs(nowMs + 60_000),
+    });
+    expect(validateBrowserRead(valid, nowMs, [nowMs + 120_000, nowMs + 60_000])).toBe(valid);
+    expect(() =>
+      validateBrowserRead(
+        create(ResolvedBrowserReadSchema, {
+          ...base,
+          notAfter: timestampFromMs(nowMs + 120_000),
+        }),
+        nowMs,
+        [nowMs + 120_000, nowMs + 60_000],
+      ),
+    ).toThrow('not_after must equal the earliest finite capability expiry');
+    expect(() => validateBrowserRead(valid, nowMs, [Number.POSITIVE_INFINITY])).toThrow(
+      'capability-bearing browser access requires a finite expiry',
+    );
+
+    const publicRead = create(ResolvedBrowserReadSchema, {
+      ...base,
+      accessClass: BrowserAccessClass.PUBLIC,
+    });
+    expect(validateBrowserRead(publicRead, nowMs, [])).toBe(publicRead);
+  });
+
   it('normalizes legacy read access plan JSON into protobuf oneof JSON', () => {
     const legacyBrokeredDelta = {
       plan_type: 'brokered_delta',
@@ -184,8 +453,7 @@ describe('dataaccess contract codegen', () => {
       tableId: 'tbl-123',
       fullName: 'main.sales.orders',
       grantId: 'grant-456',
-      queryId: 'query-789',
-      requestId: 'req-123',
+      executionId: 'execution-789',
       correlationId: 'corr-123',
       action: 'range',
       objectPath: 'part-000.parquet',
@@ -199,10 +467,19 @@ describe('dataaccess contract codegen', () => {
 
     expect(protobufJson).toEqual(normalized);
     expect(protobufJson).toMatchObject({
+      executionId: 'execution-789',
       action: 'OBJECT_GRANT_AUDIT_ACTION_RANGE',
       outcome: 'OBJECT_GRANT_AUDIT_OUTCOME_ALLOWED',
       range: { start: '0', end: '16' },
     });
+    expect(ObjectGrantAuditEventSchema.fields.find((field) => field.number === 10)?.name).toBe(
+      'execution_id',
+    );
+    expect(
+      ObjectGrantAuditEventSchema.fields.some(
+        (field) => field.name === 'query_id' || field.name === 'request_id',
+      ),
+    ).toBe(false);
   });
 });
 
@@ -296,8 +573,7 @@ type LegacyObjectGrantAuditEvent = {
   tableId: string;
   fullName: string;
   grantId: string;
-  queryId: string;
-  requestId: string;
+  executionId: string;
   correlationId: string;
   action: 'list' | 'head' | 'batch_sign' | 'range';
   objectPath: string;
@@ -398,8 +674,7 @@ function legacyObjectGrantAuditEventToProtobufJson(event: LegacyObjectGrantAudit
       tableId: event.tableId,
       fullName: event.fullName,
       grantId: event.grantId,
-      queryId: event.queryId,
-      requestId: event.requestId,
+      executionId: event.executionId,
       correlationId: event.correlationId,
       action: normalizeObjectGrantAuditAction(event.action),
       objectPath: event.objectPath,
@@ -412,6 +687,55 @@ function legacyObjectGrantAuditEventToProtobufJson(event: LegacyObjectGrantAudit
       outcome: normalizeObjectGrantAuditOutcome(event.outcome),
     }),
   );
+}
+
+function validatedCapabilityStates(
+  report: CapabilityReport,
+): ReadonlyMap<CapabilityKey, CapabilityState> {
+  const states = new Map<CapabilityKey, CapabilityState>();
+  for (const capability of report.capabilities) {
+    if (capability.key === CapabilityKey.UNSPECIFIED) {
+      throw new TypeError('unspecified capability key');
+    }
+    if (capability.state === CapabilityState.UNSPECIFIED) {
+      throw new TypeError('unspecified capability state');
+    }
+    if (states.has(capability.key)) {
+      throw new TypeError('duplicate capability key');
+    }
+    states.set(capability.key, capability.state);
+  }
+  return states;
+}
+
+function validateBrowserRead(
+  read: ResolvedBrowserRead,
+  nowMs: number,
+  capabilityExpiriesMs: readonly number[],
+): ResolvedBrowserRead {
+  const capabilityBearing = read.accessClass !== BrowserAccessClass.PUBLIC;
+  if (capabilityBearing && !read.notAfter) {
+    throw new TypeError('capability-bearing browser access requires not_after');
+  }
+  if (read.notAfter) {
+    const notAfterMs = Number(read.notAfter.seconds) * 1000 + read.notAfter.nanos / 1_000_000;
+    if (!Number.isFinite(notAfterMs)) {
+      throw new TypeError('browser access not_after must be finite');
+    }
+    if (notAfterMs <= nowMs) {
+      throw new TypeError('browser access is expired');
+    }
+    if (capabilityBearing) {
+      const finiteExpiries = capabilityExpiriesMs.filter(Number.isFinite);
+      if (finiteExpiries.length === 0) {
+        throw new TypeError('capability-bearing browser access requires a finite expiry');
+      }
+      if (notAfterMs !== Math.min(...finiteExpiries)) {
+        throw new TypeError('not_after must equal the earliest finite capability expiry');
+      }
+    }
+  }
+  return read;
 }
 
 function normalizeObjectGrantAuditAction(

@@ -747,9 +747,12 @@ describe('execution contract codegen', () => {
         dataset: {
           table_uri: 'https://storage.example.invalid/datasets/plain-parquet-events',
           required_capabilities: {
-            capabilities: {
-              range_reads: 'CAPABILITY_STATE_SUPPORTED',
-            },
+            capabilities: [
+              {
+                key: 'CAPABILITY_KEY_RANGE_READS',
+                state: 'CAPABILITY_STATE_SUPPORTED',
+              },
+            ],
           },
           files: [{ size_bytes: '1048576' }],
         },
@@ -888,10 +891,13 @@ function normalizeCapabilityReport(report: CapabilityReport | undefined): JsonOb
   if (!report) {
     return undefined;
   }
-  const capabilities: JsonObject = {};
+  const capabilities: JsonObject[] = [];
   for (const [key, value] of Object.entries(report.capabilities)) {
     if (value !== undefined) {
-      capabilities[key] = enumSymbol('CAPABILITY_STATE', value);
+      capabilities.push({
+        key: enumSymbol('CAPABILITY_KEY', key),
+        state: enumSymbol('CAPABILITY_STATE', value),
+      });
     }
   }
   return {

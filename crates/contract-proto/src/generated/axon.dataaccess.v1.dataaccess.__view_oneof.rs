@@ -10,6 +10,56 @@ pub mod partition_value {
         NullValue(::buffa::EnumValue<::buffa_types::google::protobuf::NullValue>),
     }
 }
+pub mod browser_read_descriptor {
+    #[allow(unused_imports)]
+    use super::*;
+    #[derive(Clone, Debug)]
+    pub enum Descriptor<'a> {
+        Snapshot(
+            ::buffa::alloc::boxed::Box<
+                super::super::super::super::__buffa::view::BrowserHttpSnapshotDescriptorView<
+                    'a,
+                >,
+            >,
+        ),
+        ParquetDataset(
+            ::buffa::alloc::boxed::Box<
+                super::super::super::super::__buffa::view::BrowserHttpParquetDatasetDescriptorView<
+                    'a,
+                >,
+            >,
+        ),
+    }
+}
+pub mod read_resolution {
+    #[allow(unused_imports)]
+    use super::*;
+    #[derive(Clone, Debug)]
+    pub enum Outcome<'a> {
+        BrowserRead(
+            ::buffa::alloc::boxed::Box<
+                super::super::super::super::__buffa::view::ResolvedBrowserReadView<'a>,
+            >,
+        ),
+        RemoteRequired(
+            ::buffa::alloc::boxed::Box<
+                super::super::super::super::__buffa::view::RemoteRequiredView<'a>,
+            >,
+        ),
+        Denied(
+            ::buffa::alloc::boxed::Box<
+                super::super::super::super::__buffa::view::ReadDeniedView<'a>,
+            >,
+        ),
+        Error(
+            ::buffa::alloc::boxed::Box<
+                super::super::super::super::super::super::common::v1::__buffa::view::ProviderErrorView<
+                    'a,
+                >,
+            >,
+        ),
+    }
+}
 pub mod read_access_plan {
     #[allow(unused_imports)]
     use super::*;
