@@ -990,6 +990,119 @@ test('coordinator rejects declared output beyond aggregate staging before child 
   expect(result?.message).toContain('aggregate staging capacity');
 });
 
+test('one-child coordinator reports stable owned-memory high-water marks across repeated atomic queries', async ({
+  page,
+}) => {
+  await routeCursorParquet(page);
+  await page.goto('/');
+
+  const metrics = await page.evaluate(
+    async ({ fixtureBytes }: { fixtureBytes: number }) => {
+      type OwnedMemoryMetrics = {
+        context: { request_id?: string };
+        coordinator: {
+          limit_bytes: number;
+          reserved_bytes: number;
+          staged_bytes: number;
+          peak_reserved_bytes: number;
+          peak_staged_bytes: number;
+        };
+        datafusion?: {
+          limit_bytes: number;
+          reserved_bytes: number;
+          peak_bytes: number;
+        };
+      };
+
+      const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+      const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
+        type: 'module',
+      });
+      const ownedMemoryMetrics: OwnedMemoryMetrics[] = [];
+      const client = sdk.createAxonBrowserClient({
+        worker,
+        onEvent: (event: unknown) => {
+          const envelope = event as { owned_memory_metrics?: OwnedMemoryMetrics };
+          if (envelope.owned_memory_metrics) {
+            ownedMemoryMetrics.push(envelope.owned_memory_metrics);
+          }
+        },
+      });
+      const tableUri = new URL('/fixtures/browser-datafusion-runtime/table', location.href).href;
+      const fixtureUrl = new URL(
+        '/fixtures/browser-datafusion-runtime/internal-cursor.parquet',
+        location.href,
+      ).href;
+
+      try {
+        await client.openDeltaTable(
+          'events',
+          {
+            table_uri: tableUri,
+            snapshot_version: 0,
+            partition_column_types: {},
+            browser_compatibility: { capabilities: {} },
+            required_capabilities: { capabilities: {} },
+            active_files: [
+              {
+                path: 'part-000.parquet',
+                url: fixtureUrl,
+                size_bytes: fixtureBytes,
+                partition_values: {},
+              },
+            ],
+          },
+          { requestId: 'open-owned-memory-plateau' },
+        );
+
+        for (let index = 0; index < 21; index += 1) {
+          await client.query('events', 'SELECT payload, id FROM events ORDER BY payload, id', {
+            requestId: `query-owned-memory-${index}`,
+          });
+        }
+        return ownedMemoryMetrics;
+      } finally {
+        client.terminate();
+      }
+    },
+    { fixtureBytes: BINARY_STRING_INT_PARQUET_BYTES.byteLength },
+  );
+
+  expect(metrics).toHaveLength(21);
+  expect(metrics.map((metric) => metric.context.request_id)).toEqual(
+    Array.from({ length: 21 }, (_, index) => `query-owned-memory-${index}`),
+  );
+  for (const metric of metrics) {
+    expect(metric.coordinator.limit_bytes).toBe(32 * 1024 * 1024);
+    expect(metric.coordinator.reserved_bytes).toBe(0);
+    expect(metric.coordinator.staged_bytes).toBe(0);
+    expect(metric.coordinator.peak_reserved_bytes).toBeGreaterThan(0);
+    expect(metric.coordinator.peak_staged_bytes).toBeGreaterThan(0);
+    expect(metric.coordinator.peak_reserved_bytes).toBeLessThanOrEqual(
+      metric.coordinator.limit_bytes,
+    );
+    expect(metric.coordinator.peak_staged_bytes).toBeLessThanOrEqual(
+      metric.coordinator.limit_bytes,
+    );
+    expect(metric.datafusion).toBeDefined();
+    expect(metric.datafusion?.limit_bytes).toBe(64 * 1024 * 1024);
+    expect(metric.datafusion?.reserved_bytes).toBe(0);
+    expect(metric.datafusion?.peak_bytes).toBeGreaterThan(0);
+    expect(metric.datafusion?.peak_bytes).toBeLessThanOrEqual(metric.datafusion?.limit_bytes ?? -1);
+  }
+
+  const steadyStateHighWaterMarks = metrics
+    .slice(-10)
+    .map((metric) =>
+      [
+        metric.coordinator.peak_reserved_bytes,
+        metric.coordinator.peak_staged_bytes,
+        metric.datafusion?.peak_bytes,
+      ].join(':'),
+    );
+  expect(new Set(steadyStateHighWaterMarks).size).toBe(1);
+});
+
 test('coordinator deadline owns the terminal and replaces a hung child', async ({ page }) => {
   await page.goto('/');
 

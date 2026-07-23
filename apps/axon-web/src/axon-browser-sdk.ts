@@ -983,6 +983,26 @@ export type BrowserWorkerCacheMetricsEvent = {
   transport?: BrowserWorkerTransportCacheMetrics;
 };
 
+export type BrowserWorkerCoordinatorMemoryMetrics = {
+  limit_bytes: number;
+  reserved_bytes: number;
+  staged_bytes: number;
+  peak_reserved_bytes: number;
+  peak_staged_bytes: number;
+};
+
+export type BrowserWorkerDataFusionMemoryMetrics = {
+  limit_bytes: number;
+  reserved_bytes: number;
+  peak_bytes: number;
+};
+
+export type BrowserWorkerOwnedMemoryMetricsEvent = {
+  context: BrowserWorkerEventContext;
+  coordinator: BrowserWorkerCoordinatorMemoryMetrics;
+  datafusion?: BrowserWorkerDataFusionMemoryMetrics;
+};
+
 export type BrowserWorkerFallbackEvent = {
   context: BrowserWorkerEventContext;
   reason: FallbackReason;
@@ -1012,6 +1032,7 @@ export type BrowserWorkerEventEnvelope =
   | { log: BrowserWorkerLogEvent }
   | { range_read_metrics: BrowserWorkerRangeReadMetricsEvent }
   | { cache_metrics: BrowserWorkerCacheMetricsEvent }
+  | { owned_memory_metrics: BrowserWorkerOwnedMemoryMetricsEvent }
   | { fallback: BrowserWorkerFallbackEvent }
   | { cancellation: BrowserWorkerCancellationEvent }
   | { terminal_error: BrowserWorkerTerminalErrorEvent }
@@ -4819,6 +4840,58 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
           transport: normalizeOptionalTransportCacheMetrics(payload.transport),
         },
       };
+    case 'owned_memory_metrics': {
+      const coordinator = requiredObject(payload.coordinator, 'owned_memory_metrics.coordinator');
+      const datafusion =
+        payload.datafusion === undefined
+          ? undefined
+          : requiredObject(payload.datafusion, 'owned_memory_metrics.datafusion');
+      return {
+        owned_memory_metrics: {
+          context: normalizeWorkerEventContext(payload.context, 'owned_memory_metrics.context'),
+          coordinator: {
+            limit_bytes: requiredNonNegativeInteger(
+              coordinator.limit_bytes,
+              'owned_memory_metrics.coordinator.limit_bytes',
+            ),
+            reserved_bytes: requiredNonNegativeInteger(
+              coordinator.reserved_bytes,
+              'owned_memory_metrics.coordinator.reserved_bytes',
+            ),
+            staged_bytes: requiredNonNegativeInteger(
+              coordinator.staged_bytes,
+              'owned_memory_metrics.coordinator.staged_bytes',
+            ),
+            peak_reserved_bytes: requiredNonNegativeInteger(
+              coordinator.peak_reserved_bytes,
+              'owned_memory_metrics.coordinator.peak_reserved_bytes',
+            ),
+            peak_staged_bytes: requiredNonNegativeInteger(
+              coordinator.peak_staged_bytes,
+              'owned_memory_metrics.coordinator.peak_staged_bytes',
+            ),
+          },
+          ...(datafusion
+            ? {
+                datafusion: {
+                  limit_bytes: requiredNonNegativeInteger(
+                    datafusion.limit_bytes,
+                    'owned_memory_metrics.datafusion.limit_bytes',
+                  ),
+                  reserved_bytes: requiredNonNegativeInteger(
+                    datafusion.reserved_bytes,
+                    'owned_memory_metrics.datafusion.reserved_bytes',
+                  ),
+                  peak_bytes: requiredNonNegativeInteger(
+                    datafusion.peak_bytes,
+                    'owned_memory_metrics.datafusion.peak_bytes',
+                  ),
+                },
+              }
+            : {}),
+        },
+      };
+    }
     case 'fallback':
       return {
         fallback: {
@@ -5403,6 +5476,7 @@ const WORKER_EVENT_TAGS = [
   'log',
   'range_read_metrics',
   'cache_metrics',
+  'owned_memory_metrics',
   'fallback',
   'cancellation',
   'terminal_error',

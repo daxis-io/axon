@@ -4217,6 +4217,131 @@ test('routes worker runtime events without settling the active request', async (
   });
 });
 
+test('projects coordinator and DataFusion owned-memory metrics through worker events', async () => {
+  const worker = new FakeWorker();
+  const events: BrowserWorkerEventEnvelope[] = [];
+  const client = createAxonBrowserClient({
+    worker: worker as unknown as Worker,
+    onEvent: (event) => events.push(event),
+  });
+
+  const resultPromise = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT COUNT(*) AS row_count FROM events',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-owned-memory' },
+  );
+
+  worker.emitRawMessage({
+    owned_memory_metrics: {
+      context: {
+        phase: 'query',
+        request_id: 'req-owned-memory',
+        query_id: 'req-owned-memory',
+        table_name: 'events',
+      },
+      coordinator: {
+        limit_bytes: 33_554_432,
+        reserved_bytes: 0,
+        staged_bytes: 0,
+        peak_reserved_bytes: 16_777_216,
+        peak_staged_bytes: 4096,
+      },
+      datafusion: {
+        limit_bytes: 67_108_864,
+        reserved_bytes: 0,
+        peak_bytes: 8192,
+      },
+    },
+  });
+
+  await expect(settlement(resultPromise)).resolves.toEqual({ status: 'pending' });
+  expect(events).toEqual([
+    {
+      owned_memory_metrics: {
+        context: {
+          phase: 'query',
+          request_id: 'req-owned-memory',
+          query_id: 'req-owned-memory',
+          table_name: 'events',
+        },
+        coordinator: {
+          limit_bytes: 33_554_432,
+          reserved_bytes: 0,
+          staged_bytes: 0,
+          peak_reserved_bytes: 16_777_216,
+          peak_staged_bytes: 4096,
+        },
+        datafusion: {
+          limit_bytes: 67_108_864,
+          reserved_bytes: 0,
+          peak_bytes: 8192,
+        },
+      },
+    },
+  ]);
+
+  worker.emitMessage({
+    success: {
+      request_id: 'req-owned-memory',
+      response: queryResponse(),
+      result: {
+        format: 'stream',
+        content_type: 'application/vnd.apache.arrow.stream',
+        bytes: [1],
+      },
+    },
+  });
+  await expect(resultPromise).resolves.toMatchObject({ request_id: 'req-owned-memory' });
+});
+
+test('rejects malformed owned-memory worker metrics', async () => {
+  const worker = new FakeWorker();
+  const events: BrowserWorkerEventEnvelope[] = [];
+  const client = createAxonBrowserClient({
+    worker: worker as unknown as Worker,
+    onEvent: (event) => events.push(event),
+  });
+  const resultPromise = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT 1',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-invalid-owned-memory' },
+  );
+
+  worker.emitRawMessage({
+    owned_memory_metrics: {
+      context: {
+        phase: 'query',
+        request_id: 'req-invalid-owned-memory',
+        query_id: 'req-invalid-owned-memory',
+        table_name: 'events',
+      },
+      coordinator: {
+        limit_bytes: 33_554_432,
+        reserved_bytes: 0,
+        staged_bytes: 0,
+        peak_reserved_bytes: 16_777_216,
+        peak_staged_bytes: -1,
+      },
+    },
+  });
+
+  await expect(resultPromise).rejects.toThrow(AxonProtocolError);
+  await expect(resultPromise).rejects.toThrow(
+    'owned_memory_metrics.coordinator.peak_staged_bytes must be a non-negative integer',
+  );
+  expect(events).toEqual([]);
+});
+
 test('projects cache and dormant readahead metrics through events and final responses', async () => {
   const worker = new FakeWorker();
   const events: BrowserWorkerEventEnvelope[] = [];

@@ -13,6 +13,12 @@ export type PrivateStreamPhase = 'schema' | 'data' | 'end_of_stream';
 export type PrivateCreditClass = 'data' | 'control';
 export type PrivateTerminalStatus = 'succeeded' | 'cancelled' | 'deadline_exceeded' | 'failed';
 
+export type PrivateDataFusionMemoryMetrics = {
+  limit_bytes: string;
+  reserved_bytes: string;
+  peak_bytes: string;
+};
+
 export type PrivateStreamChunk = {
   version: typeof PRIVATE_STREAM_PROTOCOL_VERSION;
   query_id: string;
@@ -40,6 +46,7 @@ export type PrivateTerminalMetadata = {
     peak_pending_encoded_capacity: string;
     peak_transport_chunk_bytes: string;
   };
+  datafusion_memory?: PrivateDataFusionMemoryMetrics;
   [key: string]: unknown;
 };
 
@@ -436,6 +443,14 @@ export function requireTerminalMetadata(value: unknown): asserts value is Privat
   }
   decimalBigInt(metadata.arrow_ipc_byte_length, 'arrow_ipc_byte_length');
   decimalBigInt(metadata.row_count, 'row_count');
+  if (metadata.datafusion_memory !== undefined) {
+    if (!metadata.datafusion_memory || typeof metadata.datafusion_memory !== 'object') {
+      throw new Error('private stream datafusion_memory must be an object');
+    }
+    decimalBigInt(metadata.datafusion_memory.limit_bytes, 'datafusion_memory.limit_bytes');
+    decimalBigInt(metadata.datafusion_memory.reserved_bytes, 'datafusion_memory.reserved_bytes');
+    decimalBigInt(metadata.datafusion_memory.peak_bytes, 'datafusion_memory.peak_bytes');
+  }
 }
 
 export function decimalBigInt(value: unknown, field: string): bigint {

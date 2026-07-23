@@ -2,6 +2,7 @@ import {
   ARROW_IPC_STREAM_CONTENT_TYPE,
   type BrowserWorkerCancelCommand,
   type BrowserWorkerCommand,
+  type BrowserWorkerDataFusionMemoryMetrics,
   type BrowserWorkerEventContext,
   type BrowserWorkerEventEnvelope,
   type BrowserWorkerLogLevel,
@@ -32,6 +33,7 @@ import {
   requireTerminalMetadata,
   type PrivateChildMessage,
   type PrivateCoordinatorMessage,
+  type PrivateDataFusionMemoryMetrics,
   type PrivateTerminalMetadata,
   type PrivateTerminalStatus,
 } from './sandbox-query-stream-protocol';
@@ -311,7 +313,14 @@ function handleChildMessage(message: PrivateChildMessage): void {
     const active = activeQueries.get(message.query_id);
     if (!active) return;
     if (active.lifecycle.state === 'draining') {
-      if (message.kind !== 'stream_chunk') finishActiveQuery(message.query_id);
+      if (message.kind === 'stream_terminal') {
+        finishActiveQuery(
+          message.query_id,
+          normalizePrivateDataFusionMemoryMetrics(message.metadata.datafusion_memory),
+        );
+      } else if (message.kind !== 'stream_chunk') {
+        finishActiveQuery(message.query_id);
+      }
       return;
     }
 
@@ -334,6 +343,7 @@ function handleChildMessage(message: PrivateChildMessage): void {
     }
     if (!active.lifecycle.beginDrain('failed')) return;
     active.stage.discard();
+    releaseActiveMemory(active);
     postQueryError(message.query_id, active.context, message.error);
     finishActiveQuery(message.query_id);
   } catch (error) {
@@ -358,6 +368,7 @@ function finishFromTerminal(
 ): void {
   requireTerminalMetadata(metadataValue);
   const metadata = metadataValue as SandboxTerminalMetadata;
+  const datafusionMemory = normalizePrivateDataFusionMemoryMetrics(metadata.datafusion_memory);
   if (metadata.status !== 'succeeded') {
     if (!active.lifecycle.beginDrain(metadata.status)) return;
     active.stage.discard();
@@ -371,8 +382,9 @@ function finishFromTerminal(
             ? 'experimental browser DataFusion query cancelled during Arrow IPC cursor pull'
             : 'browser DataFusion query failed without structured error metadata',
       );
+    releaseActiveMemory(active, datafusionMemory);
     postQueryError(active.command.request_id, active.context, error, metadata.status);
-    finishActiveQuery(active.command.request_id);
+    finishActiveQuery(active.command.request_id, datafusionMemory);
     return;
   }
 
@@ -380,13 +392,14 @@ function finishFromTerminal(
   try {
     chunks = active.stage.commit(metadata);
     if (!active.lifecycle.beginDrain('succeeded')) return;
-    commitSuccessfulQuery(active, metadata, chunks);
+    commitSuccessfulQuery(active, metadata, chunks, datafusionMemory);
   } catch (error) {
     active.lifecycle.beginDrain('failed');
     active.stage.discard();
+    releaseActiveMemory(active, datafusionMemory);
     postQueryError(active.command.request_id, active.context, normalizeQueryError(error));
   } finally {
-    finishActiveQuery(active.command.request_id);
+    finishActiveQuery(active.command.request_id, datafusionMemory);
   }
 }
 
@@ -394,6 +407,7 @@ function commitSuccessfulQuery(
   active: ActiveCoordinatorQuery,
   metadata: SandboxTerminalMetadata,
   chunks: Uint8Array[],
+  datafusionMemory: BrowserWorkerDataFusionMemoryMetrics | undefined,
 ): void {
   if (
     !metadata.response ||
@@ -436,6 +450,7 @@ function commitSuccessfulQuery(
 
   if (active.delivery === 'chunked_buffers') {
     postCommittedChunks(active.context, active.command.request_id, chunks);
+    releaseActiveMemory(active, datafusionMemory);
     emitProgress(active.context, 'finished');
     postResponse({
       success: {
@@ -455,6 +470,8 @@ function commitSuccessfulQuery(
   }
 
   const bytes = checkedSingleBuffer(chunks, arrowIpcByteLength);
+  chunks.length = 0;
+  releaseActiveMemory(active, datafusionMemory);
   emitProgress(active.context, 'finished');
   postResponse(
     {
@@ -555,13 +572,16 @@ function beginAuthoritativeDrain(
   }, runtimeConfig.watchdogMs);
 }
 
-function finishActiveQuery(queryId: string): void {
+function finishActiveQuery(
+  queryId: string,
+  datafusionMemory?: BrowserWorkerDataFusionMemoryMetrics,
+): void {
   const active = activeQueries.get(queryId);
   if (!active) return;
   clearTimeout(active.deadline);
   if (active.watchdog) clearTimeout(active.watchdog);
   if (active.lifecycle.state === 'draining') active.lifecycle.finishDrain();
-  releaseActiveMemory(active);
+  releaseActiveMemory(active, datafusionMemory);
   activeQueries.delete(queryId);
 }
 
@@ -576,13 +596,13 @@ function recycleChild(invalidationReason: string): void {
   );
   for (const [queryId, active] of activeQueries) {
     active.stage.discard();
+    releaseActiveMemory(active);
     if (active.lifecycle.beginDrain('failed')) {
       postQueryError(queryId, active.context, invalidationError);
     }
     clearTimeout(active.deadline);
     if (active.watchdog) clearTimeout(active.watchdog);
     if (active.lifecycle.state === 'draining') active.lifecycle.finishDrain();
-    releaseActiveMemory(active);
   }
   activeQueries.clear();
   for (const [requestId, pending] of pendingForwardedCommands) {
@@ -621,10 +641,38 @@ function coordinatorRuntimeConfig(scope: CoordinatorConfiguredScope): Coordinato
   };
 }
 
-function releaseActiveMemory(active: ActiveCoordinatorQuery): void {
+function releaseActiveMemory(
+  active: ActiveCoordinatorQuery,
+  datafusionMemory?: BrowserWorkerDataFusionMemoryMetrics,
+): void {
   if (active.memoryReleased) return;
   memoryBudget.release(active.command.request_id);
   active.memoryReleased = true;
+  const coordinator = memoryBudget.snapshot();
+  postEvent({
+    owned_memory_metrics: {
+      context: active.context,
+      coordinator: {
+        limit_bytes: coordinator.limitBytes,
+        reserved_bytes: coordinator.currentReservedBytes,
+        staged_bytes: coordinator.currentStagedBytes,
+        peak_reserved_bytes: coordinator.peakReservedBytes,
+        peak_staged_bytes: coordinator.peakStagedBytes,
+      },
+      ...(datafusionMemory ? { datafusion: datafusionMemory } : {}),
+    },
+  });
+}
+
+function normalizePrivateDataFusionMemoryMetrics(
+  metrics: PrivateDataFusionMemoryMetrics | undefined,
+): BrowserWorkerDataFusionMemoryMetrics | undefined {
+  if (!metrics) return undefined;
+  return {
+    limit_bytes: decimalNumber(metrics.limit_bytes),
+    reserved_bytes: decimalNumber(metrics.reserved_bytes),
+    peak_bytes: decimalNumber(metrics.peak_bytes),
+  };
 }
 
 function configuredPositiveInteger(value: number | undefined, fallback: number): number {

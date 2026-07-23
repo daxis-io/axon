@@ -21,6 +21,16 @@ type QueryMeasurement = {
   coordinatorStagingLimitBytes: number;
   cursorPeakPendingEncodedBytes: number;
   cursorPeakTransportChunkBytes: number;
+  ownedMemory: {
+    coordinatorLimitBytes: number;
+    coordinatorReservedBytes: number;
+    coordinatorStagedBytes: number;
+    coordinatorPeakReservedBytes: number;
+    coordinatorPeakStagedBytes: number;
+    datafusionLimitBytes: number;
+    datafusionReservedBytes: number;
+    datafusionPeakBytes: number;
+  };
 };
 
 type OverLimitMeasurement = {
@@ -64,7 +74,9 @@ type PerformanceBudgets = {
   warmQueryMs: number;
   repeatedFiveRunsMs: number;
   coordinatorStagingBytes: number;
+  coordinatorAggregateStagingBytes: number;
   cursorPendingEncodedBytes: number;
+  datafusionOperatorPoolBytes: number;
   transportChunkBytes: number;
   postGcRetainedHeapDeltaBytes: number;
 };
@@ -90,9 +102,17 @@ test('records real browser query timing, atomicity, and component memory bounds'
       'AXON_BROWSER_QUERY_COORDINATOR_STAGING_BUDGET_BYTES',
       8 * MIB,
     ),
+    coordinatorAggregateStagingBytes: environmentBudget(
+      'AXON_BROWSER_QUERY_COORDINATOR_AGGREGATE_STAGING_BUDGET_BYTES',
+      32 * MIB,
+    ),
     cursorPendingEncodedBytes: environmentBudget(
       'AXON_BROWSER_QUERY_CURSOR_PENDING_BUDGET_BYTES',
       8 * MIB,
+    ),
+    datafusionOperatorPoolBytes: environmentBudget(
+      'AXON_BROWSER_QUERY_DATAFUSION_OPERATOR_POOL_BUDGET_BYTES',
+      64 * MIB,
     ),
     transportChunkBytes: environmentBudget('AXON_BROWSER_QUERY_TRANSPORT_CHUNK_BUDGET_BYTES', MIB),
     postGcRetainedHeapDeltaBytes: environmentBudget(
@@ -217,6 +237,16 @@ test('records real browser query timing, atomicity, and component memory bounds'
     assertQueryMeasurement(measurement, budgets, budgets.warmQueryMs);
   }
   expect(memoryRetentionRuns).toHaveLength(MEMORY_RETENTION_QUERY_RUNS);
+  const steadyStateOwnedHighWaterMarks = memoryRetentionRuns
+    .slice(-10)
+    .map((measurement) =>
+      [
+        measurement.ownedMemory.coordinatorPeakReservedBytes,
+        measurement.ownedMemory.coordinatorPeakStagedBytes,
+        measurement.ownedMemory.datafusionPeakBytes,
+      ].join(':'),
+    );
+  expect(new Set(steadyStateOwnedHighWaterMarks).size).toBe(1);
   expect(repeatedTotalDurationMs).toBeLessThanOrEqual(budgets.repeatedFiveRunsMs);
   expect(retainedHeapDeltaBytes).toBeLessThanOrEqual(budgets.postGcRetainedHeapDeltaBytes);
   expect(overLimit).toMatchObject({
@@ -252,6 +282,21 @@ async function installProbe(page: Page): Promise<ProbeSetup> {
       progress?: {
         context?: { request_id?: string };
         stage?: string;
+      };
+      owned_memory_metrics?: {
+        context?: { request_id?: string };
+        coordinator?: {
+          limit_bytes?: number;
+          reserved_bytes?: number;
+          staged_bytes?: number;
+          peak_reserved_bytes?: number;
+          peak_staged_bytes?: number;
+        };
+        datafusion?: {
+          limit_bytes?: number;
+          reserved_bytes?: number;
+          peak_bytes?: number;
+        };
       };
     };
     type TimedRuntimeEvent = { atMs: number; value: RuntimeEvent };
@@ -338,6 +383,9 @@ async function installProbe(page: Page): Promise<ProbeSetup> {
       const arrowReady = queryEvents.find(
         (event) => event.value.progress?.stage === 'arrow_ipc_ready',
       );
+      const ownedMemory = runtimeEvents.find(
+        (event) => event.value.owned_memory_metrics?.context?.request_id === requestId,
+      )?.value.owned_memory_metrics;
       const queryMessages = rawMessages.filter(
         (message) =>
           message.value.arrow_ipc_chunk?.request_id === requestId ||
@@ -349,7 +397,13 @@ async function installProbe(page: Page): Promise<ProbeSetup> {
       const success = queryMessages.find(
         (message) => message.value.success?.request_id === requestId,
       );
-      if (!arrowReady || !firstChunk || !success) {
+      if (
+        !arrowReady ||
+        !firstChunk ||
+        !success ||
+        !ownedMemory?.coordinator ||
+        !ownedMemory.datafusion
+      ) {
         throw new Error(`browser query '${requestId}' omitted an atomic delivery milestone`);
       }
       const metrics = result.response.metrics;
@@ -382,6 +436,40 @@ async function installProbe(page: Page): Promise<ProbeSetup> {
           metrics.cursor_peak_transport_chunk_bytes,
           'cursor_peak_transport_chunk_bytes',
         ),
+        ownedMemory: {
+          coordinatorLimitBytes: requiredMetric(
+            ownedMemory.coordinator.limit_bytes,
+            'owned_memory_metrics.coordinator.limit_bytes',
+          ),
+          coordinatorReservedBytes: requiredMetric(
+            ownedMemory.coordinator.reserved_bytes,
+            'owned_memory_metrics.coordinator.reserved_bytes',
+          ),
+          coordinatorStagedBytes: requiredMetric(
+            ownedMemory.coordinator.staged_bytes,
+            'owned_memory_metrics.coordinator.staged_bytes',
+          ),
+          coordinatorPeakReservedBytes: requiredMetric(
+            ownedMemory.coordinator.peak_reserved_bytes,
+            'owned_memory_metrics.coordinator.peak_reserved_bytes',
+          ),
+          coordinatorPeakStagedBytes: requiredMetric(
+            ownedMemory.coordinator.peak_staged_bytes,
+            'owned_memory_metrics.coordinator.peak_staged_bytes',
+          ),
+          datafusionLimitBytes: requiredMetric(
+            ownedMemory.datafusion.limit_bytes,
+            'owned_memory_metrics.datafusion.limit_bytes',
+          ),
+          datafusionReservedBytes: requiredMetric(
+            ownedMemory.datafusion.reserved_bytes,
+            'owned_memory_metrics.datafusion.reserved_bytes',
+          ),
+          datafusionPeakBytes: requiredMetric(
+            ownedMemory.datafusion.peak_bytes,
+            'owned_memory_metrics.datafusion.peak_bytes',
+          ),
+        },
       };
       rawMessages.length = 0;
       runtimeEvents.length = 0;
@@ -535,5 +623,24 @@ function assertQueryMeasurement(
   expect(measurement.cursorPeakTransportChunkBytes).toBeGreaterThan(0);
   expect(measurement.cursorPeakTransportChunkBytes).toBeLessThanOrEqual(
     budgets.transportChunkBytes,
+  );
+  expect(measurement.ownedMemory.coordinatorLimitBytes).toBe(
+    budgets.coordinatorAggregateStagingBytes,
+  );
+  expect(measurement.ownedMemory.coordinatorReservedBytes).toBe(0);
+  expect(measurement.ownedMemory.coordinatorStagedBytes).toBe(0);
+  expect(measurement.ownedMemory.coordinatorPeakReservedBytes).toBeGreaterThan(0);
+  expect(measurement.ownedMemory.coordinatorPeakStagedBytes).toBeGreaterThan(0);
+  expect(measurement.ownedMemory.coordinatorPeakReservedBytes).toBeLessThanOrEqual(
+    measurement.ownedMemory.coordinatorLimitBytes,
+  );
+  expect(measurement.ownedMemory.coordinatorPeakStagedBytes).toBeLessThanOrEqual(
+    measurement.ownedMemory.coordinatorLimitBytes,
+  );
+  expect(measurement.ownedMemory.datafusionLimitBytes).toBe(budgets.datafusionOperatorPoolBytes);
+  expect(measurement.ownedMemory.datafusionReservedBytes).toBe(0);
+  expect(measurement.ownedMemory.datafusionPeakBytes).toBeGreaterThan(0);
+  expect(measurement.ownedMemory.datafusionPeakBytes).toBeLessThanOrEqual(
+    measurement.ownedMemory.datafusionLimitBytes,
   );
 }

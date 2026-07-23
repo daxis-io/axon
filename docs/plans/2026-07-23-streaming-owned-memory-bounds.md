@@ -195,7 +195,9 @@ git commit -m "feat: bound datafusion operator memory"
 
 - Modify: `apps/axon-web/src/axon-browser-sdk.ts`
 - Modify: `apps/axon-web/tests/axon-browser-sdk.spec.ts`
+- Modify: `apps/axon-web/src/generated/contracts/exec-codegen.test.ts`
 - Modify: `apps/axon-web/src/sandbox-query-stream-protocol.ts`
+- Modify: `apps/axon-web/src/sandbox-query-stream-protocol.test.ts`
 - Modify: `apps/axon-web/src/sandbox-query-worker.ts`
 - Modify: `apps/axon-web/tests/internal-arrow-ipc-stream.spec.ts`
 - Modify: `apps/axon-web/tests/browser-heap-evidence.spec.ts`
@@ -211,7 +213,7 @@ Define the intended `owned_memory_metrics` worker event in the test first. Requi
 Run:
 
 ```bash
-npx vitest run tests/axon-browser-sdk.spec.ts --testNamePattern "owned memory"
+npx playwright test --config=playwright.sdk.config.ts --grep "owned-memory"
 ```
 
 Expected: FAIL because the event tag and normalizer do not exist.
@@ -234,7 +236,7 @@ Run:
 ```bash
 npm run build:fixture
 npm run build:wasm
-npx playwright test tests/internal-arrow-ipc-stream.spec.ts --config=playwright.config.ts --grep "owned memory plateau"
+npx playwright test tests/internal-arrow-ipc-stream.spec.ts --config=playwright.config.ts --grep "owned-memory high-water"
 ```
 
 Expected: PASS in Chromium, Firefox, and WebKit.
@@ -254,9 +256,17 @@ Expected: PASS in Chromium with retained heap delta at or below 8 MiB and owned 
 **Step 5: Commit**
 
 ```bash
-git add apps/axon-web/src/axon-browser-sdk.ts apps/axon-web/tests/axon-browser-sdk.spec.ts apps/axon-web/src/sandbox-query-stream-protocol.ts apps/axon-web/src/sandbox-query-worker.ts apps/axon-web/tests/internal-arrow-ipc-stream.spec.ts apps/axon-web/tests/browser-heap-evidence.spec.ts docs/plans/2026-07-23-streaming-owned-memory-bounds.md
+git add apps/axon-web/src/axon-browser-sdk.ts apps/axon-web/tests/axon-browser-sdk.spec.ts apps/axon-web/src/generated/contracts/exec-codegen.test.ts apps/axon-web/src/sandbox-query-stream-protocol.ts apps/axon-web/src/sandbox-query-stream-protocol.test.ts apps/axon-web/src/sandbox-query-worker.ts apps/axon-web/tests/internal-arrow-ipc-stream.spec.ts apps/axon-web/tests/browser-heap-evidence.spec.ts docs/plans/2026-07-23-streaming-owned-memory-bounds.md
 git commit -m "test: prove streaming owned-memory plateau"
 ```
+
+**Execution evidence (2026-07-23):**
+
+- SDK red: both owned-memory cases failed on the unknown event tag; SDK green: 2/2.
+- Private-terminal red: malformed DataFusion counters were accepted; focused green: 1/1.
+- Browser red: Chromium observed 0 of 21 required snapshots; green: Chromium, Firefox, and WebKit each completed the warm query plus 20 repeated atomic queries with stable high-water marks.
+- Chromium heap evidence passed with 21 owned-memory snapshots; coordinator and DataFusion current ownership returned to zero and both peaks stayed within their configured limits.
+- `npx tsc --noEmit` passed after explicitly keeping the browser-only event outside the protobuf event projection.
 
 ## Task 5: Full verification and local handoff
 

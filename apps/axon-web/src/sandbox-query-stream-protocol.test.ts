@@ -4,6 +4,7 @@ import {
   PRIVATE_STREAM_PROTOCOL_VERSION,
   QueryCreditGate,
   QueryStage,
+  requireTerminalMetadata,
   type PrivateStreamChunk,
 } from './sandbox-query-stream-protocol';
 
@@ -25,6 +26,36 @@ function chunk(overrides: Partial<PrivateStreamChunk> = {}): PrivateStreamChunk 
 }
 
 describe('private Arrow IPC query staging', () => {
+  it('validates DataFusion memory counters at the private terminal boundary', () => {
+    expect(() =>
+      requireTerminalMetadata({
+        metadata_version: 1,
+        status: 'succeeded',
+        arrow_ipc_byte_length: '0',
+        row_count: '0',
+        datafusion_memory: {
+          limit_bytes: '67108864',
+          reserved_bytes: '0',
+          peak_bytes: '8192',
+        },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      requireTerminalMetadata({
+        metadata_version: 1,
+        status: 'succeeded',
+        arrow_ipc_byte_length: '0',
+        row_count: '0',
+        datafusion_memory: {
+          limit_bytes: '67108864',
+          reserved_bytes: '0',
+          peak_bytes: '-1',
+        },
+      }),
+    ).toThrow('private stream datafusion_memory.peak_bytes must be an unsigned decimal string');
+  });
+
   it('keeps chunks private until a validated success terminal commits them', () => {
     const stage = new QueryStage('query-1');
     const schema = chunk();
