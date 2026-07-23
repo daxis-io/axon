@@ -80,38 +80,6 @@ pub use self::__buffa::view::ReadResolutionView;
 #[doc(inline)]
 pub use self::__buffa::view::ReadResolutionOwnedView;
 #[doc(inline)]
-pub use self::__buffa::view::BrokeredObjectAccessView;
-#[doc(inline)]
-pub use self::__buffa::view::BrokeredObjectAccessOwnedView;
-#[doc(inline)]
-pub use self::__buffa::view::BrokeredPolicyAuthorityView;
-#[doc(inline)]
-pub use self::__buffa::view::BrokeredPolicyAuthorityOwnedView;
-#[doc(inline)]
-pub use self::__buffa::view::BrokeredDeltaReadAccessPlanView;
-#[doc(inline)]
-pub use self::__buffa::view::BrokeredDeltaReadAccessPlanOwnedView;
-#[doc(inline)]
-pub use self::__buffa::view::DeltaSharingReadAccessPlanView;
-#[doc(inline)]
-pub use self::__buffa::view::DeltaSharingReadAccessPlanOwnedView;
-#[doc(inline)]
-pub use self::__buffa::view::SqlFallbackRequiredReadAccessPlanView;
-#[doc(inline)]
-pub use self::__buffa::view::SqlFallbackRequiredReadAccessPlanOwnedView;
-#[doc(inline)]
-pub use self::__buffa::view::BlockedReadAccessPlanView;
-#[doc(inline)]
-pub use self::__buffa::view::BlockedReadAccessPlanOwnedView;
-#[doc(inline)]
-pub use self::__buffa::view::ReadAccessPlanView;
-#[doc(inline)]
-pub use self::__buffa::view::ReadAccessPlanOwnedView;
-#[doc(inline)]
-pub use self::__buffa::view::TableReadResolutionView;
-#[doc(inline)]
-pub use self::__buffa::view::TableReadResolutionOwnedView;
-#[doc(inline)]
 pub use self::__buffa::view::ObjectGrantListRequestView;
 #[doc(inline)]
 pub use self::__buffa::view::ObjectGrantListRequestOwnedView;

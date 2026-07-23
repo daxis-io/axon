@@ -10,39 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file axon/common/v1/common.proto.
  */
 export const file_axon_common_v1_common: GenFile = /*@__PURE__*/
-  fileDesc("ChtheG9uL2NvbW1vbi92MS9jb21tb24ucHJvdG8SDmF4b24uY29tbW9uLnYxIlEKCU9iamVjdFJlZhIVCg1jb25uZWN0aW9uX2lkGAEgASgJEg8KB2NhdGFsb2cYAiABKAkSDgoGc2NoZW1hGAMgASgJEgwKBG5hbWUYBCABKAkivAEKFENhbm9uaWNhbFJlc291cmNlUmVmEhUKDWNvbm5lY3Rpb25faWQYASABKAkSGgoScHJvdmlkZXJfbmFtZXNwYWNlGAIgASgJEioKBGtpbmQYAyABKA4yHC5heG9uLmNvbW1vbi52MS5SZXNvdXJjZUtpbmQSHAoScHJvdmlkZXJfb2JqZWN0X2lkGAQgASgJSAASGwoRY2Fub25pY2FsX2xvY2F0b3IYBSABKAlIAEIKCghpZGVudGl0eSIwCgtQYWdlUmVxdWVzdBIOCgZjdXJzb3IYASABKAkSEQoJcGFnZV9zaXplGAIgASgNIkQKCFBhZ2VJbmZvEhgKC25leHRfY3Vyc29yGAEgASgJSACIAQFCDgoMX25leHRfY3Vyc29ySgQIAhADUghoYXNfbW9yZSJpCg1Qcm92aWRlckVycm9yEi8KBGNvZGUYASABKA4yIS5heG9uLmNvbW1vbi52MS5Qcm92aWRlckVycm9yQ29kZRIPCgdtZXNzYWdlGAIgASgJEhYKDmNvcnJlbGF0aW9uX2lkGAMgASgJKmAKDFJlc291cmNlS2luZBIdChlSRVNPVVJDRV9LSU5EX1VOU1BFQ0lGSUVEEAASFwoTUkVTT1VSQ0VfS0lORF9UQUJMRRABEhgKFFJFU09VUkNFX0tJTkRfVk9MVU1FEAIq6wEKEVByb3ZpZGVyRXJyb3JDb2RlEiMKH1BST1ZJREVSX0VSUk9SX0NPREVfVU5TUEVDSUZJRUQQABInCiNQUk9WSURFUl9FUlJPUl9DT0RFX1NFU1NJT05fRVhQSVJFRBABEh8KG1BST1ZJREVSX0VSUk9SX0NPREVfQkxPQ0tFRBACEiEKHVBST1ZJREVSX0VSUk9SX0NPREVfTk9UX0ZPVU5EEAMSIwofUFJPVklERVJfRVJST1JfQ09ERV9VTkFWQUlMQUJMRRAEEh8KG1BST1ZJREVSX0VSUk9SX0NPREVfSU5WQUxJRBAFYgZwcm90bzM");
-
-/**
- * @generated from message axon.common.v1.ObjectRef
- */
-export type ObjectRef = Message<"axon.common.v1.ObjectRef"> & {
-  /**
-   * @generated from field: string connection_id = 1;
-   */
-  connectionId: string;
-
-  /**
-   * @generated from field: string catalog = 2;
-   */
-  catalog: string;
-
-  /**
-   * @generated from field: string schema = 3;
-   */
-  schema: string;
-
-  /**
-   * @generated from field: string name = 4;
-   */
-  name: string;
-};
-
-/**
- * Describes the message axon.common.v1.ObjectRef.
- * Use `create(ObjectRefSchema)` to create a new message.
- */
-export const ObjectRefSchema: GenMessage<ObjectRef> = /*@__PURE__*/
-  messageDesc(file_axon_common_v1_common, 0);
+  fileDesc("ChtheG9uL2NvbW1vbi92MS9jb21tb24ucHJvdG8SDmF4b24uY29tbW9uLnYxIrwBChRDYW5vbmljYWxSZXNvdXJjZVJlZhIVCg1jb25uZWN0aW9uX2lkGAEgASgJEhoKEnByb3ZpZGVyX25hbWVzcGFjZRgCIAEoCRIqCgRraW5kGAMgASgOMhwuYXhvbi5jb21tb24udjEuUmVzb3VyY2VLaW5kEhwKEnByb3ZpZGVyX29iamVjdF9pZBgEIAEoCUgAEhsKEWNhbm9uaWNhbF9sb2NhdG9yGAUgASgJSABCCgoIaWRlbnRpdHkiMAoLUGFnZVJlcXVlc3QSDgoGY3Vyc29yGAEgASgJEhEKCXBhZ2Vfc2l6ZRgCIAEoDSJECghQYWdlSW5mbxIYCgtuZXh0X2N1cnNvchgBIAEoCUgAiAEBQg4KDF9uZXh0X2N1cnNvckoECAIQA1IIaGFzX21vcmUiaQoNUHJvdmlkZXJFcnJvchIvCgRjb2RlGAEgASgOMiEuYXhvbi5jb21tb24udjEuUHJvdmlkZXJFcnJvckNvZGUSDwoHbWVzc2FnZRgCIAEoCRIWCg5jb3JyZWxhdGlvbl9pZBgDIAEoCSpgCgxSZXNvdXJjZUtpbmQSHQoZUkVTT1VSQ0VfS0lORF9VTlNQRUNJRklFRBAAEhcKE1JFU09VUkNFX0tJTkRfVEFCTEUQARIYChRSRVNPVVJDRV9LSU5EX1ZPTFVNRRACKusBChFQcm92aWRlckVycm9yQ29kZRIjCh9QUk9WSURFUl9FUlJPUl9DT0RFX1VOU1BFQ0lGSUVEEAASJwojUFJPVklERVJfRVJST1JfQ09ERV9TRVNTSU9OX0VYUElSRUQQARIfChtQUk9WSURFUl9FUlJPUl9DT0RFX0JMT0NLRUQQAhIhCh1QUk9WSURFUl9FUlJPUl9DT0RFX05PVF9GT1VORBADEiMKH1BST1ZJREVSX0VSUk9SX0NPREVfVU5BVkFJTEFCTEUQBBIfChtQUk9WSURFUl9FUlJPUl9DT0RFX0lOVkFMSUQQBWIGcHJvdG8z");
 
 /**
  * @generated from message axon.common.v1.CanonicalResourceRef
@@ -86,7 +54,7 @@ export type CanonicalResourceRef = Message<"axon.common.v1.CanonicalResourceRef"
  * Use `create(CanonicalResourceRefSchema)` to create a new message.
  */
 export const CanonicalResourceRefSchema: GenMessage<CanonicalResourceRef> = /*@__PURE__*/
-  messageDesc(file_axon_common_v1_common, 1);
+  messageDesc(file_axon_common_v1_common, 0);
 
 /**
  * @generated from message axon.common.v1.PageRequest
@@ -108,7 +76,7 @@ export type PageRequest = Message<"axon.common.v1.PageRequest"> & {
  * Use `create(PageRequestSchema)` to create a new message.
  */
 export const PageRequestSchema: GenMessage<PageRequest> = /*@__PURE__*/
-  messageDesc(file_axon_common_v1_common, 2);
+  messageDesc(file_axon_common_v1_common, 1);
 
 /**
  * @generated from message axon.common.v1.PageInfo
@@ -125,7 +93,7 @@ export type PageInfo = Message<"axon.common.v1.PageInfo"> & {
  * Use `create(PageInfoSchema)` to create a new message.
  */
 export const PageInfoSchema: GenMessage<PageInfo> = /*@__PURE__*/
-  messageDesc(file_axon_common_v1_common, 3);
+  messageDesc(file_axon_common_v1_common, 2);
 
 /**
  * @generated from message axon.common.v1.ProviderError
@@ -152,7 +120,7 @@ export type ProviderError = Message<"axon.common.v1.ProviderError"> & {
  * Use `create(ProviderErrorSchema)` to create a new message.
  */
 export const ProviderErrorSchema: GenMessage<ProviderError> = /*@__PURE__*/
-  messageDesc(file_axon_common_v1_common, 4);
+  messageDesc(file_axon_common_v1_common, 3);
 
 /**
  * @generated from enum axon.common.v1.ResourceKind

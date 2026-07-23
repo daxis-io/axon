@@ -5,6 +5,7 @@ package axon.exec.v1;
 import "axon/common/v1/common.proto";
 import "axon/dataaccess/v1/dataaccess.proto";
 import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
 
 // Selects the executor requested for a query.
 enum ExecutionTarget {
@@ -15,27 +16,40 @@ enum ExecutionTarget {
   EXECUTION_TARGET_REMOTE_SERVICE = 3;
 }
 
-// Names a query capability that can gate execution or fallback.
-enum CapabilityKey {
-  CAPABILITY_KEY_UNSPECIFIED = 0;
-  CAPABILITY_KEY_CHANGE_DATA_FEED = 1;
-  CAPABILITY_KEY_COLUMN_MAPPING = 2;
-  CAPABILITY_KEY_DELETION_VECTORS = 3;
-  CAPABILITY_KEY_MULTI_PARTITION_EXECUTION = 4;
-  CAPABILITY_KEY_PROXY_ACCESS = 5;
-  CAPABILITY_KEY_RANGE_READS = 6;
-  CAPABILITY_KEY_SIGNED_URL_ACCESS = 7;
-  CAPABILITY_KEY_TIME_TRAVEL = 8;
-  CAPABILITY_KEY_TIMESTAMP_NTZ = 9;
-  CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES = 10;
+// Records the seven authoritative states for one caller-created execution ID.
+enum ExecutionLifecycleState {
+  EXECUTION_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  EXECUTION_LIFECYCLE_STATE_CREATED = 1;
+  EXECUTION_LIFECYCLE_STATE_RUNNING = 2;
+  EXECUTION_LIFECYCLE_STATE_CANCEL_REQUESTED = 3;
+  EXECUTION_LIFECYCLE_STATE_REJECTED = 4;
+  EXECUTION_LIFECYCLE_STATE_COMPLETED = 5;
+  EXECUTION_LIFECYCLE_STATE_FAILED = 6;
+  EXECUTION_LIFECYCLE_STATE_CANCELLED = 7;
 }
 
-// Classifies query failures for retry, fallback, and UI handling.
+// Classifies a request that did not enter accepted execution.
+enum ExecutionRejectionReason {
+  EXECUTION_REJECTION_REASON_UNSPECIFIED = 0;
+  EXECUTION_REJECTION_REASON_INVALID_REQUEST = 1;
+  EXECUTION_REJECTION_REASON_DEADLINE_EXPIRED = 2;
+  EXECUTION_REJECTION_REASON_CANCELLED = 3;
+  EXECUTION_REJECTION_REASON_EXECUTION_ID_REUSE = 4;
+  EXECUTION_REJECTION_REASON_RESOURCE_LIMIT = 5;
+  EXECUTION_REJECTION_REASON_UNSUPPORTED = 6;
+  EXECUTION_REJECTION_REASON_ACCESS_DENIED = 7;
+  EXECUTION_REJECTION_REASON_UNAVAILABLE = 8;
+  EXECUTION_REJECTION_REASON_CAPACITY = 9;
+}
+
+// Classifies query failures for UI handling.
 enum QueryErrorCode {
+  reserved 3;
+  reserved "QUERY_ERROR_CODE_FALLBACK_REQUIRED";
+
   QUERY_ERROR_CODE_UNSPECIFIED = 0;
   QUERY_ERROR_CODE_ACCESS_DENIED = 1;
   QUERY_ERROR_CODE_EXECUTION_FAILED = 2;
-  QUERY_ERROR_CODE_FALLBACK_REQUIRED = 3;
   QUERY_ERROR_CODE_INVALID_REQUEST = 4;
   QUERY_ERROR_CODE_OBJECT_NOT_FOUND = 5;
   QUERY_ERROR_CODE_OBJECT_STORE_PROTOCOL = 6;
@@ -57,24 +71,10 @@ enum ArrowIpcFormat {
   ARROW_IPC_FORMAT_FILE = 2;
 }
 
-// Describes whether Arrow IPC bytes arrive in one result or as chunks.
-enum ArrowIpcDelivery {
-  ARROW_IPC_DELIVERY_UNSPECIFIED = 0;
-  ARROW_IPC_DELIVERY_SINGLE_BUFFER = 1;
-  ARROW_IPC_DELIVERY_CHUNKED_BUFFERS = 2;
-}
-
 // Selects the worker's SQL result encoding.
 enum BrowserWorkerSqlOutput {
   BROWSER_WORKER_SQL_OUTPUT_UNSPECIFIED = 0;
   BROWSER_WORKER_SQL_OUTPUT_ARROW_IPC_STREAM = 1;
-}
-
-// Selects how the worker transfers an SQL result.
-enum BrowserWorkerSqlDelivery {
-  BROWSER_WORKER_SQL_DELIVERY_UNSPECIFIED = 0;
-  BROWSER_WORKER_SQL_DELIVERY_SINGLE_BUFFER = 1;
-  BROWSER_WORKER_SQL_DELIVERY_CHUNKED_BUFFERS = 2;
 }
 
 // Identifies the worker operation that emitted an event.
@@ -105,15 +105,6 @@ enum BrowserWorkerLogLevel {
   BROWSER_WORKER_LOG_LEVEL_ERROR = 4;
 }
 
-// Carries one resolved descriptor that an executor can open directly.
-message OpenableDescriptor {
-  // Resolution fallback and blocked plans are excluded.
-  oneof descriptor {
-    axon.dataaccess.v1.BrowserHttpSnapshotDescriptor snapshot = 1;
-    axon.dataaccess.v1.BrowserHttpParquetDatasetDescriptor parquet_dataset = 2 [json_name = "parquet_dataset"];
-  }
-}
-
 // Requests a bounded result page while preserving explicit zero values.
 message QueryResultPage {
   optional uint64 limit = 1;
@@ -136,48 +127,31 @@ message QueryExecutionOptions {
   QueryRuntimeLimits runtime_limits = 4 [json_name = "runtime_limits"];
 }
 
-// Describes SQL execution against a table snapshot and preferred target.
+// Describes SQL execution against the binding carried by ExecuteRequest.
 message QueryRequest {
-  string table_uri = 1 [json_name = "table_uri"];
-  optional int64 snapshot_version = 2 [json_name = "snapshot_version"];
+  reserved 1, 2;
+  reserved "table_uri", "snapshot_version";
+
   string sql = 3;
   ExecutionTarget preferred_target = 4 [json_name = "preferred_target"];
   QueryExecutionOptions options = 5;
 }
 
-// Marks a fallback variant that needs no additional data.
-message FallbackReasonMarker {}
-
-// Explains which capability state prevented execution on the requested target.
-message CapabilityGateFallbackReason {
-  CapabilityKey capability = 1;
-  axon.dataaccess.v1.CapabilityState required_state = 2 [json_name = "required_state"];
-}
-
-// Identifies why execution moved or must move to another target.
-message FallbackReason {
-  oneof reason {
-    FallbackReasonMarker access_denied = 1 [json_name = "access_denied"];
-    FallbackReasonMarker browser_runtime_constraint = 2 [json_name = "browser_runtime_constraint"];
-    FallbackReasonMarker native_required = 3 [json_name = "native_required"];
-    FallbackReasonMarker network_failure = 4 [json_name = "network_failure"];
-    FallbackReasonMarker range_read_unavailable = 5 [json_name = "range_read_unavailable"];
-    FallbackReasonMarker security_policy = 6 [json_name = "security_policy"];
-    FallbackReasonMarker signed_url_expired = 7 [json_name = "signed_url_expired"];
-    CapabilityGateFallbackReason capability_gate = 8 [json_name = "capability_gate"];
-  }
-}
-
-// Returns a structured query failure and optional fallback guidance.
+// Returns a structured query failure.
 message QueryError {
+  reserved 4;
+  reserved "fallback_reason";
+
   QueryErrorCode code = 1;
   string message = 2;
   ExecutionTarget target = 3;
-  FallbackReason fallback_reason = 4 [json_name = "fallback_reason"];
 }
 
 // Summarizes query, I/O, caching, and encoding work reported by an executor.
 message QueryMetricsSummary {
+  reserved 38;
+  reserved "arrow_ipc_chunk_count";
+
   optional uint64 bytes_fetched = 1 [json_name = "bytes_fetched"];
   optional uint64 duration_ms = 2 [json_name = "duration_ms"];
   optional uint64 files_touched = 3 [json_name = "files_touched"];
@@ -215,7 +189,6 @@ message QueryMetricsSummary {
   optional uint64 snapshot_bootstrap_duration_ms = 35 [json_name = "snapshot_bootstrap_duration_ms"];
   optional BrowserAccessMode access_mode = 36 [json_name = "access_mode"];
   optional uint64 arrow_ipc_bytes = 37 [json_name = "arrow_ipc_bytes"];
-  optional uint64 arrow_ipc_chunk_count = 38 [json_name = "arrow_ipc_chunk_count"];
   optional uint64 preview_rows = 39 [json_name = "preview_rows"];
   optional uint64 preview_string_bytes = 40 [json_name = "preview_string_bytes"];
   optional uint64 planning_duration_ms = 41 [json_name = "planning_duration_ms"];
@@ -235,21 +208,24 @@ message QueryMetricsSummary {
 
 // Carries execution metadata shared by full results and previews.
 message QueryResponse {
+  reserved 3;
+  reserved "fallback_reason";
+
   ExecutionTarget executed_on = 1 [json_name = "executed_on"];
   axon.dataaccess.v1.CapabilityReport capabilities = 2;
-  FallbackReason fallback_reason = 3 [json_name = "fallback_reason"];
   QueryMetricsSummary metrics = 4;
   optional string explain = 5;
 }
 
-// Carries opaque Arrow IPC bytes or metadata for chunks streamed in separate events.
+// Carries one opaque Arrow IPC buffer bounded by the admitted byte budget.
 message ArrowIpcResult {
+  reserved 3, 6;
+  reserved "delivery", "chunk_count";
+
   ArrowIpcFormat format = 1;
   string content_type = 2 [json_name = "content_type"];
-  optional ArrowIpcDelivery delivery = 3;
   optional bytes bytes = 4;
   optional uint64 byte_length = 5 [json_name = "byte_length"];
-  optional uint64 chunk_count = 6 [json_name = "chunk_count"];
 }
 
 // Encodes one UI preview value without modeling Arrow rows.
@@ -371,18 +347,21 @@ message BrowserWorkerInspectParquetCommand {
 
 // Executes a query against a registered worker table.
 message BrowserWorkerSqlCommand {
+  reserved 5;
+  reserved "delivery";
+
   string request_id = 1 [json_name = "request_id"];
+  string execution_id = 7 [json_name = "execution_id"];
   string name = 2;
   QueryRequest query = 3;
   optional BrowserWorkerSqlOutput output = 4;
-  optional BrowserWorkerSqlDelivery delivery = 5;
   optional bool browser_safe_defaults = 6 [json_name = "browser_safe_defaults"];
 }
 
-// Requests fire-and-forget cancellation of an in-flight worker query.
+// Requests fire-and-forget cancellation of an in-flight worker execution.
 message BrowserWorkerCancelCommand {
   string request_id = 1 [json_name = "request_id"];
-  optional string query_id = 2 [json_name = "query_id"];
+  string execution_id = 2 [json_name = "execution_id"];
 }
 
 // Releases a registered table from the worker session.
@@ -404,11 +383,11 @@ message BrowserWorkerCommand {
   }
 }
 
-// Correlates a worker event with its operation, request, query, and table.
+// Correlates a worker event with its operation, internal span, execution, and table.
 message BrowserWorkerEventContext {
   BrowserWorkerEventPhase phase = 1;
   optional string request_id = 2 [json_name = "request_id"];
-  optional string query_id = 3 [json_name = "query_id"];
+  optional string execution_id = 3 [json_name = "execution_id"];
   optional string table_name = 4 [json_name = "table_name"];
 }
 
@@ -427,6 +406,9 @@ message BrowserWorkerLogEvent {
 
 // Reports query and range-read metrics observed during a worker operation.
 message BrowserWorkerRangeReadMetricsEvent {
+  reserved 38;
+  reserved "arrow_ipc_chunk_count";
+
   BrowserWorkerEventContext context = 1;
   optional uint64 bytes_fetched = 2 [json_name = "bytes_fetched"];
   optional uint64 files_touched = 3 [json_name = "files_touched"];
@@ -464,7 +446,6 @@ message BrowserWorkerRangeReadMetricsEvent {
   optional uint64 snapshot_bootstrap_duration_ms = 35 [json_name = "snapshot_bootstrap_duration_ms"];
   optional BrowserAccessMode access_mode = 36 [json_name = "access_mode"];
   optional uint64 arrow_ipc_bytes = 37 [json_name = "arrow_ipc_bytes"];
-  optional uint64 arrow_ipc_chunk_count = 38 [json_name = "arrow_ipc_chunk_count"];
   optional uint64 preview_rows = 39 [json_name = "preview_rows"];
   optional uint64 preview_string_bytes = 40 [json_name = "preview_string_bytes"];
   optional uint64 planning_duration_ms = 41 [json_name = "planning_duration_ms"];
@@ -498,45 +479,16 @@ message BrowserWorkerCacheMetricsEvent {
   BrowserWorkerTransportCacheMetrics transport = 5;
 }
 
-// Signals that a query cannot continue on its requested target.
-message BrowserWorkerFallbackEvent {
-  BrowserWorkerEventContext context = 1;
-  FallbackReason reason = 2;
-}
-
-// Reports query cancellation as a structured error.
-message BrowserWorkerCancellationEvent {
-  BrowserWorkerEventContext context = 1;
-  QueryError error = 2;
-}
-
-// Signals a terminal failure during worker command processing.
-message BrowserWorkerTerminalErrorEvent {
-  BrowserWorkerEventContext context = 1;
-  QueryError error = 2;
-}
-
-// Carries one ordered opaque byte chunk for chunked Arrow IPC delivery.
-message BrowserWorkerArrowIpcChunkEvent {
-  BrowserWorkerEventContext context = 1;
-  string request_id = 2 [json_name = "request_id"];
-  optional uint64 sequence = 3;
-  optional uint64 byte_offset = 4 [json_name = "byte_offset"];
-  optional uint64 byte_length = 5 [json_name = "byte_length"];
-  bytes bytes = 6;
-}
-
-// Wraps one event emitted during worker command processing.
+// Wraps one nonterminal event emitted during worker command processing.
 message BrowserWorkerEventEnvelope {
+  reserved 5, 6, 7, 8;
+  reserved "fallback", "cancellation", "terminal_error", "arrow_ipc_chunk";
+
   oneof event {
     BrowserWorkerProgressEvent progress = 1;
     BrowserWorkerLogEvent log = 2;
     BrowserWorkerRangeReadMetricsEvent range_read_metrics = 3 [json_name = "range_read_metrics"];
     BrowserWorkerCacheMetricsEvent cache_metrics = 4 [json_name = "cache_metrics"];
-    BrowserWorkerFallbackEvent fallback = 5;
-    BrowserWorkerCancellationEvent cancellation = 6;
-    BrowserWorkerTerminalErrorEvent terminal_error = 7 [json_name = "terminal_error"];
-    BrowserWorkerArrowIpcChunkEvent arrow_ipc_chunk = 8 [json_name = "arrow_ipc_chunk"];
   }
 }
 
@@ -583,27 +535,88 @@ message BrowserWorkerResponseEnvelope {
   }
 }
 
-// Requests streaming execution against a directly openable table descriptor.
+// Requests one idempotent admission under a caller-created execution identity.
 message ExecuteRequest {
-  string request_id = 1 [json_name = "request_id"];
-  axon.common.v1.ObjectRef table_ref = 2 [json_name = "table_ref"];
-  OpenableDescriptor descriptor = 3;
+  string execution_id = 1 [json_name = "execution_id"];
+
+  oneof binding {
+    axon.dataaccess.v1.ResolvedBrowserRead browser_read = 2 [json_name = "browser_read"];
+    axon.common.v1.CanonicalResourceRef logical_resource = 3 [json_name = "logical_resource"];
+  }
+
   QueryRequest query = 4;
+  google.protobuf.Timestamp deadline = 5;
 }
 
-// Carries one streamed worker event or one terminal worker response.
+// Records one accepted admission. Launch is true only for the first identical request.
+message ExecutionAccepted {
+  string execution_id = 1 [json_name = "execution_id"];
+  ExecutionLifecycleState state = 2;
+  bool launch = 3;
+}
+
+// Records one rejected admission. Rejected executions emit no execution events.
+message ExecutionRejected {
+  string execution_id = 1 [json_name = "execution_id"];
+  ExecutionRejectionReason reason = 2;
+  string message = 3;
+}
+
+// Carries exactly one accepted or rejected admission result.
+message ExecutionAdmission {
+  oneof outcome {
+    ExecutionAccepted accepted = 1;
+    ExecutionRejected rejected = 2;
+  }
+}
+
+// Carries the successful result for one authoritative completed state.
+message ExecutionCompleted {
+  QueryResponse response = 1;
+  ArrowIpcResult result = 2;
+  ResultPreview preview = 3;
+}
+
+// Carries the structured error for one authoritative failed state.
+message ExecutionFailed {
+  QueryError error = 1;
+}
+
+// Marks one authoritative cancelled state.
+message ExecutionCancelled {}
+
+// Records exactly one authoritative terminal outcome.
+message ExecutionTerminalState {
+  oneof outcome {
+    ExecutionCompleted completed = 1;
+    ExecutionFailed failed = 2;
+    ExecutionCancelled cancelled = 3;
+  }
+}
+
+// Delivers the recorded terminal state at most once for one execution stream.
+message ExecutionTerminalFrame {
+  string execution_id = 1 [json_name = "execution_id"];
+  uint64 sequence = 2;
+  ExecutionTerminalState state = 3;
+}
+
+// Carries admission first, then nonterminal events, and at most one terminal frame.
 message ExecuteResponse {
   oneof item {
-    BrowserWorkerEventEnvelope event = 1;
-    BrowserWorkerResponseEnvelope response = 2;
+    ExecutionAdmission admission = 1;
+    BrowserWorkerEventEnvelope event = 2;
+    ExecutionTerminalFrame terminal = 3;
   }
 }
 
 // Requests a bounded sample from a directly openable table descriptor.
 message PreviewRequest {
-  string request_id = 1 [json_name = "request_id"];
-  axon.common.v1.ObjectRef table_ref = 2 [json_name = "table_ref"];
-  OpenableDescriptor descriptor = 3;
+  reserved 3;
+  reserved "descriptor";
+
+  string execution_id = 1 [json_name = "execution_id"];
+  axon.dataaccess.v1.ResolvedBrowserRead browser_read = 2 [json_name = "browser_read"];
   ExecutionTarget preferred_target = 4 [json_name = "preferred_target"];
   optional uint64 limit = 5;
 }
@@ -622,27 +635,31 @@ message PreviewResponse {
   }
 }
 
-// Requests cancellation of a query under a separate control request ID.
+// Requests idempotent cancellation keyed only by execution identity.
 message CancelRequest {
-  string request_id = 1 [json_name = "request_id"];
-  string query_id = 2 [json_name = "query_id"];
+  reserved 2;
+  reserved "query_id";
+
+  string execution_id = 1 [json_name = "execution_id"];
 }
 
-// Acknowledges a cancellation request and whether the target accepted it.
+// Returns the authoritative state recorded for the cancellation target.
 message CancelResponse {
-  string request_id = 1 [json_name = "request_id"];
-  string query_id = 2 [json_name = "query_id"];
-  optional bool accepted = 3;
+  reserved 3;
+  reserved "accepted";
+
+  string execution_id = 1 [json_name = "execution_id"];
+  ExecutionLifecycleState state = 2;
 }
 
 // Exposes query execution, preview, and cancellation at the process boundary.
 // The public contract uses QueryEngine rather than a transport-specific service name.
 // buf:lint:ignore SERVICE_SUFFIX
 service QueryEngine {
-  // Streams worker events followed by one terminal response.
+  // Streams admission, nonterminal events, and at most one terminal frame.
   rpc Execute(ExecuteRequest) returns (stream ExecuteResponse);
   // Returns one bounded preview result.
   rpc Preview(PreviewRequest) returns (PreviewResponse);
-  // Requests cancellation and reports whether the target accepted it.
+  // Requests cancellation and returns the recorded lifecycle state.
   rpc Cancel(CancelRequest) returns (CancelResponse);
 }

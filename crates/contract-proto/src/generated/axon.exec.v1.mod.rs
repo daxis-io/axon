@@ -32,10 +32,6 @@ pub mod __buffa {
     }
 }
 #[doc(inline)]
-pub use self::__buffa::view::OpenableDescriptorView;
-#[doc(inline)]
-pub use self::__buffa::view::OpenableDescriptorOwnedView;
-#[doc(inline)]
 pub use self::__buffa::view::QueryResultPageView;
 #[doc(inline)]
 pub use self::__buffa::view::QueryResultPageOwnedView;
@@ -51,18 +47,6 @@ pub use self::__buffa::view::QueryExecutionOptionsOwnedView;
 pub use self::__buffa::view::QueryRequestView;
 #[doc(inline)]
 pub use self::__buffa::view::QueryRequestOwnedView;
-#[doc(inline)]
-pub use self::__buffa::view::FallbackReasonMarkerView;
-#[doc(inline)]
-pub use self::__buffa::view::FallbackReasonMarkerOwnedView;
-#[doc(inline)]
-pub use self::__buffa::view::CapabilityGateFallbackReasonView;
-#[doc(inline)]
-pub use self::__buffa::view::CapabilityGateFallbackReasonOwnedView;
-#[doc(inline)]
-pub use self::__buffa::view::FallbackReasonView;
-#[doc(inline)]
-pub use self::__buffa::view::FallbackReasonOwnedView;
 #[doc(inline)]
 pub use self::__buffa::view::QueryErrorView;
 #[doc(inline)]
@@ -168,22 +152,6 @@ pub use self::__buffa::view::BrowserWorkerCacheMetricsEventView;
 #[doc(inline)]
 pub use self::__buffa::view::BrowserWorkerCacheMetricsEventOwnedView;
 #[doc(inline)]
-pub use self::__buffa::view::BrowserWorkerFallbackEventView;
-#[doc(inline)]
-pub use self::__buffa::view::BrowserWorkerFallbackEventOwnedView;
-#[doc(inline)]
-pub use self::__buffa::view::BrowserWorkerCancellationEventView;
-#[doc(inline)]
-pub use self::__buffa::view::BrowserWorkerCancellationEventOwnedView;
-#[doc(inline)]
-pub use self::__buffa::view::BrowserWorkerTerminalErrorEventView;
-#[doc(inline)]
-pub use self::__buffa::view::BrowserWorkerTerminalErrorEventOwnedView;
-#[doc(inline)]
-pub use self::__buffa::view::BrowserWorkerArrowIpcChunkEventView;
-#[doc(inline)]
-pub use self::__buffa::view::BrowserWorkerArrowIpcChunkEventOwnedView;
-#[doc(inline)]
 pub use self::__buffa::view::BrowserWorkerEventEnvelopeView;
 #[doc(inline)]
 pub use self::__buffa::view::BrowserWorkerEventEnvelopeOwnedView;
@@ -215,6 +183,38 @@ pub use self::__buffa::view::BrowserWorkerResponseEnvelopeOwnedView;
 pub use self::__buffa::view::ExecuteRequestView;
 #[doc(inline)]
 pub use self::__buffa::view::ExecuteRequestOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionAcceptedView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionAcceptedOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionRejectedView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionRejectedOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionAdmissionView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionAdmissionOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionCompletedView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionCompletedOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionFailedView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionFailedOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionCancelledView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionCancelledOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionTerminalStateView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionTerminalStateOwnedView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionTerminalFrameView;
+#[doc(inline)]
+pub use self::__buffa::view::ExecutionTerminalFrameOwnedView;
 #[doc(inline)]
 pub use self::__buffa::view::ExecuteResponseView;
 #[doc(inline)]

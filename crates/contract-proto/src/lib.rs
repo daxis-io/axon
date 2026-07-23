@@ -95,20 +95,11 @@ pub mod axon_fs_v1 {
 }
 
 pub use axon_common_v1::{
-    CanonicalResourceRef, CanonicalResourceRefOwnedView, CanonicalResourceRefView, ObjectRef,
-    ObjectRefOwnedView, ObjectRefView, PageInfo, PageInfoOwnedView, PageInfoView, PageRequest,
-    PageRequestOwnedView, PageRequestView, ProviderError, ProviderErrorCode,
-    ProviderErrorOwnedView, ProviderErrorView, ResourceKind,
+    CanonicalResourceRef, CanonicalResourceRefOwnedView, CanonicalResourceRefView, PageInfo,
+    PageInfoOwnedView, PageInfoView, PageRequest, PageRequestOwnedView, PageRequestView,
+    ProviderError, ProviderErrorCode, ProviderErrorOwnedView, ProviderErrorView, ResourceKind,
 };
 
 pub fn canonical_resource_ref_full_name() -> &'static str {
     <CanonicalResourceRef as buffa::MessageName>::FULL_NAME
-}
-
-pub fn object_ref_full_name() -> &'static str {
-    <ObjectRef as buffa::MessageName>::FULL_NAME
-}
-
-pub fn read_access_plan_full_name() -> &'static str {
-    <axon_dataaccess_v1::ReadAccessPlan as buffa::MessageName>::FULL_NAME
 }

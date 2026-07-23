@@ -2,13 +2,6 @@ syntax = "proto3";
 
 package axon.common.v1;
 
-message ObjectRef {
-  string connection_id = 1;
-  string catalog = 2;
-  string schema = 3;
-  string name = 4;
-}
-
 enum ResourceKind {
   RESOURCE_KIND_UNSPECIFIED = 0;
   RESOURCE_KIND_TABLE = 1;

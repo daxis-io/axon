@@ -10,6 +10,7 @@ import {
   ProviderErrorSchema,
   ResourceKind,
   file_axon_common_v1_common,
+  type CanonicalResourceRef,
 } from './protobuf/axon/common/v1/common_pb.ts';
 import {
   ColumnNodeSchema,
@@ -121,6 +122,7 @@ describe('contract codegen', () => {
       (message: DescMessage) => message.name,
     );
     const commonEnums = file_axon_common_v1_common.enums.map((value) => value.name);
+    expect(commonMessages).not.toContain('ObjectRef');
     expect(commonMessages).not.toContain('ProviderCapabilities');
     expect(commonEnums).not.toContain('ProviderAuthority');
 
@@ -153,6 +155,38 @@ describe('contract codegen', () => {
       'comment',
       'name',
     ]);
+  });
+
+  it('rejects incomplete canonical resource tuples at the contract boundary', () => {
+    const valid = create(CanonicalResourceRefSchema, {
+      connectionId: 'connection-public-gcs',
+      providerNamespace: 'axon.public-gcs/v1',
+      kind: ResourceKind.TABLE,
+      identity: {
+        case: 'canonicalLocator',
+        value: 'gs://axon-fixtures/tables/events',
+      },
+    });
+    expect(validateCanonicalResourceRef(valid)).toBe(valid);
+
+    const invalid = [
+      create(CanonicalResourceRefSchema, { ...valid, connectionId: '' }),
+      create(CanonicalResourceRefSchema, { ...valid, providerNamespace: '' }),
+      create(CanonicalResourceRefSchema, { ...valid, kind: ResourceKind.UNSPECIFIED }),
+      create(CanonicalResourceRefSchema, { ...valid, identity: { case: undefined } }),
+      create(CanonicalResourceRefSchema, {
+        ...valid,
+        identity: { case: 'canonicalLocator', value: '' },
+      }),
+      create(CanonicalResourceRefSchema, {
+        ...valid,
+        identity: { case: 'providerObjectId', value: '' },
+      }),
+    ];
+
+    for (const resource of invalid) {
+      expect(() => validateCanonicalResourceRef(resource)).toThrow('canonical resource');
+    }
   });
 
   it('keeps locator canonicalization versioned, deterministic, and capability-free', () => {
@@ -240,4 +274,20 @@ function canonicalizeFixture(fixture: CanonicalLocatorFixture): string {
 
 function containsCapabilityMaterial(locator: string): boolean {
   return /[?#]|(?:token|signature|credential|grant|x-amz-)/i.test(locator);
+}
+
+function validateCanonicalResourceRef(resource: CanonicalResourceRef): CanonicalResourceRef {
+  if (!resource.connectionId.trim()) {
+    throw new TypeError('canonical resource connection_id is required');
+  }
+  if (!resource.providerNamespace.trim()) {
+    throw new TypeError('canonical resource provider_namespace is required');
+  }
+  if (resource.kind === ResourceKind.UNSPECIFIED) {
+    throw new TypeError('canonical resource kind is required');
+  }
+  if (!resource.identity.case || !resource.identity.value.trim()) {
+    throw new TypeError('canonical resource identity is required');
+  }
+  return resource;
 }

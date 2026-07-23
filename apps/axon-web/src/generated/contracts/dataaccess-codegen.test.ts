@@ -8,12 +8,7 @@ import {
   ResourceKind,
 } from './protobuf/axon/common/v1/common_pb.ts';
 import {
-  BlockedReadAccessPlanSchema,
   BrowserAccessClass,
-  BrokeredDeltaAccessMode,
-  BrokeredDeltaReadAccessPlanSchema,
-  BrokeredObjectAccessSchema,
-  BrokeredPolicyAuthoritySchema,
   BrowserHttpParquetDatasetDescriptorSchema,
   BrowserHttpSnapshotDescriptorSchema,
   BrowserReadDescriptorSchema,
@@ -22,7 +17,6 @@ import {
   CapabilityReportSchema,
   CapabilityState,
   BrowserHttpFileDescriptorSchema,
-  DirectExternalEngineReadSupport,
   ObjectGrantBatchSignResponseSchema,
   ObjectGrantAuditAction,
   ObjectGrantAuditEventSchema,
@@ -33,17 +27,15 @@ import {
   ObjectGrantRangeRequestSchema,
   ObjectGrantRangeResponseSchema,
   PartitionValueSchema,
-  PolicyAuthorityKind,
-  ReadAccessPlanSchema,
   ReadDeniedSchema,
   ReadResolutionReason,
   ReadResolutionSchema,
   RemoteRequiredSchema,
   ResolvedBrowserReadSchema,
   ResolutionProvenanceSchema,
+  file_axon_dataaccess_v1_dataaccess,
   type CapabilityReport,
   type ResolvedBrowserRead,
-  ReadAccessPlanReason,
 } from './protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 
 describe('dataaccess contract codegen', () => {
@@ -293,47 +285,166 @@ describe('dataaccess contract codegen', () => {
     expect(validateBrowserRead(publicRead, nowMs, [])).toBe(publicRead);
   });
 
-  it('normalizes legacy read access plan JSON into protobuf oneof JSON', () => {
-    const legacyBrokeredDelta = {
-      plan_type: 'brokered_delta',
-      tableId: 'tbl-123',
-      fullName: 'main.sales.orders',
-      tableRoot: 's3://prod-bucket/tables/orders',
-      grantId: 'grant-456',
-      expiresAtEpochMs: 1_800_000_000_000,
-      deltaAccessMode: 'delta_log',
-      policyAuthority: {
-        authority: 'unity_catalog',
-        directExternalEngineRead: 'confirmed',
-      },
-      objectAccess: {
-        list: true,
-        head: true,
-        get: false,
-        rangeGet: true,
-        batchSign: true,
-        proxyRange: true,
-      },
-    } satisfies LegacyReadAccessPlan;
-
-    const normalized = legacyReadAccessPlanToProtobufJson(legacyBrokeredDelta);
-    const decoded = fromJson(ReadAccessPlanSchema, normalized);
-    const protobufJson = toJson(ReadAccessPlanSchema, decoded);
-
-    expect(protobufJson).toEqual(normalized);
-    expect(protobufJson).toMatchObject({
-      brokeredDelta: {
-        tableId: 'tbl-123',
-        fullName: 'main.sales.orders',
-        grantId: 'grant-456',
-        expiresAtEpochMs: '1800000000000',
-        deltaAccessMode: 'BROKERED_DELTA_ACCESS_MODE_DELTA_LOG',
-        policyAuthority: {
-          authority: 'POLICY_AUTHORITY_KIND_UNITY_CATALOG',
-          directExternalEngineRead: 'DIRECT_EXTERNAL_ENGINE_READ_SUPPORT_CONFIRMED',
+  it('rejects incomplete browser-read identity, descriptor, access, and provenance', () => {
+    const valid = create(ResolvedBrowserReadSchema, {
+      resource: create(CanonicalResourceRefSchema, {
+        connectionId: 'connection-public-gcs',
+        providerNamespace: 'axon.public-gcs/v1',
+        kind: ResourceKind.TABLE,
+        identity: {
+          case: 'canonicalLocator',
+          value: 'gs://axon-fixtures/tables/events',
         },
-      },
+      }),
+      descriptor: create(BrowserReadDescriptorSchema, {
+        descriptor: {
+          case: 'snapshot',
+          value: create(BrowserHttpSnapshotDescriptorSchema, {
+            tableUri: 'gs://axon-fixtures/tables/events',
+          }),
+        },
+      }),
+      accessClass: BrowserAccessClass.PUBLIC,
+      correlationId: 'correlation-001',
+      provenance: create(ResolutionProvenanceSchema, {
+        resolverId: 'public-object-storage',
+        resolutionId: 'resolution-001',
+      }),
     });
+    const nowMs = 1_800_000_000_000;
+    expect(validateBrowserRead(valid, nowMs, [])).toBe(valid);
+
+    expect(() =>
+      validateBrowserRead(
+        create(ResolvedBrowserReadSchema, { ...valid, resource: undefined }),
+        nowMs,
+        [],
+      ),
+    ).toThrow('resource');
+    expect(() =>
+      validateBrowserRead(
+        create(ResolvedBrowserReadSchema, {
+          ...valid,
+          resource: create(CanonicalResourceRefSchema, {
+            ...valid.resource!,
+            connectionId: '',
+          }),
+        }),
+        nowMs,
+        [],
+      ),
+    ).toThrow('canonical resource');
+    expect(() =>
+      validateBrowserRead(
+        create(ResolvedBrowserReadSchema, { ...valid, descriptor: undefined }),
+        nowMs,
+        [],
+      ),
+    ).toThrow('descriptor');
+    expect(() =>
+      validateBrowserRead(
+        create(ResolvedBrowserReadSchema, {
+          ...valid,
+          descriptor: create(BrowserReadDescriptorSchema, {}),
+        }),
+        nowMs,
+        [],
+      ),
+    ).toThrow('descriptor arm');
+    expect(() =>
+      validateBrowserRead(
+        create(ResolvedBrowserReadSchema, {
+          ...valid,
+          accessClass: BrowserAccessClass.UNSPECIFIED,
+        }),
+        nowMs,
+        [],
+      ),
+    ).toThrow('access_class');
+    expect(() =>
+      validateBrowserRead(
+        create(ResolvedBrowserReadSchema, { ...valid, correlationId: '' }),
+        nowMs,
+        [],
+      ),
+    ).toThrow('correlation_id');
+    expect(() =>
+      validateBrowserRead(
+        create(ResolvedBrowserReadSchema, { ...valid, provenance: undefined }),
+        nowMs,
+        [],
+      ),
+    ).toThrow('provenance');
+    expect(() =>
+      validateBrowserRead(
+        create(ResolvedBrowserReadSchema, {
+          ...valid,
+          provenance: create(ResolutionProvenanceSchema, {
+            resolverId: '',
+            resolutionId: 'resolution-001',
+          }),
+        }),
+        nowMs,
+        [],
+      ),
+    ).toThrow('resolver_id');
+    expect(() =>
+      validateBrowserRead(
+        create(ResolvedBrowserReadSchema, {
+          ...valid,
+          descriptor: create(BrowserReadDescriptorSchema, {
+            descriptor: {
+              case: 'snapshot',
+              value: create(BrowserHttpSnapshotDescriptorSchema, {
+                tableUri: 'gs://axon-fixtures/tables/events',
+                browserCompatibility: create(CapabilityReportSchema, {
+                  capabilities: [
+                    create(CapabilityEntrySchema, {
+                      key: CapabilityKey.RANGE_READS,
+                      state: CapabilityState.SUPPORTED,
+                    }),
+                    create(CapabilityEntrySchema, {
+                      key: CapabilityKey.RANGE_READS,
+                      state: CapabilityState.NATIVE_ONLY,
+                    }),
+                  ],
+                }),
+              }),
+            },
+          }),
+        }),
+        nowMs,
+        [],
+      ),
+    ).toThrow('duplicate capability key');
+  });
+
+  it('removes the temporary resolution-plan compatibility hierarchy', () => {
+    const messageNames = file_axon_dataaccess_v1_dataaccess.messages.map(
+      (message) => message.name,
+    );
+    const enumNames = file_axon_dataaccess_v1_dataaccess.enums.map((value) => value.name);
+
+    expect(messageNames).not.toEqual(
+      expect.arrayContaining([
+        'BrokeredObjectAccess',
+        'BrokeredPolicyAuthority',
+        'BrokeredDeltaReadAccessPlan',
+        'DeltaSharingReadAccessPlan',
+        'SqlFallbackRequiredReadAccessPlan',
+        'BlockedReadAccessPlan',
+        'ReadAccessPlan',
+        'TableReadResolution',
+      ]),
+    );
+    expect(enumNames).not.toEqual(
+      expect.arrayContaining([
+        'ReadAccessPlanReason',
+        'BrokeredDeltaAccessMode',
+        'PolicyAuthorityKind',
+        'DirectExternalEngineReadSupport',
+      ]),
+    );
   });
 
   it('normalizes nullable legacy partition values through explicit protobuf partition values', () => {
@@ -483,78 +594,6 @@ describe('dataaccess contract codegen', () => {
   });
 });
 
-type LegacyReadAccessPlan = {
-  plan_type: 'brokered_delta' | 'blocked';
-  tableId: string;
-  fullName: string;
-  tableRoot?: string;
-  grantId?: string;
-  expiresAtEpochMs?: number;
-  deltaAccessMode?: 'delta_log' | 'presigned_files';
-  policyAuthority?: {
-    authority: 'unity_catalog' | 'delta_sharing' | 'mock_broker';
-    directExternalEngineRead: 'confirmed' | 'not_confirmed';
-  };
-  objectAccess?: {
-    list: boolean;
-    head: boolean;
-    get: boolean;
-    rangeGet: boolean;
-    batchSign: boolean;
-    proxyRange: boolean;
-  };
-  reason?: 'row_filter' | 'unknown_policy_state';
-  message?: string;
-};
-
-function legacyReadAccessPlanToProtobufJson(plan: LegacyReadAccessPlan): JsonValue {
-  switch (plan.plan_type) {
-    case 'brokered_delta': {
-      const brokeredDelta = create(BrokeredDeltaReadAccessPlanSchema, {
-        tableId: plan.tableId,
-        fullName: plan.fullName,
-        tableRoot: plan.tableRoot,
-        grantId: plan.grantId,
-        expiresAtEpochMs: BigInt(plan.expiresAtEpochMs ?? 0),
-        deltaAccessMode: normalizeDeltaAccessMode(plan.deltaAccessMode),
-        policyAuthority: create(BrokeredPolicyAuthoritySchema, {
-          authority: normalizePolicyAuthority(plan.policyAuthority?.authority),
-          directExternalEngineRead: normalizeDirectExternalEngineRead(
-            plan.policyAuthority?.directExternalEngineRead,
-          ),
-        }),
-        objectAccess: create(BrokeredObjectAccessSchema, plan.objectAccess),
-      });
-      return toJson(
-        ReadAccessPlanSchema,
-        create(ReadAccessPlanSchema, {
-          plan: {
-            case: 'brokeredDelta',
-            value: brokeredDelta,
-          },
-        }),
-      );
-    }
-    case 'blocked': {
-      const blocked = create(BlockedReadAccessPlanSchema, {
-        tableId: plan.tableId,
-        fullName: plan.fullName,
-        reason: normalizeReadAccessPlanReason(plan.reason),
-        message: plan.message,
-      });
-      return toJson(
-        ReadAccessPlanSchema,
-        create(ReadAccessPlanSchema, {
-          plan: {
-            case: 'blocked',
-            value: blocked,
-          },
-        }),
-      );
-    }
-  }
-}
-
 type LegacyBrowserHttpFileDescriptor = {
   path: string;
   url: string;
@@ -609,58 +648,6 @@ function legacyBrowserHttpFileDescriptorToProtobufJson(
   );
 }
 
-function normalizeDeltaAccessMode(
-  value: LegacyReadAccessPlan['deltaAccessMode'],
-): BrokeredDeltaAccessMode {
-  switch (value) {
-    case 'delta_log':
-      return BrokeredDeltaAccessMode.DELTA_LOG;
-    case 'presigned_files':
-      return BrokeredDeltaAccessMode.PRESIGNED_FILES;
-    default:
-      return BrokeredDeltaAccessMode.UNSPECIFIED;
-  }
-}
-
-function normalizePolicyAuthority(
-  value: NonNullable<LegacyReadAccessPlan['policyAuthority']>['authority'] | undefined,
-): PolicyAuthorityKind {
-  switch (value) {
-    case 'unity_catalog':
-      return PolicyAuthorityKind.UNITY_CATALOG;
-    case 'delta_sharing':
-      return PolicyAuthorityKind.DELTA_SHARING;
-    case 'mock_broker':
-      return PolicyAuthorityKind.MOCK_BROKER;
-    default:
-      return PolicyAuthorityKind.UNSPECIFIED;
-  }
-}
-
-function normalizeDirectExternalEngineRead(
-  value: NonNullable<LegacyReadAccessPlan['policyAuthority']>['directExternalEngineRead'] | undefined,
-): DirectExternalEngineReadSupport {
-  switch (value) {
-    case 'confirmed':
-      return DirectExternalEngineReadSupport.CONFIRMED;
-    case 'not_confirmed':
-      return DirectExternalEngineReadSupport.NOT_CONFIRMED;
-    default:
-      return DirectExternalEngineReadSupport.UNSPECIFIED;
-  }
-}
-
-function normalizeReadAccessPlanReason(value: LegacyReadAccessPlan['reason']): ReadAccessPlanReason {
-  switch (value) {
-    case 'row_filter':
-      return ReadAccessPlanReason.ROW_FILTER;
-    case 'unknown_policy_state':
-      return ReadAccessPlanReason.UNKNOWN_POLICY_STATE;
-    default:
-      return ReadAccessPlanReason.UNSPECIFIED;
-  }
-}
-
 function legacyObjectGrantAuditEventToProtobufJson(event: LegacyObjectGrantAuditEvent): JsonValue {
   return toJson(
     ObjectGrantAuditEventSchema,
@@ -713,6 +700,37 @@ function validateBrowserRead(
   nowMs: number,
   capabilityExpiriesMs: readonly number[],
 ): ResolvedBrowserRead {
+  if (!read.resource) {
+    throw new TypeError('browser_read resource is required');
+  }
+  validateCanonicalResource(read.resource);
+  if (!read.descriptor) {
+    throw new TypeError('browser_read descriptor is required');
+  }
+  const descriptor = read.descriptor.descriptor;
+  if (!descriptor.case) {
+    throw new TypeError('exactly one browser_read descriptor arm is required');
+  }
+  if (!descriptor.value.tableUri.trim()) {
+    throw new TypeError('browser_read descriptor table_uri is required');
+  }
+  validatedOptionalCapabilityReport(descriptor.value.browserCompatibility);
+  validatedOptionalCapabilityReport(descriptor.value.requiredCapabilities);
+  if (read.accessClass === BrowserAccessClass.UNSPECIFIED) {
+    throw new TypeError('browser_read access_class is required');
+  }
+  if (!read.correlationId.trim()) {
+    throw new TypeError('browser_read correlation_id is required');
+  }
+  if (!read.provenance) {
+    throw new TypeError('browser_read provenance is required');
+  }
+  if (!read.provenance.resolverId.trim()) {
+    throw new TypeError('browser_read provenance resolver_id is required');
+  }
+  if (!read.provenance.resolutionId.trim()) {
+    throw new TypeError('browser_read provenance resolution_id is required');
+  }
   const capabilityBearing = read.accessClass !== BrowserAccessClass.PUBLIC;
   if (capabilityBearing && !read.notAfter) {
     throw new TypeError('capability-bearing browser access requires not_after');
@@ -736,6 +754,27 @@ function validateBrowserRead(
     }
   }
   return read;
+}
+
+function validateCanonicalResource(
+  resource: NonNullable<ResolvedBrowserRead['resource']>,
+): void {
+  if (!resource.connectionId.trim()) {
+    throw new TypeError('canonical resource connection_id is required');
+  }
+  if (!resource.providerNamespace.trim()) {
+    throw new TypeError('canonical resource provider_namespace is required');
+  }
+  if (resource.kind === ResourceKind.UNSPECIFIED) {
+    throw new TypeError('canonical resource kind is required');
+  }
+  if (!resource.identity.case || !resource.identity.value.trim()) {
+    throw new TypeError('canonical resource identity is required');
+  }
+}
+
+function validatedOptionalCapabilityReport(report: CapabilityReport | undefined): void {
+  if (report) validatedCapabilityStates(report);
 }
 
 function normalizeObjectGrantAuditAction(

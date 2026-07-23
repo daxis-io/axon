@@ -18,6 +18,8 @@ import { SettingsSchema } from '../generated/config/protobuf/axon/config/v1/sett
 
 const appRoot = fileURLToPath(new URL('../../', import.meta.url));
 const configCodegenTempPrefix = 'axon-config-codegen-';
+const codegenSubprocessTimeoutMs = 20_000;
+const codegenTestTimeoutMs = 30_000;
 
 function listConfigCodegenTempDirs() {
   return new Set(readdirSync(tmpdir()).filter((name) => name.startsWith(configCodegenTempPrefix)));
@@ -58,57 +60,63 @@ describe('config codegen', () => {
     expect(appearanceSchema.required).toContain('accentColor');
   });
 
-  it('cleans temporary codegen output when checked-in generated output is missing', () => {
-    const tempProject = mkdtempSync(join(tmpdir(), 'axon-config-codegen-test-'));
-    const fakeBin = join(tempProject, 'bin');
-    const fakeBuf = join(fakeBin, 'buf');
-    const before = listConfigCodegenTempDirs();
-    let leakedCodegenDirs: string[] = [];
+  it(
+    'cleans temporary codegen output when checked-in generated output is missing',
+    () => {
+      const tempProject = mkdtempSync(join(tmpdir(), 'axon-config-codegen-test-'));
+      const fakeBin = join(tempProject, 'bin');
+      const fakeBuf = join(fakeBin, 'buf');
+      const before = listConfigCodegenTempDirs();
+      let leakedCodegenDirs: string[] = [];
 
-    try {
-      for (const path of ['buf.yaml', 'buf.gen.yaml', 'buf.lock', 'proto']) {
-        cpSync(join(appRoot, path), join(tempProject, path), { recursive: true });
+      try {
+        for (const path of ['buf.yaml', 'buf.gen.yaml', 'buf.lock', 'proto']) {
+          cpSync(join(appRoot, path), join(tempProject, path), { recursive: true });
+        }
+        mkdirSync(fakeBin);
+        writeFileSync(
+          fakeBuf,
+          [
+            '#!/bin/sh',
+            'set -eu',
+            'if [ "$1" != "generate" ] || [ "$2" != "--output" ]; then exit 64; fi',
+            'mkdir -p "$3/src/generated/config/protobuf"',
+            'printf "export {};\\n" > "$3/src/generated/config/protobuf/fake_pb.ts"',
+            '',
+          ].join('\n'),
+        );
+        chmodSync(fakeBuf, 0o755);
+
+        const result = spawnSync(
+          process.execPath,
+          [join(appRoot, 'scripts/check-config-codegen.mjs')],
+          {
+            cwd: tempProject,
+            encoding: 'utf8',
+            timeout: codegenSubprocessTimeoutMs,
+            env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
+          },
+        );
+
+        const after = listConfigCodegenTempDirs();
+        leakedCodegenDirs = [...after].filter((name) => !before.has(name));
+        for (const name of leakedCodegenDirs) {
+          rmSync(join(tmpdir(), name), { recursive: true, force: true });
+        }
+
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(1);
+        expect(`${result.stdout}${result.stderr}`).toContain(
+          'Missing checked-in generated config directory',
+        );
+        expect(leakedCodegenDirs).toEqual([]);
+      } finally {
+        rmSync(tempProject, { recursive: true, force: true });
+        for (const name of leakedCodegenDirs) {
+          rmSync(join(tmpdir(), name), { recursive: true, force: true });
+        }
       }
-      mkdirSync(fakeBin);
-      writeFileSync(
-        fakeBuf,
-        [
-          '#!/bin/sh',
-          'set -eu',
-          'if [ "$1" != "generate" ] || [ "$2" != "--output" ]; then exit 64; fi',
-          'mkdir -p "$3/src/generated/config/protobuf"',
-          'printf "export {};\\n" > "$3/src/generated/config/protobuf/fake_pb.ts"',
-          '',
-        ].join('\n'),
-      );
-      chmodSync(fakeBuf, 0o755);
-
-      const result = spawnSync(
-        process.execPath,
-        [join(appRoot, 'scripts/check-config-codegen.mjs')],
-        {
-          cwd: tempProject,
-          encoding: 'utf8',
-          env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}` },
-        },
-      );
-
-      const after = listConfigCodegenTempDirs();
-      leakedCodegenDirs = [...after].filter((name) => !before.has(name));
-      for (const name of leakedCodegenDirs) {
-        rmSync(join(tmpdir(), name), { recursive: true, force: true });
-      }
-
-      expect(result.status).toBe(1);
-      expect(`${result.stdout}${result.stderr}`).toContain(
-        'Missing checked-in generated config directory',
-      );
-      expect(leakedCodegenDirs).toEqual([]);
-    } finally {
-      rmSync(tempProject, { recursive: true, force: true });
-      for (const name of leakedCodegenDirs) {
-        rmSync(join(tmpdir(), name), { recursive: true, force: true });
-      }
-    }
-  });
+    },
+    codegenTestTimeoutMs,
+  );
 });

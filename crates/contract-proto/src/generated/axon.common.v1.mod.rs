@@ -32,10 +32,6 @@ pub mod __buffa {
     }
 }
 #[doc(inline)]
-pub use self::__buffa::view::ObjectRefView;
-#[doc(inline)]
-pub use self::__buffa::view::ObjectRefOwnedView;
-#[doc(inline)]
 pub use self::__buffa::view::CanonicalResourceRefView;
 #[doc(inline)]
 pub use self::__buffa::view::CanonicalResourceRefOwnedView;

@@ -4,7 +4,7 @@
 
 import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { CanonicalResourceRef, ObjectRef, ProviderError } from "../../common/v1/common_pb.ts";
+import type { CanonicalResourceRef, ProviderError } from "../../common/v1/common_pb.ts";
 import { file_axon_common_v1_common } from "../../common/v1/common_pb.ts";
 import type { NullValue, Timestamp } from "@bufbuild/protobuf/wkt";
 import { file_google_protobuf_struct, file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file axon/dataaccess/v1/dataaccess.proto.
  */
 export const file_axon_dataaccess_v1_dataaccess: GenFile = /*@__PURE__*/
-  fileDesc("CiNheG9uL2RhdGFhY2Nlc3MvdjEvZGF0YWFjY2Vzcy5wcm90bxISYXhvbi5kYXRhYWNjZXNzLnYxIk0KEENhcGFiaWxpdHlSZXBvcnQSOQoMY2FwYWJpbGl0aWVzGAEgAygLMiMuYXhvbi5kYXRhYWNjZXNzLnYxLkNhcGFiaWxpdHlFbnRyeSJ1Cg9DYXBhYmlsaXR5RW50cnkSLgoDa2V5GAEgASgOMiEuYXhvbi5kYXRhYWNjZXNzLnYxLkNhcGFiaWxpdHlLZXkSMgoFc3RhdGUYAiABKA4yIy5heG9uLmRhdGFhY2Nlc3MudjEuQ2FwYWJpbGl0eVN0YXRlImMKDlBhcnRpdGlvblZhbHVlEhYKDHN0cmluZ192YWx1ZRgBIAEoCUgAEjAKCm51bGxfdmFsdWUYAiABKA4yGi5nb29nbGUucHJvdG9idWYuTnVsbFZhbHVlSABCBwoFdmFsdWUi9wIKGUJyb3dzZXJIdHRwRmlsZURlc2NyaXB0b3ISDAoEcGF0aBgBIAEoCRILCgN1cmwYAiABKAkSHgoKc2l6ZV9ieXRlcxgDIAEoBFIKc2l6ZV9ieXRlcxJuChBwYXJ0aXRpb25fdmFsdWVzGAQgAygLMkIuYXhvbi5kYXRhYWNjZXNzLnYxLkJyb3dzZXJIdHRwRmlsZURlc2NyaXB0b3IuUGFydGl0aW9uVmFsdWVzRW50cnlSEHBhcnRpdGlvbl92YWx1ZXMSEgoFc3RhdHMYBSABKAlIAIgBARIlCgtvYmplY3RfZXRhZxgGIAEoCUgBUgtvYmplY3RfZXRhZ4gBARpaChRQYXJ0aXRpb25WYWx1ZXNFbnRyeRILCgNrZXkYASABKAkSMQoFdmFsdWUYAiABKAsyIi5heG9uLmRhdGFhY2Nlc3MudjEuUGFydGl0aW9uVmFsdWU6AjgBQggKBl9zdGF0c0IOCgxfb2JqZWN0X2V0YWci+gQKHUJyb3dzZXJIdHRwU25hcHNob3REZXNjcmlwdG9yEhwKCXRhYmxlX3VyaRgBIAEoCVIJdGFibGVfdXJpEi8KEHNuYXBzaG90X3ZlcnNpb24YAiABKANIAFIQc25hcHNob3RfdmVyc2lvbogBARKDAQoWcGFydGl0aW9uX2NvbHVtbl90eXBlcxgDIAMoCzJLLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cFNuYXBzaG90RGVzY3JpcHRvci5QYXJ0aXRpb25Db2x1bW5UeXBlc0VudHJ5UhZwYXJ0aXRpb25fY29sdW1uX3R5cGVzEloKFWJyb3dzZXJfY29tcGF0aWJpbGl0eRgEIAEoCzIkLmF4b24uZGF0YWFjY2Vzcy52MS5DYXBhYmlsaXR5UmVwb3J0UhVicm93c2VyX2NvbXBhdGliaWxpdHkSWgoVcmVxdWlyZWRfY2FwYWJpbGl0aWVzGAUgASgLMiQuYXhvbi5kYXRhYWNjZXNzLnYxLkNhcGFiaWxpdHlSZXBvcnRSFXJlcXVpcmVkX2NhcGFiaWxpdGllcxJRCgxhY3RpdmVfZmlsZXMYBiADKAsyLS5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3Nlckh0dHBGaWxlRGVzY3JpcHRvclIMYWN0aXZlX2ZpbGVzGmQKGVBhcnRpdGlvbkNvbHVtblR5cGVzRW50cnkSCwoDa2V5GAEgASgJEjYKBXZhbHVlGAIgASgOMicuYXhvbi5kYXRhYWNjZXNzLnYxLlBhcnRpdGlvbkNvbHVtblR5cGU6AjgBQhMKEV9zbmFwc2hvdF92ZXJzaW9uIqsECiNCcm93c2VySHR0cFBhcnF1ZXREYXRhc2V0RGVzY3JpcHRvchIcCgl0YWJsZV91cmkYASABKAlSCXRhYmxlX3VyaRKJAQoWcGFydGl0aW9uX2NvbHVtbl90eXBlcxgCIAMoCzJRLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cFBhcnF1ZXREYXRhc2V0RGVzY3JpcHRvci5QYXJ0aXRpb25Db2x1bW5UeXBlc0VudHJ5UhZwYXJ0aXRpb25fY29sdW1uX3R5cGVzEloKFWJyb3dzZXJfY29tcGF0aWJpbGl0eRgDIAEoCzIkLmF4b24uZGF0YWFjY2Vzcy52MS5DYXBhYmlsaXR5UmVwb3J0UhVicm93c2VyX2NvbXBhdGliaWxpdHkSWgoVcmVxdWlyZWRfY2FwYWJpbGl0aWVzGAQgASgLMiQuYXhvbi5kYXRhYWNjZXNzLnYxLkNhcGFiaWxpdHlSZXBvcnRSFXJlcXVpcmVkX2NhcGFiaWxpdGllcxI8CgVmaWxlcxgFIAMoCzItLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cEZpbGVEZXNjcmlwdG9yGmQKGVBhcnRpdGlvbkNvbHVtblR5cGVzRW50cnkSCwoDa2V5GAEgASgJEjYKBXZhbHVlGAIgASgOMicuYXhvbi5kYXRhYWNjZXNzLnYxLlBhcnRpdGlvbkNvbHVtblR5cGU6AjgBItEBChVCcm93c2VyUmVhZERlc2NyaXB0b3ISRQoIc25hcHNob3QYASABKAsyMS5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3Nlckh0dHBTbmFwc2hvdERlc2NyaXB0b3JIABJjCg9wYXJxdWV0X2RhdGFzZXQYAiABKAsyNy5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3Nlckh0dHBQYXJxdWV0RGF0YXNldERlc2NyaXB0b3JIAFIPcGFycXVldF9kYXRhc2V0QgwKCmRlc2NyaXB0b3IiQgoUUmVzb2x1dGlvblByb3ZlbmFuY2USEwoLcmVzb2x2ZXJfaWQYASABKAkSFQoNcmVzb2x1dGlvbl9pZBgCIAEoCSLPAgoTUmVzb2x2ZWRCcm93c2VyUmVhZBI2CghyZXNvdXJjZRgBIAEoCzIkLmF4b24uY29tbW9uLnYxLkNhbm9uaWNhbFJlc291cmNlUmVmEj0KCmRlc2NyaXB0b3IYAiABKAsyKS5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3NlclJlYWREZXNjcmlwdG9yEjwKDGFjY2Vzc19jbGFzcxgDIAEoDjImLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VyQWNjZXNzQ2xhc3MSLQoJbm90X2FmdGVyGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIWCg5jb3JyZWxhdGlvbl9pZBgFIAEoCRI8Cgpwcm92ZW5hbmNlGAYgASgLMiguYXhvbi5kYXRhYWNjZXNzLnYxLlJlc29sdXRpb25Qcm92ZW5hbmNlIq4BCg5SZW1vdGVSZXF1aXJlZBI2CghyZXNvdXJjZRgBIAEoCzIkLmF4b24uY29tbW9uLnYxLkNhbm9uaWNhbFJlc291cmNlUmVmEhkKEWVuZm9yY2VtZW50X293bmVyGAIgASgJEjgKBnJlYXNvbhgDIAEoDjIoLmF4b24uZGF0YWFjY2Vzcy52MS5SZWFkUmVzb2x1dGlvblJlYXNvbhIPCgdtZXNzYWdlGAQgASgJIo8BCgpSZWFkRGVuaWVkEjYKCHJlc291cmNlGAEgASgLMiQuYXhvbi5jb21tb24udjEuQ2Fub25pY2FsUmVzb3VyY2VSZWYSOAoGcmVhc29uGAIgASgOMiguYXhvbi5kYXRhYWNjZXNzLnYxLlJlYWRSZXNvbHV0aW9uUmVhc29uEg8KB21lc3NhZ2UYAyABKAki/QEKDlJlYWRSZXNvbHV0aW9uEj8KDGJyb3dzZXJfcmVhZBgBIAEoCzInLmF4b24uZGF0YWFjY2Vzcy52MS5SZXNvbHZlZEJyb3dzZXJSZWFkSAASPQoPcmVtb3RlX3JlcXVpcmVkGAIgASgLMiIuYXhvbi5kYXRhYWNjZXNzLnYxLlJlbW90ZVJlcXVpcmVkSAASMAoGZGVuaWVkGAMgASgLMh4uYXhvbi5kYXRhYWNjZXNzLnYxLlJlYWREZW5pZWRIABIuCgVlcnJvchgEIAEoCzIdLmF4b24uY29tbW9uLnYxLlByb3ZpZGVyRXJyb3JIAEIJCgdvdXRjb21lInsKFEJyb2tlcmVkT2JqZWN0QWNjZXNzEgwKBGxpc3QYASABKAgSDAoEaGVhZBgCIAEoCBILCgNnZXQYAyABKAgSEQoJcmFuZ2VfZ2V0GAQgASgIEhIKCmJhdGNoX3NpZ24YBSABKAgSEwoLcHJveHlfcmFuZ2UYBiABKAgirwEKF0Jyb2tlcmVkUG9saWN5QXV0aG9yaXR5EjoKCWF1dGhvcml0eRgBIAEoDjInLmF4b24uZGF0YWFjY2Vzcy52MS5Qb2xpY3lBdXRob3JpdHlLaW5kElgKG2RpcmVjdF9leHRlcm5hbF9lbmdpbmVfcmVhZBgCIAEoDjIzLmF4b24uZGF0YWFjY2Vzcy52MS5EaXJlY3RFeHRlcm5hbEVuZ2luZVJlYWRTdXBwb3J0ItUCChtCcm9rZXJlZERlbHRhUmVhZEFjY2Vzc1BsYW4SEAoIdGFibGVfaWQYASABKAkSEQoJZnVsbF9uYW1lGAIgASgJEhIKCnRhYmxlX3Jvb3QYAyABKAkSEAoIZ3JhbnRfaWQYBCABKAkSGwoTZXhwaXJlc19hdF9lcG9jaF9tcxgFIAEoBBJGChFkZWx0YV9hY2Nlc3NfbW9kZRgGIAEoDjIrLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm9rZXJlZERlbHRhQWNjZXNzTW9kZRJFChBwb2xpY3lfYXV0aG9yaXR5GAcgASgLMisuYXhvbi5kYXRhYWNjZXNzLnYxLkJyb2tlcmVkUG9saWN5QXV0aG9yaXR5Ej8KDW9iamVjdF9hY2Nlc3MYCCABKAsyKC5heG9uLmRhdGFhY2Nlc3MudjEuQnJva2VyZWRPYmplY3RBY2Nlc3MitgEKGkRlbHRhU2hhcmluZ1JlYWRBY2Nlc3NQbGFuEhAKCHRhYmxlX2lkGAEgASgJEhEKCWZ1bGxfbmFtZRgCIAEoCRIYChBzaGFyaW5nX2VuZHBvaW50GAMgASgJEhsKE2V4cGlyZXNfYXRfZXBvY2hfbXMYBCABKAQSPAoFZmlsZXMYBSADKAsyLS5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3Nlckh0dHBGaWxlRGVzY3JpcHRvciLLAQohU3FsRmFsbGJhY2tSZXF1aXJlZFJlYWRBY2Nlc3NQbGFuEhAKCHRhYmxlX2lkGAEgASgJEhEKCWZ1bGxfbmFtZRgCIAEoCRI4CgZyZWFzb24YAyABKA4yKC5heG9uLmRhdGFhY2Nlc3MudjEuUmVhZEFjY2Vzc1BsYW5SZWFzb24SDwoHbWVzc2FnZRgEIAEoCRIaChJzdGF0ZW1lbnRfZW5kcG9pbnQYBSABKAkSGgoSd2FyZWhvdXNlX3JlcXVpcmVkGAYgASgIIocBChVCbG9ja2VkUmVhZEFjY2Vzc1BsYW4SEAoIdGFibGVfaWQYASABKAkSEQoJZnVsbF9uYW1lGAIgASgJEjgKBnJlYXNvbhgDIAEoDjIoLmF4b24uZGF0YWFjY2Vzcy52MS5SZWFkQWNjZXNzUGxhblJlYXNvbhIPCgdtZXNzYWdlGAQgASgJIsICCg5SZWFkQWNjZXNzUGxhbhJJCg5icm9rZXJlZF9kZWx0YRgBIAEoCzIvLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm9rZXJlZERlbHRhUmVhZEFjY2Vzc1BsYW5IABJHCg1kZWx0YV9zaGFyaW5nGAIgASgLMi4uYXhvbi5kYXRhYWNjZXNzLnYxLkRlbHRhU2hhcmluZ1JlYWRBY2Nlc3NQbGFuSAASVgoVc3FsX2ZhbGxiYWNrX3JlcXVpcmVkGAMgASgLMjUuYXhvbi5kYXRhYWNjZXNzLnYxLlNxbEZhbGxiYWNrUmVxdWlyZWRSZWFkQWNjZXNzUGxhbkgAEjwKB2Jsb2NrZWQYBCABKAsyKS5heG9uLmRhdGFhY2Nlc3MudjEuQmxvY2tlZFJlYWRBY2Nlc3NQbGFuSABCBgoEcGxhbiLjAgoTVGFibGVSZWFkUmVzb2x1dGlvbhIsCgl0YWJsZV9yZWYYASABKAsyGS5heG9uLmNvbW1vbi52MS5PYmplY3RSZWYSRwoKZGVzY3JpcHRvchgCIAEoCzIxLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cFNuYXBzaG90RGVzY3JpcHRvckgAEj4KEHJlYWRfYWNjZXNzX3BsYW4YAyABKAsyIi5heG9uLmRhdGFhY2Nlc3MudjEuUmVhZEFjY2Vzc1BsYW5IABJJCghmYWxsYmFjaxgEIAEoCzI1LmF4b24uZGF0YWFjY2Vzcy52MS5TcWxGYWxsYmFja1JlcXVpcmVkUmVhZEFjY2Vzc1BsYW5IABI8CgdibG9ja2VkGAUgASgLMikuYXhvbi5kYXRhYWNjZXNzLnYxLkJsb2NrZWRSZWFkQWNjZXNzUGxhbkgAQgwKCnJlc29sdXRpb24iKAoWT2JqZWN0R3JhbnRMaXN0UmVxdWVzdBIOCgZwcmVmaXgYASABKAkiUQoXT2JqZWN0R3JhbnRMaXN0UmVzcG9uc2USNgoHb2JqZWN0cxgBIAMoCzIlLmF4b24uZGF0YWFjY2Vzcy52MS5PYmplY3RHcmFudE9iamVjdCImChZPYmplY3RHcmFudEhlYWRSZXF1ZXN0EgwKBHBhdGgYASABKAkiVwoXT2JqZWN0R3JhbnRIZWFkUmVzcG9uc2USDAoEcGF0aBgBIAEoCRISCgpzaXplX2J5dGVzGAIgASgEEhEKBGV0YWcYAyABKAlIAIgBAUIHCgVfZXRhZyJRChFPYmplY3RHcmFudE9iamVjdBIMCgRwYXRoGAEgASgJEhIKCnNpemVfYnl0ZXMYAiABKAQSEQoEZXRhZxgDIAEoCUgAiAEBQgcKBV9ldGFnIiwKG09iamVjdEdyYW50QmF0Y2hTaWduUmVxdWVzdBINCgVwYXRocxgBIAMoCSJdChxPYmplY3RHcmFudEJhdGNoU2lnblJlc3BvbnNlEj0KC3NpZ25lZF91cmxzGAEgAygLMiguYXhvbi5kYXRhYWNjZXNzLnYxLk9iamVjdEdyYW50U2lnbmVkVXJsIk4KFE9iamVjdEdyYW50U2lnbmVkVXJsEgwKBHBhdGgYASABKAkSCwoDdXJsGAIgASgJEhsKE2V4cGlyZXNfYXRfZXBvY2hfbXMYAyABKAQiXwoXT2JqZWN0R3JhbnRSYW5nZVJlcXVlc3QSDAoEcGF0aBgBIAEoCRISCgVzdGFydBgCIAEoBEgAiAEBEhAKA2VuZBgDIAEoBEgBiAEBQggKBl9zdGFydEIGCgRfZW5kIoYBChhPYmplY3RHcmFudFJhbmdlUmVzcG9uc2USDAoEZGF0YRgBIAEoDBIaCg1jb250ZW50X3JhbmdlGAIgASgJSACIAQESEQoEZXRhZxgDIAEoCUgBiAEBEhIKCnNpemVfYnl0ZXMYBCABKARCEAoOX2NvbnRlbnRfcmFuZ2VCBwoFX2V0YWciTwoVT2JqZWN0R3JhbnRBdWRpdFJhbmdlEhIKBXN0YXJ0GAEgASgESACIAQESEAoDZW5kGAIgASgESAGIAQFCCAoGX3N0YXJ0QgYKBF9lbmQi5AMKFU9iamVjdEdyYW50QXVkaXRFdmVudBIQCghldmVudF9pZBgBIAEoCRISCgpldmVudF90eXBlGAIgASgJEhwKFG9jY3VycmVkX2F0X2Vwb2NoX21zGAMgASgEEhEKCXRlbmFudF9pZBgEIAEoCRIUCgx3b3Jrc3BhY2VfaWQYBSABKAkSFAoMdXNlcl9zdWJqZWN0GAYgASgJEhAKCHRhYmxlX2lkGAcgASgJEhEKCWZ1bGxfbmFtZRgIIAEoCRIQCghncmFudF9pZBgJIAEoCRIUCgxleGVjdXRpb25faWQYCiABKAkSFgoOY29ycmVsYXRpb25faWQYDCABKAkSOgoGYWN0aW9uGA0gASgOMiouYXhvbi5kYXRhYWNjZXNzLnYxLk9iamVjdEdyYW50QXVkaXRBY3Rpb24SEwoLb2JqZWN0X3BhdGgYDiABKAkSOAoFcmFuZ2UYDyABKAsyKS5heG9uLmRhdGFhY2Nlc3MudjEuT2JqZWN0R3JhbnRBdWRpdFJhbmdlEjwKB291dGNvbWUYECABKA4yKy5heG9uLmRhdGFhY2Nlc3MudjEuT2JqZWN0R3JhbnRBdWRpdE91dGNvbWVKBAgLEAxSCHF1ZXJ5X2lkUgpyZXF1ZXN0X2lkKqEDCg1DYXBhYmlsaXR5S2V5Eh4KGkNBUEFCSUxJVFlfS0VZX1VOU1BFQ0lGSUVEEAASIwofQ0FQQUJJTElUWV9LRVlfQ0hBTkdFX0RBVEFfRkVFRBABEiEKHUNBUEFCSUxJVFlfS0VZX0NPTFVNTl9NQVBQSU5HEAISIwofQ0FQQUJJTElUWV9LRVlfREVMRVRJT05fVkVDVE9SUxADEiwKKENBUEFCSUxJVFlfS0VZX01VTFRJX1BBUlRJVElPTl9FWEVDVVRJT04QBBIfChtDQVBBQklMSVRZX0tFWV9QUk9YWV9BQ0NFU1MQBRIeChpDQVBBQklMSVRZX0tFWV9SQU5HRV9SRUFEUxAGEiQKIENBUEFCSUxJVFlfS0VZX1NJR05FRF9VUkxfQUNDRVNTEAcSHgoaQ0FQQUJJTElUWV9LRVlfVElNRV9UUkFWRUwQCBIgChxDQVBBQklMSVRZX0tFWV9USU1FU1RBTVBfTlRaEAkSLAooQ0FQQUJJTElUWV9LRVlfVU5LTk9XTl9QUk9UT0NPTF9GRUFUVVJFUxAKKroBCg9DYXBhYmlsaXR5U3RhdGUSIAocQ0FQQUJJTElUWV9TVEFURV9VTlNQRUNJRklFRBAAEh4KGkNBUEFCSUxJVFlfU1RBVEVfU1VQUE9SVEVEEAESIAocQ0FQQUJJTElUWV9TVEFURV9OQVRJVkVfT05MWRACEiAKHENBUEFCSUxJVFlfU1RBVEVfVU5TVVBQT1JURUQQAxIhCh1DQVBBQklMSVRZX1NUQVRFX0VYUEVSSU1FTlRBTBAEKs8BChJCcm93c2VyQWNjZXNzQ2xhc3MSJAogQlJPV1NFUl9BQ0NFU1NfQ0xBU1NfVU5TUEVDSUZJRUQQABIfChtCUk9XU0VSX0FDQ0VTU19DTEFTU19QVUJMSUMQARIlCiFCUk9XU0VSX0FDQ0VTU19DTEFTU19MT0NBTF9IQU5ETEUQAhIjCh9CUk9XU0VSX0FDQ0VTU19DTEFTU19TSUdORURfVVJMEAMSJgoiQlJPV1NFUl9BQ0NFU1NfQ0xBU1NfU0VTU0lPTl9QUk9YWRAEKtoCChRSZWFkUmVzb2x1dGlvblJlYXNvbhImCiJSRUFEX1JFU09MVVRJT05fUkVBU09OX1VOU1BFQ0lGSUVEEAASNgoyUkVBRF9SRVNPTFVUSU9OX1JFQVNPTl9QT0xJQ1lfRU5GT1JDRU1FTlRfUkVRVUlSRUQQARIuCipSRUFEX1JFU09MVVRJT05fUkVBU09OX0JST1dTRVJfVU5TVVBQT1JURUQQAhIoCiRSRUFEX1JFU09MVVRJT05fUkVBU09OX0FDQ0VTU19ERU5JRUQQAxIrCidSRUFEX1JFU09MVVRJT05fUkVBU09OX1NFU1NJT05fUkVRVUlSRUQQBBItCilSRUFEX1JFU09MVVRJT05fUkVBU09OX0VYUElSRURfQ0FQQUJJTElUWRAFEiwKKFJFQURfUkVTT0xVVElPTl9SRUFTT05fVU5TQUZFX0RFU0NSSVBUT1IQBirJAQoTUGFydGl0aW9uQ29sdW1uVHlwZRIlCiFQQVJUSVRJT05fQ09MVU1OX1RZUEVfVU5TUEVDSUZJRUQQABIgChxQQVJUSVRJT05fQ09MVU1OX1RZUEVfU1RSSU5HEAESHwobUEFSVElUSU9OX0NPTFVNTl9UWVBFX0lOVDY0EAISIQodUEFSVElUSU9OX0NPTFVNTl9UWVBFX0JPT0xFQU4QAxIlCiFQQVJUSVRJT05fQ09MVU1OX1RZUEVfVU5TVVBQT1JURUQQBCrpAwoUUmVhZEFjY2Vzc1BsYW5SZWFzb24SJwojUkVBRF9BQ0NFU1NfUExBTl9SRUFTT05fVU5TUEVDSUZJRUQQABImCiJSRUFEX0FDQ0VTU19QTEFOX1JFQVNPTl9ST1dfRklMVEVSEAESJwojUkVBRF9BQ0NFU1NfUExBTl9SRUFTT05fQ09MVU1OX01BU0sQAhIgChxSRUFEX0FDQ0VTU19QTEFOX1JFQVNPTl9WSUVXEAMSMAosUkVBRF9BQ0NFU1NfUExBTl9SRUFTT05fVU5LTk9XTl9QT0xJQ1lfU1RBVEUQBBJCCj5SRUFEX0FDQ0VTU19QTEFOX1JFQVNPTl9OT19ESVJFQ1RfRVhURVJOQUxfRU5HSU5FX1JFQURfU1VQUE9SVBAFEjIKLlJFQURfQUNDRVNTX1BMQU5fUkVBU09OX1VOU1VQUE9SVEVEX1RBQkxFX1RZUEUQBhIpCiVSRUFEX0FDQ0VTU19QTEFOX1JFQVNPTl9HUkFOVF9FWFBJUkVEEAcSMAosUkVBRF9BQ0NFU1NfUExBTl9SRUFTT05fU1RPUkFHRV9DT1JTX0JMT0NLRUQQCBIuCipSRUFEX0FDQ0VTU19QTEFOX1JFQVNPTl9CUk9LRVJfVU5BVkFJTEFCTEUQCSqfAQoXQnJva2VyZWREZWx0YUFjY2Vzc01vZGUSKgomQlJPS0VSRURfREVMVEFfQUNDRVNTX01PREVfVU5TUEVDSUZJRUQQABIoCiRCUk9LRVJFRF9ERUxUQV9BQ0NFU1NfTU9ERV9ERUxUQV9MT0cQARIuCipCUk9LRVJFRF9ERUxUQV9BQ0NFU1NfTU9ERV9QUkVTSUdORURfRklMRVMQAiq1AQoTUG9saWN5QXV0aG9yaXR5S2luZBIlCiFQT0xJQ1lfQVVUSE9SSVRZX0tJTkRfVU5TUEVDSUZJRUQQABInCiNQT0xJQ1lfQVVUSE9SSVRZX0tJTkRfVU5JVFlfQ0FUQUxPRxABEicKI1BPTElDWV9BVVRIT1JJVFlfS0lORF9ERUxUQV9TSEFSSU5HEAISJQohUE9MSUNZX0FVVEhPUklUWV9LSU5EX01PQ0tfQlJPS0VSEAMqwAEKH0RpcmVjdEV4dGVybmFsRW5naW5lUmVhZFN1cHBvcnQSMwovRElSRUNUX0VYVEVSTkFMX0VOR0lORV9SRUFEX1NVUFBPUlRfVU5TUEVDSUZJRUQQABIxCi1ESVJFQ1RfRVhURVJOQUxfRU5HSU5FX1JFQURfU1VQUE9SVF9DT05GSVJNRUQQARI1CjFESVJFQ1RfRVhURVJOQUxfRU5HSU5FX1JFQURfU1VQUE9SVF9OT1RfQ09ORklSTUVEEAIq2gEKFk9iamVjdEdyYW50QXVkaXRBY3Rpb24SKQolT0JKRUNUX0dSQU5UX0FVRElUX0FDVElPTl9VTlNQRUNJRklFRBAAEiIKHk9CSkVDVF9HUkFOVF9BVURJVF9BQ1RJT05fTElTVBABEiIKHk9CSkVDVF9HUkFOVF9BVURJVF9BQ1RJT05fSEVBRBACEigKJE9CSkVDVF9HUkFOVF9BVURJVF9BQ1RJT05fQkFUQ0hfU0lHThADEiMKH09CSkVDVF9HUkFOVF9BVURJVF9BQ1RJT05fUkFOR0UQBCqUAQoXT2JqZWN0R3JhbnRBdWRpdE91dGNvbWUSKgomT0JKRUNUX0dSQU5UX0FVRElUX09VVENPTUVfVU5TUEVDSUZJRUQQABImCiJPQkpFQ1RfR1JBTlRfQVVESVRfT1VUQ09NRV9BTExPV0VEEAESJQohT0JKRUNUX0dSQU5UX0FVRElUX09VVENPTUVfREVOSUVEEAJiBnByb3RvMw", [file_axon_common_v1_common, file_google_protobuf_struct, file_google_protobuf_timestamp]);
+  fileDesc("CiNheG9uL2RhdGFhY2Nlc3MvdjEvZGF0YWFjY2Vzcy5wcm90bxISYXhvbi5kYXRhYWNjZXNzLnYxIk0KEENhcGFiaWxpdHlSZXBvcnQSOQoMY2FwYWJpbGl0aWVzGAEgAygLMiMuYXhvbi5kYXRhYWNjZXNzLnYxLkNhcGFiaWxpdHlFbnRyeSJ1Cg9DYXBhYmlsaXR5RW50cnkSLgoDa2V5GAEgASgOMiEuYXhvbi5kYXRhYWNjZXNzLnYxLkNhcGFiaWxpdHlLZXkSMgoFc3RhdGUYAiABKA4yIy5heG9uLmRhdGFhY2Nlc3MudjEuQ2FwYWJpbGl0eVN0YXRlImMKDlBhcnRpdGlvblZhbHVlEhYKDHN0cmluZ192YWx1ZRgBIAEoCUgAEjAKCm51bGxfdmFsdWUYAiABKA4yGi5nb29nbGUucHJvdG9idWYuTnVsbFZhbHVlSABCBwoFdmFsdWUi9wIKGUJyb3dzZXJIdHRwRmlsZURlc2NyaXB0b3ISDAoEcGF0aBgBIAEoCRILCgN1cmwYAiABKAkSHgoKc2l6ZV9ieXRlcxgDIAEoBFIKc2l6ZV9ieXRlcxJuChBwYXJ0aXRpb25fdmFsdWVzGAQgAygLMkIuYXhvbi5kYXRhYWNjZXNzLnYxLkJyb3dzZXJIdHRwRmlsZURlc2NyaXB0b3IuUGFydGl0aW9uVmFsdWVzRW50cnlSEHBhcnRpdGlvbl92YWx1ZXMSEgoFc3RhdHMYBSABKAlIAIgBARIlCgtvYmplY3RfZXRhZxgGIAEoCUgBUgtvYmplY3RfZXRhZ4gBARpaChRQYXJ0aXRpb25WYWx1ZXNFbnRyeRILCgNrZXkYASABKAkSMQoFdmFsdWUYAiABKAsyIi5heG9uLmRhdGFhY2Nlc3MudjEuUGFydGl0aW9uVmFsdWU6AjgBQggKBl9zdGF0c0IOCgxfb2JqZWN0X2V0YWci+gQKHUJyb3dzZXJIdHRwU25hcHNob3REZXNjcmlwdG9yEhwKCXRhYmxlX3VyaRgBIAEoCVIJdGFibGVfdXJpEi8KEHNuYXBzaG90X3ZlcnNpb24YAiABKANIAFIQc25hcHNob3RfdmVyc2lvbogBARKDAQoWcGFydGl0aW9uX2NvbHVtbl90eXBlcxgDIAMoCzJLLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cFNuYXBzaG90RGVzY3JpcHRvci5QYXJ0aXRpb25Db2x1bW5UeXBlc0VudHJ5UhZwYXJ0aXRpb25fY29sdW1uX3R5cGVzEloKFWJyb3dzZXJfY29tcGF0aWJpbGl0eRgEIAEoCzIkLmF4b24uZGF0YWFjY2Vzcy52MS5DYXBhYmlsaXR5UmVwb3J0UhVicm93c2VyX2NvbXBhdGliaWxpdHkSWgoVcmVxdWlyZWRfY2FwYWJpbGl0aWVzGAUgASgLMiQuYXhvbi5kYXRhYWNjZXNzLnYxLkNhcGFiaWxpdHlSZXBvcnRSFXJlcXVpcmVkX2NhcGFiaWxpdGllcxJRCgxhY3RpdmVfZmlsZXMYBiADKAsyLS5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3Nlckh0dHBGaWxlRGVzY3JpcHRvclIMYWN0aXZlX2ZpbGVzGmQKGVBhcnRpdGlvbkNvbHVtblR5cGVzRW50cnkSCwoDa2V5GAEgASgJEjYKBXZhbHVlGAIgASgOMicuYXhvbi5kYXRhYWNjZXNzLnYxLlBhcnRpdGlvbkNvbHVtblR5cGU6AjgBQhMKEV9zbmFwc2hvdF92ZXJzaW9uIqsECiNCcm93c2VySHR0cFBhcnF1ZXREYXRhc2V0RGVzY3JpcHRvchIcCgl0YWJsZV91cmkYASABKAlSCXRhYmxlX3VyaRKJAQoWcGFydGl0aW9uX2NvbHVtbl90eXBlcxgCIAMoCzJRLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cFBhcnF1ZXREYXRhc2V0RGVzY3JpcHRvci5QYXJ0aXRpb25Db2x1bW5UeXBlc0VudHJ5UhZwYXJ0aXRpb25fY29sdW1uX3R5cGVzEloKFWJyb3dzZXJfY29tcGF0aWJpbGl0eRgDIAEoCzIkLmF4b24uZGF0YWFjY2Vzcy52MS5DYXBhYmlsaXR5UmVwb3J0UhVicm93c2VyX2NvbXBhdGliaWxpdHkSWgoVcmVxdWlyZWRfY2FwYWJpbGl0aWVzGAQgASgLMiQuYXhvbi5kYXRhYWNjZXNzLnYxLkNhcGFiaWxpdHlSZXBvcnRSFXJlcXVpcmVkX2NhcGFiaWxpdGllcxI8CgVmaWxlcxgFIAMoCzItLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VySHR0cEZpbGVEZXNjcmlwdG9yGmQKGVBhcnRpdGlvbkNvbHVtblR5cGVzRW50cnkSCwoDa2V5GAEgASgJEjYKBXZhbHVlGAIgASgOMicuYXhvbi5kYXRhYWNjZXNzLnYxLlBhcnRpdGlvbkNvbHVtblR5cGU6AjgBItEBChVCcm93c2VyUmVhZERlc2NyaXB0b3ISRQoIc25hcHNob3QYASABKAsyMS5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3Nlckh0dHBTbmFwc2hvdERlc2NyaXB0b3JIABJjCg9wYXJxdWV0X2RhdGFzZXQYAiABKAsyNy5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3Nlckh0dHBQYXJxdWV0RGF0YXNldERlc2NyaXB0b3JIAFIPcGFycXVldF9kYXRhc2V0QgwKCmRlc2NyaXB0b3IiQgoUUmVzb2x1dGlvblByb3ZlbmFuY2USEwoLcmVzb2x2ZXJfaWQYASABKAkSFQoNcmVzb2x1dGlvbl9pZBgCIAEoCSLPAgoTUmVzb2x2ZWRCcm93c2VyUmVhZBI2CghyZXNvdXJjZRgBIAEoCzIkLmF4b24uY29tbW9uLnYxLkNhbm9uaWNhbFJlc291cmNlUmVmEj0KCmRlc2NyaXB0b3IYAiABKAsyKS5heG9uLmRhdGFhY2Nlc3MudjEuQnJvd3NlclJlYWREZXNjcmlwdG9yEjwKDGFjY2Vzc19jbGFzcxgDIAEoDjImLmF4b24uZGF0YWFjY2Vzcy52MS5Ccm93c2VyQWNjZXNzQ2xhc3MSLQoJbm90X2FmdGVyGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIWCg5jb3JyZWxhdGlvbl9pZBgFIAEoCRI8Cgpwcm92ZW5hbmNlGAYgASgLMiguYXhvbi5kYXRhYWNjZXNzLnYxLlJlc29sdXRpb25Qcm92ZW5hbmNlIq4BCg5SZW1vdGVSZXF1aXJlZBI2CghyZXNvdXJjZRgBIAEoCzIkLmF4b24uY29tbW9uLnYxLkNhbm9uaWNhbFJlc291cmNlUmVmEhkKEWVuZm9yY2VtZW50X293bmVyGAIgASgJEjgKBnJlYXNvbhgDIAEoDjIoLmF4b24uZGF0YWFjY2Vzcy52MS5SZWFkUmVzb2x1dGlvblJlYXNvbhIPCgdtZXNzYWdlGAQgASgJIo8BCgpSZWFkRGVuaWVkEjYKCHJlc291cmNlGAEgASgLMiQuYXhvbi5jb21tb24udjEuQ2Fub25pY2FsUmVzb3VyY2VSZWYSOAoGcmVhc29uGAIgASgOMiguYXhvbi5kYXRhYWNjZXNzLnYxLlJlYWRSZXNvbHV0aW9uUmVhc29uEg8KB21lc3NhZ2UYAyABKAki/QEKDlJlYWRSZXNvbHV0aW9uEj8KDGJyb3dzZXJfcmVhZBgBIAEoCzInLmF4b24uZGF0YWFjY2Vzcy52MS5SZXNvbHZlZEJyb3dzZXJSZWFkSAASPQoPcmVtb3RlX3JlcXVpcmVkGAIgASgLMiIuYXhvbi5kYXRhYWNjZXNzLnYxLlJlbW90ZVJlcXVpcmVkSAASMAoGZGVuaWVkGAMgASgLMh4uYXhvbi5kYXRhYWNjZXNzLnYxLlJlYWREZW5pZWRIABIuCgVlcnJvchgEIAEoCzIdLmF4b24uY29tbW9uLnYxLlByb3ZpZGVyRXJyb3JIAEIJCgdvdXRjb21lIigKFk9iamVjdEdyYW50TGlzdFJlcXVlc3QSDgoGcHJlZml4GAEgASgJIlEKF09iamVjdEdyYW50TGlzdFJlc3BvbnNlEjYKB29iamVjdHMYASADKAsyJS5heG9uLmRhdGFhY2Nlc3MudjEuT2JqZWN0R3JhbnRPYmplY3QiJgoWT2JqZWN0R3JhbnRIZWFkUmVxdWVzdBIMCgRwYXRoGAEgASgJIlcKF09iamVjdEdyYW50SGVhZFJlc3BvbnNlEgwKBHBhdGgYASABKAkSEgoKc2l6ZV9ieXRlcxgCIAEoBBIRCgRldGFnGAMgASgJSACIAQFCBwoFX2V0YWciUQoRT2JqZWN0R3JhbnRPYmplY3QSDAoEcGF0aBgBIAEoCRISCgpzaXplX2J5dGVzGAIgASgEEhEKBGV0YWcYAyABKAlIAIgBAUIHCgVfZXRhZyIsChtPYmplY3RHcmFudEJhdGNoU2lnblJlcXVlc3QSDQoFcGF0aHMYASADKAkiXQocT2JqZWN0R3JhbnRCYXRjaFNpZ25SZXNwb25zZRI9CgtzaWduZWRfdXJscxgBIAMoCzIoLmF4b24uZGF0YWFjY2Vzcy52MS5PYmplY3RHcmFudFNpZ25lZFVybCJOChRPYmplY3RHcmFudFNpZ25lZFVybBIMCgRwYXRoGAEgASgJEgsKA3VybBgCIAEoCRIbChNleHBpcmVzX2F0X2Vwb2NoX21zGAMgASgEIl8KF09iamVjdEdyYW50UmFuZ2VSZXF1ZXN0EgwKBHBhdGgYASABKAkSEgoFc3RhcnQYAiABKARIAIgBARIQCgNlbmQYAyABKARIAYgBAUIICgZfc3RhcnRCBgoEX2VuZCKGAQoYT2JqZWN0R3JhbnRSYW5nZVJlc3BvbnNlEgwKBGRhdGEYASABKAwSGgoNY29udGVudF9yYW5nZRgCIAEoCUgAiAEBEhEKBGV0YWcYAyABKAlIAYgBARISCgpzaXplX2J5dGVzGAQgASgEQhAKDl9jb250ZW50X3JhbmdlQgcKBV9ldGFnIk8KFU9iamVjdEdyYW50QXVkaXRSYW5nZRISCgVzdGFydBgBIAEoBEgAiAEBEhAKA2VuZBgCIAEoBEgBiAEBQggKBl9zdGFydEIGCgRfZW5kIuQDChVPYmplY3RHcmFudEF1ZGl0RXZlbnQSEAoIZXZlbnRfaWQYASABKAkSEgoKZXZlbnRfdHlwZRgCIAEoCRIcChRvY2N1cnJlZF9hdF9lcG9jaF9tcxgDIAEoBBIRCgl0ZW5hbnRfaWQYBCABKAkSFAoMd29ya3NwYWNlX2lkGAUgASgJEhQKDHVzZXJfc3ViamVjdBgGIAEoCRIQCgh0YWJsZV9pZBgHIAEoCRIRCglmdWxsX25hbWUYCCABKAkSEAoIZ3JhbnRfaWQYCSABKAkSFAoMZXhlY3V0aW9uX2lkGAogASgJEhYKDmNvcnJlbGF0aW9uX2lkGAwgASgJEjoKBmFjdGlvbhgNIAEoDjIqLmF4b24uZGF0YWFjY2Vzcy52MS5PYmplY3RHcmFudEF1ZGl0QWN0aW9uEhMKC29iamVjdF9wYXRoGA4gASgJEjgKBXJhbmdlGA8gASgLMikuYXhvbi5kYXRhYWNjZXNzLnYxLk9iamVjdEdyYW50QXVkaXRSYW5nZRI8CgdvdXRjb21lGBAgASgOMisuYXhvbi5kYXRhYWNjZXNzLnYxLk9iamVjdEdyYW50QXVkaXRPdXRjb21lSgQICxAMUghxdWVyeV9pZFIKcmVxdWVzdF9pZCqhAwoNQ2FwYWJpbGl0eUtleRIeChpDQVBBQklMSVRZX0tFWV9VTlNQRUNJRklFRBAAEiMKH0NBUEFCSUxJVFlfS0VZX0NIQU5HRV9EQVRBX0ZFRUQQARIhCh1DQVBBQklMSVRZX0tFWV9DT0xVTU5fTUFQUElORxACEiMKH0NBUEFCSUxJVFlfS0VZX0RFTEVUSU9OX1ZFQ1RPUlMQAxIsCihDQVBBQklMSVRZX0tFWV9NVUxUSV9QQVJUSVRJT05fRVhFQ1VUSU9OEAQSHwobQ0FQQUJJTElUWV9LRVlfUFJPWFlfQUNDRVNTEAUSHgoaQ0FQQUJJTElUWV9LRVlfUkFOR0VfUkVBRFMQBhIkCiBDQVBBQklMSVRZX0tFWV9TSUdORURfVVJMX0FDQ0VTUxAHEh4KGkNBUEFCSUxJVFlfS0VZX1RJTUVfVFJBVkVMEAgSIAocQ0FQQUJJTElUWV9LRVlfVElNRVNUQU1QX05UWhAJEiwKKENBUEFCSUxJVFlfS0VZX1VOS05PV05fUFJPVE9DT0xfRkVBVFVSRVMQCiq6AQoPQ2FwYWJpbGl0eVN0YXRlEiAKHENBUEFCSUxJVFlfU1RBVEVfVU5TUEVDSUZJRUQQABIeChpDQVBBQklMSVRZX1NUQVRFX1NVUFBPUlRFRBABEiAKHENBUEFCSUxJVFlfU1RBVEVfTkFUSVZFX09OTFkQAhIgChxDQVBBQklMSVRZX1NUQVRFX1VOU1VQUE9SVEVEEAMSIQodQ0FQQUJJTElUWV9TVEFURV9FWFBFUklNRU5UQUwQBCrPAQoSQnJvd3NlckFjY2Vzc0NsYXNzEiQKIEJST1dTRVJfQUNDRVNTX0NMQVNTX1VOU1BFQ0lGSUVEEAASHwobQlJPV1NFUl9BQ0NFU1NfQ0xBU1NfUFVCTElDEAESJQohQlJPV1NFUl9BQ0NFU1NfQ0xBU1NfTE9DQUxfSEFORExFEAISIwofQlJPV1NFUl9BQ0NFU1NfQ0xBU1NfU0lHTkVEX1VSTBADEiYKIkJST1dTRVJfQUNDRVNTX0NMQVNTX1NFU1NJT05fUFJPWFkQBCraAgoUUmVhZFJlc29sdXRpb25SZWFzb24SJgoiUkVBRF9SRVNPTFVUSU9OX1JFQVNPTl9VTlNQRUNJRklFRBAAEjYKMlJFQURfUkVTT0xVVElPTl9SRUFTT05fUE9MSUNZX0VORk9SQ0VNRU5UX1JFUVVJUkVEEAESLgoqUkVBRF9SRVNPTFVUSU9OX1JFQVNPTl9CUk9XU0VSX1VOU1VQUE9SVEVEEAISKAokUkVBRF9SRVNPTFVUSU9OX1JFQVNPTl9BQ0NFU1NfREVOSUVEEAMSKwonUkVBRF9SRVNPTFVUSU9OX1JFQVNPTl9TRVNTSU9OX1JFUVVJUkVEEAQSLQopUkVBRF9SRVNPTFVUSU9OX1JFQVNPTl9FWFBJUkVEX0NBUEFCSUxJVFkQBRIsCihSRUFEX1JFU09MVVRJT05fUkVBU09OX1VOU0FGRV9ERVNDUklQVE9SEAYqyQEKE1BhcnRpdGlvbkNvbHVtblR5cGUSJQohUEFSVElUSU9OX0NPTFVNTl9UWVBFX1VOU1BFQ0lGSUVEEAASIAocUEFSVElUSU9OX0NPTFVNTl9UWVBFX1NUUklORxABEh8KG1BBUlRJVElPTl9DT0xVTU5fVFlQRV9JTlQ2NBACEiEKHVBBUlRJVElPTl9DT0xVTU5fVFlQRV9CT09MRUFOEAMSJQohUEFSVElUSU9OX0NPTFVNTl9UWVBFX1VOU1VQUE9SVEVEEAQq2gEKFk9iamVjdEdyYW50QXVkaXRBY3Rpb24SKQolT0JKRUNUX0dSQU5UX0FVRElUX0FDVElPTl9VTlNQRUNJRklFRBAAEiIKHk9CSkVDVF9HUkFOVF9BVURJVF9BQ1RJT05fTElTVBABEiIKHk9CSkVDVF9HUkFOVF9BVURJVF9BQ1RJT05fSEVBRBACEigKJE9CSkVDVF9HUkFOVF9BVURJVF9BQ1RJT05fQkFUQ0hfU0lHThADEiMKH09CSkVDVF9HUkFOVF9BVURJVF9BQ1RJT05fUkFOR0UQBCqUAQoXT2JqZWN0R3JhbnRBdWRpdE91dGNvbWUSKgomT0JKRUNUX0dSQU5UX0FVRElUX09VVENPTUVfVU5TUEVDSUZJRUQQABImCiJPQkpFQ1RfR1JBTlRfQVVESVRfT1VUQ09NRV9BTExPV0VEEAESJQohT0JKRUNUX0dSQU5UX0FVRElUX09VVENPTUVfREVOSUVEEAJiBnByb3RvMw", [file_axon_common_v1_common, file_google_protobuf_struct, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message axon.dataaccess.v1.CapabilityReport
@@ -401,320 +401,6 @@ export const ReadResolutionSchema: GenMessage<ReadResolution> = /*@__PURE__*/
   messageDesc(file_axon_dataaccess_v1_dataaccess, 11);
 
 /**
- * @generated from message axon.dataaccess.v1.BrokeredObjectAccess
- */
-export type BrokeredObjectAccess = Message<"axon.dataaccess.v1.BrokeredObjectAccess"> & {
-  /**
-   * @generated from field: bool list = 1;
-   */
-  list: boolean;
-
-  /**
-   * @generated from field: bool head = 2;
-   */
-  head: boolean;
-
-  /**
-   * @generated from field: bool get = 3;
-   */
-  get: boolean;
-
-  /**
-   * @generated from field: bool range_get = 4;
-   */
-  rangeGet: boolean;
-
-  /**
-   * @generated from field: bool batch_sign = 5;
-   */
-  batchSign: boolean;
-
-  /**
-   * @generated from field: bool proxy_range = 6;
-   */
-  proxyRange: boolean;
-};
-
-/**
- * Describes the message axon.dataaccess.v1.BrokeredObjectAccess.
- * Use `create(BrokeredObjectAccessSchema)` to create a new message.
- */
-export const BrokeredObjectAccessSchema: GenMessage<BrokeredObjectAccess> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 12);
-
-/**
- * @generated from message axon.dataaccess.v1.BrokeredPolicyAuthority
- */
-export type BrokeredPolicyAuthority = Message<"axon.dataaccess.v1.BrokeredPolicyAuthority"> & {
-  /**
-   * @generated from field: axon.dataaccess.v1.PolicyAuthorityKind authority = 1;
-   */
-  authority: PolicyAuthorityKind;
-
-  /**
-   * @generated from field: axon.dataaccess.v1.DirectExternalEngineReadSupport direct_external_engine_read = 2;
-   */
-  directExternalEngineRead: DirectExternalEngineReadSupport;
-};
-
-/**
- * Describes the message axon.dataaccess.v1.BrokeredPolicyAuthority.
- * Use `create(BrokeredPolicyAuthoritySchema)` to create a new message.
- */
-export const BrokeredPolicyAuthoritySchema: GenMessage<BrokeredPolicyAuthority> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 13);
-
-/**
- * @generated from message axon.dataaccess.v1.BrokeredDeltaReadAccessPlan
- */
-export type BrokeredDeltaReadAccessPlan = Message<"axon.dataaccess.v1.BrokeredDeltaReadAccessPlan"> & {
-  /**
-   * @generated from field: string table_id = 1;
-   */
-  tableId: string;
-
-  /**
-   * @generated from field: string full_name = 2;
-   */
-  fullName: string;
-
-  /**
-   * @generated from field: string table_root = 3;
-   */
-  tableRoot: string;
-
-  /**
-   * @generated from field: string grant_id = 4;
-   */
-  grantId: string;
-
-  /**
-   * @generated from field: uint64 expires_at_epoch_ms = 5;
-   */
-  expiresAtEpochMs: bigint;
-
-  /**
-   * @generated from field: axon.dataaccess.v1.BrokeredDeltaAccessMode delta_access_mode = 6;
-   */
-  deltaAccessMode: BrokeredDeltaAccessMode;
-
-  /**
-   * @generated from field: axon.dataaccess.v1.BrokeredPolicyAuthority policy_authority = 7;
-   */
-  policyAuthority?: BrokeredPolicyAuthority | undefined;
-
-  /**
-   * @generated from field: axon.dataaccess.v1.BrokeredObjectAccess object_access = 8;
-   */
-  objectAccess?: BrokeredObjectAccess | undefined;
-};
-
-/**
- * Describes the message axon.dataaccess.v1.BrokeredDeltaReadAccessPlan.
- * Use `create(BrokeredDeltaReadAccessPlanSchema)` to create a new message.
- */
-export const BrokeredDeltaReadAccessPlanSchema: GenMessage<BrokeredDeltaReadAccessPlan> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 14);
-
-/**
- * @generated from message axon.dataaccess.v1.DeltaSharingReadAccessPlan
- */
-export type DeltaSharingReadAccessPlan = Message<"axon.dataaccess.v1.DeltaSharingReadAccessPlan"> & {
-  /**
-   * @generated from field: string table_id = 1;
-   */
-  tableId: string;
-
-  /**
-   * @generated from field: string full_name = 2;
-   */
-  fullName: string;
-
-  /**
-   * @generated from field: string sharing_endpoint = 3;
-   */
-  sharingEndpoint: string;
-
-  /**
-   * @generated from field: uint64 expires_at_epoch_ms = 4;
-   */
-  expiresAtEpochMs: bigint;
-
-  /**
-   * @generated from field: repeated axon.dataaccess.v1.BrowserHttpFileDescriptor files = 5;
-   */
-  files: BrowserHttpFileDescriptor[];
-};
-
-/**
- * Describes the message axon.dataaccess.v1.DeltaSharingReadAccessPlan.
- * Use `create(DeltaSharingReadAccessPlanSchema)` to create a new message.
- */
-export const DeltaSharingReadAccessPlanSchema: GenMessage<DeltaSharingReadAccessPlan> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 15);
-
-/**
- * @generated from message axon.dataaccess.v1.SqlFallbackRequiredReadAccessPlan
- */
-export type SqlFallbackRequiredReadAccessPlan = Message<"axon.dataaccess.v1.SqlFallbackRequiredReadAccessPlan"> & {
-  /**
-   * @generated from field: string table_id = 1;
-   */
-  tableId: string;
-
-  /**
-   * @generated from field: string full_name = 2;
-   */
-  fullName: string;
-
-  /**
-   * @generated from field: axon.dataaccess.v1.ReadAccessPlanReason reason = 3;
-   */
-  reason: ReadAccessPlanReason;
-
-  /**
-   * @generated from field: string message = 4;
-   */
-  message: string;
-
-  /**
-   * @generated from field: string statement_endpoint = 5;
-   */
-  statementEndpoint: string;
-
-  /**
-   * @generated from field: bool warehouse_required = 6;
-   */
-  warehouseRequired: boolean;
-};
-
-/**
- * Describes the message axon.dataaccess.v1.SqlFallbackRequiredReadAccessPlan.
- * Use `create(SqlFallbackRequiredReadAccessPlanSchema)` to create a new message.
- */
-export const SqlFallbackRequiredReadAccessPlanSchema: GenMessage<SqlFallbackRequiredReadAccessPlan> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 16);
-
-/**
- * @generated from message axon.dataaccess.v1.BlockedReadAccessPlan
- */
-export type BlockedReadAccessPlan = Message<"axon.dataaccess.v1.BlockedReadAccessPlan"> & {
-  /**
-   * @generated from field: string table_id = 1;
-   */
-  tableId: string;
-
-  /**
-   * @generated from field: string full_name = 2;
-   */
-  fullName: string;
-
-  /**
-   * @generated from field: axon.dataaccess.v1.ReadAccessPlanReason reason = 3;
-   */
-  reason: ReadAccessPlanReason;
-
-  /**
-   * @generated from field: string message = 4;
-   */
-  message: string;
-};
-
-/**
- * Describes the message axon.dataaccess.v1.BlockedReadAccessPlan.
- * Use `create(BlockedReadAccessPlanSchema)` to create a new message.
- */
-export const BlockedReadAccessPlanSchema: GenMessage<BlockedReadAccessPlan> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 17);
-
-/**
- * @generated from message axon.dataaccess.v1.ReadAccessPlan
- */
-export type ReadAccessPlan = Message<"axon.dataaccess.v1.ReadAccessPlan"> & {
-  /**
-   * @generated from oneof axon.dataaccess.v1.ReadAccessPlan.plan
-   */
-  plan: {
-    /**
-     * @generated from field: axon.dataaccess.v1.BrokeredDeltaReadAccessPlan brokered_delta = 1;
-     */
-    value: BrokeredDeltaReadAccessPlan;
-    case: "brokeredDelta";
-  } | {
-    /**
-     * @generated from field: axon.dataaccess.v1.DeltaSharingReadAccessPlan delta_sharing = 2;
-     */
-    value: DeltaSharingReadAccessPlan;
-    case: "deltaSharing";
-  } | {
-    /**
-     * @generated from field: axon.dataaccess.v1.SqlFallbackRequiredReadAccessPlan sql_fallback_required = 3;
-     */
-    value: SqlFallbackRequiredReadAccessPlan;
-    case: "sqlFallbackRequired";
-  } | {
-    /**
-     * @generated from field: axon.dataaccess.v1.BlockedReadAccessPlan blocked = 4;
-     */
-    value: BlockedReadAccessPlan;
-    case: "blocked";
-  } | { case: undefined; value?: undefined };
-};
-
-/**
- * Describes the message axon.dataaccess.v1.ReadAccessPlan.
- * Use `create(ReadAccessPlanSchema)` to create a new message.
- */
-export const ReadAccessPlanSchema: GenMessage<ReadAccessPlan> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 18);
-
-/**
- * @generated from message axon.dataaccess.v1.TableReadResolution
- */
-export type TableReadResolution = Message<"axon.dataaccess.v1.TableReadResolution"> & {
-  /**
-   * @generated from field: axon.common.v1.ObjectRef table_ref = 1;
-   */
-  tableRef?: ObjectRef | undefined;
-
-  /**
-   * @generated from oneof axon.dataaccess.v1.TableReadResolution.resolution
-   */
-  resolution: {
-    /**
-     * @generated from field: axon.dataaccess.v1.BrowserHttpSnapshotDescriptor descriptor = 2;
-     */
-    value: BrowserHttpSnapshotDescriptor;
-    case: "descriptor";
-  } | {
-    /**
-     * @generated from field: axon.dataaccess.v1.ReadAccessPlan read_access_plan = 3;
-     */
-    value: ReadAccessPlan;
-    case: "readAccessPlan";
-  } | {
-    /**
-     * @generated from field: axon.dataaccess.v1.SqlFallbackRequiredReadAccessPlan fallback = 4;
-     */
-    value: SqlFallbackRequiredReadAccessPlan;
-    case: "fallback";
-  } | {
-    /**
-     * @generated from field: axon.dataaccess.v1.BlockedReadAccessPlan blocked = 5;
-     */
-    value: BlockedReadAccessPlan;
-    case: "blocked";
-  } | { case: undefined; value?: undefined };
-};
-
-/**
- * Describes the message axon.dataaccess.v1.TableReadResolution.
- * Use `create(TableReadResolutionSchema)` to create a new message.
- */
-export const TableReadResolutionSchema: GenMessage<TableReadResolution> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 19);
-
-/**
  * @generated from message axon.dataaccess.v1.ObjectGrantListRequest
  */
 export type ObjectGrantListRequest = Message<"axon.dataaccess.v1.ObjectGrantListRequest"> & {
@@ -729,7 +415,7 @@ export type ObjectGrantListRequest = Message<"axon.dataaccess.v1.ObjectGrantList
  * Use `create(ObjectGrantListRequestSchema)` to create a new message.
  */
 export const ObjectGrantListRequestSchema: GenMessage<ObjectGrantListRequest> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 20);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 12);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantListResponse
@@ -746,7 +432,7 @@ export type ObjectGrantListResponse = Message<"axon.dataaccess.v1.ObjectGrantLis
  * Use `create(ObjectGrantListResponseSchema)` to create a new message.
  */
 export const ObjectGrantListResponseSchema: GenMessage<ObjectGrantListResponse> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 21);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 13);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantHeadRequest
@@ -763,7 +449,7 @@ export type ObjectGrantHeadRequest = Message<"axon.dataaccess.v1.ObjectGrantHead
  * Use `create(ObjectGrantHeadRequestSchema)` to create a new message.
  */
 export const ObjectGrantHeadRequestSchema: GenMessage<ObjectGrantHeadRequest> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 22);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 14);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantHeadResponse
@@ -790,7 +476,7 @@ export type ObjectGrantHeadResponse = Message<"axon.dataaccess.v1.ObjectGrantHea
  * Use `create(ObjectGrantHeadResponseSchema)` to create a new message.
  */
 export const ObjectGrantHeadResponseSchema: GenMessage<ObjectGrantHeadResponse> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 23);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 15);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantObject
@@ -817,7 +503,7 @@ export type ObjectGrantObject = Message<"axon.dataaccess.v1.ObjectGrantObject"> 
  * Use `create(ObjectGrantObjectSchema)` to create a new message.
  */
 export const ObjectGrantObjectSchema: GenMessage<ObjectGrantObject> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 24);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 16);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantBatchSignRequest
@@ -834,7 +520,7 @@ export type ObjectGrantBatchSignRequest = Message<"axon.dataaccess.v1.ObjectGran
  * Use `create(ObjectGrantBatchSignRequestSchema)` to create a new message.
  */
 export const ObjectGrantBatchSignRequestSchema: GenMessage<ObjectGrantBatchSignRequest> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 25);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 17);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantBatchSignResponse
@@ -851,7 +537,7 @@ export type ObjectGrantBatchSignResponse = Message<"axon.dataaccess.v1.ObjectGra
  * Use `create(ObjectGrantBatchSignResponseSchema)` to create a new message.
  */
 export const ObjectGrantBatchSignResponseSchema: GenMessage<ObjectGrantBatchSignResponse> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 26);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 18);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantSignedUrl
@@ -878,7 +564,7 @@ export type ObjectGrantSignedUrl = Message<"axon.dataaccess.v1.ObjectGrantSigned
  * Use `create(ObjectGrantSignedUrlSchema)` to create a new message.
  */
 export const ObjectGrantSignedUrlSchema: GenMessage<ObjectGrantSignedUrl> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 27);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 19);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantRangeRequest
@@ -905,7 +591,7 @@ export type ObjectGrantRangeRequest = Message<"axon.dataaccess.v1.ObjectGrantRan
  * Use `create(ObjectGrantRangeRequestSchema)` to create a new message.
  */
 export const ObjectGrantRangeRequestSchema: GenMessage<ObjectGrantRangeRequest> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 28);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 20);
 
 /**
  * Protobuf transports use this envelope for range bytes and metadata. The
@@ -941,7 +627,7 @@ export type ObjectGrantRangeResponse = Message<"axon.dataaccess.v1.ObjectGrantRa
  * Use `create(ObjectGrantRangeResponseSchema)` to create a new message.
  */
 export const ObjectGrantRangeResponseSchema: GenMessage<ObjectGrantRangeResponse> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 29);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 21);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantAuditRange
@@ -963,7 +649,7 @@ export type ObjectGrantAuditRange = Message<"axon.dataaccess.v1.ObjectGrantAudit
  * Use `create(ObjectGrantAuditRangeSchema)` to create a new message.
  */
 export const ObjectGrantAuditRangeSchema: GenMessage<ObjectGrantAuditRange> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 30);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 22);
 
 /**
  * @generated from message axon.dataaccess.v1.ObjectGrantAuditEvent
@@ -1050,7 +736,7 @@ export type ObjectGrantAuditEvent = Message<"axon.dataaccess.v1.ObjectGrantAudit
  * Use `create(ObjectGrantAuditEventSchema)` to create a new message.
  */
 export const ObjectGrantAuditEventSchema: GenMessage<ObjectGrantAuditEvent> = /*@__PURE__*/
-  messageDesc(file_axon_dataaccess_v1_dataaccess, 31);
+  messageDesc(file_axon_dataaccess_v1_dataaccess, 23);
 
 /**
  * @generated from enum axon.dataaccess.v1.CapabilityKey
@@ -1273,150 +959,6 @@ export const PartitionColumnTypeSchema: GenEnum<PartitionColumnType> = /*@__PURE
   enumDesc(file_axon_dataaccess_v1_dataaccess, 4);
 
 /**
- * @generated from enum axon.dataaccess.v1.ReadAccessPlanReason
- */
-export enum ReadAccessPlanReason {
-  /**
-   * @generated from enum value: READ_ACCESS_PLAN_REASON_UNSPECIFIED = 0;
-   */
-  UNSPECIFIED = 0,
-
-  /**
-   * @generated from enum value: READ_ACCESS_PLAN_REASON_ROW_FILTER = 1;
-   */
-  ROW_FILTER = 1,
-
-  /**
-   * @generated from enum value: READ_ACCESS_PLAN_REASON_COLUMN_MASK = 2;
-   */
-  COLUMN_MASK = 2,
-
-  /**
-   * @generated from enum value: READ_ACCESS_PLAN_REASON_VIEW = 3;
-   */
-  VIEW = 3,
-
-  /**
-   * @generated from enum value: READ_ACCESS_PLAN_REASON_UNKNOWN_POLICY_STATE = 4;
-   */
-  UNKNOWN_POLICY_STATE = 4,
-
-  /**
-   * @generated from enum value: READ_ACCESS_PLAN_REASON_NO_DIRECT_EXTERNAL_ENGINE_READ_SUPPORT = 5;
-   */
-  NO_DIRECT_EXTERNAL_ENGINE_READ_SUPPORT = 5,
-
-  /**
-   * @generated from enum value: READ_ACCESS_PLAN_REASON_UNSUPPORTED_TABLE_TYPE = 6;
-   */
-  UNSUPPORTED_TABLE_TYPE = 6,
-
-  /**
-   * @generated from enum value: READ_ACCESS_PLAN_REASON_GRANT_EXPIRED = 7;
-   */
-  GRANT_EXPIRED = 7,
-
-  /**
-   * @generated from enum value: READ_ACCESS_PLAN_REASON_STORAGE_CORS_BLOCKED = 8;
-   */
-  STORAGE_CORS_BLOCKED = 8,
-
-  /**
-   * @generated from enum value: READ_ACCESS_PLAN_REASON_BROKER_UNAVAILABLE = 9;
-   */
-  BROKER_UNAVAILABLE = 9,
-}
-
-/**
- * Describes the enum axon.dataaccess.v1.ReadAccessPlanReason.
- */
-export const ReadAccessPlanReasonSchema: GenEnum<ReadAccessPlanReason> = /*@__PURE__*/
-  enumDesc(file_axon_dataaccess_v1_dataaccess, 5);
-
-/**
- * @generated from enum axon.dataaccess.v1.BrokeredDeltaAccessMode
- */
-export enum BrokeredDeltaAccessMode {
-  /**
-   * @generated from enum value: BROKERED_DELTA_ACCESS_MODE_UNSPECIFIED = 0;
-   */
-  UNSPECIFIED = 0,
-
-  /**
-   * @generated from enum value: BROKERED_DELTA_ACCESS_MODE_DELTA_LOG = 1;
-   */
-  DELTA_LOG = 1,
-
-  /**
-   * @generated from enum value: BROKERED_DELTA_ACCESS_MODE_PRESIGNED_FILES = 2;
-   */
-  PRESIGNED_FILES = 2,
-}
-
-/**
- * Describes the enum axon.dataaccess.v1.BrokeredDeltaAccessMode.
- */
-export const BrokeredDeltaAccessModeSchema: GenEnum<BrokeredDeltaAccessMode> = /*@__PURE__*/
-  enumDesc(file_axon_dataaccess_v1_dataaccess, 6);
-
-/**
- * @generated from enum axon.dataaccess.v1.PolicyAuthorityKind
- */
-export enum PolicyAuthorityKind {
-  /**
-   * @generated from enum value: POLICY_AUTHORITY_KIND_UNSPECIFIED = 0;
-   */
-  UNSPECIFIED = 0,
-
-  /**
-   * @generated from enum value: POLICY_AUTHORITY_KIND_UNITY_CATALOG = 1;
-   */
-  UNITY_CATALOG = 1,
-
-  /**
-   * @generated from enum value: POLICY_AUTHORITY_KIND_DELTA_SHARING = 2;
-   */
-  DELTA_SHARING = 2,
-
-  /**
-   * @generated from enum value: POLICY_AUTHORITY_KIND_MOCK_BROKER = 3;
-   */
-  MOCK_BROKER = 3,
-}
-
-/**
- * Describes the enum axon.dataaccess.v1.PolicyAuthorityKind.
- */
-export const PolicyAuthorityKindSchema: GenEnum<PolicyAuthorityKind> = /*@__PURE__*/
-  enumDesc(file_axon_dataaccess_v1_dataaccess, 7);
-
-/**
- * @generated from enum axon.dataaccess.v1.DirectExternalEngineReadSupport
- */
-export enum DirectExternalEngineReadSupport {
-  /**
-   * @generated from enum value: DIRECT_EXTERNAL_ENGINE_READ_SUPPORT_UNSPECIFIED = 0;
-   */
-  UNSPECIFIED = 0,
-
-  /**
-   * @generated from enum value: DIRECT_EXTERNAL_ENGINE_READ_SUPPORT_CONFIRMED = 1;
-   */
-  CONFIRMED = 1,
-
-  /**
-   * @generated from enum value: DIRECT_EXTERNAL_ENGINE_READ_SUPPORT_NOT_CONFIRMED = 2;
-   */
-  NOT_CONFIRMED = 2,
-}
-
-/**
- * Describes the enum axon.dataaccess.v1.DirectExternalEngineReadSupport.
- */
-export const DirectExternalEngineReadSupportSchema: GenEnum<DirectExternalEngineReadSupport> = /*@__PURE__*/
-  enumDesc(file_axon_dataaccess_v1_dataaccess, 8);
-
-/**
  * @generated from enum axon.dataaccess.v1.ObjectGrantAuditAction
  */
 export enum ObjectGrantAuditAction {
@@ -1453,7 +995,7 @@ export enum ObjectGrantAuditAction {
  * Describes the enum axon.dataaccess.v1.ObjectGrantAuditAction.
  */
 export const ObjectGrantAuditActionSchema: GenEnum<ObjectGrantAuditAction> = /*@__PURE__*/
-  enumDesc(file_axon_dataaccess_v1_dataaccess, 9);
+  enumDesc(file_axon_dataaccess_v1_dataaccess, 5);
 
 /**
  * @generated from enum axon.dataaccess.v1.ObjectGrantAuditOutcome
@@ -1482,4 +1024,4 @@ export enum ObjectGrantAuditOutcome {
  * Describes the enum axon.dataaccess.v1.ObjectGrantAuditOutcome.
  */
 export const ObjectGrantAuditOutcomeSchema: GenEnum<ObjectGrantAuditOutcome> = /*@__PURE__*/
-  enumDesc(file_axon_dataaccess_v1_dataaccess, 10);
+  enumDesc(file_axon_dataaccess_v1_dataaccess, 6);

@@ -23,7 +23,6 @@ import type {
   BrowserWorkerResultPreview,
   BrowserWorkerSqlCommand,
   CapabilityReport,
-  FallbackReason,
   ParquetInspectionColumn,
   ParquetInspectionColumnChunk,
   ParquetInspectionRowGroup,
@@ -46,10 +45,8 @@ import {
   BrowserWorkerEventEnvelopeSchema,
   BrowserWorkerResponseEnvelopeSchema,
   CancelResponseSchema,
-  ExecuteRequestSchema,
   ExecuteResponseSchema,
   ExecutionTarget,
-  OpenableDescriptorSchema,
   PreviewRequestSchema,
   PreviewResponseSchema,
   PreviewCellSchema,
@@ -113,7 +110,6 @@ const QUERY_METRIC_UINT64_FIELDS = [
   'rows_emitted',
   'snapshot_bootstrap_duration_ms',
   'arrow_ipc_bytes',
-  'arrow_ipc_chunk_count',
   'preview_rows',
   'preview_string_bytes',
   'planning_duration_ms',
@@ -199,6 +195,7 @@ describe('execution contract codegen', () => {
     expect(protobufJson).toMatchObject({
       sql: {
         request_id: 'req-supported-001',
+        execution_id: 'req-supported-001',
         query: {
           preferred_target: 'EXECUTION_TARGET_BROWSER_WASM',
           options: {
@@ -207,7 +204,6 @@ describe('execution contract codegen', () => {
           },
         },
         output: 'BROWSER_WORKER_SQL_OUTPUT_ARROW_IPC_STREAM',
-        delivery: 'BROWSER_WORKER_SQL_DELIVERY_SINGLE_BUFFER',
         browser_safe_defaults: false,
       },
     });
@@ -232,19 +228,19 @@ describe('execution contract codegen', () => {
     );
     const jsonWithoutRuntimeLimits = toJson(QueryRequestSchema, decodedWithoutRuntimeLimits);
 
-    expect(decodedWithoutRuntimeLimits.snapshotVersion).toBe(0n);
     expect(decodedWithoutRuntimeLimits.options?.includeExplain).toBe(false);
     expect(decodedWithoutRuntimeLimits.options?.collectMetrics).toBe(false);
     expect(decodedWithoutRuntimeLimits.options?.resultPage?.limit).toBe(0n);
     expect(decodedWithoutRuntimeLimits.options?.runtimeLimits).toBeUndefined();
     expect(jsonWithoutRuntimeLimits).toMatchObject({
-      snapshot_version: '0',
       options: {
         include_explain: false,
         collect_metrics: false,
         result_page: { limit: '0', offset: '0' },
       },
     });
+    expect(jsonWithoutRuntimeLimits).not.toHaveProperty('table_uri');
+    expect(jsonWithoutRuntimeLimits).not.toHaveProperty('snapshot_version');
     expect(jsonWithoutRuntimeLimits).not.toHaveProperty('options.runtime_limits');
 
     const withExplicitZeroLimits: QueryRequest = {
@@ -351,16 +347,14 @@ describe('execution contract codegen', () => {
         },
         result: {
           format: 'ARROW_IPC_FORMAT_STREAM',
-          delivery: 'ARROW_IPC_DELIVERY_SINGLE_BUFFER',
           bytes: 'AQIDBA==',
           byte_length: '4',
-          chunk_count: '1',
         },
       },
     });
   });
 
-  it('normalizes structured fallback reasons and preserves explicit zero metrics', () => {
+  it('drops legacy fallback metadata and preserves explicit zero metrics', () => {
     const legacy = readExample<WireBrowserWorkerResponseEnvelope>(
       'browser-worker-response.native-fallback.json',
     );
@@ -374,12 +368,6 @@ describe('execution contract codegen', () => {
       success: {
         response: {
           executed_on: 'EXECUTION_TARGET_NATIVE',
-          fallback_reason: {
-            capability_gate: {
-              capability: 'CAPABILITY_KEY_MULTI_PARTITION_EXECUTION',
-              required_state: 'CAPABILITY_STATE_NATIVE_ONLY',
-            },
-          },
           metrics: {
             row_groups_touched: '0',
             row_groups_skipped: '0',
@@ -390,13 +378,13 @@ describe('execution contract codegen', () => {
           format: 'ARROW_IPC_FORMAT_FILE',
           bytes: 'CQgHBg==',
           byte_length: '4',
-          chunk_count: '1',
         },
       },
     });
+    expect(protobufJson).not.toHaveProperty('success.response.fallback_reason');
   });
 
-  it('keeps Arrow IPC opaque, base64-encoded, and explicit about delivery metadata', () => {
+  it('keeps Arrow IPC opaque, base64-encoded, and single-buffer only', () => {
     const singleBuffer: WireArrowIpcResult = {
       format: 'stream',
       content_type: 'application/vnd.apache.arrow.stream',
@@ -410,10 +398,8 @@ describe('execution contract codegen', () => {
     expect(singleBufferJson).toEqual({
       format: 'ARROW_IPC_FORMAT_STREAM',
       content_type: 'application/vnd.apache.arrow.stream',
-      delivery: 'ARROW_IPC_DELIVERY_SINGLE_BUFFER',
       bytes: 'AQIDBA==',
       byte_length: '4',
-      chunk_count: '1',
     });
 
     const chunked: WireArrowIpcResult = {
@@ -423,19 +409,10 @@ describe('execution contract codegen', () => {
       byte_length: 0,
       chunk_count: 0,
     };
-    const chunkedJson = toJson(
-      ArrowIpcResultSchema,
-      fromJson(ArrowIpcResultSchema, normalizeArrowIpcResult(chunked)),
+    expect(() => normalizeArrowIpcResult(chunked)).toThrow(
+      'corrected protobuf contract requires one Arrow IPC buffer',
     );
-
-    expect(chunkedJson).toEqual({
-      format: 'ARROW_IPC_FORMAT_STREAM',
-      content_type: 'application/vnd.apache.arrow.stream',
-      delivery: 'ARROW_IPC_DELIVERY_CHUNKED_BUFFERS',
-      byte_length: '0',
-      chunk_count: '0',
-    });
-    expect(chunkedJson).not.toHaveProperty('rows');
+    expect(singleBufferJson).not.toHaveProperty('rows');
   });
 
   it('normalizes every preview cell variant and preserves preview zero counts', () => {
@@ -521,18 +498,12 @@ describe('execution contract codegen', () => {
     );
   });
 
-  it('normalizes all eight worker event arms and every query metric field', () => {
+  it('normalizes the four nonterminal worker event arms and every retained metric field', () => {
     const context: BrowserWorkerEventContext = {
       phase: 'query',
       request_id: 'req-query-001',
       query_id: 'req-query-001',
       table_name: 'supported_table',
-    };
-    const queryError: QueryError = {
-      code: 'fallback_required',
-      message: 'browser query exceeded runtime budget',
-      target: 'browser_wasm',
-      fallback_reason: 'browser_runtime_constraint',
     };
     const events: Array<{
       expectedCase: string;
@@ -573,35 +544,6 @@ describe('execution contract codegen', () => {
               validation_misses: 1,
               persistent_cache_errors: 0,
             },
-          },
-        },
-      },
-      {
-        expectedCase: 'fallback',
-        expectedJsonName: 'fallback',
-        legacy: { fallback: { context, reason: 'browser_runtime_constraint' } },
-      },
-      {
-        expectedCase: 'cancellation',
-        expectedJsonName: 'cancellation',
-        legacy: { cancellation: { context, error: queryError } },
-      },
-      {
-        expectedCase: 'terminalError',
-        expectedJsonName: 'terminal_error',
-        legacy: { terminal_error: { context, error: queryError } },
-      },
-      {
-        expectedCase: 'arrowIpcChunk',
-        expectedJsonName: 'arrow_ipc_chunk',
-        legacy: {
-          arrow_ipc_chunk: {
-            context,
-            request_id: 'req-query-001',
-            sequence: 0,
-            byte_offset: 0,
-            byte_length: 2,
-            bytes: new Uint8Array([9, 8]),
           },
         },
       },
@@ -649,20 +591,6 @@ describe('execution contract codegen', () => {
           validation_misses: '1',
           persistent_cache_errors: '0',
         },
-      },
-    });
-
-    const chunkJson = toJson(
-      BrowserWorkerEventEnvelopeSchema,
-      fromJson(BrowserWorkerEventEnvelopeSchema, normalizeWorkerEvent(events[7]!.legacy)),
-    );
-    expect(chunkJson).toMatchObject({
-      arrow_ipc_chunk: {
-        request_id: 'req-query-001',
-        sequence: '0',
-        byte_offset: '0',
-        byte_length: '2',
-        bytes: 'CQg=',
       },
     });
   });
@@ -781,29 +709,13 @@ describe('execution contract codegen', () => {
     ]);
   });
 
-  it('restricts execution and preview requests to directly openable descriptors', () => {
-    for (const requestSchema of [ExecuteRequestSchema, PreviewRequestSchema]) {
-      expect(messageFieldTypeName(requestSchema.fields, 'descriptor')).toBe(
-        'axon.exec.v1.OpenableDescriptor',
-      );
-      expect(requestSchema.fields.map((field: DescField) => field.name)).not.toContain(
-        'table_read_resolution',
-      );
-    }
-
-    expect(
-      OpenableDescriptorSchema.oneofs[0]?.fields.map((field: DescField) => [
-        field.name,
-        messageFieldTypeName(OpenableDescriptorSchema.fields, field.name),
-      ]),
-    ).toEqual([
-      ['snapshot', 'axon.dataaccess.v1.BrowserHttpSnapshotDescriptor'],
-      ['parquet_dataset', 'axon.dataaccess.v1.BrowserHttpParquetDatasetDescriptor'],
-    ]);
-    expect(ExecuteResponseSchema.oneofs[0]?.fields.map((field: DescField) => field.name)).toEqual([
-      'event',
-      'response',
-    ]);
+  it('restricts preview to one self-identifying browser binding', () => {
+    expect(messageFieldTypeName(PreviewRequestSchema.fields, 'browser_read')).toBe(
+      'axon.dataaccess.v1.ResolvedBrowserRead',
+    );
+    expect(PreviewRequestSchema.fields.map((field: DescField) => field.name)).not.toEqual(
+      expect.arrayContaining(['request_id', 'table_ref', 'descriptor']),
+    );
     expect(PreviewResponseSchema.oneofs[0]?.fields.map((field: DescField) => field.name)).toEqual([
       'success',
       'error',
@@ -812,7 +724,7 @@ describe('execution contract codegen', () => {
     const previewRequest = toJson(
       PreviewRequestSchema,
       fromJson(PreviewRequestSchema, {
-        request_id: 'preview-control-001',
+        execution_id: 'execution-preview-001',
         preferred_target: 'EXECUTION_TARGET_BROWSER_WASM',
         limit: '0',
       }),
@@ -820,17 +732,15 @@ describe('execution contract codegen', () => {
     const cancelResponse = toJson(
       CancelResponseSchema,
       fromJson(CancelResponseSchema, {
-        request_id: 'cancel-control-001',
-        query_id: 'query-001',
-        accepted: false,
+        execution_id: 'execution-001',
+        state: 'EXECUTION_LIFECYCLE_STATE_CANCEL_REQUESTED',
       }),
     );
 
     expect(previewRequest).toHaveProperty('limit', '0');
     expect(cancelResponse).toEqual({
-      request_id: 'cancel-control-001',
-      query_id: 'query-001',
-      accepted: false,
+      execution_id: 'execution-001',
+      state: 'EXECUTION_LIFECYCLE_STATE_CANCEL_REQUESTED',
     });
   });
 
@@ -848,7 +758,604 @@ describe('execution contract codegen', () => {
       cancel: ['CancelRequest', 'CancelResponse'],
     });
   });
+
+  it('defines one caller-owned execution identity and one binding arm', () => {
+    const executeRequest = contractMessage('ExecuteRequest');
+    const queryRequest = contractMessage('QueryRequest');
+    const runtimeLimits = contractMessage('QueryRuntimeLimits');
+
+    expect(executeRequest.fields.map((field: DescField) => field.name)).toEqual([
+      'execution_id',
+      'browser_read',
+      'logical_resource',
+      'query',
+      'deadline',
+    ]);
+    expect(executeRequest.oneofs).toHaveLength(1);
+    expect(executeRequest.oneofs[0]?.fields.map((field: DescField) => field.name)).toEqual([
+      'browser_read',
+      'logical_resource',
+    ]);
+    expect(messageFieldTypeName(executeRequest.fields, 'browser_read')).toBe(
+      'axon.dataaccess.v1.ResolvedBrowserRead',
+    );
+    expect(messageFieldTypeName(executeRequest.fields, 'logical_resource')).toBe(
+      'axon.common.v1.CanonicalResourceRef',
+    );
+    expect(messageFieldTypeName(executeRequest.fields, 'deadline')).toBe(
+      'google.protobuf.Timestamp',
+    );
+    expect(queryRequest.fields.map((field: DescField) => field.name)).toEqual([
+      'sql',
+      'preferred_target',
+      'options',
+    ]);
+    expect(runtimeLimits.fields.map((field: DescField) => field.name)).toEqual([
+      'max_result_rows',
+      'max_arrow_ipc_bytes',
+      'max_preview_string_bytes',
+      'max_scan_bytes',
+    ]);
+    expect(
+      runtimeLimits.fields.every((field: DescField) => field.proto.proto3Optional === true),
+    ).toBe(true);
+  });
+
+  it('closes admission, lifecycle, terminal delivery, cancellation, and Arrow buffering', () => {
+    const lifecycleStates = contractEnumValues('ExecutionLifecycleState');
+    expect(lifecycleStates).toEqual([
+      'EXECUTION_LIFECYCLE_STATE_UNSPECIFIED',
+      'EXECUTION_LIFECYCLE_STATE_CREATED',
+      'EXECUTION_LIFECYCLE_STATE_RUNNING',
+      'EXECUTION_LIFECYCLE_STATE_CANCEL_REQUESTED',
+      'EXECUTION_LIFECYCLE_STATE_REJECTED',
+      'EXECUTION_LIFECYCLE_STATE_COMPLETED',
+      'EXECUTION_LIFECYCLE_STATE_FAILED',
+      'EXECUTION_LIFECYCLE_STATE_CANCELLED',
+    ]);
+    expect(contractMessage('ExecutionAdmission').oneofs[0]?.fields.map((field) => field.name)).toEqual(
+      ['accepted', 'rejected'],
+    );
+    expect(
+      contractMessage('ExecutionTerminalState').oneofs[0]?.fields.map((field) => field.name),
+    ).toEqual(['completed', 'failed', 'cancelled']);
+    expect(ExecuteResponseSchema.oneofs[0]?.fields.map((field: DescField) => field.name)).toEqual([
+      'admission',
+      'event',
+      'terminal',
+    ]);
+    expect(contractMessage('CancelRequest').fields.map((field) => field.name)).toEqual([
+      'execution_id',
+    ]);
+    expect(contractMessage('CancelResponse').fields.map((field) => field.name)).toEqual([
+      'execution_id',
+      'state',
+    ]);
+    expect(BrowserWorkerEventEnvelopeSchema.oneofs[0]?.fields.map((field) => field.name)).toEqual([
+      'progress',
+      'log',
+      'range_read_metrics',
+      'cache_metrics',
+    ]);
+    expect(ArrowIpcResultSchema.fields.map((field: DescField) => field.name)).toEqual([
+      'format',
+      'content_type',
+      'bytes',
+      'byte_length',
+    ]);
+
+    const admission = contractMessage('ExecutionAdmission');
+    const accepted = fromJson(admission, {
+      accepted: {
+        execution_id: 'execution-accepted',
+        state: 'EXECUTION_LIFECYCLE_STATE_RUNNING',
+        launch: true,
+      },
+    }) as unknown as { outcome: { case?: string } };
+    const rejected = fromJson(admission, {
+      rejected: {
+        execution_id: 'execution-rejected',
+        reason: 'EXECUTION_REJECTION_REASON_INVALID_REQUEST',
+        message: 'invalid request',
+      },
+    }) as unknown as { outcome: { case?: string } };
+    expect(accepted.outcome.case).toBe('accepted');
+    expect(rejected.outcome.case).toBe('rejected');
+
+    const arrow = fromJson(ArrowIpcResultSchema, {
+      format: 'ARROW_IPC_FORMAT_STREAM',
+      content_type: 'application/vnd.apache.arrow.stream',
+      bytes: 'AQIDBA==',
+      byte_length: '4',
+    });
+    expect(validateArrowBuffer(arrow, 4n)).toBe(arrow);
+    expect(() => validateArrowBuffer(arrow, 3n)).toThrow('Arrow IPC byte budget');
+  });
+
+  it('rejects invalid admission identity, binding, deadlines, budgets, and ID reuse', () => {
+    const executeRequest = contractMessage('ExecuteRequest');
+    const validJson = validExecuteRequestJson();
+    const valid = fromJson(executeRequest, validJson);
+    const withoutBinding = { ...validJson };
+    delete withoutBinding.browser_read;
+
+    expect(validateExecuteAdmission(valid, Date.parse('2026-07-23T12:00:00Z'))).toEqual(valid);
+    expect(() =>
+      validateExecuteAdmission(
+        fromJson(executeRequest, { ...validJson, execution_id: '' }),
+        Date.parse('2026-07-23T12:00:00Z'),
+      ),
+    ).toThrow('execution_id');
+    expect(() =>
+      validateExecuteAdmission(
+        fromJson(executeRequest, withoutBinding),
+        Date.parse('2026-07-23T12:00:00Z'),
+      ),
+    ).toThrow('binding');
+    const withoutNestedResource = structuredClone(validJson);
+    delete requiredJsonObject(withoutNestedResource.browser_read).resource;
+    expect(() =>
+      validateExecuteAdmission(
+        fromJson(executeRequest, withoutNestedResource),
+        Date.parse('2026-07-23T12:00:00Z'),
+      ),
+    ).toThrow('browser_read resource');
+    const withoutNestedDescriptor = structuredClone(validJson);
+    delete requiredJsonObject(withoutNestedDescriptor.browser_read).descriptor;
+    expect(() =>
+      validateExecuteAdmission(
+        fromJson(executeRequest, withoutNestedDescriptor),
+        Date.parse('2026-07-23T12:00:00Z'),
+      ),
+    ).toThrow('browser_read descriptor');
+    expect(() =>
+      fromJson(executeRequest, {
+        ...validJson,
+        logical_resource: {
+          connection_id: 'connection-001',
+          provider_namespace: 'axon.public-gcs/v1',
+          kind: 'RESOURCE_KIND_TABLE',
+          canonical_locator: 'gs://axon-fixtures/tables/events',
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      validateExecuteAdmission(
+        fromJson(executeRequest, {
+          ...validJson,
+          query: {
+            ...requiredJsonObject(validJson.query),
+            preferred_target: 'EXECUTION_TARGET_NATIVE',
+          },
+        }),
+        Date.parse('2026-07-23T12:00:00Z'),
+      ),
+    ).toThrow('browser_read requires browser_wasm');
+    const logicalBinding = { ...validJson };
+    delete logicalBinding.browser_read;
+    logicalBinding.logical_resource = {
+      connection_id: 'connection-001',
+      provider_namespace: 'axon.public-gcs/v1',
+      kind: 'RESOURCE_KIND_TABLE',
+      canonical_locator: 'gs://axon-fixtures/tables/events',
+    };
+    expect(() =>
+      validateExecuteAdmission(
+        fromJson(executeRequest, logicalBinding),
+        Date.parse('2026-07-23T12:00:00Z'),
+      ),
+    ).toThrow('logical_resource requires non-browser target');
+    expect(() =>
+      validateExecuteAdmission(
+        fromJson(executeRequest, {
+          ...validJson,
+          deadline: '2026-07-23T12:00:00Z',
+        }),
+        Date.parse('2026-07-23T12:00:00Z'),
+      ),
+    ).toThrow('deadline');
+    expect(() =>
+      validateExecuteAdmission(
+        fromJson(executeRequest, {
+          ...validJson,
+          query: {
+            ...requiredJsonObject(validJson.query),
+            options: {
+              runtime_limits: {
+                max_result_rows: '0',
+                max_arrow_ipc_bytes: '0',
+                max_preview_string_bytes: '0',
+                max_scan_bytes: '0',
+              },
+            },
+          },
+        }),
+        Date.parse('2026-07-23T12:00:00Z'),
+      ),
+    ).toThrow('positive budget');
+    expect(() =>
+      validateExecuteAdmission(
+        fromJson(executeRequest, {
+          ...validJson,
+          query: {
+            ...requiredJsonObject(validJson.query),
+            options: {
+              runtime_limits: {
+                max_result_rows: '502',
+                max_arrow_ipc_bytes: '8388609',
+                max_preview_string_bytes: '262145',
+                max_scan_bytes: '67108864',
+              },
+            },
+          },
+        }),
+        Date.parse('2026-07-23T12:00:00Z'),
+      ),
+    ).toThrow('browser-safe budget');
+
+    const ledger = new AdmissionLedger();
+    expect(ledger.admit(valid)).toBe(true);
+    expect(ledger.admit(fromJson(executeRequest, validJson))).toBe(false);
+    expect(() =>
+      ledger.admit(
+        fromJson(executeRequest, {
+          ...validJson,
+          query: {
+            ...requiredJsonObject(validJson.query),
+            sql: 'select 2',
+          },
+        }),
+      ),
+    ).toThrow('mismatched execution_id reuse');
+  });
+
+  it('rejects events after terminal and duplicate terminal delivery', () => {
+    expect(() =>
+      validateExecuteResponseOrder([
+        { item: { case: 'admission', value: { outcome: { case: 'accepted' } } } },
+        { item: { case: 'event' } },
+        { item: { case: 'terminal' } },
+      ]),
+    ).not.toThrow();
+    expect(() =>
+      validateExecuteResponseOrder([
+        { item: { case: 'admission', value: { outcome: { case: 'accepted' } } } },
+        { item: { case: 'terminal' } },
+        { item: { case: 'event' } },
+      ]),
+    ).toThrow('event after terminal');
+    expect(() =>
+      validateExecuteResponseOrder([
+        { item: { case: 'admission', value: { outcome: { case: 'accepted' } } } },
+        { item: { case: 'terminal' } },
+        { item: { case: 'terminal' } },
+      ]),
+    ).toThrow('duplicate terminal');
+    expect(() =>
+      validateExecuteResponseOrder([
+        {
+          item: {
+            case: 'admission',
+            value: { outcome: { case: 'rejected' } },
+          },
+        },
+        { item: { case: 'event' } },
+      ]),
+    ).toThrow('event after rejected admission');
+    expect(() =>
+      validateExecuteResponseOrder([
+        {
+          item: {
+            case: 'admission',
+            value: { outcome: { case: 'rejected' } },
+          },
+        },
+        { item: { case: 'terminal' } },
+      ]),
+    ).toThrow('terminal after rejected admission');
+    expect(() => validateExecuteResponseOrder([{ item: {} }])).toThrow(
+      'execution response item is required',
+    );
+    expect(() =>
+      validateExecuteResponseOrder([
+        {
+          item: {
+            case: 'admission',
+            value: { outcome: {} },
+          },
+        },
+      ]),
+    ).toThrow('admission outcome is required');
+  });
+
+  it('removes legacy identity, fallback, chunk, and descriptor declarations', () => {
+    const messageNames = file_axon_exec_v1_exec.messages.map(
+      (message: DescMessage) => message.name,
+    );
+    const enumNames = file_axon_exec_v1_exec.enums.map((value) => value.name);
+
+    expect(messageNames).not.toEqual(
+      expect.arrayContaining([
+        'OpenableDescriptor',
+        'FallbackReasonMarker',
+        'CapabilityGateFallbackReason',
+        'FallbackReason',
+        'BrowserWorkerFallbackEvent',
+        'BrowserWorkerCancellationEvent',
+        'BrowserWorkerTerminalErrorEvent',
+        'BrowserWorkerArrowIpcChunkEvent',
+      ]),
+    );
+    expect(enumNames).not.toEqual(
+      expect.arrayContaining(['CapabilityKey', 'ArrowIpcDelivery', 'BrowserWorkerSqlDelivery']),
+    );
+    expect(contractEnumValues('QueryErrorCode')).not.toContain(
+      'QUERY_ERROR_CODE_FALLBACK_REQUIRED',
+    );
+    expect(contractMessage('QueryMetricsSummary').fields.map((field) => field.name)).not.toContain(
+      'arrow_ipc_chunk_count',
+    );
+  });
 });
+
+function contractMessage(name: string): DescMessage {
+  const descriptor = file_axon_exec_v1_exec.messages.find((message) => message.name === name);
+  if (!descriptor) throw new TypeError(`missing corrected execution message ${name}`);
+  return descriptor;
+}
+
+function contractEnumValues(name: string): string[] {
+  const descriptor = file_axon_exec_v1_exec.enums.find((value) => value.name === name);
+  if (!descriptor) throw new TypeError(`missing corrected execution enum ${name}`);
+  return descriptor.values.map((value) => value.name);
+}
+
+function validExecuteRequestJson(): JsonObject {
+  return {
+    execution_id: 'execution-001',
+    browser_read: {
+      resource: {
+        connection_id: 'connection-001',
+        provider_namespace: 'axon.public-gcs/v1',
+        kind: 'RESOURCE_KIND_TABLE',
+        canonical_locator: 'gs://axon-fixtures/tables/events',
+      },
+      descriptor: {
+        snapshot: {
+          table_uri: 'gs://axon-fixtures/tables/events',
+        },
+      },
+      access_class: 'BROWSER_ACCESS_CLASS_PUBLIC',
+      correlation_id: 'correlation-001',
+      provenance: {
+        resolver_id: 'public-object-storage',
+        resolution_id: 'resolution-001',
+      },
+    },
+    query: {
+      sql: 'select * from events',
+      preferred_target: 'EXECUTION_TARGET_BROWSER_WASM',
+      options: {
+        runtime_limits: {
+          max_result_rows: '501',
+          max_arrow_ipc_bytes: '8388608',
+          max_preview_string_bytes: '262144',
+          max_scan_bytes: '67108864',
+        },
+      },
+    },
+    deadline: '2026-07-23T12:02:00Z',
+  };
+}
+
+function validateExecuteAdmission<T>(request: T, nowMs: number): T {
+  const value = request as {
+    executionId?: string;
+    binding?: {
+      case?: string;
+      value?: {
+        connectionId?: string;
+        providerNamespace?: string;
+        kind?: number;
+        identity?: { case?: string; value?: string };
+        resource?: {
+          connectionId?: string;
+          providerNamespace?: string;
+          kind?: number;
+          identity?: { case?: string; value?: string };
+        };
+        descriptor?: { descriptor?: { case?: string } };
+        accessClass?: number;
+        correlationId?: string;
+        provenance?: { resolverId?: string; resolutionId?: string };
+      };
+    };
+    query?: {
+      sql?: string;
+      preferredTarget?: number;
+      options?: {
+        runtimeLimits?: {
+          maxResultRows?: bigint;
+          maxArrowIpcBytes?: bigint;
+          maxPreviewStringBytes?: bigint;
+          maxScanBytes?: bigint;
+        };
+      };
+    };
+    deadline?: { seconds?: bigint; nanos?: number };
+  };
+  if (!value.executionId) throw new TypeError('execution_id must not be empty');
+  if (!value.binding?.case) throw new TypeError('exactly one binding is required');
+  validateExecuteBinding(value.binding);
+  if (!value.query?.sql?.trim()) throw new TypeError('SQL must not be empty');
+  if (!value.query.preferredTarget) throw new TypeError('execution target must be specified');
+  if (value.binding.case === 'browserRead' && value.query.preferredTarget !== 1) {
+    throw new TypeError('browser_read requires browser_wasm');
+  }
+  if (value.binding.case === 'logicalResource' && value.query.preferredTarget === 1) {
+    throw new TypeError('logical_resource requires non-browser target');
+  }
+  if (!value.deadline) throw new TypeError('absolute deadline is required');
+  const deadlineMs = Number(value.deadline.seconds ?? 0n) * 1_000 + (value.deadline.nanos ?? 0) / 1e6;
+  if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= nowMs) {
+    throw new TypeError('deadline must be finite and in the future');
+  }
+  const limits = value.query.options?.runtimeLimits;
+  const budgets = [
+    limits?.maxResultRows,
+    limits?.maxArrowIpcBytes,
+    limits?.maxPreviewStringBytes,
+    limits?.maxScanBytes,
+  ];
+  if (budgets.some((budget) => budget === undefined || budget <= 0n)) {
+    throw new TypeError('every execution budget must be a positive budget');
+  }
+  if (
+    value.binding.case === 'browserRead' &&
+    (limits!.maxResultRows! > 501n ||
+      limits!.maxArrowIpcBytes! > 8n * 1024n * 1024n ||
+      limits!.maxPreviewStringBytes! > 256n * 1024n)
+  ) {
+    throw new TypeError('browser execution exceeded a browser-safe budget');
+  }
+  return request;
+}
+
+function validateExecuteBinding(binding: {
+  case?: string;
+  value?: {
+    connectionId?: string;
+    providerNamespace?: string;
+    kind?: number;
+    identity?: { case?: string; value?: string };
+    resource?: {
+      connectionId?: string;
+      providerNamespace?: string;
+      kind?: number;
+      identity?: { case?: string; value?: string };
+    };
+    descriptor?: { descriptor?: { case?: string } };
+    accessClass?: number;
+    correlationId?: string;
+    provenance?: { resolverId?: string; resolutionId?: string };
+  };
+}): void {
+  if (binding.case === 'logicalResource') {
+    validateCanonicalResourceValue(binding.value, 'logical_resource');
+    return;
+  }
+  if (binding.case !== 'browserRead') {
+    throw new TypeError('exactly one supported binding is required');
+  }
+  const read = binding.value;
+  if (!read?.resource) throw new TypeError('browser_read resource is required');
+  validateCanonicalResourceValue(read.resource, 'browser_read resource');
+  if (!read.descriptor?.descriptor?.case) {
+    throw new TypeError('browser_read descriptor arm is required');
+  }
+  if (!read.accessClass) throw new TypeError('browser_read access_class is required');
+  if (!read.correlationId?.trim()) throw new TypeError('browser_read correlation_id is required');
+  if (!read.provenance?.resolverId?.trim() || !read.provenance.resolutionId?.trim()) {
+    throw new TypeError('browser_read provenance is required');
+  }
+}
+
+function validateCanonicalResourceValue(
+  resource:
+    | {
+        connectionId?: string;
+        providerNamespace?: string;
+        kind?: number;
+        identity?: { case?: string; value?: string };
+      }
+    | undefined,
+  label: string,
+): void {
+  if (
+    !resource?.connectionId?.trim() ||
+    !resource.providerNamespace?.trim() ||
+    !resource.kind ||
+    !resource.identity?.case ||
+    !resource.identity.value?.trim()
+  ) {
+    throw new TypeError(`${label} must contain one complete canonical resource tuple`);
+  }
+}
+
+function validateArrowBuffer<T>(
+  result: T,
+  maxArrowIpcBytes: bigint,
+): T {
+  const value = result as { bytes?: Uint8Array; byteLength?: bigint };
+  if (!(value.bytes instanceof Uint8Array)) {
+    throw new TypeError('Arrow IPC result must contain one byte buffer');
+  }
+  if (value.byteLength !== BigInt(value.bytes.byteLength)) {
+    throw new TypeError('Arrow IPC byte length did not match its buffer');
+  }
+  if (value.byteLength > maxArrowIpcBytes) {
+    throw new TypeError('Arrow IPC byte budget exceeded');
+  }
+  return result;
+}
+
+class AdmissionLedger {
+  readonly #inputs = new Map<string, string>();
+
+  admit(request: unknown): boolean {
+    const executionId = (request as { executionId?: string }).executionId;
+    if (!executionId) throw new TypeError('execution_id must not be empty');
+    const encoded = stableAdmissionJson(request);
+    const existing = this.#inputs.get(executionId);
+    if (existing === undefined) {
+      this.#inputs.set(executionId, encoded);
+      return true;
+    }
+    if (existing !== encoded) throw new TypeError('mismatched execution_id reuse');
+    return false;
+  }
+}
+
+function stableAdmissionJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item) =>
+    typeof item === 'bigint' ? item.toString() : item,
+  );
+}
+
+function validateExecuteResponseOrder(
+  responses: Array<{
+    item?: {
+      case?: string;
+      value?: { outcome?: { case?: string } };
+    };
+  }>,
+): void {
+  let admissionSeen = false;
+  let rejected = false;
+  let terminalSeen = false;
+  for (const response of responses) {
+    const item = response.item?.case;
+    if (!item) throw new TypeError('execution response item is required');
+    if (item === 'admission') {
+      if (admissionSeen || terminalSeen) throw new TypeError('duplicate or late admission');
+      if (!response.item?.value?.outcome?.case) {
+        throw new TypeError('admission outcome is required');
+      }
+      admissionSeen = true;
+      rejected = response.item?.value?.outcome?.case === 'rejected';
+      continue;
+    }
+    if (!admissionSeen) throw new TypeError('execution response preceded admission');
+    if (rejected) throw new TypeError(`${item} after rejected admission`);
+    if (item === 'terminal') {
+      if (terminalSeen) throw new TypeError('duplicate terminal');
+      terminalSeen = true;
+      continue;
+    }
+    if (item === 'event' && terminalSeen) throw new TypeError('event after terminal');
+    if (item !== 'event') throw new TypeError(`unknown execution response item '${item}'`);
+  }
+}
 
 function readExample<T>(fileName: string): T {
   return JSON.parse(readFileSync(resolve(HANDOFF_EXAMPLE_DIR, fileName), 'utf8')) as T;
@@ -961,8 +1468,6 @@ function normalizeParquetDatasetDescriptor(
 function normalizeQueryRequest(request: ContractQueryRequest): JsonObject {
   const options = request.options ?? {};
   return compact({
-    table_uri: request.table_uri,
-    snapshot_version: decimal(request.snapshot_version),
     sql: request.sql,
     preferred_target: enumSymbol('EXECUTION_TARGET', request.preferred_target),
     options: compact({
@@ -986,29 +1491,11 @@ function normalizeQueryRequest(request: ContractQueryRequest): JsonObject {
   });
 }
 
-function normalizeFallbackReason(reason: FallbackReason): JsonObject {
-  if (typeof reason === 'string') {
-    return { [reason]: {} };
-  }
-  return {
-    capability_gate: {
-      capability: enumSymbol('CAPABILITY_KEY', reason.capability_gate.capability),
-      required_state: enumSymbol(
-        'CAPABILITY_STATE',
-        reason.capability_gate.required_state,
-      ),
-    },
-  };
-}
-
 function normalizeQueryError(error: QueryError): JsonObject {
   return compact({
     code: enumSymbol('QUERY_ERROR_CODE', error.code),
     message: error.message,
     target: enumSymbol('EXECUTION_TARGET', error.target),
-    fallback_reason: error.fallback_reason
-      ? normalizeFallbackReason(error.fallback_reason)
-      : undefined,
   });
 }
 
@@ -1031,9 +1518,6 @@ function normalizeQueryResponse(response: QueryResponse): JsonObject {
   return compact({
     executed_on: enumSymbol('EXECUTION_TARGET', response.executed_on),
     capabilities: normalizeCapabilityReport(response.capabilities),
-    fallback_reason: response.fallback_reason
-      ? normalizeFallbackReason(response.fallback_reason)
-      : undefined,
     metrics: normalizeMetricFields(response.metrics),
     explain: response.explain,
   });
@@ -1056,17 +1540,15 @@ function normalizeBytes(
 
 function normalizeArrowIpcResult(result: WireArrowIpcResult): JsonObject {
   const bytes = normalizeBytes(result.bytes);
-  const delivery = result.delivery ?? 'single_buffer';
+  if (result.delivery === 'chunked_buffers' || !bytes) {
+    throw new TypeError('corrected protobuf contract requires one Arrow IPC buffer');
+  }
   const byteLength = result.byte_length ?? bytes?.byteLength;
-  const chunkCount =
-    result.chunk_count ?? (delivery === 'single_buffer' ? (byteLength === 0 ? 0 : 1) : undefined);
   return compact({
     format: enumSymbol('ARROW_IPC_FORMAT', result.format),
     content_type: result.content_type,
-    delivery: enumSymbol('ARROW_IPC_DELIVERY', delivery),
     bytes: bytes ? Buffer.from(bytes).toString('base64') : undefined,
     byte_length: decimal(byteLength),
-    chunk_count: decimal(chunkCount),
   });
 }
 
@@ -1209,13 +1691,10 @@ function normalizeWorkerCommand(command: LegacyWorkerCommand): JsonObject {
     return {
       sql: {
         request_id: sql.request_id,
+        execution_id: sql.request_id,
         name: sql.name,
         query: normalizeQueryRequest(query),
         output: enumSymbol('BROWSER_WORKER_SQL_OUTPUT', sql.output ?? 'arrow_ipc_stream'),
-        delivery: enumSymbol(
-          'BROWSER_WORKER_SQL_DELIVERY',
-          sql.delivery ?? 'single_buffer',
-        ),
         browser_safe_defaults: sql.browser_safe_defaults ?? false,
       },
     };
@@ -1224,7 +1703,7 @@ function normalizeWorkerCommand(command: LegacyWorkerCommand): JsonObject {
     return {
       cancel: compact({
         request_id: command.cancel.request_id,
-        query_id: command.cancel.query_id,
+        execution_id: command.cancel.query_id ?? command.cancel.request_id,
       }),
     };
   }
@@ -1275,7 +1754,7 @@ function normalizeEventContext(context: BrowserWorkerEventContext): JsonObject {
   return compact({
     phase: enumSymbol('BROWSER_WORKER_EVENT_PHASE', context.phase),
     request_id: context.request_id,
-    query_id: context.query_id,
+    execution_id: context.query_id ?? context.request_id,
     table_name: context.table_name,
   });
 }
@@ -1324,40 +1803,7 @@ function normalizeWorkerEvent(event: BrowserWorkerEventEnvelope): JsonObject {
       }),
     };
   }
-  if ('fallback' in event) {
-    return {
-      fallback: {
-        context: normalizeEventContext(event.fallback.context),
-        reason: normalizeFallbackReason(event.fallback.reason),
-      },
-    };
-  }
-  if ('cancellation' in event) {
-    return {
-      cancellation: {
-        context: normalizeEventContext(event.cancellation.context),
-        error: normalizeQueryError(event.cancellation.error),
-      },
-    };
-  }
-  if ('terminal_error' in event) {
-    return {
-      terminal_error: {
-        context: normalizeEventContext(event.terminal_error.context),
-        error: normalizeQueryError(event.terminal_error.error),
-      },
-    };
-  }
-  return {
-    arrow_ipc_chunk: compact({
-      context: normalizeEventContext(event.arrow_ipc_chunk.context),
-      request_id: event.arrow_ipc_chunk.request_id,
-      sequence: decimal(event.arrow_ipc_chunk.sequence),
-      byte_offset: decimal(event.arrow_ipc_chunk.byte_offset),
-      byte_length: decimal(event.arrow_ipc_chunk.byte_length),
-      bytes: Buffer.from(event.arrow_ipc_chunk.bytes).toString('base64'),
-    }),
-  };
+  throw new TypeError('corrected protobuf contract accepts only nonterminal worker events');
 }
 
 function representativeMetrics(): QueryMetricsSummary {
