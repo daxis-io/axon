@@ -5,6 +5,7 @@ node_modules/
 apps/axon-web/dist/
 apps/axon-web/node_modules/
 apps/axon-web/public/fixtures/prod-like/
+apps/axon-web/public/fixtures/s3-perf/table/
 apps/axon-web/playwright-report/
 apps/axon-web/src/wasm/
 apps/axon-web/test-results/

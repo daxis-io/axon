@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build:fixture": "cargo run --locked -p axon-web-wasm --features fixture-generator --bin generate-prod-fixture -- public/fixtures/prod-like",
+    "build:s3-perf-fixture": "cargo run --locked -p axon-web-wasm --features fixture-generator --bin generate-s3-perf-fixture -- ../../target/fixtures/s3-perf-generated",
     "build:wasm": "cargo build -p axon-web-wasm --target wasm32-unknown-unknown --release --locked && wasm-bindgen ../../target/wasm32-unknown-unknown/release/axon_web_wasm.wasm --target web --out-dir src/wasm --typescript",
     "dev:server": "vite --host 127.0.0.1",
     "dev": "npm run build:fixture && npm run build:wasm && vite --host 127.0.0.1",
@@ -26,6 +27,8 @@
     "test:browser:editor-smoke": "playwright test --config=playwright.editor-smoke.config.ts",
     "test:browser:public-gcs-live": "playwright test --config=playwright.public-gcs-live.config.ts",
     "test:browser:public-s3-live": "playwright test --config=playwright.public-s3-live.config.ts",
+    "test:s3-perf-fixture": "bash scripts/verify-s3-perf-fixture.test.sh",
+    "verify:s3-perf-fixture": "bash scripts/verify-s3-perf-fixture.sh --metadata-only",
     "test:browser:local-delta": "playwright test --config=playwright.editor-smoke.config.ts --grep \"local Delta\"",
     "test:e2e": "npm run build:fixture && npm run build:wasm && playwright test"
   },
