@@ -971,7 +971,7 @@ mod tests {
             path: "part-000.parquet".to_string(),
             url: "https://example.com/part-000.parquet".to_string(),
             size_bytes: 9_007_199_254_740_993,
-            object_etag: None,
+            object_etag: Some("\"preflight-etag\"".to_string()),
             partition_values: BTreeMap::new(),
             delta_stats: None,
             footer_length_bytes: u32::MAX,
@@ -991,6 +991,7 @@ mod tests {
         let serialized = serde_json::to_value(output).expect("preflight output should serialize");
 
         assert_eq!(serialized["size_bytes"], json!("9007199254740993"));
+        assert_eq!(serialized["object_etag"], json!("\"preflight-etag\""));
         assert_eq!(serialized["footer_length_bytes"], json!("4294967295"));
         assert_eq!(serialized["row_group_count"], json!("9007199254740994"));
         assert_eq!(serialized["row_count"], json!("9007199254740995"));

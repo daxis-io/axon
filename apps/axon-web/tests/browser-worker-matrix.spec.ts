@@ -782,8 +782,8 @@ test('preserves cancellation errors from the real browser query worker', async (
   expect(result.cancellation).toMatchObject({
     name: 'AxonWorkerError',
   });
-  expect(result.cancellation.message).toContain(
-    'experimental browser DataFusion query cancelled during',
+  expect(result.cancellation.message).toBe(
+    'experimental browser DataFusion query cancelled in the coordinator',
   );
   expect(result.cancellation?.queryError).toMatchObject({
     code: 'execution_failed',
