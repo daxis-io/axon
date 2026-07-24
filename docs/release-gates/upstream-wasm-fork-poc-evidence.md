@@ -1,161 +1,440 @@
 # Daxis Upstream-WASM Fork POC Evidence
 
-- Status: In progress
-- Evidence date: 2026-07-23
+- Technical POC status: complete
+- Canonical-upstream status: prepared, with the Delta Kernel and delta-rs slices blocked as
+  described below
+- POC date: 2026-07-23
+- Evidence completion: 2026-07-24 UTC
 - Umbrella issue: [daxis-io/axon#2](https://github.com/daxis-io/axon/issues/2)
 - Axon branch: `poc/upstream-wasm-fork-stack`
+- Axon implementation revision: `41518135ed993c2bee152becdd5b435692c31d53`
+- Axon CI correction revision: `b0a91a6f111b7f9d221202086819d9dd63ebd7c3`
 - Axon compatibility base: `62d4c465e10dc329221023eaaf2c67c542c408ce`
-- Raw evidence root: `target/upstream-wasm-fork-poc-evidence/<stack-lock-hash>/`
-- Current stack-lock SHA-256: `50c1fd6f63c65141c66fecb8c4ba277f9d0820561ca873e3541d2b502bb801d4`
+- Immutable POC tag in every fork: `daxis-poc/wasm32-browser-e2e-2026-07-23`
+- Raw evidence root:
+  `target/upstream-wasm-fork-poc-evidence/9ce6b301657278bf6883727073ddbe1ee206c92088512dcb68da64ea3193a9a3/`
 
-This record separates graph viability, browser runtime viability, protocol interoperability,
-downstream viability, native compatibility, product measurements, and upstream readiness. A passing
-result in one class is not evidence for another class.
+The release-based Daxis fork stack passes its native, exact-target graph, compiler-independent,
+browser-runtime, protocol, measurement, and Axon-boundary gates. It proves a browser-only
+read/query path without replacing Axon's shipping Rust dependencies. It does not claim that the
+same commits can be submitted to every canonical repository without adaptation: the refreshed
+Delta Kernel has diverged too far from the Buoyant compatibility base for a safe mechanical
+forward port, and the delta-rs slice consequently remains ordered behind a Kernel redesign.
 
-## Control-Plane Snapshot
+## Control Plane And Isolation
 
-GitHub authentication was refreshed immediately before mutation:
+GitHub authentication was refreshed before mutation and again at evidence freeze. Account
+`ethan-tyler` has active `daxis-io` admin membership. All five repositories are public forks with
+their expected parents:
 
-- account: `ethan-tyler`;
-- organization: `daxis-io`;
-- membership: active;
-- role: admin;
-- token scopes reported by `gh auth status`: `admin:public_key`, `gist`, `read:org`, and `repo`.
+| Fork                                                                                  | Parent                         | Default branch | Default head at evidence freeze            |
+| ------------------------------------------------------------------------------------- | ------------------------------ | -------------- | ------------------------------------------ |
+| [`daxis-io/arrow-rs`](https://github.com/daxis-io/arrow-rs)                           | `apache/arrow-rs`              | `main`         | `f9bf62845ca459c16938359e9378b34a4d8c51d9` |
+| [`daxis-io/arrow-rs-object-store`](https://github.com/daxis-io/arrow-rs-object-store) | `apache/arrow-rs-object-store` | `main`         | `84d24eb8efcec9448566de09e94d2d4b74b21ebe` |
+| [`daxis-io/datafusion`](https://github.com/daxis-io/datafusion)                       | `apache/datafusion`            | `main`         | `a0a6836e4cc9f07be52cc8d1380f19ad411d67d8` |
+| [`daxis-io/delta-kernel-rs`](https://github.com/daxis-io/delta-kernel-rs)             | `delta-io/delta-kernel-rs`     | `main`         | `7bfb06587add017187a1b14b1195ef8f6a95ca9d` |
+| [`daxis-io/delta-rs`](https://github.com/daxis-io/delta-rs)                           | `delta-io/delta-rs`            | `main`         | `3f562682c5a9dd55693b7f7bbd2a2f749fdf38e5` |
 
-All five repositories are public GitHub forks with the expected parent:
+The pre-existing `daxis-io/delta-kernel-rs` default branch was not changed.
+No conflicting POC base, candidate, stack, tag, or forward-port branch name was present before its
+first publication.
 
-| Fork | Parent | Default branch head before POC branches |
-| --- | --- | --- |
-| [`daxis-io/arrow-rs`](https://github.com/daxis-io/arrow-rs) | `apache/arrow-rs` | `f9bf62845ca459c16938359e9378b34a4d8c51d9` |
-| [`daxis-io/arrow-rs-object-store`](https://github.com/daxis-io/arrow-rs-object-store) | `apache/arrow-rs-object-store` | `84d24eb8efcec9448566de09e94d2d4b74b21ebe` |
-| [`daxis-io/datafusion`](https://github.com/daxis-io/datafusion) | `apache/datafusion` | `a0a6836e4cc9f07be52cc8d1380f19ad411d67d8` |
-| [`daxis-io/delta-kernel-rs`](https://github.com/daxis-io/delta-kernel-rs) | `delta-io/delta-kernel-rs` | `7bfb06587add017187a1b14b1195ef8f6a95ca9d` |
-| [`daxis-io/delta-rs`](https://github.com/daxis-io/delta-rs) | `delta-io/delta-rs` | `3f562682c5a9dd55693b7f7bbd2a2f749fdf38e5` |
+The dirty Axon root remained at
+`3e5aceda0c1eb2c0dea983c0e5849200447a363f`. Its 61 modified or untracked files were hashed before
+work began and the sorted SHA-256 inventory remained byte-for-byte identical at evidence freeze.
+All Axon mutations were made in
+`.worktrees/upstream-wasm-fork-poc/axon`, created from the refreshed `origin/main` revision
+`62d4c465e10dc329221023eaaf2c67c542c408ce`.
+The four authorized documentation sets were copied byte-for-byte and published as the isolated
+foundation commit `d83672fee18abe6d125a67b3dabced9b73b33e5b`.
 
-The existing Delta Kernel default branch is unrelated history and remains unchanged.
+The browser POC is an excluded nested workspace. Its released-crate fixture generator is a second,
+also excluded, nested workspace with its own lock. Daxis fork revisions do not appear in Axon's
+shipping manifests, production worker, or root `Cargo.lock`. The root lock remains identical to
+`origin/main`, with SHA-256
+`0f8630bdea0dca3fdaa0186a46c31ee0651d067a0b300cf9192c9ec6dd4f5d33`.
+
+Before POC source changes, `cargo build --workspace --locked` passed in the isolated worktree.
+`cargo test --workspace --locked` reproduced four pre-existing
+`browser_snapshot_preflight` metrics failures concerning touched-file parity for pruned scans and
+nonzero fetched-byte accounting. The focused test reproduced the same four failures. The dirty
+root contains overlapping user-owned work in that test; none of it was copied or modified, and
+those baseline failures are classified separately from the POC's required gates.
 
 ## Compatibility Bases
 
-| Component | Release ref | Tag object | Peeled commit | Immutable base branch |
-| --- | --- | --- | --- | --- |
-| Arrow / Parquet | `58.3.0` | `913bab26ba9bed8fc2bc1acda300cc52345b0da1` | `913bab26ba9bed8fc2bc1acda300cc52345b0da1` | `poc/base/arrow-58.3.0` |
-| `object_store` | `v0.13.2` | `7a65b75b0d26fd8a282999462cb7030fb85fdcc3` | `7a65b75b0d26fd8a282999462cb7030fb85fdcc3` | `poc/base/object-store-0.13.2` |
-| DataFusion | `53.1.0` | `eae7bf4fa1c037c0a065d1f36d0669f5bb97a9cf` | `eae7bf4fa1c037c0a065d1f36d0669f5bb97a9cf` | `poc/base/datafusion-53.1.0` |
+| Component            | Release ref       | Tag object                                 | Peeled commit                              | Immutable base branch            |
+| -------------------- | ----------------- | ------------------------------------------ | ------------------------------------------ | -------------------------------- |
+| Arrow / Parquet      | `58.3.0`          | `913bab26ba9bed8fc2bc1acda300cc52345b0da1` | `913bab26ba9bed8fc2bc1acda300cc52345b0da1` | `poc/base/arrow-58.3.0`          |
+| `object_store`       | `v0.13.2`         | `7a65b75b0d26fd8a282999462cb7030fb85fdcc3` | `7a65b75b0d26fd8a282999462cb7030fb85fdcc3` | `poc/base/object-store-0.13.2`   |
+| DataFusion           | `53.1.0`          | `eae7bf4fa1c037c0a065d1f36d0669f5bb97a9cf` | `eae7bf4fa1c037c0a065d1f36d0669f5bb97a9cf` | `poc/base/datafusion-53.1.0`     |
 | Buoyant Delta Kernel | `buoyant-v0.22.2` | `61ee6af059ebda666940cb9d7b805d818cdd5af6` | `f4602a43fe886f45cc3523360bc2488b8f3a2e58` | `poc/base/buoyant-kernel-0.22.2` |
-| delta-rs | `rust-v0.32.4` | `2c37b2df127086256042968474b06b28f2ec3aae` | `df72cc6d3fba014a77243ce80514a6122b46a89b` | `poc/base/delta-rs-0.32.4` |
+| delta-rs             | `rust-v0.32.4`    | `2c37b2df127086256042968474b06b28f2ec3aae` | `df72cc6d3fba014a77243ce80514a6122b46a89b` | `poc/base/delta-rs-0.32.4`       |
 
-Each base branch was verified from its fork after push. Base branches are immutable for this POC.
+Each base revision is reachable from its fork. The base branches were not rewritten.
 
-## Canonical Heads At Start
+## Accepted Revision Ledger
 
-| Component | Canonical head |
-| --- | --- |
-| Arrow / Parquet | `f9bf62845ca459c16938359e9378b34a4d8c51d9` |
+Candidate branches contain only clean, DCO-signed candidate commits. Stack branches add Daxis-only
+dependency wiring with immutable 40-character `rev` values. No candidate diff contains a Daxis URL
+or revision, no dependency-level `[patch]` table is used, and every correction was an additive
+commit followed by a repin.
+
+Every fork uses `poc/wasm32-browser-candidate` for the candidate and
+`poc/wasm32-browser-stack` for Daxis-only wiring.
+
+The owner for all five rows is the runtime / engine team. Compatible bases are recorded above;
+dispositions and removal conditions are maintained in the upstream patch inventory.
+
+| Repository                                                                            | Candidate revision                         | Stack revision                             | Draft Daxis PR                                                 | Candidate / stack CI                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------ | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`daxis-io/arrow-rs`](https://github.com/daxis-io/arrow-rs)                           | `f24c67c536e98f85f2ed8a289a6eb1d55916ffb9` | `39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc` | [#1](https://github.com/daxis-io/arrow-rs/pull/1)              | [candidate](https://github.com/daxis-io/arrow-rs/actions/runs/30066099978), [dev](https://github.com/daxis-io/arrow-rs/actions/runs/30066099967), plus the complete Axon pinned-graph run                                                                                        |
+| [`daxis-io/arrow-rs-object-store`](https://github.com/daxis-io/arrow-rs-object-store) | `1d000072b4490e4736b9aab02731cde33a2c10fa` | `54109e3e6797522ccb2ee5d43cad2a9cd0013074` | [#1](https://github.com/daxis-io/arrow-rs-object-store/pull/1) | [candidate HTTP](https://github.com/daxis-io/arrow-rs-object-store/actions/runs/30072242617), [candidate range](https://github.com/daxis-io/arrow-rs-object-store/actions/runs/30072240432), [stack](https://github.com/daxis-io/arrow-rs-object-store/actions/runs/30072265567) |
+| [`daxis-io/datafusion`](https://github.com/daxis-io/datafusion)                       | `693aa0b5d2a3c925db963776a472d6144352116e` | `0d1d77af6a5974af10dfbe1e3790f3dce05ae617` | [#1](https://github.com/daxis-io/datafusion/pull/1)            | [browser stack](https://github.com/daxis-io/datafusion/actions/runs/30073362262), [dev stack](https://github.com/daxis-io/datafusion/actions/runs/30073362290)                                                                                                                   |
+| [`daxis-io/delta-kernel-rs`](https://github.com/daxis-io/delta-kernel-rs)             | `9d60a72f19e678c30de6b6869cf5c62aa3576de8` | `79c48fe4e22431efb144da4a0db46bb8ff5ce9d8` | [#2](https://github.com/daxis-io/delta-kernel-rs/pull/2)       | [browser stack](https://github.com/daxis-io/delta-kernel-rs/actions/runs/30072563608)                                                                                                                                                                                            |
+| [`daxis-io/delta-rs`](https://github.com/daxis-io/delta-rs)                           | `aa61ca76d699c5dac4e192af6f925b9273a6b0b4` | `bc45f077347988804e8d42249238710f90b8db97` | [#1](https://github.com/daxis-io/delta-rs/pull/1)              | [candidate browser](https://github.com/daxis-io/delta-rs/actions/runs/30071533095), [candidate hygiene](https://github.com/daxis-io/delta-rs/actions/runs/30071533105), [final stack](https://github.com/daxis-io/delta-rs/actions/runs/30073759546)                             |
+
+Every linked POC-owned candidate and stack run in this table concluded successfully at the exact
+recorded candidate or stack revision.
+
+The nested-workspace lock hashes are:
+
+| Artifact                       | SHA-256                                                            |
+| ------------------------------ | ------------------------------------------------------------------ |
+| `stack.lock.toml`              | `9ce6b301657278bf6883727073ddbe1ee206c92088512dcb68da64ea3193a9a3` |
+| Browser `Cargo.lock`           | `e6d5921bb8caf57c2495fa98c67cbd80b543af74d0e30c36f5b70bf60e9e6591` |
+| Fixture-generator `Cargo.lock` | `810944d8ff7bd159ad78fbb8e43f54d0a7b52c60ecd46763118937cf25609854` |
+| Fixture manifest               | `e02b28c246c5709bfb83eb4de75256ba2e9734ee5f545265c883bc2f047b7aa6` |
+
+Per-fork lock hashes at the accepted revisions are:
+
+| Repository / branch                             | Lock SHA-256                                                       |
+| ----------------------------------------------- | ------------------------------------------------------------------ |
+| `object_store` candidate and stack nested locks | `79caf990a17d936f92fba937c216939559e3d522211d9281c5051a57c2c077e4` |
+| DataFusion candidate root lock                  | `1be32482823a8a2a315253dfa967b40c962842cefca8dab44cd8f69716a60448` |
+| DataFusion stack root lock                      | `5b1fef57df8fe09b1f0a172d73538e0c073d9c965cf3ab603cb06b7dd2941a10` |
+| Delta Kernel candidate nested lock              | `5cca1727ca04e97cfefb65cb0111ddcc4d481b4abbd8bc7f9034f99fb752d2aa` |
+| Delta Kernel stack nested lock                  | `92829fbc5a9310f017637dd5db21b087207feeca2e1952ebe8640a4607f74816` |
+| delta-rs stack nested lock                      | `0582135c66aa5c61b74ff050c975f4cbef745e5329bfda6410193dcfe81a9887` |
+
+Arrow and the delta-rs candidate do not track a corresponding lock.
+
+## Implemented Interfaces
+
+Arrow/Parquet keeps the public logical zstd features and native defaults while excluding native
+zstd backends only for exact `wasm32-unknown-unknown` builds. Parquet page decoding and Arrow IPC
+compression/decompression distinguish a disabled codec feature from a codec whose backend is
+unavailable on the target. Browser Parquet also excludes object-store writer code that would
+reintroduce native-only dependencies.
+
+`object_store` separates host-neutral HTTP support from explicit browser host capabilities. The
+Fetch path covers timers, local scheduling, retry jitter/entropy, `If-Range`, identity encoding,
+CORS diagnostics, content-length and `Content-Range` validation, validator mismatch, clean-EOF
+retry, and a bounded full-object fallback. Ordinary partial-range `200`, encoded range bodies,
+invalid lengths, missing lengths, and over-bound fallbacks are rejected.
+
+DataFusion owns its Parquet/compression feature composition and provides a disk-disabled,
+single-partition browser profile. Browser-inactive filesystem dependencies, production
+`tempfile`, spill, and multi-thread runtime features are absent from the exact target graph. Its
+browser tests cover HTTP Parquet projection, filter, order, aggregation, and precise unsupported
+zstd/xz behavior.
+
+Delta Kernel's POC candidate moves shared Arrow data/evaluation support under the existing
+`arrow-58`/`internal-api` profile, keeps native execution under `default-engine-base`, and removes
+read-path entropy, filesystem URL helpers, blocking waits, native clocks, cloud batteries, and
+Tokio multi-thread support from the exact browser target. Browser code prefetches asynchronously;
+Kernel handlers remain synchronous and replay the prefetched version-0 log through cache-backed
+storage and JSON handlers.
+
+delta-rs adds a separate `deltalake-browser` crate. It does not depend on `deltalake-core` or the
+native `deltalake` facade. `BrowserDeltaTable::open` asynchronously prefetches the version-0 log,
+replays it through the synchronous in-memory Kernel engine, and records active files.
+`query_ipc` lets DataFusion read selected Parquet ranges asynchronously and returns an Arrow IPC
+stream, row count, fetched bytes, and request count.
+
+The test-only Axon adapter creates the existing browser query envelope from an exact-sized
+`Uint8Array`, records `browser_wasm`, request/transfer metrics, snapshot version, and
+`application/vnd.apache.arrow.stream`, rejects any native fallback, and enforces the 8 MiB result
+budget.
+
+## Deterministic Fixtures
+
+The generator is locked to released Arrow/Parquet `58.3.0` crates and produces independent
+checkpoint-free Snappy and zstd Delta tables:
+
+| Fixture file                                  | Bytes | SHA-256                                                            |
+| --------------------------------------------- | ----: | ------------------------------------------------------------------ |
+| `snappy/_delta_log/00000000000000000000.json` |   618 | `f57e2c0deac64ad9598fcd20de430d2c60f58295efed8edc28687ccf0033e4d8` |
+| `snappy/part-00000.snappy.parquet`            |   779 | `55deb795ce237f5eecdc6ba8114f779213cf501775564408593ded80363c6a5d` |
+| `zstd/_delta_log/00000000000000000000.json`   |   616 | `2d34cad334f9463e54ccc9fe71b902306decd16c2eb55d2be872377e35570a04` |
+| `zstd/part-00000.zstd.parquet`                |   804 | `09d504a26937fcff3d4ddd6c6bf1afacdf83bdf36a7f4301d92f0c48129c2a66` |
+
+Both tables contain rows `(alpha, 2)`, `(beta, 3)`, `(alpha, 5)`, and `(beta, 7)`. The expected SQL
+result is `alpha=7,beta=10`, ordered by category.
+
+## Final Graph And Native Gates
+
+`tests/conformance/verify_upstream_wasm_fork_stack.sh --final` reports:
+
+```text
+upstream WASM fork stack verified mode=final repositories=5 graph_packages=259
+```
+
+The verifier and candidate-hygiene checks collectively reject missing repository entries, malformed
+or unreachable revisions, `UNSET` in final mode, missing browser locks, mutable branch
+dependencies, lock/revision mismatch, Daxis pins in candidates, and duplicate
+Arrow/DataFusion/Kernel source universes. Bootstrap mode alone permits `UNSET` and a missing
+browser lock; its regression suite proves the mode distinction.
+
+The target-filtered browser graph contains exactly one source universe for Arrow, Parquet,
+`object_store`, DataFusion, and Kernel. It contains none of:
+
+- `zstd-sys`, `liblzma-sys`, `aws-lc-sys`, `openssl-sys`, `native-tls`, `ring`, `hyper`,
+  `walkdir`, or `tempfile`;
+- filesystem object-store implementations or AWS, Azure, and GCP provider batteries;
+- Tokio's `rt-multi-thread` feature.
+
+Native-default checks passed in all five accepted forks without changing their default feature
+composition. Component-focused tests covered Arrow IPC/Parquet codecs, object-store HTTP/range
+behavior, DataFusion disk-manager and datasource-compression behavior, an Arrow-backed Kernel
+engine, and delta-rs's browser-only query boundary. The Axon nested-workspace tests, stack-verifier
+regression suite, `query-contract` tests, and `browser-sdk` tests all pass.
+
+The exact `wasm32-unknown-unknown` graph builds in `debian:bookworm-slim` with Rust 1.95.0, raw
+`ld.lld`, and no Clang, C/C++ compiler, CMake, or global `RUSTFLAGS`.
+
+## Browser Runtime And Measurements
+
+The two-origin harness serves the page and data from different loopback origins. Chrome and
+Firefox return identical snapshot/query results and identical valid Arrow IPC bytes:
+
+- snapshot version: `0`;
+- rows: `alpha=7,beta=10`;
+- row count: `2`;
+- IPC bytes: `840`;
+- IPC SHA-256: `993f5a3cf4ee02fa9e2103e60e1cfb9118d54e6a1a577b148913cc10081d8784`;
+- content type: `application/vnd.apache.arrow.stream`;
+- execution marker: `browser_wasm`;
+- native fallback: `false`;
+- cold logical object requests / bytes fetched: `3` / `696`;
+- cold network GET requests / transferred bytes: `4` / `1,314` (CORS preflights are not counted as
+  GETs).
+
+Each result is well below the 8 MiB POC result budget.
+
+Local measurements use one cold run, one discarded warmup, and five measured warm runs:
+
+| Browser | Version          | Cold end-to-end | Warm median | Warm max | WASM memory high-water |
+| ------- | ---------------- | --------------: | ----------: | -------: | ---------------------: |
+| Chrome  | `150.0.7871.184` |       166.52 ms |      5.1 ms |   5.6 ms |        6,160,384 bytes |
+| Firefox | `144.0.2`        |       335.60 ms |     10.0 ms |  10.0 ms |        6,160,384 bytes |
+
+The local release bundle is 28,134,370 raw bytes, 6,582,844 gzip bytes, and 4,308,743 Brotli
+bytes. Its WASM SHA-256 is
+`0a3765b35ab07907ed95e216d40de1754daa0bda0b175c019d4533fc6e429c8c`.
+
+The accepted CI run independently recorded:
+
+| Browser | Version          | Cold end-to-end | Warm median | Warm max | WASM memory high-water |
+| ------- | ---------------- | --------------: | ----------: | -------: | ---------------------: |
+| Chrome  | `150.0.7871.186` |       345.84 ms |     17.6 ms |  25.7 ms |        6,160,384 bytes |
+| Firefox | `144.0.2`        |     1,177.69 ms |     37.0 ms |  39.0 ms |        6,160,384 bytes |
+
+The CI release bundle is 28,125,932 raw bytes, 6,685,391 gzip bytes, and 4,303,781 Brotli bytes.
+Its WASM SHA-256 is
+`869f961d420ec80950c3589d2949e4c8004f6f6961fc65b8b17d79fe784044f5`.
+Measurements are evidence-completeness results, not product-budget assertions; no numeric product
+threshold was specified.
+
+## Protocol Verdict
+
+Chrome and Firefox both passed:
+
+- cross-origin Fetch with explicit CORS exposure;
+- `206` and exact `Content-Range` validation;
+- ETag capture and `If-Range` retry;
+- clean-EOF retry with a bounded second range;
+- validator mismatch rejection;
+- identity-encoding enforcement;
+- a bounded full-object `200` fallback;
+- rejection of ordinary partial-range `200`;
+- rejection of encoded, invalid-range, invalid-length, missing-length, and over-bound bodies.
+
+The zstd table replays its Delta metadata and schema successfully without page decoding. Its first
+compressed-page use fails with:
+
+```text
+cannot create Parquet zstd codec: feature "zstd" is enabled, but no backend is available for target wasm32-unknown-unknown
+```
+
+That is distinct from the feature-disabled diagnostic.
+
+## Axon CI And Raw Evidence
+
+[Axon run 30074789411](https://github.com/daxis-io/axon/actions/runs/30074789411) passed at exact
+revision `b0a91a6f111b7f9d221202086819d9dd63ebd7c3`:
+
+| Job                                                                                                                 | Result  |
+| ------------------------------------------------------------------------------------------------------------------- | ------- |
+| [Native defaults and Axon boundary](https://github.com/daxis-io/axon/actions/runs/30074789411/job/89423064477)      | Success |
+| [Pinned graph without a native compiler](https://github.com/daxis-io/axon/actions/runs/30074789411/job/89423064484) | Success |
+| [Chrome and Firefox runtime](https://github.com/daxis-io/axon/actions/runs/30074789411/job/89423064550)             | Success |
+
+Run `30074067981` was not accepted: it exposed missing `ripgrep` and Git safe-directory setup in
+the minimal container. Revision `b0a91a6f111b7f9d221202086819d9dd63ebd7c3` corrected both
+additively, and only the succeeding exact-SHA run is used as release evidence.
+
+Local browser evidence:
+
+`target/upstream-wasm-fork-poc-evidence/9ce6b301657278bf6883727073ddbe1ee206c92088512dcb68da64ea3193a9a3/browser-evidence.json`
+
+SHA-256:
+`be52f1a72a0f8647088b8b7de16a0f92dbe1fc47bc01552933db4219781392ff`.
+
+Downloaded CI evidence:
+
+`target/upstream-wasm-fork-poc-evidence/9ce6b301657278bf6883727073ddbe1ee206c92088512dcb68da64ea3193a9a3/ci-run-30074789411/`
+
+| Artifact file                   | SHA-256                                                            |
+| ------------------------------- | ------------------------------------------------------------------ |
+| Graph `dependency-tree.txt`     | `088e5819c838066f6739fc4390d3fb84469cefb85585b0e96ff2839e7475f0f3` |
+| Graph `lock-sha256.txt`         | `1bee0d388b91ef56869731b36f62c42713ccbd1e8ab9d22bd138526855fec357` |
+| Graph `rustc.txt`               | `4fdff2578428e9c5c08ddd7a0d3079c1a106b1cdaa46e73e46f7cd32b0fb9cad` |
+| Graph `cargo.txt`               | `c10ec31b8c6e6e2693cf65fc1971b41edbc3da1ae7db6f9f3f36c4823f8dcab5` |
+| Browser `dependency-tree.txt`   | `95796c26a29e50da93655c0d31b151eac40d79d33bf3952f6f6fcb8d6a82cbb2` |
+| Browser `browser-evidence.json` | `610e1eaf2a4f46386ff1c20a416a1a8eb607f878556cf6f8aeb78308f9d11395` |
+| Browser `lock-sha256.txt`       | `1bee0d388b91ef56869731b36f62c42713ccbd1e8ab9d22bd138526855fec357` |
+
+Local toolchain: Rust/Cargo 1.95.0, Node 25.4.0, wasm-bindgen 0.2.114, Chrome
+150.0.7871.184, and Firefox 144.0.2. CI used the same Rust/Cargo and wasm-bindgen versions with
+Node 22.23.1, Chrome 150.0.7871.186, and Firefox 144.0.2.
+
+## Immutable Stack Tags
+
+The annotated tag `daxis-poc/wasm32-browser-e2e-2026-07-23` resolves as follows:
+
+| Fork           | Tag object                                 | Peeled stack commit                        |
+| -------------- | ------------------------------------------ | ------------------------------------------ |
+| Arrow          | `e927bb6fb70f67b39470681265441ab8bd58a08b` | `39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc` |
+| `object_store` | `b18da03078866ceb71321e615847db791ed6c0fc` | `54109e3e6797522ccb2ee5d43cad2a9cd0013074` |
+| DataFusion     | `7107a67ae032b48889ffe3869a67a4530b452bc0` | `0d1d77af6a5974af10dfbe1e3790f3dce05ae617` |
+| Delta Kernel   | `9e7cfb84a9435d135b16fb18e25e0bfcb864eed0` | `79c48fe4e22431efb144da4a0db46bb8ff5ce9d8` |
+| delta-rs       | `62ab9e0fb3cf8305aff3629dccec321a67995983` | `bc45f077347988804e8d42249238710f90b8db97` |
+
+## Inherited Workflow Classification
+
+The acceptance gates are exact-target and native-default gates owned by this POC. Inherited
+workflows outside that scope are retained as diagnostics:
+
+- [Arrow Parquet run 30066099938](https://github.com/daxis-io/arrow-rs/actions/runs/30066099938)
+  fails its `wasm32-wasip1` job because the candidate intentionally excludes native zstd only for
+  exact `wasm32-unknown-unknown`; WASI was not a requested target.
+- [Arrow Rust run 30066099997](https://github.com/daxis-io/arrow-rs/actions/runs/30066099997)
+  fails its inherited MSRV job while installing an unpinned `cargo-msrv` against current AWS
+  dependencies requiring Rust 1.94.1. The accepted native-default and exact browser-target gates do
+  not depend on that installer.
+- [Delta Kernel standard build 30072563549](https://github.com/daxis-io/delta-kernel-rs/actions/runs/30072563549)
+  reports a dead-code warning for `validate_latest_commit_file` in one all-feature cfg combination
+  and Clippy's `new_without_default` for `SyncEngine::new`. Default-native compatibility and the
+  exact browser stack pass; all-feature Clippy was not an acceptance gate.
+- Other inherited workflows requiring PR context, unavailable secrets, or unrelated upstream
+  checks are not substituted for the POC-owned candidate, stack, and Axon runs above.
+
+## Canonical Forward-Port Preparation
+
+Canonical remotes were refreshed before and after preparing forward branches. Final observed heads
+were:
+
+| Repository     | Canonical head                             |
+| -------------- | ------------------------------------------ |
+| Arrow          | `f7dfcd25aabeb01641fe4b6c35ab964fdf0b24aa` |
 | `object_store` | `84d24eb8efcec9448566de09e94d2d4b74b21ebe` |
-| DataFusion | `a0a6836e4cc9f07be52cc8d1380f19ad411d67d8` |
-| Delta Kernel | `8547538d22d23a532cd07f31f3b9ec1e379bd750` |
-| Buoyant compatibility source | `c3a868f16cb9b01d1d13f6f66acea96a584c5813` |
-| delta-rs | `3f562682c5a9dd55693b7f7bbd2a2f749fdf38e5` |
+| DataFusion     | `f40d99ac8b10e03a41374706e9fa07194a922ca9` |
+| Delta Kernel   | `9f411b405ea52d787ee4896a9fbdc19d37f2c0a7` |
+| delta-rs       | `3f562682c5a9dd55693b7f7bbd2a2f749fdf38e5` |
 
-Arrow and DataFusion advanced after the planning snapshot. The intervening Arrow coalesce change
-and DataFusion LEAD/LAG evaluation and protobuf-serde changes do not touch the planned WASM
-surfaces. The other canonical heads remained at the planning snapshot.
+The final already-landed scan still found only partial reusable work, notably object_store's
+reqwest-backed Fetch adapter and range-retry correction
+`4d042dc6136e8eccdc559979663f6773419e83d3`. None of the complete target-safe stack, protocol,
+Kernel, or browser-engine changes had landed canonically.
 
-## Axon Isolation And Baseline
+No canonical PR was opened. The prepared DCO-signed branches contain no Daxis dependency pins:
 
-The Axon root remained at `3e5aceda0c1eb2c0dea983c0e5849200447a363f`. A SHA-256 snapshot of
-all 61 dirty root files was identical before and after worktree creation, documentation copy,
-commit, and push.
+| Order | Concern                            | Branch / revision                                                                         | Verification and disposition                                                                                                                                                                                                                                                                          |
+| ----: | ---------------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|     1 | Parquet zstd target split          | `upstream/wasm32-parquet-zstd` at `d9d6bb626981299425671c5bd8d0b15ab67c1db6`              | Native zstd/default checks, exact WASM build, and policy pass locally. Canonical workflow branch filters did not trigger.                                                                                                                                                                             |
+|     2 | Arrow IPC zstd target split        | `upstream/wasm32-arrow-ipc-zstd` at `7eca801309b97ea379e633fad955b001dd534951`            | Native zstd/default checks, exact WASM build, and policy pass locally. Canonical workflow branch filters did not trigger.                                                                                                                                                                             |
+|     3 | Host-neutral HTTP manifest         | `upstream/wasm32-http-manifest` at `4a89dd1fc831d19570de7e84b85daefda94017d6`             | [CI success](https://github.com/daxis-io/arrow-rs-object-store/actions/runs/30076813929).                                                                                                                                                                                                             |
+|     4 | Browser retry                      | `upstream/wasm32-browser-retry` at `5eeda43613bfba9298ed255d724af5e0e0238eec`             | [CI success](https://github.com/daxis-io/arrow-rs-object-store/actions/runs/30076822278).                                                                                                                                                                                                             |
+|     5 | Browser range protocol             | `upstream/wasm32-browser-range-protocol` at `3dabb144a265999df74eabd19af3d22266c0c9bc`    | [CI success](https://github.com/daxis-io/arrow-rs-object-store/actions/runs/30076835664).                                                                                                                                                                                                             |
+|     6 | DataFusion feature ownership       | `upstream/wasm32-feature-ownership` at `2ae13de39344056ae0a91a4e97110b3737450bce`         | Native checks and final inherited CI pass, including headless Chrome and Firefox.                                                                                                                                                                                                                     |
+|     7 | DataFusion browser runtime         | `upstream/wasm32-browser-runtime` at `bb6f1012676c0c28935fe2b2768a2f8444bd8799`           | Dev and dependency CI pass; 24/25 inherited Rust jobs pass, and standalone WASM jobs stop on canonical prerequisites. A disposable integration using the Arrow forward branches builds the exact target and passes dependency policy.                                                                 |
+|     8 | Delta Kernel core target safety    | Not published; canonical head `9f411b405ea52d787ee4896a9fbdc19d37f2c0a7`                  | Blocked. The first POC commit conflicts in seven files (six source/manifest surfaces plus `Cargo.lock`) while touching 14 files; canonical has 205 unique commits against 74 on the Buoyant side. A mechanical port would require the broad native-core surgery forbidden by the POC stop conditions. |
+|     9 | delta-rs browser-engine incubation | `upstream/wasm32-browser-engine-incubation` at `aae56e2eb7db7a96e04d04805df83309bc54fcbc` | [Candidate cleanliness succeeds; standalone pinned graph exposes ordered prerequisites](https://github.com/daxis-io/delta-rs/actions/runs/30076691603). Publish only after the Kernel redesign and preceding Arrow/`object_store`/DataFusion slices.                                                  |
 
-The isolated Axon worktree was created from
-`62d4c465e10dc329221023eaaf2c67c542c408ce`. The four authorized documentation sets were copied
-byte-for-byte and published in commit `d83672fee18abe6d125a67b3dabced9b73b33e5b`. Its root
-`Cargo.lock` SHA-256 is `0f8630bdea0dca3fdaa0186a46c31ee0651d067a0b300cf9192c9ec6dd4f5d33`.
+The object-store forward CI initially exposed a current `rust-toolchain` override and a raw-LLD
+`-B...gcc-ld` argument. Additive commits pin the intended 1.85.0 CI toolchain explicitly and
+translate the compiler-search argument; the three final runs above are green.
 
-Baseline command results before POC source changes:
+DataFusion's first dependency run identified a cargo-machete false positive for target-only
+`getrandom`; an additive commit records that intentional selector. The first forward-port
+[Rust run 30076904837](https://github.com/daxis-io/datafusion/actions/runs/30076904837)
+then exposed an unconditional current-main `tempfile` import in the public `test_util` module.
+Commit `f714f81cc8771dd5eef3c72e65d88e13a57c8e4d` keeps those filesystem-only helpers off the exact
+browser target while preserving their native API. Its superseding
+[Rust run 30079325660](https://github.com/daxis-io/datafusion/actions/runs/30079325660)
+reached the browser harness and showed that the inherited xz test still unwrapped the deliberate
+target-unavailable error. After that failed job and 15 successful jobs were captured, the remaining
+nine jobs were cancelled in favor of the final revision.
 
-| Command | Result |
-| --- | --- |
-| `cargo build --workspace --locked` | Passed. |
-| `cargo test --workspace --locked` | Failed in four pre-existing `browser_snapshot_preflight` metrics assertions. |
-| `cargo test -p delta-control-plane --test browser_snapshot_preflight --locked -- --test-threads=1` | Reproduced the same four failures: touched-file parity for pruned scans and nonzero fetched-byte accounting. |
+Commit `2ae13de39344056ae0a91a4e97110b3737450bce` keeps the successful xz round trip native-only and
+asserts that browser xz and zstd failures identify the operation, codec, and target. The browser
+runtime branch already contained the identical assertion, so no empty correction commit was added
+there.
 
-The dirty root contains overlapping user-owned work in that test. It was not copied or modified.
-The POC uses an excluded nested workspace and records the baseline failures separately from its
-required gates.
+The final forward-port runs are:
 
-## Revision Ledger
+- Feature ownership: [Dev 30080008354](https://github.com/daxis-io/datafusion/actions/runs/30080008354),
+  [Dependencies 30080008299](https://github.com/daxis-io/datafusion/actions/runs/30080008299),
+  and [Rust 30080008310](https://github.com/daxis-io/datafusion/actions/runs/30080008310)
+  all succeed at `2ae13de39344056ae0a91a4e97110b3737450bce`. Rust is 25/25 green,
+  including the headless Chrome and Firefox WASM job.
+- Browser runtime: [Dev 30079328877](https://github.com/daxis-io/datafusion/actions/runs/30079328877)
+  and [Dependencies 30079328812](https://github.com/daxis-io/datafusion/actions/runs/30079328812)
+  succeed at `bb6f1012676c0c28935fe2b2768a2f8444bd8799`.
+  [Rust 30079328919](https://github.com/daxis-io/datafusion/actions/runs/30079328919)
+  has 24 successful jobs and one expected failure: its inherited wasm-pack job stops at canonical
+  `getrandom` 0.4 before DataFusion runtime code.
+  [Browser WASM 30079328900](https://github.com/daxis-io/datafusion/actions/runs/30079328900)
+  records the remaining ordered prerequisites: the compiler-free job reaches canonical Arrow
+  `zstd-sys`, while Chrome and Firefox reach canonical `getrandom` without its browser feature.
+  No DataFusion-owned failure remains.
 
-`UNSET` is permitted only while bootstrapping. Normal and final verification reject it.
+Standalone DataFusion browser builds against canonical dependencies are expected to expose
+`zstd-sys`, `getrandom` 0.4 without its browser selector, `ring`, and `hyper`. This is the evidence
+for the stated upstream order, not authorization to duplicate those fixes in DataFusion. With the
+published Arrow forward branches integrated in a disposable worktree, the exact DataFusion WASM
+build and denied-dependency policy pass.
 
-| Repository | Owner | Base | Candidate revision | Stack revision | Disposition | Removal condition | Cargo lock SHA-256 | Candidate CI | Stack CI |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `daxis-io/arrow-rs` | Runtime / engine team | `913bab26ba9bed8fc2bc1acda300cc52345b0da1` | `ae7ea8ca6c13bc80f8bae683fa443ab9fd458080` | `ae7ea8ca6c13bc80f8bae683fa443ab9fd458080` | `opened` | Accepted upstream release adopted and locked Axon rehearsal passes. | `a7b15dc895f1a84a9bec543d73896f3d65c60be2db2648cc74c63b94ad25ae3f` | [Arrow](https://github.com/daxis-io/arrow-rs/actions/runs/30063394535), [Parquet](https://github.com/daxis-io/arrow-rs/actions/runs/30063394593) pending | Same revision; complete pinned-graph CI pending. |
-| `daxis-io/arrow-rs-object-store` | Runtime / engine team | `7a65b75b0d26fd8a282999462cb7030fb85fdcc3` | `UNSET` | `UNSET` | `proposed` | Accepted upstream release adopted and locked Axon rehearsal passes. | `UNSET` | `UNSET` | `UNSET` |
-| `daxis-io/datafusion` | Runtime / engine team | `eae7bf4fa1c037c0a065d1f36d0669f5bb97a9cf` | `UNSET` | `UNSET` | `proposed` | Accepted upstream release adopted and locked Axon rehearsal passes. | `UNSET` | `UNSET` | `UNSET` |
-| `daxis-io/delta-kernel-rs` | Runtime / engine team | `f4602a43fe886f45cc3523360bc2488b8f3a2e58` | `UNSET` | `UNSET` | `proposed` | Compatible upstream release adopted and downstream browser rehearsal passes. | `UNSET` | `UNSET` | `UNSET` |
-| `daxis-io/delta-rs` | Runtime / engine team | `df72cc6d3fba014a77243ce80514a6122b46a89b` | `UNSET` | `UNSET` | `proposed` | Browser engine lands in its canonical home, a compatible release is adopted, and Axon's proof passes. | `UNSET` | `UNSET` | `UNSET` |
+The delta-rs forward slice was adapted to current DataFusion 54 and Buoyant Kernel 0.25.1 and does
+not carry obsolete `TableProvider::as_any`. Its browser-safe Kernel feature set currently produces
+about 40 compile errors because current Kernel Arrow conversion code still references modules
+gated by `default-engine-base`; the standalone exact graph also reaches the preceding canonical
+Arrow and object-store blockers. This is why slice 9 is ordered after slice 8 rather than widened
+to patch those dependencies locally.
 
-Corrections are additive commits followed by downstream repins. Published candidate or stack
-revisions are never force-pushed or rewritten.
+## Remaining Risks And Non-Goals
 
-## Arrow And Parquet Candidate
+- The technical POC is complete on its immutable release-based stack; canonical Delta Kernel
+  upstream readiness is blocked on a deliberate target-safe-core redesign.
+- The DataFusion and delta-rs standalone forward branches require the earlier Arrow and
+  `object_store` slices; the delta-rs slice additionally requires the Kernel redesign.
+- Exact `wasm32-unknown-unknown` is supported. `wasm32-wasip1` remains intentionally out of scope.
+- Kernel all-feature Clippy warnings remain outside the accepted native-default profile.
+- Bundle, latency, memory, request, and transfer measurements have no product pass/fail budget.
+- Pure-Rust zstd, multipart upload, writes, credential discovery, filesystem/spill, native
+  threads, generalized multi-partition execution, production dependency replacement, and new
+  public codec/random capability APIs remain excluded.
 
-Draft Daxis PR: [`daxis-io/arrow-rs#1`](https://github.com/daxis-io/arrow-rs/pull/1), targeting
-`poc/base/arrow-58.3.0`.
-
-The clean candidate contains three DCO-signed commits:
-
-| Commit | Concern |
-| --- | --- |
-| `b895ca27bc9b1849d91651436d1ded7f557f9bfc` | Preserve the logical Parquet zstd feature while excluding its native backend only on `wasm32-unknown-unknown`; add distinct feature-disabled and target-unavailable page-decode errors. |
-| `cec96911c810bae6f460f75fb1af0b063861c5bb` | Add the required Apache license header to the Parquet codec test as an additive correction. |
-| `ae7ea8ca6c13bc80f8bae683fa443ab9fd458080` | Apply the same target-specific backend policy to Arrow IPC zstd compression and decompression, propagate writer errors without a partial record batch, and extend the WASM dependency policy. |
-
-Witnessed red results:
-
-- the exact Parquet and Arrow IPC feature-unified WASM checks both failed through `zstd-sys` and
-  Clang before the target dependency split;
-- the Arrow IPC feature-disabled writer test panicked at the infallible writer assertion before
-  the error-propagation change.
-
-Green verification was repeated from a detached clean worktree at
-`ae7ea8ca6c13bc80f8bae683fa443ab9fd458080`:
-
-| Gate | Result |
-| --- | --- |
-| `cargo test -p parquet --locked` | Passed: 1,088 library tests plus integration and doctest suites. |
-| `cargo test -p parquet --all-features --locked` | Passed: 1,138 library tests plus integration and doctest suites. |
-| `cargo test -p arrow-ipc --locked` | Passed: 113 library tests plus all integration suites. |
-| `cargo test -p arrow-ipc --all-features --locked` | Passed: 118 library tests plus all integration suites. |
-| Exact `wasm32-unknown-unknown` Parquet and Arrow IPC checks | Passed with the public codec features enabled. |
-| `dev/check_wasm_dependency_policy.sh parquet` and `arrow-ipc` | Passed; `zstd-sys` is absent from both normal/build target graphs. |
-| All-target, all-feature Clippy for both crates with warnings denied | Passed. |
-| Formatting, diff checks, DCO, and downstream-pin scan | Passed. No Daxis URL or revision appears in the candidate diff. |
-
-Independent native-generated fixtures:
-
-| Fixture | Bytes | SHA-256 |
-| --- | ---: | --- |
-| `parquet/tests/data/wasm_zstd.parquet` | 479 | `5ba396599033bfd515a3be73e62b50e4dc7768c7cbf35508feeafc9a1d817f8e` |
-| `arrow-ipc/tests/data/wasm_zstd.arrow` | 520 | `84c510e9064ca5be3eb7ee488e9b5ddd6e1efed800ccc53918ed74d3e20db4a8` |
-
-The candidate and stack branches both resolve from the fork to the accepted commit. Candidate CI
-is running at that exact SHA; conclusions and artifacts remain pending.
-
-## Evidence Verdicts
-
-| Verdict | Status | Evidence |
-| --- | --- | --- |
-| Graph viability | Pending | Locked WASM build and dependency-policy report. |
-| Browser runtime viability | Pending | Chrome and Firefox happy-path query. |
-| Protocol interoperability | Pending | Cross-origin Range, validator, retry, and error suites. |
-| Downstream viability | Pending | delta-rs browser crate through the Axon-hosted harness. |
-| Native compatibility | Partial | Arrow/Parquet native-default and all-feature gates pass at the accepted leaf revision; four forks remain. |
-| Product viability | Pending | Bundle size, latency, memory, request count, and transferred bytes. |
-| Upstream readiness | Pending | Nine clean forward-port concern branches against refreshed canonical heads. |
-
-## CI Runs And Artifacts
-
-No candidate or stack CI run is accepted until its exact head SHA, URL, conclusion, logs, artifacts,
-and artifact SHA-256 values are recorded here.
+The recommended canonical PR order is the nine-row order above. No canonical PR should be opened
+until the repository owners accept that ordering and, for Delta Kernel, the redesign boundary.
