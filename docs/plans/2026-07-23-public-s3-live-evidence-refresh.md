@@ -6,6 +6,12 @@
 > exactly two local commits; do not push, merge, tune runtime policy, or mutate
 > cloud state.
 
+> **Publication override — 2026-07-25:** after the completed audit follow-up, the
+> user explicitly authorized a direct push to `origin/main`. This supersedes only
+> the original no-push boundary. The branch was rebased without conflict onto
+> `origin/main` at `ee6a430afe99144c5e5780952b45a335d15e89c3` and the complete
+> evidence gate was rerun before publication.
+
 ## Goal
 
 Refresh the pinned public-S3 browser-performance evidence on current `origin/main`
@@ -105,6 +111,10 @@ Require finite, nonnegative safe integers for every current metric and preserve:
 
 Arrow IPC chunk count is required for this current-main evidence rather than
 remaining optional.
+
+The coordinator staging peak must not exceed its emitted per-query staging
+limit. Cursor pending encoded and transport-chunk peaks must not exceed the
+runtime's fixed 8 MiB and 1 MiB bounds, respectively.
 
 ### Owned memory
 
@@ -270,3 +280,142 @@ The final branch must contain exactly two local commits and a clean worktree.
 No cache/readahead policy changes, cloud mutations, Rust/protobuf/SDK changes,
 page-index tuning, worker-pool/WCRPC work, public API changes, unrelated cleanup,
 push, merge, or pull request.
+
+## Execution handoff
+
+The implementation stayed in the isolated worktree and changed only this plan,
+`apps/axon-web/tests/public-s3-live.spec.ts`, and the canonical browser-performance
+plan.
+
+### Evidence-contract implementation
+
+Commit `dee3a2f` (`test(perf): complete public S3 evidence contract`) extends the
+existing worker interceptor and artifact builder. It:
+
+- requires every range, cache, overfetch, IPC, coordinator, and cursor metric;
+- records the full metric set for pre-cache, verified 2026-07-16, and current-main
+  revisions, with `null` for historical fields that were not collected;
+- captures request-correlated owned-memory and browser-WASM success events;
+- rejects non-integer, negative, missing, terminally owned, over-limit, and fallback
+  evidence;
+- gates the canonical performance artifact on the exact pinned URI and region;
+- requires all fresh-browser `COUNT(*)` results to equal `1,048,576`;
+- redacts URI userinfo, query, and fragment content, then rejects AWS access-key,
+  credential, token, signed-query, and `X-Amz-*` material in the serialized
+  artifact;
+- writes and attaches the performance artifact before enforcing the readahead
+  decision gate.
+
+The TDD cycles produced these expected failures before implementation:
+
+- projection and comparison coverage failed while overfetch, memory, and chunk
+  fields were absent;
+- owned-memory validation failed while current ownership and peak limits were not
+  enforced;
+- review hardening failed four tests for incomplete historical comparison,
+  unmodeled `X-Amz-*` fields, lookalike fixture acceptance, and interleaved request
+  correlation.
+- the 2026-07-25 audit follow-up failed three independent tests while coordinator
+  peaks above the emitted staging limit and cursor peaks above the 8 MiB pending
+  and 1 MiB transport bounds were still accepted.
+
+The final missing-environment run passed 13 contract tests and skipped the three
+live tests.
+
+### Fixture and build verification
+
+From `apps/axon-web`:
+
+| Command                                                                                                                                               | Result                                                                   |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `npm run verify:s3-perf-fixture`                                                                                                                      | Passed; 21 required objects                                              |
+| `npm run test:s3-perf-fixture`                                                                                                                        | Passed; the tamper regression printed its expected manifest mismatch     |
+| `bash scripts/verify-s3-perf-fixture.sh --stage ../../target/fixtures/s3-perf-pinned/table`                                                           | Rejected before network access because the safety check rejects `..`     |
+| `bash scripts/verify-s3-perf-fixture.sh --stage /Users/ethanurbanski/axon/.worktrees/public-s3-evidence-refresh/target/fixtures/s3-perf-pinned/table` | Passed after one approved anonymous-network retry; staged all 21 objects |
+| `npm run build:fixture`                                                                                                                               | Passed                                                                   |
+| `npm run build:wasm`                                                                                                                                  | Passed                                                                   |
+| `AXON_LIVE_PUBLIC_S3_TABLE_URI= AXON_LIVE_PUBLIC_S3_REGION= npm run test:browser:public-s3-live -- --reporter=line`                                   | 13 passed, 3 skipped                                                     |
+| `npm run test:sdk -- --grep owned-memory`                                                                                                             | 2 passed                                                                 |
+| `npm run lint`                                                                                                                                        | Passed                                                                   |
+| `npx tsc --noEmit`                                                                                                                                    | Passed                                                                   |
+| `npm run format:check`                                                                                                                                | Passed                                                                   |
+
+The validated provenance remained:
+
+- URI:
+  `s3://axon-public-s3-fixture-452456948477/fixtures/s3-browser-perf/table`
+- region: `us-east-2`
+- manifest SHA-256:
+  `18d1c4c3b5e1ce78ce156ce51247a94a46e44401cad9688ec0d14ceaa01b6ab3`
+- inventory SHA-256:
+  `05f6c5823a88c49559eef70072165b584dfe3c320ae8a435c6f6f82f30d719a9`
+- inventory: 21 objects, 8 active files, 82,057,700 bytes, and 1,048,576
+  rows.
+
+### Live browser result
+
+The final run used the required command:
+
+```bash
+AXON_LIVE_PUBLIC_S3_TABLE_URI=s3://axon-public-s3-fixture-452456948477/fixtures/s3-browser-perf/table \
+AXON_LIVE_PUBLIC_S3_REGION=us-east-2 \
+CI=1 \
+npm run test:browser:public-s3-live -- --reporter=line
+```
+
+All 16 Chromium tests passed, including the anonymous list/log/range smoke, three
+fresh-browser `COUNT(*)` runs, and the performance query. The run used port 5173.
+The initial sandboxed attempt could not bind loopback and returned `EPERM`. The
+final approved run used the same command. Port 5173 had no owner, so no process
+was killed and no temporary Playwright config was needed.
+
+Canonical artifact:
+
+```text
+apps/axon-web/test-results/public-s3-live-public-S3-l-352ff-adahead-comparison-evidence-chromium/public-s3-live-uat-evidence.json
+```
+
+SHA-256: `b403ab279dc38d95cc487a3f48d9d5d8a38f629931045a9c878136b5d5949326`.
+
+The publication artifact records base
+`ee6a430afe99144c5e5780952b45a335d15e89c3`. Its measured metrics are unchanged
+from the pre-publication audit run; the new SHA reflects the updated provenance
+field.
+
+Repeat-query artifact:
+
+```text
+apps/axon-web/test-results/public-s3-live-public-S3-l-3c4bf-ross-fresh-browser-runtimes-chromium/public-s3-repeat-query-evidence.json
+```
+
+SHA-256: `68c02460d60c70e3af32dc57b588936466ca29b356880a7e939635ae12026f12`.
+
+The performance query recorded:
+
+- 22,677,645 physical bytes across 160 logical scan data ranges;
+- 32 coalesced reads, zero gap bytes, zero duplicate reads, and zero scan
+  overfetch;
+- 128 cache misses, 22,677,645 bytes stored, zero reuse, and zero validation or
+  degraded-identity misses;
+- zero readahead requests and zero fetched, used, or wasted readahead bytes;
+- 1,048,576 rows, 36,744 Arrow IPC bytes, and one IPC chunk;
+- a 36,744-byte coordinator staging peak under the 8,388,608-byte staging limit;
+- 36,288-byte cursor pending and transport-chunk peaks;
+- zero terminal coordinator reserved/staged ownership, with peaks of 8,388,608
+  reserved bytes and 36,744 staged bytes under the 33,554,432-byte limit;
+- zero terminal DataFusion ownership and a 4,815,095-byte peak under the
+  67,108,864-byte limit;
+- `browser_wasm`, no fallback event, and no response fallback reason.
+
+All three fresh-browser count runs returned `1,048,576`, reported browser-WASM
+execution without fallback, and ended with zero terminal ownership. The serialized
+artifact scan found no credential or signed-query material.
+
+### Decision
+
+The performance workload exercised scan reads and physical bytes. Readahead and
+scan overfetch remained zero. Record the run as no-overfetch evidence, not a
+latency improvement. Keep page-index byte-savings A/B research as the next slice;
+make no cache, readahead, or page-index policy change from this run.
+
+`apps/axon-web/test-results/` remains ignored and uncommitted.

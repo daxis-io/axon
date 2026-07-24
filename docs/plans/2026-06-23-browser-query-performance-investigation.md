@@ -41,15 +41,15 @@ Performance work can cache resolved descriptors, access envelopes, and footer me
 
 ## Current Status
 
-The remote baseline for the 2026-07-23 audit is `origin/main` at
-`6cca364465fc4fa714ff7403b6df7e3f229c6e8f`. It includes the original
-instrumentation, identity propagation, footer and shared range caches,
-prebootstrap pruning, descriptor carryover, lazy startup, scan-trace split,
-small-gap coalescing, bounded readahead, and the private Arrow IPC
-cursor/coordinator path.
+The initial remote baseline for the 2026-07-23 evidence refresh was `origin/main` at
+`62d4c465e10dc329221023eaaf2c67c542c408ce`. Commit `3e5aced` merged
+`perf/resolve-performance-audit`; six later commits bound coordinator staging
+and DataFusion ownership, then added plateau and capacity-isolation proof.
+Before publication on 2026-07-25, the evidence branch rebased without conflict
+onto `origin/main` at `ee6a430afe99144c5e5780952b45a335d15e89c3` and reran the
+complete evidence gate. The current artifact below uses that publication base.
 
-The local-only `perf/resolve-performance-audit` branch closes the remaining
-audit findings as follows:
+Current main closes the performance-audit findings as follows:
 
 | Finding | Current resolution |
 | --- | --- |
@@ -65,7 +65,9 @@ audit findings as follows:
 The 2026-07-16 public-S3 artifact remains honest historical evidence: adaptive
 readahead fetched, used, and wasted zero bytes, while physical bytes returned
 to the 22,677,645-byte pre-cache baseline. It proves no overfetch regression,
-not a latency win.
+not a latency win. The 2026-07-23 refresh, rerun for publication on 2026-07-25,
+adds current-main memory bounds,
+an exact fixture gate, and a complete three-revision metric comparison.
 
 ---
 
@@ -118,7 +120,9 @@ amplification.
 Historical recommendation: capture live browser UAT evidence before starting a
 shared Delta/Parquet range cache, bounded readahead, or scan-byte budget
 enforcement. The cache and readahead slices landed, and the 2026-07-16 public-S3
-evidence below supersedes this gate.
+evidence below superseded this gate. The 2026-07-23 current-main refresh, rerun
+on the 2026-07-25 publication base, confirms
+the no-overfetch result with the expanded evidence contract.
 
 ### Live Public-GCS Browser UAT Evidence - 2026-06-28
 
@@ -143,11 +147,7 @@ region `us-east-2`, manifest SHA-256
 checksum-inventory SHA-256
 `05f6c5823a88c49559eef70072165b584dfe3c320ae8a435c6f6f82f30d719a9`,
 21 required objects, 8 active Parquet files, and 82,057,700 active data
-bytes. The deterministic validator successfully staged and checked the
-anonymous fixture during the 2026-07-23 resolution. The live browser suite was
-not rerun because its environment variables were absent and this local-only
-audit did not authorize cloud mutation. The artifact below therefore remains
-the only live performance verdict.
+bytes.
 
 The CI-forced Chromium run used the public performance fixture and passed all
 four tests. Ports 5173 and 5174 were occupied by other worktrees, so the final
@@ -207,6 +207,128 @@ query material.
 Decision: accept the adaptive admission follow-up without changing the 64 KiB
 tail, 512 KiB query budget, or default enablement. Open the Slice 6 scan-byte and
 overfetch-budget guardrail gate.
+
+### Current-Main Public-S3 Browser Evidence - 2026-07-25 Publication Refresh
+
+The refresh ran from `perf/public-s3-evidence-refresh`. Its final publication run
+was based on `origin/main` at
+`ee6a430afe99144c5e5780952b45a335d15e89c3`.
+
+Fixture and build checks:
+
+- `npm run verify:s3-perf-fixture` validated all 21 manifest objects.
+- `npm run test:s3-perf-fixture` passed. Its tamper regression prints an
+  intentional manifest SHA-256 mismatch.
+- The documented relative staging path failed before network access with
+  `unsafe S3 fixture table root: ../../target/fixtures/s3-perf-pinned/table`
+  because the validator rejects paths containing `..`.
+- The equivalent resolved path passed and staged all 21 anonymous objects:
+
+  ```bash
+  bash scripts/verify-s3-perf-fixture.sh \
+    --stage /Users/ethanurbanski/axon/.worktrees/public-s3-evidence-refresh/target/fixtures/s3-perf-pinned/table
+  ```
+
+- `npm run build:fixture` and `npm run build:wasm` passed.
+- The missing-environment gate ran 13 contract tests and skipped the three live
+  tests.
+
+The 2026-07-25 audit follow-up added branch-local rejection for a coordinator
+peak above its emitted staging limit, a cursor pending peak above 8 MiB, and a
+cursor transport-chunk peak above 1 MiB. All three independent negative cases
+failed before the bounds validator was added and passed afterward.
+
+The current-main run used the pinned URI and region:
+
+```bash
+AXON_LIVE_PUBLIC_S3_TABLE_URI=s3://axon-public-s3-fixture-452456948477/fixtures/s3-browser-perf/table \
+AXON_LIVE_PUBLIC_S3_REGION=us-east-2 \
+CI=1 \
+npm run test:browser:public-s3-live -- --reporter=line
+```
+
+Chromium ran all 16 tests, including all three live tests, on port 5173. The
+initial sandboxed attempt could not bind loopback and returned `EPERM`. The final
+approved run used the same command and passed. Port 5173 had no owner, so the run
+needed no temporary Playwright config and killed no process.
+
+Canonical performance artifact:
+
+```text
+apps/axon-web/test-results/public-s3-live-public-S3-l-352ff-adahead-comparison-evidence-chromium/public-s3-live-uat-evidence.json
+```
+
+SHA-256: `b403ab279dc38d95cc487a3f48d9d5d8a38f629931045a9c878136b5d5949326`.
+
+The measured metrics remained identical to the pre-publication audit run. The
+artifact SHA changed because `comparison.current_main.base_commit_sha` now records
+the final publication base.
+
+The artifact carries the exact fixture URI, region, manifest SHA-256, inventory
+SHA-256, 21-object inventory, 8 active files, and 82,057,700 active bytes. The
+suite wrote it before applying the readahead stop condition. A serialized scan
+found no URI userinfo, AWS access-key identifier, credential field, signed
+query field, or `X-Amz-*` material.
+
+The embedded pre-cache record predates several counters. `Unavailable` means the
+historical artifact did not record the field.
+
+| Metric                                |   Pre-cache |  2026-07-16 | Current main |
+| ------------------------------------- | ----------: | ----------: | -----------: |
+| `bytes_fetched`                       |  22,677,645 |  22,677,645 |   22,677,645 |
+| `bootstrap_footer_range_reads`        | unavailable |          16 |           16 |
+| `scan_footer_range_reads`             | unavailable |           0 |            0 |
+| `scan_data_range_reads`               |         160 |         160 |          160 |
+| `duplicate_range_reads`               | unavailable |           0 |            0 |
+| `coalesced_range_reads`               |          32 |          32 |           32 |
+| `coalesced_gap_bytes_fetched`         | unavailable |           0 |            0 |
+| `scan_overfetch_bytes`                | unavailable | unavailable |            0 |
+| `footer_cache_hits`                   | unavailable |           8 |            8 |
+| `footer_cache_misses`                 | unavailable |           8 |            8 |
+| `footer_range_reads_avoided`          | unavailable |          16 |           16 |
+| `identity_present_range_reads`        | unavailable |         160 |          160 |
+| `identity_missing_range_reads`        | unavailable |          16 |           16 |
+| `range_cache_hits`                    | unavailable |           0 |            0 |
+| `range_cache_misses`                  | unavailable |         128 |          128 |
+| `range_cache_bytes_reused`            | unavailable |           0 |            0 |
+| `range_cache_bytes_stored`            | unavailable |  22,677,645 |   22,677,645 |
+| `range_cache_validation_misses`       | unavailable |           0 |            0 |
+| `range_cache_degraded_identity_reads` | unavailable |           0 |            0 |
+| `range_readahead_requests`            | unavailable |           0 |            0 |
+| `range_readahead_bytes_fetched`       | unavailable |           0 |            0 |
+| `range_readahead_bytes_used`          | unavailable |           0 |            0 |
+| `range_readahead_wasted_bytes`        | unavailable |           0 |            0 |
+| `rows_emitted`                        |   1,048,576 |   1,048,576 |    1,048,576 |
+| `arrow_ipc_bytes`                     |      36,744 |      36,744 |       36,744 |
+| `arrow_ipc_chunk_count`               | unavailable |           1 |            1 |
+| `coordinator_peak_staged_bytes`       | unavailable | unavailable |       36,744 |
+| `coordinator_staging_limit_bytes`     | unavailable | unavailable |    8,388,608 |
+| `cursor_peak_pending_encoded_bytes`   | unavailable | unavailable |       36,288 |
+| `cursor_peak_transport_chunk_bytes`   | unavailable | unavailable |       36,288 |
+
+Current browser-owned memory:
+
+| Component   | Metric                    |      Value |
+| ----------- | ------------------------- | ---------: |
+| Coordinator | `limit_bytes`             | 33,554,432 |
+| Coordinator | terminal `reserved_bytes` |          0 |
+| Coordinator | terminal `staged_bytes`   |          0 |
+| Coordinator | `peak_reserved_bytes`     |  8,388,608 |
+| Coordinator | `peak_staged_bytes`       |     36,744 |
+| DataFusion  | `limit_bytes`             | 67,108,864 |
+| DataFusion  | terminal `reserved_bytes` |          0 |
+| DataFusion  | `peak_bytes`              |  4,815,095 |
+
+All three fresh-browser `COUNT(*)` runs returned exactly `1,048,576`. Each run
+reported `browser_wasm`, no fallback event, no response fallback reason, and
+zero terminal coordinator and DataFusion ownership.
+
+The performance query exercised 160 scan data ranges and fetched 22,677,645
+physical bytes. Readahead requests, fetched bytes, used bytes, and wasted bytes
+all remained zero; `scan_overfetch_bytes` also remained zero. Record this as
+no-overfetch evidence. It makes no latency or page-index byte-savings claim.
+The next performance slice should run a page-index byte-savings A/B experiment
+before changing page-index or read-policy defaults.
 
 ---
 
@@ -313,7 +435,7 @@ The active scan path uses `HttpRangeAsyncFileReader`. The first eligible single 
 - Metrics show duplicate footer/trailer ranges drop to zero for open-plus-query on the same table.
 - Scan requests carry identity headers when the provider exposes identity.
 - Tests cover `ETag` present, `ETag` missing, object identity drift, and signed URL refresh.
-- Live public-S3 evidence records cache reuse and readahead fetched, used, and wasted bytes. **Satisfied on 2026-07-16; the scan-byte budget gate is open.**
+- Live public-S3 evidence records cache reuse and readahead fetched, used, and wasted bytes. **Satisfied on 2026-07-16 and refreshed on the publication base on 2026-07-25; the scan-byte budget gate remains open.**
 
 ---
 
