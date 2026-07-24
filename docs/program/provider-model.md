@@ -2,7 +2,7 @@
 
 - Status: Working architecture
 - Date: 2026-06-20
-- Revised: 2026-07-15
+- Revised: 2026-07-23
 - Scope: Axon's source-profile composition, provider boundaries, authority, and host integration boundary
 - Related:
   - [Axon workbench architecture](./axon-workbench-architecture.md)
@@ -12,14 +12,27 @@
 
 ## Current Implementation
 
-Axon currently executes browser-local Delta and public object-storage sources.
-Generated `axon/common/v1`, `axon/catalog/v1`, `axon/dataaccess/v1`,
-`axon/exec/v1`, and `axon/fs/v1` messages are landed. The filesystem package is
-messages-only contract substrate; no E8 provider, adapter, UI, or runtime
-consumer has landed. App-layer `CatalogProvider`, `DataAccessResolver`, and
-`ExecutionProvider` interfaces have not been adopted end to end. Unity Catalog
-discovery, governed read resolution, remote execution, and filesystem adoption
-remain proposed work.
+Axon executes browser-local Delta and public GCS/S3 sources through app-layer
+`DataAccessResolver` and `ExecutionProvider` seams. One exact source selection
+becomes a generated `TableNode` and `CanonicalResourceRef`; its profile resolver
+returns a closed `ReadResolution`; and the browser executor validates the
+generated `ExecuteRequest` and supplied snapshot descriptor before the sole SDK
+table-open boundary. The executor recognizes the sample fixture under its fixed
+fixture identity. Product selection never falls back to it.
+
+Local resolution rechecks the retained handle or re-grant state for every new
+execution and mints a `LOCAL_HANDLE` lease ending at that execution's existing
+deadline. Public resolution emits a fresh non-expiring `PUBLIC` envelope around
+credential-free HTTPS objects rooted at the normalized GCS or S3 locator.
+Generated admission, cancellation, lifecycle, response, preview, and bounded
+single-buffer Arrow IPC messages carry the app execution path.
+
+The repository generates `axon/common/v1`, `axon/catalog/v1`,
+`axon/dataaccess/v1`, `axon/exec/v1`, and `axon/fs/v1` messages. The filesystem
+package remains messages-only contract substrate; no E8 provider, adapter, UI,
+or runtime consumer has landed. App-layer `CatalogProvider`, Unity Catalog
+discovery, governed read resolution, logical-resource/native execution, remote
+execution, and filesystem adoption remain proposed work.
 
 The landed `axon.exec.v1` commands and events describe the browser worker compatibility boundary. They are not a portable remote execution service contract. A remote service contract is deferred until a concrete host implementation can prove its identity, admission, streaming, cancellation, retry, and audit requirements.
 
