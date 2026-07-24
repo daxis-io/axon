@@ -118,6 +118,7 @@ pub struct BrowserWorkerStartupReport {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BrowserWorkerQueryBudgetReport {
     pub max_scan_bytes: Option<u64>,
+    pub max_scan_overfetch_bytes: Option<u64>,
     pub max_output_ipc_bytes: Option<u64>,
     pub max_batches_in_flight: Option<usize>,
     pub max_rows_returned: Option<u64>,
@@ -127,6 +128,7 @@ impl BrowserWorkerQueryBudgetReport {
     pub fn from_query_budget(query_budget: BrowserQueryBudget) -> Self {
         Self {
             max_scan_bytes: query_budget.max_scan_bytes,
+            max_scan_overfetch_bytes: query_budget.max_scan_overfetch_bytes,
             max_output_ipc_bytes: query_budget.max_output_ipc_bytes,
             max_batches_in_flight: query_budget.max_batches_in_flight,
             max_rows_returned: query_budget.max_rows_returned,
@@ -599,6 +601,7 @@ fn browser_safe_runtime_limits(
             "runtime_limits.max_preview_string_bytes",
         )?),
         max_scan_bytes: limits.max_scan_bytes,
+        max_scan_overfetch_bytes: limits.max_scan_overfetch_bytes,
     })
 }
 
@@ -826,6 +829,7 @@ fn emit_open_bootstrap_metrics<F>(
             coalesced_gap_bytes_fetched: Some(
                 snapshot.range_read_metrics().coalesced_gap_bytes_fetched,
             ),
+            scan_overfetch_bytes: Some(snapshot.range_read_metrics().scan_overfetch_bytes()),
             footer_cache_hits: Some(snapshot.range_read_metrics().footer_cache_hits),
             footer_cache_misses: Some(snapshot.range_read_metrics().footer_cache_misses),
             footer_range_reads_avoided: Some(
@@ -884,6 +888,10 @@ fn emit_open_bootstrap_metrics<F>(
             planning_duration_ms: None,
             arrow_ipc_encode_duration_ms: None,
             preview_duration_ms: None,
+            coordinator_peak_staged_bytes: None,
+            coordinator_staging_limit_bytes: None,
+            cursor_peak_pending_encoded_bytes: None,
+            cursor_peak_transport_chunk_bytes: None,
         },
     ));
 }

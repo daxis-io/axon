@@ -275,6 +275,18 @@ fn arrow_bytes_and_explicit_zero_presence_survive_binary_round_trips() {
 
     assert_eq!(decoded_descriptor.snapshot_version, Some(0));
 
+    let runtime_limits = axon_exec_v1::QueryRuntimeLimits {
+        max_scan_overfetch_bytes: Some(524_288),
+        ..Default::default()
+    };
+    let decoded_runtime_limits =
+        axon_exec_v1::QueryRuntimeLimits::decode_from_slice(&runtime_limits.encode_to_vec())
+            .expect("query runtime limits should decode");
+    assert_eq!(
+        decoded_runtime_limits.max_scan_overfetch_bytes,
+        Some(524_288)
+    );
+
     let metrics = axon_exec_v1::QueryMetricsSummary {
         range_cache_hits: Some(1),
         range_cache_misses: Some(0),
@@ -286,6 +298,11 @@ fn arrow_bytes_and_explicit_zero_presence_survive_binary_round_trips() {
         range_readahead_bytes_fetched: Some(0),
         range_readahead_bytes_used: Some(0),
         range_readahead_wasted_bytes: Some(0),
+        scan_overfetch_bytes: Some(0),
+        coordinator_peak_staged_bytes: Some(4_096),
+        coordinator_staging_limit_bytes: Some(8_388_608),
+        cursor_peak_pending_encoded_bytes: Some(2_048),
+        cursor_peak_transport_chunk_bytes: Some(1_048_576),
         ..Default::default()
     };
     let decoded_metrics =
@@ -294,12 +311,31 @@ fn arrow_bytes_and_explicit_zero_presence_survive_binary_round_trips() {
     assert_eq!(decoded_metrics.range_cache_hits, Some(1));
     assert_eq!(decoded_metrics.range_cache_bytes_reused, Some(800));
     assert_eq!(decoded_metrics.range_readahead_wasted_bytes, Some(0));
+    assert_eq!(decoded_metrics.scan_overfetch_bytes, Some(0));
+    assert_eq!(decoded_metrics.coordinator_peak_staged_bytes, Some(4_096));
+    assert_eq!(
+        decoded_metrics.coordinator_staging_limit_bytes,
+        Some(8_388_608)
+    );
+    assert_eq!(
+        decoded_metrics.cursor_peak_pending_encoded_bytes,
+        Some(2_048)
+    );
+    assert_eq!(
+        decoded_metrics.cursor_peak_transport_chunk_bytes,
+        Some(1_048_576)
+    );
 
     let worker_metrics = axon_exec_v1::BrowserWorkerRangeReadMetricsEvent {
         range_cache_hits: Some(1),
         range_cache_bytes_reused: Some(800),
         range_readahead_requests: Some(0),
         range_readahead_wasted_bytes: Some(0),
+        scan_overfetch_bytes: Some(0),
+        coordinator_peak_staged_bytes: Some(4_096),
+        coordinator_staging_limit_bytes: Some(8_388_608),
+        cursor_peak_pending_encoded_bytes: Some(2_048),
+        cursor_peak_transport_chunk_bytes: Some(1_048_576),
         ..Default::default()
     };
     let decoded_worker_metrics =
@@ -309,6 +345,23 @@ fn arrow_bytes_and_explicit_zero_presence_survive_binary_round_trips() {
         .expect("worker metrics should decode");
     assert_eq!(decoded_worker_metrics.range_cache_hits, Some(1));
     assert_eq!(decoded_worker_metrics.range_readahead_requests, Some(0));
+    assert_eq!(decoded_worker_metrics.scan_overfetch_bytes, Some(0));
+    assert_eq!(
+        decoded_worker_metrics.coordinator_peak_staged_bytes,
+        Some(4_096)
+    );
+    assert_eq!(
+        decoded_worker_metrics.coordinator_staging_limit_bytes,
+        Some(8_388_608)
+    );
+    assert_eq!(
+        decoded_worker_metrics.cursor_peak_pending_encoded_bytes,
+        Some(2_048)
+    );
+    assert_eq!(
+        decoded_worker_metrics.cursor_peak_transport_chunk_bytes,
+        Some(1_048_576)
+    );
 }
 
 #[test]

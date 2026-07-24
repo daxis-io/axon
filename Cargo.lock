@@ -401,6 +401,7 @@ dependencies = [
  "query-contract",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",

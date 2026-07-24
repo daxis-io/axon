@@ -91,6 +91,11 @@ const QUERY_METRIC_UINT64_FIELDS = [
   'duplicate_range_reads',
   'coalesced_range_reads',
   'coalesced_gap_bytes_fetched',
+  'scan_overfetch_bytes',
+  'coordinator_peak_staged_bytes',
+  'coordinator_staging_limit_bytes',
+  'cursor_peak_pending_encoded_bytes',
+  'cursor_peak_transport_chunk_bytes',
   'footer_cache_hits',
   'footer_cache_misses',
   'footer_range_reads_avoided',
@@ -252,6 +257,7 @@ describe('execution contract codegen', () => {
           max_arrow_ipc_bytes: 0,
           max_preview_string_bytes: 0,
           max_scan_bytes: 0,
+          max_scan_overfetch_bytes: 0,
         },
       },
     };
@@ -267,6 +273,7 @@ describe('execution contract codegen', () => {
           max_arrow_ipc_bytes: '0',
           max_preview_string_bytes: '0',
           max_scan_bytes: '0',
+          max_scan_overfetch_bytes: '0',
         },
       },
     });
@@ -795,6 +802,7 @@ describe('execution contract codegen', () => {
       'max_arrow_ipc_bytes',
       'max_preview_string_bytes',
       'max_scan_bytes',
+      'max_scan_overfetch_bytes',
     ]);
     expect(
       runtimeLimits.fields.every((field: DescField) => field.proto.proto3Optional === true),
@@ -1485,6 +1493,9 @@ function normalizeQueryRequest(request: ContractQueryRequest): JsonObject {
             max_arrow_ipc_bytes: decimal(options.runtime_limits.max_arrow_ipc_bytes),
             max_preview_string_bytes: decimal(options.runtime_limits.max_preview_string_bytes),
             max_scan_bytes: decimal(options.runtime_limits.max_scan_bytes),
+            max_scan_overfetch_bytes: decimal(
+              options.runtime_limits.max_scan_overfetch_bytes,
+            ),
           })
         : undefined,
     }),
@@ -1825,6 +1836,11 @@ function representativeMetrics(): QueryMetricsSummary {
     duplicate_range_reads: 2,
     coalesced_range_reads: 1,
     coalesced_gap_bytes_fetched: 12_288,
+    scan_overfetch_bytes: 13_312,
+    coordinator_peak_staged_bytes: 4_096,
+    coordinator_staging_limit_bytes: 8_388_608,
+    cursor_peak_pending_encoded_bytes: 2_048,
+    cursor_peak_transport_chunk_bytes: 1_048_576,
     footer_cache_hits: 1,
     footer_cache_misses: 3,
     footer_range_reads_avoided: 2,

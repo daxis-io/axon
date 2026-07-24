@@ -460,22 +460,8 @@ test('private child blocks at zero credit and delivers cancellation and deadline
   });
 });
 
-test('one-child coordinator discards staged data after a late failure', async ({
-  page,
-  browserName,
-}) => {
+test('one-child coordinator discards staged data after a late failure', async ({ page }) => {
   await routeCursorParquet(page);
-  let childLoads = 0;
-  if (browserName === 'firefox') {
-    page.on('worker', (worker) => {
-      if (worker.url().includes('sandbox-query-child-worker')) childLoads += 1;
-    });
-  } else {
-    await page.route('**/sandbox-query-child-worker.ts*', async (route) => {
-      childLoads += 1;
-      await route.continue();
-    });
-  }
   await page.goto('/');
 
   const result = await page.evaluate(
@@ -593,50 +579,147 @@ test('one-child coordinator discards staged data after a late failure', async ({
     publicErrors: 1,
     publicSuccesses: 0,
   });
-  expect(childLoads).toBe(1);
+});
+
+test('one-child coordinator publishes no partial result after an output-budget failure', async ({
+  page,
+}) => {
+  await routeCursorParquet(page);
+  await page.goto('/');
+
+  const result = await page.evaluate(
+    async ({ fixtureBytes }: { fixtureBytes: number }) => {
+      type PublicMessage = {
+        arrow_ipc_chunk?: { request_id?: string };
+        error?: { request_id?: string };
+        success?: { request_id?: string };
+      };
+      type CapturedError = {
+        message: string;
+        name: string;
+        queryError?: unknown;
+      };
+
+      const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+      const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
+        type: 'module',
+      });
+      const rawMessages: PublicMessage[] = [];
+      worker.addEventListener('message', (event: MessageEvent<PublicMessage>) => {
+        rawMessages.push(event.data);
+      });
+      const client = sdk.createAxonBrowserClient({ worker });
+      const requestId = 'query-coordinator-output-budget';
+
+      try {
+        await client.openDeltaTable(
+          'budget_events',
+          {
+            table_uri: new URL('/fixtures/browser-datafusion-runtime/output-budget', location.href)
+              .href,
+            snapshot_version: 0,
+            partition_column_types: { category: 'string' },
+            browser_compatibility: { capabilities: {} },
+            required_capabilities: { capabilities: {} },
+            active_files: [
+              {
+                path: 'category=budget/part-000.parquet',
+                url: new URL(
+                  '/fixtures/browser-datafusion-runtime/internal-cursor.parquet',
+                  location.href,
+                ).href,
+                size_bytes: fixtureBytes,
+                partition_values: { category: 'budget' },
+              },
+            ],
+          },
+          { requestId: 'open-coordinator-output-budget' },
+        );
+
+        let capturedError: CapturedError | undefined;
+        try {
+          await client.query(
+            'budget_events',
+            'SELECT payload, category, id FROM budget_events ORDER BY id',
+            {
+              requestId,
+              queryOptions: {
+                runtime_limits: { max_arrow_ipc_bytes: 1 },
+              },
+            },
+          );
+        } catch (error) {
+          const candidate = error as Partial<CapturedError>;
+          capturedError = {
+            message: String(candidate.message),
+            name: String(candidate.name),
+            queryError: candidate.queryError,
+          };
+        }
+        if (!capturedError) throw new Error('over-budget coordinator query unexpectedly succeeded');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        return {
+          error: capturedError,
+          publicArrowChunks: rawMessages.filter(
+            (message) => message.arrow_ipc_chunk?.request_id === requestId,
+          ).length,
+          publicErrors: rawMessages.filter((message) => message.error?.request_id === requestId)
+            .length,
+          publicSuccesses: rawMessages.filter(
+            (message) => message.success?.request_id === requestId,
+          ).length,
+        };
+      } finally {
+        client.terminate();
+      }
+    },
+    { fixtureBytes: BINARY_STRING_INT_PARQUET_BYTES.byteLength },
+  );
+
+  expect(result).toMatchObject({
+    error: {
+      name: 'AxonWorkerError',
+      queryError: {
+        code: 'execution_failed',
+        target: 'browser_wasm',
+      },
+    },
+    publicArrowChunks: 0,
+    publicErrors: 1,
+    publicSuccesses: 0,
+  });
+  expect(result.error?.message).toContain('max_arrow_ipc_bytes');
 });
 
 test('one-child coordinator fails a forwarded command once when the child crashes', async ({
   page,
-  browserName,
 }) => {
-  let childLoads = 0;
-  const isFirefox = browserName === 'firefox';
-  const childWorkerPromise = isFirefox
-    ? page.waitForEvent('worker', {
-        predicate: (worker) => worker.url().includes('sandbox-query-child-worker'),
-      })
-    : undefined;
-  if (isFirefox) {
-    page.on('worker', (worker) => {
-      if (worker.url().includes('sandbox-query-child-worker')) childLoads += 1;
-    });
-  } else {
-    await page.route('**/sandbox-query-child-worker.ts*', async (route) => {
-      childLoads += 1;
-      if (childLoads === 1) {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/javascript',
-          body: "throw new Error('injected child worker crash');",
-        });
-        return;
-      }
-      await route.continue();
-    });
-  }
   await page.goto('/');
 
-  const resultPromise = page.evaluate(async () => {
-    type PublicMessage = { error?: { request_id?: string } };
+  const result = await page.evaluate(async () => {
+    type PublicMessage = {
+      coordinator_test_ready?: boolean;
+      error?: { request_id?: string };
+    };
     const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
-    const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
-      type: 'module',
-    });
+    const worker = new Worker(
+      new URL(
+        '/src/sandbox-query-worker-test-harness.ts?first_child=crash-on-command',
+        location.href,
+      ),
+      { type: 'module' },
+    );
     const rawMessages: PublicMessage[] = [];
+    let readyResolver: (() => void) | undefined;
+    const ready = new Promise<void>((resolve) => {
+      readyResolver = resolve;
+    });
     worker.addEventListener('message', (event: MessageEvent<PublicMessage>) => {
       rawMessages.push(event.data);
+      if (event.data.coordinator_test_ready) readyResolver?.();
     });
+    await ready;
     const client = sdk.createAxonBrowserClient({ worker });
 
     try {
@@ -660,6 +743,21 @@ test('one-child coordinator fails a forwarded command once when the child crashe
         name?: string;
         queryError?: unknown;
       };
+      await client.openDeltaTable(
+        'child_crash_recovery',
+        {
+          table_uri: new URL(
+            '/fixtures/browser-datafusion-runtime/child-crash-recovery',
+            location.href,
+          ).href,
+          snapshot_version: 0,
+          partition_column_types: {},
+          browser_compatibility: { capabilities: {} },
+          required_capabilities: { capabilities: {} },
+          active_files: [],
+        },
+        { requestId: 'open-after-child-crash' },
+      );
       await new Promise((resolve) => setTimeout(resolve, 50));
       return {
         error: {
@@ -670,20 +768,12 @@ test('one-child coordinator fails a forwarded command once when the child crashe
         publicErrors: rawMessages.filter(
           (message) => message.error?.request_id === 'open-child-crash-probe',
         ).length,
+        recovered: true,
       };
     } finally {
       client.terminate();
     }
   });
-  if (childWorkerPromise) {
-    const childWorker = await childWorkerPromise;
-    await childWorker.evaluate(() => {
-      setTimeout(() => {
-        throw new Error('injected child worker crash');
-      }, 0);
-    });
-  }
-  const result = await resultPromise;
 
   expect(result).toMatchObject({
     error: {
@@ -691,8 +781,274 @@ test('one-child coordinator fails a forwarded command once when the child crashe
       queryError: { code: 'execution_failed', target: 'browser_wasm' },
     },
     publicErrors: 1,
+    recovered: true,
   });
-  expect(childLoads).toBeGreaterThanOrEqual(2);
+});
+
+test('one-child coordinator fails active SQL atomically when the child crashes', async ({
+  page,
+}) => {
+  await page.goto('/');
+
+  const result = await page.evaluate(async () => {
+    type PublicMessage = {
+      coordinator_test_ready?: boolean;
+      arrow_ipc_chunk?: { request_id?: string };
+      error?: { request_id?: string };
+      success?: { request_id?: string };
+    };
+    const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+    const worker = new Worker(
+      new URL('/src/sandbox-query-worker-test-harness.ts?crash_on_command=2', location.href),
+      { type: 'module' },
+    );
+    const rawMessages: PublicMessage[] = [];
+    let readyResolver: (() => void) | undefined;
+    const ready = new Promise<void>((resolve) => {
+      readyResolver = resolve;
+    });
+    worker.addEventListener('message', (event: MessageEvent<PublicMessage>) => {
+      rawMessages.push(event.data);
+      if (event.data.coordinator_test_ready) readyResolver?.();
+    });
+    await ready;
+    const client = sdk.createAxonBrowserClient({ worker });
+
+    try {
+      await client.openDeltaTable(
+        'events',
+        {
+          table_uri: new URL(
+            '/fixtures/browser-datafusion-runtime/active-child-crash',
+            location.href,
+          ).href,
+          snapshot_version: 0,
+          partition_column_types: {},
+          browser_compatibility: { capabilities: {} },
+          required_capabilities: { capabilities: {} },
+          active_files: [],
+        },
+        { requestId: 'open-before-active-child-crash' },
+      );
+      let captured: { name: string; queryError?: unknown } | undefined;
+      try {
+        await client.query('events', 'SELECT 1 AS value', {
+          requestId: 'query-active-child-crash',
+        });
+      } catch (error) {
+        const candidate = error as { name?: string; queryError?: unknown };
+        captured = { name: String(candidate.name), queryError: candidate.queryError };
+      }
+      if (!captured) throw new Error('active child crash query unexpectedly succeeded');
+
+      let recoveryError: { message: string; name: string; queryError?: unknown } | undefined;
+      try {
+        await client.openDeltaTable(
+          'child_crash_recovery',
+          {
+            table_uri: new URL(
+              '/fixtures/browser-datafusion-runtime/active-child-crash-recovery',
+              location.href,
+            ).href,
+            snapshot_version: 0,
+            partition_column_types: {},
+            browser_compatibility: { capabilities: {} },
+            required_capabilities: { capabilities: {} },
+            active_files: [],
+          },
+          { requestId: 'open-after-active-child-crash' },
+        );
+      } catch (error) {
+        const candidate = error as {
+          message?: string;
+          name?: string;
+          queryError?: unknown;
+        };
+        recoveryError = {
+          message: String(candidate.message),
+          name: String(candidate.name),
+          queryError: candidate.queryError,
+        };
+      }
+
+      return {
+        error: captured,
+        publicArrowChunks: rawMessages.filter(
+          (message) => message.arrow_ipc_chunk?.request_id === 'query-active-child-crash',
+        ).length,
+        publicErrors: rawMessages.filter(
+          (message) => message.error?.request_id === 'query-active-child-crash',
+        ).length,
+        publicSuccesses: rawMessages.filter(
+          (message) => message.success?.request_id === 'query-active-child-crash',
+        ).length,
+        recoveryError,
+        responseIds: rawMessages
+          .flatMap((message) => [message.error?.request_id, message.success?.request_id])
+          .filter((value): value is string => value !== undefined),
+      };
+    } finally {
+      client.terminate();
+    }
+  });
+
+  expect(result).toMatchObject({
+    error: {
+      name: 'AxonWorkerError',
+      queryError: { code: 'execution_failed', target: 'browser_wasm' },
+    },
+    publicArrowChunks: 0,
+    publicErrors: 1,
+    publicSuccesses: 0,
+    recoveryError: undefined,
+  });
+});
+
+test('coordinator deadline owns the terminal and replaces a hung child', async ({ page }) => {
+  await page.goto('/');
+
+  const result = await page.evaluate(async () => {
+    type PublicMessage = {
+      coordinator_test_ready?: boolean;
+      opened?: { request_id?: string };
+      error?: {
+        request_id?: string;
+        error?: { code?: string; message?: string; target?: string };
+      };
+      success?: {
+        request_id?: string;
+        preview?: { row_count?: number };
+      };
+    };
+    const worker = new Worker(
+      new URL(
+        '/src/sandbox-query-worker-test-harness.ts?first_child=hang&deadline_ms=40&watchdog_ms=200&max_requests=1',
+        location.href,
+      ),
+      { type: 'module' },
+    );
+    const inbox: PublicMessage[] = [];
+    worker.addEventListener('message', (event: MessageEvent<PublicMessage>) => {
+      inbox.push(event.data);
+    });
+    const waitFor = async (
+      predicate: (message: PublicMessage) => boolean,
+    ): Promise<PublicMessage> => {
+      for (let attempt = 0; attempt < 500; attempt += 1) {
+        const message = inbox.find(predicate);
+        if (message) return message;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error(`timed out waiting for coordinator response: ${JSON.stringify(inbox)}`);
+    };
+    const postSql = (requestId: string): void => {
+      worker.postMessage({
+        sql: {
+          request_id: requestId,
+          name: 'deadline_recovery',
+          query: {
+            table_uri: new URL(
+              '/fixtures/browser-datafusion-runtime/deadline-recovery',
+              location.href,
+            ).href,
+            snapshot_version: 0,
+            sql: 'SELECT * FROM deadline_recovery',
+            preferred_target: 'browser_wasm',
+            options: {},
+          },
+          output: 'arrow_ipc_stream',
+          delivery: 'single_buffer',
+          browser_safe_defaults: true,
+        },
+      });
+    };
+
+    try {
+      await waitFor((message) => message.coordinator_test_ready === true);
+      postSql('query-deadline-watchdog');
+      worker.postMessage({
+        open_delta_table: {
+          request_id: 'open-over-coordinator-capacity',
+          name: 'capacity_probe',
+          snapshot: {
+            table_uri: new URL('/fixtures/browser-datafusion-runtime/capacity-probe', location.href)
+              .href,
+            snapshot_version: 0,
+            partition_column_types: {},
+            browser_compatibility: { capabilities: {} },
+            required_capabilities: { capabilities: {} },
+            active_files: [],
+          },
+        },
+      });
+      const capacity = await waitFor(
+        (message) =>
+          message.error?.request_id === 'open-over-coordinator-capacity' &&
+          message.error.error?.code === 'fallback_required',
+      );
+      const first = await waitFor(
+        (message) =>
+          message.error?.request_id === 'query-deadline-watchdog' &&
+          message.error.error?.message?.includes('deadline exceeded') === true,
+      );
+      postSql('query-deadline-watchdog');
+      const reuseWhileDraining = await waitFor(
+        (message) =>
+          message.error?.request_id === 'query-deadline-watchdog' &&
+          message.error.error?.code === 'invalid_request',
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      worker.postMessage({
+        open_delta_table: {
+          request_id: 'open-after-deadline-watchdog',
+          name: 'deadline_recovery',
+          snapshot: {
+            table_uri: new URL(
+              '/fixtures/browser-datafusion-runtime/deadline-recovery',
+              location.href,
+            ).href,
+            snapshot_version: 0,
+            partition_column_types: {},
+            browser_compatibility: { capabilities: {} },
+            required_capabilities: { capabilities: {} },
+            active_files: [],
+          },
+        },
+      });
+      await waitFor((message) => message.opened?.request_id === 'open-after-deadline-watchdog');
+      postSql('query-deadline-watchdog');
+      const recovered = await waitFor(
+        (message) => message.success?.request_id === 'query-deadline-watchdog',
+      );
+
+      return {
+        capacity: capacity.error?.error,
+        first: first.error?.error,
+        reuseWhileDraining: reuseWhileDraining.error?.error,
+        recoveredRows: recovered.success?.preview?.row_count,
+      };
+    } finally {
+      worker.terminate();
+    }
+  });
+
+  expect(result.first).toMatchObject({
+    code: 'execution_failed',
+    target: 'browser_wasm',
+  });
+  expect(result.capacity).toMatchObject({
+    code: 'fallback_required',
+    target: 'browser_wasm',
+  });
+  expect(result.capacity?.message).toContain('capacity (1) is exhausted');
+  expect(result.first?.message).toContain('deadline exceeded');
+  expect(result.reuseWhileDraining).toMatchObject({
+    code: 'invalid_request',
+    target: 'browser_wasm',
+  });
+  expect(result.reuseWhileDraining?.message).toContain('already active');
+  expect(result.recoveredRows).toBe(0);
 });
 
 test('one-child coordinator bounds queued SQL and recycles a non-settling child', async ({
@@ -716,15 +1072,28 @@ test('one-child coordinator bounds queued SQL and recycles a non-settling child'
   await page.goto('/');
 
   const result = await page.evaluate(async () => {
+    type PublicMessage = {
+      coordinator_test_ready?: boolean;
+    };
     type CapturedError = {
       code?: string;
       message: string;
       name: string;
     };
     const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
-    const worker = new Worker(new URL('/src/sandbox-query-worker.ts', location.href), {
-      type: 'module',
+    const worker = new Worker(
+      new URL(
+        '/src/sandbox-query-worker-test-harness.ts?watchdog_ms=200&max_requests=32',
+        location.href,
+      ),
+      { type: 'module' },
+    );
+    const ready = new Promise<void>((resolve) => {
+      worker.addEventListener('message', (event: MessageEvent<PublicMessage>) => {
+        if (event.data.coordinator_test_ready) resolve();
+      });
     });
+    await ready;
     const client = sdk.createAxonBrowserClient({ worker });
 
     try {
@@ -781,7 +1150,9 @@ test('one-child coordinator bounds queued SQL and recycles a non-settling child'
   expect(result.errors).toHaveLength(33);
   expect(
     result.errors.filter(
-      (error) => error.code === 'invalid_request' && error.message.includes('coordinator capacity'),
+      (error) =>
+        error.code === 'fallback_required' &&
+        error.message.includes('coordinator request capacity'),
     ),
   ).toHaveLength(1);
   expect(
@@ -791,7 +1162,7 @@ test('one-child coordinator bounds queued SQL and recycles a non-settling child'
   ).toHaveLength(1);
   expect(
     result.errors.filter((error) => error.message.includes('browser query session invalidated:')),
-  ).toHaveLength(32);
+  ).toHaveLength(31);
   expect(childLoads).toBeGreaterThanOrEqual(2);
 });
 

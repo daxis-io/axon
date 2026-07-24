@@ -69,6 +69,35 @@ The Daxis M3 browser DataFusion budget profile is checked in at [`../release-gat
 
 `cargo test -p wasm-datafusion-poc --test daxis_budget_profile` keeps the profile parseable, bounded, and tied to the budget, size, smoke, and Daxis corpus verification commands. The full artifact-size command remains a release evidence command because it requires `wasm-bindgen`, `wasm-opt`, `brotli`, and `twiggy`. For the Daxis-facing default worker, run `AXON_DF_SIZE_PACKAGE=axon-web-wasm AXON_DF_SIZE_WASM_STEM=axon_web_wasm AXON_DF_BROTLI_BUDGET_BYTES=6291456 bash tests/perf/report_datafusion_wasm_size.sh`.
 
+## Arrow IPC Cursor Constraints
+
+The shipped worker uses a private Arrow IPC cursor and coordinator while
+preserving the public SDK's atomic `sql()` contract:
+
+- each transferable transport chunk is at most 1 MiB
+- pending encoded storage for one logical input batch is capped at 8 MiB and
+  grows lazily
+- the Daxis total Arrow IPC output limit is a separate 16 MiB budget, so a
+  valid result may exceed 8 MiB in total without requiring an 8 MiB initial
+  allocation
+- browser coordinator staging is capped at 8 MiB and rejects before retaining
+  an excess chunk
+- the public SDK receives no partial result; it reassembles staged chunks only
+  after a successful private terminal
+
+Cursor v0 rejects dictionary-encoded schemas before writer construction,
+including static, replacement, delta, growing, and nested dictionary modes.
+That rejection is a compatibility boundary, not a claim that Arrow cannot
+represent those schemas.
+
+The performance metrics report cursor pending-encoded, cursor transport-chunk,
+and coordinator staging peaks. They do not measure every DataFusion operator or
+total process RSS. `browser_query_performance.sh` runs a cross-origin-isolated
+page in full Chromium, executes 20 atomic queries, records
+`measureUserAgentSpecificMemory()` across the page and both workers, and
+enforces a 16 MiB retained-delta regression gate. That gate is component and
+retention evidence, not an operator-peak or whole-process-RSS bound.
+
 ## Daxis Runtime Isolation Plan
 
 The Daxis M3 runtime isolation plan is checked in at [`../release-gates/daxis-browser-runtime-isolation-plan.json`](../release-gates/daxis-browser-runtime-isolation-plan.json). It records two separate runtime boundaries:

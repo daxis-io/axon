@@ -151,6 +151,9 @@ pub struct QueryRuntimeLimits {
     pub max_preview_string_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_scan_bytes: Option<u64>,
+    /// Maximum physical bytes fetched only for coalescing gaps or unused speculative readahead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_scan_overfetch_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1515,6 +1518,9 @@ pub struct QueryMetricsSummary {
     /// Gap bytes fetched only because nearby logical Parquet ranges were coalesced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coalesced_gap_bytes_fetched: Option<u64>,
+    /// Physical bytes fetched only for coalescing gaps or unused speculative readahead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_overfetch_bytes: Option<u64>,
     /// Parquet footer metadata cache hits observed across bootstrap, inspect, or scan paths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footer_cache_hits: Option<u64>,
@@ -1623,6 +1629,18 @@ pub struct QueryMetricsSummary {
     /// Wall-clock duration of preview construction when tracked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_duration_ms: Option<u64>,
+    /// Peak Arrow IPC bytes retained by the atomic coordinator stage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_peak_staged_bytes: Option<u64>,
+    /// Maximum Arrow IPC bytes the atomic coordinator stage may retain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator_staging_limit_bytes: Option<u64>,
+    /// Peak encoded Arrow IPC bytes awaiting transport from the Rust cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_peak_pending_encoded_bytes: Option<u64>,
+    /// Peak single transport chunk emitted by the Rust cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_peak_transport_chunk_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

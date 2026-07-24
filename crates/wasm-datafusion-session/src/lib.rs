@@ -48,6 +48,7 @@ const PARQUET_DATASET_RUNTIME_VERSION: i64 = 0;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BrowserDataFusionQueryBudget {
     pub max_scan_bytes: Option<u64>,
+    pub max_scan_overfetch_bytes: Option<u64>,
     pub max_output_ipc_bytes: Option<u64>,
     pub max_batches_in_flight: Option<usize>,
     pub max_rows_returned: Option<u64>,
@@ -57,6 +58,7 @@ impl From<BrowserDataFusionQueryBudget> for wasm_datafusion_poc::BrowserQueryBud
     fn from(budget: BrowserDataFusionQueryBudget) -> Self {
         Self {
             max_scan_bytes: budget.max_scan_bytes,
+            max_scan_overfetch_bytes: budget.max_scan_overfetch_bytes,
             max_output_ipc_bytes: budget.max_output_ipc_bytes,
             max_batches_in_flight: budget.max_batches_in_flight,
             max_rows_returned: budget.max_rows_returned,
@@ -1340,6 +1342,7 @@ fn datafusion_query_metrics(
         duplicate_range_reads: Some(range_read_metrics.duplicate_range_reads),
         coalesced_range_reads: Some(range_read_metrics.coalesced_range_reads),
         coalesced_gap_bytes_fetched: Some(range_read_metrics.coalesced_gap_bytes_fetched),
+        scan_overfetch_bytes: Some(range_read_metrics.scan_overfetch_bytes()),
         footer_cache_hits: Some(range_read_metrics.footer_cache_hits),
         footer_cache_misses: Some(range_read_metrics.footer_cache_misses),
         footer_range_reads_avoided: Some(range_read_metrics.footer_range_reads_avoided),
@@ -1380,6 +1383,10 @@ fn datafusion_query_metrics(
         planning_duration_ms: None,
         arrow_ipc_encode_duration_ms: None,
         preview_duration_ms: None,
+        coordinator_peak_staged_bytes: None,
+        coordinator_staging_limit_bytes: None,
+        cursor_peak_pending_encoded_bytes: None,
+        cursor_peak_transport_chunk_bytes: None,
     }
 }
 
@@ -1673,6 +1680,7 @@ fn datafusion_query_budget_from_runtime_config(
         .execution_budget
         .map(|execution_budget| BrowserDataFusionQueryBudget {
             max_scan_bytes: Some(execution_budget.max_bytes),
+            max_scan_overfetch_bytes: None,
             max_output_ipc_bytes: Some(execution_budget.max_bytes),
             max_batches_in_flight: None,
             max_rows_returned: Some(execution_budget.max_rows),
@@ -1692,6 +1700,10 @@ fn datafusion_query_budget_for_request(
         max_scan_bytes: min_optional_budget(
             session_budget.max_scan_bytes,
             request_limits.max_scan_bytes,
+        ),
+        max_scan_overfetch_bytes: min_optional_budget(
+            session_budget.max_scan_overfetch_bytes,
+            request_limits.max_scan_overfetch_bytes,
         ),
         max_output_ipc_bytes: min_optional_budget(
             session_budget.max_output_ipc_bytes,
@@ -1996,6 +2008,7 @@ mod tests {
                 max_arrow_ipc_bytes: Some(1),
                 max_preview_string_bytes: None,
                 max_scan_bytes: None,
+                max_scan_overfetch_bytes: None,
             }),
             ..query_contract::QueryExecutionOptions::default()
         });

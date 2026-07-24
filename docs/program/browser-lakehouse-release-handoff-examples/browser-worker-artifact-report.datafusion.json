@@ -23,13 +23,14 @@
     "default_preview_limit": 501,
     "datafusion_query_budget": {
       "max_scan_bytes": null,
+      "max_scan_overfetch_bytes": null,
       "max_output_ipc_bytes": null,
       "max_batches_in_flight": null,
       "max_rows_returned": null
     }
   },
   "memory": {
-    "datafusion_session_bytes": "304",
+    "datafusion_session_bytes": "408",
     "command_envelope_json_bytes": "233",
     "max_session_cached_bytes": "67108864"
   }

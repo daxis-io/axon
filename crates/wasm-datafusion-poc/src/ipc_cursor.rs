@@ -28,9 +28,9 @@ use wasm_parquet_engine::merge_parquet_range_read_metrics;
 use super::{
     datafusion_metric_from_usize, datafusion_scan_metrics_from_plan, is_query_cancelled_error,
     map_arrow_ipc_error, map_datafusion_error, query_budget_exceeded_error_at,
-    validate_query_budget_for_plan, validate_query_budget_value_option_at, BrowserQueryBudget,
-    BrowserQueryCancellation, DataFusionScanMetricsSummary, ParquetRangeQueryContext,
-    WasmDataFusionEngine,
+    validate_query_budget_for_plan, validate_query_budget_value_option_at,
+    validate_scan_overfetch_budget, BrowserQueryBudget, BrowserQueryCancellation,
+    DataFusionScanMetricsSummary, ParquetRangeQueryContext, WasmDataFusionEngine,
 };
 
 pub const DEFAULT_IPC_TRANSPORT_CHUNK_BYTES: usize = 1024 * 1024;
@@ -281,7 +281,7 @@ struct DrainableIpcSink {
 impl DrainableIpcSink {
     fn new(max_pending: usize, max_total: Option<u64>, faults: Arc<SinkFaultState>) -> Self {
         Self {
-            pending: BytesMut::with_capacity(max_pending),
+            pending: BytesMut::new(),
             max_pending,
             max_total,
             total_encoded: 0,
@@ -307,9 +307,25 @@ impl DrainableIpcSink {
     }
 
     fn reset_if_empty(&mut self) {
-        if self.pending.is_empty() && self.pending.capacity() != self.max_pending {
-            self.pending = BytesMut::with_capacity(self.max_pending);
+        if self.pending.is_empty() && self.pending.capacity() > 0 {
+            self.pending = BytesMut::new();
         }
+    }
+
+    fn grow_for(&mut self, next_pending: usize) {
+        if next_pending <= self.pending.capacity() {
+            return;
+        }
+        let target = self
+            .pending
+            .capacity()
+            .max(64)
+            .saturating_mul(2)
+            .max(next_pending)
+            .min(self.max_pending);
+        let mut pending = BytesMut::with_capacity(target);
+        pending.extend_from_slice(&self.pending);
+        self.pending = pending;
     }
 
     fn reject(&self, error: QueryError) -> io::Error {
@@ -354,6 +370,7 @@ impl Write for DrainableIpcSink {
             )));
         }
 
+        self.grow_for(next_pending);
         self.pending.extend_from_slice(buf);
         self.total_encoded = next_total;
         Ok(buf.len())
@@ -374,7 +391,7 @@ pub struct DataFusionIpcCursor {
     limits: IpcStreamLimits,
     query_budget: BrowserQueryBudget,
     cancel_handle: QueryCancelHandle,
-    legacy_cancellation: BrowserQueryCancellation,
+    query_cancellation: BrowserQueryCancellation,
     pending: PendingLogicalChunk,
     next_sequence: u64,
     next_logical_batch_sequence: u64,
@@ -408,7 +425,7 @@ impl DataFusionIpcCursor {
                 return Ok(Some(IpcCursorItem::Terminal(self.finish_cancelled(status))));
             }
             if let Err(error) = self
-                .legacy_cancellation
+                .query_cancellation
                 .check_cancelled_at("Arrow IPC output")
             {
                 return Ok(Some(IpcCursorItem::Terminal(self.finish_failed(error))));
@@ -614,7 +631,7 @@ impl DataFusionIpcCursor {
         if let Err(error) = writer.write(&batch) {
             return Err(self.take_sink_or_arrow_error(error, "encode Arrow IPC batch"));
         }
-        self.legacy_cancellation
+        self.query_cancellation
             .check_cancelled_at("Arrow IPC batch encoding")?;
         self.record_pending_metrics();
         self.pending = PendingLogicalChunk {
@@ -694,7 +711,6 @@ impl DataFusionIpcCursor {
 
     fn finish_failed(&mut self, error: QueryError) -> QueryTerminal {
         let status = if is_query_cancelled_error(&error) {
-            self.legacy_cancellation.reset();
             QueryTerminalStatus::Cancelled
         } else {
             QueryTerminalStatus::Failed
@@ -703,7 +719,6 @@ impl DataFusionIpcCursor {
     }
 
     fn finish_cancelled(&mut self, status: QueryTerminalStatus) -> QueryTerminal {
-        self.legacy_cancellation.reset();
         let message = match status {
             QueryTerminalStatus::DeadlineExceeded => {
                 "experimental browser DataFusion query deadline exceeded during Arrow IPC cursor pull"
@@ -754,6 +769,11 @@ impl DataFusionIpcCursor {
             "max_scan_bytes",
             scan_metrics.bytes_fetched,
             self.query_budget.max_scan_bytes,
+            "scan stream",
+        )?;
+        validate_scan_overfetch_budget(
+            &scan_metrics.range_read_metrics,
+            self.query_budget,
             "scan stream",
         )?;
         Ok(scan_metrics)
@@ -821,16 +841,11 @@ impl WasmDataFusionEngine {
             ));
         }
 
-        if let Err(error) = self.cancellation_token().check_cancelled_at("SQL planning") {
-            self.cancellation_token().reset();
-            return Err(error);
-        }
-        let (query_ctx, query_context) = self.begin_query_session();
+        let query_cancellation = self.cancellation_token().snapshot();
+        query_cancellation.check_cancelled_at("SQL planning")?;
+        let (query_ctx, query_context) = self.begin_query_session(&query_cancellation);
         let frame = query_ctx.sql(sql).await.map_err(map_datafusion_error)?;
-        if let Err(error) = self.cancellation_token().check_cancelled_at("SQL planning") {
-            self.cancellation_token().reset();
-            return Err(error);
-        }
+        query_cancellation.check_cancelled_at("SQL planning")?;
         let output_schema = frame.schema().inner().clone();
         reject_dictionary_schema(&output_schema)?;
         let task_ctx = query_ctx.task_ctx();
@@ -873,7 +888,7 @@ impl WasmDataFusionEngine {
             limits,
             query_budget: self.query_budget(),
             cancel_handle: QueryCancelHandle::new(),
-            legacy_cancellation: self.cancellation_token(),
+            query_cancellation,
             pending: PendingLogicalChunk {
                 phase: ArrowIpcPhase::Schema,
                 logical_batch_sequence: None,
@@ -977,14 +992,15 @@ impl PreviewBuilder {
     }
 
     fn append(&mut self, batch: &RecordBatch) -> Result<(), QueryError> {
-        for row_index in 0..batch.num_rows() {
-            self.row_count = self
-                .row_count
-                .checked_add(1)
-                .ok_or_else(|| cursor_execution_error("preview row count overflowed u64"))?;
-            if self.rows.len() >= self.row_limit {
-                continue;
-            }
+        let batch_rows = u64::try_from(batch.num_rows())
+            .map_err(|_| cursor_execution_error("preview batch row count overflowed u64"))?;
+        let next_row_count = self
+            .row_count
+            .checked_add(batch_rows)
+            .ok_or_else(|| cursor_execution_error("preview row count overflowed u64"))?;
+        let preview_prefix_len =
+            preview_prefix_len(batch.num_rows(), self.rows.len(), self.row_limit);
+        for row_index in 0..preview_prefix_len {
             let row = batch
                 .columns()
                 .iter()
@@ -1020,6 +1036,7 @@ impl PreviewBuilder {
             self.string_bytes = next_string_bytes;
             self.rows.push(row);
         }
+        self.row_count = next_row_count;
         Ok(())
     }
 
@@ -1033,6 +1050,10 @@ impl PreviewBuilder {
             string_bytes: self.string_bytes,
         }
     }
+}
+
+fn preview_prefix_len(batch_rows: usize, materialized_rows: usize, row_limit: usize) -> usize {
+    row_limit.saturating_sub(materialized_rows).min(batch_rows)
 }
 
 fn preview_value(array: &dyn Array, row_index: usize) -> Value {
@@ -1095,4 +1116,33 @@ fn cursor_execution_error(message: impl Into<String>) -> QueryError {
         message,
         super::runtime_target(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow_schema::{DataType, Field, Fields};
+
+    use super::{contains_dictionary, preview_prefix_len};
+
+    #[test]
+    fn preview_prefix_covers_only_rows_remaining_under_the_limit() {
+        assert_eq!(preview_prefix_len(10, 0, 2), 2);
+        assert_eq!(preview_prefix_len(10, 1, 2), 1);
+        assert_eq!(preview_prefix_len(10, 2, 2), 0);
+        assert_eq!(preview_prefix_len(1, 0, usize::MAX), 1);
+    }
+
+    #[test]
+    fn dictionary_detection_descends_through_nested_output_types() {
+        let dictionary = DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::Utf8));
+        let nested = DataType::Struct(Fields::from(vec![Field::new(
+            "items",
+            DataType::List(Arc::new(Field::new("item", dictionary, true))),
+            true,
+        )]));
+
+        assert!(contains_dictionary(&nested));
+    }
 }

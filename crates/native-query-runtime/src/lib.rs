@@ -749,6 +749,7 @@ fn collect_query_metrics(
         duplicate_range_reads: None,
         coalesced_range_reads: None,
         coalesced_gap_bytes_fetched: None,
+        scan_overfetch_bytes: None,
         footer_cache_hits: None,
         footer_cache_misses: None,
         footer_range_reads_avoided: None,
@@ -785,6 +786,10 @@ fn collect_query_metrics(
         planning_duration_ms: None,
         arrow_ipc_encode_duration_ms: None,
         preview_duration_ms: None,
+        coordinator_peak_staged_bytes: None,
+        coordinator_staging_limit_bytes: None,
+        cursor_peak_pending_encoded_bytes: None,
+        cursor_peak_transport_chunk_bytes: None,
     })
 }
 

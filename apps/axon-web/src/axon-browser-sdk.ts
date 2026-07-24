@@ -91,6 +91,7 @@ export type QueryRuntimeLimits = {
   max_arrow_ipc_bytes?: number;
   max_preview_string_bytes?: number;
   max_scan_bytes?: number;
+  max_scan_overfetch_bytes?: number;
 };
 
 export type QueryRequest = {
@@ -635,6 +636,7 @@ export type QueryMetricsSummary = {
   duplicate_range_reads?: number;
   coalesced_range_reads?: number;
   coalesced_gap_bytes_fetched?: number;
+  scan_overfetch_bytes?: number;
   footer_cache_hits?: number;
   footer_cache_misses?: number;
   footer_range_reads_avoided?: number;
@@ -671,6 +673,10 @@ export type QueryMetricsSummary = {
   planning_duration_ms?: number;
   arrow_ipc_encode_duration_ms?: number;
   preview_duration_ms?: number;
+  coordinator_peak_staged_bytes?: number;
+  coordinator_staging_limit_bytes?: number;
+  cursor_peak_pending_encoded_bytes?: number;
+  cursor_peak_transport_chunk_bytes?: number;
 };
 
 export type QueryResponse = {
@@ -920,6 +926,7 @@ export type BrowserWorkerRangeReadMetricsEvent = {
   duplicate_range_reads?: number;
   coalesced_range_reads?: number;
   coalesced_gap_bytes_fetched?: number;
+  scan_overfetch_bytes?: number;
   footer_cache_hits?: number;
   footer_cache_misses?: number;
   footer_range_reads_avoided?: number;
@@ -956,6 +963,10 @@ export type BrowserWorkerRangeReadMetricsEvent = {
   planning_duration_ms?: number;
   arrow_ipc_encode_duration_ms?: number;
   preview_duration_ms?: number;
+  coordinator_peak_staged_bytes?: number;
+  coordinator_staging_limit_bytes?: number;
+  cursor_peak_pending_encoded_bytes?: number;
+  cursor_peak_transport_chunk_bytes?: number;
 };
 
 export type BrowserWorkerTransportCacheMetrics = {
@@ -4627,6 +4638,26 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
           coalesced_gap_bytes_fetched: optionalNumber(
             payload.coalesced_gap_bytes_fetched,
             'range_read_metrics.coalesced_gap_bytes_fetched',
+          ),
+          scan_overfetch_bytes: optionalNumber(
+            payload.scan_overfetch_bytes,
+            'range_read_metrics.scan_overfetch_bytes',
+          ),
+          coordinator_peak_staged_bytes: optionalNumber(
+            payload.coordinator_peak_staged_bytes,
+            'range_read_metrics.coordinator_peak_staged_bytes',
+          ),
+          coordinator_staging_limit_bytes: optionalNumber(
+            payload.coordinator_staging_limit_bytes,
+            'range_read_metrics.coordinator_staging_limit_bytes',
+          ),
+          cursor_peak_pending_encoded_bytes: optionalNumber(
+            payload.cursor_peak_pending_encoded_bytes,
+            'range_read_metrics.cursor_peak_pending_encoded_bytes',
+          ),
+          cursor_peak_transport_chunk_bytes: optionalNumber(
+            payload.cursor_peak_transport_chunk_bytes,
+            'range_read_metrics.cursor_peak_transport_chunk_bytes',
           ),
           footer_cache_hits: optionalNumber(
             payload.footer_cache_hits,

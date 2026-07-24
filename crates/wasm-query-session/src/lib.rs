@@ -27,6 +27,7 @@ const PARQUET_DATASET_RUNTIME_VERSION: i64 = 0;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BrowserQueryBudget {
     pub max_scan_bytes: Option<u64>,
+    pub max_scan_overfetch_bytes: Option<u64>,
     pub max_output_ipc_bytes: Option<u64>,
     pub max_batches_in_flight: Option<usize>,
     pub max_rows_returned: Option<u64>,
@@ -225,6 +226,7 @@ impl BrowserQuerySession {
             .execute_plan_to_arrow_ipc(&materialized, &plan)
             .await?;
         validate_arrow_result_budget(&runtime_result, query_budget)?;
+        validate_scan_overfetch_budget(&plan, &runtime_result, query_budget)?;
         let explain = if request.options.include_explain {
             Some(format!("{plan:#?}"))
         } else {
@@ -423,6 +425,7 @@ fn query_budget_from_runtime_config(config: &BrowserRuntimeConfig) -> BrowserQue
         .execution_budget
         .map(|execution_budget| BrowserQueryBudget {
             max_scan_bytes: Some(execution_budget.max_bytes),
+            max_scan_overfetch_bytes: None,
             max_output_ipc_bytes: Some(execution_budget.max_bytes),
             max_batches_in_flight: None,
             max_rows_returned: Some(execution_budget.max_rows),
@@ -439,6 +442,10 @@ fn query_budget_for_request(
         max_scan_bytes: min_optional_budget(
             session_budget.max_scan_bytes,
             request_limits.max_scan_bytes,
+        ),
+        max_scan_overfetch_bytes: min_optional_budget(
+            session_budget.max_scan_overfetch_bytes,
+            request_limits.max_scan_overfetch_bytes,
         ),
         max_output_ipc_bytes: min_optional_budget(
             session_budget.max_output_ipc_bytes,
@@ -502,6 +509,26 @@ fn validate_arrow_result_budget(
         }
     }
 
+    Ok(())
+}
+
+fn validate_scan_overfetch_budget(
+    plan: &BrowserExecutionPlan,
+    runtime_result: &RuntimeArrowIpcResult,
+    query_budget: BrowserQueryBudget,
+) -> Result<(), QueryError> {
+    let Some(max_scan_overfetch_bytes) = query_budget.max_scan_overfetch_bytes else {
+        return Ok(());
+    };
+    let scan_overfetch_bytes =
+        execution_range_read_metrics(plan, &runtime_result.scan_metrics).scan_overfetch_bytes();
+    if scan_overfetch_bytes > max_scan_overfetch_bytes {
+        return Err(browser_budget_exceeded_error(
+            "max_scan_overfetch_bytes",
+            scan_overfetch_bytes,
+            max_scan_overfetch_bytes,
+        ));
+    }
     Ok(())
 }
 
@@ -733,6 +760,7 @@ fn execution_metrics(
         duplicate_range_reads: Some(range_read_metrics.duplicate_range_reads),
         coalesced_range_reads: Some(range_read_metrics.coalesced_range_reads),
         coalesced_gap_bytes_fetched: Some(range_read_metrics.coalesced_gap_bytes_fetched),
+        scan_overfetch_bytes: Some(range_read_metrics.scan_overfetch_bytes()),
         footer_cache_hits: Some(range_read_metrics.footer_cache_hits),
         footer_cache_misses: Some(range_read_metrics.footer_cache_misses),
         footer_range_reads_avoided: Some(range_read_metrics.footer_range_reads_avoided),
@@ -773,6 +801,10 @@ fn execution_metrics(
         planning_duration_ms: None,
         arrow_ipc_encode_duration_ms: Some(runtime_result.encode_duration_ms),
         preview_duration_ms: None,
+        coordinator_peak_staged_bytes: None,
+        coordinator_staging_limit_bytes: None,
+        cursor_peak_pending_encoded_bytes: None,
+        cursor_peak_transport_chunk_bytes: None,
     })
 }
 

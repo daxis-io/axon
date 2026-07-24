@@ -2,8 +2,14 @@
 
 set -euo pipefail
 
-package="${AXON_DF_SIZE_PACKAGE:-wasm-datafusion-poc}"
+package="${AXON_DF_SIZE_PACKAGE:-axon-web-wasm}"
 wasm_stem="${AXON_DF_SIZE_WASM_STEM:-${package//-/_}}"
+default_brotli_budget_bytes="6291456"
+if [[ "$package" == "axon-web-wasm" && "$wasm_stem" == "axon_web_wasm" ]]; then
+  brotli_budget_bytes="${AXON_DF_BROTLI_BUDGET_BYTES:-$default_brotli_budget_bytes}"
+else
+  brotli_budget_bytes="${AXON_DF_BROTLI_BUDGET_BYTES:-}"
+fi
 if [[ "${AXON_DF_SIZE_OUT_DIR+x}" == "x" ]]; then
   out_dir="$AXON_DF_SIZE_OUT_DIR"
 else
@@ -104,28 +110,38 @@ cat > "${out_dir}/summary.md" <<SUMMARY
 | gzip -9 of optimized wasm | ${gzip_bytes} |
 | Brotli -q 11 of optimized wasm | ${brotli_bytes} |
 
+Budget:
+
+- Brotli budget bytes: \`${brotli_budget_bytes:-report-only}\`
+
 Additional outputs:
 
 - \`${out_dir}/cargo-tree.txt\`
 - \`${out_dir}/twiggy-top.txt\`
 - \`${out_dir}/twiggy-monos.txt\`
 
-Optional companion smoke report:
+Release companion browser performance report:
 
-- \`bash tests/perf/browser_datafusion_engine_smoke.sh\` records streaming init, first tiny query,
-  repeated tiny query, first Parquet metadata query, first real Delta/Parquet query, and scan metrics.
+- \`bash tests/perf/browser_query_performance.sh\` records browser startup, cold and warm
+  Delta/Parquet query milestones, result bytes, atomic over-limit behavior, exact cursor and
+  coordinator memory bounds, and the post-GC user-agent memory delta across the page and workers.
+
+Host-only diagnostic:
+
+- \`bash tests/perf/browser_datafusion_engine_smoke.sh\` records Rust-side streaming init, tiny
+  query, Parquet metadata, Delta/Parquet query, and scan metrics without claiming browser timing.
 SUMMARY
 
 cat "${out_dir}/summary.md"
 
-if [[ -n "${AXON_DF_BROTLI_BUDGET_BYTES:-}" ]]; then
-  if [[ ! "$AXON_DF_BROTLI_BUDGET_BYTES" =~ ^[0-9]+$ ]]; then
-    echo "AXON_DF_BROTLI_BUDGET_BYTES must be an unsigned integer byte count: ${AXON_DF_BROTLI_BUDGET_BYTES}" >&2
+if [[ -n "$brotli_budget_bytes" ]]; then
+  if [[ ! "$brotli_budget_bytes" =~ ^[0-9]+$ ]]; then
+    echo "AXON_DF_BROTLI_BUDGET_BYTES must be an unsigned integer byte count: ${brotli_budget_bytes}" >&2
     exit 1
   fi
 
-  if (( brotli_bytes > AXON_DF_BROTLI_BUDGET_BYTES )); then
-    echo "DataFusion Brotli budget exceeded: ${brotli_bytes} bytes > ${AXON_DF_BROTLI_BUDGET_BYTES} bytes" >&2
+  if (( brotli_bytes > brotli_budget_bytes )); then
+    echo "DataFusion Brotli budget exceeded: ${brotli_bytes} bytes > ${brotli_budget_bytes} bytes" >&2
     exit 1
   fi
 fi

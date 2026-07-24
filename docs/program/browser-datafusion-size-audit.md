@@ -241,9 +241,12 @@ The current POC proves:
   writes batches as DataFusion yields them instead of collecting the full output first. Budget
   failures return structured `QueryError` values with `FallbackReason::BrowserRuntimeConstraint`;
   cancellation returns a structured browser DataFusion cancellation error.
-- `tests/perf/browser_datafusion_engine_smoke.sh` records optional smoke timings for streaming init,
-  first and repeated tiny queries, first Parquet metadata query, first real Delta/Parquet query, and
-  scan metrics. `tests/perf/report_datafusion_wasm_size.sh` remains the Brotli-size source of truth.
+- `tests/perf/browser_query_performance.sh` records the release-facing Chromium startup, cold and
+  warm Delta/Parquet query milestones, result bytes, atomic over-limit behavior, component-memory
+  counters, and post-GC user-agent memory delta across the page and workers.
+  `tests/perf/browser_datafusion_engine_smoke.sh` retains the equivalent Rust host probes as
+  diagnostic-only timings. `tests/perf/report_datafusion_wasm_size.sh` remains the Brotli-size
+  source of truth.
 - `wasm-query-runtime` can opt into a compiler-boundary lowering spike through its
   `datafusion-planner-poc` feature. That spike is useful scaffolding and a corpus harness, but it is
   no longer the product destination.
@@ -280,6 +283,18 @@ Release-profile matrix, measured with `tests/perf/report_datafusion_wasm_size.sh
 | planner plus optimizer floor | 42,300,914 | 28,444,112 | 5,735,339 | 2,945,395 | Adds optional `datafusion-optimizer` and exported `optimizer_surface_marker_wasm`, retaining the default logical optimizer rule list; `wasm-bindgen` output was 39,236,537 bytes. Confirms planner and optimizer pieces fit inside the emerging engine budget. |
 | planner plus physical-expr floor | 29,153,447 | 19,417,295 | 3,916,000 | 2,113,465 | Adds optional `datafusion-physical-expr` and exported `physical_expr_surface_marker_wasm`, retaining a column physical expression marker; `wasm-bindgen` output was 26,845,560 bytes. Inside the hard gate, but this is only a tiny symbol floor, not evidence for broad physical expression execution. |
 | planner plus physical-plan floor | 29,186,424 | 19,422,327 | 3,907,415 | 2,104,480 | Adds optional `datafusion-physical-plan` and exported `physical_plan_surface_marker_wasm`, retaining `PlaceholderRowExec`; `wasm-bindgen` output was 26,875,287 bytes. Inside the hard gate, but this remains a narrow execution-plan symbol floor rather than a real physical runtime measurement. The wasm compile required a target-only `uuid/js` feature unifier because `datafusion-physical-plan` pulls `datafusion-functions` default string functions, which enable `uuid/v4`. |
+
+Current default-worker measurement on July 23, 2026:
+
+| Variant | Raw wasm | wasm-bindgen | wasm-opt | gzip | Brotli | Budget result |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| inherited speed profile | 97,931,254 | 90,595,008 | 61,742,191 | 13,038,823 | 6,591,104 | Fail by 299,648 bytes (4.76%) |
+| release `opt-level = "z"` final resolution rerun | 45,397,475 | 40,081,640 | 23,450,156 | 6,232,474 | 3,932,517 | Pass with 2,358,939 bytes (37.50%) headroom |
+
+The size-oriented release profile is now the shipped default and the
+`axon-web-wasm` 6,291,456-byte Brotli budget is a recurring pull-request and
+`main` CI gate. The browser performance probe is the companion check for the
+size-versus-runtime tradeoff; host `cargo test` wall time is diagnostic only.
 
 Interpretation:
 

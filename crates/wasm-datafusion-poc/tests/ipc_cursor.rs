@@ -128,6 +128,53 @@ async fn cursor_cancellation_discards_pending_bytes_and_terminates_once() {
 }
 
 #[tokio::test]
+async fn engine_cancel_generation_reaches_every_live_cursor_and_not_later_queries() {
+    let engine = engine_with_string_rows(vec!["payload".repeat(1024)]).await;
+    let mut first = engine
+        .start_arrow_ipc_cursor("SELECT value FROM events", limits(64), false)
+        .await
+        .unwrap();
+    let mut second = engine
+        .start_arrow_ipc_cursor("SELECT value FROM events", limits(64), false)
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        first.next().await.unwrap().unwrap(),
+        IpcCursorItem::Chunk(ref chunk) if chunk.phase == ArrowIpcPhase::Schema
+    ));
+    assert!(matches!(
+        second.next().await.unwrap().unwrap(),
+        IpcCursorItem::Chunk(ref chunk) if chunk.phase == ArrowIpcPhase::Schema
+    ));
+
+    engine.cancel_running_queries();
+
+    let first_terminal = match first.next().await.unwrap().unwrap() {
+        IpcCursorItem::Terminal(terminal) => terminal,
+        item => panic!("first live cursor missed cancel-all: {item:?}"),
+    };
+    let second_terminal = match second.next().await.unwrap().unwrap() {
+        IpcCursorItem::Terminal(terminal) => terminal,
+        item => panic!("second live cursor missed cancel-all: {item:?}"),
+    };
+    assert_eq!(first_terminal.status, QueryTerminalStatus::Cancelled);
+    assert_eq!(second_terminal.status, QueryTerminalStatus::Cancelled);
+
+    let mut later = engine
+        .start_arrow_ipc_cursor("SELECT value FROM events", limits(64), false)
+        .await
+        .expect("a later query must capture the new cancellation generation");
+    let later_terminal = loop {
+        match later.next().await.unwrap().unwrap() {
+            IpcCursorItem::Chunk(_) => {}
+            IpcCursorItem::Terminal(terminal) => break terminal,
+        }
+    };
+    assert_eq!(later_terminal.status, QueryTerminalStatus::Succeeded);
+}
+
+#[tokio::test]
 async fn cursor_total_budget_counts_end_of_stream_and_terminates_once() {
     let engine = engine_with_string_rows(Vec::new()).await;
     let mut measuring_cursor = engine
@@ -205,6 +252,86 @@ async fn cursor_rejects_oversized_retained_batch_before_data_encoding() {
     assert!(terminal.cursor_metrics.peak_input_batch_bytes > 1024);
     assert!(terminal.cursor_metrics.peak_pending_encoded_bytes <= 1024);
     assert!(terminal.cursor_metrics.peak_pending_encoded_capacity <= 1024);
+}
+
+#[tokio::test]
+async fn cursor_grows_pending_storage_lazily_under_separate_total_and_batch_caps() {
+    const PENDING_CAP: usize = 8 * 1024 * 1024;
+    const TOTAL_CAP: u64 = 16 * 1024 * 1024;
+    let engine = engine_with_string_rows(vec!["small".to_string()]).await;
+    let mut stream_limits = limits(1024 * 1024);
+    stream_limits.max_pending_encoded_batch_bytes = PENDING_CAP;
+    stream_limits.max_total_encoded_bytes = Some(TOTAL_CAP);
+    let mut cursor = engine
+        .start_arrow_ipc_cursor("SELECT value FROM events", stream_limits, false)
+        .await
+        .unwrap();
+    let mut terminal = None;
+
+    while let Some(item) = cursor.next().await.unwrap() {
+        if let IpcCursorItem::Terminal(value) = item {
+            terminal = Some(value);
+        }
+    }
+
+    let terminal = terminal.expect("cursor should report one terminal outcome");
+    assert_eq!(terminal.status, QueryTerminalStatus::Succeeded);
+    assert!(terminal.encoded_bytes <= TOTAL_CAP);
+    assert!(terminal.cursor_metrics.peak_pending_encoded_bytes <= PENDING_CAP as u64);
+    assert!(terminal.cursor_metrics.peak_pending_encoded_capacity <= PENDING_CAP as u64);
+    assert!(
+        terminal.cursor_metrics.peak_pending_encoded_capacity < PENDING_CAP as u64,
+        "a small query must not reserve the entire per-batch cap"
+    );
+}
+
+#[tokio::test]
+async fn cursor_allows_output_above_pending_cap_when_each_batch_stays_bounded() {
+    const BATCH_COUNT: usize = 18;
+    const PAYLOAD_BYTES: usize = 512 * 1024;
+    const PENDING_CAP: usize = 8 * 1024 * 1024;
+    const TOTAL_CAP: u64 = 16 * 1024 * 1024;
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "value",
+        arrow_schema::DataType::Utf8,
+        false,
+    )]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(vec!["x".repeat(PAYLOAD_BYTES)]))],
+    )
+    .unwrap();
+    let mut engine = WasmDataFusionEngine::new();
+    engine
+        .register_record_batches("events", schema, vec![batch; BATCH_COUNT])
+        .await
+        .unwrap();
+    let mut cursor = engine
+        .start_arrow_ipc_cursor(
+            "SELECT value FROM events",
+            IpcStreamLimits {
+                max_transport_chunk_bytes: 1024 * 1024,
+                max_pending_encoded_batch_bytes: PENDING_CAP,
+                max_total_encoded_bytes: Some(TOTAL_CAP),
+                preview_rows: 0,
+                max_preview_string_bytes: None,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    let terminal = loop {
+        match cursor.next().await.unwrap().unwrap() {
+            IpcCursorItem::Chunk(_) => {}
+            IpcCursorItem::Terminal(terminal) => break terminal,
+        }
+    };
+
+    assert_eq!(terminal.status, QueryTerminalStatus::Succeeded);
+    assert!(terminal.encoded_bytes > PENDING_CAP as u64);
+    assert!(terminal.encoded_bytes <= TOTAL_CAP);
+    assert!(terminal.cursor_metrics.peak_pending_encoded_bytes <= PENDING_CAP as u64);
+    assert!(terminal.cursor_metrics.peak_pending_encoded_capacity <= PENDING_CAP as u64);
 }
 
 #[tokio::test]

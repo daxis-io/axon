@@ -1,6 +1,5 @@
 import {
   ARROW_IPC_STREAM_CONTENT_TYPE,
-  BROWSER_SAFE_ARROW_IPC_BYTES,
   type BrowserWorkerCancelCommand,
   type BrowserWorkerCommand,
   type BrowserWorkerEventContext,
@@ -18,8 +17,15 @@ import {
   redactUrlSecrets,
 } from './axon-browser-sdk';
 import {
+  CoordinatorQueryLifecycle,
+  MAX_COORDINATOR_REQUESTS,
+  coordinatorHasCapacity,
+  coordinatorMaxArrowIpcBytes,
+} from './sandbox-query-coordinator-policy';
+import {
   PRIVATE_STREAM_PROTOCOL_VERSION,
   QueryStage,
+  QueryStageLimitError,
   requireProtocolVersion,
   requireTerminalMetadata,
   type PrivateChildMessage,
@@ -28,10 +34,7 @@ import {
   type PrivateTerminalStatus,
 } from './sandbox-query-stream-protocol';
 import { isBrowserDataFusionCancellation } from './services/query-cancellation.ts';
-import {
-  appendQuerySessionInvalidation,
-  querySessionInvalidationMessage,
-} from './services/query-session-invalidation.ts';
+import { querySessionInvalidationMessage } from './services/query-session-invalidation.ts';
 
 type DecimalString = string;
 
@@ -51,6 +54,12 @@ type SandboxTerminalMetadata = PrivateTerminalMetadata & {
   preview_string_bytes?: DecimalString;
   preview_duration_ms?: DecimalString;
   cache_metrics?: SandboxCacheMetrics;
+  cursor_metrics?: {
+    peak_input_batch_bytes: DecimalString;
+    peak_pending_encoded_bytes: DecimalString;
+    peak_pending_encoded_capacity: DecimalString;
+    peak_transport_chunk_bytes: DecimalString;
+  };
 };
 
 type PublicWorkerScope = {
@@ -68,25 +77,36 @@ type ActiveCoordinatorQuery = {
   command: BrowserWorkerSqlCommand;
   context: BrowserWorkerEventContext;
   delivery: BrowserWorkerSqlDelivery;
+  lifecycle: CoordinatorQueryLifecycle;
   stage: QueryStage;
-  maxBytes: number;
   deadline: ReturnType<typeof setTimeout>;
-  cancellation?: {
-    reason: 'cancelled' | 'deadline_exceeded';
-    grace: ReturnType<typeof setTimeout>;
-  };
+  watchdog?: ReturnType<typeof setTimeout>;
 };
 
 type PendingForwardedCommand = {
   context: BrowserWorkerEventContext;
 };
 
-const PRIVATE_QUERY_DEADLINE_MS = 120_000;
-const PRIVATE_QUERY_CANCELLATION_GRACE_MS = 1_000;
-const MAX_COORDINATOR_PENDING_COMMANDS = 32;
+type CoordinatorRuntimeConfig = {
+  deadlineMs: number;
+  watchdogMs: number;
+  maxRequests: number;
+  crashOnCommandNumber?: number;
+  firstChildUrl?: string;
+};
+
+type CoordinatorConfiguredScope = PublicWorkerScope & {
+  __AXON_SANDBOX_QUERY_COORDINATOR_TEST_CONFIG__?: Partial<CoordinatorRuntimeConfig>;
+};
+
+const DEFAULT_PRIVATE_QUERY_DEADLINE_MS = 120_000;
+const DEFAULT_PRIVATE_QUERY_WATCHDOG_MS = 5_000;
 const workerScope = self as unknown as PublicWorkerScope;
+const runtimeConfig = coordinatorRuntimeConfig(self as unknown as CoordinatorConfiguredScope);
 const activeQueries = new Map<string, ActiveCoordinatorQuery>();
 const pendingForwardedCommands = new Map<string, PendingForwardedCommand>();
+let childCreationCount = 0;
+let coordinatorCommandCount = 0;
 let child = createChild();
 
 workerScope.addEventListener('message', (event) => {
@@ -113,13 +133,20 @@ function forwardCommand(command: BrowserWorkerCommand): void {
     );
     return;
   }
-  if (!hasCoordinatorCapacity()) {
+  if (
+    !coordinatorHasCapacity(
+      activeQueries.size,
+      pendingForwardedCommands.size,
+      runtimeConfig.maxRequests,
+    )
+  ) {
     postQueryError(
       requestId,
       context,
       queryError(
-        'invalid_request',
-        `browser query coordinator capacity ${MAX_COORDINATOR_PENDING_COMMANDS} exceeded`,
+        'fallback_required',
+        `browser coordinator request capacity (${runtimeConfig.maxRequests}) is exhausted`,
+        'browser_runtime_constraint',
       ),
     );
     return;
@@ -133,7 +160,13 @@ function forwardCommand(command: BrowserWorkerCommand): void {
 }
 
 function createChild(): Worker {
-  const next = new Worker(new URL('./sandbox-query-child-worker.ts', import.meta.url), {
+  const configuredFirstChildUrl =
+    childCreationCount === 0 ? runtimeConfig.firstChildUrl : undefined;
+  childCreationCount += 1;
+  const childUrl = configuredFirstChildUrl
+    ? new URL(configuredFirstChildUrl)
+    : new URL('./sandbox-query-child-worker.ts', import.meta.url);
+  const next = new Worker(childUrl, {
     type: 'module',
     name: 'axon-sandbox-query-child',
   });
@@ -164,13 +197,20 @@ function startCoordinatedQuery(command: BrowserWorkerSqlCommand): void {
     );
     return;
   }
-  if (!hasCoordinatorCapacity()) {
+  if (
+    !coordinatorHasCapacity(
+      activeQueries.size,
+      pendingForwardedCommands.size,
+      runtimeConfig.maxRequests,
+    )
+  ) {
     postQueryError(
       queryId,
       context,
       queryError(
-        'invalid_request',
-        `browser query coordinator capacity ${MAX_COORDINATOR_PENDING_COMMANDS} exceeded`,
+        'fallback_required',
+        `browser coordinator request capacity (${runtimeConfig.maxRequests}) is exhausted`,
+        'browser_runtime_constraint',
       ),
     );
     return;
@@ -184,22 +224,39 @@ function startCoordinatedQuery(command: BrowserWorkerSqlCommand): void {
     );
     return;
   }
-  const requestedMax = command.query.options?.runtime_limits?.max_arrow_ipc_bytes;
-  const maxBytes =
-    typeof requestedMax === 'number' && Number.isSafeInteger(requestedMax) && requestedMax > 0
-      ? Math.min(requestedMax, BROWSER_SAFE_ARROW_IPC_BYTES)
-      : BROWSER_SAFE_ARROW_IPC_BYTES;
+  let maxBytes: number;
+  try {
+    maxBytes = coordinatorMaxArrowIpcBytes(command);
+  } catch (error) {
+    postQueryError(
+      queryId,
+      context,
+      queryError('invalid_request', error instanceof Error ? error.message : String(error)),
+    );
+    return;
+  }
   const deadline = setTimeout(() => {
-    requestQueryCancellation(queryId, 'deadline_exceeded');
-  }, PRIVATE_QUERY_DEADLINE_MS);
-  activeQueries.set(queryId, {
+    const active = activeQueries.get(queryId);
+    if (!active) return;
+    beginAuthoritativeDrain(
+      active,
+      'deadline_exceeded',
+      queryError(
+        'execution_failed',
+        'browser DataFusion query deadline exceeded in the coordinator',
+      ),
+      'deadline_exceeded',
+    );
+  }, runtimeConfig.deadlineMs);
+  const active: ActiveCoordinatorQuery = {
     command,
     context,
     delivery,
-    stage: new QueryStage(queryId),
-    maxBytes,
+    lifecycle: new CoordinatorQueryLifecycle(),
+    stage: new QueryStage(queryId, maxBytes),
     deadline,
-  });
+  };
+  activeQueries.set(queryId, active);
   postToChild({
     kind: 'command',
     version: PRIVATE_STREAM_PROTOCOL_VERSION,
@@ -209,29 +266,17 @@ function startCoordinatedQuery(command: BrowserWorkerSqlCommand): void {
 
 function handleCancel(command: BrowserWorkerCancelCommand): void {
   const queryId = command.query_id ?? command.request_id;
-  requestQueryCancellation(queryId, 'cancelled');
-}
-
-function requestQueryCancellation(
-  queryId: string,
-  reason: 'cancelled' | 'deadline_exceeded',
-): void {
   const active = activeQueries.get(queryId);
-  if (!active || active.cancellation) return;
-  postToChild({
-    kind: 'cancel',
-    version: PRIVATE_STREAM_PROTOCOL_VERSION,
-    query_id: queryId,
-    reason,
-  });
-  active.cancellation = {
-    reason,
-    grace: setTimeout(() => {
-      const current = activeQueries.get(queryId);
-      if (!current || current.cancellation?.reason !== reason) return;
-      recycleAfterUnconfirmedCancellation(queryId, reason);
-    }, PRIVATE_QUERY_CANCELLATION_GRACE_MS),
-  };
+  if (!active) return;
+  beginAuthoritativeDrain(
+    active,
+    'cancelled',
+    queryError(
+      'execution_failed',
+      'experimental browser DataFusion query cancelled in the coordinator',
+    ),
+    'cancelled',
+  );
 }
 
 function handleChildMessage(message: PrivateChildMessage): void {
@@ -246,15 +291,13 @@ function handleChildMessage(message: PrivateChildMessage): void {
     }
     const active = activeQueries.get(message.query_id);
     if (!active) return;
+    if (active.lifecycle.state === 'draining') {
+      if (message.kind !== 'stream_chunk') finishActiveQuery(message.query_id);
+      return;
+    }
 
     if (message.kind === 'stream_chunk') {
       const credit = active.stage.stage(message);
-      if (active.stage.stagedByteLength > active.maxBytes) {
-        throw queryError(
-          'execution_failed',
-          `resource limit runtime_limits.max_arrow_ipc_bytes exceeded: actual ${active.stage.stagedByteLength}, limit ${active.maxBytes}`,
-        );
-      }
       postToChild({
         kind: 'credit',
         version: PRIVATE_STREAM_PROTOCOL_VERSION,
@@ -269,6 +312,7 @@ function handleChildMessage(message: PrivateChildMessage): void {
       finishFromTerminal(active, message.metadata);
       return;
     }
+    if (!active.lifecycle.beginDrain('failed')) return;
     active.stage.discard();
     postQueryError(message.query_id, active.context, message.error);
     finishActiveQuery(message.query_id);
@@ -277,15 +321,14 @@ function handleChildMessage(message: PrivateChildMessage): void {
     if (!queryId) return;
     const active = activeQueries.get(queryId);
     if (!active) return;
-    active.stage.discard();
-    postToChild({
-      kind: 'cancel',
-      version: PRIVATE_STREAM_PROTOCOL_VERSION,
-      query_id: queryId,
-      reason: 'cancelled',
-    });
-    postQueryError(queryId, active.context, normalizeQueryError(error));
-    finishActiveQuery(queryId);
+    beginAuthoritativeDrain(
+      active,
+      'failed',
+      error instanceof QueryStageLimitError
+        ? queryError('fallback_required', error.message, 'browser_runtime_constraint')
+        : normalizeQueryError(error),
+      'cancelled',
+    );
   }
 }
 
@@ -296,6 +339,7 @@ function finishFromTerminal(
   requireTerminalMetadata(metadataValue);
   const metadata = metadataValue as SandboxTerminalMetadata;
   if (metadata.status !== 'succeeded') {
+    if (!active.lifecycle.beginDrain(metadata.status)) return;
     active.stage.discard();
     const error =
       metadata.error ??
@@ -315,8 +359,10 @@ function finishFromTerminal(
   let chunks: Uint8Array[];
   try {
     chunks = active.stage.commit(metadata);
+    if (!active.lifecycle.beginDrain('succeeded')) return;
     commitSuccessfulQuery(active, metadata, chunks);
   } catch (error) {
+    active.lifecycle.beginDrain('failed');
     active.stage.discard();
     postQueryError(active.command.request_id, active.context, normalizeQueryError(error));
   } finally {
@@ -329,7 +375,12 @@ function commitSuccessfulQuery(
   metadata: SandboxTerminalMetadata,
   chunks: Uint8Array[],
 ): void {
-  if (!metadata.response || !metadata.preview || !metadata.cache_metrics) {
+  if (
+    !metadata.response ||
+    !metadata.preview ||
+    !metadata.cache_metrics ||
+    !metadata.cursor_metrics
+  ) {
     throw queryError('execution_failed', 'successful child terminal omitted response metadata');
   }
   const arrowIpcByteLength = decimalNumber(metadata.arrow_ipc_byte_length);
@@ -347,6 +398,14 @@ function commitSuccessfulQuery(
       preview_rows: preview.rows.length,
       preview_string_bytes: previewStringBytes,
       preview_duration_ms: previewDurationMs,
+      coordinator_peak_staged_bytes: active.stage.peakStagedByteLength,
+      coordinator_staging_limit_bytes: active.stage.stagingLimitBytes,
+      cursor_peak_pending_encoded_bytes: decimalNumber(
+        metadata.cursor_metrics.peak_pending_encoded_bytes,
+      ),
+      cursor_peak_transport_chunk_bytes: decimalNumber(
+        metadata.cursor_metrics.peak_transport_chunk_bytes,
+      ),
     },
   };
 
@@ -451,67 +510,57 @@ function requireExactSizedChunk(chunk: Uint8Array): void {
   }
 }
 
+function beginAuthoritativeDrain(
+  active: ActiveCoordinatorQuery,
+  status: PrivateTerminalStatus,
+  error: QueryError,
+  cancelReason: 'cancelled' | 'deadline_exceeded',
+): void {
+  if (!active.lifecycle.beginDrain(status)) return;
+  clearTimeout(active.deadline);
+  active.stage.discard();
+  postQueryError(active.command.request_id, active.context, error, status);
+  postToChild({
+    kind: 'cancel',
+    version: PRIVATE_STREAM_PROTOCOL_VERSION,
+    query_id: active.command.request_id,
+    reason: cancelReason,
+  });
+  active.watchdog = setTimeout(() => {
+    const current = activeQueries.get(active.command.request_id);
+    if (current !== active || active.lifecycle.state !== 'draining') return;
+    handleChildCrash(
+      `sandbox query child did not drain '${active.command.request_id}' within ${runtimeConfig.watchdogMs}ms`,
+    );
+  }, runtimeConfig.watchdogMs);
+}
+
 function finishActiveQuery(queryId: string): void {
   const active = activeQueries.get(queryId);
   if (!active) return;
   clearTimeout(active.deadline);
-  if (active.cancellation) clearTimeout(active.cancellation.grace);
+  if (active.watchdog) clearTimeout(active.watchdog);
+  if (active.lifecycle.state === 'draining') active.lifecycle.finishDrain();
   activeQueries.delete(queryId);
-}
-
-function recycleAfterUnconfirmedCancellation(
-  queryId: string,
-  reason: 'cancelled' | 'deadline_exceeded',
-): void {
-  const invalidationReason = 'child did not confirm cancellation before the grace period expired';
-  const primaryError =
-    reason === 'cancelled'
-      ? queryError(
-          'execution_failed',
-          appendQuerySessionInvalidation(
-            'experimental browser DataFusion query cancelled while awaiting worker confirmation',
-            invalidationReason,
-          ),
-        )
-      : queryError(
-          'execution_failed',
-          appendQuerySessionInvalidation(
-            'browser DataFusion query deadline exceeded while awaiting worker confirmation',
-            invalidationReason,
-          ),
-        );
-  recycleChild(invalidationReason, {
-    queryId,
-    error: primaryError,
-    status: reason,
-  });
 }
 
 function handleChildCrash(invalidationReason: string): void {
   recycleChild(invalidationReason);
 }
 
-function recycleChild(
-  invalidationReason: string,
-  primary?: {
-    queryId: string;
-    error: QueryError;
-    status: PrivateTerminalStatus;
-  },
-): void {
+function recycleChild(invalidationReason: string): void {
   const invalidationError = queryError(
     'execution_failed',
     querySessionInvalidationMessage(invalidationReason),
   );
   for (const [queryId, active] of activeQueries) {
     active.stage.discard();
-    if (primary?.queryId === queryId) {
-      postQueryError(queryId, active.context, primary.error, primary.status);
-    } else {
+    if (active.lifecycle.beginDrain('failed')) {
       postQueryError(queryId, active.context, invalidationError);
     }
     clearTimeout(active.deadline);
-    if (active.cancellation) clearTimeout(active.cancellation.grace);
+    if (active.watchdog) clearTimeout(active.watchdog);
+    if (active.lifecycle.state === 'draining') active.lifecycle.finishDrain();
   }
   activeQueries.clear();
   for (const [requestId, pending] of pendingForwardedCommands) {
@@ -523,8 +572,31 @@ function recycleChild(
   previousChild.terminate();
 }
 
-function hasCoordinatorCapacity(): boolean {
-  return activeQueries.size + pendingForwardedCommands.size < MAX_COORDINATOR_PENDING_COMMANDS;
+function coordinatorRuntimeConfig(scope: CoordinatorConfiguredScope): CoordinatorRuntimeConfig {
+  const configured = scope.__AXON_SANDBOX_QUERY_COORDINATOR_TEST_CONFIG__;
+  return {
+    deadlineMs: configuredPositiveInteger(
+      configured?.deadlineMs,
+      DEFAULT_PRIVATE_QUERY_DEADLINE_MS,
+    ),
+    watchdogMs: configuredPositiveInteger(
+      configured?.watchdogMs,
+      DEFAULT_PRIVATE_QUERY_WATCHDOG_MS,
+    ),
+    maxRequests: configuredPositiveInteger(configured?.maxRequests, MAX_COORDINATOR_REQUESTS),
+    ...(typeof configured?.crashOnCommandNumber === 'number'
+      ? {
+          crashOnCommandNumber: configuredPositiveInteger(configured.crashOnCommandNumber, 1),
+        }
+      : {}),
+    ...(typeof configured?.firstChildUrl === 'string'
+      ? { firstChildUrl: configured.firstChildUrl }
+      : {}),
+  };
+}
+
+function configuredPositiveInteger(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
 function postQueryError(
@@ -540,6 +612,12 @@ function postQueryError(
 
 function postToChild(message: PrivateCoordinatorMessage): void {
   child.postMessage(message);
+  if (message.kind === 'command') {
+    coordinatorCommandCount += 1;
+    if (runtimeConfig.crashOnCommandNumber === coordinatorCommandCount) {
+      handleChildCrash('injected sandbox query child crash');
+    }
+  }
 }
 
 function normalizePreview(preview: SandboxWireResultPreview): BrowserWorkerResultPreview {
@@ -581,6 +659,7 @@ function emitRangeReadMetrics(
       duplicate_range_reads: metrics.duplicate_range_reads,
       coalesced_range_reads: metrics.coalesced_range_reads,
       coalesced_gap_bytes_fetched: metrics.coalesced_gap_bytes_fetched,
+      scan_overfetch_bytes: metrics.scan_overfetch_bytes,
       footer_cache_hits: metrics.footer_cache_hits,
       footer_cache_misses: metrics.footer_cache_misses,
       footer_range_reads_avoided: metrics.footer_range_reads_avoided,
@@ -617,6 +696,10 @@ function emitRangeReadMetrics(
       planning_duration_ms: metrics.planning_duration_ms,
       arrow_ipc_encode_duration_ms: metrics.arrow_ipc_encode_duration_ms,
       preview_duration_ms: metrics.preview_duration_ms,
+      coordinator_peak_staged_bytes: metrics.coordinator_peak_staged_bytes,
+      coordinator_staging_limit_bytes: metrics.coordinator_staging_limit_bytes,
+      cursor_peak_pending_encoded_bytes: metrics.cursor_peak_pending_encoded_bytes,
+      cursor_peak_transport_chunk_bytes: metrics.cursor_peak_transport_chunk_bytes,
     },
   });
 }

@@ -34,6 +34,12 @@ export type PrivateTerminalMetadata = {
   preview?: unknown;
   arrow_ipc_byte_length: string;
   row_count: string;
+  cursor_metrics?: {
+    peak_input_batch_bytes: string;
+    peak_pending_encoded_bytes: string;
+    peak_pending_encoded_capacity: string;
+    peak_transport_chunk_bytes: string;
+  };
   [key: string]: unknown;
 };
 
@@ -86,6 +92,18 @@ export type StagedCredit = {
   credit_class: PrivateCreditClass;
   byte_length: number;
 };
+
+export class QueryStageLimitError extends Error {
+  readonly observedBytes: number;
+  readonly limitBytes: number;
+
+  constructor(observedBytes: number, limitBytes: number) {
+    super(`private stream staging limit exceeded (${observedBytes} > ${limitBytes})`);
+    this.name = 'QueryStageLimitError';
+    this.observedBytes = observedBytes;
+    this.limitBytes = limitBytes;
+  }
+}
 
 export type CreditReservation = {
   creditClass: PrivateCreditClass;
@@ -210,16 +228,30 @@ export class QueryStage {
   #expectedDataFragment = 0n;
   #lastRowsCompleted = 0n;
   #stagedByteLength = 0;
+  #peakStagedByteLength = 0;
+  readonly #stagingLimitBytes: number;
   #discarded = false;
   #committed = false;
 
-  constructor(queryId: string) {
+  constructor(queryId: string, stagingLimitBytes = Number.MAX_SAFE_INTEGER) {
     if (!queryId) throw new Error('private stream query id must not be empty');
+    if (!Number.isSafeInteger(stagingLimitBytes) || stagingLimitBytes <= 0) {
+      throw new Error('private stream staging limit must be a positive safe integer');
+    }
     this.queryId = queryId;
+    this.#stagingLimitBytes = stagingLimitBytes;
   }
 
   get stagedByteLength(): number {
     return this.#stagedByteLength;
+  }
+
+  get peakStagedByteLength(): number {
+    return this.#peakStagedByteLength;
+  }
+
+  get stagingLimitBytes(): number {
+    return this.#stagingLimitBytes;
   }
 
   stage(chunk: PrivateStreamChunk): StagedCredit {
@@ -250,14 +282,18 @@ export class QueryStage {
     }
 
     const creditClass = chunk.phase === 'data' ? 'data' : 'control';
-    this.#validatePhase(chunk);
     const byteLength = chunk.bytes.byteLength;
     const nextLength = this.#stagedByteLength + byteLength;
     if (!Number.isSafeInteger(nextLength)) {
       throw new Error('private stream staged byte length overflowed a safe integer');
     }
+    if (nextLength > this.#stagingLimitBytes) {
+      throw new QueryStageLimitError(nextLength, this.#stagingLimitBytes);
+    }
+    this.#validatePhase(chunk);
     this.#chunks.push(chunk.bytes);
     this.#stagedByteLength = nextLength;
+    this.#peakStagedByteLength = Math.max(this.#peakStagedByteLength, nextLength);
     this.#expectedSequence += 1n;
     if (chunk.end_of_logical_batch) this.#lastRowsCompleted = chunk.rows_completed;
     return { credit_class: creditClass, byte_length: byteLength };

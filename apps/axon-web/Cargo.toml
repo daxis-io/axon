@@ -11,12 +11,18 @@ crate-type = ["cdylib", "rlib"]
 [features]
 fixture-generator = [
   "dep:deltalake",
+  "dep:sha2",
   "dep:tokio",
 ]
 
 [[bin]]
 name = "generate-prod-fixture"
 path = "src/bin/generate_prod_fixture.rs"
+required-features = ["fixture-generator"]
+
+[[bin]]
+name = "generate-s3-perf-fixture"
+path = "src/bin/generate_s3_perf_fixture.rs"
 required-features = ["fixture-generator"]
 
 [dependencies]
@@ -38,4 +44,5 @@ wasm-query-runtime = { path = "../../crates/wasm-query-runtime" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 deltalake = { version = "=0.32.4", features = ["datafusion"], optional = true }
+sha2 = { version = "=0.10.9", optional = true }
 tokio = { version = "=1.52.3", features = ["macros", "rt-multi-thread"], optional = true }

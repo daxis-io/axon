@@ -339,6 +339,7 @@ fn session_sql_enforces_request_runtime_limits() {
             max_arrow_ipc_bytes: None,
             max_preview_string_bytes: None,
             max_scan_bytes: None,
+            max_scan_overfetch_bytes: None,
         }),
         ..QueryExecutionOptions::default()
     });
@@ -388,6 +389,7 @@ fn session_sql_enforces_request_scan_runtime_limits_before_execution() {
             max_arrow_ipc_bytes: None,
             max_preview_string_bytes: None,
             max_scan_bytes: Some(1),
+            max_scan_overfetch_bytes: None,
         }),
         ..QueryExecutionOptions::default()
     });

@@ -1,4 +1,4 @@
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
@@ -81,6 +81,17 @@ type PublicS3EvidenceBase = {
   browser_name: string;
   base_url: string;
   region: string;
+  fixture_provenance?: PublicS3FixtureProvenance;
+};
+type PublicS3FixtureProvenance = {
+  fixture_revision: string;
+  table_uri: string;
+  region: string;
+  manifest_sha256: string;
+  object_checksums_sha256: string;
+  required_object_count: number;
+  active_file_count: number;
+  active_data_bytes: number;
 };
 type PublicS3PerformanceEvidence = PublicS3EvidenceBase & {
   metrics: ProjectedLiveMetrics;
@@ -92,6 +103,17 @@ type PublicS3PerformanceEvidence = PublicS3EvidenceBase & {
 type PublicS3RepeatEvidence = PublicS3EvidenceBase & {
   repeat_count: number;
   runs: PublicS3LiveRunEvidence[];
+};
+
+const pinnedFixtureProvenance: PublicS3FixtureProvenance = {
+  fixture_revision: 's3-browser-perf-v1',
+  table_uri: 's3://axon-public-s3-fixture-452456948477/fixtures/s3-browser-perf/table',
+  region: 'us-east-2',
+  manifest_sha256: '18d1c4c3b5e1ce78ce156ce51247a94a46e44401cad9688ec0d14ceaa01b6ab3',
+  object_checksums_sha256: '05f6c5823a88c49559eef70072165b584dfe3c320ae8a435c6f6f82f30d719a9',
+  required_object_count: 21,
+  active_file_count: 8,
+  active_data_bytes: 82_057_700,
 };
 
 const exampleLiveMetrics: LiveMetricsInput = {
@@ -275,6 +297,28 @@ test('public S3 performance evidence preserves comparison metrics', () => {
   });
 });
 
+test('public S3 performance evidence identifies the pinned fixture revision', async () => {
+  const evidence = buildPublicS3PerformanceEvidence({
+    tableUri: `${pinnedFixtureProvenance.table_uri}?X-Amz-Signature=secret`,
+    tableName: 'table',
+    browserName: 'chromium',
+    baseURL: 'https://127.0.0.1:5173',
+    region: pinnedFixtureProvenance.region,
+    metrics: exampleLiveMetrics,
+  });
+  const trackedProvenance = JSON.parse(
+    await readFile(
+      new URL('../public/fixtures/s3-perf/s3-perf-provenance.json', import.meta.url),
+      'utf8',
+    ),
+  ) as PublicS3FixtureProvenance;
+
+  expect(evidence.fixture_provenance).toEqual(pinnedFixtureProvenance);
+  expect(trackedProvenance).toMatchObject(pinnedFixtureProvenance);
+  expect(JSON.stringify(evidence)).not.toContain('X-Amz-Signature');
+  expect(JSON.stringify(evidence)).not.toContain('secret');
+});
+
 test('public S3 live evidence requires finite nonnegative cache, readahead, and IPC metrics', () => {
   const requiredComparisonMetricKeys = [
     'range_cache_hits',
@@ -444,6 +488,7 @@ LIMIT 1000
     expect(evidence.metrics.bytes_fetched).toBeGreaterThan(0);
     expect(evidence.metrics.scan_data_range_reads).toBeGreaterThan(0);
     expect(evidence.metrics.rows_emitted).toBeGreaterThan(0);
+    expect(evidence.fixture_provenance).toEqual(pinnedFixtureProvenance);
     const artifactPath = testInfo.outputPath('public-s3-live-uat-evidence.json');
     await writeFile(artifactPath, `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
     await testInfo.attach('public-s3-live-uat-evidence', {
@@ -609,12 +654,19 @@ function buildEvidenceBase(input: {
   baseURL: string;
   region: string;
 }): PublicS3EvidenceBase {
+  const tableUri = redactTableUri(input.tableUri);
+  const fixtureProvenance =
+    tableUri === pinnedFixtureProvenance.table_uri &&
+    input.region === pinnedFixtureProvenance.region
+      ? pinnedFixtureProvenance
+      : undefined;
   return {
-    table_uri: redactTableUri(input.tableUri),
+    table_uri: tableUri,
     table_name: input.tableName,
     browser_name: input.browserName,
     base_url: input.baseURL,
     region: input.region,
+    ...(fixtureProvenance === undefined ? {} : { fixture_provenance: fixtureProvenance }),
   };
 }
 
