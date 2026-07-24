@@ -13,7 +13,9 @@ const liveRegion = process.env.AXON_LIVE_PUBLIC_S3_REGION;
 const liveOrigin =
   process.env.AXON_LIVE_PUBLIC_S3_ORIGIN ??
   new URL(process.env.PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:5173').origin;
-const rangeReadMetricsCaptureKey = '__AXON_PUBLIC_S3_RANGE_READ_METRICS__';
+const queryEvidenceCaptureKey = '__AXON_PUBLIC_S3_QUERY_EVIDENCE__';
+const browserSafeCursorPendingEncodedBytes = 8 * 1024 * 1024;
+const browserSafeCursorTransportChunkBytes = 1024 * 1024;
 const requiredLiveMetricKeys = [
   'bytes_fetched',
   'bootstrap_footer_range_reads',
@@ -22,6 +24,7 @@ const requiredLiveMetricKeys = [
   'duplicate_range_reads',
   'coalesced_range_reads',
   'coalesced_gap_bytes_fetched',
+  'scan_overfetch_bytes',
   'footer_cache_hits',
   'footer_cache_misses',
   'footer_range_reads_avoided',
@@ -39,42 +42,118 @@ const requiredLiveMetricKeys = [
   'range_readahead_wasted_bytes',
   'rows_emitted',
   'arrow_ipc_bytes',
+  'arrow_ipc_chunk_count',
+  'coordinator_peak_staged_bytes',
+  'coordinator_staging_limit_bytes',
+  'cursor_peak_pending_encoded_bytes',
+  'cursor_peak_transport_chunk_bytes',
 ] as const;
-const optionalLiveMetricKeys = ['arrow_ipc_chunk_count'] as const;
-const comparisonMetricKeys = [
-  'bytes_fetched',
-  'scan_data_range_reads',
-  'coalesced_range_reads',
-  'range_cache_bytes_reused',
-  'range_readahead_bytes_fetched',
-  'range_readahead_bytes_used',
-  'range_readahead_wasted_bytes',
-  'rows_emitted',
-  'arrow_ipc_bytes',
-] as const;
+const comparisonMetricKeys = requiredLiveMetricKeys;
 
 type RequiredLiveMetricKey = (typeof requiredLiveMetricKeys)[number];
-type OptionalLiveMetricKey = (typeof optionalLiveMetricKeys)[number];
 type ComparisonMetricKey = (typeof comparisonMetricKeys)[number];
-type LiveMetricsInput = Partial<Record<RequiredLiveMetricKey | OptionalLiveMetricKey, number>>;
-const preCacheComparison: Record<ComparisonMetricKey, number | null> = {
+type LiveMetricsInput = Partial<Record<RequiredLiveMetricKey, number>>;
+type ComparisonMetrics = Record<ComparisonMetricKey, number | null>;
+type ProjectedOwnedMemory = {
+  coordinator: {
+    limit_bytes: number;
+    reserved_bytes: number;
+    staged_bytes: number;
+    peak_reserved_bytes: number;
+    peak_staged_bytes: number;
+  };
+  datafusion: {
+    limit_bytes: number;
+    reserved_bytes: number;
+    peak_bytes: number;
+  };
+};
+type ProjectedExecution = {
+  executed_on: 'browser_wasm';
+  fallback_event_observed: false;
+  response_fallback_reason: null;
+};
+type CapturedQueryEvidence = {
+  metrics: LiveMetricsInput;
+  ownedMemory: unknown;
+  execution: unknown;
+};
+const currentMainBaseCommit = 'ee6a430afe99144c5e5780952b45a335d15e89c3';
+const verified20260716ArtifactSha256 =
+  '0dbda0ae8f7018f739fbaf57897aebc1dfa5083927c8bc6691f9a494424a7152';
+const pinnedFixtureRowCount = 1_048_576;
+const preCacheComparison: ComparisonMetrics = {
   bytes_fetched: 22_677_645,
+  bootstrap_footer_range_reads: null,
+  scan_footer_range_reads: null,
   scan_data_range_reads: 160,
+  duplicate_range_reads: null,
   coalesced_range_reads: 32,
+  coalesced_gap_bytes_fetched: null,
+  scan_overfetch_bytes: null,
+  footer_cache_hits: null,
+  footer_cache_misses: null,
+  footer_range_reads_avoided: null,
+  identity_present_range_reads: null,
+  identity_missing_range_reads: null,
+  range_cache_hits: null,
+  range_cache_misses: null,
   range_cache_bytes_reused: null,
+  range_cache_bytes_stored: null,
+  range_cache_validation_misses: null,
+  range_cache_degraded_identity_reads: null,
+  range_readahead_requests: null,
   range_readahead_bytes_fetched: null,
   range_readahead_bytes_used: null,
   range_readahead_wasted_bytes: null,
   rows_emitted: 1_048_576,
   arrow_ipc_bytes: 36_744,
+  arrow_ipc_chunk_count: null,
+  coordinator_peak_staged_bytes: null,
+  coordinator_staging_limit_bytes: null,
+  cursor_peak_pending_encoded_bytes: null,
+  cursor_peak_transport_chunk_bytes: null,
+};
+const verified20260716Comparison: ComparisonMetrics = {
+  bytes_fetched: 22_677_645,
+  bootstrap_footer_range_reads: 16,
+  scan_footer_range_reads: 0,
+  scan_data_range_reads: 160,
+  duplicate_range_reads: 0,
+  coalesced_range_reads: 32,
+  coalesced_gap_bytes_fetched: 0,
+  scan_overfetch_bytes: null,
+  footer_cache_hits: 8,
+  footer_cache_misses: 8,
+  footer_range_reads_avoided: 16,
+  identity_present_range_reads: 160,
+  identity_missing_range_reads: 16,
+  range_cache_hits: 0,
+  range_cache_misses: 128,
+  range_cache_bytes_reused: 0,
+  range_cache_bytes_stored: 22_677_645,
+  range_cache_validation_misses: 0,
+  range_cache_degraded_identity_reads: 0,
+  range_readahead_requests: 0,
+  range_readahead_bytes_fetched: 0,
+  range_readahead_bytes_used: 0,
+  range_readahead_wasted_bytes: 0,
+  rows_emitted: 1_048_576,
+  arrow_ipc_bytes: 36_744,
+  arrow_ipc_chunk_count: 1,
+  coordinator_peak_staged_bytes: null,
+  coordinator_staging_limit_bytes: null,
+  cursor_peak_pending_encoded_bytes: null,
+  cursor_peak_transport_chunk_bytes: null,
 };
 type PublicS3LiveRunEvidence = {
   run: number;
   scalar_result: string;
   metrics: ProjectedLiveMetrics;
+  owned_memory: ProjectedOwnedMemory;
+  execution: ProjectedExecution;
 };
-type ProjectedLiveMetrics = Record<RequiredLiveMetricKey, number> &
-  Partial<Record<OptionalLiveMetricKey, number>>;
+type ProjectedLiveMetrics = Record<RequiredLiveMetricKey, number>;
 type PublicS3EvidenceBase = {
   table_uri: string;
   table_name: string;
@@ -95,9 +174,23 @@ type PublicS3FixtureProvenance = {
 };
 type PublicS3PerformanceEvidence = PublicS3EvidenceBase & {
   metrics: ProjectedLiveMetrics;
+  owned_memory: ProjectedOwnedMemory;
+  execution: ProjectedExecution;
   comparison: {
-    pre_cache: Record<ComparisonMetricKey, number | null>;
-    current: Record<ComparisonMetricKey, number>;
+    pre_cache: {
+      metrics: ComparisonMetrics;
+      owned_memory: null;
+    };
+    verified_2026_07_16: {
+      artifact_sha256: string;
+      metrics: ComparisonMetrics;
+      owned_memory: null;
+    };
+    current_main: {
+      base_commit_sha: string;
+      metrics: Record<ComparisonMetricKey, number>;
+      owned_memory: ProjectedOwnedMemory;
+    };
   };
 };
 type PublicS3RepeatEvidence = PublicS3EvidenceBase & {
@@ -143,6 +236,30 @@ const exampleLiveMetrics: LiveMetricsInput = {
   range_readahead_bytes_fetched: 22,
   range_readahead_bytes_used: 23,
   range_readahead_wasted_bytes: 24,
+  scan_overfetch_bytes: 25,
+  coordinator_peak_staged_bytes: 26,
+  coordinator_staging_limit_bytes: 260,
+  cursor_peak_pending_encoded_bytes: 28,
+  cursor_peak_transport_chunk_bytes: 29,
+};
+const exampleOwnedMemory = {
+  coordinator: {
+    limit_bytes: 1_000,
+    reserved_bytes: 0,
+    staged_bytes: 0,
+    peak_reserved_bytes: 100,
+    peak_staged_bytes: 200,
+  },
+  datafusion: {
+    limit_bytes: 2_000,
+    reserved_bytes: 0,
+    peak_bytes: 500,
+  },
+};
+const exampleExecution = {
+  executed_on: 'browser_wasm',
+  fallback_event_observed: false,
+  response_fallback_reason: null,
 };
 
 test('public S3 repeat evidence redacts URI secrets and preserves per-run metrics', () => {
@@ -158,6 +275,8 @@ test('public S3 repeat evidence redacts URI secrets and preserves per-run metric
         run: 1,
         scalar_result: '42',
         metrics: exampleLiveMetrics,
+        ownedMemory: exampleOwnedMemory,
+        execution: exampleExecution,
       },
       {
         run: 2,
@@ -178,6 +297,8 @@ test('public S3 repeat evidence redacts URI secrets and preserves per-run metric
           identity_missing_range_reads: 0,
           rows_emitted: 12,
         },
+        ownedMemory: exampleOwnedMemory,
+        execution: exampleExecution,
       },
     ],
   });
@@ -215,15 +336,24 @@ test('public S3 repeat evidence redacts URI secrets and preserves per-run metric
       range_readahead_bytes_fetched: 22,
       range_readahead_bytes_used: 23,
       range_readahead_wasted_bytes: 24,
+      scan_overfetch_bytes: 25,
       rows_emitted: 12,
       arrow_ipc_bytes: 13,
       arrow_ipc_chunk_count: 14,
+      coordinator_peak_staged_bytes: 26,
+      coordinator_staging_limit_bytes: 260,
+      cursor_peak_pending_encoded_bytes: 28,
+      cursor_peak_transport_chunk_bytes: 29,
     },
+    owned_memory: exampleOwnedMemory,
+    execution: exampleExecution,
   });
   expect(evidence.runs[1]).toMatchObject({
     run: 2,
     scalar_result: '42',
     metrics: { bytes_fetched: 24, rows_emitted: 12 },
+    owned_memory: exampleOwnedMemory,
+    execution: exampleExecution,
   });
   const serializedEvidence = JSON.stringify(evidence);
   expect(serializedEvidence).not.toContain('embedded-user');
@@ -242,6 +372,8 @@ test('public S3 performance evidence preserves comparison metrics', () => {
     baseURL: 'https://127.0.0.1:5173',
     region: 'us-east-2',
     metrics: exampleLiveMetrics,
+    ownedMemory: exampleOwnedMemory,
+    execution: exampleExecution,
   });
 
   expect(evidence.metrics).toEqual({
@@ -267,34 +399,356 @@ test('public S3 performance evidence preserves comparison metrics', () => {
     range_readahead_bytes_fetched: 22,
     range_readahead_bytes_used: 23,
     range_readahead_wasted_bytes: 24,
+    scan_overfetch_bytes: 25,
     rows_emitted: 12,
     arrow_ipc_bytes: 13,
     arrow_ipc_chunk_count: 14,
+    coordinator_peak_staged_bytes: 26,
+    coordinator_staging_limit_bytes: 260,
+    cursor_peak_pending_encoded_bytes: 28,
+    cursor_peak_transport_chunk_bytes: 29,
   });
   expect(evidence.comparison).toEqual({
     pre_cache: {
-      bytes_fetched: 22_677_645,
-      scan_data_range_reads: 160,
-      coalesced_range_reads: 32,
-      range_cache_bytes_reused: null,
-      range_readahead_bytes_fetched: null,
-      range_readahead_bytes_used: null,
-      range_readahead_wasted_bytes: null,
-      rows_emitted: 1_048_576,
-      arrow_ipc_bytes: 36_744,
+      metrics: {
+        bytes_fetched: 22_677_645,
+        bootstrap_footer_range_reads: null,
+        scan_footer_range_reads: null,
+        scan_data_range_reads: 160,
+        duplicate_range_reads: null,
+        coalesced_range_reads: 32,
+        coalesced_gap_bytes_fetched: null,
+        scan_overfetch_bytes: null,
+        footer_cache_hits: null,
+        footer_cache_misses: null,
+        footer_range_reads_avoided: null,
+        identity_present_range_reads: null,
+        identity_missing_range_reads: null,
+        range_cache_hits: null,
+        range_cache_misses: null,
+        range_cache_bytes_reused: null,
+        range_cache_bytes_stored: null,
+        range_cache_validation_misses: null,
+        range_cache_degraded_identity_reads: null,
+        range_readahead_requests: null,
+        range_readahead_bytes_fetched: null,
+        range_readahead_bytes_used: null,
+        range_readahead_wasted_bytes: null,
+        rows_emitted: 1_048_576,
+        arrow_ipc_bytes: 36_744,
+        arrow_ipc_chunk_count: null,
+        coordinator_peak_staged_bytes: null,
+        coordinator_staging_limit_bytes: null,
+        cursor_peak_pending_encoded_bytes: null,
+        cursor_peak_transport_chunk_bytes: null,
+      },
+      owned_memory: null,
     },
-    current: {
-      bytes_fetched: 42,
-      scan_data_range_reads: 3,
-      coalesced_range_reads: 5,
-      range_cache_bytes_reused: 17,
-      range_readahead_bytes_fetched: 22,
-      range_readahead_bytes_used: 23,
-      range_readahead_wasted_bytes: 24,
-      rows_emitted: 12,
-      arrow_ipc_bytes: 13,
+    verified_2026_07_16: {
+      artifact_sha256: '0dbda0ae8f7018f739fbaf57897aebc1dfa5083927c8bc6691f9a494424a7152',
+      metrics: {
+        bytes_fetched: 22_677_645,
+        bootstrap_footer_range_reads: 16,
+        scan_footer_range_reads: 0,
+        scan_data_range_reads: 160,
+        duplicate_range_reads: 0,
+        coalesced_range_reads: 32,
+        coalesced_gap_bytes_fetched: 0,
+        scan_overfetch_bytes: null,
+        footer_cache_hits: 8,
+        footer_cache_misses: 8,
+        footer_range_reads_avoided: 16,
+        identity_present_range_reads: 160,
+        identity_missing_range_reads: 16,
+        range_cache_hits: 0,
+        range_cache_misses: 128,
+        range_cache_bytes_reused: 0,
+        range_cache_bytes_stored: 22_677_645,
+        range_cache_validation_misses: 0,
+        range_cache_degraded_identity_reads: 0,
+        range_readahead_requests: 0,
+        range_readahead_bytes_fetched: 0,
+        range_readahead_bytes_used: 0,
+        range_readahead_wasted_bytes: 0,
+        rows_emitted: 1_048_576,
+        arrow_ipc_bytes: 36_744,
+        arrow_ipc_chunk_count: 1,
+        coordinator_peak_staged_bytes: null,
+        coordinator_staging_limit_bytes: null,
+        cursor_peak_pending_encoded_bytes: null,
+        cursor_peak_transport_chunk_bytes: null,
+      },
+      owned_memory: null,
+    },
+    current_main: {
+      base_commit_sha: 'ee6a430afe99144c5e5780952b45a335d15e89c3',
+      metrics: {
+        bytes_fetched: 42,
+        bootstrap_footer_range_reads: 1,
+        scan_footer_range_reads: 2,
+        scan_data_range_reads: 3,
+        duplicate_range_reads: 4,
+        coalesced_range_reads: 5,
+        coalesced_gap_bytes_fetched: 6,
+        scan_overfetch_bytes: 25,
+        footer_cache_hits: 7,
+        footer_cache_misses: 8,
+        footer_range_reads_avoided: 9,
+        identity_present_range_reads: 10,
+        identity_missing_range_reads: 11,
+        range_cache_hits: 15,
+        range_cache_misses: 16,
+        range_cache_bytes_reused: 17,
+        range_cache_bytes_stored: 18,
+        range_cache_validation_misses: 19,
+        range_cache_degraded_identity_reads: 20,
+        range_readahead_requests: 21,
+        range_readahead_bytes_fetched: 22,
+        range_readahead_bytes_used: 23,
+        range_readahead_wasted_bytes: 24,
+        rows_emitted: 12,
+        arrow_ipc_bytes: 13,
+        arrow_ipc_chunk_count: 14,
+        coordinator_peak_staged_bytes: 26,
+        coordinator_staging_limit_bytes: 260,
+        cursor_peak_pending_encoded_bytes: 28,
+        cursor_peak_transport_chunk_bytes: 29,
+      },
+      owned_memory: exampleOwnedMemory,
     },
   });
+});
+
+test('pinned public S3 repeat evidence requires the exact fixture row count', () => {
+  const input = {
+    tableUri: pinnedFixtureProvenance.table_uri,
+    tableName: 'table',
+    browserName: 'chromium',
+    baseURL: 'https://127.0.0.1:5173',
+    region: pinnedFixtureProvenance.region,
+    runs: [
+      {
+        run: 1,
+        scalar_result: '1048575',
+        metrics: exampleLiveMetrics,
+        ownedMemory: exampleOwnedMemory,
+        execution: exampleExecution,
+      },
+    ],
+  };
+
+  expect(() => buildPublicS3RepeatEvidence(input)).toThrow('1,048,576');
+  expect(
+    buildPublicS3RepeatEvidence({
+      ...input,
+      runs: [
+        {
+          run: 1,
+          scalar_result: '1048576',
+          metrics: exampleLiveMetrics,
+          ownedMemory: exampleOwnedMemory,
+          execution: exampleExecution,
+        },
+      ],
+    }).runs[0]?.scalar_result,
+  ).toBe('1048576');
+});
+
+test('public S3 evidence rejects serialized AWS credential and signed-query material', () => {
+  expect(() =>
+    buildPublicS3PerformanceEvidence({
+      tableUri: pinnedFixtureProvenance.table_uri,
+      tableName: 'table',
+      browserName: 'chromium',
+      baseURL:
+        'https://127.0.0.1:5173/?X-Amz-Credential=AKIAIOSFODNN7EXAMPLE&X-Amz-Signature=signed-secret',
+      region: pinnedFixtureProvenance.region,
+      metrics: exampleLiveMetrics,
+      ownedMemory: exampleOwnedMemory,
+      execution: exampleExecution,
+    }),
+  ).toThrow(/credential|signed-query/i);
+  expect(() =>
+    buildPublicS3PerformanceEvidence({
+      tableUri: pinnedFixtureProvenance.table_uri,
+      tableName: 'table',
+      browserName: 'chromium',
+      baseURL: 'https://127.0.0.1:5173/?X-Amz-Unmodeled-Signer-Field=secret',
+      region: pinnedFixtureProvenance.region,
+      metrics: exampleLiveMetrics,
+      ownedMemory: exampleOwnedMemory,
+      execution: exampleExecution,
+    }),
+  ).toThrow(/credential|signed-query/i);
+});
+
+test('public S3 evidence requires zero terminal owned memory with bounded peaks', () => {
+  const buildWithOwnedMemory = (ownedMemory: unknown) =>
+    buildPublicS3PerformanceEvidence({
+      tableUri: pinnedFixtureProvenance.table_uri,
+      tableName: 'table',
+      browserName: 'chromium',
+      baseURL: 'https://127.0.0.1:5173',
+      region: pinnedFixtureProvenance.region,
+      metrics: exampleLiveMetrics,
+      ownedMemory,
+      execution: exampleExecution,
+    });
+
+  const evidence = buildWithOwnedMemory(exampleOwnedMemory);
+  expect(evidence.owned_memory).toEqual(exampleOwnedMemory);
+  expect(evidence.comparison.pre_cache.owned_memory).toBeNull();
+  expect(evidence.comparison.verified_2026_07_16.owned_memory).toBeNull();
+  expect(evidence.comparison.current_main.owned_memory).toEqual(exampleOwnedMemory);
+
+  const numericCases = [
+    {
+      key: 'coordinator.limit_bytes',
+      withValue: (value: number) => ({
+        ...exampleOwnedMemory,
+        coordinator: { ...exampleOwnedMemory.coordinator, limit_bytes: value },
+      }),
+    },
+    {
+      key: 'coordinator.reserved_bytes',
+      withValue: (value: number) => ({
+        ...exampleOwnedMemory,
+        coordinator: { ...exampleOwnedMemory.coordinator, reserved_bytes: value },
+      }),
+    },
+    {
+      key: 'coordinator.staged_bytes',
+      withValue: (value: number) => ({
+        ...exampleOwnedMemory,
+        coordinator: { ...exampleOwnedMemory.coordinator, staged_bytes: value },
+      }),
+    },
+    {
+      key: 'coordinator.peak_reserved_bytes',
+      withValue: (value: number) => ({
+        ...exampleOwnedMemory,
+        coordinator: { ...exampleOwnedMemory.coordinator, peak_reserved_bytes: value },
+      }),
+    },
+    {
+      key: 'coordinator.peak_staged_bytes',
+      withValue: (value: number) => ({
+        ...exampleOwnedMemory,
+        coordinator: { ...exampleOwnedMemory.coordinator, peak_staged_bytes: value },
+      }),
+    },
+    {
+      key: 'datafusion.limit_bytes',
+      withValue: (value: number) => ({
+        ...exampleOwnedMemory,
+        datafusion: { ...exampleOwnedMemory.datafusion, limit_bytes: value },
+      }),
+    },
+    {
+      key: 'datafusion.reserved_bytes',
+      withValue: (value: number) => ({
+        ...exampleOwnedMemory,
+        datafusion: { ...exampleOwnedMemory.datafusion, reserved_bytes: value },
+      }),
+    },
+    {
+      key: 'datafusion.peak_bytes',
+      withValue: (value: number) => ({
+        ...exampleOwnedMemory,
+        datafusion: { ...exampleOwnedMemory.datafusion, peak_bytes: value },
+      }),
+    },
+  ];
+  for (const { key, withValue } of numericCases) {
+    for (const invalidValue of [
+      -1,
+      1.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ]) {
+      expect(() => buildWithOwnedMemory(withValue(invalidValue))).toThrow(key);
+    }
+  }
+
+  expect(() =>
+    buildWithOwnedMemory({
+      ...exampleOwnedMemory,
+      coordinator: { ...exampleOwnedMemory.coordinator, reserved_bytes: 1 },
+    }),
+  ).toThrow(/coordinator.*reserved_bytes.*zero/i);
+  expect(() =>
+    buildWithOwnedMemory({
+      ...exampleOwnedMemory,
+      coordinator: { ...exampleOwnedMemory.coordinator, staged_bytes: 1 },
+    }),
+  ).toThrow(/coordinator.*staged_bytes.*zero/i);
+  expect(() =>
+    buildWithOwnedMemory({
+      ...exampleOwnedMemory,
+      datafusion: { ...exampleOwnedMemory.datafusion, reserved_bytes: 1 },
+    }),
+  ).toThrow(/datafusion.*reserved_bytes.*zero/i);
+  expect(() =>
+    buildWithOwnedMemory({
+      ...exampleOwnedMemory,
+      coordinator: {
+        ...exampleOwnedMemory.coordinator,
+        peak_reserved_bytes: exampleOwnedMemory.coordinator.limit_bytes + 1,
+      },
+    }),
+  ).toThrow(/peak_reserved_bytes.*limit_bytes/i);
+  expect(() =>
+    buildWithOwnedMemory({
+      ...exampleOwnedMemory,
+      coordinator: {
+        ...exampleOwnedMemory.coordinator,
+        peak_staged_bytes: exampleOwnedMemory.coordinator.limit_bytes + 1,
+      },
+    }),
+  ).toThrow(/peak_staged_bytes.*limit_bytes/i);
+  expect(() =>
+    buildWithOwnedMemory({
+      ...exampleOwnedMemory,
+      datafusion: {
+        ...exampleOwnedMemory.datafusion,
+        peak_bytes: exampleOwnedMemory.datafusion.limit_bytes + 1,
+      },
+    }),
+  ).toThrow(/datafusion.*peak_bytes.*limit_bytes/i);
+  expect(() =>
+    buildWithOwnedMemory({
+      coordinator: exampleOwnedMemory.coordinator,
+    }),
+  ).toThrow('datafusion');
+});
+
+test('public S3 evidence requires successful browser WASM execution without fallback', () => {
+  const buildWithExecution = (execution: unknown) =>
+    buildPublicS3PerformanceEvidence({
+      tableUri: pinnedFixtureProvenance.table_uri,
+      tableName: 'table',
+      browserName: 'chromium',
+      baseURL: 'https://127.0.0.1:5173',
+      region: pinnedFixtureProvenance.region,
+      metrics: exampleLiveMetrics,
+      ownedMemory: exampleOwnedMemory,
+      execution,
+    });
+
+  expect(buildWithExecution(exampleExecution).execution).toEqual(exampleExecution);
+  expect(() => buildWithExecution({ ...exampleExecution, executed_on: 'native' })).toThrow(
+    'browser_wasm',
+  );
+  expect(() => buildWithExecution({ ...exampleExecution, fallback_event_observed: true })).toThrow(
+    /fallback event/i,
+  );
+  expect(() =>
+    buildWithExecution({
+      ...exampleExecution,
+      response_fallback_reason: { code: 'browser_runtime_constraint' },
+    }),
+  ).toThrow(/fallback reason/i);
 });
 
 test('public S3 performance evidence identifies the pinned fixture revision', async () => {
@@ -305,6 +759,8 @@ test('public S3 performance evidence identifies the pinned fixture revision', as
     baseURL: 'https://127.0.0.1:5173',
     region: pinnedFixtureProvenance.region,
     metrics: exampleLiveMetrics,
+    ownedMemory: exampleOwnedMemory,
+    execution: exampleExecution,
   });
   const trackedProvenance = JSON.parse(
     await readFile(
@@ -319,6 +775,59 @@ test('public S3 performance evidence identifies the pinned fixture revision', as
   expect(JSON.stringify(evidence)).not.toContain('secret');
 });
 
+test('public S3 performance evidence requires the exact pinned fixture URI and region', () => {
+  expect(
+    isPinnedPerformanceFixture(
+      `${pinnedFixtureProvenance.table_uri}?X-Amz-Signature=redacted`,
+      pinnedFixtureProvenance.region,
+    ),
+  ).toBe(true);
+  expect(
+    isPinnedPerformanceFixture(
+      's3://lookalike-bucket/fixtures/s3-browser-perf/table',
+      pinnedFixtureProvenance.region,
+    ),
+  ).toBe(false);
+  expect(isPinnedPerformanceFixture(pinnedFixtureProvenance.table_uri, 'us-east-1')).toBe(false);
+});
+
+test('public S3 query evidence correlates the latest success without inheriting fallback', () => {
+  const requestAMetrics = { context: { request_id: 'request-a' }, bytes_fetched: 1 };
+  const requestAOwnedMemory = { context: { request_id: 'request-a' }, marker: 'a' };
+  const requestBMetrics = { context: { request_id: 'request-b' }, bytes_fetched: 2 };
+  const requestBOwnedMemory = { context: { request_id: 'request-b' }, marker: 'b' };
+
+  expect(
+    correlateCapturedQueryEvidence([
+      { kind: 'range_read_metrics', value: requestAMetrics },
+      { kind: 'owned_memory_metrics', value: requestAOwnedMemory },
+      {
+        kind: 'success',
+        request_id: 'request-a',
+        executed_on: 'browser_wasm',
+        response_fallback_reason: null,
+      },
+      { kind: 'fallback', request_id: 'request-a' },
+      { kind: 'range_read_metrics', value: requestBMetrics },
+      { kind: 'owned_memory_metrics', value: requestBOwnedMemory },
+      {
+        kind: 'success',
+        request_id: 'request-b',
+        executed_on: 'browser_wasm',
+        response_fallback_reason: null,
+      },
+    ]),
+  ).toEqual({
+    metrics: requestBMetrics,
+    ownedMemory: requestBOwnedMemory,
+    execution: {
+      executed_on: 'browser_wasm',
+      fallback_event_observed: false,
+      response_fallback_reason: null,
+    },
+  });
+});
+
 test('public S3 live evidence requires finite nonnegative cache, readahead, and IPC metrics', () => {
   const requiredComparisonMetricKeys = [
     'range_cache_hits',
@@ -331,7 +840,13 @@ test('public S3 live evidence requires finite nonnegative cache, readahead, and 
     'range_readahead_bytes_fetched',
     'range_readahead_bytes_used',
     'range_readahead_wasted_bytes',
+    'scan_overfetch_bytes',
     'arrow_ipc_bytes',
+    'arrow_ipc_chunk_count',
+    'coordinator_peak_staged_bytes',
+    'coordinator_staging_limit_bytes',
+    'cursor_peak_pending_encoded_bytes',
+    'cursor_peak_transport_chunk_bytes',
   ] as const satisfies readonly RequiredLiveMetricKey[];
 
   for (const key of requiredComparisonMetricKeys) {
@@ -339,12 +854,46 @@ test('public S3 live evidence requires finite nonnegative cache, readahead, and 
     delete missing[key];
     expect(() => buildEvidenceWithMetrics(missing)).toThrow(key);
 
-    for (const invalidValue of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    for (const invalidValue of [
+      -1,
+      1.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ]) {
       expect(() =>
         buildEvidenceWithMetrics({ ...completeLiveMetrics(), [key]: invalidValue }),
       ).toThrow(key);
     }
   }
+});
+
+test('public S3 live evidence rejects a coordinator peak above its staging limit', () => {
+  expect(() =>
+    buildEvidenceWithMetrics({
+      ...completeLiveMetrics(),
+      coordinator_peak_staged_bytes: 65,
+      coordinator_staging_limit_bytes: 64,
+    }),
+  ).toThrow(/coordinator_peak_staged_bytes.*coordinator_staging_limit_bytes/i);
+});
+
+test('public S3 live evidence rejects a cursor pending peak above 8 MiB', () => {
+  expect(() =>
+    buildEvidenceWithMetrics({
+      ...completeLiveMetrics(),
+      cursor_peak_pending_encoded_bytes: browserSafeCursorPendingEncodedBytes + 1,
+    }),
+  ).toThrow(/cursor_peak_pending_encoded_bytes.*8 MiB/i);
+});
+
+test('public S3 live evidence rejects a cursor transport chunk peak above 1 MiB', () => {
+  expect(() =>
+    buildEvidenceWithMetrics({
+      ...completeLiveMetrics(),
+      cursor_peak_transport_chunk_bytes: browserSafeCursorTransportChunkBytes + 1,
+    }),
+  ).toThrow(/cursor_peak_transport_chunk_bytes.*1 MiB/i);
 });
 
 test.describe('public S3 live smoke', () => {
@@ -390,10 +939,15 @@ test.describe('public S3 live smoke', () => {
     const tableName = tableNameFromTableUri(liveTableUri!);
     const repeatedQuery = `SELECT COUNT(*) AS row_count FROM ${quoteSqlIdentifier(tableName)}`;
     const runtimeErrors = captureRuntimeErrors(page);
-    const runs: Array<{ run: number; scalar_result: string; metrics: LiveMetricsInput }> = [];
+    const runs: Array<
+      CapturedQueryEvidence & {
+        run: number;
+        scalar_result: string;
+      }
+    > = [];
     let expectedScalarResult: string | undefined;
 
-    await installRangeReadMetricsCapture(page);
+    await installQueryEvidenceCapture(page);
     await connectPublicS3Table(page);
     for (let run = 1; run <= 3; run += 1) {
       if (run > 1) await page.reload();
@@ -415,6 +969,11 @@ test.describe('public S3 live smoke', () => {
       expect(scalarResult, `run ${run} matched the first COUNT(*) result`).toBe(
         expectedScalarResult,
       );
+      if (redactTableUri(liveTableUri!) === pinnedFixtureProvenance.table_uri) {
+        expect(scalarResult, `run ${run} matched the pinned fixture row count`).toBe(
+          String(pinnedFixtureRowCount),
+        );
+      }
       await expect(page.locator('.results')).not.toContainText(
         /(?:parquet|decode|worker).*(?:error|failed)|(?:error|failed).*(?:parquet|decode|worker)/i,
       );
@@ -425,10 +984,11 @@ test.describe('public S3 live smoke', () => {
         `run ${run} emitted no Parquet, decode, or worker errors`,
       ).toEqual([]);
 
+      const queryEvidence = await latestCapturedQueryEvidence(page);
       runs.push({
         run,
         scalar_result: scalarResult,
-        metrics: await latestCapturedRangeReadMetrics(page),
+        ...queryEvidence,
       });
     }
 
@@ -454,13 +1014,13 @@ test.describe('public S3 live smoke', () => {
     baseURL,
   }, testInfo) => {
     test.skip(
-      !redactTableUri(liveTableUri!).endsWith('/fixtures/s3-browser-perf/table'),
-      'set AXON_LIVE_PUBLIC_S3_TABLE_URI to the s3-browser-perf fixture for performance evidence',
+      !isPinnedPerformanceFixture(liveTableUri!, liveRegion!),
+      'set the exact pinned public S3 performance fixture URI and region for performance evidence',
     );
     testInfo.setTimeout(240_000);
     const tableName = tableNameFromTableUri(liveTableUri!);
 
-    await installRangeReadMetricsCapture(page);
+    await installQueryEvidenceCapture(page);
     await connectPublicS3Table(page);
     await page.locator('.code-input').fill(`
 SELECT event_id, event_ts, region, customer_id, amount, status
@@ -477,17 +1037,15 @@ LIMIT 1000
     await expect(page.locator('table.grid')).toContainText('event_id');
     await expect(page.locator('table.grid')).toContainText('amount');
 
+    const queryEvidence = await latestCapturedQueryEvidence(page);
     const evidence = buildPublicS3PerformanceEvidence({
       tableUri: liveTableUri!,
       tableName,
       browserName,
       baseURL: baseURL ?? liveOrigin,
       region: liveRegion!,
-      metrics: await latestCapturedRangeReadMetrics(page),
+      ...queryEvidence,
     });
-    expect(evidence.metrics.bytes_fetched).toBeGreaterThan(0);
-    expect(evidence.metrics.scan_data_range_reads).toBeGreaterThan(0);
-    expect(evidence.metrics.rows_emitted).toBeGreaterThan(0);
     expect(evidence.fixture_provenance).toEqual(pinnedFixtureProvenance);
     const artifactPath = testInfo.outputPath('public-s3-live-uat-evidence.json');
     await writeFile(artifactPath, `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
@@ -495,6 +1053,13 @@ LIMIT 1000
       path: artifactPath,
       contentType: 'application/json',
     });
+    expect(evidence.metrics.bytes_fetched).toBeGreaterThan(0);
+    expect(evidence.metrics.scan_data_range_reads).toBeGreaterThan(0);
+    expect(evidence.metrics.rows_emitted).toBeGreaterThan(0);
+    expect(
+      evidence.metrics.range_readahead_wasted_bytes,
+      'readahead waste must not exceed bytes subsequently used',
+    ).toBeLessThanOrEqual(evidence.metrics.range_readahead_bytes_used);
   });
 });
 
@@ -552,7 +1117,7 @@ async function selectPersistedPublicTable(page: Page, tableName: string): Promis
   await expect(page.locator('.queryref-bar .qref')).toContainText(tableName);
 }
 
-async function installRangeReadMetricsCapture(page: Page): Promise<void> {
+async function installQueryEvidenceCapture(page: Page): Promise<void> {
   await page.addInitScript((captureKey) => {
     const scope = window as typeof window & Record<string, unknown>;
     const captured: unknown[] = [];
@@ -567,14 +1132,49 @@ async function installRangeReadMetricsCapture(page: Page): Promise<void> {
         super(scriptURL, options);
         this.addEventListener('message', (event: MessageEvent<unknown>) => {
           const data = event.data;
+          if (!data || typeof data !== 'object') return;
           if (
-            data &&
-            typeof data === 'object' &&
             'range_read_metrics' in data &&
             data.range_read_metrics &&
             typeof data.range_read_metrics === 'object'
           ) {
-            captured.push(data.range_read_metrics);
+            captured.push({ kind: 'range_read_metrics', value: data.range_read_metrics });
+          }
+          if (
+            'owned_memory_metrics' in data &&
+            data.owned_memory_metrics &&
+            typeof data.owned_memory_metrics === 'object'
+          ) {
+            captured.push({ kind: 'owned_memory_metrics', value: data.owned_memory_metrics });
+          }
+          if ('fallback' in data && data.fallback && typeof data.fallback === 'object') {
+            const context =
+              'context' in data.fallback &&
+              data.fallback.context &&
+              typeof data.fallback.context === 'object'
+                ? data.fallback.context
+                : undefined;
+            captured.push({
+              kind: 'fallback',
+              request_id: context && 'request_id' in context ? context.request_id : undefined,
+            });
+          }
+          if ('success' in data && data.success && typeof data.success === 'object') {
+            const response =
+              'response' in data.success &&
+              data.success.response &&
+              typeof data.success.response === 'object'
+                ? data.success.response
+                : undefined;
+            captured.push({
+              kind: 'success',
+              request_id: 'request_id' in data.success ? data.success.request_id : undefined,
+              executed_on: response && 'executed_on' in response ? response.executed_on : undefined,
+              response_fallback_reason:
+                response && 'fallback_reason' in response
+                  ? (response.fallback_reason ?? null)
+                  : null,
+            });
           }
         });
       }
@@ -585,25 +1185,90 @@ async function installRangeReadMetricsCapture(page: Page): Promise<void> {
       configurable: true,
       writable: true,
     });
-  }, rangeReadMetricsCaptureKey);
+  }, queryEvidenceCaptureKey);
 }
 
-async function latestCapturedRangeReadMetrics(page: Page): Promise<LiveMetricsInput> {
+async function latestCapturedQueryEvidence(page: Page): Promise<CapturedQueryEvidence> {
   await page.waitForFunction(
     (captureKey) => {
       const captured = (window as typeof window & Record<string, unknown>)[captureKey];
-      return Array.isArray(captured) && captured.length > 0;
+      if (!Array.isArray(captured)) return false;
+      const records = captured.filter(
+        (value): value is Record<string, unknown> =>
+          Boolean(value) && typeof value === 'object' && !Array.isArray(value),
+      );
+      const success = records.filter((record) => record.kind === 'success').at(-1);
+      const requestId = success?.request_id;
+      if (typeof requestId !== 'string') return false;
+      const matchesRequest = (record: Record<string, unknown>) => {
+        const value = record.value;
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+        const context = (value as Record<string, unknown>).context;
+        return (
+          Boolean(context) &&
+          typeof context === 'object' &&
+          !Array.isArray(context) &&
+          (context as Record<string, unknown>).request_id === requestId
+        );
+      };
+      return (
+        records.some((record) => record.kind === 'range_read_metrics' && matchesRequest(record)) &&
+        records.some((record) => record.kind === 'owned_memory_metrics' && matchesRequest(record))
+      );
     },
-    rangeReadMetricsCaptureKey,
+    queryEvidenceCaptureKey,
     { timeout: 5_000 },
   );
-  const metrics = await page.evaluate((captureKey) => {
-    const captured = (window as typeof window & Record<string, unknown>)[captureKey];
-    if (!Array.isArray(captured)) return null;
-    return captured.at(-1) ?? null;
-  }, rangeReadMetricsCaptureKey);
-  expect(metrics, 'browser worker emitted range-read metrics for the live query').toBeTruthy();
-  return metrics as LiveMetricsInput;
+  const captured = await page.evaluate(
+    (captureKey) => (window as typeof window & Record<string, unknown>)[captureKey],
+    queryEvidenceCaptureKey,
+  );
+  const queryEvidence = correlateCapturedQueryEvidence(captured);
+  expect(
+    queryEvidence,
+    'browser worker emitted correlated range, owned-memory, and success evidence for the live query',
+  ).toBeTruthy();
+  return queryEvidence as CapturedQueryEvidence;
+}
+
+function correlateCapturedQueryEvidence(captured: unknown): CapturedQueryEvidence | null {
+  if (!Array.isArray(captured)) return null;
+  const records = captured.filter(
+    (value): value is Record<string, unknown> =>
+      Boolean(value) && typeof value === 'object' && !Array.isArray(value),
+  );
+  const success = records.filter((record) => record.kind === 'success').at(-1);
+  const requestId = success?.request_id;
+  if (!success || typeof requestId !== 'string') return null;
+  const matchesRequest = (record: Record<string, unknown>) => {
+    const value = record.value;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const context = (value as Record<string, unknown>).context;
+    return (
+      Boolean(context) &&
+      typeof context === 'object' &&
+      !Array.isArray(context) &&
+      (context as Record<string, unknown>).request_id === requestId
+    );
+  };
+  const metrics = records
+    .filter((record) => record.kind === 'range_read_metrics' && matchesRequest(record))
+    .at(-1)?.value;
+  const ownedMemory = records
+    .filter((record) => record.kind === 'owned_memory_metrics' && matchesRequest(record))
+    .at(-1)?.value;
+  if (!metrics || !ownedMemory) return null;
+  return {
+    metrics: metrics as LiveMetricsInput,
+    ownedMemory,
+    execution: {
+      executed_on: success.executed_on,
+      fallback_event_observed: records.some(
+        (record) => record.kind === 'fallback' && record.request_id === requestId,
+      ),
+      response_fallback_reason: success.response_fallback_reason,
+    },
+  };
 }
 
 function buildPublicS3PerformanceEvidence(input: {
@@ -613,19 +1278,39 @@ function buildPublicS3PerformanceEvidence(input: {
   baseURL: string;
   region: string;
   metrics: LiveMetricsInput;
+  ownedMemory: unknown;
+  execution: unknown;
 }): PublicS3PerformanceEvidence {
   const metrics = projectLiveMetrics(input.metrics);
+  const ownedMemory = projectOwnedMemory(input.ownedMemory);
+  const execution = projectExecution(input.execution);
   const currentComparison = Object.fromEntries(
     comparisonMetricKeys.map((key) => [key, metrics[key]]),
   ) as Record<ComparisonMetricKey, number>;
-  return {
+  const evidence: PublicS3PerformanceEvidence = {
     ...buildEvidenceBase(input),
     metrics,
+    owned_memory: ownedMemory,
+    execution,
     comparison: {
-      pre_cache: preCacheComparison,
-      current: currentComparison,
+      pre_cache: {
+        metrics: preCacheComparison,
+        owned_memory: null,
+      },
+      verified_2026_07_16: {
+        artifact_sha256: verified20260716ArtifactSha256,
+        metrics: verified20260716Comparison,
+        owned_memory: null,
+      },
+      current_main: {
+        base_commit_sha: currentMainBaseCommit,
+        metrics: currentComparison,
+        owned_memory: ownedMemory,
+      },
     },
   };
+  assertArtifactContainsNoSecrets(evidence);
+  return evidence;
 }
 
 function buildPublicS3RepeatEvidence(input: {
@@ -634,17 +1319,36 @@ function buildPublicS3RepeatEvidence(input: {
   browserName: string;
   baseURL: string;
   region: string;
-  runs: Array<{ run: number; scalar_result: string; metrics: LiveMetricsInput }>;
+  runs: Array<{
+    run: number;
+    scalar_result: string;
+    metrics: LiveMetricsInput;
+    ownedMemory: unknown;
+    execution: unknown;
+  }>;
 }): PublicS3RepeatEvidence {
-  return {
+  const evidence: PublicS3RepeatEvidence = {
     ...buildEvidenceBase(input),
     repeat_count: input.runs.length,
     runs: input.runs.map((run) => ({
       run: run.run,
       scalar_result: run.scalar_result,
       metrics: projectLiveMetrics(run.metrics),
+      owned_memory: projectOwnedMemory(run.ownedMemory),
+      execution: projectExecution(run.execution),
     })),
   };
+  if (evidence.fixture_provenance) {
+    for (const run of evidence.runs) {
+      if (run.scalar_result !== String(pinnedFixtureRowCount)) {
+        throw new Error(
+          `pinned public S3 fixture COUNT(*) must equal 1,048,576; run ${run.run} returned ${run.scalar_result}`,
+        );
+      }
+    }
+  }
+  assertArtifactContainsNoSecrets(evidence);
+  return evidence;
 }
 
 function buildEvidenceBase(input: {
@@ -655,11 +1359,9 @@ function buildEvidenceBase(input: {
   region: string;
 }): PublicS3EvidenceBase {
   const tableUri = redactTableUri(input.tableUri);
-  const fixtureProvenance =
-    tableUri === pinnedFixtureProvenance.table_uri &&
-    input.region === pinnedFixtureProvenance.region
-      ? pinnedFixtureProvenance
-      : undefined;
+  const fixtureProvenance = isPinnedPerformanceFixture(tableUri, input.region)
+    ? pinnedFixtureProvenance
+    : undefined;
   return {
     table_uri: tableUri,
     table_name: input.tableName,
@@ -674,19 +1376,150 @@ function projectLiveMetrics(metrics: LiveMetricsInput): PublicS3LiveRunEvidence[
   const projected = Object.fromEntries(
     requiredLiveMetricKeys.map((key) => [key, requiredMetric(metrics, key)]),
   ) as PublicS3LiveRunEvidence['metrics'];
-  for (const key of optionalLiveMetricKeys) {
-    const value = metrics[key];
-    if (typeof value === 'number') projected[key] = value;
-  }
+  assertLiveMetricBounds(projected);
   return projected;
 }
 
 function requiredMetric(metrics: LiveMetricsInput, key: RequiredLiveMetricKey): number {
   const value = metrics[key];
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw new Error(`live public S3 evidence requires finite nonnegative numeric metric '${key}'`);
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(
+      `live public S3 evidence requires finite nonnegative safe-integer metric '${key}'`,
+    );
   }
   return value;
+}
+
+function assertLiveMetricBounds(metrics: PublicS3LiveRunEvidence['metrics']): void {
+  if (metrics.coordinator_peak_staged_bytes > metrics.coordinator_staging_limit_bytes) {
+    throw new Error(
+      "live public S3 evidence requires 'coordinator_peak_staged_bytes' to not exceed 'coordinator_staging_limit_bytes'",
+    );
+  }
+  if (metrics.cursor_peak_pending_encoded_bytes > browserSafeCursorPendingEncodedBytes) {
+    throw new Error(
+      "live public S3 evidence requires 'cursor_peak_pending_encoded_bytes' to not exceed 8 MiB",
+    );
+  }
+  if (metrics.cursor_peak_transport_chunk_bytes > browserSafeCursorTransportChunkBytes) {
+    throw new Error(
+      "live public S3 evidence requires 'cursor_peak_transport_chunk_bytes' to not exceed 1 MiB",
+    );
+  }
+}
+
+function projectOwnedMemory(input: unknown): ProjectedOwnedMemory {
+  const ownedMemory = requiredObject(input, 'owned_memory');
+  const coordinatorInput = requiredObject(ownedMemory.coordinator, 'owned_memory.coordinator');
+  const datafusionInput = requiredObject(ownedMemory.datafusion, 'owned_memory.datafusion');
+  const coordinator = {
+    limit_bytes: requiredSafeInteger(
+      coordinatorInput.limit_bytes,
+      'owned_memory.coordinator.limit_bytes',
+    ),
+    reserved_bytes: requiredSafeInteger(
+      coordinatorInput.reserved_bytes,
+      'owned_memory.coordinator.reserved_bytes',
+    ),
+    staged_bytes: requiredSafeInteger(
+      coordinatorInput.staged_bytes,
+      'owned_memory.coordinator.staged_bytes',
+    ),
+    peak_reserved_bytes: requiredSafeInteger(
+      coordinatorInput.peak_reserved_bytes,
+      'owned_memory.coordinator.peak_reserved_bytes',
+    ),
+    peak_staged_bytes: requiredSafeInteger(
+      coordinatorInput.peak_staged_bytes,
+      'owned_memory.coordinator.peak_staged_bytes',
+    ),
+  };
+  const datafusion = {
+    limit_bytes: requiredSafeInteger(
+      datafusionInput.limit_bytes,
+      'owned_memory.datafusion.limit_bytes',
+    ),
+    reserved_bytes: requiredSafeInteger(
+      datafusionInput.reserved_bytes,
+      'owned_memory.datafusion.reserved_bytes',
+    ),
+    peak_bytes: requiredSafeInteger(
+      datafusionInput.peak_bytes,
+      'owned_memory.datafusion.peak_bytes',
+    ),
+  };
+
+  if (coordinator.reserved_bytes !== 0) {
+    throw new Error('owned_memory.coordinator.reserved_bytes must be zero at terminal');
+  }
+  if (coordinator.staged_bytes !== 0) {
+    throw new Error('owned_memory.coordinator.staged_bytes must be zero at terminal');
+  }
+  if (datafusion.reserved_bytes !== 0) {
+    throw new Error('owned_memory.datafusion.reserved_bytes must be zero at terminal');
+  }
+  if (coordinator.peak_reserved_bytes > coordinator.limit_bytes) {
+    throw new Error('owned_memory.coordinator.peak_reserved_bytes must not exceed limit_bytes');
+  }
+  if (coordinator.peak_staged_bytes > coordinator.limit_bytes) {
+    throw new Error('owned_memory.coordinator.peak_staged_bytes must not exceed limit_bytes');
+  }
+  if (datafusion.peak_bytes > datafusion.limit_bytes) {
+    throw new Error('owned_memory.datafusion.peak_bytes must not exceed limit_bytes');
+  }
+
+  return { coordinator, datafusion };
+}
+
+function projectExecution(input: unknown): ProjectedExecution {
+  const execution = requiredObject(input, 'execution');
+  if (execution.executed_on !== 'browser_wasm') {
+    throw new Error("live public S3 evidence requires executed_on 'browser_wasm'");
+  }
+  if (execution.fallback_event_observed !== false) {
+    throw new Error('live public S3 evidence requires no fallback event');
+  }
+  if (
+    execution.response_fallback_reason !== null &&
+    execution.response_fallback_reason !== undefined
+  ) {
+    throw new Error('live public S3 evidence requires no response fallback reason');
+  }
+  return {
+    executed_on: 'browser_wasm',
+    fallback_event_observed: false,
+    response_fallback_reason: null,
+  };
+}
+
+function requiredObject(value: unknown, path: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${path} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requiredSafeInteger(value: unknown, path: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${path} must be a finite nonnegative safe integer`);
+  }
+  return value;
+}
+
+function assertArtifactContainsNoSecrets(
+  evidence: PublicS3PerformanceEvidence | PublicS3RepeatEvidence,
+): void {
+  const serialized = JSON.stringify(evidence);
+  const forbiddenPatterns = [
+    /:\/\/[^/"\s]+:[^/@\s]+@/,
+    /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/,
+    /aws_(?:access_key_id|secret_access_key|session_token)/i,
+    /x-amz-[a-z0-9-]+/i,
+    /(?:^|[?&])(?:credential|security-token|signature|token)=/i,
+  ];
+  if (forbiddenPatterns.some((pattern) => pattern.test(serialized))) {
+    throw new Error('serialized public S3 evidence contains credential or signed-query material');
+  }
 }
 
 function completeLiveMetrics(): LiveMetricsInput {
@@ -701,6 +1534,8 @@ function buildEvidenceWithMetrics(metrics: LiveMetricsInput): PublicS3Performanc
     baseURL: 'https://127.0.0.1:5173',
     region: 'us-east-2',
     metrics,
+    ownedMemory: exampleOwnedMemory,
+    execution: exampleExecution,
   });
 }
 
@@ -715,6 +1550,13 @@ function redactTableUri(tableUri: string): string {
   } catch {
     return tableUri.split(/[?#]/, 1)[0];
   }
+}
+
+function isPinnedPerformanceFixture(tableUri: string, region: string): boolean {
+  return (
+    redactTableUri(tableUri) === pinnedFixtureProvenance.table_uri &&
+    region === pinnedFixtureProvenance.region
+  );
 }
 
 function tableNameFromTableUri(tableUri: string): string {
