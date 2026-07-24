@@ -1282,7 +1282,7 @@ test('one-child coordinator bounds queued SQL and recycles a non-settling child'
     const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
     const worker = new Worker(
       new URL(
-        '/src/sandbox-query-worker-test-harness.ts?watchdog_ms=200&max_requests=32',
+        '/src/sandbox-query-worker-test-harness.ts?watchdog_ms=200&max_requests=32&max_staged_bytes=268435456',
         location.href,
       ),
       { type: 'module' },
