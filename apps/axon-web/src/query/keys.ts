@@ -1,6 +1,4 @@
 import type {
-  ActiveConnectedTableRef,
-  AvailableQuerySourceSelection,
   QuerySourceIdentity,
   QuerySourceSelection,
   QueryTableSource,
@@ -9,29 +7,6 @@ import { querySourceIdentity } from '../services/query-source.ts';
 
 export { querySourceIdentity };
 export type { QuerySourceIdentity };
-
-export type SelectedQuerySourceIdentity = Readonly<{
-  kind: AvailableQuerySourceSelection['kind'];
-  ref: Readonly<ActiveConnectedTableRef>;
-  source: QuerySourceIdentity;
-  snapshotVersion: number | null;
-}>;
-
-export function selectedQuerySourceIdentity(
-  selection: AvailableQuerySourceSelection,
-  snapshotVersion?: number,
-): SelectedQuerySourceIdentity {
-  return {
-    kind: selection.kind,
-    ref: {
-      catalogId: selection.ref.catalogId,
-      schemaName: selection.ref.schemaName,
-      tableName: selection.ref.tableName,
-    },
-    source: querySourceIdentity(selection.source),
-    snapshotVersion: snapshotVersion ?? null,
-  };
-}
 
 function catalogRootKey() {
   return ['catalog'] as const;

@@ -127,6 +127,13 @@ describe('resolveQuerySourceSelection', () => {
       storage: SAMPLE_QUERY_SOURCE.storage,
       region: SAMPLE_QUERY_SOURCE.region,
     });
+    Object.assign(sample.schemas[0]!.tables[0]!, {
+      snapshot: 3,
+      rows: 6,
+      files: 1,
+      size: 'fixture',
+      protocol: 'r2/w5',
+    });
 
     expect(resolveSelection([sample], sampleRef)).toEqual({
       kind: 'sample',

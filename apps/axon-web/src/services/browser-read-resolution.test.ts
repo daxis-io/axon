@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   CanonicalResourceRefSchema,
   ProviderErrorCode,
+  ProviderErrorSchema,
   ResourceKind,
 } from '../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
 import {
@@ -11,13 +12,24 @@ import {
   BrowserHttpFileDescriptorSchema,
   BrowserHttpSnapshotDescriptorSchema,
   PartitionColumnType,
+  ReadDeniedSchema,
+  ReadResolutionSchema,
   ReadResolutionReason,
+  RemoteRequiredSchema,
+  ResolvedBrowserReadSchema,
 } from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
-import type { AvailableQuerySourceSelection } from './query-source.ts';
+import { ExecutionRejectionReason } from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
+import {
+  SAMPLE_QUERY_SOURCE,
+  SAMPLE_QUERY_SOURCE_REF,
+  type AvailableQuerySourceSelection,
+} from './query-source.ts';
 import { LocalDeltaError } from './local-delta.ts';
 import {
+  BrowserReadResolutionFailure,
   canonicalTableForSelection,
   dataAccessResolverForSelection,
+  requireBrowserReadResolution,
 } from './browser-read-resolution.ts';
 
 const localSelection: AvailableQuerySourceSelection = {
@@ -80,6 +92,109 @@ const publicS3Selection: AvailableQuerySourceSelection = {
 };
 
 describe('browser read canonical identity', () => {
+  it.each([
+    ['access_denied', ExecutionRejectionReason.ACCESS_DENIED],
+    ['unsupported_feature', ExecutionRejectionReason.UNSUPPORTED],
+    ['execution_failed', ExecutionRejectionReason.UNAVAILABLE],
+  ] as const)(
+    'maps %s resolver failures to a distinct generated admission reason',
+    (code, expected) => {
+      const error = new BrowserReadResolutionFailure('resolution failed', code);
+
+      expect(error.rejectionReason).toBe(expected);
+    },
+  );
+
+  it('treats invalid provider envelopes as invalid generated requests', () => {
+    const error = new BrowserReadResolutionFailure(
+      'invalid envelope',
+      'execution_failed',
+      ExecutionRejectionReason.INVALID_REQUEST,
+    );
+
+    expect(error.rejectionReason).toBe(ExecutionRejectionReason.INVALID_REQUEST);
+  });
+
+  it('closes every generated read-resolution arm before execution admission', () => {
+    const resource = canonicalTableForSelection(localSelection).resource!;
+    const browserRead = create(ResolvedBrowserReadSchema, {
+      resource,
+      accessClass: BrowserAccessClass.LOCAL_HANDLE,
+      correlationId: 'execution-local',
+    });
+
+    expect(
+      requireBrowserReadResolution(
+        create(ReadResolutionSchema, {
+          outcome: { case: 'browserRead', value: browserRead },
+        }),
+      ),
+    ).toBe(browserRead);
+
+    const cases = [
+      {
+        resolution: create(ReadResolutionSchema, {
+          outcome: {
+            case: 'remoteRequired',
+            value: create(RemoteRequiredSchema, {
+              resource,
+              reason: ReadResolutionReason.POLICY_ENFORCEMENT_REQUIRED,
+              message: 'remote enforcement is required',
+            }),
+          },
+        }),
+        code: 'unsupported_feature',
+        reason: ExecutionRejectionReason.UNSUPPORTED,
+      },
+      {
+        resolution: create(ReadResolutionSchema, {
+          outcome: {
+            case: 'denied',
+            value: create(ReadDeniedSchema, {
+              resource,
+              reason: ReadResolutionReason.ACCESS_DENIED,
+              message: 'read access was denied',
+            }),
+          },
+        }),
+        code: 'access_denied',
+        reason: ExecutionRejectionReason.ACCESS_DENIED,
+      },
+      {
+        resolution: create(ReadResolutionSchema, {
+          outcome: {
+            case: 'error',
+            value: create(ProviderErrorSchema, {
+              code: ProviderErrorCode.INVALID,
+              message: 'provider returned an invalid envelope',
+              correlationId: 'execution-local',
+            }),
+          },
+        }),
+        code: 'execution_failed',
+        reason: ExecutionRejectionReason.INVALID_REQUEST,
+      },
+      {
+        resolution: create(ReadResolutionSchema),
+        code: 'execution_failed',
+        reason: ExecutionRejectionReason.INVALID_REQUEST,
+      },
+    ] as const;
+
+    for (const expected of cases) {
+      try {
+        requireBrowserReadResolution(expected.resolution);
+        throw new Error('expected the non-browser resolution to fail');
+      } catch (error) {
+        expect(error).toBeInstanceOf(BrowserReadResolutionFailure);
+        expect(error).toMatchObject({
+          code: expected.code,
+          rejectionReason: expected.reason,
+        });
+      }
+    }
+  });
+
   it('maps an exact local Delta selection to one generated table resource', async () => {
     expect(canonicalTableForSelection).toBeTypeOf('function');
     expect(canonicalTableForSelection(localSelection)).toMatchObject({
@@ -256,6 +371,32 @@ describe('browser read canonical identity', () => {
     });
   });
 
+  it('preserves unexpected local provider diagnostics without opening a fallback source', async () => {
+    const resolver = dataAccessResolverForSelection(localSelection, {
+      loadLocalDeltaRuntime: vi.fn(async () => {
+        throw new Error('registry boom');
+      }),
+    });
+
+    const resolution = await resolver.resolve(
+      canonicalTableForSelection(localSelection).resource!,
+      {
+        executionId: 'execution-local-provider-error',
+        deadline: timestampFromMs(1_800_000_120_000),
+        signal: new AbortController().signal,
+      },
+    );
+
+    expect(resolution.outcome).toMatchObject({
+      case: 'error',
+      value: {
+        code: ProviderErrorCode.UNAVAILABLE,
+        correlationId: 'execution-local-provider-error',
+        message: 'registry boom',
+      },
+    });
+  });
+
   it.each([
     [
       publicGcsSelection,
@@ -341,6 +482,70 @@ describe('browser read canonical identity', () => {
       expect(resolution.outcome.value.notAfter).toBeUndefined();
     },
   );
+
+  it('maps only the exact sample selection to its fixed fixture identity and PUBLIC envelope', async () => {
+    const selection: AvailableQuerySourceSelection = {
+      kind: 'sample',
+      ref: SAMPLE_QUERY_SOURCE_REF,
+      source: SAMPLE_QUERY_SOURCE,
+    };
+    const descriptor = localDescriptor('gs://axon-sandbox/prod-like-events', 3);
+    const loadSampleFixtureDescriptor = vi.fn(async () => descriptor);
+    const table = canonicalTableForSelection(selection);
+
+    expect(table).toMatchObject({
+      name: 'events',
+      resource: {
+        connectionId: 'axon-connection://sample-fixture/sample-lake',
+        providerNamespace: 'axon.sample-fixture/v1',
+        kind: ResourceKind.TABLE,
+        identity: {
+          case: 'canonicalLocator',
+          value: 'axon-fixture://sample-lake/prod_like/events',
+        },
+      },
+    });
+
+    const resolution = await dataAccessResolverForSelection(selection, {
+      loadSampleFixtureDescriptor,
+    }).resolve(table.resource!, {
+      executionId: 'execution-sample',
+      deadline: timestampFromMs(1_800_000_120_000),
+      snapshotVersion: 3,
+      signal: new AbortController().signal,
+    });
+
+    expect(loadSampleFixtureDescriptor).toHaveBeenCalledWith({
+      snapshotVersion: 3,
+      signal: expect.objectContaining({ aborted: false }),
+    });
+    expect(resolution.outcome).toMatchObject({
+      case: 'browserRead',
+      value: {
+        resource: table.resource,
+        accessClass: BrowserAccessClass.PUBLIC,
+        correlationId: 'execution-sample',
+        provenance: {
+          resolverId: 'axon.sample-fixture/v1',
+          resolutionId: 'execution-sample:sample-fixture',
+        },
+      },
+    });
+    if (resolution.outcome.case === 'browserRead') {
+      expect(resolution.outcome.value.notAfter).toBeUndefined();
+    }
+  });
+
+  it('does not turn an arbitrary manifest source into the sample fixture provider', () => {
+    const impostor: AvailableQuerySourceSelection = {
+      kind: 'resource',
+      ref: SAMPLE_QUERY_SOURCE_REF,
+      source: SAMPLE_QUERY_SOURCE,
+    };
+
+    expect(() => canonicalTableForSelection(impostor)).toThrow(/explicit sample fixture/i);
+    expect(() => dataAccessResolverForSelection(impostor)).toThrow(/explicit sample fixture/i);
+  });
 });
 
 function localDescriptor(tableUri = 'browser-local://delta-table/events', snapshotVersion = 12) {

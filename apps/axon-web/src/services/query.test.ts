@@ -1,50 +1,34 @@
+import { create } from '@bufbuild/protobuf';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
   AxonWorkerError,
-  BROWSER_SAFE_ARROW_IPC_BYTES,
-  BROWSER_SAFE_PREVIEW_STRING_BYTES,
-  BROWSER_SAFE_RESULT_ROW_LIMIT,
   queryCommand,
   type QueryErrorCode,
   type QueryRequest,
 } from '../axon-browser-sdk.ts';
-import type { ExecutionAdmissionInput } from './execution-lifecycle.ts';
 import {
-  queryClientOptionsForAdmission,
-  queryExecutionOptionsForAdmission,
+  ExecuteRequestSchema,
+  ExecutionTarget,
+} from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
+import {
+  queryClientOptionsForRequest,
+  queryExecutionOptionsForRequest,
   queryFailureOutcome,
   queryFailureInvalidatesSession,
   runCancelableQueryStages,
 } from './query.ts';
+import { browserQueryRequest } from './query-pagination.ts';
 import { withValidatedArrowIpcOutput } from './worker-query-bounds.ts';
 
-const admission: ExecutionAdmissionInput = {
-  executionId: 'execution-1',
-  sourceIdentity: {
-    kind: 'sample',
-    ref: { catalogId: 'sample', schemaName: 'main', tableName: 'events' },
-    source: [
-      'manifest',
-      'sample',
-      'main',
-      'events',
-      '/fixture.json',
-      'gs://sample/events',
-      'browser-local',
-      null,
-    ],
-    snapshotVersion: null,
-  },
+const contractQuery = browserQueryRequest({
   sql: 'select * from events',
-  target: 'browser_wasm',
-  deadlineAt: 121_000,
-  budgets: {
-    maxResultRows: BROWSER_SAFE_RESULT_ROW_LIMIT,
-    maxArrowIpcBytes: BROWSER_SAFE_ARROW_IPC_BYTES,
-    maxPreviewStringBytes: BROWSER_SAFE_PREVIEW_STRING_BYTES,
-    maxScanBytes: 64 * 1024 * 1024,
-  },
-};
+  preferredTarget: ExecutionTarget.BROWSER_WASM,
+});
+contractQuery.options!.runtimeLimits!.maxScanBytes = 64n * 1024n * 1024n;
+const executeRequest = create(ExecuteRequestSchema, {
+  executionId: 'execution-1',
+  query: contractQuery,
+});
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -371,7 +355,7 @@ describe('query failure classification', () => {
 
 describe('admitted editor query bounds and delivery', () => {
   it('carries every admitted budget and requests single-buffer delivery', () => {
-    expect(queryExecutionOptionsForAdmission(admission, { limit: 501, offset: 0 })).toEqual({
+    expect(queryExecutionOptionsForRequest(contractQuery)).toEqual({
       collect_metrics: true,
       include_explain: true,
       result_page: { limit: 501, offset: 0 },
@@ -382,7 +366,7 @@ describe('admitted editor query bounds and delivery', () => {
         max_scan_bytes: 64 * 1024 * 1024,
       },
     });
-    expect(queryClientOptionsForAdmission(admission)).toEqual({
+    expect(queryClientOptionsForRequest(executeRequest)).toEqual({
       requestId: 'execution-1',
       delivery: 'single_buffer',
     });

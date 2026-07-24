@@ -15,14 +15,19 @@ import {
   ResolvedBrowserReadSchema,
   type BrowserHttpSnapshotDescriptor,
   type ReadResolution,
+  type ResolvedBrowserRead,
 } from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 import {
   TableNodeSchema,
   TableType,
   type TableNode,
 } from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
+import { ExecutionRejectionReason } from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
 import type { Timestamp } from '@bufbuild/protobuf/wkt';
-import type { AvailableQuerySourceSelection } from './query-source.ts';
+import {
+  isExplicitSampleFixtureSelection,
+  type AvailableQuerySourceSelection,
+} from './query-source.ts';
 import {
   loadLocalDeltaRuntime as loadDefaultLocalDeltaRuntime,
   LocalDeltaError,
@@ -46,6 +51,75 @@ export interface DataAccessResolver {
   ): Promise<ReadResolution>;
 }
 
+type BrowserReadResolutionFailureCode =
+  | 'access_denied'
+  | 'unsupported_feature'
+  | 'execution_failed';
+
+export class BrowserReadResolutionFailure extends Error {
+  constructor(
+    message: string,
+    readonly code: BrowserReadResolutionFailureCode,
+    readonly rejectionReason: ExecutionRejectionReason = defaultRejectionReason(code),
+  ) {
+    super(message);
+    this.name = 'BrowserReadResolutionFailure';
+  }
+}
+
+function defaultRejectionReason(code: BrowserReadResolutionFailureCode): ExecutionRejectionReason {
+  switch (code) {
+    case 'access_denied':
+      return ExecutionRejectionReason.ACCESS_DENIED;
+    case 'unsupported_feature':
+      return ExecutionRejectionReason.UNSUPPORTED;
+    case 'execution_failed':
+      return ExecutionRejectionReason.UNAVAILABLE;
+  }
+}
+
+export function requireBrowserReadResolution(resolution: ReadResolution): ResolvedBrowserRead {
+  switch (resolution.outcome.case) {
+    case 'browserRead':
+      return resolution.outcome.value;
+    case 'remoteRequired':
+      throw new BrowserReadResolutionFailure(
+        resolution.outcome.value.message || 'Browser execution requires remote enforcement.',
+        'unsupported_feature',
+        ExecutionRejectionReason.UNSUPPORTED,
+      );
+    case 'denied':
+      throw new BrowserReadResolutionFailure(
+        resolution.outcome.value.message || 'Browser read access was denied.',
+        'access_denied',
+        ExecutionRejectionReason.ACCESS_DENIED,
+      );
+    case 'error': {
+      const providerError = resolution.outcome.value;
+      if (providerError.code === ProviderErrorCode.BLOCKED) {
+        throw new BrowserReadResolutionFailure(
+          providerError.message || 'Browser read resolution was blocked.',
+          'access_denied',
+          ExecutionRejectionReason.ACCESS_DENIED,
+        );
+      }
+      throw new BrowserReadResolutionFailure(
+        providerError.message || 'Browser read resolution failed.',
+        'execution_failed',
+        providerError.code === ProviderErrorCode.INVALID
+          ? ExecutionRejectionReason.INVALID_REQUEST
+          : ExecutionRejectionReason.UNAVAILABLE,
+      );
+    }
+    case undefined:
+      throw new BrowserReadResolutionFailure(
+        'Data access resolver returned no outcome.',
+        'execution_failed',
+        ExecutionRejectionReason.INVALID_REQUEST,
+      );
+  }
+}
+
 type LocalDeltaResolutionRuntime = Readonly<{
   registryId: string;
   schemaName: string;
@@ -53,7 +127,7 @@ type LocalDeltaResolutionRuntime = Readonly<{
   descriptor: BrowserHttpSnapshotDescriptor;
 }>;
 
-export type BrowserReadResolutionDependencies = Readonly<{
+type BrowserReadResolutionDependencies = Readonly<{
   loadLocalDeltaRuntime?: (
     registryId: string,
     options: {
@@ -70,7 +144,16 @@ export type BrowserReadResolutionDependencies = Readonly<{
     expectedSnapshotVersion?: number;
     signal: AbortSignal;
   }) => Promise<BrowserHttpSnapshotDescriptor>;
+  loadSampleFixtureDescriptor?: (input: {
+    snapshotVersion?: number;
+    signal: AbortSignal;
+  }) => Promise<BrowserHttpSnapshotDescriptor>;
 }>;
+
+const SAMPLE_FIXTURE_CONNECTION_ID = 'axon-connection://sample-fixture/sample-lake';
+const SAMPLE_FIXTURE_NAMESPACE = 'axon.sample-fixture/v1';
+const SAMPLE_FIXTURE_LOCATOR = 'axon-fixture://sample-lake/prod_like/events';
+const SAMPLE_FIXTURE_TABLE_URI = 'gs://axon-sandbox/prod-like-events';
 
 export function canonicalTableForSelection(selection: AvailableQuerySourceSelection): TableNode {
   return create(TableNodeSchema, {
@@ -84,15 +167,15 @@ export function dataAccessResolverForSelection(
   selection: AvailableQuerySourceSelection,
   dependencies: BrowserReadResolutionDependencies = {},
 ): DataAccessResolver {
+  if (selection.source.kind === 'manifest') {
+    assertExactSampleFixtureSelection(selection);
+    return sampleFixtureResolver(selection, dependencies);
+  }
   switch (selection.source.kind) {
     case 'local_delta':
       return localDeltaResolver(selection, dependencies);
     case 'object_store_table_root':
       return publicObjectStorageResolver(selection, dependencies);
-    case 'manifest':
-      throw new TypeError(
-        `query source '${selection.source.kind}' does not have a Slice 2 resolver yet`,
-      );
   }
 }
 
@@ -100,6 +183,18 @@ function canonicalResourceForSelection(
   selection: AvailableQuerySourceSelection,
 ): CanonicalResourceRef {
   const source = selection.source;
+  if (source.kind === 'manifest') {
+    assertExactSampleFixtureSelection(selection);
+    return create(CanonicalResourceRefSchema, {
+      connectionId: SAMPLE_FIXTURE_CONNECTION_ID,
+      providerNamespace: SAMPLE_FIXTURE_NAMESPACE,
+      kind: ResourceKind.TABLE,
+      identity: {
+        case: 'canonicalLocator',
+        value: SAMPLE_FIXTURE_LOCATOR,
+      },
+    });
+  }
   switch (source.kind) {
     case 'local_delta':
       return create(CanonicalResourceRefSchema, {
@@ -127,10 +222,85 @@ function canonicalResourceForSelection(
         },
       });
     }
-    case 'manifest':
-      throw new TypeError(
-        `query source '${source.kind}' does not have a Slice 2 canonicalizer yet`,
-      );
+  }
+}
+
+function sampleFixtureResolver(
+  selection: AvailableQuerySourceSelection,
+  dependencies: BrowserReadResolutionDependencies,
+): DataAccessResolver {
+  assertExactSampleFixtureSelection(selection);
+  const expectedResource = canonicalResourceForSelection(selection);
+  return {
+    async resolve(resource, context) {
+      if (!equals(CanonicalResourceRefSchema, resource, expectedResource)) {
+        return providerErrorResolution(
+          ProviderErrorCode.INVALID,
+          'canonical resource did not match the explicit sample fixture',
+          context.executionId,
+        );
+      }
+      if (context.signal.aborted) {
+        throw new DOMException('cancelled', 'AbortError');
+      }
+      if (!dependencies.loadSampleFixtureDescriptor) {
+        return providerErrorResolution(
+          ProviderErrorCode.UNAVAILABLE,
+          'sample fixture descriptor loader is unavailable',
+          context.executionId,
+        );
+      }
+
+      let descriptor: BrowserHttpSnapshotDescriptor;
+      try {
+        descriptor = await dependencies.loadSampleFixtureDescriptor({
+          snapshotVersion: context.snapshotVersion,
+          signal: context.signal,
+        });
+      } catch (error) {
+        if (isAbortError(error) || context.signal.aborted) throw error;
+        return providerErrorResolution(
+          ProviderErrorCode.UNAVAILABLE,
+          error instanceof Error ? error.message : 'Sample fixture resolution was unavailable.',
+          context.executionId,
+        );
+      }
+      if (
+        descriptor.tableUri !== SAMPLE_FIXTURE_TABLE_URI ||
+        (context.snapshotVersion !== undefined &&
+          descriptor.snapshotVersion !== BigInt(context.snapshotVersion))
+      ) {
+        return providerErrorResolution(
+          ProviderErrorCode.INVALID,
+          'sample fixture descriptor identity did not match the explicit fixture',
+          context.executionId,
+        );
+      }
+
+      return create(ReadResolutionSchema, {
+        outcome: {
+          case: 'browserRead',
+          value: create(ResolvedBrowserReadSchema, {
+            resource,
+            descriptor: create(BrowserReadDescriptorSchema, {
+              descriptor: { case: 'snapshot', value: descriptor },
+            }),
+            accessClass: BrowserAccessClass.PUBLIC,
+            correlationId: context.executionId,
+            provenance: {
+              resolverId: SAMPLE_FIXTURE_NAMESPACE,
+              resolutionId: `${context.executionId}:sample-fixture`,
+            },
+          }),
+        },
+      });
+    },
+  };
+}
+
+function assertExactSampleFixtureSelection(selection: AvailableQuerySourceSelection): void {
+  if (!isExplicitSampleFixtureSelection(selection)) {
+    throw new TypeError('manifest execution is limited to the explicit sample fixture selection');
   }
 }
 
@@ -289,9 +459,7 @@ function localDeltaResolver(
           error instanceof LocalDeltaError
             ? ProviderErrorCode.INVALID
             : ProviderErrorCode.UNAVAILABLE,
-          error instanceof LocalDeltaError
-            ? error.message
-            : 'Local Delta resolution was unavailable.',
+          error instanceof Error ? error.message : 'Local Delta resolution was unavailable.',
           context.executionId,
         );
       }

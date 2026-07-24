@@ -1,8 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { ExecutionTarget as ContractExecutionTarget } from '../../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
+import { canonicalTableForSelection } from '../../services/browser-read-resolution.ts';
 import { defaultCapabilityMatrix } from '../../services/capabilities.ts';
 import { SAMPLE_QUERY_SOURCE, SAMPLE_QUERY_SOURCE_REF } from '../../services/query-source.ts';
-import type { QueryResultPageRun } from '../../services/query-pagination.ts';
+import {
+  browserQueryRequest,
+  queryResultPageRun,
+  type QueryResultPageRun,
+} from '../../services/query-pagination.ts';
 import type {
   CapabilityMatrixRow,
   ExecutionTarget,
@@ -91,19 +97,21 @@ function runFor(
   sql: string,
   target: ExecutionTarget | 'auto' = 'browser_wasm',
 ): QueryResultPageRun {
-  return {
-    request: {
+  const selection = {
+    kind: 'sample',
+    ref: SAMPLE_QUERY_SOURCE_REF,
+    source: SAMPLE_QUERY_SOURCE,
+  } as const;
+  return queryResultPageRun(
+    canonicalTableForSelection(selection),
+    browserQueryRequest({
       sql,
-      table_name: 'events',
-      preferred_target: target,
-      snapshot_version: 12,
-    },
-    selection: {
-      kind: 'sample',
-      ref: SAMPLE_QUERY_SOURCE_REF,
-      source: SAMPLE_QUERY_SOURCE,
-    },
-  };
+      preferredTarget:
+        target === 'native' ? ContractExecutionTarget.NATIVE : ContractExecutionTarget.BROWSER_WASM,
+    }),
+    selection,
+    12,
+  );
 }
 
 function metricsEvent(summary = metrics()): QueryEvent {

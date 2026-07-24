@@ -22,7 +22,11 @@ import {
   createValidatedBrowserExecutionProvider,
   type BrowserExecuteInput,
 } from './browser-execution-provider.ts';
-import type { AvailableQuerySourceSelection } from './query-source.ts';
+import {
+  SAMPLE_QUERY_SOURCE,
+  SAMPLE_QUERY_SOURCE_REF,
+  type AvailableQuerySourceSelection,
+} from './query-source.ts';
 
 const localSelection: AvailableQuerySourceSelection = {
   kind: 'resource',
@@ -218,6 +222,35 @@ describe('validated browser execution provider', () => {
     );
     expect(execute).not.toHaveBeenCalled();
   });
+
+  it('accepts the explicit same-origin sample fixture but rejects an outside-fixture URL', async () => {
+    const input = await sampleExecuteInput();
+    const execute = vi.fn(() => responses(create(ExecuteResponseSchema)));
+    const provider = createValidatedBrowserExecutionProvider({
+      execute,
+      cancel: () =>
+        create(CancelResponseSchema, {
+          executionId: input.request.executionId,
+          state: ExecutionLifecycleState.CANCEL_REQUESTED,
+        }),
+    });
+
+    await collect(provider.execute(input));
+    expect(execute).toHaveBeenCalledTimes(1);
+
+    if (
+      input.request.binding.case !== 'browserRead' ||
+      input.request.binding.value.descriptor?.descriptor.case !== 'snapshot'
+    ) {
+      throw new Error('sample test input omitted its snapshot');
+    }
+    input.request.binding.value.descriptor.descriptor.value.activeFiles[0]!.url =
+      'https://example.test/fixtures/prod-like/table/part-000.parquet';
+    await expect(collect(provider.execute(input))).rejects.toBeInstanceOf(
+      BrowserExecutionValidationError,
+    );
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
 });
 
 async function localExecuteRequest() {
@@ -295,6 +328,51 @@ async function publicExecuteInput(): Promise<BrowserExecuteInput> {
     table,
     request: create(ExecuteRequestSchema, {
       executionId: 'execution-public-1',
+      binding: { case: 'browserRead', value: resolution.outcome.value },
+      query: create(QueryRequestSchema, {
+        sql: 'select * from events',
+        preferredTarget: ExecutionTarget.BROWSER_WASM,
+      }),
+      deadline,
+    }),
+  };
+}
+
+async function sampleExecuteInput(): Promise<BrowserExecuteInput> {
+  const selection: AvailableQuerySourceSelection = {
+    kind: 'sample',
+    ref: SAMPLE_QUERY_SOURCE_REF,
+    source: SAMPLE_QUERY_SOURCE,
+  };
+  const table = canonicalTableForSelection(selection);
+  const deadline = timestampFromMs(1_800_000_120_000);
+  const resolution = await dataAccessResolverForSelection(selection, {
+    loadSampleFixtureDescriptor: async () =>
+      create(BrowserHttpSnapshotDescriptorSchema, {
+        tableUri: 'gs://axon-sandbox/prod-like-events',
+        snapshotVersion: 3n,
+        activeFiles: [
+          {
+            path: 'category=A/part-000.parquet',
+            url: 'http://localhost:5173/fixtures/prod-like/table/category=A/part-000.parquet',
+            sizeBytes: 128n,
+            partitionValues: {},
+          },
+        ],
+      }),
+  }).resolve(table.resource!, {
+    executionId: 'execution-sample-1',
+    deadline,
+    snapshotVersion: 3,
+    signal: new AbortController().signal,
+  });
+  if (resolution.outcome.case !== 'browserRead') {
+    throw new Error(`unexpected resolution ${resolution.outcome.case}`);
+  }
+  return {
+    table,
+    request: create(ExecuteRequestSchema, {
+      executionId: 'execution-sample-1',
       binding: { case: 'browserRead', value: resolution.outcome.value },
       query: create(QueryRequestSchema, {
         sql: 'select * from events',

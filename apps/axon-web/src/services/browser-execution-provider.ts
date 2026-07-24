@@ -45,7 +45,7 @@ export class BrowserExecutionValidationError extends Error {
   }
 }
 
-export type BrowserExecutionValidationOptions = Readonly<{
+type BrowserExecutionValidationOptions = Readonly<{
   now?: () => number;
   isCurrentLocalObjectUrl?: (registryId: string, url: string) => boolean;
 }>;
@@ -141,6 +141,10 @@ function validatePublicRead(
   if (read.resource?.identity.case !== 'canonicalLocator') {
     invalid('public browser reads require one canonical table locator');
   }
+  if (read.resource.providerNamespace === 'axon.sample-fixture/v1') {
+    validateSampleFixtureRead(read, descriptor);
+    return;
+  }
   const provider = publicProviderForNamespace(read.resource.providerNamespace);
   let root;
   try {
@@ -180,6 +184,59 @@ function validatePublicRead(
         /^w\//i.test(file.objectEtag))
     ) {
       invalid('public descriptor contains an unstable object identity');
+    }
+  }
+}
+
+function validateSampleFixtureRead(
+  read: ResolvedBrowserRead,
+  descriptor: BrowserHttpSnapshotDescriptor,
+): void {
+  if (
+    read.resource?.connectionId !== 'axon-connection://sample-fixture/sample-lake' ||
+    read.resource.identity.case !== 'canonicalLocator' ||
+    read.resource.identity.value !== 'axon-fixture://sample-lake/prod_like/events' ||
+    descriptor.tableUri !== 'gs://axon-sandbox/prod-like-events'
+  ) {
+    invalid('sample descriptor identity does not match the explicit fixture');
+  }
+  for (const file of descriptor.activeFiles) {
+    if (
+      file.path.startsWith('/') ||
+      file.path.includes('\\') ||
+      file.path.split('/').some((segment) => segment === '' || segment === '..')
+    ) {
+      invalid('sample descriptor contains an invalid fixture path');
+    }
+    let url: URL;
+    try {
+      url = new URL(file.url);
+    } catch {
+      invalid('sample descriptor contains an invalid fixture URL');
+    }
+    const expectedPath = `/fixtures/prod-like/table/${file.path}`;
+    const currentOrigin =
+      typeof globalThis.location === 'object' && globalThis.location
+        ? globalThis.location.origin
+        : undefined;
+    const loopback =
+      url.hostname === 'localhost' ||
+      url.hostname === '127.0.0.1' ||
+      url.hostname === '[::1]' ||
+      url.hostname === '::1';
+    if (
+      url.pathname !== expectedPath ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      (currentOrigin ? url.origin !== currentOrigin : !loopback) ||
+      (url.protocol !== 'http:' && url.protocol !== 'https:')
+    ) {
+      reject(
+        ExecutionRejectionReason.ACCESS_DENIED,
+        'sample descriptor contains an outside-fixture or capability-bearing URL',
+      );
     }
   }
 }

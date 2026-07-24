@@ -1388,42 +1388,60 @@ test('editor query session reopens its table after a child crash', async ({
   const result = await page.evaluate(async () => {
     const query = await import(new URL('/src/services/query.ts', location.href).href);
     const sourceModule = await import(new URL('/src/services/query-source.ts', location.href).href);
-    const keys = await import(new URL('/src/query/keys.ts', location.href).href);
+    const pagination = await import(
+      new URL('/src/services/query-pagination.ts', location.href).href
+    );
+    const lifecycle = await import(
+      new URL('/src/services/execution-lifecycle.ts', location.href).href
+    );
+    const contracts = await import(
+      new URL('/src/generated/contracts/protobuf/axon/exec/v1/exec_pb.ts', location.href).href
+    );
     const source = sourceModule.SAMPLE_QUERY_SOURCE;
     const selection = {
       kind: 'sample' as const,
       ref: sourceModule.SAMPLE_QUERY_SOURCE_REF,
       source,
     };
-    const sourceIdentity = keys.selectedQuerySourceIdentity(selection);
-    const admission = (executionId: string) => ({
-      executionId,
-      sourceIdentity,
+    const request = pagination.browserQueryRequest({
       sql: 'SELECT COUNT(*) AS value FROM events',
-      target: 'browser_wasm' as const,
-      deadlineAt: Date.now() + 30_000,
-      budgets: {
-        maxResultRows: 501,
-        maxArrowIpcBytes: 8 * 1024 * 1024,
-        maxPreviewStringBytes: 256 * 1024,
-        maxScanBytes: 64 * 1024 * 1024,
-      },
+      preferredTarget: contracts.ExecutionTarget.BROWSER_WASM,
     });
+    let nextExecutionId = '';
+    const executionController = lifecycle.createExecutionController({
+      idFactory: () => nextExecutionId,
+    });
+    const execute = async (executionId: string) => {
+      nextExecutionId = executionId;
+      const prepared = executionController.prepare({ timeoutMs: 30_000 });
+      if (prepared.kind === 'rejected') throw new Error('execution reservation was rejected');
+      const controller = new AbortController();
+      const input = await query.resolveBrowserExecuteInput({
+        selection,
+        query: request,
+        execution: prepared.execution,
+        signal: controller.signal,
+      });
+      const admission = executionController.admit(input.request);
+      if (
+        admission.admission.outcome.case !== 'accepted' ||
+        !admission.admission.outcome.value.launch
+      ) {
+        throw new Error('execution admission was rejected');
+      }
+      const outcome = await query.runQuery(input, () => undefined, source, controller.signal);
+      if (outcome.status === 'done') {
+        executionController.complete(executionId, outcome);
+      } else {
+        executionController.fail(executionId, outcome.code ?? 'query_error', outcome);
+      }
+      return outcome;
+    };
 
     query.discardQuerySession();
     try {
-      const first = await query.runQuery(
-        { sql: 'SELECT COUNT(*) AS value FROM events' },
-        () => undefined,
-        source,
-        admission('child-crash-first'),
-      );
-      const second = await query.runQuery(
-        { sql: 'SELECT COUNT(*) AS value FROM events' },
-        () => undefined,
-        source,
-        admission('child-crash-second'),
-      );
+      const first = await execute('child-crash-first');
+      const second = await execute('child-crash-second');
       return { first, second };
     } finally {
       query.discardQuerySession();

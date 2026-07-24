@@ -2,6 +2,7 @@ import { expect, test, type Locator, type Page, type Request, type Route } from 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ExecutionTarget as ContractExecutionTarget } from '../src/generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
 import {
   buildCatalogFromResult,
   catalogsAvailableForFeatures,
@@ -17,8 +18,10 @@ import {
   SAMPLE_QUERY_SOURCE_REF,
 } from '../src/services/query-source.ts';
 import { connectorFeaturesFromEnv } from '../src/services/connector-features.ts';
+import { canonicalTableForSelection } from '../src/services/browser-read-resolution.ts';
 import {
   QUERY_RESULT_PAGE_SIZE,
+  browserQueryRequest,
   queryResultPageRequest,
   queryResultPageRun,
   queryResultPageRunRequest,
@@ -393,7 +396,10 @@ test.describe('editor (Phase 1 smoke)', () => {
       { offset: 0, size: QUERY_RESULT_PAGE_SIZE },
     );
 
-    expect(workerPage).toEqual({ limit: QUERY_RESULT_PAGE_SIZE + 1, offset: 500 });
+    expect(workerPage).toMatchObject({
+      limit: BigInt(QUERY_RESULT_PAGE_SIZE + 1),
+      offset: 500n,
+    });
     expect(result.rows).toHaveLength(QUERY_RESULT_PAGE_SIZE);
     expect(result.row_count).toBe(QUERY_RESULT_PAGE_SIZE);
     expect(result.page).toMatchObject({
@@ -410,32 +416,39 @@ test.describe('editor (Phase 1 smoke)', () => {
   });
 
   test('query result page identity rejects loading more after SQL changes', () => {
+    const selection = {
+      kind: 'sample',
+      ref: SAMPLE_QUERY_SOURCE_REF,
+      source: SAMPLE_QUERY_SOURCE,
+    } as const;
+    const table = canonicalTableForSelection(selection);
     const original = queryResultPageRun(
-      {
+      table,
+      browserQueryRequest({
         sql: 'SELECT * FROM events',
-        table_name: 'events',
-        preferred_target: 'browser_wasm',
         page: { offset: 0, size: QUERY_RESULT_PAGE_SIZE },
-      },
-      { kind: 'sample', ref: SAMPLE_QUERY_SOURCE_REF, source: SAMPLE_QUERY_SOURCE },
+        preferredTarget: ContractExecutionTarget.BROWSER_WASM,
+      }),
+      selection,
     );
     const edited = queryResultPageRun(
-      {
+      table,
+      browserQueryRequest({
         sql: 'SELECT id FROM events',
-        table_name: 'events',
-        preferred_target: 'browser_wasm',
-      },
-      { kind: 'sample', ref: SAMPLE_QUERY_SOURCE_REF, source: SAMPLE_QUERY_SOURCE },
+        preferredTarget: ContractExecutionTarget.BROWSER_WASM,
+      }),
+      selection,
     );
 
     expect(sameQueryResultPageRun(original, edited)).toBe(false);
     expect(
       queryResultPageRunRequest(original, { offset: QUERY_RESULT_PAGE_SIZE, size: 250 }),
-    ).toEqual({
+    ).toMatchObject({
       sql: 'SELECT * FROM events',
-      table_name: 'events',
-      preferred_target: 'browser_wasm',
-      page: { offset: QUERY_RESULT_PAGE_SIZE, size: 250 },
+      preferredTarget: ContractExecutionTarget.BROWSER_WASM,
+      options: {
+        resultPage: { offset: BigInt(QUERY_RESULT_PAGE_SIZE), limit: 251n },
+      },
     });
   });
 
@@ -1526,7 +1539,7 @@ test.describe('editor (Phase 1 smoke)', () => {
 
     await page.locator('.btn.primary', { hasText: 'Run' }).click();
 
-    await expect(page.locator('.res-meta')).toContainText(/failed/i, { timeout: 15_000 });
+    await expect(page.locator('.res-meta')).toContainText(/rejected/i, { timeout: 15_000 });
     await expect(page.locator('.results')).toContainText('registry boom');
   });
 

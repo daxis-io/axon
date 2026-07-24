@@ -159,14 +159,6 @@ export type QueryRunError = {
 
 export type QueryRunOutcome = QueryRunResult | QueryRunError;
 
-export type QueryExecRequest = {
-  sql: string;
-  table_name: string;
-  preferred_target: ExecutionTarget | 'auto';
-  snapshot_version?: number;
-  page?: QueryPageRequest;
-};
-
 // ─── History ────────────────────────────────────────────────────────────────
 
 export type HistoryEntry = {
