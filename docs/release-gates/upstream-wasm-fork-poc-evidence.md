@@ -6,6 +6,7 @@
 - Axon branch: `poc/upstream-wasm-fork-stack`
 - Axon compatibility base: `62d4c465e10dc329221023eaaf2c67c542c408ce`
 - Raw evidence root: `target/upstream-wasm-fork-poc-evidence/<stack-lock-hash>/`
+- Current stack-lock SHA-256: `50c1fd6f63c65141c66fecb8c4ba277f9d0820561ca873e3541d2b502bb801d4`
 
 This record separates graph viability, browser runtime viability, protocol interoperability,
 downstream viability, native compatibility, product measurements, and upstream readiness. A passing
@@ -89,7 +90,7 @@ required gates.
 
 | Repository | Owner | Base | Candidate revision | Stack revision | Disposition | Removal condition | Cargo lock SHA-256 | Candidate CI | Stack CI |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `daxis-io/arrow-rs` | Runtime / engine team | `913bab26ba9bed8fc2bc1acda300cc52345b0da1` | `UNSET` | `UNSET` | `proposed` | Accepted upstream release adopted and locked Axon rehearsal passes. | `UNSET` | `UNSET` | `UNSET` |
+| `daxis-io/arrow-rs` | Runtime / engine team | `913bab26ba9bed8fc2bc1acda300cc52345b0da1` | `ae7ea8ca6c13bc80f8bae683fa443ab9fd458080` | `ae7ea8ca6c13bc80f8bae683fa443ab9fd458080` | `opened` | Accepted upstream release adopted and locked Axon rehearsal passes. | `a7b15dc895f1a84a9bec543d73896f3d65c60be2db2648cc74c63b94ad25ae3f` | [Arrow](https://github.com/daxis-io/arrow-rs/actions/runs/30063394535), [Parquet](https://github.com/daxis-io/arrow-rs/actions/runs/30063394593) pending | Same revision; complete pinned-graph CI pending. |
 | `daxis-io/arrow-rs-object-store` | Runtime / engine team | `7a65b75b0d26fd8a282999462cb7030fb85fdcc3` | `UNSET` | `UNSET` | `proposed` | Accepted upstream release adopted and locked Axon rehearsal passes. | `UNSET` | `UNSET` | `UNSET` |
 | `daxis-io/datafusion` | Runtime / engine team | `eae7bf4fa1c037c0a065d1f36d0669f5bb97a9cf` | `UNSET` | `UNSET` | `proposed` | Accepted upstream release adopted and locked Axon rehearsal passes. | `UNSET` | `UNSET` | `UNSET` |
 | `daxis-io/delta-kernel-rs` | Runtime / engine team | `f4602a43fe886f45cc3523360bc2488b8f3a2e58` | `UNSET` | `UNSET` | `proposed` | Compatible upstream release adopted and downstream browser rehearsal passes. | `UNSET` | `UNSET` | `UNSET` |
@@ -97,6 +98,50 @@ required gates.
 
 Corrections are additive commits followed by downstream repins. Published candidate or stack
 revisions are never force-pushed or rewritten.
+
+## Arrow And Parquet Candidate
+
+Draft Daxis PR: [`daxis-io/arrow-rs#1`](https://github.com/daxis-io/arrow-rs/pull/1), targeting
+`poc/base/arrow-58.3.0`.
+
+The clean candidate contains three DCO-signed commits:
+
+| Commit | Concern |
+| --- | --- |
+| `b895ca27bc9b1849d91651436d1ded7f557f9bfc` | Preserve the logical Parquet zstd feature while excluding its native backend only on `wasm32-unknown-unknown`; add distinct feature-disabled and target-unavailable page-decode errors. |
+| `cec96911c810bae6f460f75fb1af0b063861c5bb` | Add the required Apache license header to the Parquet codec test as an additive correction. |
+| `ae7ea8ca6c13bc80f8bae683fa443ab9fd458080` | Apply the same target-specific backend policy to Arrow IPC zstd compression and decompression, propagate writer errors without a partial record batch, and extend the WASM dependency policy. |
+
+Witnessed red results:
+
+- the exact Parquet and Arrow IPC feature-unified WASM checks both failed through `zstd-sys` and
+  Clang before the target dependency split;
+- the Arrow IPC feature-disabled writer test panicked at the infallible writer assertion before
+  the error-propagation change.
+
+Green verification was repeated from a detached clean worktree at
+`ae7ea8ca6c13bc80f8bae683fa443ab9fd458080`:
+
+| Gate | Result |
+| --- | --- |
+| `cargo test -p parquet --locked` | Passed: 1,088 library tests plus integration and doctest suites. |
+| `cargo test -p parquet --all-features --locked` | Passed: 1,138 library tests plus integration and doctest suites. |
+| `cargo test -p arrow-ipc --locked` | Passed: 113 library tests plus all integration suites. |
+| `cargo test -p arrow-ipc --all-features --locked` | Passed: 118 library tests plus all integration suites. |
+| Exact `wasm32-unknown-unknown` Parquet and Arrow IPC checks | Passed with the public codec features enabled. |
+| `dev/check_wasm_dependency_policy.sh parquet` and `arrow-ipc` | Passed; `zstd-sys` is absent from both normal/build target graphs. |
+| All-target, all-feature Clippy for both crates with warnings denied | Passed. |
+| Formatting, diff checks, DCO, and downstream-pin scan | Passed. No Daxis URL or revision appears in the candidate diff. |
+
+Independent native-generated fixtures:
+
+| Fixture | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `parquet/tests/data/wasm_zstd.parquet` | 479 | `5ba396599033bfd515a3be73e62b50e4dc7768c7cbf35508feeafc9a1d817f8e` |
+| `arrow-ipc/tests/data/wasm_zstd.arrow` | 520 | `84c510e9064ca5be3eb7ee488e9b5ddd6e1efed800ccc53918ed74d3e20db4a8` |
+
+The candidate and stack branches both resolve from the fork to the accepted commit. Candidate CI
+is running at that exact SHA; conclusions and artifacts remain pending.
 
 ## Evidence Verdicts
 
@@ -106,7 +151,7 @@ revisions are never force-pushed or rewritten.
 | Browser runtime viability | Pending | Chrome and Firefox happy-path query. |
 | Protocol interoperability | Pending | Cross-origin Range, validator, retry, and error suites. |
 | Downstream viability | Pending | delta-rs browser crate through the Axon-hosted harness. |
-| Native compatibility | Pending | Native default matrix for all five forks. |
+| Native compatibility | Partial | Arrow/Parquet native-default and all-feature gates pass at the accepted leaf revision; four forks remain. |
 | Product viability | Pending | Bundle size, latency, memory, request count, and transferred bytes. |
 | Upstream readiness | Pending | Nine clean forward-port concern branches against refreshed canonical heads. |
 

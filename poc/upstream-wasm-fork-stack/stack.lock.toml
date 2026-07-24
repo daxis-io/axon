@@ -6,8 +6,8 @@ axon_base_rev = "62d4c465e10dc329221023eaaf2c67c542c408ce"
 canonical = "https://github.com/apache/arrow-rs"
 fork = "https://github.com/daxis-io/arrow-rs"
 base_rev = "913bab26ba9bed8fc2bc1acda300cc52345b0da1"
-candidate_rev = "UNSET"
-stack_rev = "UNSET"
+candidate_rev = "ae7ea8ca6c13bc80f8bae683fa443ab9fd458080"
+stack_rev = "ae7ea8ca6c13bc80f8bae683fa443ab9fd458080"
 
 [repositories.object_store]
 canonical = "https://github.com/apache/arrow-rs-object-store"
