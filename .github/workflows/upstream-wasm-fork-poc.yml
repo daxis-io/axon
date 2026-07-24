@@ -22,9 +22,11 @@ jobs:
         run: |
           apt-get update
           apt-get install --yes --no-install-recommends \
-            ca-certificates curl git libc6-dev libgcc-12-dev lld python3
+            ca-certificates curl git libc6-dev libgcc-12-dev lld python3 ripgrep
           rm -rf /var/lib/apt/lists/*
       - uses: actions/checkout@v4
+      - name: Trust the container checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Install Rust and the browser target
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
@@ -82,6 +84,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
+      - name: Install verifier dependencies
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - name: Reject fork pins in shipping workspaces
         run: |
           if git grep -n 'daxis-io' -- Cargo.toml Cargo.lock crates apps; then
