@@ -8,7 +8,9 @@
 
 **Tech Stack:** Rust, Apache Arrow/Parquet 58.3, DataFusion 53.1, TypeScript, Vitest, Playwright, Web Workers, wasm-bindgen.
 
-**Base and mutation boundary:** Work only in `.worktrees/streaming-memory-bounds` on `feat/streaming-memory-bounds`, based on `9e45d68736b12b574bc8d5b16a6661a354a003d3`. Keep all commits local; do not push or open a PR.
+**Original implementation boundary:** Work only in `.worktrees/streaming-memory-bounds` on `feat/streaming-memory-bounds`, based on `9e45d68736b12b574bc8d5b16a6661a354a003d3`. Keep all commits local; do not push or open a PR until a separate publication request.
+
+**Publication reconciliation:** Before publication, replay only the unique memory-bound work onto live `origin/main`, preserve newer coordinator/cursor behavior, rerun the complete verification matrix, and require a normal fast-forward push.
 
 **Non-goals:**
 
@@ -200,7 +202,7 @@ git commit -m "feat: bound datafusion operator memory"
 - Modify: `apps/axon-web/src/sandbox-query-stream-protocol.test.ts`
 - Modify: `apps/axon-web/src/sandbox-query-worker.ts`
 - Modify: `apps/axon-web/tests/internal-arrow-ipc-stream.spec.ts`
-- Modify: `apps/axon-web/tests/browser-heap-evidence.spec.ts`
+- Modify: `apps/axon-web/tests/browser-query-performance.spec.ts`
 - Modify: `docs/plans/2026-07-23-streaming-owned-memory-bounds.md`
 
 **Step 1: Write the failing SDK event test**
@@ -243,12 +245,12 @@ Expected: PASS in Chromium, Firefox, and WebKit.
 
 **Step 4: Retain the total-heap canary**
 
-Update the Chromium heap evidence annotations to include the owned-memory limit/peak values observed during the same repeated-query loop. Keep `measureUserAgentSpecificMemory()` as a separate retained-heap assertion and document why it cannot be made portable.
+Update the consolidated Chromium query-performance evidence to include the owned-memory limit/peak values observed during the same repeated-query loop. Keep `measureUserAgentSpecificMemory()` as a separate retained-heap assertion and document why it cannot be made portable.
 
 Run:
 
 ```bash
-npm run test:browser:heap-evidence
+npm run test:browser:query-performance
 ```
 
 Expected: PASS in Chromium with retained heap delta at or below 8 MiB and owned peaks within both configured limits.
@@ -256,7 +258,7 @@ Expected: PASS in Chromium with retained heap delta at or below 8 MiB and owned 
 **Step 5: Commit**
 
 ```bash
-git add apps/axon-web/src/axon-browser-sdk.ts apps/axon-web/tests/axon-browser-sdk.spec.ts apps/axon-web/src/generated/contracts/exec-codegen.test.ts apps/axon-web/src/sandbox-query-stream-protocol.ts apps/axon-web/src/sandbox-query-stream-protocol.test.ts apps/axon-web/src/sandbox-query-worker.ts apps/axon-web/tests/internal-arrow-ipc-stream.spec.ts apps/axon-web/tests/browser-heap-evidence.spec.ts docs/plans/2026-07-23-streaming-owned-memory-bounds.md
+git add apps/axon-web/src/axon-browser-sdk.ts apps/axon-web/tests/axon-browser-sdk.spec.ts apps/axon-web/src/generated/contracts/exec-codegen.test.ts apps/axon-web/src/sandbox-query-stream-protocol.ts apps/axon-web/src/sandbox-query-stream-protocol.test.ts apps/axon-web/src/sandbox-query-worker.ts apps/axon-web/tests/internal-arrow-ipc-stream.spec.ts apps/axon-web/tests/browser-query-performance.spec.ts docs/plans/2026-07-23-streaming-owned-memory-bounds.md
 git commit -m "test: prove streaming owned-memory plateau"
 ```
 
@@ -265,7 +267,7 @@ git commit -m "test: prove streaming owned-memory plateau"
 - SDK red: both owned-memory cases failed on the unknown event tag; SDK green: 2/2.
 - Private-terminal red: malformed DataFusion counters were accepted; focused green: 1/1.
 - Browser red: Chromium observed 0 of 21 required snapshots; green: Chromium, Firefox, and WebKit each completed the warm query plus 20 repeated atomic queries with stable high-water marks.
-- Chromium heap evidence passed with 21 owned-memory snapshots; coordinator and DataFusion current ownership returned to zero and both peaks stayed within their configured limits.
+- Consolidated Chromium query-performance evidence passed with 21 owned-memory snapshots; coordinator and DataFusion current ownership returned to zero and both peaks stayed within their configured limits.
 - `npx tsc --noEmit` passed after explicitly keeping the browser-only event outside the protobuf event projection.
 
 ## Task 5: Full verification and local handoff
@@ -297,7 +299,7 @@ npx tsc --noEmit
 npm run format:check
 npm run build
 npx playwright test tests/internal-arrow-ipc-stream.spec.ts tests/browser-worker-matrix.spec.ts --config=playwright.config.ts
-npm run test:browser:heap-evidence
+npm run test:browser:query-performance
 ```
 
 **Step 2: Record evidence and residual boundaries**
@@ -315,7 +317,7 @@ Run:
 
 ```bash
 git status --short --branch
-git log --oneline 9e45d68736b12b574bc8d5b16a6661a354a003d3..HEAD
+git log --oneline origin/main..HEAD
 ```
 
 Expected: clean branch with the plan and implementation commits only.
@@ -326,3 +328,36 @@ Expected: clean branch with the plan and implementation commits only.
 git add docs/plans/2026-07-23-streaming-owned-memory-bounds.md
 git commit -m "docs: record streaming memory verification"
 ```
+
+## Execution handoff (2026-07-23)
+
+The reconciled implementation head before this handoff commit is `0aa6b57`. The publication candidate is a strict descendant of live `origin/main`, and the public `query()` result remains atomic.
+
+Fresh verification:
+
+- `cargo fmt --all -- --check`: passed.
+- `RUSTFLAGS="-D warnings" cargo check -p wasm-parquet-engine --locked`: passed; the inherited Arrow page-index deprecation is gone.
+- `cargo test -p wasm-parquet-engine --locked`: 53 passed.
+- `cargo test -p wasm-datafusion-poc --locked`: 90 passed.
+- `cargo test -p wasm-datafusion-session --locked`: 42 passed.
+- `cargo test -p axon-web-wasm --locked`: 4 passed.
+- `bash tests/perf/report_datafusion_wasm_size_test.sh`: passed.
+- `npm test`: 34 files and 267 tests passed.
+- `npm run test:sdk`: 154 passed.
+- `npm run lint`, `npx tsc --noEmit`, and `npm run format:check`: passed.
+- `npm run build`: fixture generation, Wasm release build, TypeScript, and Vite production build passed.
+- `PLAYWRIGHT_BASE_URL=https://127.0.0.1:5298 npx playwright test tests/internal-arrow-ipc-stream.spec.ts tests/browser-worker-matrix.spec.ts --config=playwright.config.ts`: 52 passed across Chromium, Firefox, and WebKit; 2 Firefox nested-worker cases remained intentionally skipped.
+- `PLAYWRIGHT_BASE_URL=https://127.0.0.1:5299 npm run test:browser:query-performance`: 1 passed in Chromium; retained heap stayed within 8 MiB, all terminal samples reported released coordinator/DataFusion ownership, and steady-state peaks stayed inside their limits.
+
+The authoritative browser runs used isolated ports 5298 and 5299 so Playwright could not reuse another worktree's server. The first integrated matrix exposed a real test interaction: the 32 MiB aggregate reservation bound rejected the fifth default 8 MiB query before the inherited 32-request test could exercise request-count capacity. Commit `0aa6b57` makes the aggregate limit non-binding only in that request-capacity test; the focused Chromium/WebKit regression and the full matrix then passed.
+
+One verification gate remains external: `npm run codegen:check` invokes remote plugins at `buf.build` and was not rerun without explicit authorization to transmit the protobuf definitions to that third party. `git diff origin/main...HEAD -- apps/axon-web/proto crates/contract-proto` is empty; the browser-only event remains deliberately outside the protobuf projection, while the local TypeScript and generated-contract tests compile and pass.
+
+Post-fetch integration baseline: `origin/main` is `3e5aceda0c1eb2c0dea983c0e5849200447a363f`, the pre-handoff head is `0aa6b57`, and `git rev-list --left-right --count origin/main...HEAD` reports 0 main-only commits and 5 integration commits. The original page-index commit was not replayed because current main's `a021672` already carries the equivalent, more comprehensive fix. The original `feat/streaming-memory-bounds` branch remains preserved at `42c18b3`.
+
+Residual boundaries:
+
+- Total browser heap remains a Chromium-only canary because Firefox and WebKit do not expose `measureUserAgentSpecificMemory()`.
+- Coordinator staging now has an independent 32 MiB aggregate admission bound, but atomic single-buffer assembly can still copy a bounded staged result before transfer.
+- The 64 MiB DataFusion pool governs DataFusion-registered reservations, not every Arrow, Wasm, JavaScript, cache, or browser allocation.
+- SDK final materialization remains atomic and may copy chunked output. Lazy result materialization stays deferred unless later measurements justify the API complexity.
