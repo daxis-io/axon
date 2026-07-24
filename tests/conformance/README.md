@@ -13,6 +13,8 @@ Current contents:
 - `verify_daxis_query_corpus_coverage_test.sh`: regression coverage for the query-corpus compatibility coverage verifier.
 - `verify_embedding_sketch_contract.sh`: verifies the minimal embedding sketch uses the SDK client contract rather than obsolete raw worker messages.
 - `verify_patch_inventory_state.sh`: verifies the patch inventory is real state, not a template, and that vendoring or `[patch]` sections cannot appear without an inventory entry.
+- `verify_upstream_wasm_fork_stack.sh`: verifies the Daxis upstream-WASM POC repository revisions, rejects mutable branch dependencies, compares fork revisions with the nested browser `Cargo.lock`, and checks the target-filtered normal/build graph for duplicate Arrow, Parquet, `object_store`, DataFusion, or Kernel package sources. `--bootstrap` (also accepted as `--allow-unset`) permits unfinished leaf revisions and a missing browser lock; the default final mode rejects both.
+- `verify_upstream_wasm_fork_stack_test.sh`: regression coverage for stack-lock shape, revision reachability, bootstrap/final mode separation, immutable dependency pins, Cargo lock provenance, and duplicate guarded package sources.
 - `verify_daxis_operational_readiness.sh`: verifies the M4 Daxis operational-readiness handoff names dashboard, runbook, rollout-control, compatibility-dashboard, and release-evidence requirements without claiming production systems exist in this repo. It also requires unique source docs, dashboard names, runbook names, and release automation commands, rejects release automation commands that are not listed by the release-evidence runner, keeps the operational-readiness verifier in the automation set, and requires the ADR, operational maturity, observability, release runbook, strategy, external handoff, rollout decisions, external proof packet, release bundle, release evidence, and external blocker source docs.
 - `verify_daxis_operational_readiness_test.sh`: regression coverage for the operational-readiness verifier.
 - `verify_daxis_release_evidence.sh`: runs or lists the Daxis release evidence gate set for repeatable go/no-go checks, including Daxis verifier regression scripts, the Daxis default-worker dependency and bundle secret-marker guardrail after the WASM artifact is built, and the skip-safe public GCS live smoke.
@@ -71,6 +73,9 @@ Useful local commands:
 - `bash tests/conformance/verify_embedding_sketch_contract.sh`
 - `bash tests/conformance/verify_patch_inventory_state.sh`
 - `bash tests/conformance/verify_patch_inventory_state_test.sh`
+- `bash tests/conformance/verify_upstream_wasm_fork_stack_test.sh`
+- `bash tests/conformance/verify_upstream_wasm_fork_stack.sh --bootstrap`
+- `bash tests/conformance/verify_upstream_wasm_fork_stack.sh`
 - `bash tests/conformance/verify_daxis_operational_readiness_test.sh`
 - `bash tests/conformance/verify_daxis_operational_readiness.sh`
 - `bash tests/conformance/verify_daxis_release_evidence_test.sh`

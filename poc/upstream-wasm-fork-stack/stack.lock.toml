@@ -1,0 +1,39 @@
+schema = 1
+target = "wasm32-unknown-unknown"
+axon_base_rev = "62d4c465e10dc329221023eaaf2c67c542c408ce"
+
+[repositories.arrow_rs]
+canonical = "https://github.com/apache/arrow-rs"
+fork = "https://github.com/daxis-io/arrow-rs"
+base_rev = "913bab26ba9bed8fc2bc1acda300cc52345b0da1"
+candidate_rev = "UNSET"
+stack_rev = "UNSET"
+
+[repositories.object_store]
+canonical = "https://github.com/apache/arrow-rs-object-store"
+fork = "https://github.com/daxis-io/arrow-rs-object-store"
+base_rev = "7a65b75b0d26fd8a282999462cb7030fb85fdcc3"
+candidate_rev = "UNSET"
+stack_rev = "UNSET"
+
+[repositories.datafusion]
+canonical = "https://github.com/apache/datafusion"
+fork = "https://github.com/daxis-io/datafusion"
+base_rev = "eae7bf4fa1c037c0a065d1f36d0669f5bb97a9cf"
+candidate_rev = "UNSET"
+stack_rev = "UNSET"
+
+[repositories.delta_kernel]
+canonical = "https://github.com/delta-io/delta-kernel-rs"
+compatibility_source = "https://github.com/buoyant-data/delta-kernel-rs"
+fork = "https://github.com/daxis-io/delta-kernel-rs"
+base_rev = "f4602a43fe886f45cc3523360bc2488b8f3a2e58"
+candidate_rev = "UNSET"
+stack_rev = "UNSET"
+
+[repositories.delta_rs]
+canonical = "https://github.com/delta-io/delta-rs"
+fork = "https://github.com/daxis-io/delta-rs"
+base_rev = "df72cc6d3fba014a77243ce80514a6122b46a89b"
+candidate_rev = "UNSET"
+stack_rev = "UNSET"
