@@ -39,6 +39,46 @@ const localSelection: AvailableQuerySourceSelection = {
   },
 };
 
+const publicGcsSelection: AvailableQuerySourceSelection = {
+  kind: 'resource',
+  ref: {
+    catalogId: 'public-gcs',
+    schemaName: 'default',
+    tableName: 'events',
+  },
+  source: {
+    kind: 'object_store_table_root',
+    provider: 'gcs',
+    catalogName: 'Public GCS',
+    schemaName: 'default',
+    tableName: 'events',
+    tableUri: ' gs://Public-Bucket/events/table/ ',
+    storage: 'gs://Public-Bucket/events/table',
+    region: 'global',
+    snapshot: 12,
+  },
+};
+
+const publicS3Selection: AvailableQuerySourceSelection = {
+  kind: 'resource',
+  ref: {
+    catalogId: 'public-s3',
+    schemaName: 'default',
+    tableName: 'events',
+  },
+  source: {
+    kind: 'object_store_table_root',
+    provider: 's3',
+    catalogName: 'Public S3',
+    schemaName: 'default',
+    tableName: 'events',
+    tableUri: 's3://public-bucket/events/table/',
+    storage: 's3://public-bucket/events/table',
+    region: ' US-EAST-2 ',
+    snapshot: 14,
+  },
+};
+
 describe('browser read canonical identity', () => {
   it('maps an exact local Delta selection to one generated table resource', async () => {
     expect(canonicalTableForSelection).toBeTypeOf('function');
@@ -215,12 +255,98 @@ describe('browser read canonical identity', () => {
       },
     });
   });
+
+  it.each([
+    [
+      publicGcsSelection,
+      {
+        connectionId: 'axon-connection://public-gcs/Public-Bucket',
+        providerNamespace: 'axon.public-gcs/v1',
+        canonicalLocator: 'gs://Public-Bucket/events/table',
+      },
+    ],
+    [
+      publicS3Selection,
+      {
+        connectionId: 'axon-connection://public-s3/us-east-2/public-bucket',
+        providerNamespace: 'axon.public-s3/v1',
+        canonicalLocator: 's3://public-bucket/events/table',
+      },
+    ],
+  ])('maps a normalized public table root to one canonical resource', (selection, expected) => {
+    expect(canonicalTableForSelection(selection)).toMatchObject({
+      name: 'events',
+      resource: {
+        connectionId: expected.connectionId,
+        providerNamespace: expected.providerNamespace,
+        kind: ResourceKind.TABLE,
+        identity: {
+          case: 'canonicalLocator',
+          value: expected.canonicalLocator,
+        },
+      },
+    });
+  });
+
+  it.each([publicGcsSelection, publicS3Selection])(
+    'resolves a requested public snapshot into a fresh non-expiring PUBLIC envelope',
+    async (selection) => {
+      const source = selection.source;
+      if (source.kind !== 'object_store_table_root') {
+        throw new Error('public resolver fixture must be an object-store table root');
+      }
+      const tableUri =
+        source.provider === 'gcs'
+          ? 'gs://Public-Bucket/events/table'
+          : 's3://public-bucket/events/table';
+      const descriptor = localDescriptor(tableUri, source.snapshot);
+      const loadPublicObjectStorageDescriptor = vi.fn(async () => descriptor);
+      const resolver = dataAccessResolverForSelection(selection, {
+        loadPublicObjectStorageDescriptor,
+      });
+      const table = canonicalTableForSelection(selection);
+
+      const resolution = await resolver.resolve(table.resource!, {
+        executionId: `execution-${source.provider}`,
+        deadline: timestampFromMs(1_800_000_120_000),
+        snapshotVersion: source.snapshot,
+        signal: new AbortController().signal,
+      });
+
+      expect(loadPublicObjectStorageDescriptor).toHaveBeenCalledWith({
+        provider: source.provider,
+        tableUri,
+        region: source.provider === 's3' ? 'us-east-2' : undefined,
+        snapshotVersion: source.snapshot,
+        expectedSnapshotVersion: source.snapshot,
+        signal: expect.objectContaining({ aborted: false }),
+      });
+      expect(resolution.outcome.case).toBe('browserRead');
+      if (resolution.outcome.case !== 'browserRead') return;
+      expect(resolution.outcome.value).toMatchObject({
+        resource: table.resource,
+        descriptor: {
+          descriptor: {
+            case: 'snapshot',
+            value: descriptor,
+          },
+        },
+        accessClass: BrowserAccessClass.PUBLIC,
+        correlationId: `execution-${source.provider}`,
+        provenance: {
+          resolverId: `axon.public-${source.provider}/v1`,
+          resolutionId: `execution-${source.provider}:public-${source.provider}`,
+        },
+      });
+      expect(resolution.outcome.value.notAfter).toBeUndefined();
+    },
+  );
 });
 
-function localDescriptor() {
+function localDescriptor(tableUri = 'browser-local://delta-table/events', snapshotVersion = 12) {
   return create(BrowserHttpSnapshotDescriptorSchema, {
-    tableUri: 'browser-local://delta-table/events',
-    snapshotVersion: 12n,
+    tableUri,
+    snapshotVersion: BigInt(snapshotVersion),
     partitionColumnTypes: {
       day: PartitionColumnType.STRING,
     },

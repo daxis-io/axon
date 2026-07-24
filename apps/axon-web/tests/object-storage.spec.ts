@@ -1,4 +1,10 @@
 import { expect, test } from '@playwright/test';
+import { create } from '@bufbuild/protobuf';
+import {
+  BrowserHttpSnapshotDescriptorSchema,
+  CapabilityKey,
+  CapabilityState,
+} from '../src/generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 
 import {
   buildPublicDeltaLogManifest,
@@ -275,6 +281,7 @@ test.describe('public object storage', () => {
     const descriptor = await resolvePublicObjectStorageDescriptor({
       provider: 'gcs',
       tableUri: 'gs://bucket/table',
+      snapshotVersion: 7,
       onMetrics: (metrics) => metricEvents.push(metrics),
       fetch: async (input) => {
         requests.push(String(input));
@@ -290,8 +297,9 @@ test.describe('public object storage', () => {
           { status: 200, headers: { 'content-type': 'application/xml' } },
         );
       },
-      resolveDeltaSnapshotFromManifest: async (manifestJson, tableUri) => {
+      resolveDeltaSnapshotFromManifest: async (manifestJson, tableUri, snapshotVersion) => {
         expect(tableUri).toBe('gs://bucket/table');
+        expect(snapshotVersion).toBe(7);
         expect(JSON.parse(manifestJson)).toEqual({
           objects: [
             {
@@ -303,7 +311,7 @@ test.describe('public object storage', () => {
         });
         return JSON.stringify({
           table_uri: tableUri,
-          snapshot_version: 0,
+          snapshot_version: 7,
           partition_column_types: {},
           browser_compatibility: {
             capabilities: {
@@ -337,26 +345,39 @@ test.describe('public object storage', () => {
         snapshot_resolve_duration_ms: expect.any(Number),
       },
     ]);
-    expect(descriptor).toEqual({
-      table_uri: 'gs://bucket/table',
-      snapshot_version: 0,
-      partition_column_types: {},
-      browser_compatibility: {
-        capabilities: {
-          deletion_vectors: 'native_only',
-        },
+    expect(descriptor).toMatchObject({
+      tableUri: 'gs://bucket/table',
+      snapshotVersion: 7n,
+      partitionColumnTypes: {},
+      browserCompatibility: {
+        capabilities: [
+          {
+            key: CapabilityKey.DELETION_VECTORS,
+            state: CapabilityState.NATIVE_ONLY,
+          },
+        ],
       },
-      required_capabilities: {
-        capabilities: {
-          deletion_vectors: 'native_only',
-        },
+      requiredCapabilities: {
+        capabilities: [
+          {
+            key: CapabilityKey.DELETION_VECTORS,
+            state: CapabilityState.NATIVE_ONLY,
+          },
+        ],
       },
-      active_files: [
+      activeFiles: [
         {
           path: 'category=A/part-000.parquet',
           url: 'https://storage.googleapis.com/bucket/table/category%3DA/part-000.parquet',
-          size_bytes: 128,
-          partition_values: { category: 'A' },
+          sizeBytes: 128n,
+          partitionValues: {
+            category: {
+              value: {
+                case: 'stringValue',
+                value: 'A',
+              },
+            },
+          },
           stats: '{"numRecords":1}',
         },
       ],
@@ -406,12 +427,12 @@ test.describe('public object storage', () => {
     });
 
     expect(descriptor).toMatchObject({
-      table_uri: 's3://bucket/table',
-      active_files: [
+      tableUri: 's3://bucket/table',
+      activeFiles: [
         {
           path: 'part-000.parquet',
           url: 'https://bucket.s3.us-east-2.amazonaws.com/table/part-000.parquet',
-          size_bytes: 128,
+          sizeBytes: 128n,
         },
       ],
     });
@@ -500,13 +521,14 @@ test.describe('public object storage', () => {
 
     expect(cached?.descriptor).toEqual({
       ...descriptor,
-      active_files: [
+      activeFiles: [
         {
+          $typeName: 'axon.dataaccess.v1.BrowserHttpFileDescriptor',
           path: 'part-000.parquet',
           url: 'https://storage.googleapis.com/bucket/table/part-000.parquet',
-          size_bytes: 128,
-          partition_values: {},
-          object_etag: '"part-000-v1"',
+          sizeBytes: 128n,
+          partitionValues: {},
+          objectEtag: '"part-000-v1"',
         },
       ],
     });
@@ -565,32 +587,30 @@ test.describe('public object storage', () => {
         snapshot: { kind: 'latest' },
         expectedSnapshotVersion: 0,
         nowMs: () => 2_000,
-      })?.descriptor.active_files[0],
+      })?.descriptor.activeFiles[0],
     ).toMatchObject({
       path: 'part-000.parquet',
-      size_bytes: 128,
-      object_etag: '"part-000-v1"',
+      sizeBytes: 128n,
+      objectEtag: '"part-000-v1"',
     });
     clearPublicObjectStorageRuntimeCache();
   });
 
   test('keeps public S3 descriptor runtime cache entries scoped by bucket region', () => {
     clearPublicObjectStorageRuntimeCache();
-    const descriptor = {
-      table_uri: 's3://bucket/table',
-      snapshot_version: 0,
-      partition_column_types: {},
-      browser_compatibility: { capabilities: {} },
-      required_capabilities: { capabilities: {} },
-      active_files: [
+    const descriptor = create(BrowserHttpSnapshotDescriptorSchema, {
+      tableUri: 's3://bucket/table',
+      snapshotVersion: 0n,
+      partitionColumnTypes: {},
+      activeFiles: [
         {
           path: 'part-000.parquet',
           url: 'https://bucket.s3.us-east-2.amazonaws.com/table/part-000.parquet',
-          size_bytes: 128,
-          partition_values: {},
+          sizeBytes: 128n,
+          partitionValues: {},
         },
       ],
-    };
+    });
 
     expect(
       registerPublicObjectStorageRuntimeCache({
@@ -630,10 +650,10 @@ test.describe('public object storage', () => {
         snapshot: { kind: 'latest' },
         expectedSnapshotVersion: 0,
         nowMs: () => 2_000,
-      })?.descriptor.active_files[0],
+      })?.descriptor.activeFiles[0],
     ).toMatchObject({
       path: 'part-000.parquet',
-      object_etag: '"part-000-v1"',
+      objectEtag: '"part-000-v1"',
     });
     clearPublicObjectStorageRuntimeCache();
   });
@@ -673,26 +693,40 @@ test.describe('public object storage', () => {
     const targets: unknown[] = [];
 
     await preflightPublicObjectStorageDescriptorRangeRead({
-      descriptor: {
-        table_uri: 'gs://bucket/table',
-        snapshot_version: 0,
-        partition_column_types: {},
-        active_files: [
+      descriptor: create(BrowserHttpSnapshotDescriptorSchema, {
+        tableUri: 'gs://bucket/table',
+        snapshotVersion: 0n,
+        partitionColumnTypes: {},
+        activeFiles: [
           {
             path: 'category=A/part-000.parquet',
             url: 'https://storage.googleapis.com/bucket/table/category%3DA/part-000.parquet',
-            size_bytes: 128,
-            partition_values: { category: 'A' },
+            sizeBytes: 128n,
+            partitionValues: {
+              category: {
+                value: {
+                  case: 'stringValue',
+                  value: 'A',
+                },
+              },
+            },
             stats: '{"numRecords":1}',
           },
           {
             path: 'category=B/part-001.parquet',
             url: 'https://storage.googleapis.com/bucket/table/category%3DB/part-001.parquet',
-            size_bytes: 256,
-            partition_values: { category: 'B' },
+            sizeBytes: 256n,
+            partitionValues: {
+              category: {
+                value: {
+                  case: 'stringValue',
+                  value: 'B',
+                },
+              },
+            },
           },
         ],
-      },
+      }),
       preflightParquetMetadataForTargets: async (targetsJson) => {
         targets.push(...JSON.parse(targetsJson));
         return JSON.stringify([{ path: 'category=A/part-000.parquet' }]);
@@ -714,20 +748,20 @@ test.describe('public object storage', () => {
     const targets: unknown[] = [];
 
     await preflightPublicObjectStorageDescriptorRangeRead({
-      descriptor: {
-        table_uri: 'gs://bucket/table',
-        snapshot_version: 0,
-        partition_column_types: {},
-        active_files: [
+      descriptor: create(BrowserHttpSnapshotDescriptorSchema, {
+        tableUri: 'gs://bucket/table',
+        snapshotVersion: 0n,
+        partitionColumnTypes: {},
+        activeFiles: [
           {
             path: 'part-000.parquet',
             url: 'https://storage.googleapis.com/bucket/table/part-000.parquet',
-            size_bytes: 128,
-            partition_values: {},
-            object_etag: '"part-000-v1"',
+            sizeBytes: 128n,
+            partitionValues: {},
+            objectEtag: '"part-000-v1"',
           },
         ],
-      },
+      }),
       preflightParquetMetadataForTargets: async (targetsJson) => {
         targets.push(...JSON.parse(targetsJson));
         return JSON.stringify([
@@ -753,19 +787,17 @@ test.describe('public object storage', () => {
 });
 
 function publicDescriptor() {
-  return {
-    table_uri: 'gs://bucket/table',
-    snapshot_version: 0,
-    partition_column_types: {},
-    browser_compatibility: { capabilities: {} },
-    required_capabilities: { capabilities: {} },
-    active_files: [
+  return create(BrowserHttpSnapshotDescriptorSchema, {
+    tableUri: 'gs://bucket/table',
+    snapshotVersion: 0n,
+    partitionColumnTypes: {},
+    activeFiles: [
       {
         path: 'part-000.parquet',
         url: 'https://storage.googleapis.com/bucket/table/part-000.parquet',
-        size_bytes: 128,
-        partition_values: {},
+        sizeBytes: 128n,
+        partitionValues: {},
       },
     ],
-  };
+  });
 }

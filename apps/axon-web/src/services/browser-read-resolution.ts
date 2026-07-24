@@ -27,6 +27,12 @@ import {
   loadLocalDeltaRuntime as loadDefaultLocalDeltaRuntime,
   LocalDeltaError,
 } from './local-delta.ts';
+import {
+  parsePublicObjectStorageTableRoot,
+  publicObjectStorageConnectionId,
+  PublicObjectStorageError,
+  type PublicObjectStorageProvider,
+} from './object-storage.ts';
 
 export interface DataAccessResolver {
   resolve(
@@ -56,6 +62,14 @@ export type BrowserReadResolutionDependencies = Readonly<{
       snapshotVersion?: number;
     },
   ) => Promise<LocalDeltaResolutionRuntime>;
+  loadPublicObjectStorageDescriptor?: (input: {
+    provider: PublicObjectStorageProvider;
+    tableUri: string;
+    region?: string;
+    snapshotVersion?: number;
+    expectedSnapshotVersion?: number;
+    signal: AbortSignal;
+  }) => Promise<BrowserHttpSnapshotDescriptor>;
 }>;
 
 export function canonicalTableForSelection(selection: AvailableQuerySourceSelection): TableNode {
@@ -74,6 +88,7 @@ export function dataAccessResolverForSelection(
     case 'local_delta':
       return localDeltaResolver(selection, dependencies);
     case 'object_store_table_root':
+      return publicObjectStorageResolver(selection, dependencies);
     case 'manifest':
       throw new TypeError(
         `query source '${selection.source.kind}' does not have a Slice 2 resolver yet`,
@@ -96,12 +111,132 @@ function canonicalResourceForSelection(
           value: source.localRegistryId,
         },
       });
-    case 'object_store_table_root':
+    case 'object_store_table_root': {
+      const root = parsePublicObjectStorageTableRoot({
+        provider: source.provider,
+        tableUri: source.tableUri,
+        region: source.region,
+      });
+      return create(CanonicalResourceRefSchema, {
+        connectionId: publicObjectStorageConnectionId(root),
+        providerNamespace: `axon.public-${root.provider}/v1`,
+        kind: ResourceKind.TABLE,
+        identity: {
+          case: 'canonicalLocator',
+          value: root.tableUri,
+        },
+      });
+    }
     case 'manifest':
       throw new TypeError(
         `query source '${source.kind}' does not have a Slice 2 canonicalizer yet`,
       );
   }
+}
+
+function publicObjectStorageResolver(
+  selection: AvailableQuerySourceSelection,
+  dependencies: BrowserReadResolutionDependencies,
+): DataAccessResolver {
+  if (selection.source.kind !== 'object_store_table_root') {
+    throw new TypeError('public object-storage resolver requires a public table-root source');
+  }
+  const source = selection.source;
+  const root = parsePublicObjectStorageTableRoot({
+    provider: source.provider,
+    tableUri: source.tableUri,
+    region: source.region,
+  });
+  const expectedResource = canonicalResourceForSelection(selection);
+
+  return {
+    async resolve(resource, context) {
+      if (!equals(CanonicalResourceRefSchema, resource, expectedResource)) {
+        return providerErrorResolution(
+          ProviderErrorCode.INVALID,
+          'canonical resource did not match the exact selected public table root',
+          context.executionId,
+        );
+      }
+      if (context.signal.aborted) {
+        throw new DOMException('cancelled', 'AbortError');
+      }
+      if (!dependencies.loadPublicObjectStorageDescriptor) {
+        return providerErrorResolution(
+          ProviderErrorCode.UNAVAILABLE,
+          'public object-storage descriptor loader is unavailable',
+          context.executionId,
+        );
+      }
+
+      let descriptor: BrowserHttpSnapshotDescriptor;
+      try {
+        descriptor = await dependencies.loadPublicObjectStorageDescriptor({
+          provider: root.provider,
+          tableUri: root.tableUri,
+          region: root.region,
+          snapshotVersion: context.snapshotVersion,
+          expectedSnapshotVersion: context.snapshotVersion ?? source.snapshot,
+          signal: context.signal,
+        });
+      } catch (error) {
+        if (isAbortError(error) || context.signal.aborted) throw error;
+        return providerErrorResolution(
+          error instanceof PublicObjectStorageError &&
+            (error.code === 'invalid_public_object_path' ||
+              error.code === 'invalid_public_object_storage_uri')
+            ? ProviderErrorCode.INVALID
+            : ProviderErrorCode.UNAVAILABLE,
+          error instanceof PublicObjectStorageError
+            ? error.message
+            : 'Public object-storage resolution was unavailable.',
+          context.executionId,
+        );
+      }
+      if (context.signal.aborted) {
+        throw new DOMException('cancelled', 'AbortError');
+      }
+      if (descriptor.tableUri !== root.tableUri) {
+        return providerErrorResolution(
+          ProviderErrorCode.INVALID,
+          'public descriptor identity did not match the canonical table root',
+          context.executionId,
+        );
+      }
+      const expectedSnapshotVersion = context.snapshotVersion ?? source.snapshot;
+      if (
+        expectedSnapshotVersion !== undefined &&
+        descriptor.snapshotVersion !== BigInt(expectedSnapshotVersion)
+      ) {
+        return providerErrorResolution(
+          ProviderErrorCode.INVALID,
+          'public descriptor snapshot did not match the requested snapshot',
+          context.executionId,
+        );
+      }
+
+      return create(ReadResolutionSchema, {
+        outcome: {
+          case: 'browserRead',
+          value: create(ResolvedBrowserReadSchema, {
+            resource,
+            descriptor: create(BrowserReadDescriptorSchema, {
+              descriptor: {
+                case: 'snapshot',
+                value: descriptor,
+              },
+            }),
+            accessClass: BrowserAccessClass.PUBLIC,
+            correlationId: context.executionId,
+            provenance: {
+              resolverId: `axon.public-${root.provider}/v1`,
+              resolutionId: `${context.executionId}:public-${root.provider}`,
+            },
+          }),
+        },
+      });
+    },
+  };
 }
 
 function localDeltaResolver(

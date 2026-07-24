@@ -171,6 +171,10 @@ export function getColdStartMs(): number | undefined {
 }
 
 const eventListeners = new Set<EventHandler>();
+const publicDescriptorSetupMetrics = new WeakMap<
+  ContractBrowserHttpSnapshotDescriptor,
+  SessionSetupMetrics
+>();
 
 // Exposed for cross-cutting consumers (engine status, etc.) that need every event,
 // not just the per-query subset that runQuery() filters by request_id.
@@ -246,39 +250,22 @@ async function buildSession(
   }
 
   if (source.kind === 'object_store_table_root') {
-    await ensureWasm();
-    let setupMetrics = source.descriptorResolutionMetrics
-      ? sessionSetupMetricsFromPublicObjectStorage(source.descriptorResolutionMetrics)
-      : undefined;
-    const cached = lookupPublicObjectStorageRuntimeCache({
-      provider: source.provider,
-      tableUri: source.tableUri,
-      region: source.region,
-      snapshot: { kind: 'latest' },
-      expectedSnapshotVersion: source.snapshot,
-    });
-    let descriptor: BrowserHttpSnapshotDescriptor;
-    if (cached) {
-      descriptor = cached.descriptor;
-      setupMetrics = mergeSessionSetupMetrics(setupMetrics, { descriptor_cache_hit: 1 });
-    } else {
-      descriptor = await resolvePublicObjectStorageDescriptor({
-        provider: source.provider,
-        tableUri: source.tableUri,
-        region: source.region,
-        resolveDeltaSnapshotFromManifest: resolve_delta_snapshot_from_manifest,
-        onMetrics: (metrics) => {
-          setupMetrics = mergeSessionSetupMetrics(
-            setupMetrics,
-            sessionSetupMetricsFromPublicObjectStorage(metrics),
-          );
-        },
-      });
+    if (browserRead?.descriptor?.descriptor.case !== 'snapshot') {
+      throw new Error('public object-storage session requires a resolved snapshot descriptor');
     }
+    const contractDescriptor = browserRead.descriptor.descriptor.value;
+    const descriptor = sdkSnapshotDescriptor(contractDescriptor);
+    const setupMetrics = mergeSessionSetupMetrics(
+      source.descriptorResolutionMetrics
+        ? sessionSetupMetricsFromPublicObjectStorage(source.descriptorResolutionMetrics)
+        : undefined,
+      publicDescriptorSetupMetrics.get(contractDescriptor),
+    );
 
     return {
       client: createQueryClient(),
       descriptor,
+      contractDescriptor,
       setupMetrics,
       setupMetricsEmitted: false,
       snapshot: snapshotFromBrowserDescriptor(descriptor),
@@ -690,7 +677,7 @@ function sameSessionResolution(
   contractDescriptor: ContractBrowserHttpSnapshotDescriptor | undefined,
 ): boolean {
   if (!sameQuerySource(candidate.source, source)) return false;
-  if (source.kind !== 'local_delta') return true;
+  if (source.kind === 'manifest') return true;
   return (
     candidate.contractDescriptor !== undefined &&
     contractDescriptor !== undefined &&
@@ -920,13 +907,56 @@ class BrowserReadResolutionFailure extends Error {
   }
 }
 
-async function localBrowserExecuteInput(
+async function loadPublicObjectStorageDescriptor(input: {
+  provider: 'gcs' | 's3';
+  tableUri: string;
+  region?: string;
+  snapshotVersion?: number;
+  expectedSnapshotVersion?: number;
+  signal: AbortSignal;
+}): Promise<ContractBrowserHttpSnapshotDescriptor> {
+  throwIfCancelled(input.signal);
+  await ensureWasm();
+  throwIfCancelled(input.signal);
+  const snapshot =
+    input.snapshotVersion === undefined
+      ? ({ kind: 'latest' } as const)
+      : ({ kind: 'version', version: input.snapshotVersion } as const);
+  const cached = lookupPublicObjectStorageRuntimeCache({
+    provider: input.provider,
+    tableUri: input.tableUri,
+    region: input.region,
+    snapshot,
+    expectedSnapshotVersion: input.expectedSnapshotVersion,
+  });
+  if (cached) {
+    publicDescriptorSetupMetrics.set(cached.descriptor, { descriptor_cache_hit: 1 });
+    return cached.descriptor;
+  }
+
+  let setupMetrics: SessionSetupMetrics | undefined;
+  const descriptor = await resolvePublicObjectStorageDescriptor({
+    provider: input.provider,
+    tableUri: input.tableUri,
+    region: input.region,
+    snapshotVersion: input.snapshotVersion,
+    resolveDeltaSnapshotFromManifest: resolve_delta_snapshot_from_manifest,
+    onMetrics: (metrics) => {
+      setupMetrics = sessionSetupMetricsFromPublicObjectStorage(metrics);
+    },
+  });
+  throwIfCancelled(input.signal);
+  if (setupMetrics) publicDescriptorSetupMetrics.set(descriptor, setupMetrics);
+  return descriptor;
+}
+
+async function browserExecuteInput(
   selection: AvailableQuerySourceSelection,
   req: QueryExecRequest,
   admission: ExecutionAdmissionInput,
   signal: AbortSignal,
 ): Promise<BrowserExecuteInput | undefined> {
-  if (selection.source.kind !== 'local_delta') return undefined;
+  if (selection.source.kind === 'manifest') return undefined;
   const table = canonicalTableForSelection(selection);
   if (!table.resource) {
     throw new BrowserReadResolutionFailure(
@@ -935,10 +965,12 @@ async function localBrowserExecuteInput(
     );
   }
   const deadline = timestampFromMs(admission.deadlineAt);
-  const resolution = await dataAccessResolverForSelection(selection).resolve(table.resource, {
+  const resolution = await dataAccessResolverForSelection(selection, {
+    loadPublicObjectStorageDescriptor,
+  }).resolve(table.resource, {
     executionId: admission.executionId,
     deadline,
-    snapshotVersion: req.snapshot_version ?? selection.source.snapshot,
+    snapshotVersion: req.snapshot_version,
     signal,
   });
   if (resolution.outcome.case !== 'browserRead') {
@@ -1011,7 +1043,7 @@ export async function runQuery(
   const executionId = admission.executionId;
 
   try {
-    const browserInput = await localBrowserExecuteInput(selection, req, admission, signal);
+    const browserInput = await browserExecuteInput(selection, req, admission, signal);
     const browserRead =
       browserInput?.request.binding.case === 'browserRead'
         ? browserInput.request.binding.value
@@ -1064,11 +1096,11 @@ export async function runQuery(
         eventListeners.add(handler);
         try {
           const result: AxonQueryResult = await state.client.query(
-            state.source.tableName,
+            browserInput?.table.name ?? state.source.tableName,
             {
               table_uri: state.snapshot.table_uri,
-              snapshot_version: req.snapshot_version ?? state.snapshot.snapshot_version,
-              sql: req.sql,
+              snapshot_version: state.snapshot.snapshot_version,
+              sql: browserInput?.request.query?.sql ?? req.sql,
               preferred_target: admission.target,
               options: queryExecutionOptionsForAdmission(admission, queryResultPageRequest(page)),
             },

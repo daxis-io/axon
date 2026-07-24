@@ -27,7 +27,7 @@ import {
 import { IconCheck, IconFolder, IconLock, IconWarn } from './icons.tsx';
 import { DEFAULT_AXON_CATALOG_ALIAS } from './store.ts';
 import type { ConnectForm, ConnectResult, SchemaSelection, TestState } from './types.ts';
-import type { BrowserHttpSnapshotDescriptor } from '../../axon-browser-sdk.ts';
+import type { BrowserHttpSnapshotDescriptor } from '../../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
 import type {
   LocalDeltaRuntime,
@@ -773,11 +773,14 @@ function objectStorageRuntimeFromDescriptor(
   descriptor: BrowserHttpSnapshotDescriptor,
   descriptorResolutionMetrics?: PublicObjectStorageDescriptorResolutionMetrics,
 ) {
-  const tableName = descriptor.table_uri.split('/').filter(Boolean).at(-1) ?? 'table';
-  const rows = descriptor.active_files.reduce((sum, file) => sum + rowsFromStats(file.stats), 0);
-  const sizeBytes = descriptor.active_files.reduce((sum, file) => sum + file.size_bytes, 0);
+  const tableName = descriptor.tableUri.split('/').filter(Boolean).at(-1) ?? 'table';
+  const rows = descriptor.activeFiles.reduce((sum, file) => sum + rowsFromStats(file.stats), 0);
+  const sizeBytes = descriptor.activeFiles.reduce(
+    (sum, file) => sum + generatedDescriptorInteger(file.sizeBytes),
+    0,
+  );
   return {
-    tableUri: descriptor.table_uri,
+    tableUri: descriptor.tableUri,
     tableName,
     descriptorResolutionMetrics,
     discovery: {
@@ -790,12 +793,12 @@ function objectStorageRuntimeFromDescriptor(
           tables: [
             {
               name: tableName,
-              snapshot: descriptor.snapshot_version,
+              snapshot: generatedDescriptorInteger(descriptor.snapshotVersion),
               rows,
-              files: descriptor.active_files.length,
+              files: descriptor.activeFiles.length,
               size: formatBytes(sizeBytes),
               protocol: 'r1/w2',
-              uri: descriptor.table_uri,
+              uri: descriptor.tableUri,
               descriptorResolutionMetrics,
             },
           ],
@@ -803,6 +806,15 @@ function objectStorageRuntimeFromDescriptor(
       ],
     },
   };
+}
+
+function generatedDescriptorInteger(value: bigint | undefined): number {
+  if (value === undefined) throw new Error('Public descriptor omitted its snapshot version.');
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) {
+    throw new Error('Public descriptor integer was outside the browser-safe range.');
+  }
+  return number;
 }
 
 function rowsFromStats(stats: string | undefined): number {

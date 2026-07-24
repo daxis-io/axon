@@ -17,6 +17,12 @@ import {
   type ExecuteResponse,
 } from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
 import type { TableNode } from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
+import {
+  parsePublicObjectStorageTableRoot,
+  publicObjectUrl,
+  publicObjectStorageConnectionId,
+  type PublicObjectStorageProvider,
+} from './object-storage.ts';
 
 export type BrowserExecuteInput = Readonly<{
   table: TableNode;
@@ -114,9 +120,7 @@ export function validateBrowserExecuteInput(
       validateLocalRead(read, descriptor, deadline, now, options);
       break;
     case BrowserAccessClass.PUBLIC:
-      if (read.notAfter) {
-        invalid('public browser reads must not carry an expiry');
-      }
+      validatePublicRead(read, descriptor);
       break;
     default:
       reject(
@@ -125,6 +129,75 @@ export function validateBrowserExecuteInput(
       );
   }
   return read;
+}
+
+function validatePublicRead(
+  read: ResolvedBrowserRead,
+  descriptor: BrowserHttpSnapshotDescriptor,
+): void {
+  if (read.notAfter) {
+    invalid('public browser reads must not carry an expiry');
+  }
+  if (read.resource?.identity.case !== 'canonicalLocator') {
+    invalid('public browser reads require one canonical table locator');
+  }
+  const provider = publicProviderForNamespace(read.resource.providerNamespace);
+  let root;
+  try {
+    root = parsePublicObjectStorageTableRoot({
+      provider,
+      tableUri: read.resource.identity.value,
+      region: publicS3RegionFromConnection(read.resource.connectionId, provider),
+    });
+  } catch {
+    invalid('public browser-read canonical root is invalid');
+  }
+  const expectedConnectionId = publicObjectStorageConnectionId(root);
+  if (
+    read.resource.connectionId !== expectedConnectionId ||
+    descriptor.tableUri !== root.tableUri
+  ) {
+    invalid('public descriptor identity does not match its canonical root');
+  }
+
+  for (const file of descriptor.activeFiles) {
+    let expectedUrl: string;
+    try {
+      expectedUrl = publicObjectUrl(root, file.path);
+    } catch {
+      invalid('public descriptor contains a path outside its canonical root');
+    }
+    if (file.url !== expectedUrl) {
+      reject(
+        ExecutionRejectionReason.ACCESS_DENIED,
+        'public descriptor contains a non-HTTPS, capability-bearing, or outside-root URL',
+      );
+    }
+    if (
+      file.objectEtag !== undefined &&
+      (!file.objectEtag.startsWith('"') ||
+        !file.objectEtag.endsWith('"') ||
+        /^w\//i.test(file.objectEtag))
+    ) {
+      invalid('public descriptor contains an unstable object identity');
+    }
+  }
+}
+
+function publicProviderForNamespace(namespace: string): PublicObjectStorageProvider {
+  if (namespace === 'axon.public-gcs/v1') return 'gcs';
+  if (namespace === 'axon.public-s3/v1') return 's3';
+  return invalid('public browser-read provider namespace is unsupported');
+}
+
+function publicS3RegionFromConnection(
+  connectionId: string,
+  provider: PublicObjectStorageProvider,
+): string | undefined {
+  if (provider === 'gcs') return undefined;
+  const match = /^axon-connection:\/\/public-s3\/([^/]+)\/[^/]+$/.exec(connectionId);
+  if (!match?.[1]) invalid('public S3 connection identity is invalid');
+  return decodeURIComponent(match[1]);
 }
 
 function validateLocalRead(

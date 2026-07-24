@@ -20,6 +20,7 @@ import {
 import {
   BrowserExecutionValidationError,
   createValidatedBrowserExecutionProvider,
+  type BrowserExecuteInput,
 } from './browser-execution-provider.ts';
 import type { AvailableQuerySourceSelection } from './query-source.ts';
 
@@ -42,12 +43,32 @@ const localSelection: AvailableQuerySourceSelection = {
   },
 };
 
+const publicSelection: AvailableQuerySourceSelection = {
+  kind: 'resource',
+  ref: { catalogId: 'public-gcs', schemaName: 'default', tableName: 'events' },
+  source: {
+    kind: 'object_store_table_root',
+    provider: 'gcs',
+    catalogName: 'Public GCS',
+    schemaName: 'default',
+    tableName: 'events',
+    tableUri: 'gs://public-bucket/events',
+    storage: 'gs://public-bucket/events',
+    region: 'global',
+    snapshot: 12,
+  },
+};
+
 describe('validated browser execution provider', () => {
   it('passes the exact generated browser binding to the executor after validation', async () => {
     const table = canonicalTableForSelection(localSelection);
     const request = await localExecuteRequest();
     const response = create(ExecuteResponseSchema);
-    const executeValidated = vi.fn(() => responses(response));
+    const seen: BrowserExecuteInput[] = [];
+    const executeValidated = vi.fn((input: BrowserExecuteInput) => {
+      seen.push(input);
+      return responses(response);
+    });
     const provider = createValidatedBrowserExecutionProvider(
       {
         execute: executeValidated,
@@ -64,10 +85,10 @@ describe('validated browser execution provider', () => {
     );
 
     await expect(collect(provider.execute({ table, request }))).resolves.toEqual([response]);
-    expect(executeValidated).toHaveBeenCalledWith({ table, request });
+    expect(seen).toEqual([{ table, request }]);
     expect(
-      executeValidated.mock.calls[0]?.[0].request.binding.case === 'browserRead' &&
-        executeValidated.mock.calls[0][0].request.binding.value.descriptor?.descriptor.value,
+      seen[0]?.request.binding.case === 'browserRead' &&
+        seen[0].request.binding.value.descriptor?.descriptor.value,
     ).toBe(
       request.binding.case === 'browserRead' && request.binding.value.descriptor?.descriptor.value,
     );
@@ -161,6 +182,42 @@ describe('validated browser execution provider', () => {
     );
     expect(cancel).toHaveBeenCalledWith(request);
   });
+
+  it.each([
+    [
+      'credential-bearing URL',
+      'https://user:secret@storage.googleapis.com/public-bucket/events/part-000.parquet',
+    ],
+    [
+      'signed URL',
+      'https://storage.googleapis.com/public-bucket/events/part-000.parquet?X-Goog-Signature=secret',
+    ],
+    ['non-HTTPS URL', 'http://storage.googleapis.com/public-bucket/events/part-000.parquet'],
+    ['outside-root URL', 'https://storage.googleapis.com/another-bucket/events/part-000.parquet'],
+  ])('rejects a public descriptor with a %s before execution', async (_label, url) => {
+    const input = await publicExecuteInput();
+    if (
+      input.request.binding.case !== 'browserRead' ||
+      input.request.binding.value.descriptor?.descriptor.case !== 'snapshot'
+    ) {
+      throw new Error('public test input omitted its snapshot');
+    }
+    input.request.binding.value.descriptor.descriptor.value.activeFiles[0]!.url = url;
+    const execute = vi.fn(() => responses(create(ExecuteResponseSchema)));
+    const provider = createValidatedBrowserExecutionProvider({
+      execute,
+      cancel: () =>
+        create(CancelResponseSchema, {
+          executionId: input.request.executionId,
+          state: ExecutionLifecycleState.CANCEL_REQUESTED,
+        }),
+    });
+
+    await expect(collect(provider.execute(input))).rejects.toBeInstanceOf(
+      BrowserExecutionValidationError,
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
 });
 
 async function localExecuteRequest() {
@@ -205,6 +262,47 @@ async function localExecuteRequest() {
     }),
     deadline,
   });
+}
+
+async function publicExecuteInput(): Promise<BrowserExecuteInput> {
+  const table = canonicalTableForSelection(publicSelection);
+  const deadline = timestampFromMs(1_800_000_120_000);
+  const resolution = await dataAccessResolverForSelection(publicSelection, {
+    loadPublicObjectStorageDescriptor: async () =>
+      create(BrowserHttpSnapshotDescriptorSchema, {
+        tableUri: 'gs://public-bucket/events',
+        snapshotVersion: 12n,
+        activeFiles: [
+          {
+            path: 'part-000.parquet',
+            url: 'https://storage.googleapis.com/public-bucket/events/part-000.parquet',
+            sizeBytes: 128n,
+            partitionValues: {},
+            objectEtag: '"part-v1"',
+          },
+        ],
+      }),
+  }).resolve(table.resource!, {
+    executionId: 'execution-public-1',
+    deadline,
+    snapshotVersion: 12,
+    signal: new AbortController().signal,
+  });
+  if (resolution.outcome.case !== 'browserRead') {
+    throw new Error(`unexpected resolution ${resolution.outcome.case}`);
+  }
+  return {
+    table,
+    request: create(ExecuteRequestSchema, {
+      executionId: 'execution-public-1',
+      binding: { case: 'browserRead', value: resolution.outcome.value },
+      query: create(QueryRequestSchema, {
+        sql: 'select * from events',
+        preferredTarget: ExecutionTarget.BROWSER_WASM,
+      }),
+      deadline,
+    }),
+  };
 }
 
 async function* responses(response: ExecuteResponse): AsyncIterable<ExecuteResponse> {
