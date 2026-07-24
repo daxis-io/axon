@@ -1,0 +1,23 @@
+[package]
+name = "axon-upstream-wasm-browser-harness"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+arrow-array = { git = "https://github.com/daxis-io/arrow-rs", rev = "39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc" }
+arrow-ipc = { git = "https://github.com/daxis-io/arrow-rs", rev = "39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc" }
+browser-sdk = { path = "../../../crates/browser-sdk" }
+deltalake-browser = { git = "https://github.com/daxis-io/delta-rs", rev = "bc45f077347988804e8d42249238710f90b8db97" }
+js-sys = "=0.3.91"
+object_store = { git = "https://github.com/daxis-io/arrow-rs-object-store", rev = "54109e3e6797522ccb2ee5d43cad2a9cd0013074", default-features = false, features = ["http-base", "reqwest", "web"] }
+query-contract = { path = "../../../crates/query-contract" }
+url = "2"
+wasm-bindgen = "=0.2.114"
+wasm-bindgen-futures = "=0.4.64"
+
+[dev-dependencies]
+bytes = "=1.11.1"

@@ -1,0 +1,138 @@
+name: Upstream WASM fork POC
+
+on:
+  push:
+    branches:
+      - poc/upstream-wasm-fork-stack
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-graph-no-native-compiler:
+    name: Pinned graph without a native compiler
+    runs-on: ubuntu-latest
+    container:
+      image: debian:bookworm-slim
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: ${{ github.workspace }}/poc/upstream-wasm-fork-stack/compiler-free-linker.sh
+    steps:
+      - name: Install transport and linker tools
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            ca-certificates curl git libc6-dev libgcc-12-dev lld python3
+          rm -rf /var/lib/apt/lists/*
+      - uses: actions/checkout@v4
+      - name: Install Rust and the browser target
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+            sh -s -- -y --profile minimal --default-toolchain 1.95.0
+          "$HOME/.cargo/bin/rustup" target add wasm32-unknown-unknown
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Verify the compiler-free environment
+        run: |
+          test -z "${RUSTFLAGS:-}"
+          for tool in cc gcc clang c++ g++ cmake; do
+            if command -v "$tool"; then
+              echo "unexpected native build tool: $tool" >&2
+              exit 1
+            fi
+          done
+          command -v ld.lld
+          test -x "$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"
+      - name: Verify and compile the exact pinned graph
+        run: |
+          bash tests/conformance/verify_upstream_wasm_fork_stack.sh --final
+          cargo check \
+            --manifest-path poc/upstream-wasm-fork-stack/Cargo.toml \
+            --target wasm32-unknown-unknown \
+            --locked
+          poc/upstream-wasm-fork-stack/verify-browser-graph.sh
+          poc/upstream-wasm-fork-stack/verify-fixtures.sh
+      - name: Capture the target-filtered graph
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/upstream-wasm-fork-poc-graph"
+          cargo tree \
+            --manifest-path poc/upstream-wasm-fork-stack/Cargo.toml \
+            --target wasm32-unknown-unknown \
+            --edges normal,build \
+            --locked \
+            >"$RUNNER_TEMP/upstream-wasm-fork-poc-graph/dependency-tree.txt"
+          sha256sum \
+            poc/upstream-wasm-fork-stack/stack.lock.toml \
+            poc/upstream-wasm-fork-stack/Cargo.lock \
+            >"$RUNNER_TEMP/upstream-wasm-fork-poc-graph/lock-sha256.txt"
+          rustc -Vv >"$RUNNER_TEMP/upstream-wasm-fork-poc-graph/rustc.txt"
+          cargo -V >"$RUNNER_TEMP/upstream-wasm-fork-poc-graph/cargo.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-wasm-fork-poc-graph-${{ github.sha }}
+          path: ${{ runner.temp }}/upstream-wasm-fork-poc-graph
+          if-no-files-found: error
+
+  native-boundary:
+    name: Native defaults and Axon boundary
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - name: Reject fork pins in shipping workspaces
+        run: |
+          if git grep -n 'daxis-io' -- Cargo.toml Cargo.lock crates apps; then
+            echo "Daxis fork wiring escaped the excluded POC workspace" >&2
+            exit 1
+          fi
+      - name: Test the Axon result boundary
+        run: |
+          cargo test \
+            --manifest-path poc/upstream-wasm-fork-stack/Cargo.toml \
+            --locked
+          cargo test -p query-contract -p browser-sdk --locked
+          bash tests/conformance/verify_upstream_wasm_fork_stack_test.sh
+          bash tests/conformance/verify_upstream_wasm_fork_stack.sh --final
+
+  browser-runtime:
+    name: Chrome and Firefox runtime
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          targets: wasm32-unknown-unknown
+      - name: Install the exact browser toolchain
+        run: |
+          cargo install wasm-bindgen-cli --version 0.2.114 --locked
+          npm ci --prefix poc/upstream-wasm-fork-stack/browser
+          npx --prefix poc/upstream-wasm-fork-stack/browser \
+            playwright install --with-deps chrome firefox
+      - name: Build and run the deterministic two-origin proof
+        env:
+          POC_EVIDENCE_DIR: ${{ runner.temp }}/upstream-wasm-fork-poc-evidence
+        run: |
+          bash tests/conformance/verify_upstream_wasm_fork_stack.sh --final
+          npm --prefix poc/upstream-wasm-fork-stack/browser test
+          npm --prefix poc/upstream-wasm-fork-stack/browser run build
+          npm --prefix poc/upstream-wasm-fork-stack/browser run verify
+          cargo tree \
+            --manifest-path poc/upstream-wasm-fork-stack/Cargo.toml \
+            --target wasm32-unknown-unknown \
+            --edges normal,build \
+            --locked \
+            >"$POC_EVIDENCE_DIR/dependency-tree.txt"
+          sha256sum \
+            poc/upstream-wasm-fork-stack/stack.lock.toml \
+            poc/upstream-wasm-fork-stack/Cargo.lock \
+            >"$POC_EVIDENCE_DIR/lock-sha256.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-wasm-fork-poc-browser-${{ github.sha }}
+          path: ${{ runner.temp }}/upstream-wasm-fork-poc-evidence
+          if-no-files-found: error

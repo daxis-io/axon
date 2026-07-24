@@ -1,0 +1,16 @@
+[package]
+name = "axon-upstream-wasm-fixture-generator"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+arrow-array = "=58.3.0"
+arrow-buffer = "=58.3.0"
+arrow-schema = "=58.3.0"
+parquet = { version = "=58.3.0", features = ["arrow", "snap", "zstd"] }
+serde_json = "1"
+sha2 = "0.10"

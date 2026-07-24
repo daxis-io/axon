@@ -1,0 +1,131 @@
+{
+  "generator": {
+    "arrow": "58.3.0",
+    "parquet": "58.3.0"
+  },
+  "schema_version": 1,
+  "tables": [
+    {
+      "codec": "snappy",
+      "expected": {
+        "query": "SELECT category, SUM(value) AS total FROM delta GROUP BY category ORDER BY category",
+        "row_count": 2,
+        "rows": [
+          {
+            "category": "alpha",
+            "total": 7
+          },
+          {
+            "category": "beta",
+            "total": 10
+          }
+        ]
+      },
+      "files": [
+        {
+          "bytes": 618,
+          "path": "snappy/_delta_log/00000000000000000000.json",
+          "sha256": "f57e2c0deac64ad9598fcd20de430d2c60f58295efed8edc28687ccf0033e4d8"
+        },
+        {
+          "bytes": 779,
+          "path": "snappy/part-00000.snappy.parquet",
+          "sha256": "55deb795ce237f5eecdc6ba8114f779213cf501775564408593ded80363c6a5d"
+        }
+      ],
+      "name": "snappy",
+      "root": "snappy",
+      "rows": [
+        {
+          "category": "alpha",
+          "value": 2
+        },
+        {
+          "category": "beta",
+          "value": 3
+        },
+        {
+          "category": "alpha",
+          "value": 5
+        },
+        {
+          "category": "beta",
+          "value": 7
+        }
+      ],
+      "schema": [
+        {
+          "name": "category",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "name": "value",
+          "nullable": false,
+          "type": "long"
+        }
+      ]
+    },
+    {
+      "codec": "zstd",
+      "expected": {
+        "query": "SELECT category, SUM(value) AS total FROM delta GROUP BY category ORDER BY category",
+        "row_count": 2,
+        "rows": [
+          {
+            "category": "alpha",
+            "total": 7
+          },
+          {
+            "category": "beta",
+            "total": 10
+          }
+        ]
+      },
+      "files": [
+        {
+          "bytes": 616,
+          "path": "zstd/_delta_log/00000000000000000000.json",
+          "sha256": "2d34cad334f9463e54ccc9fe71b902306decd16c2eb55d2be872377e35570a04"
+        },
+        {
+          "bytes": 804,
+          "path": "zstd/part-00000.zstd.parquet",
+          "sha256": "09d504a26937fcff3d4ddd6c6bf1afacdf83bdf36a7f4301d92f0c48129c2a66"
+        }
+      ],
+      "name": "zstd",
+      "root": "zstd",
+      "rows": [
+        {
+          "category": "alpha",
+          "value": 2
+        },
+        {
+          "category": "beta",
+          "value": 3
+        },
+        {
+          "category": "alpha",
+          "value": 5
+        },
+        {
+          "category": "beta",
+          "value": 7
+        }
+      ],
+      "schema": [
+        {
+          "name": "category",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "name": "value",
+          "nullable": false,
+          "type": "long"
+        }
+      ]
+    }
+  ]
+}

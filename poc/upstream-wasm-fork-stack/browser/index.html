@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Daxis upstream-WASM fork POC</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      body {
+        margin: 2rem auto;
+        max-width: 72rem;
+        padding: 0 1.5rem;
+      }
+      button {
+        font: inherit;
+        padding: 0.5rem 0.8rem;
+      }
+      pre {
+        border: 1px solid currentColor;
+        min-height: 12rem;
+        overflow: auto;
+        padding: 1rem;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Daxis upstream-WASM fork POC</h1>
+    <p id="status" role="status">Loading WebAssembly…</p>
+    <button id="run" type="button" disabled>Run browser proof</button>
+    <pre id="result" aria-live="polite"></pre>
+    <script type="module" src="/poc.js"></script>
+  </body>
+</html>

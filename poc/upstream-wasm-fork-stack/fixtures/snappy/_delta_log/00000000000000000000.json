@@ -1,0 +1,4 @@
+{"protocol":{"minReaderVersion":1,"minWriterVersion":2}}
+{"metaData":{"configuration":{},"createdTime":0,"format":{"options":{},"provider":"parquet"},"id":"00000000-0000-4000-8000-000000000001","partitionColumns":[],"schemaString":"{\"fields\":[{\"metadata\":{},\"name\":\"category\",\"nullable\":false,\"type\":\"string\"},{\"metadata\":{},\"name\":\"value\",\"nullable\":false,\"type\":\"long\"}],\"type\":\"struct\"}"}}
+{"add":{"dataChange":true,"modificationTime":0,"partitionValues":{},"path":"part-00000.snappy.parquet","size":779,"stats":"{\"numRecords\":4}"}}
+{"commitInfo":{"operation":"WRITE","timestamp":0}}

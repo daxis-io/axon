@@ -20,6 +20,10 @@ members = [
   "crates/wasm-query-runtime",
   "apps/axon-web",
 ]
+exclude = [
+  "poc/upstream-wasm-fork-stack",
+  "poc/upstream-wasm-fork-stack/fixture-generator",
+]
 resolver = "2"
 
 [workspace.package]
