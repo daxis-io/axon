@@ -4,6 +4,7 @@ import {
   BROWSER_SAFE_RESULT_ROW_LIMIT,
   type ExecutionTarget,
 } from '../axon-browser-sdk.ts';
+import { ExecutionLifecycleState as ContractExecutionLifecycleState } from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
 import { selectedQuerySourceIdentity, type SelectedQuerySourceIdentity } from '../query/keys.ts';
 import type { AvailableQuerySourceSelection } from './query-source.ts';
 
@@ -98,7 +99,7 @@ export type ExecutionTerminalResult =
 
 type ExecutionRecord = {
   input: ExecutionAdmissionInput;
-  state: ExecutionLifecycleState;
+  state: ContractExecutionLifecycleState;
   admitted: boolean;
   rejectionReason?: string;
   terminalReason?: string;
@@ -146,7 +147,7 @@ export class ExecutionLifecycle {
     const immutableInput = immutableAdmissionInput(input);
     const record: ExecutionRecord = {
       input: immutableInput,
-      state: 'created',
+      state: ContractExecutionLifecycleState.CREATED,
       admitted: false,
       invariantViolations: [],
       listeners: new Set(),
@@ -170,9 +171,9 @@ export class ExecutionLifecycle {
     const record = this.#records.get(input.executionId);
     if (!record) throw new Error('execution lifecycle lost a registered admission');
 
-    if (record.state === 'created') {
+    if (record.state === ContractExecutionLifecycleState.CREATED) {
       if (rejectionReason) {
-        record.state = 'rejected';
+        record.state = ContractExecutionLifecycleState.REJECTED;
         record.rejectionReason = rejectionReason;
         record.cancellationHandle = undefined;
         record.listeners.clear();
@@ -186,12 +187,12 @@ export class ExecutionLifecycle {
           snapshot: snapshot(record),
         };
       }
-      record.state = 'running';
+      record.state = ContractExecutionLifecycleState.RUNNING;
       record.admitted = true;
       return { kind: 'accepted', launch: true, snapshot: snapshot(record) };
     }
 
-    if (record.state === 'rejected') {
+    if (record.state === ContractExecutionLifecycleState.REJECTED) {
       return {
         kind: 'rejected',
         launch: false,
@@ -207,12 +208,12 @@ export class ExecutionLifecycle {
     const record = this.#records.get(executionId);
     if (!record) return () => undefined;
     if (
-      record.state === 'rejected' ||
-      record.state === 'completed' ||
-      record.state === 'failed' ||
-      record.state === 'cancelled'
+      record.state === ContractExecutionLifecycleState.REJECTED ||
+      record.state === ContractExecutionLifecycleState.COMPLETED ||
+      record.state === ContractExecutionLifecycleState.FAILED ||
+      record.state === ContractExecutionLifecycleState.CANCELLED
     ) {
-      recordInvariant(record, `listener attached after ${record.state}`);
+      recordInvariant(record, `listener attached after ${uiLifecycleState(record.state)}`);
       return () => undefined;
     }
     if (record.listeners.size >= MAX_EXECUTION_LISTENERS) {
@@ -232,16 +233,21 @@ export class ExecutionLifecycle {
     const record = this.#records.get(executionId);
     if (!record) return undefined;
     if (
-      record.state === 'rejected' ||
-      record.state === 'completed' ||
-      record.state === 'failed' ||
-      record.state === 'cancelled'
+      record.state === ContractExecutionLifecycleState.REJECTED ||
+      record.state === ContractExecutionLifecycleState.COMPLETED ||
+      record.state === ContractExecutionLifecycleState.FAILED ||
+      record.state === ContractExecutionLifecycleState.CANCELLED
     ) {
-      recordInvariant(record, `cancellation handle attached after ${record.state}`);
+      recordInvariant(
+        record,
+        `cancellation handle attached after ${uiLifecycleState(record.state)}`,
+      );
       return snapshot(record);
     }
     record.cancellationHandle = handle;
-    if (record.state === 'cancel_requested') this.#invokeCancellation(record);
+    if (record.state === ContractExecutionLifecycleState.CANCEL_REQUESTED) {
+      this.#invokeCancellation(record);
+    }
     return snapshot(record);
   }
 
@@ -249,33 +255,39 @@ export class ExecutionLifecycle {
     const record = this.#records.get(executionId);
     if (!record) return { kind: 'unknown' };
 
-    if (record.state === 'created') {
-      record.state = 'rejected';
+    if (record.state === ContractExecutionLifecycleState.CREATED) {
+      record.state = ContractExecutionLifecycleState.REJECTED;
       record.rejectionReason = 'cancelled';
       record.cancellationHandle = undefined;
       record.listeners.clear();
       return { kind: 'cancelled_before_admit', snapshot: snapshot(record) };
     }
 
-    if (record.state === 'running') {
-      record.state = 'cancel_requested';
+    if (record.state === ContractExecutionLifecycleState.RUNNING) {
+      record.state = ContractExecutionLifecycleState.CANCEL_REQUESTED;
       this.#invokeCancellation(record);
       return { kind: 'cancel_requested', snapshot: snapshot(record) };
     }
 
-    if (record.state === 'cancel_requested' || record.state === 'rejected') {
+    if (
+      record.state === ContractExecutionLifecycleState.CANCEL_REQUESTED ||
+      record.state === ContractExecutionLifecycleState.REJECTED
+    ) {
       return { kind: 'recorded', snapshot: snapshot(record) };
     }
 
-    recordInvariant(record, `cancellation requested after ${record.state}`);
+    recordInvariant(record, `cancellation requested after ${uiLifecycleState(record.state)}`);
     return { kind: 'recorded', snapshot: snapshot(record) };
   }
 
   publishFrame(executionId: string, payload: unknown): ExecutionPublishResult {
     const record = this.#records.get(executionId);
     if (!record) return { kind: 'unknown' };
-    if (record.state !== 'running' && record.state !== 'cancel_requested') {
-      recordInvariant(record, `frame published after ${record.state}`);
+    if (
+      record.state !== ContractExecutionLifecycleState.RUNNING &&
+      record.state !== ContractExecutionLifecycleState.CANCEL_REQUESTED
+    ) {
+      recordInvariant(record, `frame published after ${uiLifecycleState(record.state)}`);
       return { kind: 'recorded', snapshot: snapshot(record) };
     }
 
@@ -304,14 +316,17 @@ export class ExecutionLifecycle {
     }
     record.deadlineProcessed = true;
 
-    if (record.state === 'created') {
-      record.state = 'rejected';
+    if (record.state === ContractExecutionLifecycleState.CREATED) {
+      record.state = ContractExecutionLifecycleState.REJECTED;
       record.rejectionReason = 'deadline_expired';
       record.cancellationHandle = undefined;
       record.listeners.clear();
       return { kind: 'recorded', delivered: false, snapshot: snapshot(record) };
     }
-    if (record.state === 'running' || record.state === 'cancel_requested') {
+    if (
+      record.state === ContractExecutionLifecycleState.RUNNING ||
+      record.state === ContractExecutionLifecycleState.CANCEL_REQUESTED
+    ) {
       return this.#terminal(executionId, 'failed', 'deadline');
     }
     return { kind: 'recorded', delivered: false, snapshot: snapshot(record) };
@@ -346,12 +361,15 @@ export class ExecutionLifecycle {
     const record = this.#records.get(executionId);
     if (!record) return { kind: 'unknown', delivered: false };
 
-    if (record.state !== 'running' && record.state !== 'cancel_requested') {
-      recordInvariant(record, `late ${state} after ${record.state}`);
+    if (
+      record.state !== ContractExecutionLifecycleState.RUNNING &&
+      record.state !== ContractExecutionLifecycleState.CANCEL_REQUESTED
+    ) {
+      recordInvariant(record, `late ${state} after ${uiLifecycleState(record.state)}`);
       return { kind: 'recorded', delivered: false, snapshot: snapshot(record) };
     }
 
-    record.state = state;
+    record.state = contractLifecycleState(state);
     record.terminalReason = reason;
     if (reason === 'deadline') this.#invokeCancellation(record);
     const sequence = ++record.sequence;
@@ -602,13 +620,45 @@ function admissionRejectionReason(input: ExecutionAdmissionInput, now: number): 
 function snapshot(record: ExecutionRecord): ExecutionSnapshot {
   return Object.freeze({
     executionId: record.input.executionId,
-    state: record.state,
+    state: uiLifecycleState(record.state),
     input: record.input,
     admitted: record.admitted,
     rejectionReason: record.rejectionReason,
     terminalReason: record.terminalReason,
     invariantViolations: Object.freeze([...record.invariantViolations]),
   });
+}
+
+function contractLifecycleState(state: ExecutionTerminalState): ContractExecutionLifecycleState {
+  switch (state) {
+    case 'completed':
+      return ContractExecutionLifecycleState.COMPLETED;
+    case 'failed':
+      return ContractExecutionLifecycleState.FAILED;
+    case 'cancelled':
+      return ContractExecutionLifecycleState.CANCELLED;
+  }
+}
+
+function uiLifecycleState(state: ContractExecutionLifecycleState): ExecutionLifecycleState {
+  switch (state) {
+    case ContractExecutionLifecycleState.CREATED:
+      return 'created';
+    case ContractExecutionLifecycleState.RUNNING:
+      return 'running';
+    case ContractExecutionLifecycleState.CANCEL_REQUESTED:
+      return 'cancel_requested';
+    case ContractExecutionLifecycleState.REJECTED:
+      return 'rejected';
+    case ContractExecutionLifecycleState.COMPLETED:
+      return 'completed';
+    case ContractExecutionLifecycleState.FAILED:
+      return 'failed';
+    case ContractExecutionLifecycleState.CANCELLED:
+      return 'cancelled';
+    case ContractExecutionLifecycleState.UNSPECIFIED:
+      throw new Error('execution lifecycle state is unspecified');
+  }
 }
 
 function recordInvariant(record: ExecutionRecord, violation: string): void {

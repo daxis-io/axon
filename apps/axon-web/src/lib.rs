@@ -30,6 +30,7 @@ const DEFAULT_QUERY_PREVIEW_LIMIT: usize = 501;
 const IPC_METADATA_VERSION: u32 = 1;
 const DEFAULT_IPC_TRANSPORT_CHUNK_BYTES: usize = 1024 * 1024;
 const DEFAULT_MAX_PENDING_ENCODED_BATCH_BYTES: usize = 8 * 1024 * 1024;
+const JAVASCRIPT_MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -577,7 +578,10 @@ pub fn sandbox_query_worker_artifact_report() -> Result<String, JsValue> {
 pub async fn resolve_delta_snapshot_from_manifest(
     manifest_json: String,
     table_uri: String,
+    snapshot_version: Option<f64>,
 ) -> Result<String, JsValue> {
+    let snapshot_version = validated_js_snapshot_version(snapshot_version)
+        .map_err(|message| JsValue::from_str(message))?;
     let manifest_input = serde_json::from_str::<ManifestInput>(&manifest_json)
         .map_err(|error| JsValue::from_str(&format!("invalid Delta log manifest: {error}")))?;
     let objects = manifest_input
@@ -598,13 +602,27 @@ pub async fn resolve_delta_snapshot_from_manifest(
     let snapshot = resolver
         .resolve_snapshot(SnapshotResolutionRequest {
             table_uri,
-            snapshot_version: None,
+            snapshot_version,
         })
         .await
         .map_err(query_error_to_js_value)?;
 
     serde_json::to_string(&snapshot)
         .map_err(|error| JsValue::from_str(&format!("snapshot serialization failed: {error}")))
+}
+
+fn validated_js_snapshot_version(value: Option<f64>) -> Result<Option<i64>, &'static str> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if !value.is_finite()
+        || value < 0.0
+        || value.fract() != 0.0
+        || value > JAVASCRIPT_MAX_SAFE_INTEGER
+    {
+        return Err("snapshot version must be a non-negative JavaScript-safe integer");
+    }
+    Ok(Some(value as i64))
 }
 
 #[wasm_bindgen]
@@ -987,6 +1005,23 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::path::PathBuf;
+
+    #[test]
+    fn validates_optional_javascript_snapshot_versions() {
+        assert_eq!(validated_js_snapshot_version(None), Ok(None));
+        assert_eq!(validated_js_snapshot_version(Some(0.0)), Ok(Some(0)));
+        assert_eq!(
+            validated_js_snapshot_version(Some(9_007_199_254_740_991.0)),
+            Ok(Some(9_007_199_254_740_991))
+        );
+
+        for invalid in [-1.0, 1.5, f64::NAN, f64::INFINITY, 9_007_199_254_740_992.0] {
+            assert!(
+                validated_js_snapshot_version(Some(invalid)).is_err(),
+                "{invalid} must be rejected"
+            );
+        }
+    }
 
     #[test]
     fn sandbox_datafusion_memory_metrics_serialize_as_decimal_strings() {

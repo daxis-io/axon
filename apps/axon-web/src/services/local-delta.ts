@@ -1,5 +1,14 @@
+import { create } from '@bufbuild/protobuf';
+import { NullValue } from '@bufbuild/protobuf/wkt';
 import init, { resolve_delta_snapshot_from_manifest } from '../wasm/axon_web_wasm.js';
-import type { BrowserHttpSnapshotDescriptor, PartitionColumnType } from '../axon-browser-sdk.ts';
+import {
+  BrowserHttpFileDescriptorSchema,
+  BrowserHttpSnapshotDescriptorSchema,
+  CapabilityReportSchema,
+  PartitionColumnType,
+  PartitionValueSchema,
+  type BrowserHttpSnapshotDescriptor,
+} from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 import {
   HandleStore,
   ensureDirectoryReadPermission,
@@ -91,6 +100,7 @@ export type OpenLocalDeltaOptions = {
   schemaName?: string;
   tableName?: string;
   registryId?: string;
+  snapshotVersion?: number;
 };
 
 type ObjectKind = 'commit_json' | 'checkpoint_parquet' | 'last_checkpoint' | 'delta_log_object';
@@ -118,7 +128,7 @@ type LocalDeltaRegistryRecord = LocalDeltaHandleStoreRecord<LocalFileSystemDirec
 type ResolvedSnapshot = {
   table_uri: string;
   snapshot_version: number;
-  partition_column_types?: Partial<Record<string, PartitionColumnType>>;
+  partition_column_types?: Partial<Record<string, ResolvedPartitionColumnType>>;
   active_files: Array<{
     path: string;
     size_bytes: number;
@@ -126,6 +136,8 @@ type ResolvedSnapshot = {
     stats?: string;
   }>;
 };
+
+type ResolvedPartitionColumnType = 'string' | 'int64' | 'boolean' | 'unsupported';
 
 type LocalLogFacts = {
   tableName?: string;
@@ -142,6 +154,7 @@ const LOCAL_DELTA_ACTIVE_ID_KEY = 'axon-local-delta-active-id';
 
 let wasmReady: Promise<unknown> | undefined;
 const sessionLocalDeltaTables = new Map<string, LocalDeltaTableFiles>();
+const localDeltaRuntimes = new Map<string, LocalDeltaRuntime>();
 const localObjectUrlsByRegistryId = new Map<string, Set<string>>();
 const localDeltaHandleStore = new HandleStore<LocalFileSystemDirectoryHandle>({
   databaseName: LOCAL_DELTA_DB_NAME,
@@ -172,7 +185,12 @@ export async function loadLocalDeltaRuntime(
   registryId: string,
   options: OpenLocalDeltaOptions = {},
 ): Promise<LocalDeltaRuntime> {
-  const table = sessionLocalDeltaTables.get(registryId) ?? (await loadLocalDeltaTable(registryId));
+  let table = sessionLocalDeltaTables.get(registryId);
+  if (table) {
+    await revalidateLocalDeltaTableAccess(table);
+  } else {
+    table = await loadLocalDeltaTable(registryId);
+  }
   if (!table) {
     throw new LocalDeltaError(
       'registry_unavailable',
@@ -181,11 +199,16 @@ export async function loadLocalDeltaRuntime(
   }
   sessionLocalDeltaTables.set(registryId, table);
   markLocalDeltaRuntimeActive(registryId);
-  return buildLocalDeltaRuntime(
+  const cacheKey = localDeltaRuntimeCacheKey(registryId, options);
+  const cached = localDeltaRuntimes.get(cacheKey);
+  if (cached) return cached;
+  const runtime = await buildLocalDeltaRuntime(
     table,
     { ...options, registryId },
     table.persistenceMode ?? 'session_handles',
   );
+  localDeltaRuntimes.set(cacheKey, runtime);
+  return runtime;
 }
 
 export async function loadActiveLocalDeltaRuntime(
@@ -211,9 +234,11 @@ export function clearActiveLocalDeltaRegistryId(): void {
 export function releaseLocalDeltaObjectUrls(registryId?: string): void {
   if (registryId) {
     const urls = localObjectUrlsByRegistryId.get(registryId);
-    if (!urls) return;
-    for (const url of urls) URL.revokeObjectURL(url);
-    localObjectUrlsByRegistryId.delete(registryId);
+    deleteLocalDeltaRuntimeCache(registryId);
+    if (urls) {
+      for (const url of urls) URL.revokeObjectURL(url);
+      localObjectUrlsByRegistryId.delete(registryId);
+    }
     return;
   }
 
@@ -221,10 +246,16 @@ export function releaseLocalDeltaObjectUrls(registryId?: string): void {
     for (const url of urls) URL.revokeObjectURL(url);
   }
   localObjectUrlsByRegistryId.clear();
+  localDeltaRuntimes.clear();
+}
+
+export function isCurrentLocalDeltaObjectUrl(registryId: string, url: string): boolean {
+  return url.startsWith('blob:') && localObjectUrlsByRegistryId.get(registryId)?.has(url) === true;
 }
 
 export async function unregisterLocalDeltaRuntime(registryId: string): Promise<void> {
   sessionLocalDeltaTables.delete(registryId);
+  deleteLocalDeltaRuntimeCache(registryId);
   markLocalDeltaRuntimeInactive(registryId);
   releaseLocalDeltaObjectUrls(registryId);
 
@@ -260,6 +291,15 @@ async function buildLocalDeltaRuntime(
   const registryId =
     table.registryId ?? options.registryId ?? localDeltaRegistryId(table.tableRootName);
   const tableUri = localTableUri(table.tableRootName);
+  if (
+    options.snapshotVersion !== undefined &&
+    (!Number.isSafeInteger(options.snapshotVersion) || options.snapshotVersion < 0)
+  ) {
+    throw new LocalDeltaError(
+      'invalid_delta_log',
+      'Requested Delta snapshot version must be a non-negative JavaScript-safe integer.',
+    );
+  }
 
   const logObjects = table.logEntries.map((entry) => ({
     relative_path: entry.relativePath,
@@ -277,18 +317,19 @@ async function buildLocalDeltaRuntime(
   const snapshotJson = await resolve_delta_snapshot_from_manifest(
     JSON.stringify(wasmManifest),
     tableUri,
+    options.snapshotVersion,
   );
   const snapshot = JSON.parse(snapshotJson) as ResolvedSnapshot;
   const partitionTypes =
     snapshot.partition_column_types ??
     partitionTypesFromSchema(facts.schemaString, facts.partitionColumns);
-  const descriptor: BrowserHttpSnapshotDescriptor = {
-    table_uri: snapshot.table_uri,
-    snapshot_version: snapshot.snapshot_version,
-    partition_column_types: partitionTypes,
-    browser_compatibility: { capabilities: {} },
-    required_capabilities: { capabilities: {} },
-    active_files: snapshot.active_files.map((file) => {
+  const descriptor = create(BrowserHttpSnapshotDescriptorSchema, {
+    tableUri: snapshot.table_uri,
+    snapshotVersion: BigInt(snapshot.snapshot_version),
+    partitionColumnTypes: generatedPartitionColumnTypes(partitionTypes),
+    browserCompatibility: create(CapabilityReportSchema),
+    requiredCapabilities: create(CapabilityReportSchema),
+    activeFiles: snapshot.active_files.map((file) => {
       const entry = localFileForDeltaPath(table, file.path);
       if (!entry) {
         throw new LocalDeltaError(
@@ -302,15 +343,25 @@ async function buildLocalDeltaRuntime(
           `Active file '${file.path}' size ${entry.file.size} did not match Delta log size ${file.size_bytes}.`,
         );
       }
-      return {
+      return create(BrowserHttpFileDescriptorSchema, {
         path: file.path,
         url: trackLocalObjectUrl(registryId, URL.createObjectURL(entry.file)),
-        size_bytes: file.size_bytes,
-        partition_values: file.partition_values,
+        sizeBytes: BigInt(file.size_bytes),
+        partitionValues: Object.fromEntries(
+          Object.entries(file.partition_values).map(([name, value]) => [
+            name,
+            create(PartitionValueSchema, {
+              value:
+                value === null
+                  ? { case: 'nullValue', value: NullValue.NULL_VALUE }
+                  : { case: 'stringValue', value },
+            }),
+          ]),
+        ),
         stats: file.stats,
-      };
+      });
     }),
-  };
+  });
 
   return {
     kind: 'local_delta',
@@ -340,12 +391,18 @@ async function openLocalDeltaRuntime(
     throw error;
   }
   sessionLocalDeltaTables.set(registryId, sessionTable);
+  localDeltaRuntimes.set(localDeltaRuntimeCacheKey(registryId, options), runtime);
   markLocalDeltaRuntimeActive(registryId);
 
   const durableTable = durableLocalDeltaTableForRuntime(sessionTable, runtime);
   const persisted = await tryPersistLocalDeltaTable(durableTable);
   if (persisted) {
-    return { ...runtime, persistence: persisted.persistenceMode ?? runtime.persistence };
+    const durableRuntime = {
+      ...runtime,
+      persistence: persisted.persistenceMode ?? runtime.persistence,
+    };
+    localDeltaRuntimes.set(localDeltaRuntimeCacheKey(registryId, options), durableRuntime);
+    return durableRuntime;
   }
   return runtime;
 }
@@ -505,7 +562,7 @@ function durableLocalDeltaTableForRuntime(
 ): LocalDeltaTableFiles {
   const entries = new Map<string, LocalDeltaFileEntry>();
   for (const entry of table.logEntries) entries.set(entry.relativePath, entry);
-  for (const file of runtime.descriptor.active_files) {
+  for (const file of runtime.descriptor.activeFiles) {
     const entry = localFileForDeltaPath(table, file.path);
     if (entry) entries.set(entry.relativePath, entry);
   }
@@ -571,6 +628,17 @@ async function loadDirectoryHandleLocalDeltaTable(
   });
   validateLocalDeltaTableAgainstRecord(table, record);
   return table;
+}
+
+async function revalidateLocalDeltaTableAccess(table: LocalDeltaTableFiles): Promise<void> {
+  if (!table.directoryHandle) return;
+  const granted = await ensureDirectoryReadPermission(table.directoryHandle);
+  if (!granted) {
+    throw new LocalDeltaError(
+      'registry_unavailable',
+      'Browser permission for this local Delta folder expired. Select the folder again.',
+    );
+  }
 }
 
 function validateLocalDeltaTableAgainstRecord(
@@ -681,11 +749,14 @@ function discoveryFromRuntimeFacts(
   descriptor: BrowserHttpSnapshotDescriptor,
   facts: LocalLogFacts,
 ): LocalDeltaDiscovery {
-  const rows = descriptor.active_files.reduce((total, file) => {
+  const rows = descriptor.activeFiles.reduce((total, file) => {
     const statsRows = rowsFromStats(file.stats);
     return statsRows === undefined ? total : total + statsRows;
   }, 0);
-  const sizeBytes = descriptor.active_files.reduce((total, file) => total + file.size_bytes, 0);
+  const sizeBytes = descriptor.activeFiles.reduce(
+    (total, file) => total + safeGeneratedInteger(file.sizeBytes, 'active file size'),
+    0,
+  );
   const protocol =
     facts.minReaderVersion !== undefined && facts.minWriterVersion !== undefined
       ? `r${facts.minReaderVersion}/w${facts.minWriterVersion}`
@@ -701,12 +772,12 @@ function discoveryFromRuntimeFacts(
         tables: [
           {
             name: tableName,
-            snapshot: descriptor.snapshot_version,
+            snapshot: safeGeneratedInteger(descriptor.snapshotVersion, 'snapshot version'),
             rows,
-            files: descriptor.active_files.length,
+            files: descriptor.activeFiles.length,
             size: formatBytes(sizeBytes),
             protocol,
-            uri: descriptor.table_uri,
+            uri: descriptor.tableUri,
             columns: columnsFromSchema(facts.schemaString, facts.partitionColumns),
           },
         ],
@@ -751,7 +822,7 @@ function rowsFromStats(stats: string | undefined): number | undefined {
 function partitionTypesFromSchema(
   schemaString: string | undefined,
   partitionColumns: readonly string[],
-): Partial<Record<string, PartitionColumnType>> {
+): Partial<Record<string, ResolvedPartitionColumnType>> {
   if (!schemaString) {
     return Object.fromEntries(partitionColumns.map((name) => [name, 'string']));
   }
@@ -759,7 +830,7 @@ function partitionTypesFromSchema(
   try {
     const schema = JSON.parse(schemaString) as unknown;
     if (!isRecord(schema) || !Array.isArray(schema.fields)) return {};
-    const fieldTypes = new Map<string, PartitionColumnType>();
+    const fieldTypes = new Map<string, ResolvedPartitionColumnType>();
     for (const field of schema.fields) {
       if (!isRecord(field)) continue;
       const name = stringField(field, 'name');
@@ -774,13 +845,62 @@ function partitionTypesFromSchema(
   }
 }
 
-function partitionType(value: unknown): PartitionColumnType {
+function partitionType(value: unknown): ResolvedPartitionColumnType {
   if (value === 'long' || value === 'integer' || value === 'short' || value === 'byte') {
     return 'int64';
   }
   if (value === 'boolean') return 'boolean';
   if (value === 'string' || value === undefined) return 'string';
   return 'unsupported';
+}
+
+function generatedPartitionColumnTypes(
+  values: Partial<Record<string, ResolvedPartitionColumnType>>,
+): Record<string, PartitionColumnType> {
+  return Object.fromEntries(
+    Object.entries(values).map(([name, value]) => [
+      name,
+      value === 'int64'
+        ? PartitionColumnType.INT64
+        : value === 'boolean'
+          ? PartitionColumnType.BOOLEAN
+          : value === 'unsupported'
+            ? PartitionColumnType.UNSUPPORTED
+            : PartitionColumnType.STRING,
+    ]),
+  );
+}
+
+function safeGeneratedInteger(value: bigint | undefined, field: string): number {
+  if (value === undefined) {
+    throw new LocalDeltaError('invalid_delta_log', `Resolved Delta ${field} was missing.`);
+  }
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) {
+    throw new LocalDeltaError(
+      'invalid_delta_log',
+      `Resolved Delta ${field} was outside the JavaScript-safe integer range.`,
+    );
+  }
+  return number;
+}
+
+function localDeltaRuntimeCacheKey(registryId: string, options: OpenLocalDeltaOptions): string {
+  return JSON.stringify([
+    registryId,
+    options.schemaName ?? 'default',
+    options.tableName ?? '',
+    options.snapshotVersion ?? null,
+  ]);
+}
+
+function deleteLocalDeltaRuntimeCache(registryId: string): void {
+  for (const key of localDeltaRuntimes.keys()) {
+    const parsed = JSON.parse(key) as unknown;
+    if (Array.isArray(parsed) && parsed[0] === registryId) {
+      localDeltaRuntimes.delete(key);
+    }
+  }
 }
 
 function localDeltaRegistryId(tableRootName: string): string {

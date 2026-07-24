@@ -738,9 +738,12 @@ function detectedFromRuntime(runtime: LocalDeltaRuntime) {
   const table = runtime.discovery.schemas[0]?.tables[0];
   return {
     name: runtime.tableName,
-    snapshot: runtime.descriptor.snapshot_version,
+    snapshot:
+      runtime.descriptor.snapshotVersion === undefined
+        ? 0
+        : Number(runtime.descriptor.snapshotVersion),
     rowsLabel: table ? table.rows.toLocaleString() : '0',
-    files: runtime.descriptor.active_files.length,
+    files: runtime.descriptor.activeFiles.length,
     size: table?.size ?? '0 bytes',
     protocol: table?.protocol ?? 'json-log',
     persistenceLabel: localDeltaPersistenceLabel(runtime.persistence),

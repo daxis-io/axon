@@ -2,6 +2,8 @@
 // against the configured fixture, opens the table once, and runs SQL through the
 // SDK. Translates worker events + the success envelope into UI-shaped types.
 
+import { create, equals } from '@bufbuild/protobuf';
+import { timestampFromMs } from '@bufbuild/protobuf/wkt';
 import init, { resolve_delta_snapshot_from_manifest } from '../wasm/axon_web_wasm.js';
 import {
   AxonWorkerError,
@@ -14,12 +16,31 @@ import {
   type BrowserHttpSnapshotDescriptor,
   type BrowserWorkerRangeReadMetricsEvent,
   type BrowserWorkerEventEnvelope,
+  type CapabilityKey,
+  type CapabilityState,
   type PartitionColumnType,
   type QueryError,
   type QueryExecutionOptions,
   type QueryMetricsSummary,
   type QueryResultPageRequest,
 } from '../axon-browser-sdk.ts';
+import {
+  BrowserHttpSnapshotDescriptorSchema as ContractBrowserHttpSnapshotDescriptorSchema,
+  CapabilityKey as ContractCapabilityKey,
+  CapabilityState as ContractCapabilityState,
+  PartitionColumnType as ContractPartitionColumnType,
+  type BrowserHttpSnapshotDescriptor as ContractBrowserHttpSnapshotDescriptor,
+  type CapabilityReport as ContractCapabilityReport,
+  type ResolvedBrowserRead,
+} from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
+import {
+  ExecuteRequestSchema,
+  ExecutionTarget as ContractExecutionTarget,
+  QueryExecutionOptionsSchema,
+  QueryRequestSchema,
+  QueryResultPageSchema,
+  QueryRuntimeLimitsSchema,
+} from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
 import type {
   CatalogTable,
   QueryEvent,
@@ -27,7 +48,7 @@ import type {
   QueryRunError,
   QueryRunOutcome,
 } from './types.ts';
-import { loadLocalDeltaRuntime, releaseLocalDeltaObjectUrls } from './local-delta.ts';
+import { isCurrentLocalDeltaObjectUrl } from './local-delta.ts';
 import {
   lookupPublicObjectStorageRuntimeCache,
   resolvePublicObjectStorageDescriptor,
@@ -45,7 +66,19 @@ import {
 } from './query-runtime-state.ts';
 import { isBrowserDataFusionCancellation } from './query-cancellation.ts';
 import { isQuerySessionInvalidation } from './query-session-invalidation.ts';
-import { sameQuerySource, type QueryTableSource } from './query-source.ts';
+import {
+  sameQuerySource,
+  type AvailableQuerySourceSelection,
+  type QueryTableSource,
+} from './query-source.ts';
+import {
+  canonicalTableForSelection,
+  dataAccessResolverForSelection,
+} from './browser-read-resolution.ts';
+import {
+  validateBrowserExecuteInput,
+  type BrowserExecuteInput,
+} from './browser-execution-provider.ts';
 import {
   executionCancelSpanId,
   executionOpenSpanId,
@@ -95,6 +128,7 @@ type EventHandler = (envelope: BrowserWorkerEventEnvelope) => void;
 type SessionState = {
   client: AxonBrowserClient;
   descriptor: BrowserHttpSnapshotDescriptor;
+  contractDescriptor?: ContractBrowserHttpSnapshotDescriptor;
   manifest?: FixtureManifest;
   setupMetrics?: SessionSetupMetrics;
   setupMetricsEmitted: boolean;
@@ -120,7 +154,13 @@ export type SessionSetupMetricsState = {
 
 let wasmReady: Promise<unknown> | undefined;
 let session: SessionState | undefined;
-let sessionInit: { source: QueryTableSource; promise: Promise<SessionState> } | undefined;
+let sessionInit:
+  | {
+      source: QueryTableSource;
+      contractDescriptor?: ContractBrowserHttpSnapshotDescriptor;
+      promise: Promise<SessionState>;
+    }
+  | undefined;
 let sessionGeneration = 0;
 let coldStartMs: number | undefined;
 
@@ -184,24 +224,24 @@ function browserSnapshotDescriptor(
   };
 }
 
-async function buildSession(source: QueryTableSource): Promise<SessionState> {
+async function buildSession(
+  source: QueryTableSource,
+  browserRead?: ResolvedBrowserRead,
+): Promise<SessionState> {
   if (source.kind === 'local_delta') {
-    const runtime = await loadLocalDeltaRuntime(source.localRegistryId, {
-      schemaName: source.schemaName,
-      tableName: source.tableName,
-    });
+    if (browserRead?.descriptor?.descriptor.case !== 'snapshot') {
+      throw new Error('local Delta session requires a resolved snapshot descriptor');
+    }
+    const contractDescriptor = browserRead.descriptor.descriptor.value;
+    const descriptor = sdkSnapshotDescriptor(contractDescriptor);
     return {
       client: createQueryClient(),
-      descriptor: runtime.descriptor,
+      descriptor,
+      contractDescriptor,
       setupMetricsEmitted: true,
-      snapshot: snapshotFromBrowserDescriptor(runtime.descriptor),
+      snapshot: snapshotFromBrowserDescriptor(descriptor),
       tableOpened: false,
-      source: {
-        ...source,
-        tableName: runtime.tableName,
-        schemaName: runtime.schemaName,
-        storage: runtime.storageLabel,
-      },
+      source,
     };
   }
 
@@ -298,6 +338,119 @@ function createQueryClient(): AxonBrowserClient {
       for (const handler of eventListeners) handler(envelope);
     },
   });
+}
+
+function sdkSnapshotDescriptor(
+  descriptor: ContractBrowserHttpSnapshotDescriptor,
+): BrowserHttpSnapshotDescriptor {
+  if (descriptor.snapshotVersion === undefined) {
+    throw new Error('resolved snapshot descriptor omitted snapshot_version');
+  }
+  return {
+    table_uri: descriptor.tableUri,
+    snapshot_version: safeContractInteger(descriptor.snapshotVersion, 'snapshot_version'),
+    partition_column_types: Object.fromEntries(
+      Object.entries(descriptor.partitionColumnTypes).map(([name, value]) => [
+        name,
+        sdkPartitionColumnType(value),
+      ]),
+    ),
+    browser_compatibility: sdkCapabilityReport(descriptor.browserCompatibility),
+    required_capabilities: sdkCapabilityReport(descriptor.requiredCapabilities),
+    active_files: descriptor.activeFiles.map((file) => ({
+      path: file.path,
+      url: file.url,
+      size_bytes: safeContractInteger(file.sizeBytes, 'size_bytes'),
+      partition_values: Object.fromEntries(
+        Object.entries(file.partitionValues).map(([name, value]) => [
+          name,
+          value.value.case === 'nullValue'
+            ? null
+            : value.value.case === 'stringValue'
+              ? value.value.value
+              : null,
+        ]),
+      ),
+      stats: file.stats,
+      object_etag: file.objectEtag,
+    })),
+  };
+}
+
+function sdkPartitionColumnType(value: ContractPartitionColumnType): PartitionColumnType {
+  switch (value) {
+    case ContractPartitionColumnType.INT64:
+      return 'int64';
+    case ContractPartitionColumnType.BOOLEAN:
+      return 'boolean';
+    case ContractPartitionColumnType.UNSUPPORTED:
+      return 'unsupported';
+    case ContractPartitionColumnType.STRING:
+    case ContractPartitionColumnType.UNSPECIFIED:
+      return 'string';
+  }
+}
+
+function sdkCapabilityReport(report: ContractCapabilityReport | undefined): {
+  capabilities: Partial<Record<CapabilityKey, CapabilityState>>;
+} {
+  const capabilities: Partial<Record<CapabilityKey, CapabilityState>> = {};
+  for (const entry of report?.capabilities ?? []) {
+    const key = sdkCapabilityKey(entry.key);
+    const state = sdkCapabilityState(entry.state);
+    if (key && state) capabilities[key] = state;
+  }
+  return { capabilities };
+}
+
+function sdkCapabilityKey(value: ContractCapabilityKey): CapabilityKey | undefined {
+  switch (value) {
+    case ContractCapabilityKey.CHANGE_DATA_FEED:
+      return 'change_data_feed';
+    case ContractCapabilityKey.COLUMN_MAPPING:
+      return 'column_mapping';
+    case ContractCapabilityKey.DELETION_VECTORS:
+      return 'deletion_vectors';
+    case ContractCapabilityKey.MULTI_PARTITION_EXECUTION:
+      return 'multi_partition_execution';
+    case ContractCapabilityKey.PROXY_ACCESS:
+      return 'proxy_access';
+    case ContractCapabilityKey.RANGE_READS:
+      return 'range_reads';
+    case ContractCapabilityKey.SIGNED_URL_ACCESS:
+      return 'signed_url_access';
+    case ContractCapabilityKey.TIME_TRAVEL:
+      return 'time_travel';
+    case ContractCapabilityKey.TIMESTAMP_NTZ:
+      return 'timestamp_ntz';
+    case ContractCapabilityKey.UNKNOWN_PROTOCOL_FEATURES:
+      return 'unknown_protocol_features';
+    case ContractCapabilityKey.UNSPECIFIED:
+      return undefined;
+  }
+}
+
+function sdkCapabilityState(value: ContractCapabilityState): CapabilityState | undefined {
+  switch (value) {
+    case ContractCapabilityState.SUPPORTED:
+      return 'supported';
+    case ContractCapabilityState.NATIVE_ONLY:
+      return 'native_only';
+    case ContractCapabilityState.UNSUPPORTED:
+      return 'unsupported';
+    case ContractCapabilityState.EXPERIMENTAL:
+      return 'experimental';
+    case ContractCapabilityState.UNSPECIFIED:
+      return undefined;
+  }
+}
+
+function safeContractInteger(value: bigint, field: string): number {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) {
+    throw new Error(`resolved browser descriptor ${field} is outside JavaScript-safe range`);
+  }
+  return number;
 }
 
 function snapshotFromBrowserDescriptor(
@@ -476,19 +629,25 @@ export function queryMetricsFromRangeReadMetricsEvent(
   );
 }
 
-export async function getSession(source: QueryTableSource): Promise<SessionState> {
-  if (session && sameQuerySource(session.source, source)) return session;
-  if (sessionInit && sameQuerySource(sessionInit.source, source)) return sessionInit.promise;
+export async function getSession(
+  source: QueryTableSource,
+  browserRead?: ResolvedBrowserRead,
+): Promise<SessionState> {
+  const contractDescriptor = resolvedSnapshotDescriptor(browserRead);
+  if (session && sameSessionResolution(session, source, contractDescriptor)) return session;
+  if (sessionInit && sameSessionResolution(sessionInit, source, contractDescriptor)) {
+    return sessionInit.promise;
+  }
   discardQuerySession();
   const generation = ++sessionGeneration;
   const t0 = performance.now();
-  const promise = buildSession(source)
+  const promise = buildSession(source, browserRead)
     .then((s) => {
       if (
         generation !== sessionGeneration ||
         !sessionInit ||
         sessionInit.promise !== promise ||
-        !sameQuerySource(sessionInit.source, source)
+        !sameSessionResolution(sessionInit, source, contractDescriptor)
       ) {
         disposeSession(s);
         throw new DOMException('stale query session discarded', 'AbortError');
@@ -510,8 +669,37 @@ export async function getSession(source: QueryTableSource): Promise<SessionState
         sessionInit = undefined;
       }
     });
-  sessionInit = { source, promise };
+  sessionInit = { source, contractDescriptor, promise };
   return promise;
+}
+
+function resolvedSnapshotDescriptor(
+  browserRead: ResolvedBrowserRead | undefined,
+): ContractBrowserHttpSnapshotDescriptor | undefined {
+  return browserRead?.descriptor?.descriptor.case === 'snapshot'
+    ? browserRead.descriptor.descriptor.value
+    : undefined;
+}
+
+function sameSessionResolution(
+  candidate: {
+    source: QueryTableSource;
+    contractDescriptor?: ContractBrowserHttpSnapshotDescriptor;
+  },
+  source: QueryTableSource,
+  contractDescriptor: ContractBrowserHttpSnapshotDescriptor | undefined,
+): boolean {
+  if (!sameQuerySource(candidate.source, source)) return false;
+  if (source.kind !== 'local_delta') return true;
+  return (
+    candidate.contractDescriptor !== undefined &&
+    contractDescriptor !== undefined &&
+    equals(
+      ContractBrowserHttpSnapshotDescriptorSchema,
+      candidate.contractDescriptor,
+      contractDescriptor,
+    )
+  );
 }
 
 export function getCurrentSession(source: QueryTableSource): SessionState | undefined {
@@ -538,18 +726,25 @@ export function discardQuerySession(source?: QueryTableSource): void {
 
 function disposeSession(state: SessionState): void {
   state.client.terminate();
-  if (state.source.kind === 'local_delta') {
-    releaseLocalDeltaObjectUrls(state.source.localRegistryId);
-  }
 }
 
 // ─── Run a query ────────────────────────────────────────────────────────────
 
-function ensureTable(state: SessionState, signal: AbortSignal, executionId: string): Promise<void> {
+function ensureTable(
+  state: SessionState,
+  signal: AbortSignal,
+  executionId: string,
+  input?: BrowserExecuteInput,
+): Promise<void> {
+  if (input) {
+    validateBrowserExecuteInput(input, {
+      isCurrentLocalObjectUrl: isCurrentLocalDeltaObjectUrl,
+    });
+  }
   if (state.tableOpened) return Promise.resolve();
   const requestId = executionOpenSpanId(executionId, 1);
   return state.client
-    .openDeltaTable(state.source.tableName, state.descriptor, { requestId })
+    .openDeltaTable(input?.table.name ?? state.source.tableName, state.descriptor, { requestId })
     .then(() => {
       if (signal.aborted) return;
       state.tableOpened = true;
@@ -716,14 +911,99 @@ export function queryClientOptionsForAdmission(
   return { requestId: executionRequestId(admission.executionId), delivery: 'single_buffer' };
 }
 
+class BrowserReadResolutionFailure extends Error {
+  constructor(
+    message: string,
+    readonly code: 'access_denied' | 'unsupported_feature' | 'execution_failed',
+  ) {
+    super(message);
+  }
+}
+
+async function localBrowserExecuteInput(
+  selection: AvailableQuerySourceSelection,
+  req: QueryExecRequest,
+  admission: ExecutionAdmissionInput,
+  signal: AbortSignal,
+): Promise<BrowserExecuteInput | undefined> {
+  if (selection.source.kind !== 'local_delta') return undefined;
+  const table = canonicalTableForSelection(selection);
+  if (!table.resource) {
+    throw new BrowserReadResolutionFailure(
+      'Selected table did not produce a canonical resource.',
+      'execution_failed',
+    );
+  }
+  const deadline = timestampFromMs(admission.deadlineAt);
+  const resolution = await dataAccessResolverForSelection(selection).resolve(table.resource, {
+    executionId: admission.executionId,
+    deadline,
+    snapshotVersion: req.snapshot_version ?? selection.source.snapshot,
+    signal,
+  });
+  if (resolution.outcome.case !== 'browserRead') {
+    const message =
+      resolution.outcome.case === undefined
+        ? 'Data access resolver returned no outcome.'
+        : resolution.outcome.value.message;
+    throw new BrowserReadResolutionFailure(
+      message,
+      resolution.outcome.case === 'denied'
+        ? 'access_denied'
+        : resolution.outcome.case === 'remoteRequired'
+          ? 'unsupported_feature'
+          : 'execution_failed',
+    );
+  }
+  const page = req.page ?? defaultQueryPage();
+  const request = create(ExecuteRequestSchema, {
+    executionId: admission.executionId,
+    binding: {
+      case: 'browserRead',
+      value: resolution.outcome.value,
+    },
+    query: create(QueryRequestSchema, {
+      sql: req.sql,
+      preferredTarget:
+        admission.target === 'native'
+          ? ContractExecutionTarget.NATIVE
+          : ContractExecutionTarget.BROWSER_WASM,
+      options: create(QueryExecutionOptionsSchema, {
+        collectMetrics: true,
+        includeExplain: true,
+        resultPage: create(QueryResultPageSchema, {
+          limit: BigInt(page.size),
+          offset: BigInt(page.offset),
+        }),
+        runtimeLimits: create(QueryRuntimeLimitsSchema, {
+          maxResultRows: BigInt(admission.budgets.maxResultRows),
+          maxArrowIpcBytes: BigInt(admission.budgets.maxArrowIpcBytes),
+          maxPreviewStringBytes: BigInt(admission.budgets.maxPreviewStringBytes),
+          maxScanBytes:
+            admission.budgets.maxScanBytes === undefined
+              ? undefined
+              : BigInt(admission.budgets.maxScanBytes),
+        }),
+      }),
+    }),
+    deadline,
+  });
+  const input = { table, request };
+  validateBrowserExecuteInput(input, {
+    isCurrentLocalObjectUrl: isCurrentLocalDeltaObjectUrl,
+  });
+  return input;
+}
+
 export async function runQuery(
   req: QueryExecRequest,
   onEvent: (event: QueryEvent) => void,
-  source: QueryTableSource,
+  selection: AvailableQuerySourceSelection,
   admission: ExecutionAdmissionInput,
   signal: AbortSignal = new AbortController().signal,
   deadlineSignal?: AbortSignal,
 ): Promise<QueryRunOutcome> {
+  const source = selection.source;
   const startedAt = performance.now();
   const since = () => Math.round(performance.now() - startedAt);
 
@@ -731,13 +1011,18 @@ export async function runQuery(
   const executionId = admission.executionId;
 
   try {
+    const browserInput = await localBrowserExecuteInput(selection, req, admission, signal);
+    const browserRead =
+      browserInput?.request.binding.case === 'browserRead'
+        ? browserInput.request.binding.value
+        : undefined;
     const requestId = executionRequestId(executionId);
     const execution = await runCancelableQueryStages({
       signal,
       deadlineSignal,
       remainingTime: () => admission.deadlineAt - Date.now(),
-      getSession: () => getSession(source),
-      openTable: (state) => ensureTable(state, signal, executionId),
+      getSession: () => getSession(source, browserRead),
+      openTable: (state) => ensureTable(state, signal, executionId, browserInput),
       cancelQuery: (state) =>
         state.client.cancelQuery(executionId, {
           requestId: executionCancelSpanId(executionId, 1),
@@ -856,6 +1141,15 @@ export function queryFailureOutcome(
       status: 'error',
       message: error.message,
       code: 'deadline',
+      target,
+      elapsed_ms: elapsedMs,
+    };
+  }
+  if (error instanceof BrowserReadResolutionFailure) {
+    return {
+      status: 'error',
+      message: error.message,
+      code: error.code,
       target,
       elapsed_ms: elapsedMs,
     };

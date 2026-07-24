@@ -448,12 +448,12 @@ export function App() {
     };
 
     try {
-      const execution = await executeQuerySelection(querySelection, async (source) => {
+      const execution = await executeQuerySelection(querySelection, async () => {
         const { runQuery } = await import('../services/query.ts');
         return runQuery(
           req,
           (event) => editorExecutionController.publishFrame(executionId, event),
-          source,
+          selectedSelection,
           input,
           ctrl.signal,
           deadlineCtrl.signal,
@@ -678,7 +678,7 @@ export function App() {
       const outcome = await runQuery(
         req,
         (event) => editorExecutionController.publishFrame(executionId, event),
-        runForPage.selection.source,
+        runForPage.selection,
         input,
         ctrl.signal,
         deadlineCtrl.signal,
