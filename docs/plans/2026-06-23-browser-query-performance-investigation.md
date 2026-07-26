@@ -58,7 +58,7 @@ Current main closes the performance-audit findings as follows:
 | IPC lifecycle and memory | Rust emits exact-sized private schema/data/EOS chunks under 1 MiB credit. Pending encoded storage grows lazily and is capped at 8 MiB per logical batch; total output follows the separate 16 MiB Daxis profile. The coordinator stages at most the browser-safe 8 MiB cap, rejects before retaining an excess chunk, and publishes public chunks only after a successful private terminal. |
 | Cancellation and recovery | Coordinator cancellation/deadline state is authoritative, request IDs remain reserved while draining, unresponsive children are replaced, and engine-wide cancellation uses query-generation snapshots. Chromium, Firefox, and WebKit cover late failure, output-budget failure, crash, hang, and recovery without partial public results. |
 | Scan budgets | Planned and realized `max_scan_bytes` enforcement is complete. `scan_overfetch_bytes` now saturating-adds fetched coalescing gaps and unused speculative readahead, with optional terminal enforcement; the Daxis profile allows 1 MiB. |
-| Page-index API | Metadata loading preserves explicit Parquet column-index and offset-index policies independently. This is correctness/compatibility work; no page-level browser byte saving is claimed without new evidence. |
+| Page-index API | A feature-gated local browser-WASM A/B now proves predicate-derived `RowSelection` can reduce bytes on a deterministic indexed fixture. The production default remains `Skip`; the immutable public fixture still cannot support the experiment. |
 | Public-S3 reproducibility | `s3-browser-perf-v1` now has a deterministic seeded generator, committed manifest/checksums/provenance, staging validator, and documented upload/live commands. No credentials or generated data objects are committed. |
 | Worker pool | Current main can run two disjoint coordinator shards and merge exact aggregates. Historical timings justify bounded research only; production value is inconclusive and WCRPC is not justified. |
 
@@ -75,8 +75,9 @@ an exact fixture gate, and a complete three-revision metric comparison.
 
 Prioritize these only when metrics show they are the next limiting factor:
 
-1. Prove page-index pruning changes browser bytes before claiming or tuning
-   page-level savings.
+1. If public evidence is required, separately authorize and publish an immutable
+   page-index-capable fixture revision, then rerun the same A/B before any
+   enablement or guardrail proposal.
 2. Refresh representative public-S3 browser UAT when the pinned fixture,
    query, or metrics contract changes. Validate provenance before upload or
    execution.
@@ -327,8 +328,88 @@ The performance query exercised 160 scan data ranges and fetched 22,677,645
 physical bytes. Readahead requests, fetched bytes, used bytes, and wasted bytes
 all remained zero; `scan_overfetch_bytes` also remained zero. Record this as
 no-overfetch evidence. It makes no latency or page-index byte-savings claim.
-The next performance slice should run a page-index byte-savings A/B experiment
-before changing page-index or read-policy defaults.
+That run established the prerequisite for the local page-index byte-savings A/B
+below without changing page-index or read-policy defaults.
+
+### Local Browser-WASM Page-Index Byte-Savings A/B - 2026-07-26
+
+The experiment ran from `perf/public-s3-page-index-ab` at fetched base
+`d1a31ec22479bb7d2fb380bfd61e00fd2f7881e8`. The earlier handoff SHA
+`59dcc8b07e1ed96d29b160e78c55c4aca4d832bb` remained an ancestor of that
+base.
+
+Actual inspection of every immutable `s3-browser-perf-v1` active object found
+52 offset indexes and zero column indexes per file. The public fixture therefore
+cannot drive predicate-to-page selection. No live public-S3 suite ran, no cloud
+object changed, and this section makes no public-S3 page-index claim.
+
+The replacement evidence uses generated, ignored local bytes:
+
+- revision: `local-page-index-ab-v1`;
+- fixture SHA-256:
+  `27c03fe1530ad0de3da608192d3a7742ad0c07884e9176daec98ec098ec66a2e`;
+- seed: `12109367126683295782`;
+- size: 654,095 bytes;
+- layout: 65,536 rows, one row group, 1,024-row pages, two column indexes,
+  two offset indexes;
+- predicate: `event_id >= 63488`;
+- expected result: 2,048 rows, `SUM(event_id) = 132119552`, and
+  `SUM(LENGTH(payload)) = 262144`.
+
+The focused Chromium test used fresh browser contexts, workers, and sessions in
+`A/B/B/A/A/B` order, blocked service workers, disabled the browser HTTP cache
+through CDP, and observed zero cache-served fixture responses. Physical byte
+accounting accepted only completed `206` responses with exact `Content-Range`
+and `Content-Length` validation. All six runs returned schema
+`row_count,event_id_sum,payload_length_sum` and checksum
+`80fee61a9cf95efb491badb1ae901d73502dd68ae5744896d4636a0532dc37bc`.
+Every run reported `browser_wasm`, no fallback, 968 IPC bytes in three chunks,
+zero terminal coordinator/DataFusion ownership, zero scan overfetch, zero
+readahead, zero coalescing-gap bytes, and zero range-cache reuse/storage.
+Owned-memory and cursor peaks remained within their recorded limits.
+
+All three repetitions in each arm were byte-for-byte identical:
+
+| Metric | Arm A: indexes skipped | Arm B: indexes + selection |
+| --- | ---: | ---: |
+| Total physical bytes | 643,403 | 32,934 |
+| Total physical requests | 6 | 9 |
+| Footer bytes / requests | 1,448 / 4 | 1,448 / 4 |
+| Column-index bytes | 0 | 9,758 |
+| Offset-index bytes | 0 | 1,654 |
+| Total page-index bytes / requests | 0 / 0 | 11,412 / 1 |
+| Scan data-page bytes / requests | 641,955 / 2 | 20,074 / 4 |
+| Predicate pages selected / skipped / touched | 0 / 0 / 64 | 2 / 62 / 2 |
+| Engine `bytes_fetched` | 642,679 | 32,210 |
+| Engine scan-data range reads | 2 | 4 |
+| Coordinator peak reserved / staged bytes | 8,388,608 / 968 | 8,388,608 / 968 |
+| DataFusion peak / terminal bytes | 0 / 0 | 0 / 0 |
+
+Conservative gross data-page bytes avoided were 621,881. Arm B paid 11,412
+bytes of index overhead and still saved 610,469 net physical bytes, or about
+94.9% of Arm A's physical bytes. Latency was not used as a decision input.
+
+Canonical ignored artifact:
+
+```text
+target/perf/page-index-byte-savings-ab-evidence.json
+```
+
+SHA-256:
+`7fbd20225bff579dddfb05f929f2f1cbe81c4059ecb8aa6f105429c11eb12c11`.
+The artifact records every raw request range and run, aggregates, policies,
+fixture provenance independently checked against the actual Parquet bytes,
+response/cache validation, exact SQL, explicit correctness/runtime/memory/cache
+gates, and the decision. Its serialized credential scan found no URI userinfo,
+AWS key, credential/token/signature field, authorization material, or
+`X-Amz-*` field.
+
+Decision: this is positive **local deterministic browser-WASM** byte evidence.
+Keep page indexes disabled by default. Do not extrapolate it to
+`s3-browser-perf-v1` or claim a latency improvement. The next authorized slice,
+if public evidence is necessary, is a new immutable page-index-capable fixture
+revision plus the same cold-cache A/B. Any production enablement and guardrails
+remain a later, separate decision.
 
 ---
 
