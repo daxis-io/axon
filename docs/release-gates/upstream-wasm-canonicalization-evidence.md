@@ -9,10 +9,16 @@
   `d1a31ec22479bb7d2fb380bfd61e00fd2f7881e8`
 - Canonical publication boundary: no canonical push or PR is authorized.
 - Close-time head audit: Arrow advanced after the phase-start fetch to
-  `8e7043bf937b60e3be8586ceb3cd00349b989e1e`; the other four recorded heads were unchanged.
-  The intervening Arrow commit, `8e7043bf9` / #10135, adds only a Parquet row-selection benchmark
-  and benchmark dependency. It does not overlap codec selection, IPC compression, or the retained
-  WASM tests. The prepared Arrow PRs must still be refreshed additively from this or a later head
+  `8e7043bf937b60e3be8586ceb3cd00349b989e1e`. The intervening commit, `8e7043bf9` /
+  #10135, adds only a Parquet row-selection benchmark and benchmark dependency; it does not overlap
+  codec selection, IPC compression, or the retained WASM tests.
+- DataFusion advanced to `bb670fbabec111cf74e3ae3ee78d0abec65d7569`. Commit `551c592ca`
+  adds object-store-backed spill example code and two additive `DiskManagerBuilder` methods;
+  `bb670fbab` removes a legacy proto field. Neither removes the current `tempfile` browser edge or
+  satisfies the held runtime contract, but `551c592ca` touches `disk_manager.rs`, so both prepared
+  DataFusion branches require a fresh additive transplant and focused API review before execution.
+  The other three canonical heads were unchanged.
+- The prepared Arrow PRs must likewise be refreshed additively from the close-time or later head
   immediately before canonical submission.
 
 ## Fresh Bases And Dispositions
