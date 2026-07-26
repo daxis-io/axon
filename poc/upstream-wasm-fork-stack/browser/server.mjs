@@ -3,7 +3,6 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
 
 const BROWSER_DIR = dirname(fileURLToPath(import.meta.url));
 const POC_DIR = resolve(BROWSER_DIR, "..");
@@ -56,18 +55,6 @@ export function planObjectResponse({ body, etag, headers, scenario, attempt }) {
   const range = parseRange(headers.range, body.length);
   const responseHeaders = baseHeaders(body, etag);
 
-  if (scenario === "encoded" && range) {
-    const encodedBody = gzipSync(body);
-    return {
-      status: 200,
-      headers: {
-        ...baseHeaders(encodedBody, etag),
-        "content-encoding": "gzip",
-      },
-      body: encodedBody,
-    };
-  }
-
   if (
     range &&
     ["fallback", "ordinary-200", "overbound", "missing-length"].includes(scenario)
@@ -112,6 +99,9 @@ export function planObjectResponse({ body, etag, headers, scenario, attempt }) {
   }
   if (scenario === "invalid-content-range" && range) {
     response.headers["content-range"] = `bytes 0-${response.body.length - 1}/${body.length}`;
+  }
+  if (scenario === "encoded" && range) {
+    response.headers["content-encoding"] = "identity, identity";
   }
   return response;
 }

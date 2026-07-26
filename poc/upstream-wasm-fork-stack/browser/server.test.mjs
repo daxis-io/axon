@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { gunzipSync } from "node:zlib";
 
 import { planObjectResponse, startPocServers } from "./server.mjs";
 
@@ -51,7 +50,7 @@ test("retry continuation responses preserve the validator and requested range", 
   assert.deepEqual(plan.body, SAMPLE.subarray(18));
 });
 
-test("encoded range scenario returns a valid encoded full-object fallback", () => {
+test("encoded range scenario reaches the identity-encoding validator after valid range framing", () => {
   const plan = planObjectResponse({
     body: SAMPLE,
     etag: '"sample"',
@@ -60,11 +59,11 @@ test("encoded range scenario returns a valid encoded full-object fallback", () =
     attempt: 1,
   });
 
-  assert.equal(plan.status, 200);
-  assert.equal(plan.headers["content-encoding"], "gzip");
-  assert.equal(plan.headers["content-length"], String(plan.body.length));
-  assert.equal(plan.headers["content-range"], undefined);
-  assert.deepEqual(gunzipSync(plan.body), SAMPLE);
+  assert.equal(plan.status, 206);
+  assert.equal(plan.headers["content-encoding"], "identity, identity");
+  assert.equal(plan.headers["content-length"], "4");
+  assert.equal(plan.headers["content-range"], "bytes 1-4/36");
+  assert.deepEqual(plan.body, Buffer.from("1234"));
 });
 
 test("CORS preflight allows browser adapter request headers", async () => {

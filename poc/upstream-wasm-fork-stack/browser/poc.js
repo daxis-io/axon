@@ -77,26 +77,6 @@ async function expectedFailure(operation, expectedFragments) {
   );
 }
 
-async function expectedFailureOneOf(operation, expectedAlternatives) {
-  try {
-    await operation();
-  } catch (error) {
-    const message = String(error);
-    const matched = expectedAlternatives.some((fragments) =>
-      fragments.every((fragment) => message.includes(fragment)),
-    );
-    assert(
-      matched,
-      `expected error to match one of ${JSON.stringify(expectedAlternatives)}; received ${message}`,
-    );
-    updateMemoryHighWater();
-    return message;
-  }
-  throw new Error(
-    `expected failure matching one of ${JSON.stringify(expectedAlternatives)}`,
-  );
-}
-
 async function runSnappy() {
   await reset("normal");
   const startedAt = performance.now();
@@ -268,14 +248,11 @@ async function runProtocolSuite() {
   );
 
   await reset("encoded");
-  const encodedError = await expectedFailureOneOf(
+  const encodedError = await expectedFailure(
     () => probeRange(`${dataOrigin}/encoded/sample.bin`, 0),
-    [
-      ['Content-Encoding "gzip"', "expected identity"],
-      ["browser Fetch failed"],
-      ["did not honor the range request"],
-    ],
+    ['Content-Encoding "identity, identity"', "expected identity"],
   );
+  const encoded = await stats("encoded");
 
   await reset("invalid-length");
   const invalidLengthError = await expectedFailure(
@@ -300,6 +277,7 @@ async function runProtocolSuite() {
     bounded_fallback: fallback,
     cors_error: corsError,
     direct_cors: directCors,
+    encoded,
     encoded_error: encodedError,
     invalid_content_range_error: invalidContentRangeError,
     invalid_length_error: invalidLengthError,
