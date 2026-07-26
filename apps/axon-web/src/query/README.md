@@ -24,25 +24,26 @@ The persisted cache is versioned by `AXON_QUERY_CACHE_BUSTER` and expires after 
 
 Persisted query families are intentionally narrow:
 
-- `['catalog', 'source', ['manifest', ...], 'table-derived' | 'commits']`
-- `['catalog', 'source', ['object_store_table_root', 'gcs' | 's3', ...], 'table-derived' | 'commits']`
+- Explicit sample fixture catalog/commit leaves under `catalog/provider/axon.fixture/v1/.../authority/fixture`
+- Anonymous public GCS/S3 catalog/commit leaves under `catalog/provider/axon.public-{gcs,s3}/v1/.../authority/non-session`
 - `['local', 'history']`
 - `['local', 'saved']`
 
-The policy rejects `local_delta` catalog keys, unknown query families, failed queries, mutations, signed URL strings, token/grant/credential-shaped data, openable browser handles, descriptors, object lists, active-file/session/worker/run-result payloads, metrics, plans, and capabilities. These fields remain runtime-only even when they appear inside otherwise allowed key families.
+The strict schema-v3 parser validates the full provider namespace, connection ID, authority, resource kind, canonical identity arm/value, requested snapshot (including explicit zero), and leaf. The policy rejects local catalog keys, session-scoped or unknown providers, unsafe locators, malformed identities, unknown query families, failed queries, mutations, signed URL strings, token/grant/credential-shaped data, openable browser handles, descriptors, object lists, active-file/session/worker/run-result payloads, metrics, plans, and capabilities. These fields remain runtime-only even when they appear inside otherwise allowed key families.
 
 ## Retry Policy
 
-`shouldRetryQuery` does not retry aborted or cancelled requests. It also does not retry known 4xx client errors, including `401`, `403`, and `404`.
+`shouldRetryQuery` does not retry aborted, cancelled, deadline-exceeded, invalid-request, or not-found provider requests. It also does not retry known 4xx client errors, including `401`, `403`, and `404`.
 
 Unknown failures, network-style failures, and 5xx-style failures may retry up to two times after the first failure.
 
 ## Query Keys
 
-`queryKeys` is the canonical key factory for this slice. Catalog keys are scoped by a deterministic source identity that uses the same fields as `sameQuerySource`, not raw object identity:
+`queryKeys` is the canonical key factory for this slice. Local/public catalog keys use generated canonical resource identity beneath a connection prefix; aliases, labels, metrics, and descriptors do not participate:
 
 - `queryKeys.catalog.root()`
-- `queryKeys.catalog.source(source)`
+- `queryKeys.catalog.connection(source)`
+- `queryKeys.catalog.table(source)`
 - `queryKeys.catalog.tableDerived(source)`
 - `queryKeys.catalog.commits(source)`
 - `queryKeys.local.root()`
@@ -53,11 +54,11 @@ Keep keys stable and route new query key families through this module.
 
 ## Catalog Server State
 
-`catalogQueryOptions(selection)` reads the current table-derived catalog through the legacy catalog service and seeds an available selection with `snapshotCatalog(source)`. Missing, empty, stale, and unqueryable selections use source-free stable keys with `enabled: false` and `skipToken`, so they cannot invoke a catalog loader.
+`catalogQueryOptions(selection)` passes TanStack Query's exact abort signal and a fresh correlation ID to provider-driven local/public catalog discovery. It seeds an available selection with `snapshotCatalog(source)` while discovery runs. Only the exact built-in sample fixture remains on the isolated manifest compatibility path. Missing, empty, stale, and unqueryable selections use source-free stable keys with `enabled: false` and `skipToken`, so they cannot invoke a catalog loader.
 
 `commitsQueryOptions(selection)` wraps commit-log loading and uses the same disabled behavior for unavailable selection. `AppProviders` installs a ref-counted runtime bridge that writes published runtime catalogs to the matching catalog query and invalidates the matching commits query.
 
-`purgeCatalogSourceCache(queryClient, source)` removes only the `queryKeys.catalog.source(source)` subtree and clears the matching runtime catalog state. It is used when connected sources are removed or replaced. The catalog and commits query adapters also call `purgeCatalogSourceCacheForError` so auth/session-style failures (`401`, `403`, `419`, `440`) discard only that source-scoped catalog cache. These helpers do not purge `queryKeys.local.history()` or `queryKeys.local.saved()`.
+`purgeCatalogSourceCache(queryClient, source)` cancels, removes, and invalidates the entire `queryKeys.catalog.connection(source)` subtree, in that order, then clears matching runtime presentation state. It is used when connected sources are removed or replaced. The catalog and commits query adapters also call `purgeCatalogSourceCacheForError` so auth/session-style failures (`401`, `403`, `419`, `440`) discard only that connection-scoped catalog cache. These helpers do not purge `queryKeys.local.history()` or `queryKeys.local.saved()`.
 
 ## Local Metadata Server State
 
@@ -67,4 +68,4 @@ Keep keys stable and route new query key families through this module.
 
 The query layer owns cache identity, retry defaults, source-scoped catalog cache purging, bridge wiring, local metadata adapters, and the safe persisted-cache policy. It does not own provider-specific execution logic, durable auth/session state, live object-store credentials, route definitions, or result/run-state persistence.
 
-This layer also does not add `CatalogProvider`, `DataAccessResolver`, `ExecutionProvider`, or any provider-specific execution logic. Those belong to later slices.
+`CatalogProvider` remains below this layer and owns generated discovery only. This layer does not own `DataAccessResolver`, `ExecutionProvider`, or provider-specific execution logic.

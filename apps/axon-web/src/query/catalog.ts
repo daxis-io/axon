@@ -3,6 +3,7 @@ import { skipToken } from '@tanstack/react-query';
 import { loadCatalog, snapshotCatalog } from '../services/catalog.ts';
 import {
   clearQueryRuntimeState,
+  getQueryRuntimeState,
   subscribeQueryRuntimeState,
 } from '../services/query-runtime-state.ts';
 import type { QuerySourceSelection, QueryTableSource } from '../services/query-source.ts';
@@ -14,7 +15,7 @@ import {
   AXON_QUERY_GC_TIME_MS,
   shouldRetryQuery,
 } from './client';
-import { queryKeys } from './keys';
+import { queryKeys, sameCatalogConnection } from './keys';
 
 type BridgeRegistration = {
   refCount: number;
@@ -42,7 +43,13 @@ export function catalogQueryOptions(selection: QuerySourceSelection): CatalogQue
   const source = selection.source;
   return {
     queryKey: queryKeys.catalog.tableDerived(source),
-    queryFn: ({ client }) => loadWithCatalogSourcePurge(client, source, () => loadCatalog(source)),
+    queryFn: ({ client, signal }) =>
+      loadWithCatalogSourcePurge(client, source, () =>
+        loadCatalog(source, {
+          signal,
+          correlationId: crypto.randomUUID(),
+        }),
+      ),
     initialData: snapshotCatalog(source),
     initialDataUpdatedAt: 0,
     staleTime: AXON_CATALOG_QUERY_STALE_TIME_MS,
@@ -91,15 +98,22 @@ async function loadWithCatalogSourcePurge<T>(
 }
 
 export function purgeCatalogSourceCache(queryClient: QueryClient, source: QueryTableSource): void {
+  void queryClient.cancelQueries({
+    queryKey: queryKeys.catalog.connection(source),
+    exact: false,
+  });
   queryClient.removeQueries({
-    queryKey: queryKeys.catalog.source(source),
+    queryKey: queryKeys.catalog.connection(source),
     exact: false,
   });
   void queryClient.invalidateQueries({
-    queryKey: queryKeys.catalog.source(source),
+    queryKey: queryKeys.catalog.connection(source),
     exact: false,
   });
-  clearQueryRuntimeState(source);
+  const runtimeState = getQueryRuntimeState();
+  if (runtimeState && sameCatalogConnection(runtimeState.source, source)) {
+    clearQueryRuntimeState();
+  }
 }
 
 export function purgeCatalogSourcesCache(

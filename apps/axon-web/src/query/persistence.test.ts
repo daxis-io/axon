@@ -5,7 +5,7 @@ import {
 } from '@tanstack/react-query-persist-client';
 import { IDBFactory, IDBObjectStore as FakeIDBObjectStore } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { QueryTableSource } from '../services/query-source.ts';
+import { SAMPLE_QUERY_SOURCE, type QueryTableSource } from '../services/query-source.ts';
 import type { Catalog, CommitEntry, HistoryEntry, SavedQuery } from '../services/types.ts';
 import { queryKeys } from './keys';
 import {
@@ -17,13 +17,7 @@ import {
 } from './persistence';
 
 const manifestSource: QueryTableSource = {
-  kind: 'manifest',
-  catalogName: 'catalog-a',
-  schemaName: 'schema-a',
-  tableName: 'table-a',
-  manifestUrl: '/manifest-a.json',
-  storage: 'gs://bucket/table-a',
-  region: 'browser-local',
+  ...SAMPLE_QUERY_SOURCE,
   snapshot: 7,
   rows: 123,
   files: 4,
@@ -204,6 +198,23 @@ describe('query cache persistence', () => {
     expect(restored.getQueryData(s3Key)).toEqual(s3Data);
   });
 
+  it.each([
+    ['session authority', 6, 'session'],
+    ['unknown provider', 2, 'axon.public-r2/v1'],
+    ['malformed connection', 4, 'axon-connection://public-gcs/other-bucket'],
+    ['wrong identity arm', 9, 'providerObjectId'],
+    ['unsafe locator', 10, 'gs://public-bucket/events?token=secret'],
+    ['negative snapshot', 12, -1],
+    ['unknown leaf', 13, 'descriptor'],
+  ])('rejects a public key with %s', async (_label, index, replacement) => {
+    const validKey = [...queryKeys.catalog.tableDerived(gcsSource)];
+    validKey[index] = replacement;
+
+    const restored = await persistEntries([[validKey, catalogData('blocked-public')]]);
+
+    expect(restored.getQueryData(validKey)).toBeUndefined();
+  });
+
   it('restores allowed local history and saved query cache entries', async () => {
     const historyKey = queryKeys.local.history();
     const savedKey = queryKeys.local.saved();
@@ -267,6 +278,8 @@ describe('query cache persistence', () => {
     ['handle payloads', queryKeys.local.saved(), { fileHandle: { name: 'events' } }],
     ['grant payloads', queryKeys.local.saved(), { grantId: 'grant-1' }],
     ['token payloads', queryKeys.local.saved(), { accessToken: 'token-1' }],
+    ['Map containers', queryKeys.local.saved(), new Map([['credential', 'secret']])],
+    ['Set containers', queryKeys.local.saved(), new Set(['access_token=secret'])],
     [
       'signed URL strings',
       queryKeys.local.saved(),
@@ -327,7 +340,7 @@ describe('query cache persistence', () => {
   });
 
   it('uses non-empty schema and buster constants tied to the app/cache version', () => {
-    expect(AXON_QUERY_CACHE_SCHEMA_VERSION).toBeGreaterThan(0);
+    expect(AXON_QUERY_CACHE_SCHEMA_VERSION).toBe(3);
     expect(AXON_QUERY_CACHE_APP_VERSION).toBe('axon-web@0.1.0');
     expect(AXON_QUERY_CACHE_BUSTER).toContain(AXON_QUERY_CACHE_APP_VERSION);
     expect(AXON_QUERY_CACHE_BUSTER).toContain(`v${AXON_QUERY_CACHE_SCHEMA_VERSION}`);

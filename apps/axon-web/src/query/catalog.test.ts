@@ -47,12 +47,12 @@ vi.mock('../services/snapshot.ts', async (importOriginal) => {
 });
 
 const source: QueryTableSource = {
-  kind: 'manifest',
+  kind: 'local_delta',
   catalogName: 'catalog-a',
   schemaName: 'schema-a',
   tableName: 'table-a',
-  manifestUrl: '/manifest-a.json',
-  storage: 'gs://bucket/table-a',
+  localRegistryId: 'registry-a',
+  storage: 'browser-local://table-a',
   region: 'browser-local',
   snapshot: 7,
   rows: 123,
@@ -63,8 +63,8 @@ const source: QueryTableSource = {
 
 const otherSource: QueryTableSource = {
   ...source,
+  localRegistryId: 'registry-other',
   tableName: 'other-table',
-  manifestUrl: '/manifest-other.json',
 };
 
 const selection: QuerySourceSelection = {
@@ -153,7 +153,7 @@ describe('catalog query adapters', () => {
     expect(options.initialData).toMatchObject({
       name: 'catalog-a',
       region: 'browser-local',
-      storage: 'gs://bucket/table-a',
+      storage: 'browser-local://table-a',
       tables: [
         expect.objectContaining({
           name: 'table-a',
@@ -167,6 +167,10 @@ describe('catalog query adapters', () => {
     const client = new QueryClient();
 
     await expect(client.fetchQuery(options)).resolves.toEqual(options.initialData);
+    const [, context] = catalogServiceMocks.loadCatalog.mock.calls.at(-1)!;
+    expect(context.signal).toBeInstanceOf(AbortSignal);
+    expect(context.correlationId).toEqual(expect.any(String));
+    expect(context.correlationId).not.toHaveLength(0);
   });
 
   it('builds commits query options under the matching source key', async () => {
@@ -216,6 +220,7 @@ describe('catalog query adapters', () => {
 
   it('purges source-scoped catalog cache without clearing local metadata or other sources', () => {
     const client = new QueryClient();
+    const cancelQueries = vi.spyOn(client, 'cancelQueries');
     const sourceCatalog = runtimeCatalog('source-catalog');
     const otherCatalog = runtimeCatalog('other-catalog');
     const history = [{ id: 'history-1' }];
@@ -230,12 +235,73 @@ describe('catalog query adapters', () => {
 
     purgeCatalogSourceCache(client, source);
 
+    expect(cancelQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.catalog.connection(source),
+      exact: false,
+    });
     expect(client.getQueryData(queryKeys.catalog.tableDerived(source))).toBeUndefined();
     expect(client.getQueryData(queryKeys.catalog.commits(source))).toBeUndefined();
     expect(client.getQueryData(queryKeys.catalog.tableDerived(otherSource))).toEqual(otherCatalog);
     expect(client.getQueryData(queryKeys.local.history())).toEqual(history);
     expect(client.getQueryData(queryKeys.local.saved())).toEqual(saved);
     expect(getQueryRuntimeState(source)).toBeUndefined();
+  });
+
+  it('prevents a late catalog completion from repopulating a removed connection', async () => {
+    const client = new QueryClient();
+    let resolveLoad!: (catalog: Catalog) => void;
+    catalogServiceMocks.loadCatalog.mockImplementation(
+      () =>
+        new Promise<Catalog>((resolve) => {
+          resolveLoad = resolve;
+        }),
+    );
+
+    const options = catalogQueryOptions(selection);
+    const pending = client.fetchQuery({
+      queryKey: options.queryKey,
+      queryFn: options.queryFn,
+      retry: false,
+    });
+    await vi.waitFor(() => expect(catalogServiceMocks.loadCatalog).toHaveBeenCalled());
+
+    purgeCatalogSourceCache(client, source);
+    resolveLoad(runtimeCatalog('late'));
+
+    await expect(pending).rejects.toThrow('CancelledError');
+    await Promise.resolve();
+    expect(client.getQueryData(queryKeys.catalog.tableDerived(source))).toBeUndefined();
+  });
+
+  it('purges every table leaf beneath the same public connection prefix', () => {
+    const client = new QueryClient();
+    const first: QueryTableSource = {
+      kind: 'object_store_table_root',
+      provider: 'gcs',
+      catalogName: 'first',
+      schemaName: 'main',
+      tableName: 'events',
+      tableUri: 'gs://shared-bucket/events',
+      storage: 'gs://shared-bucket/events',
+      region: 'browser-local',
+    };
+    const second: QueryTableSource = {
+      ...first,
+      catalogName: 'second',
+      tableName: 'orders',
+      tableUri: 'gs://shared-bucket/orders',
+      storage: 'gs://shared-bucket/orders',
+    };
+
+    client.setQueryData(queryKeys.catalog.tableDerived(first), runtimeCatalog('first'));
+    client.setQueryData(queryKeys.catalog.tableDerived(second), runtimeCatalog('second'));
+    publishQueryRuntimeState({ source: second, catalog: runtimeCatalog('runtime-second') }, 10);
+
+    purgeCatalogSourceCache(client, first);
+
+    expect(client.getQueryData(queryKeys.catalog.tableDerived(first))).toBeUndefined();
+    expect(client.getQueryData(queryKeys.catalog.tableDerived(second))).toBeUndefined();
+    expect(getQueryRuntimeState(second)).toBeUndefined();
   });
 
   it('purges source-scoped catalog cache for auth or session style failures only', () => {

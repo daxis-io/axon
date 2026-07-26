@@ -49,6 +49,10 @@ describe('ConnectPage connection mutation side effects', () => {
     const discardActiveQuerySession = vi.fn();
     const purgeCatalogSources = vi.fn();
     const unregisterLocalDeltaRuntimeIds = vi.fn();
+    const order: string[] = [];
+    discardActiveQuerySession.mockImplementation(() => order.push('discard'));
+    purgeCatalogSources.mockImplementation(() => order.push('purge'));
+    unregisterLocalDeltaRuntimeIds.mockImplementation(() => order.push('unregister'));
 
     expect(applySideEffects).toEqual(expect.any(Function));
 
@@ -68,5 +72,6 @@ describe('ConnectPage connection mutation side effects', () => {
       ['local-registry-id'],
       'failed to unregister local Delta catalog:',
     );
+    expect(order).toEqual(['purge', 'discard', 'unregister']);
   });
 });

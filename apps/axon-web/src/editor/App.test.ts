@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { ExecutionRejectionReason } from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
 import type { EngineStatus } from '../services/types.ts';
@@ -5,6 +6,8 @@ import { selectEngineActions, selectEngineStatus } from '../state/hooks.ts';
 import { createAxonClientStore, createMemoryClientStateStorage } from '../state/store.ts';
 import type { RunUiState } from '../state/slices/run.ts';
 import * as AppModule from './App.tsx';
+
+const appSource = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
 
 type AppEngineStatusModule = {
   subscribeAppEngineStatus?: (
@@ -65,6 +68,25 @@ describe('App engine status subscription', () => {
     expect(cleanup).toBe(unsubscribe);
     expect(subscribe).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('App connection cleanup ordering', () => {
+  it.each(['const handleConnected', 'const removeConnectedCatalog'])(
+    'begins connection-prefix purge before releasing runtime resources in %s',
+    (marker) => {
+      const start = appSource.indexOf(marker);
+      const block = appSource.slice(start, start + 1_200);
+
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(block.indexOf('purgeCatalogSourcesCache(')).toBeGreaterThanOrEqual(0);
+      expect(block.indexOf('purgeCatalogSourcesCache(')).toBeLessThan(
+        block.indexOf('discardActiveQuerySession()'),
+      );
+      expect(block.indexOf('purgeCatalogSourcesCache(')).toBeLessThan(
+        block.indexOf('unregisterLocalDeltaRuntimeIds('),
+      );
+    },
+  );
 });
 
 describe('App execution callback guard', () => {

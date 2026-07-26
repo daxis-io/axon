@@ -1,4 +1,4 @@
-import { create } from '@bufbuild/protobuf';
+import { create, toJson } from '@bufbuild/protobuf';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { TableMetadataSchema } from '../../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 import { PageRequestSchema } from '../../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
@@ -123,6 +123,70 @@ describe('connected catalog persistence', () => {
     const persisted = JSON.parse(raw ?? '[]') as ConnectedCatalog[];
     expect(persisted.map((item) => item.id)).toEqual(['durable']);
     expect(loadConnectedCatalogs().map((item) => item.id)).toEqual(['durable']);
+  });
+
+  it('rejects identity-tampered generated metadata before write and after read', () => {
+    const tampered = catalog('events');
+    tampered.storage = 'gs://bucket/events';
+    tampered.schemas[0].tables[0].uri = 'gs://bucket/events';
+    tampered.schemas[0].tables[0].source!.storage = 'gs://bucket/events';
+    tampered.schemas[0].tables[0].catalogMetadataJson = toJson(
+      TableMetadataSchema,
+      create(TableMetadataSchema, {
+        storageLocation: 'gs://other-bucket/events',
+      }),
+    ) as Readonly<Record<string, unknown>>;
+
+    storage.setItem(STORAGE_KEY, JSON.stringify([catalog('previous')]));
+    saveConnectedCatalogs([tampered]);
+    expect(loadConnectedCatalogs().map((item) => item.id)).toEqual(['previous']);
+
+    storage.setItem(STORAGE_KEY, JSON.stringify([tampered]));
+    expect(loadConnectedCatalogs()).toEqual([SAMPLE_CONNECTED_CATALOG]);
+  });
+
+  it.each([
+    [
+      'unknown public provider',
+      (candidate: ConnectedCatalog) => {
+        candidate.provider = 'r2' as ConnectedCatalog['provider'];
+      },
+    ],
+    [
+      'missing local registry identity',
+      (candidate: ConnectedCatalog) => {
+        candidate.kind = 'local';
+        candidate.provider = undefined;
+        candidate.schemas[0].tables[0].source!.kind = 'local';
+        candidate.schemas[0].tables[0].localRegistryId = undefined;
+      },
+    ],
+  ])('does not skip generated metadata validation for an %s', (_label, mutate) => {
+    const malformed = catalog('events');
+    malformed.schemas[0].tables[0].catalogMetadataJson = { table: {} };
+    mutate(malformed);
+
+    storage.setItem(STORAGE_KEY, JSON.stringify([catalog('previous')]));
+    saveConnectedCatalogs([malformed]);
+    expect(loadConnectedCatalogs().map((item) => item.id)).toEqual(['previous']);
+
+    storage.setItem(STORAGE_KEY, JSON.stringify([malformed]));
+    expect(loadConnectedCatalogs()).toEqual([SAMPLE_CONNECTED_CATALOG]);
+  });
+
+  it('rejects duplicate table identities instead of validating metadata through the first match', () => {
+    const duplicate = catalog('events');
+    duplicate.schemas[0].tables.push({
+      ...duplicate.schemas[0].tables[0],
+      catalogMetadataJson: { table: {} },
+    });
+
+    storage.setItem(STORAGE_KEY, JSON.stringify([catalog('previous')]));
+    saveConnectedCatalogs([duplicate]);
+    expect(loadConnectedCatalogs().map((item) => item.id)).toEqual(['previous']);
+
+    storage.setItem(STORAGE_KEY, JSON.stringify([duplicate]));
+    expect(loadConnectedCatalogs()).toEqual([SAMPLE_CONNECTED_CATALOG]);
   });
 
   it('projects provider-generated local discovery and persists only normalized metadata JSON', async () => {

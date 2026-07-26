@@ -50,8 +50,8 @@ export function clearQueryRuntimeState(source?: QueryTableSource): void {
   coldStartMs = undefined;
 }
 
-export function getQueryRuntimeState(source: QueryTableSource): QueryRuntimeState | undefined {
-  if (!currentState || !sameQuerySource(currentState.source, source)) return undefined;
+export function getQueryRuntimeState(source?: QueryTableSource): QueryRuntimeState | undefined {
+  if (!currentState || (source && !sameQuerySource(currentState.source, source))) return undefined;
   return currentState;
 }
 

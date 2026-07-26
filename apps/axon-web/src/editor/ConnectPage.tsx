@@ -260,12 +260,12 @@ export function applyConnectPageMutationSideEffects(
   unregisterMessage: string,
   options: ConnectPageMutationSideEffectOptions = {},
 ): void {
-  if (mutation.shouldDiscardActiveQuerySession) {
-    (options.discardActiveQuerySession ?? discardActiveQuerySession)();
-  }
-
   if (mutation.discardedSources.length > 0) {
     options.purgeCatalogSources?.(mutation.discardedSources);
+  }
+
+  if (mutation.shouldDiscardActiveQuerySession) {
+    (options.discardActiveQuerySession ?? discardActiveQuerySession)();
   }
 
   if (mutation.localRegistryIdsToUnregister.length > 0) {

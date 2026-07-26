@@ -11,8 +11,13 @@ import {
 } from './data.ts';
 import type { ConnectResult, ConnectedCatalog, ConnectedCatalogSchema } from './types.ts';
 import { createLocalStorageKeyValueStore } from '../../persistence/key-value.ts';
+import { validatePersistedCatalogMetadata } from '../../services/catalog.ts';
 import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
-import { SAMPLE_QUERY_SOURCE, SAMPLE_QUERY_SOURCE_REF } from '../../services/query-source.ts';
+import {
+  SAMPLE_QUERY_SOURCE,
+  SAMPLE_QUERY_SOURCE_REF,
+  querySourceForConnectedTableRef,
+} from '../../services/query-source.ts';
 
 const STORAGE_KEY = 'axon.connect.catalogs.v1';
 export const DEFAULT_AXON_CATALOG_ALIAS = 'workspace';
@@ -69,8 +74,9 @@ export const SAMPLE_CONNECTED_CATALOG: ConnectedCatalog = {
 const connectedCatalogStore = createLocalStorageKeyValueStore<ConnectedCatalog>({
   storageKey: STORAGE_KEY,
   fallback: () => [SAMPLE_CONNECTED_CATALOG],
-  afterRead: dedupeConnectedCatalogs,
-  beforeWrite: (catalogs) => dedupeConnectedCatalogs(durableConnectedCatalogs(catalogs)),
+  afterRead: (catalogs) => validateConnectedCatalogMetadata(dedupeConnectedCatalogs(catalogs)),
+  beforeWrite: (catalogs) =>
+    validateConnectedCatalogMetadata(dedupeConnectedCatalogs(durableConnectedCatalogs(catalogs))),
 });
 
 export function loadConnectedCatalogs(): ConnectedCatalog[] {
@@ -308,6 +314,36 @@ function dedupeConnectedCatalogs(catalogs: ConnectedCatalog[]): ConnectedCatalog
     deduped = upsertConnectedCatalog(deduped, catalogs[i]).catalogs;
   }
   return deduped;
+}
+
+function validateConnectedCatalogMetadata(catalogs: ConnectedCatalog[]): ConnectedCatalog[] {
+  for (const catalog of catalogs) {
+    const schemaNames = new Set<string>();
+    for (const schema of catalog.schemas) {
+      if (schemaNames.has(schema.name)) {
+        throw new Error('persisted catalog contains a duplicate schema identity');
+      }
+      schemaNames.add(schema.name);
+      const tableNames = new Set<string>();
+      for (const table of schema.tables) {
+        if (tableNames.has(table.name)) {
+          throw new Error('persisted catalog contains a duplicate table identity');
+        }
+        tableNames.add(table.name);
+        if (!table.catalogMetadataJson) continue;
+        const source = querySourceForConnectedTableRef([catalog], {
+          catalogId: catalog.id,
+          schemaName: schema.name,
+          tableName: table.name,
+        });
+        if (!source || source.kind === 'manifest') {
+          throw new Error('persisted generated metadata source is invalid');
+        }
+        validatePersistedCatalogMetadata(source);
+      }
+    }
+  }
+  return catalogs;
 }
 
 function durableConnectedCatalogs(catalogs: ConnectedCatalog[]): ConnectedCatalog[] {

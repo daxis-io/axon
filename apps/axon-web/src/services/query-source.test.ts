@@ -34,6 +34,7 @@ function catalog({
   manifestUrl = '/manifests/events.json',
   uri,
   localRegistryId,
+  catalogMetadataJson,
   storage,
   region,
 }: {
@@ -46,6 +47,7 @@ function catalog({
   manifestUrl?: string;
   uri?: string;
   localRegistryId?: string;
+  catalogMetadataJson?: Readonly<Record<string, unknown>>;
   storage?: string;
   region?: string;
 } = {}): QueryCatalogCandidate {
@@ -65,6 +67,7 @@ function catalog({
             manifestUrl,
             uri,
             localRegistryId,
+            catalogMetadataJson,
           },
         ],
       },
@@ -193,6 +196,23 @@ describe('resolveQuerySourceSelection', () => {
       kind: 'resource',
       ref: ref(),
       source: expect.objectContaining(expected),
+    });
+  });
+
+  it('carries generated metadata JSON into local/public query sources unchanged', () => {
+    const catalogMetadataJson = {
+      storageLocation: 'gs://workspace/events',
+      latestSnapshotVersion: '0',
+    };
+    const candidate = catalog({
+      manifestUrl: '',
+      uri: 'gs://workspace/events',
+      catalogMetadataJson,
+    });
+
+    expect(resolveSelection([candidate], ref())).toMatchObject({
+      kind: 'resource',
+      source: { catalogMetadataJson },
     });
   });
 });

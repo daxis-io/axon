@@ -30,11 +30,15 @@ describe('shouldRetryQuery', () => {
     expect(shouldRetryQuery(0, { status: 401 })).toBe(false);
     expect(shouldRetryQuery(0, { response: { status: 403 } })).toBe(false);
     expect(shouldRetryQuery(0, { statusCode: 404 })).toBe(false);
+    expect(shouldRetryQuery(0, { kind: 'deadline_exceeded' })).toBe(false);
+    expect(shouldRetryQuery(0, { kind: 'invalid_request' })).toBe(false);
+    expect(shouldRetryQuery(0, { kind: 'not_found' })).toBe(false);
   });
 
   it('retries unknown and server-style errors for the first two retry attempts', () => {
     expect(shouldRetryQuery(0, new Error('network unavailable'))).toBe(true);
     expect(shouldRetryQuery(1, { status: 503 })).toBe(true);
+    expect(shouldRetryQuery(0, { kind: 'unavailable' })).toBe(true);
     expect(shouldRetryQuery(2, new Error('still unavailable'))).toBe(false);
   });
 });

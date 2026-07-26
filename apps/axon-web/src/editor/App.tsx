@@ -298,10 +298,10 @@ export function App() {
   const handleConnected = useCallback(
     (result: ConnectResult) => {
       const mutation = connectionActions.connect(result);
+      purgeCatalogSourcesCache(queryClient, mutation.discardedSources);
       if (mutation.shouldDiscardActiveQuerySession) {
         discardActiveQuerySession();
       }
-      purgeCatalogSourcesCache(queryClient, mutation.discardedSources);
       if (mutation.localRegistryIdsToUnregister.length > 0) {
         unregisterLocalDeltaRuntimeIds(
           mutation.localRegistryIdsToUnregister,
@@ -322,10 +322,10 @@ export function App() {
   const removeConnectedCatalog = useCallback(
     (id: string) => {
       const mutation = connectionActions.removeCatalog(id);
+      purgeCatalogSourcesCache(queryClient, mutation.discardedSources);
       if (mutation.shouldDiscardActiveQuerySession) {
         discardActiveQuerySession();
       }
-      purgeCatalogSourcesCache(queryClient, mutation.discardedSources);
       if (mutation.localRegistryIdsToUnregister.length > 0) {
         unregisterLocalDeltaRuntimeIds(
           mutation.localRegistryIdsToUnregister,

@@ -31,6 +31,7 @@ export type LocalDeltaQueryTableSource = {
   files?: number;
   size?: string;
   protocol?: string;
+  catalogMetadataJson?: Readonly<Record<string, unknown>>;
 };
 
 export type ObjectStoreTableRootQueryTableSource = {
@@ -47,6 +48,7 @@ export type ObjectStoreTableRootQueryTableSource = {
   files?: number;
   size?: string;
   protocol?: string;
+  catalogMetadataJson?: Readonly<Record<string, unknown>>;
   descriptorResolutionMetrics?: PublicObjectStorageDescriptorResolutionMetrics;
 };
 
@@ -128,6 +130,7 @@ export type QueryCatalogCandidate = {
       protocol?: string;
       manifestUrl?: string;
       localRegistryId?: string;
+      catalogMetadataJson?: Readonly<Record<string, unknown>>;
       source?: {
         storage: string;
         region: string;
@@ -320,6 +323,7 @@ function querySourceForTable(
       files: table.files,
       size: table.size,
       protocol: table.protocol,
+      catalogMetadataJson: table.catalogMetadataJson,
     };
   }
 
@@ -356,6 +360,7 @@ function querySourceForTable(
       files: table.files,
       size: table.size,
       protocol: table.protocol,
+      catalogMetadataJson: table.catalogMetadataJson,
       descriptorResolutionMetrics: table.descriptorResolutionMetrics,
     };
   }

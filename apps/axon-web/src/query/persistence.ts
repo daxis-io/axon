@@ -5,8 +5,12 @@ import type {
   Persister,
 } from '@tanstack/react-query-persist-client';
 import { KeyValueStore } from '../persistence/key-value.ts';
+import {
+  parsePublicObjectStorageTableRoot,
+  publicObjectStorageConnectionId,
+} from '../services/object-storage.ts';
 
-export const AXON_QUERY_CACHE_SCHEMA_VERSION = 2;
+export const AXON_QUERY_CACHE_SCHEMA_VERSION = 3;
 export const AXON_QUERY_CACHE_APP_VERSION = 'axon-web@0.1.0';
 export const AXON_QUERY_CACHE_BUSTER = `${AXON_QUERY_CACHE_APP_VERSION}/query-cache:v${AXON_QUERY_CACHE_SCHEMA_VERSION}`;
 export const AXON_QUERY_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -98,28 +102,90 @@ function isAllowedQueryKey(queryKey: QueryKey): boolean {
     return true;
   }
 
+  if (queryKey.length !== 14 || !isAllowedCatalogLeaf(queryKey[13])) {
+    return false;
+  }
+
+  const [
+    root,
+    providerToken,
+    providerNamespace,
+    connectionToken,
+    connectionId,
+    authorityToken,
+    authority,
+    resourceToken,
+    resourceKind,
+    identityArm,
+    identityValue,
+    snapshotToken,
+    snapshot,
+  ] = queryKey;
   if (
-    queryKey.length !== 4 ||
-    queryKey[0] !== 'catalog' ||
-    queryKey[1] !== 'source' ||
-    !Array.isArray(queryKey[2]) ||
-    !isAllowedCatalogLeaf(queryKey[3])
+    root !== 'catalog' ||
+    providerToken !== 'provider' ||
+    connectionToken !== 'connection' ||
+    authorityToken !== 'authority' ||
+    resourceToken !== 'resource' ||
+    resourceKind !== 'table' ||
+    snapshotToken !== 'snapshot' ||
+    (snapshot !== null &&
+      (typeof snapshot !== 'number' || !Number.isSafeInteger(snapshot) || snapshot < 0))
   ) {
     return false;
   }
 
-  const sourceIdentity = queryKey[2];
-  if (sourceIdentity[0] === 'manifest') {
-    return sourceIdentity.length === 8;
-  }
-
-  if (sourceIdentity[0] === 'object_store_table_root') {
+  if (authority === 'fixture') {
     return (
-      sourceIdentity.length === 9 && (sourceIdentity[1] === 'gcs' || sourceIdentity[1] === 's3')
+      providerNamespace === 'axon.fixture/v1' &&
+      connectionId === 'axon-connection://fixture/sample-lake' &&
+      identityArm === 'canonicalLocator' &&
+      identityValue === 'axon-fixture://sample-lake/prod_like/events'
     );
   }
 
-  return false;
+  if (
+    authority !== 'non-session' ||
+    identityArm !== 'canonicalLocator' ||
+    typeof identityValue !== 'string' ||
+    typeof connectionId !== 'string'
+  ) {
+    return false;
+  }
+
+  const provider =
+    providerNamespace === 'axon.public-gcs/v1'
+      ? 'gcs'
+      : providerNamespace === 'axon.public-s3/v1'
+        ? 's3'
+        : undefined;
+  if (!provider) return false;
+
+  try {
+    const region = provider === 's3' ? s3RegionFromConnectionId(connectionId) : 'browser-local';
+    const root = parsePublicObjectStorageTableRoot({
+      provider,
+      tableUri: identityValue,
+      region,
+    });
+    return (
+      publicObjectStorageConnectionId(root) === connectionId && root.tableUri === identityValue
+    );
+  } catch {
+    return false;
+  }
+}
+
+function s3RegionFromConnectionId(connectionId: string): string {
+  const prefix = 'axon-connection://public-s3/';
+  if (!connectionId.startsWith(prefix)) {
+    throw new Error('invalid public S3 connection ID');
+  }
+  const [encodedRegion, encodedBucket, ...rest] = connectionId.slice(prefix.length).split('/');
+  if (!encodedRegion || !encodedBucket || rest.length > 0) {
+    throw new Error('invalid public S3 connection ID');
+  }
+  return decodeURIComponent(encodedRegion);
 }
 
 function isAllowedLocalQueryKey(queryKey: QueryKey): boolean {
@@ -151,6 +217,11 @@ function containsBlockedValue(value: unknown, seen = new Set<object>()): boolean
     return false;
   }
   seen.add(value);
+
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    return true;
+  }
 
   for (const [key, child] of Object.entries(value)) {
     if (isBlockedFieldName(key) || containsBlockedValue(child, seen)) {

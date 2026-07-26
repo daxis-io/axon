@@ -22,6 +22,10 @@ import {
 } from '../src/services/query.ts';
 
 const STORAGE_KEY = 'axon.connect.catalogs.v1';
+const CATALOG_CONTEXT = {
+  signal: new AbortController().signal,
+  correlationId: 'query-source-spec',
+};
 
 class MemoryStorage implements Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> {
   private readonly records = new Map<string, string>();
@@ -358,7 +362,7 @@ test.describe('query source', () => {
         },
       ],
     });
-    await expect(loadCatalog(source)).resolves.toEqual(snapshotCatalog(source));
+    await expect(loadCatalog(source, CATALOG_CONTEXT)).resolves.toEqual(snapshotCatalog(source));
   });
 
   test('pre-bootstrap S3 catalog exposes only summary metadata from the query source', async () => {
@@ -414,7 +418,7 @@ test.describe('query source', () => {
         },
       ],
     });
-    await expect(loadCatalog(source)).resolves.toEqual(snapshotCatalog(source));
+    await expect(loadCatalog(source, CATALOG_CONTEXT)).resolves.toEqual(snapshotCatalog(source));
   });
 
   test('pre-bootstrap manifest catalog preserves connected summary metadata', async () => {

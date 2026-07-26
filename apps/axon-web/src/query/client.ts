@@ -66,6 +66,15 @@ export function shouldRetryQuery(failureCount: number, error: unknown): boolean 
     return false;
   }
 
+  if (
+    isRecord(error) &&
+    (error.kind === 'deadline_exceeded' ||
+      error.kind === 'invalid_request' ||
+      error.kind === 'not_found')
+  ) {
+    return false;
+  }
+
   const status = getErrorStatus(error);
   if (status !== undefined && status >= 400 && status < 500) {
     return false;
