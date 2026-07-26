@@ -11,7 +11,7 @@ use std::time::Duration;
 use arrow_array::{Array, Int64Array, StringArray};
 use futures_util::TryStreamExt;
 use parquet::data_type::Int64Type;
-use parquet::file::properties::WriterProperties;
+use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
@@ -19,9 +19,9 @@ use query_contract::PartitionColumnType;
 use tokio::time::timeout;
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{
-    stream_scan_target_batches, stream_scan_target_batches_with_row_group_pruning,
-    stream_scan_targets, ObjectSource, ParquetIntegerComparison, ParquetRowGroupPruningPredicate,
-    ScanTarget,
+    stream_scan_target_batches, stream_scan_target_batches_with_page_index_policy,
+    stream_scan_target_batches_with_row_group_pruning, stream_scan_targets, ObjectSource,
+    ParquetIntegerComparison, ParquetPageIndexPolicy, ParquetRowGroupPruningPredicate, ScanTarget,
 };
 
 #[tokio::test]
@@ -234,6 +234,153 @@ async fn row_group_stats_pruning_skips_ranges_after_footer_read() {
 }
 
 #[tokio::test]
+async fn predicate_page_index_policy_skips_pages_with_exact_result_parity() {
+    let values = (0_i64..65_536).collect::<Vec<_>>();
+    let object = parquet_bytes_with_indexed_i64_pages(&values);
+    let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+    let predicate = ParquetRowGroupPruningPredicate {
+        column: "id".to_string(),
+        comparison: ParquetIntegerComparison::Gte(63_488),
+    };
+
+    let arm_a_server = RequestCapturingServer::new(object.clone(), Duration::from_millis(0), false);
+    let arm_a = stream_scan_target_batches_with_page_index_policy(
+        &HttpRangeReader::new(),
+        &ScanTarget {
+            object_source: ObjectSource::new(arm_a_server.url()),
+            object_etag: None,
+            path: "event-id.parquet".to_string(),
+            size_bytes: object_size,
+            partition_values: BTreeMap::new(),
+        },
+        &["id".to_string()],
+        &BTreeMap::new(),
+        None,
+        Some(&predicate),
+        ParquetPageIndexPolicy::Skip,
+    )
+    .await
+    .expect("Arm A should construct");
+    let arm_a_metrics = Arc::clone(&arm_a.metrics);
+    let arm_a_values = arm_a
+        .batches
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("Arm A should decode")
+        .iter()
+        .flat_map(|batch| batch_i64_values(batch, "id"))
+        .filter(|value| *value >= 63_488)
+        .collect::<Vec<_>>();
+
+    let arm_b_server = RequestCapturingServer::new(object, Duration::from_millis(0), false);
+    let arm_b = stream_scan_target_batches_with_page_index_policy(
+        &HttpRangeReader::new(),
+        &ScanTarget {
+            object_source: ObjectSource::new(arm_b_server.url()),
+            object_etag: None,
+            path: "event-id.parquet".to_string(),
+            size_bytes: object_size,
+            partition_values: BTreeMap::new(),
+        },
+        &["id".to_string()],
+        &BTreeMap::new(),
+        None,
+        Some(&predicate),
+        ParquetPageIndexPolicy::Predicate,
+    )
+    .await
+    .expect("Arm B should construct");
+    let arm_b_metrics = Arc::clone(&arm_b.metrics);
+    let arm_b_values = arm_b
+        .batches
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("Arm B should decode")
+        .iter()
+        .flat_map(|batch| batch_i64_values(batch, "id"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(arm_a_values, arm_b_values);
+    assert_eq!(arm_b_values.len(), 2_048);
+    assert_eq!(arm_a_metrics.snapshot().pages_selected, 0);
+    assert_eq!(arm_a_metrics.snapshot().pages_skipped, 0);
+    assert_eq!(arm_b_metrics.snapshot().pages_selected, 2);
+    assert_eq!(arm_b_metrics.snapshot().pages_skipped, 62);
+    assert_eq!(arm_b_metrics.snapshot().pages_touched, 2);
+    assert!(
+        arm_b_metrics.snapshot().bytes_fetched < arm_a_metrics.snapshot().bytes_fetched,
+        "page selection should avoid physical data bytes after index overhead"
+    );
+}
+
+#[tokio::test]
+async fn malformed_page_indexes_fail_open_to_full_scan() {
+    let values = (0_i64..65_536).collect::<Vec<_>>();
+    let mut object = parquet_bytes_with_indexed_i64_pages(&values);
+    let reader = SerializedFileReader::new(bytes::Bytes::copy_from_slice(&object))
+        .expect("indexed parquet object should decode");
+    let column = reader.metadata().row_group(0).column(0);
+    let corrupt_extents = [
+        (
+            column
+                .column_index_offset()
+                .expect("column index offset should exist"),
+            column
+                .column_index_length()
+                .expect("column index length should exist"),
+        ),
+        (
+            column
+                .offset_index_offset()
+                .expect("offset index offset should exist"),
+            column
+                .offset_index_length()
+                .expect("offset index length should exist"),
+        ),
+    ];
+    for (offset, length) in corrupt_extents {
+        let start = usize::try_from(offset).expect("index offset should fit usize");
+        let end = start + usize::try_from(length).expect("index length should fit usize");
+        object[start..end].fill(0xff);
+    }
+    let object_size = u64::try_from(object.len()).expect("object size should fit in u64");
+    let server = RequestCapturingServer::new(object, Duration::from_millis(0), false);
+    let scan = stream_scan_target_batches_with_page_index_policy(
+        &HttpRangeReader::new(),
+        &ScanTarget {
+            object_source: ObjectSource::new(server.url()),
+            object_etag: None,
+            path: "malformed-index.parquet".to_string(),
+            size_bytes: object_size,
+            partition_values: BTreeMap::new(),
+        },
+        &["id".to_string()],
+        &BTreeMap::new(),
+        None,
+        Some(&ParquetRowGroupPruningPredicate {
+            column: "id".to_string(),
+            comparison: ParquetIntegerComparison::Gte(63_488),
+        }),
+        ParquetPageIndexPolicy::Predicate,
+    )
+    .await
+    .expect("malformed optional page indexes should fail open");
+    let metrics = Arc::clone(&scan.metrics);
+    let rows = scan
+        .batches
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("fail-open scan should decode")
+        .iter()
+        .map(|batch| batch.num_rows())
+        .sum::<usize>();
+
+    assert_eq!(rows, values.len());
+    assert_eq!(metrics.snapshot().pages_selected, 0);
+    assert_eq!(metrics.snapshot().pages_skipped, 0);
+}
+
+#[tokio::test]
 async fn stream_scan_targets_yields_batches_across_files_with_aggregate_metrics() {
     let first_object = parquet_bytes_with_single_i64_column(&[1_i64, 2]);
     let second_object = parquet_bytes_with_single_i64_column(&[3_i64, 4, 5]);
@@ -348,6 +495,45 @@ fn parquet_bytes_with_i64_row_groups(row_groups: &[&[i64]]) -> Vec<u8> {
         row_group.close().expect("row-group writer should close");
     }
     writer.close().expect("file writer should close");
+    bytes
+}
+
+fn parquet_bytes_with_indexed_i64_pages(values: &[i64]) -> Vec<u8> {
+    let schema = Arc::new(
+        parse_message_type("message schema { REQUIRED INT64 id; }")
+            .expect("parquet schema should parse"),
+    );
+    let mut bytes = Vec::new();
+    let mut writer = SerializedFileWriter::new(
+        &mut bytes,
+        schema,
+        Arc::new(
+            WriterProperties::builder()
+                .set_writer_version(WriterVersion::PARQUET_2_0)
+                .set_statistics_enabled(EnabledStatistics::Page)
+                .set_max_row_group_row_count(Some(values.len()))
+                .set_data_page_row_count_limit(1_024)
+                .set_write_batch_size(1_024)
+                .set_dictionary_enabled(false)
+                .build(),
+        ),
+    )
+    .expect("indexed parquet writer should construct");
+    let mut row_group = writer
+        .next_row_group()
+        .expect("indexed row group should construct");
+    if let Some(mut column) = row_group
+        .next_column()
+        .expect("indexed column should be returned")
+    {
+        column
+            .typed::<Int64Type>()
+            .write_batch(values, None, None)
+            .expect("indexed parquet rows should write");
+        column.close().expect("indexed column should close");
+    }
+    row_group.close().expect("indexed row group should close");
+    writer.close().expect("indexed parquet writer should close");
     bytes
 }
 

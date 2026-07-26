@@ -18,7 +18,7 @@ use futures_util::{
     stream::{self, BoxStream},
     FutureExt, StreamExt, TryStreamExt,
 };
-use parquet::arrow::arrow_reader::ArrowReaderOptions;
+use parquet::arrow::arrow_reader::{ArrowReaderOptions, RowSelection, RowSelector};
 use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::ProjectionMask;
@@ -32,6 +32,7 @@ use parquet::errors::ParquetError;
 use parquet::file::reader::{FileReader as ParquetFileReader, SerializedFileReader};
 use parquet::file::{
     metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader},
+    page_index::column_index::ColumnIndexMetaData,
     statistics::Statistics as ParquetStatistics,
 };
 use parquet::record::Field as ParquetField;
@@ -289,6 +290,13 @@ pub struct ParquetRowGroupPruningPredicate {
     pub comparison: ParquetIntegerComparison,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ParquetPageIndexPolicy {
+    #[default]
+    Skip,
+    Predicate,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ParquetRowGroupPlan {
     pub row_groups: Vec<usize>,
@@ -302,6 +310,9 @@ pub struct ScanTargetMetricsSnapshot {
     pub files_skipped: u64,
     pub row_groups_touched: u64,
     pub row_groups_skipped: u64,
+    pub pages_selected: u64,
+    pub pages_skipped: u64,
+    pub pages_touched: u64,
     pub rows_emitted: u64,
     pub bytes_fetched: u64,
     pub footer_reads: u64,
@@ -1539,6 +1550,15 @@ impl ScanTargetMetricsHandle for AggregateScanTargetMetricsHandle {
                     aggregate.row_groups_skipped = aggregate
                         .row_groups_skipped
                         .saturating_add(snapshot.row_groups_skipped);
+                    aggregate.pages_selected = aggregate
+                        .pages_selected
+                        .saturating_add(snapshot.pages_selected);
+                    aggregate.pages_skipped = aggregate
+                        .pages_skipped
+                        .saturating_add(snapshot.pages_skipped);
+                    aggregate.pages_touched = aggregate
+                        .pages_touched
+                        .saturating_add(snapshot.pages_touched);
                     aggregate.rows_emitted =
                         aggregate.rows_emitted.saturating_add(snapshot.rows_emitted);
                     aggregate.bytes_fetched = aggregate
@@ -2704,6 +2724,31 @@ pub async fn stream_scan_target_batches_with_row_group_pruning(
     .await
 }
 
+pub async fn stream_scan_target_batches_with_page_index_policy(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    required_columns: &[String],
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    request_timeout: Option<Duration>,
+    row_group_predicate: Option<&ParquetRowGroupPruningPredicate>,
+    page_index_policy: ParquetPageIndexPolicy,
+) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
+{
+    stream_scan_target_batches_with_row_group_pruning_caches_query_and_page_index_policy(
+        reader,
+        target,
+        required_columns,
+        partition_column_types,
+        request_timeout,
+        row_group_predicate,
+        None,
+        None,
+        None,
+        page_index_policy,
+    )
+    .await
+}
+
 pub async fn stream_scan_target_batches_with_row_group_pruning_and_cache(
     reader: &HttpRangeReader,
     target: &ScanTarget,
@@ -2765,11 +2810,43 @@ pub async fn stream_scan_target_batches_with_row_group_pruning_caches_and_query(
     query_context: Option<&ParquetRangeQueryContext>,
 ) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
 {
+    stream_scan_target_batches_with_row_group_pruning_caches_query_and_page_index_policy(
+        reader,
+        target,
+        required_columns,
+        partition_column_types,
+        request_timeout,
+        row_group_predicate,
+        metadata_cache,
+        range_cache,
+        query_context,
+        ParquetPageIndexPolicy::Skip,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn stream_scan_target_batches_with_row_group_pruning_caches_query_and_page_index_policy(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    required_columns: &[String],
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    request_timeout: Option<Duration>,
+    row_group_predicate: Option<&ParquetRowGroupPruningPredicate>,
+    metadata_cache: Option<&ParquetMetadataCache>,
+    range_cache: Option<&ParquetRangeCache>,
+    query_context: Option<&ParquetRangeQueryContext>,
+    page_index_policy: ParquetPageIndexPolicy,
+) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
+{
     let metrics_handle = SharedScanTargetMetricsHandle::new(ScanTargetMetricsSnapshot {
         files_touched: 1,
         files_skipped: 0,
         row_groups_touched: 0,
         row_groups_skipped: 0,
+        pages_selected: 0,
+        pages_skipped: 0,
+        pages_touched: 0,
         rows_emitted: 0,
         bytes_fetched: 0,
         footer_reads: 1,
@@ -2788,16 +2865,40 @@ pub async fn stream_scan_target_batches_with_row_group_pruning_caches_and_query(
     if let Some(query_context) = query_context {
         async_reader = async_reader.with_query_context(query_context.clone());
     }
-    let builder = ParquetRecordBatchStreamBuilder::new(async_reader)
-        .await
-        .map_err(|error| {
-            query_error_from_parquet_error(error, |message| {
-                format!(
-                "browser runtime could not open parquet file '{}' for batch decoding: {message}",
-                target.path
-            )
-            })
-        })?;
+    let reader_options = match page_index_policy {
+        ParquetPageIndexPolicy::Skip => ArrowReaderOptions::new(),
+        ParquetPageIndexPolicy::Predicate => ArrowReaderOptions::new()
+            .with_column_index_policy(PageIndexPolicy::Optional)
+            .with_offset_index_policy(PageIndexPolicy::Optional),
+    };
+    let fallback_reader = async_reader.clone();
+    let builder =
+        match ParquetRecordBatchStreamBuilder::new_with_options(async_reader, reader_options).await {
+            Ok(builder) => builder,
+            Err(error)
+                if page_index_policy == ParquetPageIndexPolicy::Predicate
+                    && page_index_error_can_fail_open(&error) =>
+            {
+                ParquetRecordBatchStreamBuilder::new(fallback_reader)
+                    .await
+                    .map_err(|fallback_error| {
+                        query_error_from_parquet_error(fallback_error, |message| {
+                            format!(
+                                "browser runtime could not open parquet file '{}' for batch decoding: {message}",
+                                target.path
+                            )
+                        })
+                    })?
+            }
+            Err(error) => {
+                return Err(query_error_from_parquet_error(error, |message| {
+                    format!(
+                        "browser runtime could not open parquet file '{}' for batch decoding: {message}",
+                        target.path
+                    )
+                }));
+            }
+        };
     let row_group_plan = plan_parquet_row_groups(builder.metadata(), row_group_predicate)?;
     {
         let mut snapshot = metrics_handle.snapshot.lock().map_err(|_| {
@@ -2814,13 +2915,31 @@ pub async fn stream_scan_target_batches_with_row_group_pruning_caches_and_query(
     }
     let projection =
         projection_mask_for_required_columns(builder.parquet_schema(), target, required_columns);
+    let page_selection = match (page_index_policy, row_group_predicate) {
+        (ParquetPageIndexPolicy::Predicate, Some(predicate)) => {
+            plan_parquet_pages(builder.metadata(), &row_group_plan.row_groups, predicate)?
+        }
+        _ => None,
+    };
+    if let Some(page_selection) = &page_selection {
+        let mut snapshot = metrics_handle.snapshot.lock().map_err(|_| {
+            execution_runtime_error("scan target metrics handle was poisoned during page planning")
+        })?;
+        snapshot.pages_selected = page_selection.pages_selected;
+        snapshot.pages_skipped = page_selection.pages_skipped;
+        snapshot.pages_touched = page_selection.pages_touched;
+    }
     let target_for_stream = target.clone();
     let required_columns = required_columns.to_vec();
     let partition_column_types = partition_column_types.clone();
-    let batches = builder
+    let mut builder = builder
         .with_row_groups(row_group_plan.row_groups)
         .with_projection(projection)
-        .with_batch_size(DEFAULT_STREAM_BATCH_SIZE)
+        .with_batch_size(DEFAULT_STREAM_BATCH_SIZE);
+    if let Some(page_selection) = page_selection {
+        builder = builder.with_row_selection(page_selection.selection);
+    }
+    let batches = builder
         .build()
         .map_err(|error| {
             query_error_from_parquet_error(error, |message| {
@@ -3062,6 +3181,134 @@ pub fn plan_parquet_row_groups(
         row_groups_skipped: skipped,
         row_groups: retained,
     })
+}
+
+struct ParquetPageSelectionPlan {
+    selection: RowSelection,
+    pages_selected: u64,
+    pages_skipped: u64,
+    pages_touched: u64,
+}
+
+fn plan_parquet_pages(
+    metadata: &ParquetMetaData,
+    row_groups: &[usize],
+    predicate: &ParquetRowGroupPruningPredicate,
+) -> Result<Option<ParquetPageSelectionPlan>, QueryError> {
+    let Some(column_index_position) = parquet_column_index_for_name(metadata, &predicate.column)
+    else {
+        return Ok(None);
+    };
+    let (Some(column_indexes), Some(offset_indexes)) =
+        (metadata.column_index(), metadata.offset_index())
+    else {
+        return Ok(None);
+    };
+
+    let mut selectors = Vec::new();
+    let mut pages_selected = 0_u64;
+    let mut pages_skipped = 0_u64;
+    for &row_group_index in row_groups {
+        let Some(row_group_column_indexes) = column_indexes.get(row_group_index) else {
+            return Ok(None);
+        };
+        let Some(row_group_offset_indexes) = offset_indexes.get(row_group_index) else {
+            return Ok(None);
+        };
+        let Some(column_index) = row_group_column_indexes.get(column_index_position) else {
+            return Ok(None);
+        };
+        let Some(offset_index) = row_group_offset_indexes.get(column_index_position) else {
+            return Ok(None);
+        };
+        let page_locations = offset_index.page_locations();
+        let page_count = usize::try_from(column_index.num_pages())
+            .map_err(|_| execution_runtime_error("parquet page counts overflowed usize"))?;
+        if page_count == 0 || page_count != page_locations.len() {
+            return Ok(None);
+        }
+        let row_group_rows = usize::try_from(metadata.row_group(row_group_index).num_rows())
+            .map_err(|_| execution_runtime_error("parquet row-group rows overflowed usize"))?;
+        let page_starts = page_locations
+            .iter()
+            .map(|location| location.first_row_index)
+            .collect::<Vec<_>>();
+        let Some(page_row_counts) = validated_page_row_counts(&page_starts, row_group_rows) else {
+            return Ok(None);
+        };
+
+        for (page_index, row_count) in page_row_counts.into_iter().enumerate() {
+            let matches =
+                page_integer_index_matches(column_index, page_index, &predicate.comparison);
+            selectors.push(if matches {
+                pages_selected = pages_selected.checked_add(1).ok_or_else(|| {
+                    execution_runtime_error("parquet selected-page counts overflowed u64")
+                })?;
+                RowSelector::select(row_count)
+            } else {
+                pages_skipped = pages_skipped.checked_add(1).ok_or_else(|| {
+                    execution_runtime_error("parquet skipped-page counts overflowed u64")
+                })?;
+                RowSelector::skip(row_count)
+            });
+        }
+    }
+
+    let pages_touched = pages_selected;
+    Ok(Some(ParquetPageSelectionPlan {
+        selection: RowSelection::from(selectors),
+        pages_selected,
+        pages_skipped,
+        pages_touched,
+    }))
+}
+
+fn validated_page_row_counts(page_starts: &[i64], row_group_rows: usize) -> Option<Vec<usize>> {
+    if page_starts.is_empty() || page_starts.first().copied() != Some(0) {
+        return None;
+    }
+    let starts = page_starts
+        .iter()
+        .map(|start| usize::try_from(*start).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let mut row_counts = Vec::with_capacity(starts.len());
+    for (index, start) in starts.iter().copied().enumerate() {
+        let end = starts.get(index + 1).copied().unwrap_or(row_group_rows);
+        let row_count = end.checked_sub(start)?;
+        if row_count == 0 || end > row_group_rows {
+            return None;
+        }
+        row_counts.push(row_count);
+    }
+    Some(row_counts)
+}
+
+fn page_index_error_can_fail_open(error: &ParquetError) -> bool {
+    !matches!(error, ParquetError::External(_))
+}
+
+fn page_integer_index_matches(
+    column_index: &ColumnIndexMetaData,
+    page_index: usize,
+    comparison: &ParquetIntegerComparison,
+) -> bool {
+    let bounds = match column_index {
+        ColumnIndexMetaData::INT32(index) => index
+            .min_values_iter()
+            .zip(index.max_values_iter())
+            .nth(page_index)
+            .and_then(|(min, max)| Some((i64::from(*min?), i64::from(*max?)))),
+        ColumnIndexMetaData::INT64(index) => index
+            .min_values_iter()
+            .zip(index.max_values_iter())
+            .nth(page_index)
+            .and_then(|(min, max)| Some((*min?, *max?))),
+        _ => None,
+    };
+    let Some((min_i64, max_i64)) = bounds else {
+        return true;
+    };
+    integer_min_max_matches(min_i64, max_i64, comparison)
 }
 
 pub fn decode_parquet_input_rows(
@@ -4202,6 +4449,14 @@ fn row_group_integer_stats_match(
         return true;
     };
 
+    integer_min_max_matches(min_i64, max_i64, comparison)
+}
+
+fn integer_min_max_matches(
+    min_i64: i64,
+    max_i64: i64,
+    comparison: &ParquetIntegerComparison,
+) -> bool {
     match comparison {
         ParquetIntegerComparison::Eq(value) => min_i64 <= *value && max_i64 >= *value,
         ParquetIntegerComparison::Gt(value) => max_i64 > *value,
@@ -4406,10 +4661,10 @@ fn execution_runtime_error(message: impl Into<String>) -> QueryError {
 #[cfg(test)]
 mod tests {
     use super::{
-        merge_parquet_range_read_metrics, page_index_policies, HttpRangeAsyncFileReader,
-        ObjectSource, ParquetObjectIdentity, ParquetRangeCache, ParquetRangeQueryContext,
-        ParquetRangeReadKey, ParquetRangeReadMetrics, ParquetRangeReadPhase,
-        ParquetReadaheadPolicy, ScanTarget, SharedScanTargetMetricsHandle,
+        merge_parquet_range_read_metrics, page_index_policies, validated_page_row_counts,
+        HttpRangeAsyncFileReader, ObjectSource, ParquetObjectIdentity, ParquetRangeCache,
+        ParquetRangeQueryContext, ParquetRangeReadKey, ParquetRangeReadMetrics,
+        ParquetRangeReadPhase, ParquetReadaheadPolicy, ScanTarget, SharedScanTargetMetricsHandle,
     };
     use crate::{ScanTargetMetricsHandle, ScanTargetMetricsSnapshot};
     use parquet::arrow::arrow_reader::ArrowReaderOptions;
@@ -4423,6 +4678,28 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread::{self, JoinHandle};
     use wasm_http_object_store::HttpRangeReader;
+
+    #[test]
+    fn page_row_counts_reject_inconsistent_offset_indexes() {
+        assert_eq!(
+            validated_page_row_counts(&[0, 1_024, 2_048], 3_072),
+            Some(vec![1_024, 1_024, 1_024])
+        );
+        for invalid in [
+            vec![],
+            vec![-1, 1_024],
+            vec![1, 1_024],
+            vec![0, 0],
+            vec![0, 2_048, 1_024],
+            vec![0, 4_096],
+        ] {
+            assert_eq!(
+                validated_page_row_counts(&invalid, 3_072),
+                None,
+                "offset-index starts {invalid:?} should fail open"
+            );
+        }
+    }
 
     #[test]
     fn metadata_page_index_policies_preserve_independent_reader_options() {

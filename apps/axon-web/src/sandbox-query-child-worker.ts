@@ -62,6 +62,10 @@ type ActiveQuery = {
   stream?: SandboxSqlStream;
 };
 
+type ExperimentalPageIndexSession = SandboxQuerySession & {
+  set_page_index_policy_for_experiment?: (enabled: boolean) => void;
+};
+
 const QUERY_PREVIEW_LIMIT = QUERY_RESULT_PAGE_SIZE + 1;
 const childScope = self as unknown as PrivateChildScope;
 
@@ -371,6 +375,14 @@ function ensureSession(context: BrowserWorkerEventContext): Promise<SandboxQuery
   const pending = init().then(
     () => {
       const session = new SandboxQuerySession();
+      const workerConfig = new URLSearchParams(globalThis.name.split('?', 2)[1] ?? '');
+      if (workerConfig.get('page_index_policy') === 'predicate') {
+        const experimentalSession = session as ExperimentalPageIndexSession;
+        if (typeof experimentalSession.set_page_index_policy_for_experiment !== 'function') {
+          throw new Error('page-index experiment requested from a production-default Wasm build');
+        }
+        experimentalSession.set_page_index_policy_for_experiment(true);
+      }
       emitProgress(instantiateContext, 'finished');
       return session;
     },

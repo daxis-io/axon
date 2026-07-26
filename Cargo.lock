@@ -396,6 +396,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "console_error_panic_hook",
+ "bytes",
  "deltalake",
  "futures-util",
  "js-sys",

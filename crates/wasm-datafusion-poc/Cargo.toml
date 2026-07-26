@@ -8,6 +8,9 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+page-index-experiment = []
+
 [dependencies]
 arrow-array = "=58.3.0"
 arrow-ipc = "=58.3.0"

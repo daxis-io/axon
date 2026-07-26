@@ -31,6 +31,8 @@ use wasm_datafusion_poc::{
     DeltaTableDescriptor, DeltaTableFieldDataType, DeltaTableSchema, DeltaTableSchemaField,
     IpcCursorItem, QueryCancelHandle, QueryTerminal, WasmDataFusionEngine,
 };
+#[cfg(feature = "page-index-experiment")]
+use wasm_parquet_engine::ParquetPageIndexPolicy;
 use wasm_query_runtime::{
     runtime_target, BootstrappedBrowserSnapshot, BrowserExecutionBudget,
     BrowserParquetConvertedType, BrowserParquetField, BrowserParquetLogicalType,
@@ -324,6 +326,15 @@ impl BrowserDataFusionSession {
 
     pub fn datafusion_query_budget(&self) -> BrowserDataFusionQueryBudget {
         self.query_budget
+    }
+
+    #[cfg(feature = "page-index-experiment")]
+    pub fn set_page_index_policy_for_experiment(&mut self, enabled: bool) {
+        self.datafusion.set_page_index_policy(if enabled {
+            ParquetPageIndexPolicy::Predicate
+        } else {
+            ParquetPageIndexPolicy::Skip
+        });
     }
 
     pub fn cancellation_handle(&self) -> BrowserDataFusionCancellation {

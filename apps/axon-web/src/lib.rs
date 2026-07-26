@@ -395,6 +395,11 @@ impl SandboxQuerySession {
         }
     }
 
+    #[cfg(feature = "page-index-experiment")]
+    pub fn set_page_index_policy_for_experiment(&mut self, enabled: bool) {
+        self.session.set_page_index_policy_for_experiment(enabled);
+    }
+
     pub async fn open_delta_table(
         &mut self,
         name: String,

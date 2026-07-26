@@ -62,9 +62,10 @@ use wasm_bindgen::prelude::*;
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{
     merge_parquet_range_read_metrics,
-    stream_scan_target_batches_with_row_group_pruning_caches_and_query, ObjectSource,
-    ParquetIntegerComparison, ParquetMetadataCache, ParquetRangeCache, ParquetRangeQueryContext,
-    ParquetRangeReadMetrics, ParquetRowGroupPruningPredicate, ScanTarget, ScanTargetMetricsHandle,
+    stream_scan_target_batches_with_row_group_pruning_caches_query_and_page_index_policy,
+    ObjectSource, ParquetIntegerComparison, ParquetMetadataCache, ParquetPageIndexPolicy,
+    ParquetRangeCache, ParquetRangeQueryContext, ParquetRangeReadMetrics,
+    ParquetRowGroupPruningPredicate, ScanTarget, ScanTargetMetricsHandle,
     ScanTargetMetricsSnapshot,
 };
 
@@ -620,6 +621,11 @@ impl TableProvider for AxonDeltaTableProvider {
                 .config()
                 .get_extension::<ParquetRangeQueryContext>()
                 .map(|context| context.as_ref().clone());
+            let page_index_policy = state
+                .config()
+                .get_extension::<ParquetPageIndexPolicy>()
+                .map(|policy| *policy)
+                .unwrap_or_default();
             let cancellation = state
                 .config()
                 .get_extension::<BrowserQueryCancellation>()
@@ -637,6 +643,7 @@ impl TableProvider for AxonDeltaTableProvider {
                 self.metadata_cache.clone(),
                 self.range_cache.clone(),
                 query_context,
+                page_index_policy,
             )) as Arc<dyn ExecutionPlan>)
         })
     }
@@ -680,6 +687,7 @@ pub struct AxonParquetScanExec {
     metadata_cache: ParquetMetadataCache,
     range_cache: ParquetRangeCache,
     query_context: Option<ParquetRangeQueryContext>,
+    page_index_policy: ParquetPageIndexPolicy,
 }
 
 impl AxonParquetScanExec {
@@ -695,6 +703,7 @@ impl AxonParquetScanExec {
         metadata_cache: ParquetMetadataCache,
         range_cache: ParquetRangeCache,
         query_context: Option<ParquetRangeQueryContext>,
+        page_index_policy: ParquetPageIndexPolicy,
     ) -> Self {
         let plan = AxonScanPlan::new(
             descriptor.as_ref(),
@@ -731,6 +740,7 @@ impl AxonParquetScanExec {
             metadata_cache,
             range_cache,
             query_context,
+            page_index_policy,
         }
     }
 
@@ -827,6 +837,7 @@ impl AxonParquetScanExec {
         let metadata_cache = self.metadata_cache.clone();
         let range_cache = self.range_cache.clone();
         let query_context = self.query_context.clone();
+        let page_index_policy = self.page_index_policy;
         let stream_schema = Arc::clone(&self.projected_schema);
         let projected_schema = Arc::clone(&self.projected_schema);
         let parquet_batches = stream::once(async move {
@@ -844,6 +855,7 @@ impl AxonParquetScanExec {
                 metadata_cache,
                 range_cache,
                 query_context,
+                page_index_policy,
             )
             .await
             .map(|scan| {
@@ -1567,6 +1579,9 @@ fn add_scan_metrics(
         row_groups_skipped: left
             .row_groups_skipped
             .saturating_add(right.row_groups_skipped),
+        pages_selected: left.pages_selected.saturating_add(right.pages_selected),
+        pages_skipped: left.pages_skipped.saturating_add(right.pages_skipped),
+        pages_touched: left.pages_touched.saturating_add(right.pages_touched),
         rows_emitted: left.rows_emitted.saturating_add(right.rows_emitted),
         bytes_fetched: left.bytes_fetched.saturating_add(right.bytes_fetched),
         footer_reads: left.footer_reads.saturating_add(right.footer_reads),
@@ -1641,6 +1656,7 @@ struct PlannedScanTargetsState {
     metadata_cache: ParquetMetadataCache,
     range_cache: ParquetRangeCache,
     query_context: Option<ParquetRangeQueryContext>,
+    page_index_policy: ParquetPageIndexPolicy,
 }
 
 async fn stream_planned_scan_targets(
@@ -1657,6 +1673,7 @@ async fn stream_planned_scan_targets(
     metadata_cache: ParquetMetadataCache,
     range_cache: ParquetRangeCache,
     query_context: Option<ParquetRangeQueryContext>,
+    page_index_policy: ParquetPageIndexPolicy,
 ) -> Result<PlannedScanTargetBatchStream, QueryError> {
     let state = PlannedScanTargetsState {
         reader,
@@ -1676,6 +1693,7 @@ async fn stream_planned_scan_targets(
         metadata_cache,
         range_cache,
         query_context,
+        page_index_policy,
     };
     let batches = stream::try_unfold(state, |mut state| async move {
         loop {
@@ -1735,7 +1753,8 @@ async fn stream_planned_scan_targets(
             state.cancellation.check_cancelled_at("scan stream")?;
             let target = scan_target_for_planned_index(state.descriptor.as_ref(), file_index)?;
 
-            let scan = stream_scan_target_batches_with_row_group_pruning_caches_and_query(
+            let scan =
+                stream_scan_target_batches_with_row_group_pruning_caches_query_and_page_index_policy(
                 &state.reader,
                 &target,
                 &state.required_columns,
@@ -1745,6 +1764,7 @@ async fn stream_planned_scan_targets(
                 Some(&state.metadata_cache),
                 Some(&state.range_cache),
                 state.query_context.as_ref(),
+                state.page_index_policy,
             )
             .await?;
             state.cancellation.check_cancelled_at("scan stream")?;
@@ -2186,6 +2206,7 @@ pub struct WasmDataFusionEngine {
     cancellation: BrowserQueryCancellation,
     metadata_cache: ParquetMetadataCache,
     range_cache: ParquetRangeCache,
+    page_index_policy: ParquetPageIndexPolicy,
 }
 
 impl fmt::Debug for WasmDataFusionEngine {
@@ -2291,6 +2312,7 @@ impl WasmDataFusionEngine {
             cancellation,
             metadata_cache,
             range_cache,
+            page_index_policy: ParquetPageIndexPolicy::Skip,
         }
     }
 
@@ -2306,6 +2328,14 @@ impl WasmDataFusionEngine {
         let previous = self.query_budget;
         self.query_budget = query_budget;
         previous
+    }
+
+    #[cfg(any(test, feature = "page-index-experiment"))]
+    pub fn set_page_index_policy(
+        &mut self,
+        page_index_policy: ParquetPageIndexPolicy,
+    ) -> ParquetPageIndexPolicy {
+        std::mem::replace(&mut self.page_index_policy, page_index_policy)
     }
 
     pub fn cancellation_token(&self) -> BrowserQueryCancellation {
@@ -2576,6 +2606,9 @@ impl WasmDataFusionEngine {
         state
             .config_mut()
             .set_extension(Arc::new(cancellation.clone()));
+        state
+            .config_mut()
+            .set_extension(Arc::new(self.page_index_policy));
         (SessionContext::new_with_state(state), query_context)
     }
 }
@@ -2910,7 +2943,7 @@ mod tests {
     use std::time::Duration;
 
     use parquet::data_type::Int64Type;
-    use parquet::file::properties::WriterProperties;
+    use parquet::file::properties::{EnabledStatistics, WriterProperties, WriterVersion};
 
     #[test]
     fn browser_datafusion_runtime_disables_disk_spill() {
@@ -3221,6 +3254,7 @@ mod tests {
                 ParquetMetadataCache::default(),
                 ParquetRangeCache::default(),
                 None,
+                ParquetPageIndexPolicy::Skip,
             )
             .await;
             let error = match stream {
@@ -3244,6 +3278,73 @@ mod tests {
             assert_eq!(error.target, runtime_target());
             assert!(error.message.contains("max_scan_bytes"));
             assert!(error.message.contains("scan stream"));
+        });
+    }
+
+    #[test]
+    fn datafusion_page_index_policy_preserves_results_and_reduces_physical_bytes() {
+        test_runtime().block_on(async {
+            let parquet_object =
+                parquet_bytes_with_indexed_i64_pages(&(0_i64..65_536).collect::<Vec<_>>());
+            let object_size = u64::try_from(parquet_object.len()).expect("object size should fit");
+
+            async fn run_arm(
+                object: Vec<u8>,
+                object_size: u64,
+                policy: ParquetPageIndexPolicy,
+            ) -> (Vec<RecordBatch>, DataFusionScanMetricsSummary) {
+                let server = RequestCapturingServer::new(object);
+                let descriptor = DeltaTableDescriptor {
+                    table_name: "events".to_string(),
+                    table_version: 1,
+                    schema: Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+                    partition_columns: Vec::new(),
+                    partition_column_types: BTreeMap::new(),
+                    active_files: vec![DeltaActiveFile {
+                        path: "event-id.parquet".to_string(),
+                        url: server.url(),
+                        size_bytes: object_size,
+                        partition_values: BTreeMap::new(),
+                        object_etag: None,
+                        stats_json: None,
+                        deletion_vector: None,
+                    }],
+                };
+                let mut engine = WasmDataFusionEngine::new();
+                engine.set_page_index_policy(policy);
+                engine
+                    .open_delta_table(descriptor)
+                    .await
+                    .expect("indexed descriptor should register");
+                let (_schema, batches, metrics) = engine
+                    .sql_to_record_batches_with_metrics(
+                        "SELECT COUNT(*) AS rows, SUM(id) AS id_sum \
+                         FROM events WHERE id >= 63488",
+                    )
+                    .await
+                    .expect("indexed query should execute");
+                (batches, metrics)
+            }
+
+            let (arm_a_batches, arm_a_metrics) = run_arm(
+                parquet_object.clone(),
+                object_size,
+                ParquetPageIndexPolicy::Skip,
+            )
+            .await;
+            let (arm_b_batches, arm_b_metrics) = run_arm(
+                parquet_object,
+                object_size,
+                ParquetPageIndexPolicy::Predicate,
+            )
+            .await;
+
+            assert_eq!(arm_a_batches, arm_b_batches);
+            assert_eq!(arm_b_batches[0].num_rows(), 1);
+            assert!(
+                arm_b_metrics.bytes_fetched < arm_a_metrics.bytes_fetched,
+                "DataFusion Arm B should save physical bytes after index overhead"
+            );
         });
     }
 
@@ -3303,6 +3404,7 @@ mod tests {
                 ParquetMetadataCache::default(),
                 ParquetRangeCache::default(),
                 None,
+                ParquetPageIndexPolicy::Skip,
             )
             .await
             .expect("stream construction should not validate later planned files eagerly");
@@ -3396,6 +3498,45 @@ mod tests {
         }
         row_group.close().expect("row-group writer should close");
         writer.close().expect("file writer should close");
+        bytes
+    }
+
+    fn parquet_bytes_with_indexed_i64_pages(values: &[i64]) -> Vec<u8> {
+        let schema = Arc::new(
+            parse_message_type("message schema { REQUIRED INT64 id; }")
+                .expect("parquet schema should parse"),
+        );
+        let mut bytes = Vec::new();
+        let mut writer = SerializedFileWriter::new(
+            &mut bytes,
+            schema,
+            Arc::new(
+                WriterProperties::builder()
+                    .set_writer_version(WriterVersion::PARQUET_2_0)
+                    .set_statistics_enabled(EnabledStatistics::Page)
+                    .set_max_row_group_row_count(Some(values.len()))
+                    .set_data_page_row_count_limit(1_024)
+                    .set_write_batch_size(1_024)
+                    .set_dictionary_enabled(false)
+                    .build(),
+            ),
+        )
+        .expect("indexed parquet writer should construct");
+        let mut row_group = writer
+            .next_row_group()
+            .expect("indexed row group should construct");
+        if let Some(mut column) = row_group
+            .next_column()
+            .expect("indexed column should be returned")
+        {
+            column
+                .typed::<Int64Type>()
+                .write_batch(values, None, None)
+                .expect("indexed values should write");
+            column.close().expect("indexed column should close");
+        }
+        row_group.close().expect("indexed row group should close");
+        writer.close().expect("indexed parquet writer should close");
         bytes
     }
 

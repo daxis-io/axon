@@ -210,6 +210,11 @@ function createChild(): Worker {
   childPhase = 'boot';
   childHealth = 'booting';
   clearBootTimer();
+  const pageIndexPolicy = new URL(globalThis.location.href).searchParams.get('page_index_policy');
+  const childName =
+    pageIndexPolicy === 'predicate'
+      ? 'axon-sandbox-query-child?page_index_policy=predicate'
+      : 'axon-sandbox-query-child';
   let next: Worker;
   try {
     // The default branch must keep `new URL('./sandbox-query-child-worker.ts', import.meta.url)`
@@ -219,11 +224,11 @@ function createChild(): Worker {
     next = configuredUrl
       ? new Worker(new URL(configuredUrl), {
           type: 'module',
-          name: 'axon-sandbox-query-child',
+          name: childName,
         })
       : new Worker(new URL('./sandbox-query-child-worker.ts', import.meta.url), {
           type: 'module',
-          name: 'axon-sandbox-query-child',
+          name: childName,
         });
   } catch (error) {
     // Construction throws rather than firing `error` when the environment refuses the worker
