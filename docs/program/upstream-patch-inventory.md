@@ -41,5 +41,22 @@ No canonical PR was opened.
 |     8 | Delta Kernel `upstream/wasm32-core-target-safety`       | Not published                              | Blocked on a current-canonical target-safe-core redesign.                                         |
 |     9 | delta-rs `upstream/wasm32-browser-engine-incubation`    | `e0fa37143e6888c06623c6a43adf1c801a189ca0` | Candidate-clean; includes bounded IPC and path confinement; ordered after slices 1-8.             |
 
+## 2026-07-26 Current-Head Canonicalization
+
+The detailed commands and conclusions are in
+[`upstream-wasm-canonicalization-evidence.md`](../release-gates/upstream-wasm-canonicalization-evidence.md).
+These additive refs do not replace or move the historical evidence refs above.
+
+| Order | Owner | Replacement Daxis ref | Revision | Disposition and removal condition |
+| ---: | --- | --- | --- | --- |
+| 1 | Arrow | `upstream/2026-07-26/wasm32-parquet-zstd` | `33556c03aa7127fa61692f2a17d43f9eb4b53f90` | Locally verified bounded adaptation. Remove after a canonical Arrow release carries the contract and Axon's locked rehearsal passes. |
+| 2 | Arrow | `upstream/2026-07-26/wasm32-arrow-ipc-zstd` | `3a640f9ae670b79dfb2a92f2aa780eea1e43b995` | Locally verified clean transplant plus corrected compressed fixture. Same release/rehearsal removal gate. |
+| 3 | `object_store` | `upstream/2026-07-26/wasm32-http-manifest` | `185be11b24ca67d9d7df5bfd77eae8f9a21e82c9` | Locally verified runtime seam and Chrome/Firefox transient-retry producer. Remove after canonical release and locked browser protocol proof. |
+| 4-5 | `object_store` | `upstream/2026-07-26/wasm32-browser-retry`; `upstream/2026-07-26/wasm32-browser-range-protocol` | `06fe16b9963b7410de3422d73c529d2a68c93db3` | Chrome/Firefox prove strong-validator `If-Range` resume and strict retry `200` rejection. Arbitrary fallback is deferred to issue #806. |
+| 6 | DataFusion | `upstream/2026-07-26/wasm32-feature-ownership` | `b7bb98c99a50f3043c40996b7add77dcf526c7fe` | Prepared, not publishable: blocked first by runtime `tempfile`, then by canonical Arrow releases. |
+| 7 | DataFusion | `upstream/2026-07-26/wasm32-browser-runtime` | `f8fc53db63d13c437523301605ff4234c4d848e3` | Prepared, not publishable: exact graph stops on canonical Arrow `zstd-sys`. |
+| 8 | Kernel | none | none | Redesign required; remove only after the adapter/capability decision lands and is released. |
+| 9 | delta-rs | none | historical `e0fa37143e6888c06623c6a43adf1c801a189ca0` | Blocked on Kernel and compatible leaf releases. |
+
 Allowed `Upstream disposition` values are `proposed`, `opened`, `merged`, `wontfix`, and
 `temporary`.

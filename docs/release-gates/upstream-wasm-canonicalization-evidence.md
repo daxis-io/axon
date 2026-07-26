@@ -1,0 +1,150 @@
+# Upstream WASM Canonicalization Evidence
+
+- Evidence date: 2026-07-26
+- Axon base: `d1a31ec22479bb7d2fb380bfd61e00fd2f7881e8`
+- Axon branch: `chore/upstream-wasm-canonicalization`
+- Umbrella issue: [daxis-io/axon#2](https://github.com/daxis-io/axon/issues/2)
+- Prior exact-head POC CI:
+  [30184555394](https://github.com/daxis-io/axon/actions/runs/30184555394), successful at
+  `d1a31ec22479bb7d2fb380bfd61e00fd2f7881e8`
+- Canonical publication boundary: no canonical push or PR is authorized.
+
+## Fresh Bases And Dispositions
+
+| # | Concern | Canonical base | Disposition | Replacement ref / current result |
+| ---: | --- | --- | --- | --- |
+| 1 | Arrow Parquet Zstd | `87cd2e526511ce75726bceb59033dfe4078a095d` | bounded semantic adaptation | `upstream/2026-07-26/wasm32-parquet-zstd` at `33556c03aa7127fa61692f2a17d43f9eb4b53f90`; locally verified |
+| 2 | Arrow IPC Zstd | `87cd2e526511ce75726bceb59033dfe4078a095d` | clean current-head transplant | `upstream/2026-07-26/wasm32-arrow-ipc-zstd` at `3a640f9ae670b79dfb2a92f2aa780eea1e43b995`; locally verified |
+| 3 | `object_store` HTTP manifest | `84d24eb8efcec9448566de09e94d2d4b74b21ebe` | bounded semantic adaptation | `upstream/2026-07-26/wasm32-http-manifest` at `185be11b24ca67d9d7df5bfd77eae8f9a21e82c9`; locally verified |
+| 4 | `object_store` clean-EOF retry | same | blocked by another concern | Executed only with concern 5 at `06fe16b9963b7410de3422d73c529d2a68c93db3` |
+| 5 | `object_store` range protocol | same | bounded semantic adaptation | Strong validator and `If-Range` retained at `06fe16b9963b7410de3422d73c529d2a68c93db3`; arbitrary `200` fallback excluded |
+| 6 | DataFusion feature ownership | `88365ddd62b17c1eabd20ed0b064f626f9e77686` | blocked by another concern | Prepared at `b7bb98c99a50f3043c40996b7add77dcf526c7fe`; exact graph stops on current `tempfile`, then slice 7 |
+| 7 | DataFusion browser runtime | same | blocked by another concern | Prepared at `f8fc53db63d13c437523301605ff4234c4d848e3`; runtime removes `tempfile`, exact graph then stops on canonical Arrow `zstd-sys` |
+| 8 | Delta Kernel target safety | `2403501198e9b132b714c9945fb3175c0364b1dd` | redesign required | No branch; [architecture decision](../research/upstream-wasm-canonicalization/kernel-architecture-decision.md) |
+| 9 | delta-rs browser incubation | `3f562682c5a9dd55693b7f7bbd2a2f749fdf38e5` | blocked by another concern | Historical `e0fa37143e6888c06623c6a43adf1c801a189ca0` preserved; no replacement |
+
+No complete equivalent contract had landed for any of the nine concerns at the recorded canonical
+heads. Current `object_store` already retries response-body errors and validates resumed ranges;
+concerns 4 and 5 retain only the uncovered clean-EOF, strong-validator, and `If-Range` safety
+contract. The two downstream stops are dependency/architecture gates, not ordinary build failures.
+
+## Additive Revision And Lock Ledger
+
+All replacement commits are DCO-signed. Historical POC, candidate, stack, forward, and tag refs
+were not moved or rewritten.
+
+| Repository / ref | Commits over base | Head | Lock SHA-256 |
+| --- | ---: | --- | --- |
+| Arrow Parquet | 4 | `33556c03aa7127fa61692f2a17d43f9eb4b53f90` | root `8acf545edbce2e4ab6cf56f363e108e6b3067c77f73e95e10fee40b101242801`; consumer `e1f6747feeac8a4c86c5bd7f181cb0a9ae034dcd820b1d4a968c8ee31bee0ff0` |
+| Arrow IPC | 2 | `3a640f9ae670b79dfb2a92f2aa780eea1e43b995` | root `8acf545edbce2e4ab6cf56f363e108e6b3067c77f73e95e10fee40b101242801`; consumer `1db8b03ef7c1900e61763224a3281a754d4a7451ceabd53e2f3ed2add34d6c48` |
+| `object_store` HTTP | 17 | `185be11b24ca67d9d7df5bfd77eae8f9a21e82c9` | consumer `d68a57e29b023113fa0a09fc3c69c27cfd3a0a0b1cf5e66523c077df3b2544cd` |
+| `object_store` validator retry | 22 | `06fe16b9963b7410de3422d73c529d2a68c93db3` | consumer `d68a57e29b023113fa0a09fc3c69c27cfd3a0a0b1cf5e66523c077df3b2544cd` |
+| DataFusion feature ownership | 4 | `b7bb98c99a50f3043c40996b7add77dcf526c7fe` | root `62631d5ea4dca1112e7e15bc7c638e8ca77c46318dda28d392b39206951553aa` |
+| DataFusion runtime | 15 | `f8fc53db63d13c437523301605ff4234c4d848e3` | root `62631d5ea4dca1112e7e15bc7c638e8ca77c46318dda28d392b39206951553aa` |
+
+## Red-Green And Local Verification
+
+### Arrow Parquet
+
+- Red: canonical head failed the feature-unified target check in `zstd-sys` because Clang had no
+  `wasm32-unknown-unknown` backend.
+- Green: the same library check and `dev/check_wasm_dependency_policy.sh parquet` passed.
+- Real target behavior: the isolated WASM consumer read Zstd Parquet footer/schema/three-row
+  metadata, then produced the feature-enabled/target-backend-unavailable page-decode error; 1 test
+  passed under `wasm-bindgen-test-runner`.
+- Native behavior: `wasm_codec_availability` passed; after initializing canonical test-data
+  submodules, the full package passed 1,232 unit tests, 88 integration tests with 1 ignored, 3
+  row-selection tests, 11 page-index tests, 2 bloom tests, the target test, and 67 doctests with 6
+  ignored. All-target/all-feature Clippy passed with `-D warnings`.
+- Candidate hygiene, formatting, and `git diff --check` passed.
+
+### Arrow IPC
+
+- Red: canonical head failed the exact target build in `zstd-sys`.
+- The historical three-row fixture was discovered not to contain a compressed body. A replacement
+  4,096-row fixture made the original decoder assertion fail, proving the test now reaches Zstd.
+- Green: the isolated WASM consumer passed two tests: schema-before-decode failure and writer
+  rollback before record-batch commitment.
+- Native all-feature package proof passed 121 unit tests, 7 integration tests, the target-aware
+  fixture test, and 10 doctests. All-target/all-feature Clippy passed with `-D warnings`.
+- Dependency policy, formatting, candidate hygiene, and `git diff --check` passed.
+
+### `object_store`
+
+- The three exact consumer profiles (`http-base`; `http-base,reqwest,web`; and native-batteries
+  `http`) compile, and `tests/wasm-consumer/check-wasm-graph.sh` reports a target-safe graph.
+- A deterministic CORS producer and isolated downstream consumer executed in headless Chrome 150
+  and Firefox 153. The HTTP branch passed a transient `503`, fixed 25 ms browser backoff, and second
+  ranged Fetch in both browsers: 1 test per browser.
+- The stacked retry branch passed 3 tests per browser. The producer logs prove the truncated
+  response was followed by `Range: bytes=5-9` and `If-Range: "v1"`; the valid `206` resumed
+  `helloworld`, while the same retry receiving `200` was rejected as range-unsupported.
+- Retry/validator focused proof passed 9 of 9 source tests. The stacked native package proof passed
+  121 unit tests with 1 ignored, 3 range tests, the live HTTP integration test, and 33 doctests with
+  2 ignored.
+- Formatting, candidate hygiene, and `git diff --check` passed. All-feature/all-target Clippy
+  passed with the inherited current-head `clippy::enum_variant_names` lint explicitly allowed;
+  the repository-prescribed unmodified command fails on canonical source
+  `RequestBuilderError`, which this slice does not change.
+- A no-default native unit-test run exposed a current upstream test-only `LocalFileSystem` import;
+  it is not in the exact browser consumer graph and was not broadened into this patch.
+
+### DataFusion
+
+- Feature ownership's native `file_compression_type` proof passed 2 tests.
+- Runtime native disk-manager proof passed 16 tests; the Node CORS preflight server test passed.
+- The feature branch graph first fails on current `datafusion-execution -> tempfile`. The runtime
+  branch removes that edge and then fails on `arrow-ipc/parquet -> zstd -> zstd-sys`.
+- No Daxis Arrow pin or patch table was added. The runtime branch also removes the obsolete global
+  `getrandom_backend="wasm_js"` flags from the existing workflow and README.
+- Chrome/Firefox current-head execution is therefore intentionally not claimed; it resumes after
+  canonical Arrow releases provide concerns 1 and 2.
+
+## Exact Graph And Composite Conclusion
+
+The verified leaf graphs contain no `zstd-sys`, `liblzma-sys`, `aws-lc-sys`, `openssl-sys`,
+`native-tls`, `ring`, `hyper`, `walkdir`, `tempfile`, filesystem implementation, cloud-provider
+battery, or Tokio multithread feature. They use no global getrandom `RUSTFLAGS`.
+
+A clean current-head composite cannot yet be formed without Daxis dependency pins: DataFusion
+still consumes released Arrow 59.1.0. The phase therefore stops before Kernel/delta-rs integration
+and retains the successful release-based Chrome/Firefox proof in run 30184555394 as the latest
+complete stack evidence. No current-head performance or browser-parity improvement is claimed.
+
+## Candidate Canonical PR Stack
+
+1. **Arrow:** `Support feature-unified Parquet codecs on wasm32`
+   - Explain feature-enabled versus target-backend-unavailable semantics.
+   - Include the compiler-free graph and executable metadata/page-decode proof.
+2. **Arrow:** `Support feature-unified Arrow IPC codecs on wasm32`
+   - Independent base; may follow PR 1 operationally.
+   - Call out the corrected genuinely compressed fixture and writer rollback.
+3. **object_store:** `Expose target-safe HTTP host capabilities`
+   - Review the public `http-base` / `reqwest` / `web` ownership boundary separately from policy.
+4. **object_store:** `Retry truncated reads only with a strong validator`
+   - Stack on PR 3; combine clean EOF with strong ETag and `If-Range`.
+   - Explicitly exclude arbitrary subrange `200` fallback; continue that discussion in issue #806.
+5. **DataFusion:** `Own target-safe Parquet and compression features`
+   - Wait for released/accepted Arrow and `object_store` contracts.
+6. **DataFusion:** `Define the browser runtime profile`
+   - Stack on PR 5; preserve native spill/default behavior and execute Chrome/Firefox.
+7. **Delta Kernel:** design discussion on issue #252 before any source PR.
+8. **delta-rs:** no PR until Kernel exposes accepted public seams.
+
+## Fork Removal Conditions
+
+- Arrow fork patches: remove only after canonical releases contain both codec contracts and the
+  locked Axon browser rehearsal passes.
+- `object_store`: remove after a canonical release contains the explicit HTTP/runtime seam plus
+  strong-validator clean-EOF retry. Fallback policy has its own issue-#806 decision.
+- DataFusion: remove after compatible leaf releases and a DataFusion release contain feature
+  ownership plus the memory-only browser runtime and pass Chrome/Firefox.
+- Kernel: remove after maintainers accept and release a narrow adapter/capability design and the
+  prefetched synchronous engine passes the denied graph.
+- delta-rs: remove after the Kernel boundary and all leaf releases exist and the incubation code no
+  longer imports fork-only/internal Kernel APIs.
+
+## Publication Record
+
+This section is completed only after independent review, Daxis pushes, exact-ref checks, terminal
+CI, and the Axon issue update. No canonical organization mutation is permitted.
