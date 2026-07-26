@@ -134,7 +134,7 @@ The immutable POC tag `daxis-poc/wasm32-browser-e2e-2026-07-25` resolves to:
 - Removal condition: an upstream release contains clean-EOF detection plus strong-validator resume
   semantics and passes native and browser transport tests.
 - Current-head execution result: concerns 4 and 5 share
-  `06fe16b9963b7410de3422d73c529d2a68c93db3`. A deterministic CORS producer passed the real
+  `26b0b443355943c5288e5dd27fcddd889a3e2635`. A deterministic CORS producer passed the real
   truncated-body resume path in Chrome and Firefox.
 
 ## 5. `object_store`: `wasm32-browser-range-protocol`
@@ -160,7 +160,7 @@ The immutable POC tag `daxis-poc/wasm32-browser-e2e-2026-07-25` resolves to:
   removal condition is separately tied to issue #806.
 - Current-head execution result: `upstream/2026-07-26/wasm32-browser-retry` and
   `upstream/2026-07-26/wasm32-browser-range-protocol` both resolve to
-  `06fe16b9963b7410de3422d73c529d2a68c93db3`. Browser logs prove `Range: bytes=5-9`,
+  `26b0b443355943c5288e5dd27fcddd889a3e2635`. Browser logs prove `Range: bytes=5-9`,
   `If-Range: "v1"`, successful `206` resume, and rejection of a retry `200`.
 
 ## 6. DataFusion: `wasm32-feature-ownership`

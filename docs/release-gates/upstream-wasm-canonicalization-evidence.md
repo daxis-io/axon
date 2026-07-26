@@ -8,16 +8,22 @@
   [30184555394](https://github.com/daxis-io/axon/actions/runs/30184555394), successful at
   `d1a31ec22479bb7d2fb380bfd61e00fd2f7881e8`
 - Canonical publication boundary: no canonical push or PR is authorized.
+- Close-time head audit: Arrow advanced after the phase-start fetch to
+  `8e7043bf937b60e3be8586ceb3cd00349b989e1e`; the other four recorded heads were unchanged.
+  The intervening Arrow commit, `8e7043bf9` / #10135, adds only a Parquet row-selection benchmark
+  and benchmark dependency. It does not overlap codec selection, IPC compression, or the retained
+  WASM tests. The prepared Arrow PRs must still be refreshed additively from this or a later head
+  immediately before canonical submission.
 
 ## Fresh Bases And Dispositions
 
 | # | Concern | Canonical base | Disposition | Replacement ref / current result |
 | ---: | --- | --- | --- | --- |
-| 1 | Arrow Parquet Zstd | `87cd2e526511ce75726bceb59033dfe4078a095d` | bounded semantic adaptation | `upstream/2026-07-26/wasm32-parquet-zstd` at `33556c03aa7127fa61692f2a17d43f9eb4b53f90`; locally verified |
-| 2 | Arrow IPC Zstd | `87cd2e526511ce75726bceb59033dfe4078a095d` | clean current-head transplant | `upstream/2026-07-26/wasm32-arrow-ipc-zstd` at `3a640f9ae670b79dfb2a92f2aa780eea1e43b995`; locally verified |
-| 3 | `object_store` HTTP manifest | `84d24eb8efcec9448566de09e94d2d4b74b21ebe` | bounded semantic adaptation | `upstream/2026-07-26/wasm32-http-manifest` at `185be11b24ca67d9d7df5bfd77eae8f9a21e82c9`; locally verified |
-| 4 | `object_store` clean-EOF retry | same | blocked by another concern | Executed only with concern 5 at `06fe16b9963b7410de3422d73c529d2a68c93db3` |
-| 5 | `object_store` range protocol | same | bounded semantic adaptation | Strong validator and `If-Range` retained at `06fe16b9963b7410de3422d73c529d2a68c93db3`; arbitrary `200` fallback excluded |
+| 1 | Arrow Parquet Zstd | `87cd2e526511ce75726bceb59033dfe4078a095d` | bounded semantic adaptation | `upstream/2026-07-26/wasm32-parquet-zstd` at `b7d32cebec8bf10d085ca0dc12898600086c895f`; locally verified |
+| 2 | Arrow IPC Zstd | `87cd2e526511ce75726bceb59033dfe4078a095d` | clean current-head transplant | `upstream/2026-07-26/wasm32-arrow-ipc-zstd` at `6f9fabc97f321243ccb575fc49b0b26027072245`; locally verified |
+| 3 | `object_store` HTTP manifest | `84d24eb8efcec9448566de09e94d2d4b74b21ebe` | bounded semantic adaptation | `upstream/2026-07-26/wasm32-http-manifest` at `927dfa69b1c7962cd532413171f13e5ad928cb1d`; locally verified |
+| 4 | `object_store` clean-EOF retry | same | blocked by another concern | Executed only with concern 5 at `26b0b443355943c5288e5dd27fcddd889a3e2635` |
+| 5 | `object_store` range protocol | same | bounded semantic adaptation | Strong validator and `If-Range` retained at `26b0b443355943c5288e5dd27fcddd889a3e2635`; arbitrary `200` fallback excluded |
 | 6 | DataFusion feature ownership | `88365ddd62b17c1eabd20ed0b064f626f9e77686` | blocked by another concern | Prepared at `b7bb98c99a50f3043c40996b7add77dcf526c7fe`; exact graph stops on current `tempfile`, then slice 7 |
 | 7 | DataFusion browser runtime | same | blocked by another concern | Prepared at `f8fc53db63d13c437523301605ff4234c4d848e3`; runtime removes `tempfile`, exact graph then stops on canonical Arrow `zstd-sys` |
 | 8 | Delta Kernel target safety | `2403501198e9b132b714c9945fb3175c0364b1dd` | redesign required | No branch; [architecture decision](../research/upstream-wasm-canonicalization/kernel-architecture-decision.md) |
@@ -35,10 +41,10 @@ were not moved or rewritten.
 
 | Repository / ref | Commits over base | Head | Lock SHA-256 |
 | --- | ---: | --- | --- |
-| Arrow Parquet | 4 | `33556c03aa7127fa61692f2a17d43f9eb4b53f90` | root `8acf545edbce2e4ab6cf56f363e108e6b3067c77f73e95e10fee40b101242801`; consumer `e1f6747feeac8a4c86c5bd7f181cb0a9ae034dcd820b1d4a968c8ee31bee0ff0` |
-| Arrow IPC | 2 | `3a640f9ae670b79dfb2a92f2aa780eea1e43b995` | root `8acf545edbce2e4ab6cf56f363e108e6b3067c77f73e95e10fee40b101242801`; consumer `1db8b03ef7c1900e61763224a3281a754d4a7451ceabd53e2f3ed2add34d6c48` |
-| `object_store` HTTP | 17 | `185be11b24ca67d9d7df5bfd77eae8f9a21e82c9` | consumer `d68a57e29b023113fa0a09fc3c69c27cfd3a0a0b1cf5e66523c077df3b2544cd` |
-| `object_store` validator retry | 22 | `06fe16b9963b7410de3422d73c529d2a68c93db3` | consumer `d68a57e29b023113fa0a09fc3c69c27cfd3a0a0b1cf5e66523c077df3b2544cd` |
+| Arrow Parquet | 10 | `b7d32cebec8bf10d085ca0dc12898600086c895f` | root `8acf545edbce2e4ab6cf56f363e108e6b3067c77f73e95e10fee40b101242801`; consumer `e1f6747feeac8a4c86c5bd7f181cb0a9ae034dcd820b1d4a968c8ee31bee0ff0` |
+| Arrow IPC | 5 | `6f9fabc97f321243ccb575fc49b0b26027072245` | root `8acf545edbce2e4ab6cf56f363e108e6b3067c77f73e95e10fee40b101242801`; consumer `1db8b03ef7c1900e61763224a3281a754d4a7451ceabd53e2f3ed2add34d6c48` |
+| `object_store` HTTP | 18 | `927dfa69b1c7962cd532413171f13e5ad928cb1d` | consumer `6b17cbda8eeb8bc0af9b05741f9f479888e964e1508d0411268236ba49618913` |
+| `object_store` validator retry | 23 | `26b0b443355943c5288e5dd27fcddd889a3e2635` | consumer `6b17cbda8eeb8bc0af9b05741f9f479888e964e1508d0411268236ba49618913` |
 | DataFusion feature ownership | 4 | `b7bb98c99a50f3043c40996b7add77dcf526c7fe` | root `62631d5ea4dca1112e7e15bc7c638e8ca77c46318dda28d392b39206951553aa` |
 | DataFusion runtime | 15 | `f8fc53db63d13c437523301605ff4234c4d848e3` | root `62631d5ea4dca1112e7e15bc7c638e8ca77c46318dda28d392b39206951553aa` |
 
@@ -113,6 +119,9 @@ complete stack evidence. No current-head performance or browser-parity improveme
 
 ## Candidate Canonical PR Stack
 
+Paste-ready bodies, exact tests, and reviewer notes are in the
+[canonical PR draft packets](../research/upstream-wasm-canonicalization/canonical-pr-drafts.md).
+
 1. **Arrow:** `Support feature-unified Parquet codecs on wasm32`
    - Explain feature-enabled versus target-backend-unavailable semantics.
    - Include the compiler-free graph and executable metadata/page-decode proof.
@@ -146,5 +155,80 @@ complete stack evidence. No current-head performance or browser-parity improveme
 
 ## Publication Record
 
-This section is completed only after independent review, Daxis pushes, exact-ref checks, terminal
-CI, and the Axon issue update. No canonical organization mutation is permitted.
+Independent review returned **Go** after the object-store workflow was upgraded from a Node-only
+protocol harness to a deterministic CORS producer exercised in headless Chrome and Firefox. The
+review found no must-fix or should-fix findings after that correction.
+
+The verified leaf refs were pushed only to the corresponding Daxis forks. Two Daxis-only draft PRs
+exist solely to execute arrow-rs's pull-request workflows; they are explicitly marked “do not
+merge” and do not target a canonical organization:
+
+- [daxis-io/arrow-rs#3](https://github.com/daxis-io/arrow-rs/pull/3), Parquet
+- [daxis-io/arrow-rs#2](https://github.com/daxis-io/arrow-rs/pull/2), Arrow IPC
+
+The live runs found test-infrastructure gaps that local package gates did not cover. Ignored nested
+consumer workspaces did not generate their own lockfiles; Rust 1.85 selected ICU 2.2 crates
+requiring a newer compiler; Arrow's MSRV scanner required explicit nested-package metadata; the
+Rust container lacked Node for the executable WASM tests; and its unchanged Parquet WASI-default
+gate lacked Clang plus a WASI libc sysroot. Additive DCO corrections generated nested Arrow locks,
+committed an `object_store` consumer lock compatible with Rust 1.85, declared consumer MSRV, and
+provisioned Node. Parquet provisions Clang and `wasi-libc` only after the compiler-free browser
+compile and executable test have passed. No evidence ref was rewritten.
+
+| Published Daxis ref | Exact tested SHA | Terminal CI |
+| --- | --- | --- |
+| `arrow-rs:upstream/2026-07-26/wasm32-parquet-zstd` | `b7d32cebec8bf10d085ca0dc12898600086c895f` | 13/13 workflows success; focused [parquet 30214771945](https://github.com/daxis-io/arrow-rs/actions/runs/30214771945) |
+| `arrow-rs:upstream/2026-07-26/wasm32-arrow-ipc-zstd` | `6f9fabc97f321243ccb575fc49b0b26027072245` | 13/13 workflows success; focused [arrow 30214218734](https://github.com/daxis-io/arrow-rs/actions/runs/30214218734) |
+| `arrow-rs-object-store:upstream/2026-07-26/wasm32-http-manifest` | `927dfa69b1c7962cd532413171f13e5ad928cb1d` | [30213320951](https://github.com/daxis-io/arrow-rs-object-store/actions/runs/30213320951), success |
+| `arrow-rs-object-store:upstream/2026-07-26/wasm32-browser-retry` | `26b0b443355943c5288e5dd27fcddd889a3e2635` | [30213318032](https://github.com/daxis-io/arrow-rs-object-store/actions/runs/30213318032), success |
+| `arrow-rs-object-store:upstream/2026-07-26/wasm32-browser-range-protocol` | `26b0b443355943c5288e5dd27fcddd889a3e2635` | [30213318013](https://github.com/daxis-io/arrow-rs-object-store/actions/runs/30213318013), success |
+
+The Arrow exact-head bundles were wholly successful:
+
+- Parquet: [arrow](https://github.com/daxis-io/arrow-rs/actions/runs/30214771944),
+  [arrow-flight](https://github.com/daxis-io/arrow-rs/actions/runs/30214771916),
+  [audit](https://github.com/daxis-io/arrow-rs/actions/runs/30214771907),
+  [dev](https://github.com/daxis-io/arrow-rs/actions/runs/30214771898),
+  [dev-pr](https://github.com/daxis-io/arrow-rs/actions/runs/30214771061),
+  [docs](https://github.com/daxis-io/arrow-rs/actions/runs/30214771917),
+  [integration](https://github.com/daxis-io/arrow-rs/actions/runs/30214771895),
+  [Miri](https://github.com/daxis-io/arrow-rs/actions/runs/30214771920),
+  [parquet](https://github.com/daxis-io/arrow-rs/actions/runs/30214771945),
+  [parquet-geospatial](https://github.com/daxis-io/arrow-rs/actions/runs/30214771963),
+  [parquet-variant](https://github.com/daxis-io/arrow-rs/actions/runs/30214771925),
+  [parquet-derive](https://github.com/daxis-io/arrow-rs/actions/runs/30214771940), and
+  [rust](https://github.com/daxis-io/arrow-rs/actions/runs/30214771948).
+- Arrow IPC: [arrow](https://github.com/daxis-io/arrow-rs/actions/runs/30214218734),
+  [arrow-flight](https://github.com/daxis-io/arrow-rs/actions/runs/30214218736),
+  [audit](https://github.com/daxis-io/arrow-rs/actions/runs/30214218775),
+  [dev](https://github.com/daxis-io/arrow-rs/actions/runs/30214218773),
+  [dev-pr](https://github.com/daxis-io/arrow-rs/actions/runs/30214217699),
+  [docs](https://github.com/daxis-io/arrow-rs/actions/runs/30214218763),
+  [integration](https://github.com/daxis-io/arrow-rs/actions/runs/30214218792),
+  [Miri](https://github.com/daxis-io/arrow-rs/actions/runs/30214218772),
+  [parquet](https://github.com/daxis-io/arrow-rs/actions/runs/30214218744),
+  [parquet-geospatial](https://github.com/daxis-io/arrow-rs/actions/runs/30214218743),
+  [parquet-variant](https://github.com/daxis-io/arrow-rs/actions/runs/30214218738),
+  [parquet-derive](https://github.com/daxis-io/arrow-rs/actions/runs/30214218790), and
+  [rust](https://github.com/daxis-io/arrow-rs/actions/runs/30214218823).
+
+The Axon documentation branch is published at
+`daxis-io/axon:chore/upstream-wasm-canonicalization`. The repository's generic workflow reported
+failure with zero jobs at [30213192153](https://github.com/daxis-io/axon/actions/runs/30213192153);
+this is the inherited zero-job behavior, not a failed test. The local patch-inventory regression
+gate passed.
+
+The issue #2 update and final exact-ref verification are recorded after the Arrow workflow set
+reaches a terminal result. No canonical organization remote was mutated.
+
+The dirty Axon root was rechecked after publication work. It remained at
+`3e5aceda0c1eb2c0dea983c0e5849200447a363f`, retained the same pre-existing modified and untracked
+paths, and contains no canonicalization plan, research, or evidence files. Closing SHA-256 values
+for the three pre-existing modified files are:
+
+- `068fb656085f061738a71bdc1267aa258f6d82536c3da7fed29a57421a0e3af7`
+  (`browser_snapshot_preflight.rs`)
+- `4f9c8995346d710310be7e632bc97ae04316dd90a95c6a31211e46c06280e3fb`
+  (`tests/conformance/README.md`)
+- `22da1de3a6de9f0bc4ee70b59bd43adf3a476ebefb2195976e57fe7542d1a339`
+  (`browser_datafusion_engine_smoke.sh`)
