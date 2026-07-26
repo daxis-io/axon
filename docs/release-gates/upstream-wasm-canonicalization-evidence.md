@@ -218,8 +218,10 @@ failure with zero jobs at [30213192153](https://github.com/daxis-io/axon/actions
 this is the inherited zero-job behavior, not a failed test. The local patch-inventory regression
 gate passed.
 
-The issue #2 update and final exact-ref verification are recorded after the Arrow workflow set
-reaches a terminal result. No canonical organization remote was mutated.
+The exact revisions, CI links, dependency order, and next authorization gate were posted in
+[Axon issue #2](https://github.com/daxis-io/axon/issues/2#issuecomment-5084902751). Final remote-ref
+verification found every Daxis branch equal to its tested local SHA. No canonical organization
+remote was mutated.
 
 The dirty Axon root was rechecked after publication work. It remained at
 `3e5aceda0c1eb2c0dea983c0e5849200447a363f`, retained the same pre-existing modified and untracked
