@@ -93,6 +93,7 @@ shared output buffer before committing partial batch bytes.
 **Base:** `apache/arrow-rs-object-store@84d24eb8efcec9448566de09e94d2d4b74b21ebe`
 
 **Prepared ref:** `daxis-io/arrow-rs-object-store:upstream/2026-07-26/wasm32-http-manifest`
+at `31efb0908735a2e12bbf39554dd7fdc0555adfe3`
 
 **Draft body:**
 
@@ -128,7 +129,8 @@ Firefox.
 **Base:** the accepted head of `Expose target-safe HTTP host capabilities`
 
 **Prepared refs:** `daxis-io/arrow-rs-object-store:upstream/2026-07-26/wasm32-browser-retry` and
-`upstream/2026-07-26/wasm32-browser-range-protocol` resolve to the same tested commit.
+`upstream/2026-07-26/wasm32-browser-range-protocol` resolve to the same tested commit,
+`d0066c218eaf3336bc6b5e5ca3141fe78e4fea8d`.
 
 **Draft body:**
 
@@ -136,7 +138,9 @@ Current response-body retry covers transport errors and resumed-range validation
 before the declared length is not retried, and representation splicing must not be admitted by a
 weak or malformed validator. This change detects clean EOF/overrun, admits resume only for a valid
 strong ETag, sends `If-Range`, and requires the retry response to preserve the validator and satisfy
-strict `206`, `Content-Range`, length, and identity-encoding checks.
+strict `206`, the exact outstanding `Content-Range`, the original total object size, declared
+length, and identity-encoding checks. Invalid retry metadata is rejected before any resumed bytes
+are yielded.
 
 The patch intentionally excludes arbitrary subrange `200` fallback. That buffering policy remains
 separate under issue #806. Deterministic Chrome and Firefox tests prove `Range: bytes=5-9`,
@@ -146,7 +150,9 @@ separate under issue #806. Deterministic Chrome and Firefox tests prove `Range: 
 
 - strong entity-tag grammar and non-strong no-retry cases
 - clean-EOF producer/consumer resume
+- shared rejection of retry `200`, changed size, enclosing range, prefix, and suffix responses
 - native `HttpStore` `Range`/`If-Range`, validator mutation, and range validation
+- S3 mock proof that provider responses converge on shared status validation
 - Chrome and Firefox valid-resume and retry-`200` rejection tests
 - full graph/native/format/Clippy/RAT/audit gates inherited from PR 1
 - Daxis exact-head CI for the prepared ref
@@ -154,7 +160,8 @@ separate under issue #806. Deterministic Chrome and Firefox tests prove `Range: 
 **Reviewer notes:**
 
 - Treat strong-validator admission as a correctness boundary, not a browser-only optimization.
-- Confirm a retry `200` can never enter fallback or splice representations.
+- Confirm a retry `200`, size change, or non-exact outstanding range can never enter fallback or
+  splice representations.
 - Keep exact-full-range `200` and optional bounded fallback policy out of this PR.
 
 ## Held Downstream Packets

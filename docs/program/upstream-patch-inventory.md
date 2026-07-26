@@ -51,10 +51,10 @@ These additive refs do not replace or move the historical evidence refs above.
 | ---: | --- | --- | --- | --- |
 | 1 | Arrow | `upstream/2026-07-26/wasm32-parquet-zstd` | `b7d32cebec8bf10d085ca0dc12898600086c895f` | Locally verified bounded adaptation. Remove after a canonical Arrow release carries the contract and Axon's locked rehearsal passes. |
 | 2 | Arrow | `upstream/2026-07-26/wasm32-arrow-ipc-zstd` | `6f9fabc97f321243ccb575fc49b0b26027072245` | Locally verified clean transplant plus corrected compressed fixture. Same release/rehearsal removal gate. |
-| 3 | `object_store` | `upstream/2026-07-26/wasm32-http-manifest` | `927dfa69b1c7962cd532413171f13e5ad928cb1d` | Locally verified runtime seam and Chrome/Firefox transient-retry producer. Remove after canonical release and locked browser protocol proof. |
-| 4-5 | `object_store` | `upstream/2026-07-26/wasm32-browser-retry`; `upstream/2026-07-26/wasm32-browser-range-protocol` | `26b0b443355943c5288e5dd27fcddd889a3e2635` | Chrome/Firefox prove strong-validator `If-Range` resume and strict retry `200` rejection. Arbitrary fallback is deferred to issue #806. |
+| 3 | `object_store` | `upstream/2026-07-26/wasm32-http-manifest` | `31efb0908735a2e12bbf39554dd7fdc0555adfe3` | Locally verified runtime seam and Chrome/Firefox transient-retry producer; workflow inputs are immutable. Remove after canonical release and locked browser protocol proof. |
+| 4-5 | `object_store` | `upstream/2026-07-26/wasm32-browser-retry`; `upstream/2026-07-26/wasm32-browser-range-protocol` | `d0066c218eaf3336bc6b5e5ca3141fe78e4fea8d` | Shared and S3-path tests require retry `206`, unchanged total size, exact outstanding range, strong validator, and `If-Range`; Chrome/Firefox prove the producer path. Arbitrary fallback is deferred to issue #806. |
 | 6 | DataFusion | `upstream/2026-07-26/wasm32-feature-ownership` | `b7bb98c99a50f3043c40996b7add77dcf526c7fe` | Prepared, not publishable: blocked first by runtime `tempfile`, then by canonical Arrow releases. |
-| 7 | DataFusion | `upstream/2026-07-26/wasm32-browser-runtime` | `f8fc53db63d13c437523301605ff4234c4d848e3` | Prepared, not publishable: exact graph stops on canonical Arrow `zstd-sys`. |
+| 7 | DataFusion | `upstream/2026-07-26/wasm32-browser-runtime` | `343e72cad98cbac9b3686efdf5d219ab0b6fbc1a` | Held locally, not publishable: exact graph stops on canonical Arrow `zstd-sys`; workflow inputs are immutable and lint-clean. |
 | 8 | Kernel | none | none | Redesign required; remove only after the adapter/capability decision lands and is released. |
 | 9 | delta-rs | none | historical `e0fa37143e6888c06623c6a43adf1c801a189ca0` | Blocked on Kernel and compatible leaf releases. |
 

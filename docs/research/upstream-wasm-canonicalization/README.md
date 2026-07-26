@@ -134,8 +134,10 @@ The immutable POC tag `daxis-poc/wasm32-browser-e2e-2026-07-25` resolves to:
 - Removal condition: an upstream release contains clean-EOF detection plus strong-validator resume
   semantics and passes native and browser transport tests.
 - Current-head execution result: concerns 4 and 5 share
-  `26b0b443355943c5288e5dd27fcddd889a3e2635`. A deterministic CORS producer passed the real
-  truncated-body resume path in Chrome and Firefox.
+  `d0066c218eaf3336bc6b5e5ca3141fe78e4fea8d`. A deterministic CORS producer passed the real
+  truncated-body resume path in Chrome and Firefox. Shared tests reject non-206, changed-size,
+  enclosing, prefix, and suffix responses before resumed bytes; an S3 mock proves provider
+  responses reach the shared strict validator.
 
 ## 5. `object_store`: `wasm32-browser-range-protocol`
 
@@ -145,8 +147,9 @@ The immutable POC tag `daxis-poc/wasm32-browser-e2e-2026-07-25` resolves to:
   `9b5ffc7`, on top of concerns 3 and 4.
 - Real proof: `CleanEofClient`/`NonStrongEofClient` plus native `MockServer` exercise actual
   `HttpStore` Range, `If-Range`, ETag mutation, enclosing ranges, length, and identity encoding.
-- Correctness contract: strong entity-tag grammar, exact/enclosing `206`, declared and actual body
-  length, identity representation, no fallback after an `If-Range` retry.
+- Correctness contract: strong entity-tag grammar, exact outstanding `206`, unchanged total object
+  size, declared and actual body length, identity representation, and no fallback after an
+  `If-Range` retry.
 - Bounded fallback: historical implementation is disabled by default and bounds retained
   accumulation, but the public policy overlaps open
   [object_store#806](https://github.com/apache/arrow-rs-object-store/issues/806).
@@ -160,8 +163,9 @@ The immutable POC tag `daxis-poc/wasm32-browser-e2e-2026-07-25` resolves to:
   removal condition is separately tied to issue #806.
 - Current-head execution result: `upstream/2026-07-26/wasm32-browser-retry` and
   `upstream/2026-07-26/wasm32-browser-range-protocol` both resolve to
-  `26b0b443355943c5288e5dd27fcddd889a3e2635`. Browser logs prove `Range: bytes=5-9`,
-  `If-Range: "v1"`, successful `206` resume, and rejection of a retry `200`.
+  `d0066c218eaf3336bc6b5e5ca3141fe78e4fea8d`. The producer enforces
+  `Range: bytes=5-9` and `If-Range: "v1"`; browser assertions prove successful `206` resume and
+  rejection of a retry `200`.
 
 ## 6. DataFusion: `wasm32-feature-ownership`
 
@@ -203,8 +207,8 @@ The immutable POC tag `daxis-poc/wasm32-browser-e2e-2026-07-25` resolves to:
 - Maintainer boundary: browser profile documentation and owned workflow after concern 6.
 - Removal condition: a DataFusion release supplies the tested runtime profile and passes the locked
   browser rehearsal without compiler or global entropy flags.
-- Current-head execution result: prepared at
-  `f8fc53db63d13c437523301605ff4234c4d848e3`. The runtime patch removes `tempfile`,
+- Current-head execution result: held locally at
+  `343e72cad98cbac9b3686efdf5d219ab0b6fbc1a`. The runtime patch removes `tempfile`,
   but the clean canonical graph then stops on released Arrow 59.1.0 `zstd-sys`. Global getrandom
   flags were removed; Chrome/Firefox proof is deferred until concerns 1 and 2 are canonical
   dependencies.
