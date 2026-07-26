@@ -16,12 +16,15 @@ export type LocalDeltaCanonicalTableInput = Readonly<{
   tableName: string;
 }>;
 
-export type PublicObjectStorageCanonicalTableInput = Readonly<{
-  provider: 'gcs' | 's3';
+type PublicObjectStorageCanonicalTableBase = Readonly<{
   connectionId: string;
   normalizedTableUri: string;
   tableName: string;
 }>;
+
+export type PublicObjectStorageCanonicalTableInput =
+  | (PublicObjectStorageCanonicalTableBase & Readonly<{ provider: 'gcs'; region?: never }>)
+  | (PublicObjectStorageCanonicalTableBase & Readonly<{ provider: 's3'; region: string }>);
 
 export function localDeltaConnectionId(registryId: string): string {
   const opaqueId = requiredIdentityPart(registryId, 'local registry ID');
@@ -55,6 +58,16 @@ export function createPublicObjectStorageCanonicalTable(
     throw new Error('public connection ID did not match the provider');
   }
   const normalizedTableUri = normalizedPublicTableUri(input.provider, input.normalizedTableUri);
+  const parsed = new URL(normalizedTableUri);
+  const expectedConnectionId =
+    input.provider === 'gcs'
+      ? `axon-connection://public-gcs/${encodeURIComponent(parsed.hostname)}`
+      : `axon-connection://public-s3/${encodeURIComponent(
+          normalizedS3Region(input.region),
+        )}/${encodeURIComponent(parsed.hostname)}`;
+  if (connectionId !== expectedConnectionId) {
+    throw new Error('public connection ID did not match the normalized table root');
+  }
   return create(TableNodeSchema, {
     resource: create(CanonicalResourceRefSchema, {
       connectionId,
@@ -68,6 +81,14 @@ export function createPublicObjectStorageCanonicalTable(
     tableType: TableType.TABLE,
     name: tableName,
   });
+}
+
+function normalizedS3Region(region: string | undefined): string {
+  const normalized = region?.trim().toLowerCase();
+  if (!normalized || !/^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(normalized)) {
+    throw new Error('public S3 region is invalid');
+  }
+  return normalized;
 }
 
 function requiredIdentityPart(value: string, label: string): string {

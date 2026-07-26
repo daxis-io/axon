@@ -134,8 +134,12 @@ function createPublicProvider(
       correlationId,
     );
   }
+  const providerIdentity =
+    root.provider === 's3'
+      ? { provider: root.provider, region: root.region }
+      : { provider: root.provider };
   return createPublicObjectStorageCatalogProvider({
-    provider: source.provider,
+    ...providerIdentity,
     connectionId: publicObjectStorageConnectionId(root),
     normalizedTableUri: root.tableUri,
     schemaName: source.schemaName,

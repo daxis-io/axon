@@ -66,13 +66,18 @@ export function shouldRetryQuery(failureCount: number, error: unknown): boolean 
     return false;
   }
 
-  if (
-    isRecord(error) &&
-    (error.kind === 'deadline_exceeded' ||
+  if (isRecord(error)) {
+    if (error.kind === 'unavailable') {
+      return error.retryable === true && failureCount < MAX_QUERY_RETRIES;
+    }
+    if (
+      error.kind === 'cancelled' ||
+      error.kind === 'deadline_exceeded' ||
       error.kind === 'invalid_request' ||
-      error.kind === 'not_found')
-  ) {
-    return false;
+      error.kind === 'not_found'
+    ) {
+      return false;
+    }
   }
 
   const status = getErrorStatus(error);

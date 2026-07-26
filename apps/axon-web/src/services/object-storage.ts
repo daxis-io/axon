@@ -19,14 +19,16 @@ import {
 
 export type PublicObjectStorageProvider = 'gcs' | 's3';
 
-export type PublicObjectStorageTableRoot = {
-  provider: PublicObjectStorageProvider;
+type PublicObjectStorageTableRootBase = {
   tableUri: string;
   bucket: string;
   prefix: string;
-  region?: string;
   tableRootUrl: string;
 };
+
+export type PublicObjectStorageTableRoot =
+  | (PublicObjectStorageTableRootBase & { provider: 'gcs'; region?: never })
+  | (PublicObjectStorageTableRootBase & { provider: 's3'; region: string });
 
 export type PublicObjectStorageErrorCode =
   | 'invalid_public_object_storage_uri'
@@ -92,6 +94,7 @@ export type PublicObjectStorageRuntimeCacheEntry = {
 
 type PublicObjectStorageFetchOptions = {
   fetch?: PublicObjectStorageFetch;
+  signal?: AbortSignal;
 };
 
 const DEFAULT_RUNTIME_CACHE_TTL_MS = 2 * 60 * 1000;
@@ -188,7 +191,7 @@ export function parsePublicObjectStorageTableRoot(input: {
       tableUri: `s3://${bucket}/${prefix}`,
       bucket,
       prefix,
-      ...(region ? { region } : {}),
+      region,
       tableRootUrl: `${s3BucketOrigin(bucket, region)}/${encodeObjectPath(prefix)}/`,
     };
   }
@@ -265,10 +268,13 @@ export async function buildPublicDeltaLogManifest(
   const listStartedAt = nowMs();
 
   do {
+    throwIfPublicObjectStorageAborted(options.signal);
     listRequestCount += 1;
     const response = await fetcher(publicObjectStorageListUrl(root, continuationToken), {
       credentials: 'omit',
+      signal: options.signal,
     });
+    throwIfPublicObjectStorageAborted(options.signal);
     if (!response.ok) {
       throw accessFailed(
         `public object storage Delta log listing failed (HTTP ${response.status})`,
@@ -276,6 +282,7 @@ export async function buildPublicDeltaLogManifest(
     }
 
     const page = parseObjectStorageListResponse(await response.text());
+    throwIfPublicObjectStorageAborted(options.signal);
     objects.push(...page.keys.map((entry) => deltaLogObjectFromListEntry(root, entry)));
     continuationToken = page.nextContinuationToken;
   } while (continuationToken);
@@ -303,6 +310,7 @@ export async function resolvePublicObjectStorageDescriptor(input: {
     snapshotVersion?: number,
   ) => Promise<string>;
   fetch?: PublicObjectStorageFetch;
+  signal?: AbortSignal;
   onMetrics?: (metrics: PublicObjectStorageDescriptorResolutionMetrics) => void;
 }): Promise<BrowserHttpSnapshotDescriptor> {
   if (
@@ -316,7 +324,12 @@ export async function resolvePublicObjectStorageDescriptor(input: {
     tableUri: input.tableUri,
     region: input.region,
   });
-  const manifest = await buildPublicDeltaLogManifest(root, { fetch: input.fetch });
+  throwIfPublicObjectStorageAborted(input.signal);
+  const manifest = await buildPublicDeltaLogManifest(root, {
+    fetch: input.fetch,
+    signal: input.signal,
+  });
+  throwIfPublicObjectStorageAborted(input.signal);
   const snapshotResolveStartedAt = nowMs();
   const snapshot = JSON.parse(
     await input.resolveDeltaSnapshotFromManifest(
@@ -325,6 +338,7 @@ export async function resolvePublicObjectStorageDescriptor(input: {
       input.snapshotVersion,
     ),
   ) as ResolvedPublicSnapshot;
+  throwIfPublicObjectStorageAborted(input.signal);
   input.onMetrics?.({
     descriptor_resolution_count: 1,
     delta_log_manifest_list_count: manifest.list_request_count,
@@ -372,30 +386,33 @@ export async function resolvePublicObjectStorageDescriptor(input: {
 export async function preflightPublicObjectStorageDescriptorRangeRead(input: {
   descriptor: BrowserHttpSnapshotDescriptor;
   preflightParquetMetadataForTargets: (targetsJson: string) => Promise<string>;
+  signal?: AbortSignal;
 }): Promise<PublicObjectStoragePreflightResult> {
+  throwIfPublicObjectStorageAborted(input.signal);
   const target = input.descriptor.activeFiles[0];
   if (!target) return [];
 
   try {
-    return parsePreflightResult(
-      await input.preflightParquetMetadataForTargets(
-        JSON.stringify([
-          {
-            path: target.path,
-            url: target.url,
-            size_bytes: safeGeneratedInteger(target.sizeBytes, 'active file size'),
-            partition_values: Object.fromEntries(
-              Object.entries(target.partitionValues).map(([name, value]) => [
-                name,
-                value.value.case === 'stringValue' ? value.value.value : null,
-              ]),
-            ),
-            ...(target.stats === undefined ? {} : { stats: target.stats }),
-          },
-        ]),
-      ),
+    const result = await input.preflightParquetMetadataForTargets(
+      JSON.stringify([
+        {
+          path: target.path,
+          url: target.url,
+          size_bytes: safeGeneratedInteger(target.sizeBytes, 'active file size'),
+          partition_values: Object.fromEntries(
+            Object.entries(target.partitionValues).map(([name, value]) => [
+              name,
+              value.value.case === 'stringValue' ? value.value.value : null,
+            ]),
+          ),
+          ...(target.stats === undefined ? {} : { stats: target.stats }),
+        },
+      ]),
     );
+    throwIfPublicObjectStorageAborted(input.signal);
+    return parsePreflightResult(result);
   } catch (error) {
+    throwIfPublicObjectStorageAborted(input.signal);
     throw accessFailed(
       `public object storage active Parquet range-read failed: ${
         error instanceof Error ? error.message : String(error)
@@ -413,7 +430,9 @@ export function registerPublicObjectStorageRuntimeCache(input: {
   preflight: PublicObjectStoragePreflightResult;
   nowMs?: () => number;
   ttlMs?: number;
+  signal?: AbortSignal;
 }): boolean {
+  if (input.signal?.aborted) return false;
   const root = parsePublicObjectStorageTableRoot({
     provider: input.provider,
     tableUri: input.tableUri,
@@ -507,6 +526,13 @@ export function lookupPublicObjectStorageRuntimeCache(input: {
 
 export function clearPublicObjectStorageRuntimeCache(): void {
   publicObjectStorageRuntimeCache.clear();
+}
+
+function throwIfPublicObjectStorageAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  const error = new Error('public object storage acquisition was cancelled');
+  error.name = 'AbortError';
+  throw error;
 }
 
 type ObjectStorageListEntry = {

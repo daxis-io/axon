@@ -132,6 +132,7 @@ describe('loadCatalog', () => {
           provider: 's3',
           connectionId: 'axon-connection://public-s3/us-east-1/public-bucket',
           normalizedTableUri: 's3://public-bucket/events',
+          region: 'us-east-1',
           tableName: 'events',
         }),
       ),
@@ -156,6 +157,7 @@ describe('loadCatalog', () => {
         provider: 's3',
         connectionId: 'axon-connection://public-s3/us-east-1/public-bucket',
         normalizedTableUri: 's3://public-bucket/events',
+        region: 'us-east-1',
         tableName: 'events',
       }),
     );

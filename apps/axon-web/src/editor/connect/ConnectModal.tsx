@@ -191,11 +191,13 @@ export function ConnectModal({
           loadConnectWasm(),
           import('../../services/object-storage.ts'),
         ]);
+        throwIfAborted(controller.signal);
         let descriptorResolutionMetrics: PublicObjectStorageDescriptorResolutionMetrics | undefined;
         const descriptor = await objectStorage.resolvePublicObjectStorageDescriptor({
           provider: publicProvider,
           tableUri: form.uri,
           region: form.region,
+          signal: controller.signal,
           resolveDeltaSnapshotFromManifest: wasm.resolve_delta_snapshot_from_manifest,
           onMetrics: (metrics) => {
             descriptorResolutionMetrics = metrics;
@@ -203,15 +205,8 @@ export function ConnectModal({
         });
         const preflight = await objectStorage.preflightPublicObjectStorageDescriptorRangeRead({
           descriptor,
+          signal: controller.signal,
           preflightParquetMetadataForTargets: wasm.preflight_parquet_metadata_for_targets,
-        });
-        objectStorage.registerPublicObjectStorageRuntimeCache({
-          provider: publicProvider,
-          tableUri: form.uri,
-          region: form.region,
-          snapshot: { kind: 'latest' },
-          descriptor,
-          preflight,
         });
         const tableName = descriptor.tableUri.split('/').filter(Boolean).at(-1) ?? 'table';
         const root = objectStorage.parsePublicObjectStorageTableRoot({
@@ -219,9 +214,13 @@ export function ConnectModal({
           tableUri: descriptor.tableUri,
           region: form.region,
         });
+        const catalogProviderIdentity =
+          root.provider === 's3'
+            ? { provider: root.provider, region: root.region }
+            : { provider: root.provider };
         const catalogDiscovery = await discoverFlatCatalog(
           createPublicObjectStorageCatalogProvider({
-            provider: publicProvider,
+            ...catalogProviderIdentity,
             connectionId: objectStorage.publicObjectStorageConnectionId(root),
             normalizedTableUri: root.tableUri,
             schemaName: 'default',
@@ -234,6 +233,20 @@ export function ConnectModal({
             correlationId: catalogCorrelationId(),
           },
         );
+        if (connectionTestController.current !== controller) return;
+        const registered = objectStorage.registerPublicObjectStorageRuntimeCache({
+          provider: publicProvider,
+          tableUri: form.uri,
+          region: form.region,
+          signal: controller.signal,
+          snapshot: { kind: 'latest' },
+          descriptor,
+          preflight,
+        });
+        if (!registered) {
+          throwIfAborted(controller.signal);
+          throw new Error('Public object storage runtime cache registration was rejected.');
+        }
         setForm({
           ...form,
           objectStorage: {
@@ -246,6 +259,7 @@ export function ConnectModal({
         setTestState('ok');
       } catch (err) {
         if (isAbortError(err)) return;
+        if (connectionTestController.current !== controller) return;
         setForm({ ...form, objectStorage: null });
         setObjectStorageError(publicObjectStorageErrorMessage(err));
         setTestState('err');
@@ -562,7 +576,7 @@ function ConfigLocal({
     [],
   );
 
-  const openRuntime = async (open: () => Promise<LocalDeltaRuntime>) => {
+  const openRuntime = async (open: (signal: AbortSignal) => Promise<LocalDeltaRuntime>) => {
     discoveryController.current?.abort();
     const controller = new AbortController();
     discoveryController.current = controller;
@@ -570,7 +584,7 @@ function ConfigLocal({
     setPicking(true);
     setError(null);
     try {
-      const runtime = await open();
+      const runtime = await open(controller.signal);
       const catalogDiscovery = await discoverFlatCatalog(
         createLocalDeltaCatalogProvider({
           registryId: runtime.registryId,
@@ -584,6 +598,7 @@ function ConfigLocal({
           correlationId: catalogCorrelationId(),
         },
       );
+      if (discoveryController.current !== controller) return;
       setForm({
         ...form,
         path: runtime.storageLabel,
@@ -592,7 +607,7 @@ function ConfigLocal({
         localCatalogDiscovery: catalogDiscovery,
       });
     } catch (err) {
-      if (isAbortError(err)) return;
+      if (isAbortError(err) || discoveryController.current !== controller) return;
       setForm({
         ...form,
         detected: null,
@@ -601,7 +616,7 @@ function ConfigLocal({
       });
       setError(localDeltaErrorMessage(err));
     } finally {
-      setPicking(false);
+      if (discoveryController.current === controller) setPicking(false);
     }
   };
 
@@ -618,10 +633,10 @@ function ConfigLocal({
     setError(null);
     try {
       const handle = await picker({ mode: 'read' });
-      await openRuntime(async () => {
+      await openRuntime(async (signal) => {
         const { openLocalDeltaTableFromDirectoryHandle } =
           await import('../../services/local-delta.ts');
-        return openLocalDeltaTableFromDirectoryHandle(handle);
+        return openLocalDeltaTableFromDirectoryHandle(handle, { signal });
       });
     } catch (err) {
       if (!isAbortError(err)) {
@@ -639,9 +654,9 @@ function ConfigLocal({
   };
 
   const openSelectedFiles = (files: FileList | null) => {
-    void openRuntime(async () => {
+    void openRuntime(async (signal) => {
       const { openLocalDeltaTableFromFileList } = await import('../../services/local-delta.ts');
-      return openLocalDeltaTableFromFileList(files);
+      return openLocalDeltaTableFromFileList(files, { signal });
     });
   };
 
@@ -653,10 +668,10 @@ function ConfigLocal({
     );
     const handle = item?.getAsFileSystemHandle ? await item.getAsFileSystemHandle() : null;
     if (handle?.kind === 'directory') {
-      await openRuntime(async () => {
+      await openRuntime(async (signal) => {
         const { openLocalDeltaTableFromDirectoryHandle } =
           await import('../../services/local-delta.ts');
-        return openLocalDeltaTableFromDirectoryHandle(handle);
+        return openLocalDeltaTableFromDirectoryHandle(handle, { signal });
       });
       return;
     }
@@ -863,6 +878,16 @@ function isAbortError(error: unknown): boolean {
     'name' in error &&
     (error as { name?: unknown }).name === 'AbortError'
   );
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (!signal.aborted) {
+    return;
+  }
+
+  const error = new Error('connection discovery was cancelled');
+  error.name = 'AbortError';
+  throw error;
 }
 
 function formatBytes(bytes: number): string {

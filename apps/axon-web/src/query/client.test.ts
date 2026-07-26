@@ -7,6 +7,7 @@ import {
   shouldRetryQuery,
 } from './client';
 import { AXON_QUERY_CACHE_MAX_AGE_MS } from './persistence';
+import { CatalogProviderError } from '../services/catalog-provider.ts';
 
 describe('shouldRetryQuery', () => {
   it('does not retry aborted requests', () => {
@@ -38,8 +39,38 @@ describe('shouldRetryQuery', () => {
   it('retries unknown and server-style errors for the first two retry attempts', () => {
     expect(shouldRetryQuery(0, new Error('network unavailable'))).toBe(true);
     expect(shouldRetryQuery(1, { status: 503 })).toBe(true);
-    expect(shouldRetryQuery(0, { kind: 'unavailable' })).toBe(true);
+    expect(shouldRetryQuery(0, { kind: 'unavailable' })).toBe(false);
     expect(shouldRetryQuery(2, new Error('still unavailable'))).toBe(false);
+  });
+
+  it('honors CatalogProviderError retryability for unavailable failures only', () => {
+    const nonRetryable = new CatalogProviderError(
+      'unavailable',
+      'catalog unavailable',
+      'retry-test',
+      false,
+    );
+    const retryable = new CatalogProviderError(
+      'unavailable',
+      'catalog unavailable',
+      'retry-test',
+      true,
+    );
+
+    expect(shouldRetryQuery(0, nonRetryable)).toBe(false);
+    expect(shouldRetryQuery(0, retryable)).toBe(true);
+    expect(shouldRetryQuery(1, retryable)).toBe(true);
+    expect(shouldRetryQuery(2, retryable)).toBe(false);
+    for (const kind of [
+      'cancelled',
+      'deadline_exceeded',
+      'invalid_request',
+      'not_found',
+    ] as const) {
+      expect(
+        shouldRetryQuery(0, new CatalogProviderError(kind, `catalog ${kind}`, 'retry-test', true)),
+      ).toBe(false);
+    }
   });
 });
 

@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   ColumnNodeSchema,
+  GetTableMetadataResponseSchema,
+  ListTablesResponseSchema,
   TableMetadataSchema,
   TableNodeSchema,
 } from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
@@ -21,10 +23,12 @@ import {
   createLocalDeltaCatalogProvider,
   createPublicObjectStorageCatalogProvider,
   discoverFlatCatalog,
+  type CatalogProvider,
 } from './catalog-provider.ts';
 import {
   createLocalDeltaCanonicalTable,
   createPublicObjectStorageCanonicalTable,
+  type PublicObjectStorageCanonicalTableInput,
 } from './canonical-table-identity.ts';
 import { publicObjectStorageCatalogMetadata } from './object-storage.ts';
 
@@ -74,6 +78,26 @@ describe('local CatalogProvider', () => {
     expect(connectModal).toContain('discoverFlatCatalog');
     expect(connectModal).not.toContain('form.localDelta.discovery');
     expect(connectModal).not.toContain('runtime.discovery');
+  });
+
+  it('threads one caller-owned signal through local/public acquisition before registration', () => {
+    const connectModal = readFileSync(
+      fileURLToPath(new URL('../editor/connect/ConnectModal.tsx', import.meta.url)),
+      'utf8',
+    );
+
+    expect(connectModal).toMatch(
+      /resolvePublicObjectStorageDescriptor\(\{[\s\S]*?signal: controller\.signal,[\s\S]*?\}\)/,
+    );
+    expect(connectModal).toMatch(
+      /preflightPublicObjectStorageDescriptorRangeRead\(\{[\s\S]*?signal: controller\.signal,[\s\S]*?\}\)/,
+    );
+    expect(connectModal).toMatch(
+      /registerPublicObjectStorageRuntimeCache\(\{[\s\S]*?signal: controller\.signal,[\s\S]*?\}\)/,
+    );
+    expect(connectModal).toContain('openLocalDeltaTableFromDirectoryHandle(handle, { signal })');
+    expect(connectModal).toContain('openLocalDeltaTableFromFileList(files, { signal })');
+    expect(connectModal).toContain('discoveryController.current === controller');
   });
 
   it('returns one generated flat hierarchy with terminating pages and explicit zero metadata', async () => {
@@ -212,6 +236,61 @@ describe('local CatalogProvider', () => {
       },
     });
   });
+
+  it('rejects a self-consistent table and metadata pair from another connection', async () => {
+    const base = localProvider();
+    const foreignTable = createLocalDeltaCanonicalTable({
+      registryId: 'foreign-registry',
+      tableName: 'events',
+    });
+    const provider: CatalogProvider = {
+      ...base,
+      async listTables(schema, request, discoveryContext) {
+        await base.listTables(schema, request, discoveryContext);
+        return create(ListTablesResponseSchema, { tables: [foreignTable] });
+      },
+      async getTableMetadata() {
+        return create(GetTableMetadataResponseSchema, {
+          table: create(TableMetadataSchema, {
+            table: foreignTable,
+            storageLocation: 'browser-local://delta-table/foreign',
+          }),
+        });
+      },
+    };
+
+    await expect(discoverFlatCatalog(provider, page, context())).rejects.toMatchObject({
+      kind: 'invalid_request',
+      detail: { correlationId: 'catalog-test-correlation' },
+    });
+  });
+
+  it('accepts explicitly empty continuation cursors while rejecting non-empty cursors', async () => {
+    const base = localProvider();
+    const withCursor = (nextCursor: string): CatalogProvider => ({
+      ...base,
+      async listCatalogs(request, discoveryContext) {
+        const response = await base.listCatalogs(request, discoveryContext);
+        response.page!.nextCursor = nextCursor;
+        return response;
+      },
+      async listSchemas(catalog, request, discoveryContext) {
+        const response = await base.listSchemas(catalog, request, discoveryContext);
+        response.page!.nextCursor = nextCursor;
+        return response;
+      },
+      async listTables(schema, request, discoveryContext) {
+        const response = await base.listTables(schema, request, discoveryContext);
+        response.page!.nextCursor = nextCursor;
+        return response;
+      },
+    });
+
+    await expect(discoverFlatCatalog(withCursor(''), page, context())).resolves.toBeDefined();
+    await expect(discoverFlatCatalog(withCursor('next'), page, context())).rejects.toMatchObject({
+      kind: 'invalid_request',
+    });
+  });
 });
 
 describe('public object storage CatalogProvider', () => {
@@ -241,6 +320,20 @@ describe('public object storage CatalogProvider', () => {
     expect(connectModal).toContain('publicObjectStorageCatalogMetadata');
     expect(connectModal).not.toContain('objectStorageRuntimeFromDescriptor');
     expect(connectModal).not.toContain('objectStorage.discovery');
+    const discoveryIndex = connectModal.indexOf(
+      'const catalogDiscovery = await discoverFlatCatalog',
+    );
+    const ownershipGuardIndex = connectModal.indexOf(
+      'if (connectionTestController.current !== controller) return',
+      discoveryIndex,
+    );
+    const registrationIndex = connectModal.indexOf(
+      'registerPublicObjectStorageRuntimeCache',
+      discoveryIndex,
+    );
+    expect(discoveryIndex).toBeGreaterThan(-1);
+    expect(ownershipGuardIndex).toBeGreaterThan(discoveryIndex);
+    expect(registrationIndex).toBeGreaterThan(ownershipGuardIndex);
   });
 
   it.each([
@@ -267,8 +360,9 @@ describe('public object storage CatalogProvider', () => {
           tableUri: canonicalLocator,
         }),
       );
+      const providerIdentity = provider === 's3' ? { provider, region: 'us-east-2' } : { provider };
       const catalogProvider = createPublicObjectStorageCatalogProvider({
-        provider,
+        ...providerIdentity,
         connectionId,
         normalizedTableUri: canonicalLocator,
         schemaName: 'default',
@@ -320,6 +414,42 @@ describe('public object storage CatalogProvider', () => {
     expect(toBinary(TableNodeSchema, discovered.table)).toEqual(
       toBinary(TableNodeSchema, expected),
     );
+  });
+
+  it.each([
+    {
+      label: 'GCS bucket',
+      input: {
+        provider: 'gcs',
+        connectionId: 'axon-connection://public-gcs/other-bucket',
+        normalizedTableUri: 'gs://public-bucket/events/table',
+        tableName: 'table',
+      },
+    },
+    {
+      label: 'S3 bucket',
+      input: {
+        provider: 's3',
+        connectionId: 'axon-connection://public-s3/us-east-2/other-bucket',
+        normalizedTableUri: 's3://public-bucket/events/table',
+        region: 'us-east-2',
+        tableName: 'table',
+      },
+    },
+    {
+      label: 'S3 region',
+      input: {
+        provider: 's3',
+        connectionId: 'axon-connection://public-s3/us-west-2/public-bucket',
+        normalizedTableUri: 's3://public-bucket/events/table',
+        region: 'us-east-2',
+        tableName: 'table',
+      },
+    },
+  ])('rejects a mismatched canonical public $label', ({ input }) => {
+    expect(() =>
+      createPublicObjectStorageCanonicalTable(input as PublicObjectStorageCanonicalTableInput),
+    ).toThrow('public connection ID did not match the normalized table root');
   });
 
   it.each([

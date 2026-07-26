@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HandleStore, type LocalDeltaHandleStoreRecord } from '../persistence/handle-store.ts';
 import {
   hasLocalDeltaRuntime,
+  isCurrentLocalDeltaObjectUrl,
   loadLocalDeltaRuntime,
   openLocalDeltaTableFromDirectoryHandle,
   openLocalDeltaTableFromFileList,
@@ -93,11 +94,235 @@ afterEach(async () => {
   await unregisterLocalDeltaRuntime('metadata-only').catch(() => undefined);
   await unregisterLocalDeltaRuntime('session-only').catch(() => undefined);
   await unregisterLocalDeltaRuntime('directory-access').catch(() => undefined);
+  await unregisterLocalDeltaRuntime('cancelled-open').catch(() => undefined);
   releaseLocalDeltaObjectUrls();
   vi.restoreAllMocks();
 });
 
 describe('local Delta registry persistence', () => {
+  it('does not register a runtime or retain Blob URLs when acquisition is cancelled', async () => {
+    let resolveSnapshot!: (snapshot: string) => void;
+    vi.mocked(resolve_delta_snapshot_from_manifest).mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveSnapshot = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    const pending = openLocalDeltaTableFromFileList(deltaTableFiles(), {
+      registryId: 'cancelled-open',
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(resolve_delta_snapshot_from_manifest).toHaveBeenCalled());
+
+    controller.abort();
+    resolveSnapshot(
+      JSON.stringify({
+        table_uri: 'browser-local://delta-table/table-root',
+        snapshot_version: 0,
+        partition_column_types: {},
+        active_files: [
+          {
+            path: 'part-00001.parquet',
+            size_bytes: 7,
+            partition_values: {},
+            stats: JSON.stringify({ numRecords: 1 }),
+          },
+        ],
+      }),
+    );
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(hasLocalDeltaRuntime('cancelled-open')).toBe(false);
+    expect(storage.getItem(ACTIVE_LOCAL_DELTA_ID_KEY)).toBeNull();
+    expect(revokeObjectUrl).toHaveBeenCalled();
+  });
+
+  it('does not revoke a pre-existing runtime when a replacement with the same ID is cancelled', async () => {
+    const current = await openLocalDeltaTableFromFileList(deltaTableFiles(), {
+      registryId: 'cancelled-open',
+    });
+    const currentUrl = current.descriptor.activeFiles[0]?.url;
+    expect(currentUrl).toBeDefined();
+    createObjectUrl.mockImplementation(
+      (file: File) => `blob:replacement:${file.name}:${file.size}`,
+    );
+
+    let resolveSnapshot!: (snapshot: string) => void;
+    vi.mocked(resolve_delta_snapshot_from_manifest).mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveSnapshot = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    const replacement = openLocalDeltaTableFromFileList(deltaTableFiles(), {
+      registryId: 'cancelled-open',
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(resolve_delta_snapshot_from_manifest).toHaveBeenCalledTimes(2));
+
+    controller.abort();
+    resolveSnapshot(
+      JSON.stringify({
+        table_uri: 'browser-local://delta-table/table-root',
+        snapshot_version: 0,
+        partition_column_types: {},
+        active_files: [
+          {
+            path: 'part-00001.parquet',
+            size_bytes: 7,
+            partition_values: {},
+            stats: JSON.stringify({ numRecords: 1 }),
+          },
+        ],
+      }),
+    );
+
+    await expect(replacement).rejects.toMatchObject({ name: 'AbortError' });
+    expect(hasLocalDeltaRuntime('cancelled-open')).toBe(true);
+    expect(isCurrentLocalDeltaObjectUrl('cancelled-open', currentUrl!)).toBe(true);
+    expect(revokeObjectUrl).not.toHaveBeenCalledWith(currentUrl);
+  });
+
+  it('does not traverse an already-cancelled directory acquisition', async () => {
+    const entries = vi.fn(async function* () {
+      yield* [];
+    });
+    const directory: LocalFileSystemDirectoryHandle = {
+      kind: 'directory',
+      name: 'table-root',
+      entries,
+    };
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      openLocalDeltaTableFromDirectoryHandle(directory, {
+        registryId: 'cancelled-open',
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(entries).not.toHaveBeenCalled();
+  });
+
+  it('restores a pre-existing durable record when replacement persistence is cancelled', async () => {
+    await openLocalDeltaTableFromFileList(deltaTableFiles(), {
+      registryId: 'cancelled-open',
+    });
+    const store = new HandleStore({
+      databaseName: LOCAL_DELTA_DB_NAME,
+      version: 1,
+      storeName: LOCAL_DELTA_STORE,
+      indexedDB,
+    });
+    const previous = await store.get('cancelled-open');
+    let finishPut!: () => void;
+    const putSpy = vi.spyOn(HandleStore.prototype, 'put').mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPut = resolve;
+        }),
+    );
+    createObjectUrl.mockImplementation(
+      (file: File) => `blob:replacement:${file.name}:${file.size}`,
+    );
+    const controller = new AbortController();
+    const replacement = openLocalDeltaTableFromFileList(deltaTableFiles(), {
+      registryId: 'cancelled-open',
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(putSpy).toHaveBeenCalledTimes(1));
+
+    controller.abort();
+    finishPut();
+
+    await expect(replacement).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(store.get('cancelled-open')).resolves.toEqual(previous);
+  });
+
+  it('revokes only new Blob URLs when a cache-miss reload is cancelled', async () => {
+    const current = await openLocalDeltaTableFromFileList(deltaTableFiles(), {
+      registryId: 'cancelled-open',
+    });
+    const currentUrl = current.descriptor.activeFiles[0]?.url;
+    createObjectUrl.mockImplementation((file: File) => `blob:reload:${file.name}:${file.size}`);
+    let resolveSnapshot!: (snapshot: string) => void;
+    vi.mocked(resolve_delta_snapshot_from_manifest).mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveSnapshot = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    const reload = loadLocalDeltaRuntime('cancelled-open', {
+      snapshotVersion: 12,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(resolve_delta_snapshot_from_manifest).toHaveBeenCalledTimes(2));
+
+    controller.abort();
+    resolveSnapshot(
+      JSON.stringify({
+        table_uri: 'browser-local://delta-table/table-root',
+        snapshot_version: 12,
+        partition_column_types: {},
+        active_files: [
+          {
+            path: 'part-00001.parquet',
+            size_bytes: 7,
+            partition_values: {},
+            stats: JSON.stringify({ numRecords: 1 }),
+          },
+        ],
+      }),
+    );
+
+    await expect(reload).rejects.toMatchObject({ name: 'AbortError' });
+    expect(isCurrentLocalDeltaObjectUrl('cancelled-open', currentUrl!)).toBe(true);
+    expect(revokeObjectUrl).not.toHaveBeenCalledWith(currentUrl);
+    expect(revokeObjectUrl).toHaveBeenCalledWith(expect.stringContaining('blob:reload:'));
+  });
+
+  it('rejects an aborted loader after it waits behind a successful loader for the same key', async () => {
+    await openLocalDeltaTableFromFileList(deltaTableFiles(), {
+      registryId: 'cancelled-open',
+    });
+    let resolveSnapshot!: (snapshot: string) => void;
+    vi.mocked(resolve_delta_snapshot_from_manifest).mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveSnapshot = resolve;
+        }),
+    );
+    const first = loadLocalDeltaRuntime('cancelled-open', { snapshotVersion: 12 });
+    await vi.waitFor(() => expect(resolve_delta_snapshot_from_manifest).toHaveBeenCalledTimes(2));
+    const controller = new AbortController();
+    const second = loadLocalDeltaRuntime('cancelled-open', {
+      snapshotVersion: 12,
+      signal: controller.signal,
+    });
+    controller.abort();
+    resolveSnapshot(
+      JSON.stringify({
+        table_uri: 'browser-local://delta-table/table-root',
+        snapshot_version: 12,
+        partition_column_types: {},
+        active_files: [
+          {
+            path: 'part-00001.parquet',
+            size_bytes: 7,
+            partition_values: {},
+            stats: JSON.stringify({ numRecords: 1 }),
+          },
+        ],
+      }),
+    );
+
+    await expect(first).resolves.toMatchObject({ descriptor: { snapshotVersion: 12n } });
+    await expect(second).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it('materializes generated capability-free catalog metadata from normalized log facts', async () => {
     const runtime = await openLocalDeltaTableFromFileList(deltaTableFiles(), {
       registryId: 'metadata-only',

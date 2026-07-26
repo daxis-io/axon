@@ -172,12 +172,18 @@ export function canonicalTableForSelection(selection: AvailableQuerySourceSelect
       tableUri: selection.source.tableUri,
       region: selection.source.region,
     });
-    return createPublicObjectStorageCanonicalTable({
-      provider: root.provider,
+    const identity = {
       connectionId: publicObjectStorageConnectionId(root),
       normalizedTableUri: root.tableUri,
       tableName: selection.source.tableName,
-    });
+    };
+    return root.provider === 's3'
+      ? createPublicObjectStorageCanonicalTable({
+          ...identity,
+          provider: root.provider,
+          region: root.region,
+        })
+      : createPublicObjectStorageCanonicalTable({ ...identity, provider: root.provider });
   }
   return create(TableNodeSchema, {
     resource: canonicalResourceForSelection(selection),
@@ -230,12 +236,20 @@ function canonicalResourceForSelection(
         tableUri: source.tableUri,
         region: source.region,
       });
-      return createPublicObjectStorageCanonicalTable({
-        provider: root.provider,
+      const identity = {
         connectionId: publicObjectStorageConnectionId(root),
         normalizedTableUri: root.tableUri,
         tableName: source.tableName,
-      }).resource!;
+      };
+      return (
+        root.provider === 's3'
+          ? createPublicObjectStorageCanonicalTable({
+              ...identity,
+              provider: root.provider,
+              region: root.region,
+            })
+          : createPublicObjectStorageCanonicalTable({ ...identity, provider: root.provider })
+      ).resource!;
     }
   }
 }

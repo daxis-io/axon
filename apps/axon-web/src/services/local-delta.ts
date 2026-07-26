@@ -84,6 +84,7 @@ export type OpenLocalDeltaOptions = {
   tableName?: string;
   registryId?: string;
   snapshotVersion?: number;
+  signal?: AbortSignal;
 };
 
 type ObjectKind = 'commit_json' | 'checkpoint_parquet' | 'last_checkpoint' | 'delta_log_object';
@@ -139,6 +140,7 @@ let wasmReady: Promise<unknown> | undefined;
 const sessionLocalDeltaTables = new Map<string, LocalDeltaTableFiles>();
 const localDeltaRuntimes = new Map<string, LocalDeltaRuntime>();
 const localObjectUrlsByRegistryId = new Map<string, Set<string>>();
+const localDeltaAcquisitionQueues = new Map<string, Promise<void>>();
 const localDeltaHandleStore = new HandleStore<LocalFileSystemDirectoryHandle>({
   databaseName: LOCAL_DELTA_DB_NAME,
   version: LOCAL_DELTA_DB_VERSION,
@@ -157,7 +159,8 @@ export async function openLocalDeltaTableFromDirectoryHandle(
   directory: LocalFileSystemDirectoryHandle,
   options: OpenLocalDeltaOptions = {},
 ): Promise<LocalDeltaRuntime> {
-  const entries = await collectLocalDeltaDirectoryEntries(directory);
+  throwIfLocalDeltaAborted(options.signal);
+  const entries = await collectLocalDeltaDirectoryEntries(directory, '', options.signal);
   const table = buildLocalDeltaTableFiles(directory.name || 'delta-table', entries, undefined, {
     directoryHandle: directory,
   });
@@ -168,11 +171,12 @@ export async function loadLocalDeltaRuntime(
   registryId: string,
   options: OpenLocalDeltaOptions = {},
 ): Promise<LocalDeltaRuntime> {
+  throwIfLocalDeltaAborted(options.signal);
   let table = sessionLocalDeltaTables.get(registryId);
   if (table) {
-    await revalidateLocalDeltaTableAccess(table);
+    await revalidateLocalDeltaTableAccess(table, options.signal);
   } else {
-    table = await loadLocalDeltaTable(registryId);
+    table = await loadLocalDeltaTable(registryId, options.signal);
   }
   if (!table) {
     throw new LocalDeltaError(
@@ -185,13 +189,26 @@ export async function loadLocalDeltaRuntime(
   const cacheKey = localDeltaRuntimeCacheKey(registryId, options);
   const cached = localDeltaRuntimes.get(cacheKey);
   if (cached) return cached;
-  const runtime = await buildLocalDeltaRuntime(
-    table,
-    { ...options, registryId },
-    table.persistenceMode ?? 'session_handles',
-  );
-  localDeltaRuntimes.set(cacheKey, runtime);
-  return runtime;
+  return withLocalDeltaAcquisition(registryId, async () => {
+    throwIfLocalDeltaAborted(options.signal);
+    const queuedCached = localDeltaRuntimes.get(cacheKey);
+    if (queuedCached) return queuedCached;
+    const ownedObjectUrls = new Set<string>();
+    try {
+      const runtime = await buildLocalDeltaRuntime(
+        table,
+        { ...options, registryId },
+        table.persistenceMode ?? 'session_handles',
+        ownedObjectUrls,
+      );
+      throwIfLocalDeltaAborted(options.signal);
+      localDeltaRuntimes.set(cacheKey, runtime);
+      return runtime;
+    } catch (error) {
+      releaseOwnedLocalDeltaObjectUrls(registryId, ownedObjectUrls);
+      throw error;
+    }
+  });
 }
 
 export async function loadActiveLocalDeltaRuntime(
@@ -264,9 +281,13 @@ async function buildLocalDeltaRuntime(
   table: LocalDeltaTableFiles,
   options: OpenLocalDeltaOptions,
   persistence: LocalDeltaRuntime['persistence'],
+  ownedObjectUrls?: Set<string>,
 ): Promise<LocalDeltaRuntime> {
+  throwIfLocalDeltaAborted(options.signal);
   await ensureWasm();
-  const facts = await readLocalLogFacts(table.logEntries);
+  throwIfLocalDeltaAborted(options.signal);
+  const facts = await readLocalLogFacts(table.logEntries, options.signal);
+  throwIfLocalDeltaAborted(options.signal);
   const tableName = sanitizeSqlIdentifier(
     options.tableName ?? facts.tableName ?? table.tableRootName,
   );
@@ -286,7 +307,7 @@ async function buildLocalDeltaRuntime(
 
   const logObjects = table.logEntries.map((entry) => ({
     relative_path: entry.relativePath,
-    url: trackLocalObjectUrl(registryId, URL.createObjectURL(entry.file)),
+    url: trackLocalObjectUrl(registryId, URL.createObjectURL(entry.file), ownedObjectUrls),
     size_bytes: entry.file.size,
     kind: classifyObject(entry.relativePath),
   }));
@@ -302,6 +323,7 @@ async function buildLocalDeltaRuntime(
     tableUri,
     options.snapshotVersion,
   );
+  throwIfLocalDeltaAborted(options.signal);
   const snapshot = JSON.parse(snapshotJson) as ResolvedSnapshot;
   const partitionTypes =
     snapshot.partition_column_types ??
@@ -328,7 +350,7 @@ async function buildLocalDeltaRuntime(
       }
       return create(BrowserHttpFileDescriptorSchema, {
         path: file.path,
-        url: trackLocalObjectUrl(registryId, URL.createObjectURL(entry.file)),
+        url: trackLocalObjectUrl(registryId, URL.createObjectURL(entry.file), ownedObjectUrls),
         sizeBytes: BigInt(file.size_bytes),
         partitionValues: Object.fromEntries(
           Object.entries(file.partition_values).map(([name, value]) => [
@@ -365,29 +387,94 @@ async function openLocalDeltaRuntime(
 ): Promise<LocalDeltaRuntime> {
   const registryId =
     options.registryId ?? table.registryId ?? localDeltaRegistryId(table.tableRootName);
+  return withLocalDeltaAcquisition(registryId, () =>
+    openLocalDeltaRuntimeExclusive(table, options, registryId),
+  );
+}
+
+async function openLocalDeltaRuntimeExclusive(
+  table: LocalDeltaTableFiles,
+  options: OpenLocalDeltaOptions,
+  registryId: string,
+): Promise<LocalDeltaRuntime> {
   const sessionTable = { ...table, registryId };
+  const ownedObjectUrls = new Set<string>();
   let runtime: LocalDeltaRuntime;
+  let persisted: LocalDeltaTableFiles | undefined;
+  let previousRegistryRecord: LocalDeltaRegistryRecord | undefined;
+  let registrySnapshotRead = false;
   try {
-    runtime = await buildLocalDeltaRuntime(sessionTable, options, 'session_handles');
+    throwIfLocalDeltaAborted(options.signal);
+    runtime = await buildLocalDeltaRuntime(
+      sessionTable,
+      options,
+      'session_handles',
+      ownedObjectUrls,
+    );
+    throwIfLocalDeltaAborted(options.signal);
+    const durableTable = durableLocalDeltaTableForRuntime(sessionTable, runtime);
+    try {
+      previousRegistryRecord = await localDeltaHandleStore.get(registryId);
+      registrySnapshotRead = true;
+    } catch {
+      // Keep the working session runtime when the durable registry cannot be inspected safely.
+    }
+    if (registrySnapshotRead) {
+      persisted = await tryPersistLocalDeltaTable(durableTable);
+    }
+    throwIfLocalDeltaAborted(options.signal);
   } catch (error) {
-    releaseLocalDeltaObjectUrls(registryId);
+    releaseOwnedLocalDeltaObjectUrls(registryId, ownedObjectUrls);
+    if (persisted && registrySnapshotRead) {
+      await restoreLocalDeltaRegistryRecord(registryId, previousRegistryRecord);
+    }
     throw error;
   }
-  sessionLocalDeltaTables.set(registryId, sessionTable);
-  localDeltaRuntimes.set(localDeltaRuntimeCacheKey(registryId, options), runtime);
-  markLocalDeltaRuntimeActive(registryId);
-
-  const durableTable = durableLocalDeltaTableForRuntime(sessionTable, runtime);
-  const persisted = await tryPersistLocalDeltaTable(durableTable);
+  commitOwnedLocalDeltaObjectUrls(registryId, ownedObjectUrls);
   if (persisted) {
     const durableRuntime = {
       ...runtime,
       persistence: persisted.persistenceMode ?? runtime.persistence,
     };
+    sessionLocalDeltaTables.set(registryId, persisted);
     localDeltaRuntimes.set(localDeltaRuntimeCacheKey(registryId, options), durableRuntime);
+    markLocalDeltaRuntimeActive(registryId);
+    setActiveLocalDeltaRegistryId(registryId);
     return durableRuntime;
   }
+  sessionLocalDeltaTables.set(registryId, sessionTable);
+  localDeltaRuntimes.set(localDeltaRuntimeCacheKey(registryId, options), runtime);
+  markLocalDeltaRuntimeActive(registryId);
   return runtime;
+}
+
+async function withLocalDeltaAcquisition<T>(
+  registryId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = localDeltaAcquisitionQueues.get(registryId) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.then(() => current);
+  localDeltaAcquisitionQueues.set(registryId, tail);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (localDeltaAcquisitionQueues.get(registryId) === tail) {
+      localDeltaAcquisitionQueues.delete(registryId);
+    }
+  }
+}
+
+function throwIfLocalDeltaAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  const error = new Error('local Delta acquisition was cancelled');
+  error.name = 'AbortError';
+  throw error;
 }
 
 function collectLocalDeltaTableFiles(files: FileList | File[] | null): LocalDeltaTableFiles {
@@ -419,17 +506,22 @@ function collectLocalDeltaTableFiles(files: FileList | File[] | null): LocalDelt
 async function collectLocalDeltaDirectoryEntries(
   directory: LocalFileSystemDirectoryHandle,
   prefix = '',
+  signal?: AbortSignal,
 ): Promise<LocalDeltaFileEntry[]> {
+  throwIfLocalDeltaAborted(signal);
   const entries: LocalDeltaFileEntry[] = [];
   for await (const [name, handle] of directory.entries()) {
+    throwIfLocalDeltaAborted(signal);
     const relativePath = prefix ? `${prefix}/${name}` : name;
     if (isIgnoredLocalFile(relativePath)) continue;
     if (handle.kind === 'directory') {
-      entries.push(...(await collectLocalDeltaDirectoryEntries(handle, relativePath)));
+      entries.push(...(await collectLocalDeltaDirectoryEntries(handle, relativePath, signal)));
     } else {
       validateLocalRelativePath(relativePath);
+      const file = await handle.getFile();
+      throwIfLocalDeltaAborted(signal);
       entries.push({
-        file: await handle.getFile(),
+        file,
         browserPath: `${directory.name}/${relativePath}`,
         relativePath,
       });
@@ -523,16 +615,7 @@ async function tryPersistLocalDeltaTable(
   table: LocalDeltaTableFiles,
 ): Promise<LocalDeltaTableFiles | undefined> {
   try {
-    const persisted = await persistLocalDeltaTable(table);
-    sessionLocalDeltaTables.set(
-      persisted.registryId ?? table.registryId ?? table.tableRootName,
-      persisted,
-    );
-    if (persisted.registryId) {
-      markLocalDeltaRuntimeActive(persisted.registryId);
-      setActiveLocalDeltaRegistryId(persisted.registryId);
-    }
-    return persisted;
+    return await persistLocalDeltaTable(table);
   } catch (error) {
     console.warn('local Delta table import could not be persisted:', error);
     return undefined;
@@ -554,8 +637,13 @@ function durableLocalDeltaTableForRuntime(
   });
 }
 
-async function loadLocalDeltaTable(registryId: string): Promise<LocalDeltaTableFiles | undefined> {
+async function loadLocalDeltaTable(
+  registryId: string,
+  signal?: AbortSignal,
+): Promise<LocalDeltaTableFiles | undefined> {
+  throwIfLocalDeltaAborted(signal);
   const record = await localDeltaHandleStore.get(registryId);
+  throwIfLocalDeltaAborted(signal);
   if (!record) return undefined;
 
   if (record.backend === 'metadata_only') {
@@ -566,7 +654,7 @@ async function loadLocalDeltaTable(registryId: string): Promise<LocalDeltaTableF
   }
 
   if (record.backend === 'directory_handle') {
-    return loadDirectoryHandleLocalDeltaTable(record);
+    return loadDirectoryHandleLocalDeltaTable(record, signal);
   }
 
   return undefined;
@@ -587,6 +675,7 @@ function localDeltaMetadataRecord(entry: LocalDeltaFileEntry): LocalDeltaRegistr
 
 async function loadDirectoryHandleLocalDeltaTable(
   record: LocalDeltaRegistryRecord,
+  signal?: AbortSignal,
 ): Promise<LocalDeltaTableFiles | undefined> {
   const handle = record.directoryHandle;
   if (!handle) {
@@ -596,7 +685,9 @@ async function loadDirectoryHandleLocalDeltaTable(
     );
   }
 
+  throwIfLocalDeltaAborted(signal);
   const granted = await ensureDirectoryReadPermission(handle);
+  throwIfLocalDeltaAborted(signal);
   if (!granted) {
     throw new LocalDeltaError(
       'registry_unavailable',
@@ -604,7 +695,7 @@ async function loadDirectoryHandleLocalDeltaTable(
     );
   }
 
-  const entries = await collectLocalDeltaDirectoryEntries(handle);
+  const entries = await collectLocalDeltaDirectoryEntries(handle, '', signal);
   const table = buildLocalDeltaTableFiles(record.tableRootName, entries, record.id, {
     directoryHandle: handle,
     persistenceMode: 'persisted_directory_handle',
@@ -613,9 +704,14 @@ async function loadDirectoryHandleLocalDeltaTable(
   return table;
 }
 
-async function revalidateLocalDeltaTableAccess(table: LocalDeltaTableFiles): Promise<void> {
+async function revalidateLocalDeltaTableAccess(
+  table: LocalDeltaTableFiles,
+  signal?: AbortSignal,
+): Promise<void> {
   if (!table.directoryHandle) return;
+  throwIfLocalDeltaAborted(signal);
   const granted = await ensureDirectoryReadPermission(table.directoryHandle);
+  throwIfLocalDeltaAborted(signal);
   if (!granted) {
     throw new LocalDeltaError(
       'registry_unavailable',
@@ -645,14 +741,19 @@ function validateLocalDeltaTableAgainstRecord(
   }
 }
 
-async function readLocalLogFacts(logEntries: LocalDeltaFileEntry[]): Promise<LocalLogFacts> {
+async function readLocalLogFacts(
+  logEntries: LocalDeltaFileEntry[],
+  signal?: AbortSignal,
+): Promise<LocalLogFacts> {
   const facts: LocalLogFacts = { partitionColumns: [] };
   const commitEntries = logEntries.filter((entry) =>
     /^_delta_log\/\d{20}\.json$/.test(entry.relativePath),
   );
 
   for (const entry of commitEntries) {
+    throwIfLocalDeltaAborted(signal);
     const text = await entry.file.text();
+    throwIfLocalDeltaAborted(signal);
     for (const [index, line] of text.split(/\r?\n/).entries()) {
       if (!line.trim()) continue;
       let action: unknown;
@@ -915,6 +1016,21 @@ async function deleteLocalDeltaRegistryRecord(registryId: string): Promise<void>
   return localDeltaHandleStore.delete(registryId);
 }
 
+async function restoreLocalDeltaRegistryRecord(
+  registryId: string,
+  previous: LocalDeltaRegistryRecord | undefined,
+): Promise<void> {
+  try {
+    if (previous) {
+      await putLocalDeltaRegistryRecord(previous);
+    } else {
+      await deleteLocalDeltaRegistryRecord(registryId);
+    }
+  } catch {
+    // Best-effort rollback after cancellation only.
+  }
+}
+
 function fileBrowserPath(file: File): string {
   return (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
 }
@@ -1000,11 +1116,44 @@ function classifyObject(path: string): ObjectKind {
   return 'delta_log_object';
 }
 
-function trackLocalObjectUrl(registryId: string, url: string): string {
+function trackLocalObjectUrl(
+  registryId: string,
+  url: string,
+  ownedObjectUrls?: Set<string>,
+): string {
   const urls = localObjectUrlsByRegistryId.get(registryId) ?? new Set<string>();
   urls.add(url);
+  ownedObjectUrls?.add(url);
   localObjectUrlsByRegistryId.set(registryId, urls);
   return url;
+}
+
+function releaseOwnedLocalDeltaObjectUrls(
+  registryId: string,
+  ownedObjectUrls: ReadonlySet<string>,
+): void {
+  const registeredUrls = localObjectUrlsByRegistryId.get(registryId);
+  for (const url of ownedObjectUrls) {
+    URL.revokeObjectURL(url);
+    registeredUrls?.delete(url);
+  }
+  if (registeredUrls?.size === 0) {
+    localObjectUrlsByRegistryId.delete(registryId);
+  }
+}
+
+function commitOwnedLocalDeltaObjectUrls(
+  registryId: string,
+  ownedObjectUrls: ReadonlySet<string>,
+): void {
+  const registeredUrls = localObjectUrlsByRegistryId.get(registryId);
+  for (const url of registeredUrls ?? []) {
+    if (!ownedObjectUrls.has(url)) {
+      URL.revokeObjectURL(url);
+    }
+  }
+  localObjectUrlsByRegistryId.set(registryId, new Set(ownedObjectUrls));
+  deleteLocalDeltaRuntimeCache(registryId);
 }
 
 function sanitizeSqlIdentifier(name: string): string {

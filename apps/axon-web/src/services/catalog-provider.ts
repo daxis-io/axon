@@ -21,6 +21,7 @@ import {
   PageInfoSchema,
   ProviderErrorCode,
   ProviderErrorSchema,
+  ResourceKind,
   type PageRequest,
   type ProviderError,
 } from '../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
@@ -94,14 +95,17 @@ export type LocalDeltaCatalogProviderInput = Readonly<{
   metadata: TableMetadata;
 }>;
 
-export type PublicObjectStorageCatalogProviderInput = Readonly<{
-  provider: 'gcs' | 's3';
+type PublicObjectStorageCatalogProviderBase = Readonly<{
   connectionId: string;
   normalizedTableUri: string;
   schemaName: string;
   tableName: string;
   metadata: TableMetadata;
 }>;
+
+export type PublicObjectStorageCatalogProviderInput =
+  | (PublicObjectStorageCatalogProviderBase & Readonly<{ provider: 'gcs'; region?: never }>)
+  | (PublicObjectStorageCatalogProviderBase & Readonly<{ provider: 's3'; region: string }>);
 
 export function createLocalDeltaCatalogProvider(
   input: LocalDeltaCatalogProviderInput,
@@ -151,12 +155,21 @@ export function createPublicObjectStorageCatalogProvider(
     connectionId = input.connectionId;
     normalizedTableUri = input.normalizedTableUri;
     requiredText(input.schemaName, 'schema name');
-    table = createPublicObjectStorageCanonicalTable({
-      provider: input.provider,
-      connectionId,
-      normalizedTableUri,
-      tableName: input.tableName,
-    });
+    table =
+      input.provider === 's3'
+        ? createPublicObjectStorageCanonicalTable({
+            provider: input.provider,
+            connectionId,
+            normalizedTableUri,
+            region: input.region,
+            tableName: input.tableName,
+          })
+        : createPublicObjectStorageCanonicalTable({
+            provider: input.provider,
+            connectionId,
+            normalizedTableUri,
+            tableName: input.tableName,
+          });
   } catch {
     throw new CatalogProviderError(
       'invalid_request',
@@ -208,6 +221,7 @@ export async function discoverFlatCatalog(
   validateContext(context);
   const table = exactlyOne(tables.tables, 'table', context);
   requireTerminatingPage(tables.page?.nextCursor, context);
+  validateTableParent(schema, table, context);
   const response = await provider.getTableMetadata(table, context);
   validateContext(context);
   const metadata = response.table;
@@ -313,11 +327,30 @@ function validateSchemaParent(
   }
 }
 
+function validateTableParent(
+  schema: SchemaNode,
+  table: TableNode,
+  context: CatalogDiscoveryContext,
+): void {
+  const resource = table.resource;
+  if (
+    !resource ||
+    resource.connectionId !== schema.connectionId ||
+    resource.kind !== ResourceKind.TABLE ||
+    !resource.providerNamespace.trim() ||
+    (resource.identity.case !== 'providerObjectId' &&
+      resource.identity.case !== 'canonicalLocator') ||
+    !resource.identity.value.trim()
+  ) {
+    invalidRequest('catalog table parent or canonical identity is invalid', context);
+  }
+}
+
 function requireTerminatingPage(
   nextCursor: string | undefined,
   context: CatalogDiscoveryContext,
 ): void {
-  if (nextCursor !== undefined) {
+  if (nextCursor) {
     invalidRequest('flat catalog provider returned a continuation cursor', context);
   }
 }
