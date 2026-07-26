@@ -32,6 +32,7 @@ import {
   loadLocalDeltaRuntime as loadDefaultLocalDeltaRuntime,
   LocalDeltaError,
 } from './local-delta.ts';
+import { createLocalDeltaCanonicalTable } from './canonical-table-identity.ts';
 import {
   parsePublicObjectStorageTableRoot,
   publicObjectStorageConnectionId,
@@ -156,6 +157,12 @@ const SAMPLE_FIXTURE_LOCATOR = 'axon-fixture://sample-lake/prod_like/events';
 const SAMPLE_FIXTURE_TABLE_URI = 'gs://axon-sandbox/prod-like-events';
 
 export function canonicalTableForSelection(selection: AvailableQuerySourceSelection): TableNode {
+  if (selection.source.kind === 'local_delta') {
+    return createLocalDeltaCanonicalTable({
+      registryId: selection.source.localRegistryId,
+      tableName: selection.source.tableName,
+    });
+  }
   return create(TableNodeSchema, {
     resource: canonicalResourceForSelection(selection),
     tableType: TableType.TABLE,
@@ -197,15 +204,10 @@ function canonicalResourceForSelection(
   }
   switch (source.kind) {
     case 'local_delta':
-      return create(CanonicalResourceRefSchema, {
-        connectionId: `axon-connection://local-delta/${encodeURIComponent(source.localRegistryId)}`,
-        providerNamespace: 'axon.local-delta/v1',
-        kind: ResourceKind.TABLE,
-        identity: {
-          case: 'providerObjectId',
-          value: source.localRegistryId,
-        },
-      });
+      return createLocalDeltaCanonicalTable({
+        registryId: source.localRegistryId,
+        tableName: source.tableName,
+      }).resource!;
     case 'object_store_table_root': {
       const root = parsePublicObjectStorageTableRoot({
         provider: source.provider,

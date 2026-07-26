@@ -3,11 +3,13 @@
 //   2. Configure (varies by source) + Test connection
 //   3. Review & connect (alias + included schemas/tables)
 
+import { create } from '@bufbuild/protobuf';
 import {
   Fragment,
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ChangeEvent,
   type DragEvent,
@@ -25,9 +27,14 @@ import {
   type SourceId,
 } from './data.ts';
 import { IconCheck, IconFolder, IconLock, IconWarn } from './icons.tsx';
-import { DEFAULT_AXON_CATALOG_ALIAS } from './store.ts';
+import { DEFAULT_AXON_CATALOG_ALIAS, discoveryPayloadFromCatalogDiscovery } from './store.ts';
 import type { ConnectForm, ConnectResult, SchemaSelection, TestState } from './types.ts';
 import type { BrowserHttpSnapshotDescriptor } from '../../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
+import { PageRequestSchema } from '../../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
+import {
+  createLocalDeltaCatalogProvider,
+  discoverFlatCatalog,
+} from '../../services/catalog-provider.ts';
 import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
 import type {
   LocalDeltaRuntime,
@@ -51,6 +58,7 @@ const DEFAULT_FORM: ConnectForm = {
   path: '',
   detected: null,
   localDelta: null,
+  localCatalogDiscovery: null,
   provider: 'gcs',
   uri: '',
   region: '',
@@ -100,10 +108,12 @@ export function ConnectModal({
   const [useRecommendedCatalog, setUseRecommendedCatalog] = useState(true);
   const [selection, setSelection] = useState<Record<string, SchemaSelection>>({});
   const currentDiscovery = useMemo(() => {
-    if (source === 'local' && form.localDelta) return form.localDelta.discovery;
+    if (source === 'local' && form.localCatalogDiscovery) {
+      return discoveryPayloadFromCatalogDiscovery(form.localCatalogDiscovery);
+    }
     if (source === 'object_store' && form.objectStorage) return form.objectStorage.discovery;
     return source ? discoveryForSource(source) : null;
-  }, [form.localDelta, form.objectStorage, source]);
+  }, [form.localCatalogDiscovery, form.objectStorage, source]);
 
   // ─── ESC closes the modal ─────────────────────────
   useEffect(() => {
@@ -154,7 +164,7 @@ export function ConnectModal({
   const runTest = useCallback(async () => {
     setTestState('running');
     setObjectStorageError(null);
-    if (source === 'local' && form.localDelta) {
+    if (source === 'local' && form.localDelta && form.localCatalogDiscovery) {
       setTestState('ok');
       return;
     }
@@ -227,6 +237,8 @@ export function ConnectModal({
         alias,
         selection,
         discovered,
+        catalogDiscovery:
+          source === 'local' ? (form.localCatalogDiscovery ?? undefined) : undefined,
       });
     }
   };
@@ -240,7 +252,7 @@ export function ConnectModal({
       ? !!source && availabilityForSource(source, connectorFeatures).enabled
       : step === 2
         ? source === 'local'
-          ? !!form.localDelta
+          ? !!form.localDelta && !!form.localCatalogDiscovery
           : source === 'object_store'
             ? form.uri.length > 8
             : source === 'unity_catalog'
@@ -488,6 +500,7 @@ function ConfigLocal({
   const [over, setOver] = useState(false);
   const [picking, setPicking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const discoveryController = useRef<AbortController | null>(null);
   const [supportsDirectoryPicker, setSupportsDirectoryPicker] = useState(
     () =>
       typeof window !== 'undefined' &&
@@ -501,20 +514,50 @@ function ConfigLocal({
     );
   }, []);
 
+  useEffect(
+    () => () => {
+      discoveryController.current?.abort();
+    },
+    [],
+  );
+
   const openRuntime = async (open: () => Promise<LocalDeltaRuntime>) => {
+    discoveryController.current?.abort();
+    const controller = new AbortController();
+    discoveryController.current = controller;
     setOver(false);
     setPicking(true);
     setError(null);
     try {
       const runtime = await open();
+      const catalogDiscovery = await discoverFlatCatalog(
+        createLocalDeltaCatalogProvider({
+          registryId: runtime.registryId,
+          schemaName: runtime.schemaName,
+          tableName: runtime.tableName,
+          metadata: runtime.catalogMetadata,
+        }),
+        create(PageRequestSchema),
+        {
+          signal: controller.signal,
+          correlationId: catalogCorrelationId(),
+        },
+      );
       setForm({
         ...form,
         path: runtime.storageLabel,
         detected: detectedFromRuntime(runtime),
         localDelta: runtime,
+        localCatalogDiscovery: catalogDiscovery,
       });
     } catch (err) {
-      setForm({ ...form, detected: null, localDelta: null });
+      if (isAbortError(err)) return;
+      setForm({
+        ...form,
+        detected: null,
+        localDelta: null,
+        localCatalogDiscovery: null,
+      });
       setError(localDeltaErrorMessage(err));
     } finally {
       setPicking(false);
@@ -541,7 +584,12 @@ function ConfigLocal({
       });
     } catch (err) {
       if (!isAbortError(err)) {
-        setForm({ ...form, detected: null, localDelta: null });
+        setForm({
+          ...form,
+          detected: null,
+          localDelta: null,
+          localCatalogDiscovery: null,
+        });
         setError(localDeltaErrorMessage(err));
       }
     } finally {
@@ -735,19 +783,26 @@ type DataTransferItemWithHandle = DataTransferItem & {
 };
 
 function detectedFromRuntime(runtime: LocalDeltaRuntime) {
-  const table = runtime.discovery.schemas[0]?.tables[0];
+  const metadata = runtime.catalogMetadata;
   return {
     name: runtime.tableName,
     snapshot:
       runtime.descriptor.snapshotVersion === undefined
         ? 0
         : Number(runtime.descriptor.snapshotVersion),
-    rowsLabel: table ? table.rows.toLocaleString() : '0',
+    rowsLabel: Number(metadata.rowCount ?? 0n).toLocaleString(),
     files: runtime.descriptor.activeFiles.length,
-    size: table?.size ?? '0 bytes',
-    protocol: table?.protocol ?? 'json-log',
+    size: formatBytes(Number(metadata.sizeBytes ?? 0n)),
+    protocol:
+      metadata.minReaderVersion !== undefined && metadata.minWriterVersion !== undefined
+        ? `r${metadata.minReaderVersion}/w${metadata.minWriterVersion}`
+        : 'json-log',
     persistenceLabel: localDeltaPersistenceLabel(runtime.persistence),
   };
+}
+
+function catalogCorrelationId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `catalog-${Date.now()}`;
 }
 
 function localDeltaPersistenceLabel(persistence: LocalDeltaRuntime['persistence']): string {

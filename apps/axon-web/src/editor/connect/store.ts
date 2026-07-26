@@ -1,7 +1,14 @@
 // Persistence for connected catalogs from the Connect Catalog workflow.
 // Stored in localStorage so non-sensitive catalog metadata survives reloads.
 
-import { availabilityForSource, type ObjectStoreProviderId } from './data.ts';
+import { toJson } from '@bufbuild/protobuf';
+import { TableMetadataSchema } from '../../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
+import type { CatalogDiscoverySnapshot } from '../../services/catalog-provider.ts';
+import {
+  availabilityForSource,
+  type DiscoveryPayload,
+  type ObjectStoreProviderId,
+} from './data.ts';
 import type { ConnectResult, ConnectedCatalog, ConnectedCatalogSchema } from './types.ts';
 import { createLocalStorageKeyValueStore } from '../../persistence/key-value.ts';
 import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
@@ -130,7 +137,12 @@ export function localRegistryIdsForCatalogs(catalogs: ConnectedCatalog[]): strin
 
 export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog {
   const { source, form, alias, selection } = result;
-  const disc = result.discovered;
+  const disc = result.catalogDiscovery
+    ? discoveryPayloadFromCatalogDiscovery(result.catalogDiscovery)
+    : result.discovered;
+  const catalogMetadataJson = result.catalogDiscovery
+    ? generatedMetadataJson(result.catalogDiscovery.metadata)
+    : undefined;
   const catalogAlias = normalizeCatalogAlias(alias) || DEFAULT_AXON_CATALOG_ALIAS;
   const storage = storageForResult(result);
   const host =
@@ -168,6 +180,7 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
           descriptorResolutionMetrics: t.descriptorResolutionMetrics,
           localRegistryId: source === 'local' ? form.localDelta?.registryId : undefined,
           localPersistence: source === 'local' ? form.localDelta?.persistence : undefined,
+          catalogMetadataJson,
           source: {
             id: sourceBindingId(source, storage, schemaName, t.name),
             kind: source,
@@ -346,6 +359,7 @@ function durableConnectedTable(
     manifestUrl: table.manifestUrl,
     localRegistryId: table.localRegistryId,
     localPersistence: table.localPersistence,
+    catalogMetadataJson: table.catalogMetadataJson,
     descriptorResolutionMetrics: table.descriptorResolutionMetrics,
     source: table.source
       ? {
@@ -361,6 +375,84 @@ function durableConnectedTable(
         }
       : undefined,
   };
+}
+
+function generatedMetadataJson(
+  metadata: CatalogDiscoverySnapshot['metadata'],
+): Readonly<Record<string, unknown>> {
+  const json = toJson(TableMetadataSchema, metadata);
+  if (typeof json !== 'object' || json === null || Array.isArray(json)) {
+    throw new Error('Catalog metadata did not encode as a JSON object.');
+  }
+  return json;
+}
+
+export function discoveryPayloadFromCatalogDiscovery(
+  discovery: CatalogDiscoverySnapshot,
+): DiscoveryPayload {
+  const { metadata } = discovery;
+  const table = metadata.table;
+  if (!table?.resource) {
+    throw new Error('Catalog provider metadata omitted canonical table identity.');
+  }
+  const schemaName = discovery.schema.name;
+  const snapshot = browserSafeGeneratedInteger(metadata.latestSnapshotVersion, 'snapshot version');
+  const rows = browserSafeGeneratedInteger(metadata.rowCount, 'row count');
+  const files = browserSafeGeneratedInteger(metadata.fileCount, 'file count');
+  const sizeBytes = browserSafeGeneratedInteger(metadata.sizeBytes, 'size bytes');
+  const protocol =
+    metadata.minReaderVersion !== undefined && metadata.minWriterVersion !== undefined
+      ? `r${metadata.minReaderVersion}/w${metadata.minWriterVersion}`
+      : 'json-log';
+
+  return {
+    summary: 'Detected 1 catalog table',
+    schemas: [
+      {
+        name: schemaName,
+        tableCount: 1,
+        included: true,
+        tables: [
+          {
+            name: table.name,
+            snapshot,
+            rows,
+            files,
+            size: formatBytes(sizeBytes),
+            protocol,
+            features: metadata.protocolFeatures.map((feature) => feature.name),
+            uri: metadata.storageLocation,
+            columns: metadata.columns.map((column) => ({
+              name: column.name,
+              type: column.type,
+              part: metadata.partitionColumns.includes(column.name) || undefined,
+            })),
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function browserSafeGeneratedInteger(value: bigint | undefined, label: string): number {
+  if (value === undefined) return 0;
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) {
+    throw new Error(`Catalog ${label} was outside the browser-safe range.`);
+  }
+  return number;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} ${bytes === 1 ? 'byte' : 'bytes'}`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unit = -1;
+  do {
+    value /= 1024;
+    unit += 1;
+  } while (value >= 1024 && unit < units.length - 1);
+  return `${value.toFixed(1)} ${units[unit]}`;
 }
 
 function summarizeCatalog(catalog: ConnectedCatalog): ConnectedCatalog {

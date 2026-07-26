@@ -1,4 +1,5 @@
 import type { DiscoveryPayload, ObjectStoreProviderId, SourceId } from './data.ts';
+import type { CatalogDiscoverySnapshot } from '../../services/catalog-provider.ts';
 import type { LocalDeltaPersistenceMode, LocalDeltaRuntime } from '../../services/local-delta.ts';
 import type { PublicObjectStorageDescriptorResolutionMetrics } from '../../services/object-storage.ts';
 
@@ -24,6 +25,7 @@ export type ConnectForm = {
     persistenceLabel: string;
   };
   localDelta: LocalDeltaRuntime | null;
+  localCatalogDiscovery?: CatalogDiscoverySnapshot | null;
   // object store
   provider: ObjectStoreProviderId;
   uri: string;
@@ -71,6 +73,7 @@ export type ConnectedCatalogSchema = {
     manifestUrl?: string;
     localRegistryId?: string;
     localPersistence?: LocalDeltaPersistenceMode;
+    catalogMetadataJson?: Readonly<Record<string, unknown>>;
     descriptorResolutionMetrics?: PublicObjectStorageDescriptorResolutionMetrics;
     source?: ConnectedTableSourceBinding;
   }[];
@@ -96,6 +99,7 @@ export type ConnectResult = {
   alias: string;
   selection: Record<string, SchemaSelection>;
   discovered: DiscoveryPayload;
+  catalogDiscovery?: CatalogDiscoverySnapshot;
 };
 
 export type TestState = null | 'running' | 'ok' | 'err';

@@ -10,6 +10,11 @@ import {
   type BrowserHttpSnapshotDescriptor,
 } from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 import {
+  ColumnNodeSchema,
+  TableMetadataSchema,
+  type TableMetadata,
+} from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
+import {
   HandleStore,
   ensureDirectoryReadPermission,
   type LocalDeltaHandleFileRecord,
@@ -57,28 +62,6 @@ export class LocalDeltaError extends Error {
   }
 }
 
-export type LocalDeltaDiscoveredTable = {
-  name: string;
-  snapshot: number;
-  rows: number;
-  files: number;
-  size: string;
-  protocol: string;
-  features?: string[];
-  uri?: string;
-  columns?: { name: string; type: string; part?: boolean }[];
-};
-
-export type LocalDeltaDiscovery = {
-  summary: string;
-  schemas: Array<{
-    name: string;
-    tableCount: number;
-    included: boolean;
-    tables: LocalDeltaDiscoveredTable[];
-  }>;
-};
-
 export type LocalDeltaRuntime = {
   kind: 'local_delta';
   registryId: string;
@@ -88,7 +71,7 @@ export type LocalDeltaRuntime = {
   schemaName: string;
   storageLabel: string;
   descriptor: BrowserHttpSnapshotDescriptor;
-  discovery: LocalDeltaDiscovery;
+  catalogMetadata: TableMetadata;
 };
 
 export type LocalDeltaPersistenceMode =
@@ -372,7 +355,7 @@ async function buildLocalDeltaRuntime(
     schemaName,
     storageLabel: `Local folder: ${table.tableRootName}`,
     descriptor,
-    discovery: discoveryFromRuntimeFacts(schemaName, tableName, descriptor, facts),
+    catalogMetadata: catalogMetadataFromRuntimeFacts(descriptor, facts),
   };
 }
 
@@ -743,67 +726,49 @@ function applyLocalLogAction(facts: LocalLogFacts, action: unknown): void {
   }
 }
 
-function discoveryFromRuntimeFacts(
-  schemaName: string,
-  tableName: string,
+function catalogMetadataFromRuntimeFacts(
   descriptor: BrowserHttpSnapshotDescriptor,
   facts: LocalLogFacts,
-): LocalDeltaDiscovery {
+): TableMetadata {
   const rows = descriptor.activeFiles.reduce((total, file) => {
     const statsRows = rowsFromStats(file.stats);
     return statsRows === undefined ? total : total + statsRows;
   }, 0);
   const sizeBytes = descriptor.activeFiles.reduce(
-    (total, file) => total + safeGeneratedInteger(file.sizeBytes, 'active file size'),
-    0,
+    (total, file) => total + BigInt(safeGeneratedInteger(file.sizeBytes, 'active file size')),
+    0n,
   );
-  const protocol =
-    facts.minReaderVersion !== undefined && facts.minWriterVersion !== undefined
-      ? `r${facts.minReaderVersion}/w${facts.minWriterVersion}`
-      : 'json-log';
+  if (!Number.isSafeInteger(rows) || rows < 0) {
+    throw new LocalDeltaError('invalid_delta_log', 'Resolved Delta row count was invalid.');
+  }
 
-  return {
-    summary: 'Detected 1 local Delta table',
-    schemas: [
-      {
-        name: schemaName,
-        tableCount: 1,
-        included: true,
-        tables: [
-          {
-            name: tableName,
-            snapshot: safeGeneratedInteger(descriptor.snapshotVersion, 'snapshot version'),
-            rows,
-            files: descriptor.activeFiles.length,
-            size: formatBytes(sizeBytes),
-            protocol,
-            uri: descriptor.tableUri,
-            columns: columnsFromSchema(facts.schemaString, facts.partitionColumns),
-          },
-        ],
-      },
-    ],
-  };
+  return create(TableMetadataSchema, {
+    columns: catalogColumnsFromSchema(facts.schemaString),
+    partitionColumns: [...facts.partitionColumns],
+    rowCount: BigInt(rows),
+    sizeBytes,
+    fileCount: BigInt(descriptor.activeFiles.length),
+    latestSnapshotVersion: descriptor.snapshotVersion,
+    minReaderVersion: facts.minReaderVersion,
+    minWriterVersion: facts.minWriterVersion,
+    storageLocation: descriptor.tableUri,
+  });
 }
 
-function columnsFromSchema(
-  schemaString: string | undefined,
-  partitionColumns: readonly string[],
-): { name: string; type: string; part?: boolean }[] | undefined {
-  if (!schemaString) return undefined;
+function catalogColumnsFromSchema(schemaString: string | undefined) {
+  if (!schemaString) return [];
   try {
     const schema = JSON.parse(schemaString) as unknown;
-    if (!isRecord(schema) || !Array.isArray(schema.fields)) return undefined;
-    return schema.fields.filter(isRecord).map((field) => {
-      const name = stringField(field, 'name') ?? 'column';
-      return {
-        name,
+    if (!isRecord(schema) || !Array.isArray(schema.fields)) return [];
+    return schema.fields.filter(isRecord).map((field) =>
+      create(ColumnNodeSchema, {
+        name: stringField(field, 'name') ?? 'column',
         type: typeof field.type === 'string' ? field.type : 'unknown',
-        part: partitionColumns.includes(name) || undefined,
-      };
-    });
+        nullable: field.nullable !== false,
+      }),
+    );
   } catch {
-    return undefined;
+    return [];
   }
 }
 
@@ -1048,19 +1013,6 @@ function sanitizeSqlIdentifier(name: string): string {
     .replace(/[^A-Za-z0-9_]+/g, '_')
     .replace(/^_+|_+$/g, '');
   return sanitized || 'local_delta_table';
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} bytes`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let value = bytes / 1024;
-  let unit = units[0];
-  for (const candidate of units.slice(1)) {
-    if (value < 1024) break;
-    value /= 1024;
-    unit = candidate;
-  }
-  return `${value.toFixed(value < 10 ? 1 : 0)} ${unit}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

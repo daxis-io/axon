@@ -98,6 +98,32 @@ afterEach(async () => {
 });
 
 describe('local Delta registry persistence', () => {
+  it('materializes generated capability-free catalog metadata from normalized log facts', async () => {
+    const runtime = await openLocalDeltaTableFromFileList(deltaTableFiles(), {
+      registryId: 'metadata-only',
+    });
+
+    expect(runtime.catalogMetadata.table).toBeUndefined();
+    expect(runtime.catalogMetadata).toMatchObject({
+      columns: [{ name: 'value', type: 'long', nullable: true }],
+      partitionColumns: [],
+      rowCount: 1n,
+      sizeBytes: 7n,
+      fileCount: 1n,
+      latestSnapshotVersion: 0n,
+      minReaderVersion: 1,
+      minWriterVersion: 2,
+      protocolFeatures: [],
+      storageLocation: 'browser-local://delta-table/table-root',
+    });
+    const serialized = JSON.stringify(runtime.catalogMetadata, (_key, value) =>
+      typeof value === 'bigint' ? value.toString() : value,
+    );
+    expect(serialized).not.toContain('blob:');
+    expect(serialized).not.toContain('descriptor');
+    expect(serialized).not.toContain('metadata-only');
+  });
+
   it('persists file-list imports as metadata-only records without bytes or object URLs', async () => {
     const putSpy = vi.spyOn(HandleStore.prototype, 'put');
 
