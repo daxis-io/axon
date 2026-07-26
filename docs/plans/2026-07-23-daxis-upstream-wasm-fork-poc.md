@@ -1614,3 +1614,24 @@ The POC is complete when:
 12. The patch inventory gives each Daxis commit an owner, upstream disposition, and removal
     condition.
 13. The team records a separate decision for canonical forward-port work.
+
+## 2026-07-25 Audit Correction Ledger
+
+A fresh independent audit found five correctness or evidence gaps in the original immutable
+`2026-07-23` freeze. All corrections were published as additive DCO-signed commits; no existing
+candidate, stack revision, or tag was rewritten.
+
+| Finding | Witnessed red | Accepted correction | Final stack revision | Removal condition |
+| ------- | ------------- | ------------------- | -------------------- | ----------------- |
+| Stream retry could stitch bytes after a weak or malformed ETag. | A truncated response with `W/"abc"` attempted a continuation request. | `object_store` candidate `1d6cb49ba43e219ab50d33284c69d56cfa48aba0` requires an RFC entity-tag-shaped strong ETag before any continuation. | `a04240eafdc5833e34fe21d4b348ee399177def6` | Remove with an upstream release containing the strong-validator retry rule. |
+| The browser artifact accepted generic encoded-range failures and did not prove the identity validator ran. | The old encoded scenario returned a gzip full-object `200`, so range framing failed first. | Axon `4837c331b98e911cb7f9d4d87c3094b942461bb8` serves a valid four-byte `206` with `Content-Encoding: identity, identity` and requires the exact target diagnostic in Chrome and Firefox. | Axon branch head, not a fork stack revision. | Retain as protocol conformance coverage. |
+| The 8 MiB IPC budget was checked only after collecting the complete result. | The old query path collected every batch before serializing and checking length. | delta-rs candidate `0611f31ee39ef9942c04c6ccaeb44897d8ca923e` streams batches through a capped writer and stops polling at the first over-budget write. | `be60607f67951459e886915e8104273880dcc5cb` | Remove with an upstream browser-engine result-limit implementation. |
+| Delta add paths could escape the table prefix. | `../outside.parquet` resolved outside the table root. | The same delta-rs candidate rejects cross-origin, absolute, traversal, encoded-traversal, and prefix-escape paths with `ActiveFileOutsideTable`. | `be60607f67951459e886915e8104273880dcc5cb` | Remove with upstream table-root confinement. |
+| Kernel synchronous storage ignored requested ranges and panicked on `copy_atomic`. | A range read returned the full object and `copy_atomic` panicked. | Delta Kernel candidate `c9a475f3394adc5296c4f16587c1f69c6e87213e` uses `get_range` and returns a typed unsupported error for atomic copy. | `bbccfb394bf4a3eac54e125d71996a66a5a0e13a` | Remove with the redesigned upstream target-safe synchronous engine. |
+
+The corrected Axon lock pins Arrow `518663f4fb39ec0be672718432bbd7bb8a5456fc`,
+`object_store` `a04240eafdc5833e34fe21d4b348ee399177def6`, DataFusion
+`aa1d3bfb591e0e10594160119d8899d4b856c3f5`, Delta Kernel
+`bbccfb394bf4a3eac54e125d71996a66a5a0e13a`, and delta-rs
+`be60607f67951459e886915e8104273880dcc5cb`. The authoritative verification and artifact hashes are
+recorded in `docs/release-gates/upstream-wasm-fork-poc-evidence.md`.

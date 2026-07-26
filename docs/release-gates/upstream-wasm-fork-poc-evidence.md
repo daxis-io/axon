@@ -1,25 +1,183 @@
 # Daxis Upstream-WASM Fork POC Evidence
 
-- Technical POC status: complete
+- Technical POC status: complete after independent audit closure
 - Canonical-upstream status: prepared, with the Delta Kernel and delta-rs slices blocked as
   described below
-- POC date: 2026-07-23
-- Evidence completion: 2026-07-24 UTC
+- Original POC date: 2026-07-23
+- Audit closure date: 2026-07-25 local / 2026-07-26 UTC
 - Umbrella issue: [daxis-io/axon#2](https://github.com/daxis-io/axon/issues/2)
 - Axon branch: `poc/upstream-wasm-fork-stack`
-- Axon implementation revision: `41518135ed993c2bee152becdd5b435692c31d53`
-- Axon CI correction revision: `b0a91a6f111b7f9d221202086819d9dd63ebd7c3`
+- Axon audit repin revision: `1237da4b98fbff03f5c655550674db75b051103d`
+- Axon audit proof revision: `4837c331b98e911cb7f9d4d87c3094b942461bb8`
 - Axon compatibility base: `62d4c465e10dc329221023eaaf2c67c542c408ce`
-- Immutable POC tag in every fork: `daxis-poc/wasm32-browser-e2e-2026-07-23`
+- Current immutable POC tag in every fork: `daxis-poc/wasm32-browser-e2e-2026-07-25`
+- Superseded tag retained without mutation: `daxis-poc/wasm32-browser-e2e-2026-07-23`
 - Raw evidence root:
-  `target/upstream-wasm-fork-poc-evidence/9ce6b301657278bf6883727073ddbe1ee206c92088512dcb68da64ea3193a9a3/`
+  `target/upstream-wasm-fork-poc-evidence/988adae4f505953bb22675cc5e564cf4da077d4bec1ca7059865167d3f8187ea/`
 
-The release-based Daxis fork stack passes its native, exact-target graph, compiler-independent,
-browser-runtime, protocol, measurement, and Axon-boundary gates. It proves a browser-only
-read/query path without replacing Axon's shipping Rust dependencies. It does not claim that the
-same commits can be submitted to every canonical repository without adaptation: the refreshed
-Delta Kernel has diverged too far from the Buoyant compatibility base for a safe mechanical
-forward port, and the delta-rs slice consequently remains ordered behind a Kernel redesign.
+The audit-corrected release-based Daxis fork stack passes its native, exact-target graph,
+compiler-independent, browser-runtime, protocol, measurement, and Axon-boundary gates. It proves a
+browser-only read/query path without replacing Axon's shipping Rust dependencies. The correction
+set closes all five independent review findings without rewriting any published candidate, stack,
+forward-port revision, or tag.
+
+## Audit Closure
+
+### Findings And Additive Corrections
+
+| Finding | Witnessed red | Correction and green proof |
+| ------- | ------------- | -------------------------- |
+| `object_store` could retry and stitch a truncated representation after a weak or malformed ETag. | A `W/"abc"` response attempted a second request. | Candidate `1d6cb49ba43e219ab50d33284c69d56cfa48aba0` accepts only an RFC entity-tag-shaped strong validator before continuation. Missing, weak, unquoted, unterminated, list-shaped, and whitespace-containing values all stop after one request; strong-validator retry and mutation rejection still pass. Twelve focused tests and the all-feature suite passed: 196 passed and 4 ignored, plus integration and doc tests. |
+| The encoded-range browser scenario could fail at generic `200` range framing before reaching identity-encoding validation. | The previous server returned a gzip full-object `200`, and the harness accepted three unrelated alternative errors. | Axon `4837c331b98e911cb7f9d4d87c3094b942461bb8` returns a correctly framed four-byte `206` with `Content-Encoding: identity, identity`. Chrome and Firefox each record that `206` and then require `Range response used unsupported Content-Encoding "identity, identity"; expected identity`. |
+| delta-rs enforced the 8 MiB IPC budget only after collecting and allocating the complete result. | The prior query path collected all batches before serialization and length validation. | Candidate `0611f31ee39ef9942c04c6ccaeb44897d8ca923e` uses `execute_stream` and a capped IPC writer. The regression test proves the buffer never exceeds its limit and the query stream is not polled after the first over-budget write. |
+| Delta add paths could escape the configured table prefix. | `../outside.parquet` resolved outside the table root. | The same delta-rs candidate rejects cross-origin URLs, absolute paths, traversal, encoded traversal, and prefix escapes with `ActiveFileOutsideTable`, while allowing descendants of the table root. |
+| Kernel synchronous storage ignored requested read ranges and panicked on `copy_atomic`. | A requested range returned the full object and atomic copy panicked. | Candidate `c9a475f3394adc5296c4f16587c1f69c6e87213e` delegates ranged reads to `ObjectStore::get_range` and returns a typed `Unsupported` error for atomic copy. Ten focused storage tests and the 7,432-test native nextest suite passed, with 20 skipped. |
+
+Every correction is DCO-signed. Candidate diffs contain no Daxis dependency URL or immutable Daxis
+revision; the only literal match in the delta-rs candidate is the candidate-hygiene command that
+rejects those strings.
+
+### Accepted Corrected Revisions
+
+| Repository | Candidate revision | Stack revision | Draft Daxis PR | Corrected owned CI |
+| ---------- | ------------------ | -------------- | -------------- | ------------------ |
+| [`daxis-io/arrow-rs`](https://github.com/daxis-io/arrow-rs) | `f24c67c536e98f85f2ed8a289a6eb1d55916ffb9` | `518663f4fb39ec0be672718432bbd7bb8a5456fc` | [#1](https://github.com/daxis-io/arrow-rs/pull/1) | The unchanged candidate CI remains green; the repinned stack is covered by the complete Axon pinned-graph run. |
+| [`daxis-io/arrow-rs-object-store`](https://github.com/daxis-io/arrow-rs-object-store) | `1d6cb49ba43e219ab50d33284c69d56cfa48aba0` | `a04240eafdc5833e34fe21d4b348ee399177def6` | [#1](https://github.com/daxis-io/arrow-rs-object-store/pull/1) | [Candidate browser 30181759233](https://github.com/daxis-io/arrow-rs-object-store/actions/runs/30181759233), [stack browser 30182216792](https://github.com/daxis-io/arrow-rs-object-store/actions/runs/30182216792). |
+| [`daxis-io/datafusion`](https://github.com/daxis-io/datafusion) | `693aa0b5d2a3c925db963776a472d6144352116e` | `aa1d3bfb591e0e10594160119d8899d4b856c3f5` | [#1](https://github.com/daxis-io/datafusion/pull/1) | [Browser 30182304149](https://github.com/daxis-io/datafusion/actions/runs/30182304149), [Dev 30182304133](https://github.com/daxis-io/datafusion/actions/runs/30182304133). |
+| [`daxis-io/delta-kernel-rs`](https://github.com/daxis-io/delta-kernel-rs) | `c9a475f3394adc5296c4f16587c1f69c6e87213e` | `bbccfb394bf4a3eac54e125d71996a66a5a0e13a` | [#2](https://github.com/daxis-io/delta-kernel-rs/pull/2) | [Browser 30183035000](https://github.com/daxis-io/delta-kernel-rs/actions/runs/30183035000). |
+| [`daxis-io/delta-rs`](https://github.com/daxis-io/delta-rs) | `0611f31ee39ef9942c04c6ccaeb44897d8ca923e` | `be60607f67951459e886915e8104273880dcc5cb` | [#1](https://github.com/daxis-io/delta-rs/pull/1) | [Candidate browser 30182186031](https://github.com/daxis-io/delta-rs/actions/runs/30182186031), [stack browser 30183181311](https://github.com/daxis-io/delta-rs/actions/runs/30183181311). |
+
+The Axon correction stack passed all three jobs in
+[run 30183442839](https://github.com/daxis-io/axon/actions/runs/30183442839) at exact revision
+`4837c331b98e911cb7f9d4d87c3094b942461bb8`:
+
+| Axon job | Result |
+| -------- | ------ |
+| [Native defaults and Axon boundary](https://github.com/daxis-io/axon/actions/runs/30183442839/job/89743905964) | Success |
+| [Pinned graph without a native compiler](https://github.com/daxis-io/axon/actions/runs/30183442839/job/89743905915) | Success |
+| [Chrome and Firefox runtime](https://github.com/daxis-io/axon/actions/runs/30183442839/job/89743905909) | Success |
+
+The exact-target verifier reports
+`upstream WASM fork stack verified mode=final repositories=5 graph_packages=250`. The target graph
+still has one Daxis source universe for Arrow, Parquet, `object_store`, DataFusion, and Kernel, and
+the denied-dependency policy passes. The no-native-compiler container has raw `ld.lld` but no
+Clang, C/C++ compiler, CMake, or global `RUSTFLAGS`.
+
+The corrected lock hashes are:
+
+| Artifact | SHA-256 |
+| -------- | ------- |
+| `stack.lock.toml` | `988adae4f505953bb22675cc5e564cf4da077d4bec1ca7059865167d3f8187ea` |
+| Browser `Cargo.lock` | `38ce2730461a5498162091600b037dbfdaf136c706dca8acfc89c2e0e38150fe` |
+| Fixture-generator `Cargo.lock` | `810944d8ff7bd159ad78fbb8e43f54d0a7b52c60ecd46763118937cf25609854` |
+| Fixture manifest | `e02b28c246c5709bfb83eb4de75256ba2e9734ee5f545265c883bc2f047b7aa6` |
+| `object_store` candidate and stack browser lock | `79caf990a17d936f92fba937c216939559e3d522211d9281c5051a57c2c077e4` |
+| DataFusion stack root lock | `b4756004d72d52ccb5525452b5603baf97b152a3b4296f58cda214f9f91fd463` |
+| Delta Kernel candidate browser lock | `5cca1727ca04e97cfefb65cb0111ddcc4d481b4abbd8bc7f9034f99fb752d2aa` |
+| Delta Kernel stack browser lock | `7e784bc7daac79d028bfa92690abc80c5f53d8901ab4ceea0edd6ceaab02da99` |
+| delta-rs stack browser lock | `9640bfbc8d2bdb7d7375e11ba441d88594326c6007f0a7a9ecf2896c291af8b2` |
+
+### Corrected Browser And Artifact Evidence
+
+Both engines returned snapshot `0`, `alpha=7,beta=10`, row count `2`, 840 exact-sized Arrow IPC
+bytes with SHA-256 `993f5a3cf4ee02fa9e2103e60e1cfb9118d54e6a1a577b148913cc10081d8784`,
+the existing Arrow stream content type, `browser_wasm`, and no native fallback. Both also reached
+metadata/schema replay for the zstd fixture and failed only at the first compressed page with the
+precise target-unavailable diagnostic.
+
+Local measurements:
+
+| Browser | Version | Cold end-to-end | Warm median | Warm max | WASM memory high-water |
+| ------- | ------- | --------------: | ----------: | -------: | ---------------------: |
+| Chrome | `150.0.7871.184` | 152.92 ms | 5.3 ms | 5.5 ms | 14,614,528 bytes |
+| Firefox | `144.0.2` | 325.99 ms | 10.0 ms | 11.0 ms | 14,614,528 bytes |
+
+The local bundle is 28,139,553 raw bytes, 6,585,735 gzip bytes, and 4,305,241 Brotli bytes, with
+WASM SHA-256 `d72eb6d7950d825e000612e677a801bf417be1461d7c99daf922b370865c4de0`.
+Local evidence is
+`target/upstream-wasm-fork-poc-evidence/988adae4f505953bb22675cc5e564cf4da077d4bec1ca7059865167d3f8187ea/browser-evidence.json`
+with SHA-256 `ef9a9ba92d1f1eaea9abbd9884619cd06b6f21e94d2fae9b2f5c8ad4ee2f9a16`.
+
+CI measurements:
+
+| Browser | Version | Cold end-to-end | Warm median | Warm max | WASM memory high-water |
+| ------- | ------- | --------------: | ----------: | -------: | ---------------------: |
+| Chrome | `150.0.7871.186` | 352.68 ms | 16.9 ms | 23.5 ms | 14,614,528 bytes |
+| Firefox | `144.0.2` | 1,173.32 ms | 35.0 ms | 36.0 ms | 14,614,528 bytes |
+
+The CI bundle is 28,128,847 raw bytes, 6,687,628 gzip bytes, and 4,304,174 Brotli bytes, with WASM
+SHA-256 `c6e9b62653b74d0718309ade38834b7dab9dd7b03450fd0c5e0eb6d6e9db37f6`.
+CI used Rust/Cargo 1.95.0, wasm-bindgen 0.2.114, and Node 22.23.1. Local evidence used the same
+Rust/Cargo and wasm-bindgen with Node 25.4.0.
+
+Downloaded run artifacts are under
+`target/upstream-wasm-fork-poc-evidence/988adae4f505953bb22675cc5e564cf4da077d4bec1ca7059865167d3f8187ea/ci-run-30183442839/`.
+
+| Artifact file | SHA-256 |
+| ------------- | ------- |
+| Browser `browser-evidence.json` | `c986f7f428cd3ea7bfb7074ef95d012e6ebef9b7ed85d7bbada9b7ea8cb7decd` |
+| Browser `dependency-tree.txt` | `a33416f9e0ce69d2a93e05f283b0c8c744541faac770abecac34fdabe7f30c0c` |
+| Browser `lock-sha256.txt` | `617f65ea1ec147c7e28907e2192890c1ebff7abb0c4474aa8be81e45086431eb` |
+| Graph `dependency-tree.txt` | `ef6ad0e06fdf32da69fee94983e510cd402132be33cf7c397db584721ed86bda` |
+| Graph `lock-sha256.txt` | `617f65ea1ec147c7e28907e2192890c1ebff7abb0c4474aa8be81e45086431eb` |
+| Graph `rustc.txt` | `4fdff2578428e9c5c08ddd7a0d3079c1a106b1cdaa46e73e46f7cd32b0fb9cad` |
+| Graph `cargo.txt` | `c10ec31b8c6e6e2693cf65fc1971b41edbc3da1ae7db6f9f3f36c4823f8dcab5` |
+
+The encoded-range proof is no longer inferred: for each browser the artifact records one GET,
+`Range: bytes=1-4`, status `206`, four transferred bytes, and the exact
+`Content-Encoding "identity, identity"; expected identity` diagnostic.
+
+### Current Tags And Forward-Port State
+
+The new annotated tag resolves as follows:
+
+| Fork | Tag object | Peeled stack commit |
+| ---- | ---------- | ------------------- |
+| Arrow | `e4bedac9f2ae70eccb337820aaed3af9eb1b06f2` | `518663f4fb39ec0be672718432bbd7bb8a5456fc` |
+| `object_store` | `a27fa8d1b38d30d5656740be4cd24126bddbd825` | `a04240eafdc5833e34fe21d4b348ee399177def6` |
+| DataFusion | `caad12f028d6d3f41cb560fd00c849305325128a` | `aa1d3bfb591e0e10594160119d8899d4b856c3f5` |
+| Delta Kernel | `8276fcb4324018507f972a8ca374f411b58306a2` | `bbccfb394bf4a3eac54e125d71996a66a5a0e13a` |
+| delta-rs | `b12f79271511e5eb35d7f13331e948e1ca74dff4` | `be60607f67951459e886915e8104273880dcc5cb` |
+
+Canonical remotes were refreshed after the technical proof:
+
+| Repository | Canonical head |
+| ---------- | -------------- |
+| Arrow | `cd47d4a421b671fbdb78dac0d3896e9e4f9055c3` |
+| `object_store` | `84d24eb8efcec9448566de09e94d2d4b74b21ebe` |
+| DataFusion | `e3e2cb227928ffa498c2845db6ce2aa86ee174b4` |
+| Delta Kernel | `2403501198e9b132b714c9945fb3175c0364b1dd` |
+| delta-rs | `3f562682c5a9dd55693b7f7bbd2a2f749fdf38e5` |
+
+The corrected `object_store` forward branch is
+`upstream/wasm32-browser-range-protocol` at
+`9b5ffc710d5c7fb38068e8a16dbe29446593a84b`; it is DCO-signed, candidate-clean, and contains the
+current canonical head. The corrected delta-rs branch is
+`upstream/wasm32-browser-engine-incubation` at
+`e0fa37143e6888c06623c6a43adf1c801a189ca0`; it is likewise clean and contains the current
+canonical head. The Arrow and DataFusion forward branches remain the previously verified clean
+slices, but their canonical heads advanced after that verification, so repository owners must
+refresh them before opening canonical PRs. The Delta Kernel branch remains deliberately
+unpublished because the compatibility-base-to-current redesign still crosses the broad-surgery
+stop condition. No canonical PR was opened.
+
+Inherited workflow failures are not substituted for the owned gates above. In particular, Axon's
+generic `ci.yml` still fails at workflow creation with zero jobs; DataFusion's full inherited
+dependency/Clippy workflows report the known target-only `getrandom` cargo-machete diagnostic and
+`object_store::Path::child` deprecations; Kernel's inherited all-feature Clippy reports the known
+dead-code and `new_without_default` diagnostics. The POC-owned browser workflows, default-native
+checks, exact-target checks, and complete Axon run are green.
+
+The dirty Axon root remains at `3e5aceda0c1eb2c0dea983c0e5849200447a363f` with 61 modified or
+untracked files and root `Cargo.lock` SHA-256
+`0f8630bdea0dca3fdaa0186a46c31ee0651d067a0b300cf9192c9ec6dd4f5d33`. The audit-closeout dirty-file
+inventory hashes to `5eef7bdfe653493f2d903614726adb4795165c834ea6f8449131d38b88214d60`;
+all audit implementation and documentation changes stayed in the isolated POC worktree.
+
+## Historical 2026-07-23 Evidence Freeze
+
+The material below preserves the original immutable freeze. Where a revision, tag, measurement,
+canonical head, or artifact hash differs, the audit-closure section above is authoritative.
 
 ## Control Plane And Isolation
 
