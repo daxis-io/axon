@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ExecutionRejectionReason } from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
 import type { EngineStatus } from '../services/types.ts';
-import type { QuerySourceSelection, QueryTableSource } from '../services/query-source.ts';
 import { selectEngineActions, selectEngineStatus } from '../state/hooks.ts';
 import { createAxonClientStore, createMemoryClientStateStorage } from '../state/store.ts';
 import type { RunUiState } from '../state/slices/run.ts';
@@ -13,15 +13,9 @@ type AppEngineStatusModule = {
   ) => () => void;
 };
 
-type AppQuerySelectionModule = {
-  executeQuerySelection?: <T>(
-    selection: QuerySourceSelection,
-    execute: (source: QueryTableSource) => Promise<T>,
-  ) => Promise<{ status: 'unavailable'; reason: string } | { status: 'executed'; value: T }>;
-};
-
 type AppExecutionGuardModule = {
   executionMayUpdateUi?: (runState: RunUiState, executionId: string) => boolean;
+  browserProviderRejectionReason?: (error: unknown) => ExecutionRejectionReason;
 };
 
 type AppTimerOwnershipModule = {
@@ -73,23 +67,6 @@ describe('App engine status subscription', () => {
   });
 });
 
-describe('App authoritative query selection', () => {
-  it('does not invoke the lazy query path for an unavailable selection', async () => {
-    const executeQuerySelection = (AppModule as AppQuerySelectionModule).executeQuerySelection;
-    const execute = vi.fn();
-    const selection: QuerySourceSelection = { kind: 'unavailable', reason: 'missing' };
-
-    expect(executeQuerySelection).toEqual(expect.any(Function));
-    if (!executeQuerySelection) return;
-
-    await expect(executeQuerySelection(selection, execute)).resolves.toEqual({
-      status: 'unavailable',
-      reason: 'missing',
-    });
-    expect(execute).not.toHaveBeenCalled();
-  });
-});
-
 describe('App execution callback guard', () => {
   it('allows post-await UI effects only for the current execution ID', () => {
     const executionMayUpdateUi = (AppModule as AppExecutionGuardModule).executionMayUpdateUi;
@@ -120,6 +97,27 @@ describe('App execution callback guard', () => {
       ),
     ).toBe(false);
     expect(executionMayUpdateUi({ status: 'idle' }, 'execution-1')).toBe(false);
+  });
+
+  it('preserves provider rejection classes without accepting unrelated error fields', () => {
+    const browserProviderRejectionReason = (AppModule as AppExecutionGuardModule)
+      .browserProviderRejectionReason;
+    expect(browserProviderRejectionReason).toEqual(expect.any(Function));
+    if (!browserProviderRejectionReason) return;
+
+    expect(
+      browserProviderRejectionReason({
+        rejectionReason: ExecutionRejectionReason.ACCESS_DENIED,
+      }),
+    ).toBe(ExecutionRejectionReason.ACCESS_DENIED);
+    expect(
+      browserProviderRejectionReason({
+        rejectionReason: ExecutionRejectionReason.CANCELLED,
+      }),
+    ).toBe(ExecutionRejectionReason.UNAVAILABLE);
+    expect(browserProviderRejectionReason(new Error('runtime import failed'))).toBe(
+      ExecutionRejectionReason.UNAVAILABLE,
+    );
   });
 });
 

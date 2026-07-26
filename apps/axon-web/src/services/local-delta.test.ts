@@ -4,9 +4,11 @@ import { HandleStore, type LocalDeltaHandleStoreRecord } from '../persistence/ha
 import {
   hasLocalDeltaRuntime,
   loadLocalDeltaRuntime,
+  openLocalDeltaTableFromDirectoryHandle,
   openLocalDeltaTableFromFileList,
   releaseLocalDeltaObjectUrls,
   unregisterLocalDeltaRuntime,
+  type LocalFileSystemDirectoryHandle,
   type LocalDeltaPersistenceMode,
 } from './local-delta.ts';
 import {
@@ -15,23 +17,25 @@ import {
   SAMPLE_CONNECTED_CATALOG,
 } from '../editor/connect/store.ts';
 import type { ConnectedCatalog } from '../editor/connect/types.ts';
+import { resolve_delta_snapshot_from_manifest } from '../wasm/axon_web_wasm.js';
 
 vi.mock('../wasm/axon_web_wasm.js', () => ({
   default: vi.fn(async () => undefined),
-  resolve_delta_snapshot_from_manifest: vi.fn(async (_manifestJson: string, tableUri: string) =>
-    JSON.stringify({
-      table_uri: tableUri,
-      snapshot_version: 0,
-      partition_column_types: {},
-      active_files: [
-        {
-          path: 'part-00001.parquet',
-          size_bytes: 7,
-          partition_values: {},
-          stats: JSON.stringify({ numRecords: 1 }),
-        },
-      ],
-    }),
+  resolve_delta_snapshot_from_manifest: vi.fn(
+    async (_manifestJson: string, tableUri: string, snapshotVersion?: number) =>
+      JSON.stringify({
+        table_uri: tableUri,
+        snapshot_version: snapshotVersion ?? 0,
+        partition_column_types: {},
+        active_files: [
+          {
+            path: 'part-00001.parquet',
+            size_bytes: 7,
+            partition_values: {},
+            stats: JSON.stringify({ numRecords: 1 }),
+          },
+        ],
+      }),
   ),
 }));
 
@@ -61,6 +65,7 @@ let createObjectUrl: ReturnType<typeof vi.fn>;
 let revokeObjectUrl: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  vi.clearAllMocks();
   indexedDB = new IDBFactory();
   storage = new MemoryStorage();
   createObjectUrl = vi.fn((file: File) => `blob:${file.name}:${file.size}`);
@@ -87,6 +92,7 @@ beforeEach(() => {
 afterEach(async () => {
   await unregisterLocalDeltaRuntime('metadata-only').catch(() => undefined);
   await unregisterLocalDeltaRuntime('session-only').catch(() => undefined);
+  await unregisterLocalDeltaRuntime('directory-access').catch(() => undefined);
   releaseLocalDeltaObjectUrls();
   vi.restoreAllMocks();
 });
@@ -100,7 +106,7 @@ describe('local Delta registry persistence', () => {
     });
 
     expect(runtime.persistence).toBe('metadata_only_reselect');
-    expect(runtime.descriptor.active_files[0].url).toBe('blob:part-00001.parquet:7');
+    expect(runtime.descriptor.activeFiles[0].url).toBe('blob:part-00001.parquet:7');
     expect(storage.getItem(ACTIVE_LOCAL_DELTA_ID_KEY)).toBe('metadata-only');
     expect(putSpy).toHaveBeenCalledTimes(1);
 
@@ -154,6 +160,71 @@ describe('local Delta registry persistence', () => {
     const durableCatalog = connectedCatalog('durable', 'metadata_only_reselect');
     saveConnectedCatalogs([connectedCatalog('session-only', runtime.persistence), durableCatalog]);
     expect(loadConnectedCatalogs().map((catalog) => catalog.id)).toEqual(['durable']);
+  });
+
+  it('materializes a requested snapshot once and reuses its generated descriptor and Blob URLs', async () => {
+    Object.defineProperty(globalThis, 'indexedDB', {
+      configurable: true,
+      value: undefined,
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await openLocalDeltaTableFromFileList(deltaTableFiles(), {
+      registryId: 'session-only',
+    });
+
+    const pinned = await loadLocalDeltaRuntime('session-only', {
+      schemaName: 'default',
+      tableName: 'events',
+      snapshotVersion: 12,
+    });
+    const objectUrlCallsAfterPin = createObjectUrl.mock.calls.length;
+    const reused = await loadLocalDeltaRuntime('session-only', {
+      schemaName: 'default',
+      tableName: 'events',
+      snapshotVersion: 12,
+    });
+
+    expect(resolve_delta_snapshot_from_manifest).toHaveBeenCalledWith(
+      expect.any(String),
+      'browser-local://delta-table/table-root',
+      12,
+    );
+    expect(pinned.descriptor).toMatchObject({
+      tableUri: 'browser-local://delta-table/table-root',
+      snapshotVersion: 12n,
+      activeFiles: [
+        {
+          path: 'part-00001.parquet',
+          url: 'blob:part-00001.parquet:7',
+          sizeBytes: 7n,
+        },
+      ],
+    });
+    expect(reused.descriptor).toBe(pinned.descriptor);
+    expect(createObjectUrl).toHaveBeenCalledTimes(objectUrlCallsAfterPin);
+  });
+
+  it('rechecks a retained directory handle on every execution without rebuilding the runtime', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const queryPermission = vi.fn(async () => 'granted' as PermissionState);
+    const directory = directoryHandle(queryPermission);
+    const opened = await openLocalDeltaTableFromDirectoryHandle(directory, {
+      registryId: 'directory-access',
+      tableName: 'events',
+    });
+    const objectUrlCallsAfterOpen = createObjectUrl.mock.calls.length;
+
+    const first = await loadLocalDeltaRuntime('directory-access', {
+      tableName: 'events',
+    });
+    const second = await loadLocalDeltaRuntime('directory-access', {
+      tableName: 'events',
+    });
+
+    expect(queryPermission).toHaveBeenCalledTimes(2);
+    expect(first.descriptor).toBe(opened.descriptor);
+    expect(second.descriptor).toBe(opened.descriptor);
+    expect(createObjectUrl).toHaveBeenCalledTimes(objectUrlCallsAfterOpen);
   });
 });
 
@@ -219,5 +290,43 @@ function connectedCatalog(id: string, persistence: LocalDeltaPersistenceMode): C
         ],
       },
     ],
+  };
+}
+
+function directoryHandle(
+  queryPermission: () => Promise<PermissionState>,
+): LocalFileSystemDirectoryHandle {
+  const files = deltaTableFiles();
+  const commit = files.find((file) => file.name.endsWith('.json'))!;
+  const data = files.find((file) => file.name.endsWith('.parquet'))!;
+  const logDirectory: LocalFileSystemDirectoryHandle = {
+    kind: 'directory',
+    name: '_delta_log',
+    async *entries() {
+      yield [
+        '00000000000000000000.json',
+        {
+          kind: 'file' as const,
+          name: '00000000000000000000.json',
+          getFile: async () => commit,
+        },
+      ];
+    },
+  };
+  return {
+    kind: 'directory',
+    name: 'table-root',
+    queryPermission,
+    async *entries() {
+      yield ['_delta_log', logDirectory];
+      yield [
+        'part-00001.parquet',
+        {
+          kind: 'file' as const,
+          name: 'part-00001.parquet',
+          getFile: async () => data,
+        },
+      ];
+    },
   };
 }

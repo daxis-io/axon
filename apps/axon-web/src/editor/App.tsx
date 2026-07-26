@@ -10,10 +10,10 @@ import {
 } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  BROWSER_SAFE_ARROW_IPC_BYTES,
-  BROWSER_SAFE_PREVIEW_STRING_BYTES,
-  BROWSER_SAFE_RESULT_ROW_LIMIT,
-} from '../axon-browser-sdk.ts';
+  ExecutionLifecycleState,
+  ExecutionRejectionReason,
+  ExecutionTarget as ContractExecutionTarget,
+} from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
 import {
   catalogQueryOptions,
   commitsQueryOptions,
@@ -33,11 +33,12 @@ import {
 import { subscribeEngineStatus } from '../services/engine.ts';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
 import {
+  cancelExecutionRequest,
   createExecutionController,
-  type ExecutionBudgets,
 } from '../services/execution-lifecycle.ts';
 import { hasLocalDeltaRuntime } from '../services/local-delta-session.ts';
 import {
+  browserQueryRequest,
   queryResultPageRun,
   queryResultPageRunRequest,
   sameQueryResultPageRun,
@@ -46,11 +47,10 @@ import {
 import {
   resolveQuerySourceSelection,
   type ActiveConnectedTableRef,
-  type QuerySourceSelection,
-  type QueryTableSource,
+  type AvailableQuerySourceSelection,
 } from '../services/query-source.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
-import type { QueryEvent, QueryExecRequest } from '../services/types.ts';
+import type { QueryEvent } from '../services/types.ts';
 import {
   selectActiveConnectedTableRef,
   selectActiveSqlTab,
@@ -117,11 +117,6 @@ const TARGET_OPTIONS = SERVER_QUERY_FALLBACK_ENABLED
   : [{ id: 'browser_wasm' as const, short: 'Browser', cls: 'browser' }];
 
 const EDITOR_EXECUTION_TIMEOUT_MS = 120_000;
-const EDITOR_EXECUTION_BUDGETS: ExecutionBudgets = Object.freeze({
-  maxResultRows: BROWSER_SAFE_RESULT_ROW_LIMIT,
-  maxArrowIpcBytes: BROWSER_SAFE_ARROW_IPC_BYTES,
-  maxPreviewStringBytes: BROWSER_SAFE_PREVIEW_STRING_BYTES,
-});
 const editorExecutionController = createExecutionController();
 
 type ActiveCancellation = {
@@ -150,6 +145,12 @@ function targetTitle(id: SqlTab['preferred']): string {
   return 'Run on native DataFusion runtime';
 }
 
+function contractExecutionTarget(target: SqlTab['preferred']): ContractExecutionTarget {
+  return target === 'native'
+    ? ContractExecutionTarget.NATIVE
+    : ContractExecutionTarget.BROWSER_WASM;
+}
+
 export function subscribeAppEngineStatus(
   engineActions: Pick<EngineActions, 'setStatus'>,
   subscribe: typeof subscribeEngineStatus = subscribeEngineStatus,
@@ -157,24 +158,36 @@ export function subscribeAppEngineStatus(
   return subscribe(engineActions.setStatus);
 }
 
-export async function executeQuerySelection<T>(
-  selection: QuerySourceSelection,
-  execute: (source: QueryTableSource) => Promise<T>,
-): Promise<
-  | {
-      status: 'unavailable';
-      reason: Extract<QuerySourceSelection, { kind: 'unavailable' }>['reason'];
-    }
-  | { status: 'executed'; value: T }
-> {
-  if (selection.kind === 'unavailable') {
-    return { status: 'unavailable', reason: selection.reason };
-  }
-  return { status: 'executed', value: await execute(selection.source) };
-}
-
 export function executionMayUpdateUi(runState: RunUiState, executionId: string): boolean {
   return runState.status !== 'idle' && runState.executionId === executionId;
+}
+
+export function browserProviderRejectionReason(error: unknown): ExecutionRejectionReason {
+  const reason =
+    typeof error === 'object' && error !== null && 'rejectionReason' in error
+      ? error.rejectionReason
+      : undefined;
+  switch (reason) {
+    case ExecutionRejectionReason.INVALID_REQUEST:
+    case ExecutionRejectionReason.UNSUPPORTED:
+    case ExecutionRejectionReason.ACCESS_DENIED:
+    case ExecutionRejectionReason.UNAVAILABLE:
+      return reason;
+    default:
+      return ExecutionRejectionReason.UNAVAILABLE;
+  }
+}
+
+function sameSelectedTable(
+  left: AvailableQuerySourceSelection,
+  right: AvailableQuerySourceSelection,
+): boolean {
+  return (
+    left.kind === right.kind &&
+    left.ref.catalogId === right.ref.catalogId &&
+    left.ref.schemaName === right.ref.schemaName &&
+    left.ref.tableName === right.ref.tableName
+  );
 }
 
 function connectedTableForRef(
@@ -231,6 +244,7 @@ export function App() {
   const tableMeta = catalog?.tables[0];
 
   const runIsRunning = useAxonClientStore(selectRunIsRunning);
+  const resultPageRun = selectRunResultPageRun(axonClientStore.getState());
   const runActions = useAxonClientStore(selectRunActions);
 
   const cancelRef = useRef<ActiveCancellation | null>(null);
@@ -245,17 +259,23 @@ export function App() {
     !hasLocalDeltaRuntime(querySource.localRegistryId);
 
   const activeResultPageRun = useMemo(() => {
-    if (querySelection.kind === 'unavailable') return undefined;
+    if (
+      querySelection.kind === 'unavailable' ||
+      !resultPageRun ||
+      !sameSelectedTable(resultPageRun.selection, querySelection)
+    ) {
+      return undefined;
+    }
     return queryResultPageRun(
-      {
+      resultPageRun.table,
+      browserQueryRequest({
         sql: active.sql,
-        table_name: tableMeta?.name ?? querySelection.source.tableName,
-        preferred_target: active.preferred,
-        snapshot_version: active.pin ?? undefined,
-      },
+        preferredTarget: contractExecutionTarget(active.preferred),
+      }),
       querySelection,
+      active.pin ?? undefined,
     );
-  }, [active.pin, active.preferred, active.sql, querySelection, tableMeta?.name]);
+  }, [active.pin, active.preferred, active.sql, querySelection, resultPageRun]);
   const activeResultPageRunRef = useRef<QueryResultPageRun | undefined>(undefined);
 
   useEffect(() => {
@@ -369,28 +389,26 @@ export function App() {
     }
 
     if (cancelRef.current) {
-      editorExecutionController.requestCancellation(cancelRef.current.executionId);
+      editorExecutionController.cancel(cancelExecutionRequest(cancelRef.current.executionId));
     }
     const ctrl = new AbortController();
     const deadlineCtrl = new AbortController();
     const target = tab.preferred === 'native' ? 'native' : 'browser_wasm';
-    const prepared = editorExecutionController.prepare({
-      selection: selectedSelection,
-      snapshotVersion: tab.pin ?? undefined,
+    const query = browserQueryRequest({
       sql: tab.sql,
-      target,
-      timeoutMs: EDITOR_EXECUTION_TIMEOUT_MS,
-      budgets: EDITOR_EXECUTION_BUDGETS,
+      preferredTarget: contractExecutionTarget(tab.preferred),
     });
+    const prepared = editorExecutionController.prepare({ timeoutMs: EDITOR_EXECUTION_TIMEOUT_MS });
     if (prepared.kind === 'rejected') {
       showToast('Execution history is full; wait for prior executions to expire.', 'warn');
       return;
     }
 
-    const { input } = prepared;
-    const executionId = input.executionId;
+    const { execution } = prepared;
+    const executionId = execution.executionId;
     cancelRef.current = { executionId };
     runActions.createRun(executionId, target);
+    editorExecutionController.attachCancellation(executionId, () => ctrl.abort());
     const unsubscribe = editorExecutionController.subscribe(executionId, (delivery) => {
       if (delivery.kind === 'terminal') {
         if (delivery.state === 'failed' && delivery.reason === 'deadline') {
@@ -412,27 +430,6 @@ export function App() {
       runActions.appendRunEvent(executionId, event);
     });
 
-    const admission = editorExecutionController.admit(input);
-    if (admission.kind !== 'accepted' || !admission.launch) {
-      runActions.rejectRun({
-        status: 'rejected',
-        executionId,
-        target,
-        ms: 0,
-        message:
-          admission.kind === 'id_reuse'
-            ? 'Execution ID was already used with different immutable input.'
-            : 'Execution admission was not launchable.',
-        code: admission.kind === 'id_reuse' ? 'execution_id_reuse' : 'admission_rejected',
-      });
-      unsubscribe();
-      cancelRef.current = null;
-      showToast('Execution admission rejected.', 'warn');
-      return;
-    }
-    editorExecutionController.attachCancellation(executionId, () => ctrl.abort());
-
-    runActions.startRun(executionId);
     if (runTimer.current != null) window.clearInterval(runTimer.current);
     const startedAt = performance.now();
     const ownedTimer = window.setInterval(() => {
@@ -440,40 +437,81 @@ export function App() {
     }, 80);
     runTimer.current = ownedTimer;
 
-    const req: QueryExecRequest = {
-      sql: tab.sql,
-      table_name: tableMeta?.name ?? selectedSource.tableName,
-      preferred_target: tab.preferred,
-      snapshot_version: tab.pin ?? undefined,
-    };
-
+    let admitted = false;
     try {
-      const execution = await executeQuerySelection(querySelection, async (source) => {
-        const { runQuery } = await import('../services/query.ts');
-        return runQuery(
-          req,
-          (event) => editorExecutionController.publishFrame(executionId, event),
-          source,
-          input,
-          ctrl.signal,
-          deadlineCtrl.signal,
-        );
+      const { resolveBrowserExecuteInput, runQuery } = await import('../services/query.ts');
+      const browserInput = await resolveBrowserExecuteInput({
+        selection: selectedSelection,
+        query,
+        snapshotVersion: tab.pin ?? undefined,
+        execution,
+        signal: ctrl.signal,
       });
-      if (execution.status === 'unavailable') {
-        const terminal = editorExecutionController.fail(executionId, 'source_unavailable');
-        if (terminal.kind === 'transitioned') {
+      const pageRun = queryResultPageRun(
+        browserInput.table,
+        query,
+        selectedSelection,
+        tab.pin ?? undefined,
+      );
+      const admission = editorExecutionController.admit(browserInput.request);
+      if (admission.admission.outcome.case !== 'accepted') {
+        const rejection =
+          admission.admission.outcome.case === 'rejected'
+            ? admission.admission.outcome.value
+            : {
+                reason: ExecutionRejectionReason.INVALID_REQUEST,
+                message: 'Execution admission returned no outcome.',
+              };
+        if (rejection.reason === ExecutionRejectionReason.CANCELLED) {
+          runActions.finishRunCancelled({
+            status: 'cancelled',
+            executionId,
+            target,
+            ms: Math.round(performance.now() - startedAt),
+            message: rejection.message,
+          });
+        } else if (rejection.reason === ExecutionRejectionReason.DEADLINE_EXPIRED) {
           runActions.finishRunError({
             status: 'failed',
             executionId,
             target,
             ms: Math.round(performance.now() - startedAt),
-            message: 'The selected query source became unavailable.',
-            code: 'source_unavailable',
+            message: 'Execution deadline exceeded.',
+            code: 'deadline',
+          });
+        } else {
+          runActions.rejectRun({
+            status: 'rejected',
+            executionId,
+            target,
+            ms: Math.round(performance.now() - startedAt),
+            message: rejection.message,
+            code: 'admission_rejected',
           });
         }
+        showToast(rejection.message || 'Execution admission rejected.', 'warn');
         return;
       }
-      const outcome = execution.value;
+      if (!admission.admission.outcome.value.launch) {
+        runActions.rejectRun({
+          status: 'rejected',
+          executionId,
+          target,
+          ms: Math.round(performance.now() - startedAt),
+          message: 'Execution admission replay did not launch duplicate work.',
+          code: 'admission_replay',
+        });
+        return;
+      }
+      admitted = true;
+      runActions.startRun(executionId);
+      const outcome = await runQuery(
+        browserInput,
+        (event) => editorExecutionController.publishFrame(executionId, event),
+        selectedSource,
+        ctrl.signal,
+        deadlineCtrl.signal,
+      );
 
       if (outcome.status === 'done') {
         const terminal = editorExecutionController.complete(executionId, outcome);
@@ -498,7 +536,7 @@ export function App() {
             fallback: fallbackPretty,
           },
           resultData: outcome.result,
-          resultPageRun: queryResultPageRun(req, selectedSelection),
+          resultPageRun: pageRun,
           metrics: outcome.metrics,
           plan: outcome.explain ? { tree: outcome.explain } : undefined,
           capabilities: overlayCapabilityReport(
@@ -584,6 +622,43 @@ export function App() {
       showToast(outcome.message, 'warn');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (!admitted) {
+        const recordedReason =
+          editorExecutionController.lifecycle.getSnapshot(executionId)?.rejectionReason;
+        const reason = recordedReason ?? browserProviderRejectionReason(error);
+        if (recordedReason === undefined) {
+          editorExecutionController.reject(executionId, reason, message);
+        }
+        if (reason === ExecutionRejectionReason.CANCELLED) {
+          runActions.finishRunCancelled({
+            status: 'cancelled',
+            executionId,
+            target,
+            ms: Math.round(performance.now() - startedAt),
+            message: 'Query cancelled',
+          });
+        } else if (reason === ExecutionRejectionReason.DEADLINE_EXPIRED) {
+          runActions.finishRunError({
+            status: 'failed',
+            executionId,
+            target,
+            ms: Math.round(performance.now() - startedAt),
+            message: 'Execution deadline exceeded.',
+            code: 'deadline',
+          });
+        } else {
+          runActions.rejectRun({
+            status: 'rejected',
+            executionId,
+            target,
+            ms: Math.round(performance.now() - startedAt),
+            message,
+            code: 'resolution_rejected',
+          });
+        }
+        showToast(message, 'warn');
+        return;
+      }
       const terminal = editorExecutionController.fail(executionId, 'adapter_error', error);
       if (terminal.kind === 'transitioned') {
         runActions.finishRunError({
@@ -611,7 +686,6 @@ export function App() {
     runActions,
     showToast,
     tabActions,
-    tableMeta?.name,
   ]);
 
   const loadMoreRows = useCallback(async () => {
@@ -634,21 +708,16 @@ export function App() {
       offset: page.next_offset,
       size: page.size,
     });
-    const target = req.preferred_target === 'native' ? 'native' : 'browser_wasm';
-    const prepared = editorExecutionController.prepare({
-      selection: runForPage.selection,
-      snapshotVersion: req.snapshot_version,
-      sql: req.sql,
-      target,
-      timeoutMs: EDITOR_EXECUTION_TIMEOUT_MS,
-      budgets: EDITOR_EXECUTION_BUDGETS,
-    });
+    const prepared = editorExecutionController.prepare({ timeoutMs: EDITOR_EXECUTION_TIMEOUT_MS });
     if (prepared.kind === 'rejected') {
       showToast('Execution history is full; wait for prior executions to expire.', 'warn');
       return;
     }
-    const { input } = prepared;
-    const executionId = input.executionId;
+    const { execution } = prepared;
+    const executionId = execution.executionId;
+    cancelRef.current = { executionId };
+    editorExecutionController.attachCancellation(executionId, () => ctrl.abort());
+    runActions.startLoadMoreRows(executionId);
     const unsubscribe = editorExecutionController.subscribe(executionId, (delivery) => {
       if (delivery.kind === 'terminal') {
         if (delivery.state === 'failed' && delivery.reason === 'deadline') {
@@ -662,24 +731,36 @@ export function App() {
       if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') return;
       runActions.appendRunEvent(executionId, event);
     });
-    const admission = editorExecutionController.admit(input);
-    if (admission.kind !== 'accepted' || !admission.launch) {
-      unsubscribe();
-      showToast('Result-page execution admission rejected.', 'warn');
-      return;
-    }
 
-    cancelRef.current = { executionId };
-    editorExecutionController.attachCancellation(executionId, () => ctrl.abort());
-    runActions.startLoadMoreRows(executionId);
-
+    let admitted = false;
     try {
-      const { runQuery } = await import('../services/query.ts');
+      const { resolveBrowserExecuteInput, runQuery } = await import('../services/query.ts');
+      const browserInput = await resolveBrowserExecuteInput({
+        selection: runForPage.selection,
+        table: runForPage.table,
+        query: req,
+        snapshotVersion: runForPage.snapshotVersion,
+        execution,
+        signal: ctrl.signal,
+      });
+      const admission = editorExecutionController.admit(browserInput.request);
+      if (
+        admission.admission.outcome.case !== 'accepted' ||
+        !admission.admission.outcome.value.launch
+      ) {
+        runActions.finishLoadMoreRows(executionId);
+        const message =
+          admission.admission.outcome.case === 'rejected'
+            ? admission.admission.outcome.value.message
+            : 'Result-page execution replay did not launch duplicate work.';
+        showToast(message, 'warn');
+        return;
+      }
+      admitted = true;
       const outcome = await runQuery(
-        req,
+        browserInput,
         (event) => editorExecutionController.publishFrame(executionId, event),
         runForPage.selection.source,
-        input,
         ctrl.signal,
         deadlineCtrl.signal,
       );
@@ -727,6 +808,20 @@ export function App() {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (!admitted) {
+        const recordedReason =
+          editorExecutionController.lifecycle.getSnapshot(executionId)?.rejectionReason;
+        const reason = recordedReason ?? browserProviderRejectionReason(error);
+        if (recordedReason === undefined) {
+          editorExecutionController.reject(executionId, reason, message);
+        }
+        runActions.finishLoadMoreRows(executionId);
+        showToast(
+          reason === ExecutionRejectionReason.CANCELLED ? 'Query cancelled' : message,
+          'warn',
+        );
+        return;
+      }
       const terminal = editorExecutionController.fail(executionId, 'adapter_error', error);
       if (terminal.kind === 'transitioned') {
         runActions.finishLoadMoreRows(executionId);
@@ -741,10 +836,10 @@ export function App() {
   const cancelRun = useCallback(() => {
     const activeCancellation = cancelRef.current;
     if (!activeCancellation) return;
-    const cancellation = editorExecutionController.requestCancellation(
-      activeCancellation.executionId,
+    const cancellation = editorExecutionController.cancel(
+      cancelExecutionRequest(activeCancellation.executionId),
     );
-    if (cancellation.kind === 'cancel_requested') {
+    if (cancellation.state === ExecutionLifecycleState.CANCEL_REQUESTED) {
       runActions.requestRunCancellation(activeCancellation.executionId);
     }
     if (runTimer.current != null) clearOwnedRunTimer(runTimer, runTimer.current);

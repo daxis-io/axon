@@ -2,7 +2,7 @@
 
 - Status: Revised draft
 - Date: 2026-06-20
-- Revised: 2026-07-15
+- Revised: 2026-07-23
 - Scope: Define the target architecture and sequence for evolving Axon's editor app into a provider-driven lakehouse workbench while distinguishing landed implementation from proposed work.
 - Related:
   - [Rich Lakehouse Workbench Planning Prompts](./rich-lakehouse-workbench-planning-prompts.md)
@@ -63,14 +63,28 @@ Authorization decision and enforcement authority are separate roles. A browser d
 
 The following statements describe landed implementation, not the target architecture:
 
-- **Local/public vertical slice:** `LocalDelta` and public `ObjectStore` execute through the browser worker. Unity Catalog, governed read resolution, remote execution, and filesystem browsing do not yet work end to end.
-- **Source selection is not yet a provider composition:** [query-source.ts](../../apps/axon-web/src/services/query-source.ts) and [query.ts](../../apps/axon-web/src/services/query.ts) still combine source selection, descriptor construction, session management, and execution. Removing wrong-source fallback and giving one selected source explicit authority is E9 Slice 1.
+- **Axon routes local/public sources through provider seams:** exact `LocalDelta` and public
+  GCS/S3 selections become generated canonical table resources, resolve through
+  profile-scoped `DataAccessResolver` instances, and execute through one
+  validated browser `ExecutionProvider`. The executor recognizes the sample
+  fixture under its fixed identity. Product selection never falls back to it.
+- **Generated contracts carry execution authority:** the app lifecycle stores and
+  replays the exact generated `ExecuteRequest`; cancellation, admission,
+  rejection, and terminal state use `axon.exec.v1`; and the executor
+  compatibility adapter in [query.ts](../../apps/axon-web/src/services/query.ts)
+  opens the supplied Delta snapshot descriptor. Local permission is rechecked
+  per execution, while public descriptor, opened-table, and range-cache reuse
+  retain their existing strong-identity gates.
 - **Contract substrate has landed:** Buf-managed `axon/common/v1`,
   `axon/catalog/v1`, `axon/dataaccess/v1`, `axon/exec/v1`, and `axon/fs/v1`
   messages have generated TypeScript output. Buffa Rust output exists for
   common, data-access, execution, and filesystem proof, not catalog. The
   filesystem package is messages-only substrate; its E8 provider, adapter, UI,
-  and runtime adoption remain proposed, as does app-layer E1/E9 adoption.
+  and runtime adoption remain proposed. Axon has completed E9 local/public
+  adoption. App-layer E1 `CatalogProvider` adoption remains proposed.
+- **Slice 3 remains proposed:** Unity Catalog discovery,
+  governed browser-read resolution, logical-resource/native execution, remote
+  execution, and filesystem browsing do not yet work end to end.
 - **Execution protobuf is worker-scoped:** the landed `BrowserWorker*` commands, events, and `QueryEngine` service descriptor are compatibility IPC for the browser client/worker boundary. They are not a deployed or portable remote service contract.
 - **Arrow IPC already crosses the worker boundary as bytes**, while a bounded JS-cell preview remains for the current UI.
 - **State and persistence are in transition:** typed store slices and generated config contracts are landed, while service singletons and persistence across IndexedDB, local storage, OPFS, and File System Access still need consolidation by ownership and access class.
@@ -153,10 +167,9 @@ pre-adoption correction, not another broad inventory of future contracts.
 - Defer a portable remote `QueryEngine` service, Connect transport, Tauri provider, and generic auth metadata until one remote host supplies concrete requirements and an executable conformance test.
 - When that consumer exists, design its remote service separately around identity, admission, deadlines, backpressure, idempotent cancellation, terminal outcomes, and audit. Reuse stable domain messages where they fit; do not expose browser worker lifecycle commands as the service API.
 
-Dependency: E9 Slice 1 establishes selected-source integrity and lifecycle
-without protobuf changes. The intentional E3A correction follows and is a
-mandatory gate before E9 Slice 2 or other app-layer contract adoption. E3B
-proceeds boundary by boundary after a consumer exists.
+Axon has completed E9 Slice 1, the intentional E3A correction, and E9 Slice 2
+local/public adoption. E3B proceeds boundary by boundary after another consumer
+exists.
 
 ### E4 — Optional Local Authorization Decisions
 
@@ -221,22 +234,29 @@ Dependency: needs the E1 volume reference, E6 session boundary, and E9 access/ex
 
 ### E9 — Execution Provider and Data Access Resolution
 
-E9 is the next vertical integration effort. Its [execution plan](../plans/2026-07-15-e9-execution-provider-vertical-slice-plan.md) orders the work around usable slices.
+E9 proceeds as vertical integrations. Its [execution plan](../plans/2026-07-15-e9-execution-provider-vertical-slice-plan.md) orders the work around usable slices.
 
-- **Slice 1 fixes source authority and lifecycle without protobuf changes:** a
+- **Slice 1 established source authority and lifecycle without protobuf changes:** a
   run names one selected connection and resource. Missing or invalid selection
   fails; it never falls back to sample data or another source. The domain
   `execution_id` maps to existing worker correlation fields until the correction
   PI.
-- **Then correct the unadopted contracts:** one intentional E3A PI aligns
-  canonical identity, binding, resolution, admission, and terminal-state wire
-  shapes before provider adoption.
-- **Adopt one browser path:** `DataAccessResolver` returns `browser_read` with one resolved envelope, `remote_required`, `denied`, or a typed error. The envelope is memory-only and includes the directly openable descriptor, expiry, access class, and correlation/provenance identifiers.
-- **Adopt one execution lifecycle:** the run controller creates `execution_id`
-  before admission. The provider admits identical retries idempotently, rejects
-  mismatched ID reuse, and atomically records one completed, failed, or cancelled
-  terminal state. The initial browser path returns one byte-budgeted Arrow IPC
-  buffer; chunked delivery waits for an explicit credit protocol.
+- **The intentional E3A PI aligned the contracts:** it corrected canonical
+  identity, binding, resolution, admission, lifecycle, and terminal-state wire
+  shapes before provider adoption. Slice 2 changed no protobuf or tracked
+  generated-contract files.
+- **Slice 2 routes the local/public browser path:** profile-scoped
+  `DataAccessResolver` instances return `browser_read`, `remote_required`,
+  `denied`, or a typed error. Local Delta, public GCS/S3, and the explicit
+  sample fixture now reach the sole SDK open through a validated
+  `ExecutionProvider`; arbitrary manifests and stale selections do not become a
+  fallback provider.
+- **Slice 2 uses one generated execution lifecycle:** the run controller
+  creates `execution_id` before resolution and admits the exact generated
+  request afterward. Identical retries are idempotent, the controller rejects
+  mismatched ID reuse, cancellation/deadline races retain one authority, and
+  completion returns one byte-budgeted Arrow IPC buffer plus at most one
+  terminal frame.
 - **Preserve authority:** browser/local execution accepts a resolved envelope. Remote/native execution accepts a logical reference and resolves server-side. Neither accepts both.
 - **Retry deliberately:** discovery and pre-acceptance resolution may retry within expiry. Accepted execution is not automatically retried.
 - **Fail closed:** policy refusal becomes `denied`; unsupported browser work
@@ -244,19 +264,20 @@ E9 is the next vertical integration effort. Its [execution plan](../plans/2026-0
   Unknown authority, expired capability, invalid adapter data, and unsafe URLs
   become typed resolution errors before the worker opens a table.
 
-After Slice 1 and the mandatory E3A correction, E9 Slice 2 preserves local/public
-behavior behind the resolver and executor seams. Slice 3 then proves one
-session-proxied Unity Catalog browser query by composing E1 and E6. A remote host
-contract follows only when a host implementation exists, and E8 runtime adoption
-waits for a read-only volume consumer.
+Axon has completed Slices 1 and 2 and the mandatory E3A correction. Slice 3
+must prove one session-proxied Unity Catalog browser query by composing E1 and E6.
+Governed reads, logical-resource/native execution, and remote execution stay out
+of the local/public executor until that work lands. A remote host contract
+follows only when a host implementation exists, and E8 runtime adoption waits
+for a read-only volume consumer.
 
 ## Dependency and sequencing view
 
 ```mermaid
 flowchart LR
-  A[E9 Slice 1: selected-source integrity and lifecycle]
-  B[Intentional E3A correction PI]
-  C[E9 Slice 2: local Delta and public objects]
+  A[E9 Slice 1: selected-source integrity and lifecycle (landed)]
+  B[Intentional E3A correction PI (landed)]
+  C[E9 Slice 2: local Delta and public objects (landed)]
   D[E9 Slice 3: session-proxied UC browser query]
   E[Governed remote-host query when a host exists]
   F[E8 volume preview when a read-only consumer exists]
@@ -266,11 +287,8 @@ flowchart LR
   D --> F
 ```
 
-The first four nodes are the mandatory sequence, not a requirement to finish
-every horizontal effort first. E9 Slice 1 fixes source authority and lifecycle
-without protobuf changes. The intentional E3A correction follows before E9
-Slice 2 adopts the local/public seams. E1 discovery and the E6 session boundary
-then compose with E9 Slice 3 for the protected UC browser query. Governed remote
+The first three nodes have landed. E1 discovery and the E6 session boundary
+compose next with E9 Slice 3 for the protected UC browser query. Governed remote
 execution and volume preview are independently gated extensions after that
 browser-read path: the remote contract waits for its host, while E8 runtime
 adoption waits for a read-only file-navigation consumer. Neither extension

@@ -1,9 +1,17 @@
-import type {
-  BrowserHttpFileDescriptor,
-  BrowserHttpSnapshotDescriptor,
-  CapabilityReport,
+import { clone, create } from '@bufbuild/protobuf';
+import { NullValue } from '@bufbuild/protobuf/wkt';
+import {
+  BrowserHttpFileDescriptorSchema,
+  BrowserHttpSnapshotDescriptorSchema,
+  CapabilityEntrySchema,
+  CapabilityKey,
+  CapabilityReportSchema,
+  CapabilityState,
   PartitionColumnType,
-} from '../axon-browser-sdk.ts';
+  PartitionValueSchema,
+  type BrowserHttpSnapshotDescriptor,
+  type CapabilityReport,
+} from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 
 export type PublicObjectStorageProvider = 'gcs' | 's3';
 
@@ -88,15 +96,35 @@ const publicObjectStorageRuntimeCache = new Map<string, PublicObjectStorageRunti
 type ResolvedPublicSnapshot = {
   table_uri: string;
   snapshot_version: number;
-  partition_column_types?: Partial<Record<string, PartitionColumnType>>;
-  browser_compatibility?: CapabilityReport;
-  required_capabilities?: CapabilityReport;
+  partition_column_types?: Partial<Record<string, ResolvedPartitionColumnType>>;
+  browser_compatibility?: ResolvedCapabilityReport;
+  required_capabilities?: ResolvedCapabilityReport;
   active_files: Array<{
     path: string;
     size_bytes: number;
     partition_values?: Record<string, string | null>;
     stats?: string;
   }>;
+};
+
+type ResolvedPartitionColumnType = 'string' | 'int64' | 'boolean' | 'unsupported';
+
+type ResolvedCapabilityKey =
+  | 'change_data_feed'
+  | 'column_mapping'
+  | 'deletion_vectors'
+  | 'multi_partition_execution'
+  | 'proxy_access'
+  | 'range_reads'
+  | 'signed_url_access'
+  | 'time_travel'
+  | 'timestamp_ntz'
+  | 'unknown_protocol_features';
+
+type ResolvedCapabilityState = 'supported' | 'native_only' | 'unsupported' | 'experimental';
+
+type ResolvedCapabilityReport = {
+  capabilities?: Partial<Record<ResolvedCapabilityKey, ResolvedCapabilityState>>;
 };
 
 export function parsePublicObjectStorageTableRoot(input: {
@@ -176,6 +204,16 @@ export function publicObjectUrl(root: PublicObjectStorageTableRoot, relativePath
   return `${root.tableRootUrl}${encodeObjectPath(normalized)}`;
 }
 
+export function publicObjectStorageConnectionId(root: PublicObjectStorageTableRoot): string {
+  if (root.provider === 'gcs') {
+    return `axon-connection://public-gcs/${encodeURIComponent(root.bucket)}`;
+  }
+  if (!root.region) throw invalidUri('public object storage S3 region is required');
+  return `axon-connection://public-s3/${encodeURIComponent(root.region)}/${encodeURIComponent(
+    root.bucket,
+  )}`;
+}
+
 export async function buildPublicDeltaLogManifest(
   root: PublicObjectStorageTableRoot,
   options: PublicObjectStorageFetchOptions = {},
@@ -222,10 +260,21 @@ export async function resolvePublicObjectStorageDescriptor(input: {
   provider: PublicObjectStorageProvider;
   tableUri: string;
   region?: string;
-  resolveDeltaSnapshotFromManifest: (manifestJson: string, tableUri: string) => Promise<string>;
+  snapshotVersion?: number;
+  resolveDeltaSnapshotFromManifest: (
+    manifestJson: string,
+    tableUri: string,
+    snapshotVersion?: number,
+  ) => Promise<string>;
   fetch?: PublicObjectStorageFetch;
   onMetrics?: (metrics: PublicObjectStorageDescriptorResolutionMetrics) => void;
 }): Promise<BrowserHttpSnapshotDescriptor> {
+  if (
+    input.snapshotVersion !== undefined &&
+    (!Number.isSafeInteger(input.snapshotVersion) || input.snapshotVersion < 0)
+  ) {
+    throw accessFailed('public object storage snapshot version is invalid');
+  }
   const root = parsePublicObjectStorageTableRoot({
     provider: input.provider,
     tableUri: input.tableUri,
@@ -237,6 +286,7 @@ export async function resolvePublicObjectStorageDescriptor(input: {
     await input.resolveDeltaSnapshotFromManifest(
       JSON.stringify({ objects: manifest.objects }),
       root.tableUri,
+      input.snapshotVersion,
     ),
   ) as ResolvedPublicSnapshot;
   input.onMetrics?.({
@@ -251,29 +301,43 @@ export async function resolvePublicObjectStorageDescriptor(input: {
     throw accessFailed('public object storage snapshot resolver returned a different table URI');
   }
 
-  return {
-    table_uri: root.tableUri,
-    snapshot_version: snapshot.snapshot_version,
-    partition_column_types: snapshot.partition_column_types ?? {},
-    browser_compatibility: snapshot.browser_compatibility ?? { capabilities: {} },
-    required_capabilities: snapshot.required_capabilities ?? { capabilities: {} },
-    active_files: snapshot.active_files.map(
-      (file): BrowserHttpFileDescriptor => ({
+  if (!Number.isSafeInteger(snapshot.snapshot_version) || snapshot.snapshot_version < 0) {
+    throw accessFailed('public object storage snapshot resolver returned an invalid version');
+  }
+
+  return create(BrowserHttpSnapshotDescriptorSchema, {
+    tableUri: root.tableUri,
+    snapshotVersion: BigInt(snapshot.snapshot_version),
+    partitionColumnTypes: generatedPartitionColumnTypes(snapshot.partition_column_types ?? {}),
+    browserCompatibility: generatedCapabilityReport(snapshot.browser_compatibility),
+    requiredCapabilities: generatedCapabilityReport(snapshot.required_capabilities),
+    activeFiles: snapshot.active_files.map((file) =>
+      create(BrowserHttpFileDescriptorSchema, {
         path: file.path,
         url: publicObjectUrl(root, file.path),
-        size_bytes: file.size_bytes,
-        partition_values: file.partition_values ?? {},
+        sizeBytes: BigInt(validatedResolvedInteger(file.size_bytes, 'active file size')),
+        partitionValues: Object.fromEntries(
+          Object.entries(file.partition_values ?? {}).map(([name, value]) => [
+            name,
+            create(PartitionValueSchema, {
+              value:
+                value === null
+                  ? { case: 'nullValue', value: NullValue.NULL_VALUE }
+                  : { case: 'stringValue', value },
+            }),
+          ]),
+        ),
         stats: file.stats,
       }),
     ),
-  };
+  });
 }
 
 export async function preflightPublicObjectStorageDescriptorRangeRead(input: {
   descriptor: BrowserHttpSnapshotDescriptor;
   preflightParquetMetadataForTargets: (targetsJson: string) => Promise<string>;
 }): Promise<PublicObjectStoragePreflightResult> {
-  const target = input.descriptor.active_files[0];
+  const target = input.descriptor.activeFiles[0];
   if (!target) return [];
 
   try {
@@ -283,8 +347,13 @@ export async function preflightPublicObjectStorageDescriptorRangeRead(input: {
           {
             path: target.path,
             url: target.url,
-            size_bytes: target.size_bytes,
-            partition_values: target.partition_values,
+            size_bytes: safeGeneratedInteger(target.sizeBytes, 'active file size'),
+            partition_values: Object.fromEntries(
+              Object.entries(target.partitionValues).map(([name, value]) => [
+                name,
+                value.value.case === 'stringValue' ? value.value.value : null,
+              ]),
+            ),
             ...(target.stats === undefined ? {} : { stats: target.stats }),
           },
         ]),
@@ -314,19 +383,27 @@ export function registerPublicObjectStorageRuntimeCache(input: {
     tableUri: input.tableUri,
     region: input.region,
   });
-  if (input.descriptor.table_uri !== root.tableUri) return false;
+  if (input.descriptor.tableUri !== root.tableUri) return false;
+  if (
+    input.snapshot.kind === 'version' &&
+    (!Number.isSafeInteger(input.snapshot.version) ||
+      input.snapshot.version < 0 ||
+      input.descriptor.snapshotVersion !== BigInt(input.snapshot.version))
+  ) {
+    return false;
+  }
 
-  const firstFile = input.descriptor.active_files[0];
+  const firstFile = input.descriptor.activeFiles[0];
   const firstPreflight = input.preflight[0];
   if (!firstFile || !firstPreflight || firstFile.path !== firstPreflight.path) return false;
   if (firstFile.url !== firstPreflight.url) return false;
-  if (firstFile.size_bytes !== firstPreflight.size_bytes) return false;
+  if (firstFile.sizeBytes !== BigInt(firstPreflight.size_bytes)) return false;
 
   const objectEtag = strongObjectEtag(firstPreflight.object_etag);
   if (!objectEtag) return false;
   const descriptor = cloneDescriptor(input.descriptor);
-  descriptor.active_files = descriptor.active_files.map((file, index) =>
-    index === 0 ? { ...file, object_etag: objectEtag } : file,
+  descriptor.activeFiles = descriptor.activeFiles.map((file, index) =>
+    index === 0 ? { ...file, objectEtag } : file,
   );
 
   publicObjectStorageRuntimeCache.set(
@@ -335,7 +412,7 @@ export function registerPublicObjectStorageRuntimeCache(input: {
       descriptor,
       identity: {
         path: firstFile.path,
-        size_bytes: firstFile.size_bytes,
+        size_bytes: safeGeneratedInteger(firstFile.sizeBytes, 'active file size'),
         object_etag: objectEtag,
       },
       expiresAtEpochMs: (input.nowMs ?? Date.now)() + (input.ttlMs ?? DEFAULT_RUNTIME_CACHE_TTL_MS),
@@ -352,6 +429,14 @@ export function lookupPublicObjectStorageRuntimeCache(input: {
   expectedSnapshotVersion?: number;
   nowMs?: () => number;
 }): PublicObjectStorageRuntimeCacheEntry | undefined {
+  if (
+    (input.snapshot.kind === 'version' &&
+      (!Number.isSafeInteger(input.snapshot.version) || input.snapshot.version < 0)) ||
+    (input.expectedSnapshotVersion !== undefined &&
+      (!Number.isSafeInteger(input.expectedSnapshotVersion) || input.expectedSnapshotVersion < 0))
+  ) {
+    return undefined;
+  }
   const root = parsePublicObjectStorageTableRoot({
     provider: input.provider,
     tableUri: input.tableUri,
@@ -372,7 +457,7 @@ export function lookupPublicObjectStorageRuntimeCache(input: {
   }
   if (
     input.expectedSnapshotVersion !== undefined &&
-    entry.descriptor.snapshot_version !== input.expectedSnapshotVersion
+    entry.descriptor.snapshotVersion !== BigInt(input.expectedSnapshotVersion)
   ) {
     return undefined;
   }
@@ -641,8 +726,110 @@ function strongObjectEtag(etag: string | undefined): string | undefined {
   return trimmed;
 }
 
+function generatedPartitionColumnTypes(
+  values: Partial<Record<string, ResolvedPartitionColumnType>>,
+): Record<string, PartitionColumnType> {
+  return Object.fromEntries(
+    Object.entries(values).map(([name, value]) => {
+      switch (value) {
+        case 'string':
+          return [name, PartitionColumnType.STRING];
+        case 'int64':
+          return [name, PartitionColumnType.INT64];
+        case 'boolean':
+          return [name, PartitionColumnType.BOOLEAN];
+        case 'unsupported':
+          return [name, PartitionColumnType.UNSUPPORTED];
+        default:
+          throw accessFailed(
+            `public object storage snapshot resolver returned invalid partition type '${String(
+              value,
+            )}'`,
+          );
+      }
+    }),
+  );
+}
+
+function generatedCapabilityReport(report: ResolvedCapabilityReport | undefined): CapabilityReport {
+  return create(CapabilityReportSchema, {
+    capabilities: Object.entries(report?.capabilities ?? {}).flatMap(([key, state]) => {
+      const generatedKey = generatedCapabilityKey(key as ResolvedCapabilityKey);
+      const generatedState = generatedCapabilityState(state);
+      if (generatedKey === undefined || generatedState === undefined) {
+        throw accessFailed('public object storage snapshot resolver returned invalid capabilities');
+      }
+      return [
+        create(CapabilityEntrySchema, {
+          key: generatedKey,
+          state: generatedState,
+        }),
+      ];
+    }),
+  });
+}
+
+function generatedCapabilityKey(value: ResolvedCapabilityKey): CapabilityKey | undefined {
+  switch (value) {
+    case 'change_data_feed':
+      return CapabilityKey.CHANGE_DATA_FEED;
+    case 'column_mapping':
+      return CapabilityKey.COLUMN_MAPPING;
+    case 'deletion_vectors':
+      return CapabilityKey.DELETION_VECTORS;
+    case 'multi_partition_execution':
+      return CapabilityKey.MULTI_PARTITION_EXECUTION;
+    case 'proxy_access':
+      return CapabilityKey.PROXY_ACCESS;
+    case 'range_reads':
+      return CapabilityKey.RANGE_READS;
+    case 'signed_url_access':
+      return CapabilityKey.SIGNED_URL_ACCESS;
+    case 'time_travel':
+      return CapabilityKey.TIME_TRAVEL;
+    case 'timestamp_ntz':
+      return CapabilityKey.TIMESTAMP_NTZ;
+    case 'unknown_protocol_features':
+      return CapabilityKey.UNKNOWN_PROTOCOL_FEATURES;
+  }
+}
+
+function generatedCapabilityState(
+  value: ResolvedCapabilityState | undefined,
+): CapabilityState | undefined {
+  switch (value) {
+    case 'supported':
+      return CapabilityState.SUPPORTED;
+    case 'native_only':
+      return CapabilityState.NATIVE_ONLY;
+    case 'unsupported':
+      return CapabilityState.UNSUPPORTED;
+    case 'experimental':
+      return CapabilityState.EXPERIMENTAL;
+    case undefined:
+      return undefined;
+  }
+}
+
+function validatedResolvedInteger(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw accessFailed(`public object storage snapshot resolver returned an invalid ${field}`);
+  }
+  return value;
+}
+
+function safeGeneratedInteger(value: bigint, field: string): number {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) {
+    throw accessFailed(
+      `public object storage descriptor ${field} is outside JavaScript-safe range`,
+    );
+  }
+  return number;
+}
+
 function cloneDescriptor(descriptor: BrowserHttpSnapshotDescriptor): BrowserHttpSnapshotDescriptor {
-  return JSON.parse(JSON.stringify(descriptor)) as BrowserHttpSnapshotDescriptor;
+  return clone(BrowserHttpSnapshotDescriptorSchema, descriptor);
 }
 
 function nowMs(): number {

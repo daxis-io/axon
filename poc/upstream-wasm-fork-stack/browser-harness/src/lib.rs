@@ -106,9 +106,7 @@ mod wasm {
 
     use deltalake_browser::BrowserDeltaTable;
 
-    use super::{
-        AxonPocQueryResult, adapt_query_result, canonical_aggregate_rows, ipc_row_count,
-    };
+    use super::{AxonPocQueryResult, adapt_query_result, canonical_aggregate_rows, ipc_row_count};
 
     #[wasm_bindgen]
     pub struct PocBrowserTable {

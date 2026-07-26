@@ -174,6 +174,16 @@ export const SAMPLE_QUERY_SOURCE_REF: Readonly<ActiveConnectedTableRef> = Object
   tableName: SAMPLE_QUERY_SOURCE.tableName,
 });
 
+export function isExplicitSampleFixtureSelection(
+  selection: AvailableQuerySourceSelection,
+): boolean {
+  return (
+    selection.kind === 'sample' &&
+    sameConnectedTableRef(selection.ref, SAMPLE_QUERY_SOURCE_REF) &&
+    isSampleFixtureSource(selection.source)
+  );
+}
+
 export function resolveQuerySourceSelection(
   catalogs: QueryCatalogCandidate[],
   selectedRef?: ActiveConnectedTableRef,
@@ -199,13 +209,24 @@ export function resolveQuerySourceSelection(
 
   return {
     kind:
-      sameConnectedTableRef(selectedRef, SAMPLE_QUERY_SOURCE_REF) &&
-      sameQuerySource(source, SAMPLE_QUERY_SOURCE)
+      sameConnectedTableRef(selectedRef, SAMPLE_QUERY_SOURCE_REF) && isSampleFixtureSource(source)
         ? 'sample'
         : 'resource',
     ref: selectedRef,
     source,
   };
+}
+
+function isSampleFixtureSource(source: QueryTableSource): boolean {
+  return (
+    source.kind === 'manifest' &&
+    source.catalogName === SAMPLE_QUERY_SOURCE.catalogName &&
+    source.schemaName === SAMPLE_QUERY_SOURCE.schemaName &&
+    source.tableName === SAMPLE_QUERY_SOURCE.tableName &&
+    source.manifestUrl === SAMPLE_QUERY_SOURCE.manifestUrl &&
+    source.storage === SAMPLE_QUERY_SOURCE.storage &&
+    source.region === SAMPLE_QUERY_SOURCE.region
+  );
 }
 
 function sameConnectedTableRef(

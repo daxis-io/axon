@@ -1,27 +1,31 @@
+import { clone, create, equals } from '@bufbuild/protobuf';
+import { timestampFromMs, timestampMs, type Timestamp } from '@bufbuild/protobuf/wkt';
 import {
   BROWSER_SAFE_ARROW_IPC_BYTES,
   BROWSER_SAFE_PREVIEW_STRING_BYTES,
   BROWSER_SAFE_RESULT_ROW_LIMIT,
-  type ExecutionTarget,
 } from '../axon-browser-sdk.ts';
-import { selectedQuerySourceIdentity, type SelectedQuerySourceIdentity } from '../query/keys.ts';
-import type { AvailableQuerySourceSelection } from './query-source.ts';
-
-export type ExecutionBudgets = Readonly<{
-  maxResultRows: number;
-  maxArrowIpcBytes: number;
-  maxPreviewStringBytes: number;
-  maxScanBytes?: number;
-}>;
-
-export type ExecutionAdmissionInput = Readonly<{
-  executionId: string;
-  sourceIdentity: SelectedQuerySourceIdentity;
-  sql: string;
-  target: ExecutionTarget;
-  deadlineAt: number;
-  budgets: ExecutionBudgets;
-}>;
+import {
+  CancelRequestSchema,
+  CancelResponseSchema,
+  ExecuteRequestSchema,
+  ExecutionAcceptedSchema,
+  ExecutionAdmissionSchema,
+  ExecutionCancelledSchema,
+  ExecutionCompletedSchema,
+  ExecutionFailedSchema,
+  ExecutionLifecycleState as ContractExecutionLifecycleState,
+  ExecutionRejectedSchema,
+  ExecutionRejectionReason,
+  ExecutionTarget,
+  ExecutionTerminalFrameSchema,
+  ExecutionTerminalStateSchema,
+  type CancelRequest,
+  type CancelResponse,
+  type ExecuteRequest,
+  type ExecutionAdmission,
+  type ExecutionTerminalFrame,
+} from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
 
 export type ExecutionLifecycleState =
   | 'created'
@@ -40,10 +44,11 @@ export type ExecutionTerminalState = Extract<
 export type ExecutionSnapshot = Readonly<{
   executionId: string;
   state: ExecutionLifecycleState;
-  input: ExecutionAdmissionInput;
+  request?: ExecuteRequest;
   admitted: boolean;
-  rejectionReason?: string;
+  rejectionReason?: ExecutionRejectionReason;
   terminalReason?: string;
+  terminalFrame?: ExecutionTerminalFrame;
   invariantViolations: readonly string[];
 }>;
 
@@ -57,6 +62,7 @@ export type ExecutionTerminalDelivery = Readonly<{
   kind: 'terminal';
   sequence: number;
   state: ExecutionTerminalState;
+  frame: ExecutionTerminalFrame;
   reason?: string;
   payload?: unknown;
 }>;
@@ -72,19 +78,12 @@ export type ExecutionRegistrationResult =
   | { kind: 'created'; snapshot: ExecutionSnapshot }
   | { kind: 'recorded'; snapshot: ExecutionSnapshot }
   | { kind: 'id_reuse'; snapshot: ExecutionSnapshot }
-  | { kind: 'rejected'; reason: 'capacity' };
+  | { kind: 'rejected'; reason: ExecutionRejectionReason.CAPACITY };
 
-export type ExecutionAdmissionResult =
-  | { kind: 'accepted'; launch: boolean; snapshot: ExecutionSnapshot }
-  | { kind: 'rejected'; launch: false; reason: string; snapshot: ExecutionSnapshot }
-  | { kind: 'id_reuse'; launch: false; snapshot: ExecutionSnapshot }
-  | { kind: 'rejected'; launch: false; reason: 'capacity' };
-
-export type ExecutionCancellationResult =
-  | { kind: 'cancelled_before_admit'; snapshot: ExecutionSnapshot }
-  | { kind: 'cancel_requested'; snapshot: ExecutionSnapshot }
-  | { kind: 'recorded'; snapshot: ExecutionSnapshot }
-  | { kind: 'unknown' };
+export type ExecutionAdmissionResult = Readonly<{
+  admission: ExecutionAdmission;
+  snapshot?: ExecutionSnapshot;
+}>;
 
 export type ExecutionPublishResult =
   | { kind: 'published'; sequence: number; snapshot: ExecutionSnapshot }
@@ -97,11 +96,14 @@ export type ExecutionTerminalResult =
   | { kind: 'unknown'; delivered: false };
 
 type ExecutionRecord = {
-  input: ExecutionAdmissionInput;
-  state: ExecutionLifecycleState;
+  executionId: string;
+  deadline: Timestamp;
+  request?: ExecuteRequest;
+  state: ContractExecutionLifecycleState;
   admitted: boolean;
-  rejectionReason?: string;
+  rejectionReason?: ExecutionRejectionReason;
   terminalReason?: string;
+  terminalFrame?: ExecutionTerminalFrame;
   invariantViolations: string[];
   listeners: Set<ExecutionListener>;
   cancellationHandle?: ExecutionCancellationHandle;
@@ -130,23 +132,23 @@ export class ExecutionLifecycle {
     return this.#records.size;
   }
 
-  create(input: ExecutionAdmissionInput): ExecutionRegistrationResult {
-    const existing = this.#records.get(input.executionId);
+  reserve(executionId: string, deadline: Timestamp): ExecutionRegistrationResult {
+    const existing = this.#records.get(executionId);
     if (existing) {
-      if (!sameAdmissionInput(existing.input, input)) {
+      if (timestampMs(existing.deadline) !== timestampMs(deadline)) {
         return { kind: 'id_reuse', snapshot: snapshot(existing) };
       }
       return { kind: 'recorded', snapshot: snapshot(existing) };
     }
 
     if (this.#records.size >= this.#maxRecords) {
-      return { kind: 'rejected', reason: 'capacity' };
+      return { kind: 'rejected', reason: ExecutionRejectionReason.CAPACITY };
     }
 
-    const immutableInput = immutableAdmissionInput(input);
     const record: ExecutionRecord = {
-      input: immutableInput,
-      state: 'created',
+      executionId,
+      deadline: cloneTimestamp(deadline),
+      state: ContractExecutionLifecycleState.CREATED,
       admitted: false,
       invariantViolations: [],
       listeners: new Set(),
@@ -154,65 +156,98 @@ export class ExecutionLifecycle {
       sequence: 0,
       deadlineProcessed: false,
     };
-    this.#records.set(immutableInput.executionId, record);
+    this.#records.set(executionId, record);
     return { kind: 'created', snapshot: snapshot(record) };
   }
 
-  admit(input: ExecutionAdmissionInput, rejectionReason?: string): ExecutionAdmissionResult {
-    const registration = this.create(input);
-    if (registration.kind === 'id_reuse') {
-      return { kind: 'id_reuse', launch: false, snapshot: registration.snapshot };
-    }
-    if (registration.kind === 'rejected') {
-      return { kind: 'rejected', launch: false, reason: registration.reason };
-    }
-
-    const record = this.#records.get(input.executionId);
-    if (!record) throw new Error('execution lifecycle lost a registered admission');
-
-    if (record.state === 'created') {
-      if (rejectionReason) {
-        record.state = 'rejected';
-        record.rejectionReason = rejectionReason;
-        record.cancellationHandle = undefined;
-        record.listeners.clear();
-        if (rejectionReason === 'invalid_deadline' || rejectionReason === 'deadline_expired') {
-          record.deadlineProcessed = true;
-        }
-        return {
-          kind: 'rejected',
-          launch: false,
-          reason: rejectionReason,
-          snapshot: snapshot(record),
-        };
+  admit(request: ExecuteRequest, now = Date.now()): ExecutionAdmissionResult {
+    let record = this.#records.get(request.executionId);
+    if (!record) {
+      if (!request.deadline) {
+        return rejectedAdmission(
+          request.executionId,
+          ExecutionRejectionReason.INVALID_REQUEST,
+          'execution deadline is required',
+        );
       }
-      record.state = 'running';
+      const registration = this.reserve(request.executionId, request.deadline);
+      if (registration.kind === 'rejected') {
+        return rejectedAdmission(
+          request.executionId,
+          ExecutionRejectionReason.CAPACITY,
+          'execution lifecycle capacity is exhausted',
+        );
+      }
+      if (registration.kind === 'id_reuse') {
+        return rejectedAdmission(
+          request.executionId,
+          ExecutionRejectionReason.EXECUTION_ID_REUSE,
+          'execution ID was already reserved with a different deadline',
+          registration.snapshot,
+        );
+      }
+      record = this.#records.get(request.executionId);
+    }
+    if (!record) throw new Error('execution lifecycle lost a reserved admission');
+
+    if (record.request && !equals(ExecuteRequestSchema, record.request, request)) {
+      return rejectedAdmission(
+        request.executionId,
+        ExecutionRejectionReason.EXECUTION_ID_REUSE,
+        'execution ID was already used with a different immutable request',
+        snapshot(record),
+      );
+    }
+    if (!request.deadline || timestampMs(record.deadline) !== timestampMs(request.deadline)) {
+      return rejectedAdmission(
+        request.executionId,
+        ExecutionRejectionReason.EXECUTION_ID_REUSE,
+        'resolved request deadline did not match its caller reservation',
+        snapshot(record),
+      );
+    }
+    record.request ??= clone(ExecuteRequestSchema, request);
+
+    if (record.state === ContractExecutionLifecycleState.REJECTED) {
+      return rejectedAdmission(
+        request.executionId,
+        record.rejectionReason ?? ExecutionRejectionReason.INVALID_REQUEST,
+        rejectionMessage(record.rejectionReason),
+        snapshot(record),
+      );
+    }
+
+    const rejection = admissionRejection(request, now);
+    if (record.state === ContractExecutionLifecycleState.CREATED && rejection) {
+      record.state = ContractExecutionLifecycleState.REJECTED;
+      record.rejectionReason = rejection.reason;
+      record.cancellationHandle = undefined;
+      record.listeners.clear();
+      if (rejection.reason === ExecutionRejectionReason.DEADLINE_EXPIRED) {
+        record.deadlineProcessed = true;
+      }
+      return rejectedAdmission(
+        request.executionId,
+        rejection.reason,
+        rejection.message,
+        snapshot(record),
+      );
+    }
+
+    if (record.state === ContractExecutionLifecycleState.CREATED) {
+      record.state = ContractExecutionLifecycleState.RUNNING;
       record.admitted = true;
-      return { kind: 'accepted', launch: true, snapshot: snapshot(record) };
+      return acceptedAdmission(request.executionId, true, snapshot(record));
     }
 
-    if (record.state === 'rejected') {
-      return {
-        kind: 'rejected',
-        launch: false,
-        reason: record.rejectionReason ?? 'rejected',
-        snapshot: snapshot(record),
-      };
-    }
-
-    return { kind: 'accepted', launch: false, snapshot: snapshot(record) };
+    return acceptedAdmission(request.executionId, false, snapshot(record));
   }
 
   subscribe(executionId: string, listener: ExecutionListener): () => void {
     const record = this.#records.get(executionId);
     if (!record) return () => undefined;
-    if (
-      record.state === 'rejected' ||
-      record.state === 'completed' ||
-      record.state === 'failed' ||
-      record.state === 'cancelled'
-    ) {
-      recordInvariant(record, `listener attached after ${record.state}`);
+    if (isTerminalOrRejected(record.state)) {
+      recordInvariant(record, `listener attached after ${uiLifecycleState(record.state)}`);
       return () => undefined;
     }
     if (record.listeners.size >= MAX_EXECUTION_LISTENERS) {
@@ -231,51 +266,84 @@ export class ExecutionLifecycle {
   ): ExecutionSnapshot | undefined {
     const record = this.#records.get(executionId);
     if (!record) return undefined;
-    if (
-      record.state === 'rejected' ||
-      record.state === 'completed' ||
-      record.state === 'failed' ||
-      record.state === 'cancelled'
-    ) {
-      recordInvariant(record, `cancellation handle attached after ${record.state}`);
+    if (isTerminalOrRejected(record.state)) {
+      recordInvariant(
+        record,
+        `cancellation handle attached after ${uiLifecycleState(record.state)}`,
+      );
       return snapshot(record);
     }
     record.cancellationHandle = handle;
-    if (record.state === 'cancel_requested') this.#invokeCancellation(record);
+    if (record.state === ContractExecutionLifecycleState.CANCEL_REQUESTED) {
+      this.#invokeCancellation(record);
+    }
     return snapshot(record);
   }
 
-  requestCancellation(executionId: string): ExecutionCancellationResult {
-    const record = this.#records.get(executionId);
-    if (!record) return { kind: 'unknown' };
+  cancel(request: CancelRequest): CancelResponse {
+    const record = this.#records.get(request.executionId);
+    if (!record) {
+      return create(CancelResponseSchema, {
+        executionId: request.executionId,
+        state: ContractExecutionLifecycleState.UNSPECIFIED,
+      });
+    }
 
-    if (record.state === 'created') {
-      record.state = 'rejected';
-      record.rejectionReason = 'cancelled';
+    if (record.state === ContractExecutionLifecycleState.CREATED) {
+      this.#invokeCancellation(record);
+      record.state = ContractExecutionLifecycleState.REJECTED;
+      record.rejectionReason = ExecutionRejectionReason.CANCELLED;
       record.cancellationHandle = undefined;
       record.listeners.clear();
-      return { kind: 'cancelled_before_admit', snapshot: snapshot(record) };
-    }
-
-    if (record.state === 'running') {
-      record.state = 'cancel_requested';
+    } else if (record.state === ContractExecutionLifecycleState.RUNNING) {
+      record.state = ContractExecutionLifecycleState.CANCEL_REQUESTED;
       this.#invokeCancellation(record);
-      return { kind: 'cancel_requested', snapshot: snapshot(record) };
+    } else if (
+      record.state !== ContractExecutionLifecycleState.CANCEL_REQUESTED &&
+      record.state !== ContractExecutionLifecycleState.REJECTED
+    ) {
+      recordInvariant(record, `cancellation requested after ${uiLifecycleState(record.state)}`);
     }
 
-    if (record.state === 'cancel_requested' || record.state === 'rejected') {
-      return { kind: 'recorded', snapshot: snapshot(record) };
-    }
+    return create(CancelResponseSchema, {
+      executionId: request.executionId,
+      state: record.state,
+    });
+  }
 
-    recordInvariant(record, `cancellation requested after ${record.state}`);
-    return { kind: 'recorded', snapshot: snapshot(record) };
+  reject(
+    executionId: string,
+    reason: ExecutionRejectionReason,
+    message: string,
+  ): ExecutionAdmissionResult {
+    const record = this.#records.get(executionId);
+    if (!record) return rejectedAdmission(executionId, reason, message);
+    if (record.state === ContractExecutionLifecycleState.CREATED) {
+      record.state = ContractExecutionLifecycleState.REJECTED;
+      record.rejectionReason = reason;
+      record.cancellationHandle = undefined;
+      record.listeners.clear();
+      return rejectedAdmission(executionId, reason, message, snapshot(record));
+    }
+    if (record.state === ContractExecutionLifecycleState.REJECTED) {
+      return rejectedAdmission(
+        executionId,
+        record.rejectionReason ?? reason,
+        rejectionMessage(record.rejectionReason),
+        snapshot(record),
+      );
+    }
+    return acceptedAdmission(executionId, false, snapshot(record));
   }
 
   publishFrame(executionId: string, payload: unknown): ExecutionPublishResult {
     const record = this.#records.get(executionId);
     if (!record) return { kind: 'unknown' };
-    if (record.state !== 'running' && record.state !== 'cancel_requested') {
-      recordInvariant(record, `frame published after ${record.state}`);
+    if (
+      record.state !== ContractExecutionLifecycleState.RUNNING &&
+      record.state !== ContractExecutionLifecycleState.CANCEL_REQUESTED
+    ) {
+      recordInvariant(record, `frame published after ${uiLifecycleState(record.state)}`);
       return { kind: 'recorded', snapshot: snapshot(record) };
     }
 
@@ -304,14 +372,18 @@ export class ExecutionLifecycle {
     }
     record.deadlineProcessed = true;
 
-    if (record.state === 'created') {
-      record.state = 'rejected';
-      record.rejectionReason = 'deadline_expired';
+    if (record.state === ContractExecutionLifecycleState.CREATED) {
+      this.#invokeCancellation(record);
+      record.state = ContractExecutionLifecycleState.REJECTED;
+      record.rejectionReason = ExecutionRejectionReason.DEADLINE_EXPIRED;
       record.cancellationHandle = undefined;
       record.listeners.clear();
       return { kind: 'recorded', delivered: false, snapshot: snapshot(record) };
     }
-    if (record.state === 'running' || record.state === 'cancel_requested') {
+    if (
+      record.state === ContractExecutionLifecycleState.RUNNING ||
+      record.state === ContractExecutionLifecycleState.CANCEL_REQUESTED
+    ) {
       return this.#terminal(executionId, 'failed', 'deadline');
     }
     return { kind: 'recorded', delivered: false, snapshot: snapshot(record) };
@@ -320,7 +392,7 @@ export class ExecutionLifecycle {
   sweep(now: number): string[] {
     const deleted: string[] = [];
     for (const [executionId, record] of this.#records) {
-      if (!record.deadlineProcessed && record.input.deadlineAt <= now) {
+      if (!record.deadlineProcessed && timestampMs(record.deadline) <= now) {
         this.processDeadline(executionId);
       }
       if (!record.deadlineProcessed) continue;
@@ -346,19 +418,25 @@ export class ExecutionLifecycle {
     const record = this.#records.get(executionId);
     if (!record) return { kind: 'unknown', delivered: false };
 
-    if (record.state !== 'running' && record.state !== 'cancel_requested') {
-      recordInvariant(record, `late ${state} after ${record.state}`);
+    if (
+      record.state !== ContractExecutionLifecycleState.RUNNING &&
+      record.state !== ContractExecutionLifecycleState.CANCEL_REQUESTED
+    ) {
+      recordInvariant(record, `late ${state} after ${uiLifecycleState(record.state)}`);
       return { kind: 'recorded', delivered: false, snapshot: snapshot(record) };
     }
 
-    record.state = state;
+    record.state = contractLifecycleState(state);
     record.terminalReason = reason;
     if (reason === 'deadline') this.#invokeCancellation(record);
     const sequence = ++record.sequence;
+    const frame = terminalFrame(record, state, sequence);
+    record.terminalFrame = frame;
     const delivery: ExecutionTerminalDelivery = Object.freeze({
       kind: 'terminal',
       sequence,
       state,
+      frame,
       ...(reason === undefined ? {} : { reason }),
       ...(payload === undefined ? {} : { payload }),
     });
@@ -390,19 +468,24 @@ export class ExecutionLifecycle {
 }
 
 export type PrepareExecutionRequest = Readonly<{
-  selection: AvailableQuerySourceSelection;
-  snapshotVersion?: number;
-  sql: string;
-  target: ExecutionTarget;
   timeoutMs: number;
-  budgets: ExecutionBudgets;
+}>;
+
+export type PreparedExecution = Readonly<{
+  executionId: string;
+  deadline: Timestamp;
 }>;
 
 export type PreparedExecutionResult =
-  | { kind: 'created'; input: ExecutionAdmissionInput; snapshot: ExecutionSnapshot }
-  | { kind: 'recorded'; input: ExecutionAdmissionInput; snapshot: ExecutionSnapshot }
-  | { kind: 'id_reuse'; input: ExecutionAdmissionInput; snapshot: ExecutionSnapshot }
-  | { kind: 'rejected'; reason: 'capacity' };
+  | {
+      kind: 'created' | 'recorded';
+      execution: PreparedExecution;
+      snapshot: ExecutionSnapshot;
+    }
+  | {
+      kind: 'rejected';
+      reason: ExecutionRejectionReason.INVALID_REQUEST | ExecutionRejectionReason.CAPACITY;
+    };
 
 export type ExecutionTimerHandle = unknown;
 
@@ -434,39 +517,30 @@ export class ExecutionController {
   }
 
   prepare(request: PrepareExecutionRequest): PreparedExecutionResult {
-    for (const executionId of this.lifecycle.sweep(this.#now())) {
+    const now = this.#now();
+    for (const executionId of this.lifecycle.sweep(now)) {
       const handle = this.#deadlineTimers.get(executionId);
       if (handle !== undefined) this.#clearTimer(handle);
       this.#deadlineTimers.delete(executionId);
     }
-    const input = immutableAdmissionInput({
+    if (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs <= 0) {
+      return { kind: 'rejected', reason: ExecutionRejectionReason.INVALID_REQUEST };
+    }
+    const execution = Object.freeze({
       executionId: this.#idFactory(),
-      sourceIdentity: selectedQuerySourceIdentity(request.selection, request.snapshotVersion),
-      sql: request.sql,
-      target: request.target,
-      deadlineAt: this.#now() + request.timeoutMs,
-      budgets: request.budgets,
+      deadline: timestampFromMs(now + request.timeoutMs),
     });
-    const registration = this.lifecycle.create(input);
+    const registration = this.lifecycle.reserve(execution.executionId, execution.deadline);
     if (registration.kind === 'rejected') return registration;
-    this.#ensureDeadlineTimer(input);
-    return { ...registration, input };
+    if (registration.kind === 'id_reuse') {
+      return { kind: 'rejected', reason: ExecutionRejectionReason.INVALID_REQUEST };
+    }
+    this.#ensureDeadlineTimer(execution);
+    return { ...registration, execution };
   }
 
-  admit(input: ExecutionAdmissionInput): ExecutionAdmissionResult {
-    const registration = this.lifecycle.create(input);
-    if (registration.kind === 'id_reuse') {
-      return { kind: 'id_reuse', launch: false, snapshot: registration.snapshot };
-    }
-    if (registration.kind === 'rejected') {
-      return { kind: 'rejected', launch: false, reason: registration.reason };
-    }
-
-    const rejectionReason = admissionRejectionReason(input, this.#now());
-    if (registration.kind === 'recorded' && rejectionReason === 'deadline_expired') {
-      this.lifecycle.processDeadline(input.executionId);
-    }
-    return this.lifecycle.admit(input, rejectionReason);
+  admit(request: ExecuteRequest): ExecutionAdmissionResult {
+    return this.lifecycle.admit(request, this.#now());
   }
 
   subscribe(executionId: string, listener: ExecutionListener): () => void {
@@ -477,8 +551,16 @@ export class ExecutionController {
     this.lifecycle.attachCancellation(executionId, handle);
   }
 
-  requestCancellation(executionId: string): ExecutionCancellationResult {
-    return this.lifecycle.requestCancellation(executionId);
+  cancel(request: CancelRequest): CancelResponse {
+    return this.lifecycle.cancel(request);
+  }
+
+  reject(
+    executionId: string,
+    reason: ExecutionRejectionReason,
+    message: string,
+  ): ExecutionAdmissionResult {
+    return this.lifecycle.reject(executionId, reason, message);
   }
 
   publishFrame(executionId: string, payload: unknown): ExecutionPublishResult {
@@ -497,17 +579,17 @@ export class ExecutionController {
     return this.lifecycle.confirmCancelled(executionId, payload);
   }
 
-  #ensureDeadlineTimer(input: ExecutionAdmissionInput): void {
-    if (this.#deadlineTimers.has(input.executionId)) return;
-    if (!Number.isSafeInteger(input.deadlineAt)) return;
+  #ensureDeadlineTimer(execution: PreparedExecution): void {
+    if (this.#deadlineTimers.has(execution.executionId)) return;
+    const deadlineAt = timestampMs(execution.deadline);
     const handle = this.#setTimer(
       () => {
-        this.#deadlineTimers.delete(input.executionId);
-        this.lifecycle.processDeadline(input.executionId);
+        this.#deadlineTimers.delete(execution.executionId);
+        this.lifecycle.processDeadline(execution.executionId);
       },
-      Math.max(0, input.deadlineAt - this.#now()),
+      Math.max(0, deadlineAt - this.#now()),
     );
-    this.#deadlineTimers.set(input.executionId, handle);
+    this.#deadlineTimers.set(execution.executionId, handle);
   }
 }
 
@@ -529,86 +611,215 @@ export function executionCancelSpanId(executionId: string, ordinal: number): str
   return `${executionId}:cancel:${ordinal}`;
 }
 
-function immutableAdmissionInput(input: ExecutionAdmissionInput): ExecutionAdmissionInput {
-  const sourceIdentity: SelectedQuerySourceIdentity = Object.freeze({
-    kind: input.sourceIdentity.kind,
-    ref: Object.freeze({ ...input.sourceIdentity.ref }),
-    source: Object.freeze([
-      ...input.sourceIdentity.source,
-    ]) as SelectedQuerySourceIdentity['source'],
-    snapshotVersion: input.sourceIdentity.snapshotVersion,
-  });
-  const budgets = Object.freeze({ ...input.budgets });
-  return Object.freeze({ ...input, sourceIdentity, budgets });
+export function cancelExecutionRequest(executionId: string): CancelRequest {
+  return create(CancelRequestSchema, { executionId });
 }
 
-function sameAdmissionInput(
-  left: ExecutionAdmissionInput,
-  right: ExecutionAdmissionInput,
-): boolean {
-  return (
-    left.executionId === right.executionId &&
-    sameSelectedSourceIdentity(left.sourceIdentity, right.sourceIdentity) &&
-    left.sql === right.sql &&
-    left.target === right.target &&
-    Object.is(left.deadlineAt, right.deadlineAt) &&
-    Object.is(left.budgets.maxResultRows, right.budgets.maxResultRows) &&
-    Object.is(left.budgets.maxArrowIpcBytes, right.budgets.maxArrowIpcBytes) &&
-    Object.is(left.budgets.maxPreviewStringBytes, right.budgets.maxPreviewStringBytes) &&
-    Object.is(left.budgets.maxScanBytes, right.budgets.maxScanBytes)
-  );
-}
+function admissionRejection(
+  request: ExecuteRequest,
+  now: number,
+): { reason: ExecutionRejectionReason; message: string } | undefined {
+  if (!request.executionId.trim() || !request.query || request.binding.case === undefined) {
+    return invalidRequest('execution ID, binding, and query are required');
+  }
+  if (!request.deadline) return invalidRequest('execution deadline is required');
+  const deadlineAt = timestampMs(request.deadline);
+  if (!Number.isSafeInteger(deadlineAt) || deadlineAt < 0) {
+    return invalidRequest('execution deadline is invalid');
+  }
+  if (deadlineAt <= now) {
+    return {
+      reason: ExecutionRejectionReason.DEADLINE_EXPIRED,
+      message: 'execution deadline has expired',
+    };
+  }
+  if (request.query.preferredTarget !== ExecutionTarget.BROWSER_WASM) {
+    return {
+      reason: ExecutionRejectionReason.UNSUPPORTED,
+      message: 'this browser executor only admits browser_wasm queries',
+    };
+  }
 
-function sameSelectedSourceIdentity(
-  left: SelectedQuerySourceIdentity,
-  right: SelectedQuerySourceIdentity,
-): boolean {
-  return (
-    left.kind === right.kind &&
-    left.ref.catalogId === right.ref.catalogId &&
-    left.ref.schemaName === right.ref.schemaName &&
-    left.ref.tableName === right.ref.tableName &&
-    Object.is(left.snapshotVersion, right.snapshotVersion) &&
-    left.source.length === right.source.length &&
-    left.source.every((value, index) => Object.is(value, right.source[index]))
-  );
-}
-
-function admissionRejectionReason(input: ExecutionAdmissionInput, now: number): string | undefined {
-  if (!Number.isSafeInteger(input.deadlineAt)) return 'invalid_deadline';
-  if (input.deadlineAt <= now) return 'deadline_expired';
-
-  const boundedBudgets: Array<[value: number, name: string, browserMaximum: number | undefined]> = [
-    [input.budgets.maxResultRows, 'max_result_rows', BROWSER_SAFE_RESULT_ROW_LIMIT],
-    [input.budgets.maxArrowIpcBytes, 'max_arrow_ipc_bytes', BROWSER_SAFE_ARROW_IPC_BYTES],
-    [
-      input.budgets.maxPreviewStringBytes,
-      'max_preview_string_bytes',
-      BROWSER_SAFE_PREVIEW_STRING_BYTES,
-    ],
+  const limits = request.query.options?.runtimeLimits;
+  if (!limits) return invalidRequest('query runtime limits are required');
+  const boundedBudgets: Array<
+    [value: bigint | undefined, name: string, browserMaximum: number | undefined]
+  > = [
+    [limits.maxResultRows, 'max_result_rows', BROWSER_SAFE_RESULT_ROW_LIMIT],
+    [limits.maxArrowIpcBytes, 'max_arrow_ipc_bytes', BROWSER_SAFE_ARROW_IPC_BYTES],
+    [limits.maxPreviewStringBytes, 'max_preview_string_bytes', BROWSER_SAFE_PREVIEW_STRING_BYTES],
   ];
-  if (input.budgets.maxScanBytes !== undefined) {
-    boundedBudgets.push([input.budgets.maxScanBytes, 'max_scan_bytes', undefined]);
+  if (limits.maxScanBytes !== undefined) {
+    boundedBudgets.push([limits.maxScanBytes, 'max_scan_bytes', undefined]);
   }
   for (const [value, name, browserMaximum] of boundedBudgets) {
-    if (!Number.isSafeInteger(value) || value <= 0) return `invalid_${name}`;
-    if (browserMaximum !== undefined && value > browserMaximum) {
-      return `browser_unsafe_${name}`;
+    if (value === undefined || value <= 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return invalidRequest(`invalid ${name}`);
+    }
+    if (browserMaximum !== undefined && value > BigInt(browserMaximum)) {
+      return {
+        reason: ExecutionRejectionReason.RESOURCE_LIMIT,
+        message: `browser-unsafe ${name}`,
+      };
     }
   }
   return undefined;
 }
 
+function invalidRequest(message: string): {
+  reason: ExecutionRejectionReason.INVALID_REQUEST;
+  message: string;
+} {
+  return { reason: ExecutionRejectionReason.INVALID_REQUEST, message };
+}
+
+function acceptedAdmission(
+  executionId: string,
+  launch: boolean,
+  executionSnapshot: ExecutionSnapshot,
+): ExecutionAdmissionResult {
+  return {
+    admission: create(ExecutionAdmissionSchema, {
+      outcome: {
+        case: 'accepted',
+        value: create(ExecutionAcceptedSchema, {
+          executionId,
+          state: executionSnapshotState(executionSnapshot.state),
+          launch,
+        }),
+      },
+    }),
+    snapshot: executionSnapshot,
+  };
+}
+
+function rejectedAdmission(
+  executionId: string,
+  reason: ExecutionRejectionReason,
+  message: string,
+  executionSnapshot?: ExecutionSnapshot,
+): ExecutionAdmissionResult {
+  return {
+    admission: create(ExecutionAdmissionSchema, {
+      outcome: {
+        case: 'rejected',
+        value: create(ExecutionRejectedSchema, { executionId, reason, message }),
+      },
+    }),
+    snapshot: executionSnapshot,
+  };
+}
+
+function rejectionMessage(reason: ExecutionRejectionReason | undefined): string {
+  switch (reason) {
+    case ExecutionRejectionReason.CANCELLED:
+      return 'execution was cancelled before admission';
+    case ExecutionRejectionReason.DEADLINE_EXPIRED:
+      return 'execution deadline has expired';
+    default:
+      return 'execution was rejected';
+  }
+}
+
 function snapshot(record: ExecutionRecord): ExecutionSnapshot {
   return Object.freeze({
-    executionId: record.input.executionId,
-    state: record.state,
-    input: record.input,
+    executionId: record.executionId,
+    state: uiLifecycleState(record.state),
+    request: record.request ? clone(ExecuteRequestSchema, record.request) : undefined,
     admitted: record.admitted,
     rejectionReason: record.rejectionReason,
     terminalReason: record.terminalReason,
+    terminalFrame: record.terminalFrame
+      ? clone(ExecutionTerminalFrameSchema, record.terminalFrame)
+      : undefined,
     invariantViolations: Object.freeze([...record.invariantViolations]),
   });
+}
+
+function terminalFrame(
+  record: ExecutionRecord,
+  state: ExecutionTerminalState,
+  sequence: number,
+): ExecutionTerminalFrame {
+  const outcome =
+    state === 'completed'
+      ? { case: 'completed' as const, value: create(ExecutionCompletedSchema) }
+      : state === 'failed'
+        ? { case: 'failed' as const, value: create(ExecutionFailedSchema) }
+        : { case: 'cancelled' as const, value: create(ExecutionCancelledSchema) };
+  return create(ExecutionTerminalFrameSchema, {
+    executionId: record.executionId,
+    sequence: BigInt(sequence),
+    state: create(ExecutionTerminalStateSchema, { outcome }),
+  });
+}
+
+function cloneTimestamp(timestamp: Timestamp): Timestamp {
+  return {
+    $typeName: 'google.protobuf.Timestamp',
+    seconds: timestamp.seconds,
+    nanos: timestamp.nanos,
+  };
+}
+
+function isTerminalOrRejected(state: ContractExecutionLifecycleState): boolean {
+  return (
+    state === ContractExecutionLifecycleState.REJECTED ||
+    state === ContractExecutionLifecycleState.COMPLETED ||
+    state === ContractExecutionLifecycleState.FAILED ||
+    state === ContractExecutionLifecycleState.CANCELLED
+  );
+}
+
+function contractLifecycleState(state: ExecutionTerminalState): ContractExecutionLifecycleState {
+  switch (state) {
+    case 'completed':
+      return ContractExecutionLifecycleState.COMPLETED;
+    case 'failed':
+      return ContractExecutionLifecycleState.FAILED;
+    case 'cancelled':
+      return ContractExecutionLifecycleState.CANCELLED;
+  }
+}
+
+function executionSnapshotState(state: ExecutionLifecycleState): ContractExecutionLifecycleState {
+  switch (state) {
+    case 'created':
+      return ContractExecutionLifecycleState.CREATED;
+    case 'running':
+      return ContractExecutionLifecycleState.RUNNING;
+    case 'cancel_requested':
+      return ContractExecutionLifecycleState.CANCEL_REQUESTED;
+    case 'rejected':
+      return ContractExecutionLifecycleState.REJECTED;
+    case 'completed':
+      return ContractExecutionLifecycleState.COMPLETED;
+    case 'failed':
+      return ContractExecutionLifecycleState.FAILED;
+    case 'cancelled':
+      return ContractExecutionLifecycleState.CANCELLED;
+  }
+}
+
+function uiLifecycleState(state: ContractExecutionLifecycleState): ExecutionLifecycleState {
+  switch (state) {
+    case ContractExecutionLifecycleState.CREATED:
+      return 'created';
+    case ContractExecutionLifecycleState.RUNNING:
+      return 'running';
+    case ContractExecutionLifecycleState.CANCEL_REQUESTED:
+      return 'cancel_requested';
+    case ContractExecutionLifecycleState.REJECTED:
+      return 'rejected';
+    case ContractExecutionLifecycleState.COMPLETED:
+      return 'completed';
+    case ContractExecutionLifecycleState.FAILED:
+      return 'failed';
+    case ContractExecutionLifecycleState.CANCELLED:
+      return 'cancelled';
+    case ContractExecutionLifecycleState.UNSPECIFIED:
+      throw new Error('execution lifecycle state is unspecified');
+  }
 }
 
 function recordInvariant(record: ExecutionRecord, violation: string): void {

@@ -1,36 +1,48 @@
-import type { BrowserWorkerResultPreview, QueryResultPageRequest } from '../axon-browser-sdk.ts';
-import type {
-  QueryExecRequest,
-  QueryPageRequest,
-  QueryResultData,
-  ResultCell,
-  ResultColumn,
-} from './types.ts';
+import { clone, create, equals } from '@bufbuild/protobuf';
 import {
-  sameAvailableQuerySourceSelection,
-  type AvailableQuerySourceSelection,
-} from './query-source.ts';
+  BROWSER_SAFE_ARROW_IPC_BYTES,
+  BROWSER_SAFE_PREVIEW_STRING_BYTES,
+  BROWSER_SAFE_RESULT_ROW_LIMIT,
+  type BrowserWorkerResultPreview,
+} from '../axon-browser-sdk.ts';
+import {
+  ExecutionTarget,
+  QueryExecutionOptionsSchema,
+  QueryRequestSchema,
+  QueryResultPageSchema,
+  QueryRuntimeLimitsSchema,
+  type QueryRequest,
+  type QueryResultPage,
+  type ResultPreview,
+} from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
+import {
+  TableNodeSchema,
+  type TableNode,
+} from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
+import type { QueryPageRequest, QueryResultData, ResultCell, ResultColumn } from './types.ts';
+import type { AvailableQuerySourceSelection } from './query-source.ts';
 
 export const QUERY_RESULT_PAGE_SIZE = 500;
 export const MAX_QUERY_RESULT_PAGE_LIMIT = QUERY_RESULT_PAGE_SIZE + 1;
 
-export type QueryResultPageRun = {
-  request: Omit<QueryExecRequest, 'page'>;
+export type QueryResultPageRun = Readonly<{
+  table: TableNode;
+  query: QueryRequest;
   selection: AvailableQuerySourceSelection;
-};
+  snapshotVersion?: number;
+}>;
 
 export function queryResultPageRun(
-  request: QueryExecRequest,
+  table: TableNode,
+  query: QueryRequest,
   selection: AvailableQuerySourceSelection,
+  snapshotVersion?: number,
 ): QueryResultPageRun {
   return {
-    request: {
-      sql: request.sql,
-      table_name: request.table_name,
-      preferred_target: request.preferred_target,
-      snapshot_version: request.snapshot_version,
-    },
+    table: clone(TableNodeSchema, table),
+    query: clone(QueryRequestSchema, query),
     selection,
+    snapshotVersion,
   };
 }
 
@@ -39,26 +51,48 @@ export function sameQueryResultPageRun(
   right: QueryResultPageRun,
 ): boolean {
   return (
-    sameAvailableQuerySourceSelection(left.selection, right.selection) &&
-    left.request.sql === right.request.sql &&
-    left.request.table_name === right.request.table_name &&
-    left.request.preferred_target === right.request.preferred_target &&
-    (left.request.snapshot_version ?? null) === (right.request.snapshot_version ?? null)
+    equals(TableNodeSchema, left.table, right.table) &&
+    equals(QueryRequestSchema, left.query, right.query) &&
+    Object.is(left.snapshotVersion, right.snapshotVersion)
   );
 }
 
 export function queryResultPageRunRequest(
   run: QueryResultPageRun,
   page: QueryPageRequest,
-): QueryExecRequest {
-  return { ...run.request, page };
+): QueryRequest {
+  const query = clone(QueryRequestSchema, run.query);
+  query.options ??= create(QueryExecutionOptionsSchema);
+  query.options.resultPage = queryResultPageRequest(page);
+  return query;
 }
 
 export function defaultQueryPage(): QueryPageRequest {
   return { offset: 0, size: QUERY_RESULT_PAGE_SIZE };
 }
 
-export function queryResultPageRequest(page: QueryPageRequest): QueryResultPageRequest {
+export function browserQueryRequest(input: {
+  sql: string;
+  preferredTarget: ExecutionTarget;
+  page?: QueryPageRequest;
+}): QueryRequest {
+  return create(QueryRequestSchema, {
+    sql: input.sql,
+    preferredTarget: input.preferredTarget,
+    options: create(QueryExecutionOptionsSchema, {
+      collectMetrics: true,
+      includeExplain: true,
+      resultPage: queryResultPageRequest(input.page ?? defaultQueryPage()),
+      runtimeLimits: create(QueryRuntimeLimitsSchema, {
+        maxResultRows: BigInt(BROWSER_SAFE_RESULT_ROW_LIMIT),
+        maxArrowIpcBytes: BigInt(BROWSER_SAFE_ARROW_IPC_BYTES),
+        maxPreviewStringBytes: BigInt(BROWSER_SAFE_PREVIEW_STRING_BYTES),
+      }),
+    }),
+  });
+}
+
+export function queryResultPageRequest(page: QueryPageRequest): QueryResultPage {
   const offset = nonNegativeInteger(page.offset, 'query result page offset');
   const size = positiveInteger(page.size, 'query result page size');
   if (size >= Number.MAX_SAFE_INTEGER) {
@@ -67,7 +101,23 @@ export function queryResultPageRequest(page: QueryPageRequest): QueryResultPageR
   if (size + 1 > MAX_QUERY_RESULT_PAGE_LIMIT) {
     throw new Error(`query result page size ${size} exceeds maximum ${QUERY_RESULT_PAGE_SIZE}`);
   }
-  return { limit: size + 1, offset };
+  return create(QueryResultPageSchema, {
+    limit: BigInt(size + 1),
+    offset: BigInt(offset),
+  });
+}
+
+export function queryPageFromRequest(request: QueryRequest): QueryPageRequest {
+  const page = request.options?.resultPage;
+  if (!page?.limit || page.limit < 2n) {
+    throw new Error('generated query request requires a sentinel result-page limit');
+  }
+  const size = safeInteger(page.limit - 1n, 'query result page size');
+  const offset = safeInteger(page.offset ?? 0n, 'query result page offset');
+  if (size > QUERY_RESULT_PAGE_SIZE) {
+    throw new Error(`query result page size ${size} exceeds maximum ${QUERY_RESULT_PAGE_SIZE}`);
+  }
+  return { offset, size };
 }
 
 export function resultPageFromPreview(
@@ -102,6 +152,41 @@ export function resultPageFromPreview(
       next_offset: hasMore ? loadedRows : undefined,
     },
   };
+}
+
+export function resultPageFromContractPreview(
+  preview: ResultPreview | undefined,
+  page: QueryPageRequest,
+): QueryResultData {
+  if (!preview) return emptyPageResult(page);
+  return resultPageFromPreview(
+    {
+      columns: preview.columns,
+      rows: preview.rows.map((row) =>
+        row.cells.map((cell) => {
+          switch (cell.value.case) {
+            case 'stringValue':
+            case 'numberValue':
+            case 'boolValue':
+              return cell.value.value;
+            case 'nullValue':
+            case undefined:
+              return null;
+          }
+        }),
+      ),
+      row_count:
+        preview.rowCount === undefined
+          ? preview.rows.length
+          : safeInteger(preview.rowCount, 'result preview row count'),
+      preview_row_limit:
+        preview.previewRowLimit === undefined
+          ? preview.rows.length
+          : safeInteger(preview.previewRowLimit, 'result preview row limit'),
+      truncated: preview.truncated ?? false,
+    },
+    page,
+  );
 }
 
 export function appendResultPage(current: QueryResultData, next: QueryResultData): QueryResultData {
@@ -176,4 +261,11 @@ function nonNegativeInteger(value: number, label: string): number {
     throw new Error(`${label} must be a non-negative safe integer`);
   }
   return value;
+}
+
+function safeInteger(value: bigint, label: string): number {
+  if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`${label} must be a safe integer`);
+  }
+  return Number(value);
 }
