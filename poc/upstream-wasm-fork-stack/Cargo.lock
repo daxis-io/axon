@@ -64,32 +64,67 @@ dependencies = [
 [[package]]
 name = "arrow"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "378530e55cd479eda3c14eb345310799717e6f76d0c332041e8487022166b471"
 dependencies = [
- "arrow-arith",
- "arrow-array",
- "arrow-buffer",
- "arrow-cast",
- "arrow-csv",
- "arrow-data",
- "arrow-ipc",
- "arrow-json",
- "arrow-ord",
- "arrow-row",
- "arrow-schema",
- "arrow-select",
- "arrow-string",
+ "arrow-arith 58.4.0",
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-cast 58.4.0",
+ "arrow-csv 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-ipc 58.4.0",
+ "arrow-json 58.4.0",
+ "arrow-ord 58.4.0",
+ "arrow-row 58.4.0",
+ "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
+ "arrow-string 58.4.0",
+]
+
+[[package]]
+name = "arrow"
+version = "58.3.0"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
+dependencies = [
+ "arrow-arith 58.3.0",
+ "arrow-array 58.3.0",
+ "arrow-buffer 58.3.0",
+ "arrow-cast 58.3.0",
+ "arrow-csv 58.3.0",
+ "arrow-data 58.3.0",
+ "arrow-ipc 58.3.0",
+ "arrow-json 58.3.0",
+ "arrow-ord 58.3.0",
+ "arrow-row 58.3.0",
+ "arrow-schema 58.3.0",
+ "arrow-select 58.3.0",
+ "arrow-string 58.3.0",
 ]
 
 [[package]]
 name = "arrow-arith"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
+ "arrow-array 58.3.0",
+ "arrow-buffer 58.3.0",
+ "arrow-data 58.3.0",
+ "arrow-schema 58.3.0",
+ "chrono",
+ "num-traits",
+]
+
+[[package]]
+name = "arrow-arith"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a41203398f0eaa6f7ec8e62c0da742a21abf282c148fc157f6c35c90e29981a"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-schema 58.4.0",
  "chrono",
  "num-traits",
 ]
@@ -97,12 +132,31 @@ dependencies = [
 [[package]]
 name = "arrow-array"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
 dependencies = [
  "ahash",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
+ "arrow-buffer 58.3.0",
+ "arrow-data 58.3.0",
+ "arrow-schema 58.3.0",
+ "chrono",
+ "chrono-tz",
+ "half",
+ "hashbrown 0.17.1",
+ "num-complex",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "arrow-array"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae33dad492b7df00a217563a7b0ef2874df68a0deea1b1a3acf628152f7f7a69"
+dependencies = [
+ "ahash",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-schema 58.4.0",
  "chrono",
  "chrono-tz",
  "half",
@@ -115,7 +169,19 @@ dependencies = [
 [[package]]
 name = "arrow-buffer"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
+dependencies = [
+ "bytes",
+ "half",
+ "num-bigint",
+ "num-traits",
+]
+
+[[package]]
+name = "arrow-buffer"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9552f96391c005e6ab449fa941420935e7e062489b12b8b1b08879b2163f5b5"
 dependencies = [
  "bytes",
  "half",
@@ -126,14 +192,14 @@ dependencies = [
 [[package]]
 name = "arrow-cast"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-ord",
- "arrow-schema",
- "arrow-select",
+ "arrow-array 58.3.0",
+ "arrow-buffer 58.3.0",
+ "arrow-data 58.3.0",
+ "arrow-ord 58.3.0",
+ "arrow-schema 58.3.0",
+ "arrow-select 58.3.0",
  "atoi",
  "base64",
  "chrono",
@@ -145,13 +211,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrow-cast"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a8a327c9649f30d8406995f27642b68df354713cca3baaaf100f076f18d5f34"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-ord 58.4.0",
+ "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
+ "atoi",
+ "base64",
+ "chrono",
+ "half",
+ "lexical-core",
+ "num-traits",
+ "ryu",
+]
+
+[[package]]
 name = "arrow-csv"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
 dependencies = [
- "arrow-array",
- "arrow-cast",
- "arrow-schema",
+ "arrow-array 58.3.0",
+ "arrow-cast 58.3.0",
+ "arrow-schema 58.3.0",
+ "chrono",
+ "csv",
+ "csv-core",
+ "regex",
+]
+
+[[package]]
+name = "arrow-csv"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af0dd6d90d1955e9f9a014c1e563ee8aeffc21909085d25623e1da44d96eca26"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-cast 58.4.0",
+ "arrow-schema 58.4.0",
  "chrono",
  "csv",
  "csv-core",
@@ -161,10 +263,23 @@ dependencies = [
 [[package]]
 name = "arrow-data"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
 dependencies = [
- "arrow-buffer",
- "arrow-schema",
+ "arrow-buffer 58.3.0",
+ "arrow-schema 58.3.0",
+ "half",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "arrow-data"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b24852db04738907e06c04ea61e42fe7fda962a34513022dc0d0e754fb7976b"
+dependencies = [
+ "arrow-buffer 58.4.0",
+ "arrow-schema 58.4.0",
  "half",
  "num-integer",
  "num-traits",
@@ -173,29 +288,68 @@ dependencies = [
 [[package]]
 name = "arrow-ipc"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
- "arrow-select",
+ "arrow-array 58.3.0",
+ "arrow-buffer 58.3.0",
+ "arrow-data 58.3.0",
+ "arrow-schema 58.3.0",
+ "arrow-select 58.3.0",
  "flatbuffers",
  "lz4_flex",
  "zstd",
 ]
 
 [[package]]
+name = "arrow-ipc"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29a908a11fcfb3fb2f6730f4ac15e367bc644e419155e96238f68cf3adde572b"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
+ "flatbuffers",
+]
+
+[[package]]
 name = "arrow-json"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-cast",
- "arrow-ord",
- "arrow-schema",
- "arrow-select",
+ "arrow-array 58.3.0",
+ "arrow-buffer 58.3.0",
+ "arrow-cast 58.3.0",
+ "arrow-ord 58.3.0",
+ "arrow-schema 58.3.0",
+ "arrow-select 58.3.0",
+ "chrono",
+ "half",
+ "indexmap",
+ "itoa",
+ "lexical-core",
+ "memchr",
+ "num-traits",
+ "ryu",
+ "serde_core",
+ "serde_json",
+ "simdutf8",
+]
+
+[[package]]
+name = "arrow-json"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8a96aed3931c076adee39ec2a40d8219fc7f09e79bcdaca1df16272993e1e14"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-cast 58.4.0",
+ "arrow-ord 58.4.0",
+ "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
  "chrono",
  "half",
  "indexmap",
@@ -212,31 +366,57 @@ dependencies = [
 [[package]]
 name = "arrow-ord"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
- "arrow-select",
+ "arrow-array 58.3.0",
+ "arrow-buffer 58.3.0",
+ "arrow-data 58.3.0",
+ "arrow-schema 58.3.0",
+ "arrow-select 58.3.0",
+]
+
+[[package]]
+name = "arrow-ord"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63a083ec750f5c043f02946b4baf05fcdbb55f4560a3277055caca5cc99f3eb0"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
 ]
 
 [[package]]
 name = "arrow-row"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
+ "arrow-array 58.3.0",
+ "arrow-buffer 58.3.0",
+ "arrow-data 58.3.0",
+ "arrow-schema 58.3.0",
+ "half",
+]
+
+[[package]]
+name = "arrow-row"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "514ba0ef0d4c5896202dae736251ce415abb43a950bed570fb7981b8716c0e4c"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-schema 58.4.0",
  "half",
 ]
 
 [[package]]
 name = "arrow-schema"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
 dependencies = [
  "bitflags",
  "serde_core",
@@ -244,28 +424,68 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrow-schema"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21ca356ad6425cecb6eb7b28e4f659f1ee7880fbb1a16127de7dd62901efee9e"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
 name = "arrow-select"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
 dependencies = [
  "ahash",
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
+ "arrow-array 58.3.0",
+ "arrow-buffer 58.3.0",
+ "arrow-data 58.3.0",
+ "arrow-schema 58.3.0",
+ "num-traits",
+]
+
+[[package]]
+name = "arrow-select"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c58da39eb3d8350ad4a549e5c2bc49284dac554016c69829310350f1731b0aad"
+dependencies = [
+ "ahash",
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-schema 58.4.0",
  "num-traits",
 ]
 
 [[package]]
 name = "arrow-string"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
- "arrow-select",
+ "arrow-array 58.3.0",
+ "arrow-buffer 58.3.0",
+ "arrow-data 58.3.0",
+ "arrow-schema 58.3.0",
+ "arrow-select 58.3.0",
+ "memchr",
+ "num-traits",
+ "regex",
+ "regex-syntax",
+]
+
+[[package]]
+name = "arrow-string"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6789b388467525e3271326b6b4915666ecfdf5142aef09779445c954b67543c"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
  "memchr",
  "num-traits",
  "regex",
@@ -308,13 +528,13 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 name = "axon-upstream-wasm-browser-harness"
 version = "0.0.0"
 dependencies = [
- "arrow-array",
- "arrow-ipc",
+ "arrow-array 58.3.0",
+ "arrow-ipc 58.3.0",
  "browser-sdk",
  "bytes",
  "deltalake-browser",
  "js-sys",
- "object_store",
+ "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6)",
  "query-contract",
  "url",
  "wasm-bindgen",
@@ -394,9 +614,10 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "buoyant_kernel"
 version = "0.22.2"
-source = "git+https://github.com/daxis-io/delta-kernel-rs?rev=79c48fe4e22431efb144da4a0db46bb8ff5ce9d8#79c48fe4e22431efb144da4a0db46bb8ff5ce9d8"
+source = "git+https://github.com/daxis-io/delta-kernel-rs?rev=bbccfb394bf4a3eac54e125d71996a66a5a0e13a#bbccfb394bf4a3eac54e125d71996a66a5a0e13a"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "buoyant_kernel_derive",
  "bytes",
  "chrono",
@@ -404,8 +625,10 @@ dependencies = [
  "futures",
  "indexmap",
  "itertools",
- "object_store",
- "parquet",
+ "object_store 0.13.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6)",
+ "parquet 58.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "parquet 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "percent-encoding",
  "rand 0.9.5",
  "roaring",
@@ -425,7 +648,7 @@ dependencies = [
 [[package]]
 name = "buoyant_kernel_derive"
 version = "1.0.0"
-source = "git+https://github.com/daxis-io/delta-kernel-rs?rev=79c48fe4e22431efb144da4a0db46bb8ff5ce9d8#79c48fe4e22431efb144da4a0db46bb8ff5ce9d8"
+source = "git+https://github.com/daxis-io/delta-kernel-rs?rev=bbccfb394bf4a3eac54e125d71996a66a5a0e13a#bbccfb394bf4a3eac54e125d71996a66a5a0e13a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -642,10 +865,10 @@ dependencies = [
 [[package]]
 name = "datafusion"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
- "arrow-schema",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
+ "arrow-schema 58.3.0",
  "async-trait",
  "bytes",
  "chrono",
@@ -678,9 +901,9 @@ dependencies = [
  "getrandom 0.3.4",
  "itertools",
  "log",
- "object_store",
+ "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6)",
  "parking_lot",
- "parquet",
+ "parquet 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "rand 0.9.5",
  "regex",
  "sqlparser",
@@ -693,9 +916,9 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "async-trait",
  "dashmap",
  "datafusion-common",
@@ -709,7 +932,7 @@ dependencies = [
  "futures",
  "itertools",
  "log",
- "object_store",
+ "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6)",
  "parking_lot",
  "tokio",
 ]
@@ -717,9 +940,9 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog-listing"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "async-trait",
  "datafusion-catalog",
  "datafusion-common",
@@ -733,17 +956,17 @@ dependencies = [
  "futures",
  "itertools",
  "log",
- "object_store",
+ "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6)",
 ]
 
 [[package]]
 name = "datafusion-common"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
  "ahash",
- "arrow",
- "arrow-ipc",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
+ "arrow-ipc 58.3.0",
  "chrono",
  "half",
  "hashbrown 0.16.1",
@@ -751,8 +974,8 @@ dependencies = [
  "itertools",
  "libc",
  "log",
- "object_store",
- "parquet",
+ "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6)",
+ "parquet 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "paste",
  "sqlparser",
  "tokio",
@@ -762,7 +985,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common-runtime"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
  "futures",
  "log",
@@ -772,9 +995,9 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "async-trait",
  "bytes",
  "chrono",
@@ -791,7 +1014,7 @@ dependencies = [
  "glob",
  "itertools",
  "log",
- "object_store",
+ "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6)",
  "rand 0.9.5",
  "tokio",
  "url",
@@ -800,10 +1023,10 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-arrow"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
- "arrow-ipc",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
+ "arrow-ipc 58.3.0",
  "async-trait",
  "bytes",
  "datafusion-common",
@@ -816,16 +1039,16 @@ dependencies = [
  "datafusion-session",
  "futures",
  "itertools",
- "object_store",
+ "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6)",
  "tokio",
 ]
 
 [[package]]
 name = "datafusion-datasource-csv"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "async-trait",
  "bytes",
  "datafusion-common",
@@ -837,7 +1060,7 @@ dependencies = [
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
- "object_store",
+ "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6)",
  "regex",
  "tokio",
 ]
@@ -845,9 +1068,9 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-json"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "async-trait",
  "bytes",
  "datafusion-common",
@@ -859,7 +1082,7 @@ dependencies = [
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
- "object_store",
+ "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6)",
  "serde_json",
  "tokio",
  "tokio-stream",
@@ -868,9 +1091,9 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-parquet"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "async-trait",
  "bytes",
  "datafusion-common",
@@ -888,24 +1111,24 @@ dependencies = [
  "futures",
  "itertools",
  "log",
- "object_store",
+ "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6)",
  "parking_lot",
- "parquet",
+ "parquet 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "tokio",
 ]
 
 [[package]]
 name = "datafusion-doc"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 
 [[package]]
 name = "datafusion-execution"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
- "arrow-buffer",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
+ "arrow-buffer 58.3.0",
  "async-trait",
  "chrono",
  "dashmap",
@@ -914,7 +1137,7 @@ dependencies = [
  "datafusion-physical-expr-common",
  "futures",
  "log",
- "object_store",
+ "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6)",
  "parking_lot",
  "rand 0.9.5",
  "tempfile",
@@ -924,9 +1147,9 @@ dependencies = [
 [[package]]
 name = "datafusion-expr"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "async-trait",
  "chrono",
  "datafusion-common",
@@ -945,9 +1168,9 @@ dependencies = [
 [[package]]
 name = "datafusion-expr-common"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "datafusion-common",
  "indexmap",
  "itertools",
@@ -957,10 +1180,10 @@ dependencies = [
 [[package]]
 name = "datafusion-functions"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
- "arrow-buffer",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
+ "arrow-buffer 58.3.0",
  "base64",
  "chrono",
  "chrono-tz",
@@ -984,10 +1207,10 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
  "ahash",
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "datafusion-common",
  "datafusion-doc",
  "datafusion-execution",
@@ -1005,10 +1228,10 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate-common"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
  "ahash",
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "datafusion-common",
  "datafusion-expr-common",
  "datafusion-physical-expr-common",
@@ -1017,10 +1240,10 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-nested"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
- "arrow-ord",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
+ "arrow-ord 58.3.0",
  "datafusion-common",
  "datafusion-doc",
  "datafusion-execution",
@@ -1041,9 +1264,9 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-table"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "async-trait",
  "datafusion-catalog",
  "datafusion-common",
@@ -1056,9 +1279,9 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "datafusion-common",
  "datafusion-doc",
  "datafusion-expr",
@@ -1073,7 +1296,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window-common"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
  "datafusion-common",
  "datafusion-physical-expr-common",
@@ -1082,7 +1305,7 @@ dependencies = [
 [[package]]
 name = "datafusion-macros"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
  "datafusion-doc",
  "quote",
@@ -1092,9 +1315,9 @@ dependencies = [
 [[package]]
 name = "datafusion-optimizer"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "chrono",
  "datafusion-common",
  "datafusion-expr",
@@ -1110,10 +1333,10 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
  "ahash",
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "datafusion-common",
  "datafusion-expr",
  "datafusion-expr-common",
@@ -1132,9 +1355,9 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-adapter"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "datafusion-common",
  "datafusion-expr",
  "datafusion-functions",
@@ -1146,10 +1369,10 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-common"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
  "ahash",
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "chrono",
  "datafusion-common",
  "datafusion-expr-common",
@@ -1162,9 +1385,9 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-optimizer"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "datafusion-common",
  "datafusion-execution",
  "datafusion-expr",
@@ -1179,12 +1402,12 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-plan"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
  "ahash",
- "arrow",
- "arrow-ord",
- "arrow-schema",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
+ "arrow-ord 58.3.0",
+ "arrow-schema 58.3.0",
  "async-trait",
  "datafusion-common",
  "datafusion-common-runtime",
@@ -1210,9 +1433,9 @@ dependencies = [
 [[package]]
 name = "datafusion-pruning"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "datafusion-common",
  "datafusion-datasource",
  "datafusion-expr-common",
@@ -1226,7 +1449,7 @@ dependencies = [
 [[package]]
 name = "datafusion-session"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
  "async-trait",
  "datafusion-common",
@@ -1239,9 +1462,9 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "53.1.0"
-source = "git+https://github.com/daxis-io/datafusion?rev=0d1d77af6a5974af10dfbe1e3790f3dce05ae617#0d1d77af6a5974af10dfbe1e3790f3dce05ae617"
+source = "git+https://github.com/daxis-io/datafusion?rev=aa1d3bfb591e0e10594160119d8899d4b856c3f5#aa1d3bfb591e0e10594160119d8899d4b856c3f5"
 dependencies = [
- "arrow",
+ "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc)",
  "bigdecimal",
  "chrono",
  "datafusion-common",
@@ -1256,17 +1479,17 @@ dependencies = [
 [[package]]
 name = "deltalake-browser"
 version = "0.32.4"
-source = "git+https://github.com/daxis-io/delta-rs?rev=bc45f077347988804e8d42249238710f90b8db97#bc45f077347988804e8d42249238710f90b8db97"
+source = "git+https://github.com/daxis-io/delta-rs?rev=be60607f67951459e886915e8104273880dcc5cb#be60607f67951459e886915e8104273880dcc5cb"
 dependencies = [
- "arrow-array",
- "arrow-ipc",
- "arrow-schema",
+ "arrow-array 58.3.0",
+ "arrow-ipc 58.3.0",
+ "arrow-schema 58.3.0",
  "async-trait",
  "buoyant_kernel",
  "bytes",
  "datafusion",
  "futures",
- "object_store",
+ "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6)",
  "thiserror",
  "url",
 ]
@@ -2110,7 +2333,8 @@ dependencies = [
 [[package]]
 name = "object_store"
 version = "0.13.2"
-source = "git+https://github.com/daxis-io/arrow-rs-object-store?rev=54109e3e6797522ccb2ee5d43cad2a9cd0013074#54109e3e6797522ccb2ee5d43cad2a9cd0013074"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "622acbc9100d3c10e2ee15804b0caa40e55c933d5aa53814cd520805b7958a49"
 dependencies = [
  "async-trait",
  "base64",
@@ -2120,15 +2344,12 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
- "gloo-timers",
  "http",
- "http-body",
  "http-body-util",
  "httparse",
  "humantime",
  "hyper",
  "itertools",
- "js-sys",
  "md-5",
  "parking_lot",
  "percent-encoding",
@@ -2140,6 +2361,38 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "walkdir",
+ "wasm-bindgen-futures",
+ "web-time",
+]
+
+[[package]]
+name = "object_store"
+version = "0.13.2"
+source = "git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6#a04240eafdc5833e34fe21d4b348ee399177def6"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures-channel",
+ "futures-core",
+ "futures-util",
+ "gloo-timers",
+ "http",
+ "http-body",
+ "http-body-util",
+ "humantime",
+ "itertools",
+ "js-sys",
+ "parking_lot",
+ "percent-encoding",
+ "quick-xml",
+ "reqwest",
+ "serde",
  "thiserror",
  "tokio",
  "tracing",
@@ -2196,15 +2449,16 @@ dependencies = [
 [[package]]
 name = "parquet"
 version = "58.3.0"
-source = "git+https://github.com/daxis-io/arrow-rs?rev=39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc#39a02b83b6d7ddc41a3fc0dbe541604aebbe1fcc"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5dafa7d01085b62a47dd0c1829550a0a36710ea9c4fe358a05a85477cec8a908"
 dependencies = [
  "ahash",
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-ipc",
- "arrow-schema",
- "arrow-select",
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-ipc 58.4.0",
+ "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
  "base64",
  "brotli",
  "bytes",
@@ -2217,7 +2471,42 @@ dependencies = [
  "num-bigint",
  "num-integer",
  "num-traits",
- "object_store",
+ "object_store 0.13.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "paste",
+ "seq-macro",
+ "simdutf8",
+ "snap",
+ "thrift",
+ "tokio",
+ "twox-hash",
+ "zstd",
+]
+
+[[package]]
+name = "parquet"
+version = "58.3.0"
+source = "git+https://github.com/daxis-io/arrow-rs?rev=518663f4fb39ec0be672718432bbd7bb8a5456fc#518663f4fb39ec0be672718432bbd7bb8a5456fc"
+dependencies = [
+ "ahash",
+ "arrow-array 58.3.0",
+ "arrow-buffer 58.3.0",
+ "arrow-data 58.3.0",
+ "arrow-ipc 58.3.0",
+ "arrow-schema 58.3.0",
+ "arrow-select 58.3.0",
+ "base64",
+ "brotli",
+ "bytes",
+ "chrono",
+ "flate2",
+ "futures",
+ "half",
+ "hashbrown 0.17.1",
+ "lz4_flex",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=a04240eafdc5833e34fe21d4b348ee399177def6)",
  "paste",
  "seq-macro",
  "simdutf8",
