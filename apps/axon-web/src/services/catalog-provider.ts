@@ -26,6 +26,7 @@ import {
 } from '../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
 import {
   createLocalDeltaCanonicalTable,
+  createPublicObjectStorageCanonicalTable,
   localDeltaConnectionId,
 } from './canonical-table-identity.ts';
 
@@ -93,6 +94,15 @@ export type LocalDeltaCatalogProviderInput = Readonly<{
   metadata: TableMetadata;
 }>;
 
+export type PublicObjectStorageCatalogProviderInput = Readonly<{
+  provider: 'gcs' | 's3';
+  connectionId: string;
+  normalizedTableUri: string;
+  schemaName: string;
+  tableName: string;
+  metadata: TableMetadata;
+}>;
+
 export function createLocalDeltaCatalogProvider(
   input: LocalDeltaCatalogProviderInput,
 ): CatalogProvider {
@@ -123,6 +133,54 @@ export function createLocalDeltaCatalogProvider(
     throw new CatalogProviderError(
       'invalid_request',
       'local catalog metadata identity is invalid',
+      'catalog-provider-construction',
+    );
+  }
+  metadata.table = clone(TableNodeSchema, table);
+
+  return flatCatalogProvider({ catalog, schema, table, metadata });
+}
+
+export function createPublicObjectStorageCatalogProvider(
+  input: PublicObjectStorageCatalogProviderInput,
+): CatalogProvider {
+  let table: TableNode;
+  let connectionId: string;
+  let normalizedTableUri: string;
+  try {
+    connectionId = input.connectionId;
+    normalizedTableUri = input.normalizedTableUri;
+    requiredText(input.schemaName, 'schema name');
+    table = createPublicObjectStorageCanonicalTable({
+      provider: input.provider,
+      connectionId,
+      normalizedTableUri,
+      tableName: input.tableName,
+    });
+  } catch {
+    throw new CatalogProviderError(
+      'invalid_request',
+      'public catalog identity is invalid',
+      'catalog-provider-construction',
+    );
+  }
+  const catalog = create(CatalogNodeSchema, {
+    connectionId,
+    name: `public-${input.provider}`,
+  });
+  const schema = create(SchemaNodeSchema, {
+    connectionId,
+    catalog: catalog.name,
+    name: input.schemaName,
+  });
+  const metadata = clone(TableMetadataSchema, input.metadata);
+  if (
+    metadata.storageLocation !== normalizedTableUri ||
+    (metadata.table && !equals(TableNodeSchema, metadata.table, table))
+  ) {
+    throw new CatalogProviderError(
+      'invalid_request',
+      'public catalog metadata identity is invalid',
       'catalog-provider-construction',
     );
   }

@@ -177,7 +177,11 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
           features: t.features,
           uri: source === 'object_store' ? (t.uri ?? form.uri) : t.name,
           manifestUrl: t.manifestUrl,
-          descriptorResolutionMetrics: t.descriptorResolutionMetrics,
+          descriptorResolutionMetrics:
+            t.descriptorResolutionMetrics ??
+            (source === 'object_store'
+              ? form.objectStorage?.descriptorResolutionMetrics
+              : undefined),
           localRegistryId: source === 'local' ? form.localDelta?.registryId : undefined,
           localPersistence: source === 'local' ? form.localDelta?.persistence : undefined,
           catalogMetadataJson,

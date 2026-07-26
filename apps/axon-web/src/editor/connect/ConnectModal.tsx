@@ -29,10 +29,10 @@ import {
 import { IconCheck, IconFolder, IconLock, IconWarn } from './icons.tsx';
 import { DEFAULT_AXON_CATALOG_ALIAS, discoveryPayloadFromCatalogDiscovery } from './store.ts';
 import type { ConnectForm, ConnectResult, SchemaSelection, TestState } from './types.ts';
-import type { BrowserHttpSnapshotDescriptor } from '../../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 import { PageRequestSchema } from '../../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
 import {
   createLocalDeltaCatalogProvider,
+  createPublicObjectStorageCatalogProvider,
   discoverFlatCatalog,
 } from '../../services/catalog-provider.ts';
 import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
@@ -104,6 +104,7 @@ export function ConnectModal({
   const [form, setForm] = useState<ConnectForm>(DEFAULT_FORM);
   const [testState, setTestState] = useState<TestState>(null);
   const [objectStorageError, setObjectStorageError] = useState<string | null>(null);
+  const connectionTestController = useRef<AbortController | null>(null);
   const [alias, setAlias] = useState('');
   const [useRecommendedCatalog, setUseRecommendedCatalog] = useState(true);
   const [selection, setSelection] = useState<Record<string, SchemaSelection>>({});
@@ -111,7 +112,9 @@ export function ConnectModal({
     if (source === 'local' && form.localCatalogDiscovery) {
       return discoveryPayloadFromCatalogDiscovery(form.localCatalogDiscovery);
     }
-    if (source === 'object_store' && form.objectStorage) return form.objectStorage.discovery;
+    if (source === 'object_store' && form.objectStorage) {
+      return discoveryPayloadFromCatalogDiscovery(form.objectStorage.catalogDiscovery);
+    }
     return source ? discoveryForSource(source) : null;
   }, [form.localCatalogDiscovery, form.objectStorage, source]);
 
@@ -123,6 +126,13 @@ export function ConnectModal({
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [onClose]);
+
+  useEffect(
+    () => () => {
+      connectionTestController.current?.abort();
+    },
+    [],
+  );
 
   // ─── Pre-fill sample defaults on first arrival to step 2 ─
   useEffect(() => {
@@ -162,6 +172,9 @@ export function ConnectModal({
   }, [step, source, alias, useRecommendedCatalog, seededRef, currentDiscovery]);
 
   const runTest = useCallback(async () => {
+    connectionTestController.current?.abort();
+    const controller = new AbortController();
+    connectionTestController.current = controller;
     setTestState('running');
     setObjectStorageError(null);
     if (source === 'local' && form.localDelta && form.localCatalogDiscovery) {
@@ -200,15 +213,39 @@ export function ConnectModal({
           descriptor,
           preflight,
         });
+        const tableName = descriptor.tableUri.split('/').filter(Boolean).at(-1) ?? 'table';
+        const root = objectStorage.parsePublicObjectStorageTableRoot({
+          provider: publicProvider,
+          tableUri: descriptor.tableUri,
+          region: form.region,
+        });
+        const catalogDiscovery = await discoverFlatCatalog(
+          createPublicObjectStorageCatalogProvider({
+            provider: publicProvider,
+            connectionId: objectStorage.publicObjectStorageConnectionId(root),
+            normalizedTableUri: root.tableUri,
+            schemaName: 'default',
+            tableName,
+            metadata: objectStorage.publicObjectStorageCatalogMetadata(descriptor),
+          }),
+          create(PageRequestSchema),
+          {
+            signal: controller.signal,
+            correlationId: catalogCorrelationId(),
+          },
+        );
         setForm({
           ...form,
-          objectStorage: objectStorageRuntimeFromDescriptor(
-            descriptor,
+          objectStorage: {
+            tableUri: descriptor.tableUri,
+            tableName,
             descriptorResolutionMetrics,
-          ),
+            catalogDiscovery,
+          },
         });
         setTestState('ok');
       } catch (err) {
+        if (isAbortError(err)) return;
         setForm({ ...form, objectStorage: null });
         setObjectStorageError(publicObjectStorageErrorMessage(err));
         setTestState('err');
@@ -238,7 +275,11 @@ export function ConnectModal({
         selection,
         discovered,
         catalogDiscovery:
-          source === 'local' ? (form.localCatalogDiscovery ?? undefined) : undefined,
+          source === 'local'
+            ? (form.localCatalogDiscovery ?? undefined)
+            : source === 'object_store'
+              ? form.objectStorage?.catalogDiscovery
+              : undefined,
       });
     }
   };
@@ -822,66 +863,6 @@ function isAbortError(error: unknown): boolean {
     'name' in error &&
     (error as { name?: unknown }).name === 'AbortError'
   );
-}
-
-function objectStorageRuntimeFromDescriptor(
-  descriptor: BrowserHttpSnapshotDescriptor,
-  descriptorResolutionMetrics?: PublicObjectStorageDescriptorResolutionMetrics,
-) {
-  const tableName = descriptor.tableUri.split('/').filter(Boolean).at(-1) ?? 'table';
-  const rows = descriptor.activeFiles.reduce((sum, file) => sum + rowsFromStats(file.stats), 0);
-  const sizeBytes = descriptor.activeFiles.reduce(
-    (sum, file) => sum + generatedDescriptorInteger(file.sizeBytes),
-    0,
-  );
-  return {
-    tableUri: descriptor.tableUri,
-    tableName,
-    descriptorResolutionMetrics,
-    discovery: {
-      summary: 'Detected 1 public Delta table',
-      schemas: [
-        {
-          name: 'default',
-          tableCount: 1,
-          included: true,
-          tables: [
-            {
-              name: tableName,
-              snapshot: generatedDescriptorInteger(descriptor.snapshotVersion),
-              rows,
-              files: descriptor.activeFiles.length,
-              size: formatBytes(sizeBytes),
-              protocol: 'r1/w2',
-              uri: descriptor.tableUri,
-              descriptorResolutionMetrics,
-            },
-          ],
-        },
-      ],
-    },
-  };
-}
-
-function generatedDescriptorInteger(value: bigint | undefined): number {
-  if (value === undefined) throw new Error('Public descriptor omitted its snapshot version.');
-  const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < 0) {
-    throw new Error('Public descriptor integer was outside the browser-safe range.');
-  }
-  return number;
-}
-
-function rowsFromStats(stats: string | undefined): number {
-  if (!stats) return 0;
-  try {
-    const parsed = JSON.parse(stats) as { numRecords?: unknown };
-    return typeof parsed.numRecords === 'number' && Number.isFinite(parsed.numRecords)
-      ? parsed.numRecords
-      : 0;
-  } catch {
-    return 0;
-  }
 }
 
 function formatBytes(bytes: number): string {

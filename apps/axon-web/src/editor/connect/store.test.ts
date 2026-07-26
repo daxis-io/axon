@@ -2,11 +2,16 @@ import { create } from '@bufbuild/protobuf';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { TableMetadataSchema } from '../../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 import { PageRequestSchema } from '../../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
-import type { BrowserHttpSnapshotDescriptor } from '../../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
+import {
+  BrowserHttpSnapshotDescriptorSchema,
+  type BrowserHttpSnapshotDescriptor,
+} from '../../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 import {
   createLocalDeltaCatalogProvider,
+  createPublicObjectStorageCatalogProvider,
   discoverFlatCatalog,
 } from '../../services/catalog-provider.ts';
+import { publicObjectStorageCatalogMetadata } from '../../services/object-storage.ts';
 import type { ConnectedCatalog, ConnectResult } from './types.ts';
 import {
   buildCatalogFromResult,
@@ -216,5 +221,72 @@ describe('connected catalog persistence', () => {
     expect(table?.catalogMetadataJson).toBeDefined();
     expect(JSON.stringify(table?.catalogMetadataJson)).not.toContain('blob:');
     expect(JSON.stringify(table?.catalogMetadataJson)).not.toContain('descriptor');
+  });
+
+  it('keeps public descriptor metrics beside generated metadata rather than inside it', async () => {
+    const descriptor = create(BrowserHttpSnapshotDescriptorSchema, {
+      tableUri: 'gs://bucket/table',
+      snapshotVersion: 0n,
+    });
+    const catalogDiscovery = await discoverFlatCatalog(
+      createPublicObjectStorageCatalogProvider({
+        provider: 'gcs',
+        connectionId: 'axon-connection://public-gcs/bucket',
+        normalizedTableUri: descriptor.tableUri,
+        schemaName: 'default',
+        tableName: 'table',
+        metadata: publicObjectStorageCatalogMetadata(descriptor),
+      }),
+      create(PageRequestSchema),
+      {
+        signal: new AbortController().signal,
+        correlationId: 'store-public-provider-test',
+      },
+    );
+    const metrics = {
+      descriptor_resolution_count: 1,
+      delta_log_manifest_list_count: 2,
+      delta_log_manifest_list_duration_ms: 3,
+      snapshot_resolve_count: 1,
+      snapshot_resolve_duration_ms: 4,
+    };
+    const result: ConnectResult = {
+      source: 'object_store',
+      alias: 'workspace',
+      selection: { default: 'all' },
+      catalogDiscovery,
+      discovered: { summary: 'stale', schemas: [] },
+      form: {
+        path: '',
+        detected: null,
+        localDelta: null,
+        localCatalogDiscovery: null,
+        provider: 'gcs',
+        uri: descriptor.tableUri,
+        region: 'us-central1',
+        endpoint: '',
+        objectStorage: {
+          tableUri: descriptor.tableUri,
+          tableName: 'table',
+          descriptorResolutionMetrics: metrics,
+          catalogDiscovery,
+        },
+        uc_mode: 'databricks',
+        uc_host: '',
+        uc_bff_url: '',
+        uc_session_label: '',
+        uc_catalog: '',
+        uc_schema_filter: '',
+        ds_mode: 'profile',
+        ds_profile_name: '',
+        ds_endpoint: '',
+        ds_share: '',
+      },
+    };
+
+    const table = buildCatalogFromResult(result).schemas[0]?.tables[0];
+
+    expect(table?.descriptorResolutionMetrics).toEqual(metrics);
+    expect(JSON.stringify(table?.catalogMetadataJson)).not.toContain('descriptor_resolution_count');
   });
 });

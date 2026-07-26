@@ -8,15 +8,25 @@ import {
   TableNodeSchema,
 } from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 import {
+  BrowserHttpFileDescriptorSchema,
+  BrowserHttpSnapshotDescriptorSchema,
+  PartitionColumnType,
+} from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
+import {
   PageRequestSchema,
   ProviderErrorCode,
 } from '../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
 import {
   CatalogProviderError,
   createLocalDeltaCatalogProvider,
+  createPublicObjectStorageCatalogProvider,
   discoverFlatCatalog,
 } from './catalog-provider.ts';
-import { createLocalDeltaCanonicalTable } from './canonical-table-identity.ts';
+import {
+  createLocalDeltaCanonicalTable,
+  createPublicObjectStorageCanonicalTable,
+} from './canonical-table-identity.ts';
+import { publicObjectStorageCatalogMetadata } from './object-storage.ts';
 
 const page = create(PageRequestSchema);
 
@@ -201,5 +211,151 @@ describe('local CatalogProvider', () => {
         correlationId: 'catalog-test-correlation',
       },
     });
+  });
+});
+
+describe('public object storage CatalogProvider', () => {
+  const descriptor = create(BrowserHttpSnapshotDescriptorSchema, {
+    tableUri: 'gs://Public-Bucket/events/table',
+    snapshotVersion: 0n,
+    partitionColumnTypes: {
+      event_date: PartitionColumnType.STRING,
+    },
+    activeFiles: [
+      create(BrowserHttpFileDescriptorSchema, {
+        path: 'event_date=2026-07-26/part.parquet',
+        url: 'https://storage.googleapis.com/Public-Bucket/events/table/part.parquet',
+        sizeBytes: 7n,
+        stats: JSON.stringify({ numRecords: 4 }),
+      }),
+    ],
+  });
+
+  it('routes the public connection flow through provider discovery outside React metadata code', () => {
+    const connectModal = readFileSync(
+      fileURLToPath(new URL('../editor/connect/ConnectModal.tsx', import.meta.url)),
+      'utf8',
+    );
+
+    expect(connectModal).toContain('createPublicObjectStorageCatalogProvider');
+    expect(connectModal).toContain('publicObjectStorageCatalogMetadata');
+    expect(connectModal).not.toContain('objectStorageRuntimeFromDescriptor');
+    expect(connectModal).not.toContain('objectStorage.discovery');
+  });
+
+  it.each([
+    [
+      'gcs' as const,
+      'public-gcs',
+      'axon-connection://public-gcs/Public-Bucket',
+      'axon.public-gcs/v1',
+      'gs://Public-Bucket/events/table',
+    ],
+    [
+      's3' as const,
+      'public-s3',
+      'axon-connection://public-s3/us-east-2/public-bucket',
+      'axon.public-s3/v1',
+      's3://public-bucket/events/table',
+    ],
+  ])(
+    'returns generated %s hierarchy and canonical identity',
+    async (provider, catalogName, connectionId, providerNamespace, canonicalLocator) => {
+      const metadata = publicObjectStorageCatalogMetadata(
+        create(BrowserHttpSnapshotDescriptorSchema, {
+          ...descriptor,
+          tableUri: canonicalLocator,
+        }),
+      );
+      const catalogProvider = createPublicObjectStorageCatalogProvider({
+        provider,
+        connectionId,
+        normalizedTableUri: canonicalLocator,
+        schemaName: 'default',
+        tableName: 'table',
+        metadata,
+      });
+
+      const discovered = await discoverFlatCatalog(catalogProvider, page, context());
+
+      expect(discovered.catalog).toMatchObject({ name: catalogName, connectionId });
+      expect(discovered.table.resource).toMatchObject({
+        connectionId,
+        providerNamespace,
+        identity: { case: 'canonicalLocator', value: canonicalLocator },
+      });
+      expect(discovered.metadata).toMatchObject({
+        latestSnapshotVersion: 0n,
+        rowCount: 4n,
+        sizeBytes: 7n,
+        fileCount: 1n,
+        partitionColumns: ['event_date'],
+        minReaderVersion: 1,
+        minWriterVersion: 2,
+        storageLocation: canonicalLocator,
+      });
+      expect(discovered.catalog).not.toHaveProperty('descriptorResolutionMetrics');
+      expect(discovered.metadata).not.toHaveProperty('descriptorResolutionMetrics');
+    },
+  );
+
+  it('uses the same normalized public table identity as E9', async () => {
+    const provider = createPublicObjectStorageCatalogProvider({
+      provider: 'gcs',
+      connectionId: 'axon-connection://public-gcs/Public-Bucket',
+      normalizedTableUri: descriptor.tableUri,
+      schemaName: 'default',
+      tableName: 'table',
+      metadata: publicObjectStorageCatalogMetadata(descriptor),
+    });
+    const discovered = await discoverFlatCatalog(provider, page, context());
+    const expected = createPublicObjectStorageCanonicalTable({
+      provider: 'gcs',
+      connectionId: 'axon-connection://public-gcs/Public-Bucket',
+      normalizedTableUri: 'gs://Public-Bucket/events/table',
+      tableName: 'table',
+    });
+
+    expect(equals(TableNodeSchema, discovered.table, expected)).toBe(true);
+    expect(toBinary(TableNodeSchema, discovered.table)).toEqual(
+      toBinary(TableNodeSchema, expected),
+    );
+  });
+
+  it.each([
+    ['abfss', 'abfss://account/container/table'],
+    ['r2', 'r2://bucket/table'],
+    ['unity_catalog', 'https://catalog.example/table'],
+    ['delta_share', 'https://share.example/table'],
+    ['gcs', 'gs://user:secret@bucket/table'],
+    ['gcs', 'gs://bucket/table?token=secret'],
+    ['gcs', 'gs://bucket/table#fragment'],
+    ['gcs', 'gs://bucket'],
+  ])('rejects unsupported or unsafe public input %s %s', (provider, tableUri) => {
+    expect(() =>
+      createPublicObjectStorageCatalogProvider({
+        provider: provider as 'gcs',
+        connectionId: `axon-connection://public-${provider}/fixture`,
+        normalizedTableUri: tableUri,
+        schemaName: 'default',
+        tableName: 'table',
+        metadata: create(TableMetadataSchema, { storageLocation: tableUri }),
+      }),
+    ).toThrow(CatalogProviderError);
+  });
+
+  it('rejects metadata whose canonical root differs from the adapter root', () => {
+    expect(() =>
+      createPublicObjectStorageCatalogProvider({
+        provider: 'gcs',
+        connectionId: 'axon-connection://public-gcs/Public-Bucket',
+        normalizedTableUri: descriptor.tableUri,
+        schemaName: 'default',
+        tableName: 'table',
+        metadata: create(TableMetadataSchema, {
+          storageLocation: 'gs://other-bucket/other-table',
+        }),
+      }),
+    ).toThrow(CatalogProviderError);
   });
 });

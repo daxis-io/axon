@@ -32,7 +32,10 @@ import {
   loadLocalDeltaRuntime as loadDefaultLocalDeltaRuntime,
   LocalDeltaError,
 } from './local-delta.ts';
-import { createLocalDeltaCanonicalTable } from './canonical-table-identity.ts';
+import {
+  createLocalDeltaCanonicalTable,
+  createPublicObjectStorageCanonicalTable,
+} from './canonical-table-identity.ts';
 import {
   parsePublicObjectStorageTableRoot,
   publicObjectStorageConnectionId,
@@ -163,6 +166,19 @@ export function canonicalTableForSelection(selection: AvailableQuerySourceSelect
       tableName: selection.source.tableName,
     });
   }
+  if (selection.source.kind === 'object_store_table_root') {
+    const root = parsePublicObjectStorageTableRoot({
+      provider: selection.source.provider,
+      tableUri: selection.source.tableUri,
+      region: selection.source.region,
+    });
+    return createPublicObjectStorageCanonicalTable({
+      provider: root.provider,
+      connectionId: publicObjectStorageConnectionId(root),
+      normalizedTableUri: root.tableUri,
+      tableName: selection.source.tableName,
+    });
+  }
   return create(TableNodeSchema, {
     resource: canonicalResourceForSelection(selection),
     tableType: TableType.TABLE,
@@ -214,15 +230,12 @@ function canonicalResourceForSelection(
         tableUri: source.tableUri,
         region: source.region,
       });
-      return create(CanonicalResourceRefSchema, {
+      return createPublicObjectStorageCanonicalTable({
+        provider: root.provider,
         connectionId: publicObjectStorageConnectionId(root),
-        providerNamespace: `axon.public-${root.provider}/v1`,
-        kind: ResourceKind.TABLE,
-        identity: {
-          case: 'canonicalLocator',
-          value: root.tableUri,
-        },
-      });
+        normalizedTableUri: root.tableUri,
+        tableName: source.tableName,
+      }).resource!;
     }
   }
 }

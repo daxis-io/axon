@@ -9,7 +9,7 @@ export type ObjectStorageRuntime = {
   tableUri: string;
   tableName: string;
   descriptorResolutionMetrics?: PublicObjectStorageDescriptorResolutionMetrics;
-  discovery: DiscoveryPayload;
+  catalogDiscovery: CatalogDiscoverySnapshot;
 };
 
 export type ConnectForm = {

@@ -12,6 +12,10 @@ import {
   type BrowserHttpSnapshotDescriptor,
   type CapabilityReport,
 } from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
+import {
+  TableMetadataSchema,
+  type TableMetadata,
+} from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 
 export type PublicObjectStorageProvider = 'gcs' | 's3';
 
@@ -212,6 +216,38 @@ export function publicObjectStorageConnectionId(root: PublicObjectStorageTableRo
   return `axon-connection://public-s3/${encodeURIComponent(root.region)}/${encodeURIComponent(
     root.bucket,
   )}`;
+}
+
+export function publicObjectStorageCatalogMetadata(
+  descriptor: BrowserHttpSnapshotDescriptor,
+): TableMetadata {
+  const rows = descriptor.activeFiles.reduce((total, file) => {
+    const value = rowsFromDescriptorStats(file.stats);
+    return value === undefined ? total : total + value;
+  }, 0);
+  if (!Number.isSafeInteger(rows) || rows < 0) {
+    throw accessFailed('public object storage descriptor row count is invalid');
+  }
+  const sizeBytes = descriptor.activeFiles.reduce((total, file) => {
+    if (file.sizeBytes === undefined || file.sizeBytes < 0n) {
+      throw accessFailed('public object storage descriptor active file size is invalid');
+    }
+    return total + file.sizeBytes;
+  }, 0n);
+  if (descriptor.snapshotVersion === undefined || descriptor.snapshotVersion < 0n) {
+    throw accessFailed('public object storage descriptor snapshot version is invalid');
+  }
+
+  return create(TableMetadataSchema, {
+    partitionColumns: Object.keys(descriptor.partitionColumnTypes).sort(),
+    rowCount: BigInt(rows),
+    sizeBytes,
+    fileCount: BigInt(descriptor.activeFiles.length),
+    latestSnapshotVersion: descriptor.snapshotVersion,
+    minReaderVersion: 1,
+    minWriterVersion: 2,
+    storageLocation: descriptor.tableUri,
+  });
 }
 
 export async function buildPublicDeltaLogManifest(
@@ -826,6 +862,24 @@ function safeGeneratedInteger(value: bigint, field: string): number {
     );
   }
   return number;
+}
+
+function rowsFromDescriptorStats(stats: string | undefined): number | undefined {
+  if (!stats) return undefined;
+  try {
+    const parsed = JSON.parse(stats) as unknown;
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      'numRecords' in parsed &&
+      typeof parsed.numRecords === 'number'
+    ) {
+      return parsed.numRecords;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 function cloneDescriptor(descriptor: BrowserHttpSnapshotDescriptor): BrowserHttpSnapshotDescriptor {
