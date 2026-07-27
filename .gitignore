@@ -1,5 +1,7 @@
 target/
 .worktrees/
+.ai/
+.claude/settings.local.json
 .generated-delta/
 node_modules/
 apps/axon-web/dist/
