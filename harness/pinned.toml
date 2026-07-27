@@ -13,9 +13,14 @@ schema_version = 2
 [harness]
 repository = "git@github.com:ethan-tyler/gpt56-codex-engineering-harness.git"
 local_path = "~/gpt56-codex-engineering-harness"
-revision = "8557fab756ff7998084e8145e0f036c229e07730"
-branch = "main"
+revision = "81f94851ba0c2baa430c1fd7376725a423a02e84"
+branch = "feat/codex-pool-mcp-server"
 pinned_on = "2026-07-27"
+
+# The revision above is the tip of the codex-pool branch, which adds pool/, its
+# result schemas, evals 0014-0015, and HCP-0006. The sha is immutable, so this
+# pin stays valid however that branch lands; update `branch` to main once it is
+# merged.
 
 # Three identities, each answering a different question. Record the narrowest
 # one that covers what you are comparing.
@@ -28,9 +33,9 @@ pinned_on = "2026-07-27"
 #
 # The split exists because quarantining five user-scope skills changed real
 # behavior while leaving harness_id untouched. See HCP-0005.
-instructions_id = "e9f65598c122df78"
-harness_id = "a64d7c62bef65599"
-environment_id = "cea63fb47ee4ef35"
+instructions_id = "011cba0902a3a3b6"
+harness_id = "38de1f5f5867af34"
+environment_id = "73b2baad3f39adf5"
 
 [runtime]
 codex_version = "codex-cli 0.145.0"
@@ -44,19 +49,45 @@ default_subagent_model = "gpt-5.6-terra"
 default_subagent_reasoning_effort = "medium"
 registered_agent_roles = 12
 
-# How Claude Code reaches those agents. The dispatch rules live in
-# .claude/skills/codex-team/SKILL.md; the role profiles are installed from the
-# harness repository into ~/.codex/agents/ and are read at dispatch time.
+# How Claude Code reaches those agents. Dispatch goes through the codex-pool MCP
+# server (harness `pool/`), not the raw Codex MCP server. The role profiles are
+# installed into ~/.codex/agents/ and are read by the pool at dispatch time; the
+# orchestration judgment lives in .claude/skills/codex-team/SKILL.md.
+#
+# The pool's tools take a role and a task. Model, reasoning effort, sandbox, and
+# working directory are read from the role profile and appear in no schema, so
+# `danger-full-access` has no argument that could carry it. That is why these
+# tools are pre-approved in .claude/settings.local.json and the raw Codex tools
+# are not. See harness changes/HCP-0006.
 [mcp]
-server = "codex"
-tools = ["mcp__codex__codex", "mcp__codex__codex-reply"]
+server = "codex-pool"
+command = "~/gpt56-codex-engineering-harness/scripts/codex-pool-server"
+tools = [
+  "mcp__codex-pool__dispatch",
+  "mcp__codex-pool__follow_up",
+  "mcp__codex-pool__list_workers",
+  "mcp__codex-pool__pool_status",
+]
+transport = "codex exec --json"
+
+# The raw Codex MCP server remains registered but is no longer pre-approved, so
+# a call to it prompts. It is the fallback for work the pool does not cover, not
+# the normal path.
+raw_server_still_registered = true
 
 # Known limits of this pinning, so they are not rediscovered later.
 #
 # - harness_id covers the instruction surface, CLI version, and runtime posture.
 #   It does not cover the model weights behind a model name.
-# - Codex enforces the sandbox; it does not enforce which sandbox this repo's
-#   skill asks for. Claude Code permission rules match tool names, not
-#   arguments, so read-only dispatch remains a convention of the skill text.
-# - max_concurrent_threads_per_session bounds Codex-native spawning. It does not
-#   bound parallel MCP calls issued from Claude Code.
+# - The sandbox is now enforced rather than conventional: the pool derives it
+#   from the role profile, passes it as both a flag and a config override
+#   (`codex exec resume` accepts no --sandbox flag), and refuses to load a
+#   profile naming danger-full-access. What remains unenforced is semantic
+#   scope — "do not change public contracts", "this is the sole writer" — which
+#   still travels only in the assignment prompt.
+# - The three-worker cap is enforced by the pool. Codex's
+#   max_concurrent_threads_per_session bounds Codex-native spawning only and
+#   never bounded parallel MCP calls from Claude Code.
+# - Workers still fabricate command results (HCP-0003, reproduced through the
+#   pool on 2026-07-27). The pool detects and labels this via evidence_status;
+#   it does not prevent it. Read that field before any conclusion.

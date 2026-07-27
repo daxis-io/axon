@@ -14,29 +14,19 @@ $ARGUMENTS
 
 ## 0. Preflight
 
-Confirm `~/.codex/agents/` exists before dispatching anything.
+Call `mcp__codex-pool__pool_status`. It returns the repository in use, the
+installed roles with their models and sandboxes, and where this run's ledger is
+being written.
 
-If it is missing, **stop and say so**. Do not substitute guessed models or inline role prompts —
-this skill's roles are defined by those files, and dispatching without them sends wrong models with
-wrong sandboxes. Tell the user the profile library is absent and what would be needed to restore it.
+If the tool is unavailable, the `codex-pool` MCP server is not registered — say
+so rather than working around it. MCP servers load at session start, so a server
+registered mid-session is not callable until Claude Code restarts. Do not fall
+back to `mcp__codex__codex`: the raw tool takes `sandbox` and `cwd` as caller
+arguments and is exactly what the pool exists to replace.
 
-Tools required: `mcp__codex__codex` (start a thread) and `mcp__codex__codex-reply` (continue one).
-If they are not available, the MCP server is not registered — say so rather than working around it.
-MCP servers load at session start, so a server registered mid-session is not callable until restart.
-
-### Capability preflight
-
-Run this after any Codex CLI upgrade, profile change, or when a dispatch behaves unexpectedly.
-"Stable" does not mean every model, sandbox, and role combination behaves identically.
-
-1. `codex --version`, and compare against the `codex_version` in the harness manifest.
-2. Dispatch one `scout` read-only, with a trivial question **and** a write probe:
-   `touch <repo>/.codex-sandbox-probe`.
-3. Confirm the probe reports `Operation not permitted` and that the file does not exist.
-4. Confirm the returned thread ID continues correctly via one `codex-reply`.
-
-If the write probe *succeeds*, stop immediately. Read-only is not being enforced, and every
-read-only role in this skill is silently write-capable.
+If `profiles_installed` is false the pool is running on the harness repository's
+bundled profiles rather than the installed copy. Dispatch still works; say so,
+because that is a different configuration from the one the manifest ids describe.
 
 ## 1. Define the work contract
 
@@ -50,22 +40,25 @@ Before delegating, state:
 6. Required tests, benchmarks, logs, or other evidence.
 7. Assumptions workers must **verify rather than inherit**.
 
-Do not delegate trivial work merely to create agents. Use at most **three active workers** by
-default. A single well-scoped worker beats three vague ones.
+Do not delegate trivial work merely to create agents. The pool caps active
+workers at three. A single well-scoped worker beats three vague ones.
 
-Delegate only when at least two workstreams can genuinely proceed independently. A rename, a local
-bug, a single-file change, or one serial dependency chain stays here. Workers do their own model and
-tool work, so delegation pays only when parallel time saved plus independent validation plus context
-isolation exceeds the extra usage and the cost of reconciling the results.
+Delegate only when at least two workstreams can genuinely proceed independently.
+A rename, a local bug, a single-file change, or one serial dependency chain
+stays here. Workers do their own model and tool work, so delegation pays only
+when parallel time saved plus independent validation plus context isolation
+exceeds the extra usage and the cost of reconciling the results.
 
-When more than three facets exist, run **waves** — do not raise the worker count. A second wave
-informed by the first is usually better than a wider first wave.
+When more than three facets exist, run **waves** — do not try to raise the
+worker count. A second wave informed by the first is usually better than a wider
+first wave.
 
 ### The assignment envelope
 
-Every dispatch over MCP starts a **fresh thread with no conversation history**. A worker that is not
-told something does not know it. Fill in every field that applies; omitting one is how a worker
-rediscovers scope you had already settled, or violates a constraint it was never given.
+Every `dispatch` starts a **fresh thread with no conversation history**. A worker
+that is not told something does not know it. Fill in every field that applies;
+omitting one is how a worker rediscovers scope you had already settled, or
+violates a constraint it was never given.
 
 ```text
 Task ID:
@@ -83,159 +76,156 @@ Return format:
 Stop condition:
 ```
 
-Restate safety constraints explicitly in every envelope. The sandbox and approval policy are
-inherited from the parameters you pass, but the *semantic* boundaries — do not change public
-contracts, do not touch unrelated files, this is the sole writer — travel only in the prompt.
+Restate *semantic* boundaries explicitly — do not change public contracts, do
+not touch unrelated files, this is the sole writer. The sandbox is enforced by
+the pool; these are not, and they travel only in the prompt.
 
-## 2. Role registry
+## 2. Role routing
 
-Roles are defined by TOML profiles in `~/.codex/agents/`. That directory is the single source of
-truth for model, reasoning effort, sandbox, and role instructions — this table is a routing index
-only. **Read the profile at dispatch time; never hardcode its values from this table.**
-
-Those files are installed from `~/gpt56-codex-engineering-harness` (`home/agents/`), which is the
-version-controlled origin. If a profile looks wrong, fix it there and reinstall rather than editing
-`~/.codex/` directly — a direct edit is drift that `scripts/capture-manifest.py` will flag but that
-nothing will preserve.
+Roles are defined by TOML profiles the pool reads at dispatch. This table is a
+routing index only; `pool_status` returns the authoritative list.
 
 ### Read-only roles
 
-| Role | Profile | Use for |
-| --- | --- | --- |
-| `scout` | `scout.toml` | One narrow evidence question. Leaf lookups. |
-| `code_mapper` | `code_mapper.toml` | Execution paths, contracts, ownership, repo mapping. |
-| `architect` | `architect.toml` | Invariants, alternatives, failure modes, migration, operability. |
-| `docs_researcher` | `docs_researcher.toml` | Version-sensitive API/spec/changelog behavior (live web). |
-| `test_auditor` | `test_auditor.toml` | Coverage gaps and high-value validation design. |
-| `reviewer` | `reviewer.toml` | Independent owner-level review of a diff. |
-| `security_reviewer` | `security_reviewer.toml` | Trust boundaries, authz, secrets, injection, isolation. |
-| `performance_reviewer` | `performance_reviewer.toml` | Algorithmic cost, allocations, I/O, contention, benchmark validity. |
+Run in the repository root. They cannot write.
 
-### Write-capable roles (worktree required)
-
-| Role | Profile | Use for |
-| --- | --- | --- |
-| `debugger` | `debugger.toml` | Reproduce, minimize, test hypotheses, isolate root cause. |
-| `implementer` | `implementer.toml` | Bounded patch against an accepted plan. |
-| `worker` | `worker.toml` | Scoped, well-understood implementation. |
-| `smart_worker` | `smart_worker.toml` | Difficult implementation or material ambiguity. |
-
-Prefer the narrowest role that can answer the question. Reach for `architect` or `smart_worker` only
-when the problem is genuinely ambiguous.
-
-## 3. Dispatch procedure
-
-For role `R`, read `~/.codex/agents/R.toml` and call `mcp__codex__codex` with:
-
-| Parameter | Value |
+| Role | Use for |
 | --- | --- |
-| `model` | the profile's `model` |
-| `config` | `{"model_reasoning_effort": <profile's model_reasoning_effort>}`, plus `"web_search": "live"` if the profile sets it |
-| `sandbox` | the profile's `sandbox_mode` — **always passed explicitly** |
-| `developer-instructions` | the profile's `developer_instructions`, verbatim |
-| `approval-policy` | `"never"` |
-| `cwd` | absolute path — repo root for read-only, the worktree for write-capable |
-| `prompt` | the bounded task contract for this worker |
+| `scout` | One narrow evidence question. Leaf lookups. |
+| `code_mapper` | Execution paths, contracts, ownership, repo mapping. |
+| `architect` | Invariants, alternatives, failure modes, migration, operability. |
+| `docs_researcher` | Version-sensitive API/spec/changelog behavior (live web). |
+| `test_auditor` | Coverage gaps and high-value validation design. |
+| `reviewer` | Independent owner-level review of a diff. |
+| `security_reviewer` | Trust boundaries, authz, secrets, injection, isolation. |
+| `performance_reviewer` | Algorithmic cost, allocations, I/O, contention, benchmark validity. |
 
-Then record the returned **thread ID**.
+### Write-capable roles
 
-### Why `sandbox` is never omitted
+The pool creates a dedicated git worktree for each one and passes it as the
+working directory. You never name a path.
 
-`~/.codex/config.toml` sets `sandbox_mode = "workspace-write"` globally. A call that omits `sandbox`
-inherits **write access**. Read-only is not the default — passing it explicitly is what makes a
-read-only role read-only.
+| Role | Use for |
+| --- | --- |
+| `debugger` | Reproduce, minimize, test hypotheses, isolate root cause. |
+| `implementer` | Bounded patch against an accepted plan. |
+| `worker` | Scoped, well-understood implementation. |
+| `smart_worker` | Difficult implementation or material ambiguity. |
 
-### Hard rules
+Prefer the narrowest role that can answer the question. Reach for `architect` or
+`smart_worker` only when the problem is genuinely ambiguous.
 
-- Never use `danger-full-access`. It is a valid enum value; it is not a valid choice here.
-- Always pass an absolute `cwd`.
+## 3. Dispatch
+
+```text
+mcp__codex-pool__dispatch(role, task, scope_paths?)
+mcp__codex-pool__follow_up(worker_id, prompt)
+mcp__codex-pool__list_workers()
+```
+
+That is the whole surface. There is no `sandbox`, `cwd`, `model`, or
+`developer-instructions` parameter, because those are not decisions you should
+be making per call — they belong to the role, and the pool reads them from its
+profile. `danger-full-access` is not rejected at runtime; there is no argument
+that could carry it.
+
+What this means in practice:
+
+- You cannot accidentally dispatch a read-only role with write access.
+- You cannot put two write-capable workers in the same directory.
+- You cannot exceed three active workers; the pool refuses the fourth.
+- `scope_paths` is prompt context. It points a worker at files; it does not
+  change where the worker runs or what it may touch.
+
+Continue a worker only with `follow_up` and its exact `worker_id`. The worker
+retains its own prior turns and nothing of yours.
+
+Still your job, because the pool cannot enforce them:
+
 - Give each worker a bounded task, not the entire user request.
-- Preserve thread ID, role, model, sandbox, and cwd for every worker.
-- Never let two write-capable workers share a working directory.
-- No recursive delegation — workers are leaves.
 - Never pass secrets, `.env` contents, credentials, or unrelated personal context.
-- Continue a thread only with `mcp__codex__codex-reply` and its exact `threadId`.
-- Keep at most three worker threads active at once.
+- No recursive delegation — workers are leaves.
 
 ## 3a. What this transport does and does not give you
 
-Codex's native multi-agent mode has features the MCP surface does not expose. Three of them appear
-in the Codex-side orchestration guidance and **do not apply here**. Do not write prompts that assume
-them.
+Codex's native multi-agent mode has features this surface does not expose. Do
+not write prompts that assume them.
 
-| Codex-native mechanism | Over MCP |
+| Codex-native mechanism | Here |
 | --- | --- |
-| `fork_turns: "none"` for fresh context | Not needed and not available. Every `mcp__codex__codex` call is already a fresh thread. This is precisely why the assignment envelope is mandatory rather than advisory. |
+| `fork_turns: "none"` for fresh context | Not needed. Every `dispatch` is already a fresh thread. This is why the assignment envelope is mandatory rather than advisory. |
 | Peer agent-to-agent messaging | **Unavailable.** There is no inbox. A worker told to "message the test auditor" will not. Every handoff routes through Claude — collect the finding, then include it in the next worker's envelope. |
-| `max_concurrent_threads_per_session = 3` | Governs Codex-native spawning only. It does not bound how many MCP calls Claude issues in parallel. The three-worker budget here is enforced by this skill, not by the runtime. |
+| `max_concurrent_threads_per_session` | Governs Codex-native spawning only. The three-worker budget here is enforced by the pool. |
 
-Context modes available on this transport:
+Context modes:
 
 | Mode | How |
 | --- | --- |
-| Fresh context | `mcp__codex__codex` — the only way to start. Always fresh. |
-| Bounded continuation | `mcp__codex__codex-reply` with the thread ID. The worker retains its own prior turns, nothing of Claude's. |
+| Fresh context | `dispatch` — the only way to start. Always fresh. |
+| Bounded continuation | `follow_up` with the worker id. |
 | Full conversation inheritance | Not available. Do not promise a worker context it cannot receive. |
 
-The same caveat applies to `sandbox` as to concurrency: Claude Code permission rules match tool
-names, not arguments, so nothing mechanically distinguishes a `read-only` call from a
-`danger-full-access` one. Passing the profile's sandbox explicitly is a convention this skill
-enforces by text. Treat it as load-bearing.
+Write-capable workers have **no network** (`network_access = false`). If a task
+genuinely needs the network, that is a signal to reconsider the decomposition,
+not to relax the sandbox. Use `docs_researcher` for live web reads.
 
-## 4. Worktree isolation
+## 4. Read the evidence, not the prose
 
-Every write-capable worker gets its own worktree. Read-only workers use the repo root.
+This is the part that changes how you treat a worker's answer.
 
-```bash
-RUN_ID="$(date +%Y%m%d-%H%M)-<topic>"
-git worktree add -b "agent/${RUN_ID}-implementer" ".worktrees/${RUN_ID}-implementer" HEAD
-```
+GPT-5.6 models fabricate command results. Not occasionally — HCP-0003 measured
+six of six variants reporting verbatim shell output and an exit status for a
+command that was never executed, including under a prompt that explicitly forbade
+predicting output. The fabricated answers were **correct**, professionally
+formatted, and passed every content-based assertion. This behavior has been
+reproduced twice through the pool itself.
 
-Pass the resulting **absolute** path as `cwd`. Then:
+So every result carries a machine-computed verdict. Read it first.
 
-- Keep the main checkout untouched while the worker operates.
-- Review the diff from outside the worker thread.
-- Never remove a worktree containing uncommitted work.
-- Integrate only after independent review and Claude's own verification.
+| `evidence_status` | Meaning | What to do |
+| --- | --- | --- |
+| `verified` | Every claimed command appears in the event stream. | Proceed. |
+| `partially_verified` | Some claimed commands have no counterpart. | The named commands did not run. Treat any conclusion resting on them as unsupported. |
+| `unverified` | Commands were claimed and **none** ran. | The result is a prediction. Do not build on it. Re-dispatch or verify yourself. |
+| `no_command_evidence` | Nothing claimed, nothing run. | Reasoning over context. Fine for a design question; not evidence about the repository. |
 
-`.worktrees/` is gitignored and already holds many entries, so the run-id prefix matters — check
-`git worktree list` before creating one.
+For write-capable workers, `changed_files_status` compares the worker's reported
+edits against `git status` run by the pool in the worktree:
 
-Note that `[sandbox_workspace_write] network_access = false` applies: write workers have no network.
-If a task genuinely needs the network, that is a signal to reconsider the decomposition, not to relax
-the sandbox.
+| Status | Meaning |
+| --- | --- |
+| `consistent` | The report matches the disk. |
+| `undisclosed_changes` | Files changed that the worker did not report. Scope it did not disclose. |
+| `contradicted` | Files reported that did not change. The edit did not land, which usually invalidates its test results too. |
 
-## 5. Required worker response
+A worker that reports a check passed without having run it has failed the task,
+regardless of whether its conclusion happens to be right.
 
-Every worker must return:
+## 5. What a worker returns
 
-1. Conclusion.
-2. Evidence — file paths, symbols, line ranges.
-3. Commands run and relevant output.
-4. Assumptions verified.
-5. Assumptions **not** verified.
-6. Risks and edge cases.
-7. Recommended next action.
-8. Confidence, with reasons for uncertainty.
+The result is schema-constrained, so these fields are always present:
+conclusion, evidence, `claimed_commands`, assumptions verified, assumptions
+**not** verified, risks, next action, confidence and its reasons.
 
-Write-capable workers must additionally return changed files, a behavioral explanation, tests added
-or modified, exact commands run, test and benchmark results, known limitations, and confirmation that
-no unrelated changes were introduced.
+Write-capable workers additionally return changed files, the behavior change,
+tests touched, verification results, limitations, and whether unrelated changes
+were introduced.
 
-Claims without reproducible evidence are not sufficient. A worker that reports a check passed without
-having run it has failed the task.
+`executed_commands` is added by the pool from the event stream. When it and
+`claimed_commands` disagree, the event stream is the fact.
 
 ## 6. Reconciliation
 
 After workers return:
 
-1. Compare findings; do not concatenate them.
-2. Identify agreements, disagreements, and unsupported claims.
-3. Challenge weak findings with a targeted `codex-reply` to that thread.
-4. Never ask an implementation thread to be its own independent reviewer.
-5. Prefer one additional targeted experiment over model voting.
-6. Inspect the relevant files and diffs yourself.
-7. Run or independently confirm the final verification commands yourself.
+1. Check `evidence_status` before reading any conclusion.
+2. Compare findings; do not concatenate them.
+3. Identify agreements, disagreements, and unsupported claims.
+4. Challenge weak findings with a targeted `follow_up` to that worker.
+5. Never ask an implementation worker to be its own independent reviewer.
+6. Prefer one additional targeted experiment over model voting.
+7. Inspect the relevant files and diffs yourself.
+8. Run or independently confirm the final verification commands yourself.
 
 The final answer must distinguish:
 
@@ -246,28 +236,24 @@ The final answer must distinguish:
 
 State unresolved uncertainty explicitly rather than smoothing it over.
 
-## 7. Run ledger
+## 7. Integrating a worktree
 
-For **multi-worker runs only**, maintain `.ai/runs/<run-id>/run.md`:
+The pool creates worktrees; it does not merge them. After review:
 
-```markdown
-# <run-id> — <objective>
+- Inspect the diff from outside the worker thread.
+- Never remove a worktree containing uncommitted work — it is the only copy
+  until you integrate it. The pool refuses this by default.
+- Integrate only after independent review and your own verification.
 
-harness_id: <from scripts/capture-manifest.py in the harness repo>
+## 8. Run ledger
 
-## Acceptance criteria
-- ...
+Written automatically to `.ai/runs/<run-id>/` — no action needed:
 
-## Workers
-| Role | Model | Sandbox | cwd | Thread ID | Status |
-| --- | --- | --- | --- | --- | --- |
-
-## Evidence
-- commands run, key file:line references
-
-## Decision
-- outcome, and what remains uncertain
+```text
+manifest.json              harness ids, workers, models, sandboxes, thread ids
+workers/<worker-id>.md     conclusion, evidence, both command lists, diff status
+evidence/events-*.jsonl    the raw stream each verdict was computed from
 ```
 
-This exists so thread IDs and evidence survive a context compaction, and so a run can be audited
-afterward. Skip it for single-worker dispatches — the overhead is not worth it there.
+`pool_status` and `list_workers` report the path. Cite it when a run's
+conclusions need to survive a context compaction or be audited afterward.
