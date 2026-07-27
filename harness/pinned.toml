@@ -8,15 +8,29 @@
 # Regenerate the values with, from the harness repository:
 #     python3 scripts/capture-manifest.py --json
 
-schema_version = 1
+schema_version = 2
 
 [harness]
 repository = "git@github.com:ethan-tyler/gpt56-codex-engineering-harness.git"
 local_path = "~/gpt56-codex-engineering-harness"
-revision = "f87c1aef0b20082bde5d71f344e6d8b695c3093c"
+revision = "8557fab756ff7998084e8145e0f036c229e07730"
 branch = "main"
-harness_id = "03d0477fc784f973"
 pinned_on = "2026-07-27"
+
+# Three identities, each answering a different question. Record the narrowest
+# one that covers what you are comparing.
+#
+#   instructions_id  the harness repository's instruction surface alone.
+#                    Reproducible anywhere from the repo; the only id CI checks.
+#   harness_id       + Codex CLI version, effective config, and feature flags.
+#   environment_id   + the whole installed surface, including user-scope skills
+#                    the harness repo does not own.
+#
+# The split exists because quarantining five user-scope skills changed real
+# behavior while leaving harness_id untouched. See HCP-0005.
+instructions_id = "e9f65598c122df78"
+harness_id = "a64d7c62bef65599"
+environment_id = "cea63fb47ee4ef35"
 
 [runtime]
 codex_version = "codex-cli 0.145.0"
