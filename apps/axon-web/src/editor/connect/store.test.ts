@@ -1,7 +1,15 @@
 import { create, toJson } from '@bufbuild/protobuf';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { TableMetadataSchema } from '../../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
-import { PageRequestSchema } from '../../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
+import {
+  TableMetadataSchema,
+  TableNodeSchema,
+  TableType,
+} from '../../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
+import {
+  CanonicalResourceRefSchema,
+  PageRequestSchema,
+  ResourceKind,
+} from '../../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
 import {
   BrowserHttpSnapshotDescriptorSchema,
   type BrowserHttpSnapshotDescriptor,
@@ -18,6 +26,7 @@ import {
   loadConnectedCatalogs,
   saveConnectedCatalogs,
   SAMPLE_CONNECTED_CATALOG,
+  upsertConnectedCatalog,
 } from './store.ts';
 
 const STORAGE_KEY = 'axon.connect.catalogs.v1';
@@ -39,12 +48,25 @@ class MemoryStorage implements Pick<Storage, 'getItem' | 'setItem' | 'removeItem
 }
 
 function catalog(id: string, alias = id): ConnectedCatalog {
+  const storage = `gs://${id}/table`;
+  const connectionId = `axon-connection://public-gcs/${encodeURIComponent(id)}`;
+  const logicalTable = create(TableNodeSchema, {
+    resource: create(CanonicalResourceRefSchema, {
+      connectionId,
+      providerNamespace: 'axon.public-gcs/v1',
+      kind: ResourceKind.TABLE,
+      identity: { case: 'canonicalLocator', value: storage },
+    }),
+    tableType: TableType.TABLE,
+    name: id,
+  });
   return {
-    id,
+    id: connectionId,
+    catalogName: 'public-gcs',
     alias,
     kind: 'object_store',
     provider: 'gcs',
-    storage: `gs://${id}`,
+    storage,
     region: 'us',
     status: 'connected',
     connectedAt: id,
@@ -60,13 +82,22 @@ function catalog(id: string, alias = id): ConnectedCatalog {
             files: 1,
             size: '1 byte',
             protocol: 'r1/w1',
+            uri: storage,
+            logicalTable,
+            catalogMetadataJson: toJson(
+              TableMetadataSchema,
+              create(TableMetadataSchema, {
+                table: logicalTable,
+                storageLocation: storage,
+              }),
+            ) as Readonly<Record<string, unknown>>,
             source: {
               id: `source-${id}`,
               kind: 'object_store',
               provider: 'gcs',
-              storage: `gs://${id}`,
+              storage,
               region: 'us',
-              canonicalKey: `object_store|gcs|gs://${id}|||default|${id}`,
+              canonicalKey: `object_store|gcs|${storage}|||default|${id}`,
               connectedAt: id,
             },
           },
@@ -87,25 +118,115 @@ describe('connected catalog persistence', () => {
     });
   });
 
-  it('loads the sample catalog when persisted data is missing or malformed', () => {
+  it('loads the sample catalog only when persisted data is missing', () => {
     expect(loadConnectedCatalogs()).toEqual([SAMPLE_CONNECTED_CATALOG]);
 
     storage.setItem(STORAGE_KEY, '{');
 
-    expect(loadConnectedCatalogs()).toEqual([SAMPLE_CONNECTED_CATALOG]);
+    expect(loadConnectedCatalogs()).toEqual([]);
   });
 
-  it('dedupes persisted catalogs when loading from the stable storage key', () => {
-    storage.setItem(
-      STORAGE_KEY,
-      JSON.stringify([catalog('old', 'workspace'), catalog('new', 'workspace')]),
+  it('uses generated connection identity while keeping aliases mutable presentation', async () => {
+    const first = await publicCatalog({
+      bucket: 'shared-bucket',
+      path: 'events',
+      alias: 'Workspace',
+    });
+    const renamed = await publicCatalog({
+      bucket: 'shared-bucket',
+      path: 'events',
+      alias: 'Renamed workspace',
+    });
+
+    const upsert = upsertConnectedCatalog([first], renamed);
+
+    expect(first).toMatchObject({
+      id: 'axon-connection://public-gcs/shared-bucket',
+      catalogName: 'public-gcs',
+      alias: 'Workspace',
+    });
+    expect(upsert.catalogs).toHaveLength(1);
+    expect(upsert.catalogs[0]).toMatchObject({
+      id: first.id,
+      catalogName: 'public-gcs',
+      alias: 'Renamed workspace',
+    });
+  });
+
+  it('keeps same-alias connections and same-name canonical resources distinct', async () => {
+    const firstConnection = await publicCatalog({
+      bucket: 'first-bucket',
+      path: 'events',
+      alias: 'Workspace',
+    });
+    const secondConnection = await publicCatalog({
+      bucket: 'second-bucket',
+      path: 'events',
+      alias: 'Workspace',
+    });
+    const sameConnectionOtherTable = await publicCatalog({
+      bucket: 'first-bucket',
+      path: 'archive/events',
+      tableName: 'events',
+      alias: 'Workspace',
+    });
+
+    const distinctConnections = upsertConnectedCatalog([firstConnection], secondConnection);
+    expect(distinctConnections.catalogs.map((item) => item.id).sort()).toEqual([
+      'axon-connection://public-gcs/first-bucket',
+      'axon-connection://public-gcs/second-bucket',
+    ]);
+
+    const sameConnection = upsertConnectedCatalog(
+      distinctConnections.catalogs,
+      sameConnectionOtherTable,
     );
+    const firstBucket = sameConnection.catalogs.find((item) => item.id === firstConnection.id);
+    expect(firstBucket?.schemas[0]?.tables).toHaveLength(2);
+    expect(
+      firstBucket?.schemas[0]?.tables.map((table) => table.logicalTable?.resource?.identity.value),
+    ).toEqual(['gs://first-bucket/events', 'gs://first-bucket/archive/events']);
 
-    const loaded = loadConnectedCatalogs();
+    saveConnectedCatalogs(sameConnection.catalogs);
+    expect(
+      loadConnectedCatalogs()[0]?.schemas[0]?.tables.map(
+        (table) => table.logicalTable?.resource?.identity.value,
+      ),
+    ).toEqual(['gs://first-bucket/events', 'gs://first-bucket/archive/events']);
 
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0].alias).toBe('workspace');
-    expect(loaded[0].schemas[0].tables.map((table) => table.name).sort()).toEqual(['new', 'old']);
+    firstBucket!.schemas[0]!.tables[1]!.uri = 'gs://tampered-bucket/archive/events';
+    firstBucket!.schemas[0]!.tables[1]!.source!.storage = 'gs://tampered-bucket/archive/events';
+    saveConnectedCatalogs(sameConnection.catalogs);
+
+    expect(loadConnectedCatalogs()[0]?.schemas[0]?.tables[1]?.uri).toBe(
+      'gs://first-bucket/archive/events',
+    );
+  });
+
+  it('splits a legacy alias-merged record by generated connection identity', async () => {
+    const first = await publicCatalog({
+      bucket: 'first-bucket',
+      path: 'events',
+      alias: 'Workspace',
+    });
+    const second = await publicCatalog({
+      bucket: 'second-bucket',
+      path: 'events',
+      alias: 'Workspace',
+    });
+    first.id = 'catalog-workspace';
+    second.id = 'catalog-workspace';
+
+    storage.setItem(STORAGE_KEY, JSON.stringify([first, second]));
+
+    expect(
+      loadConnectedCatalogs()
+        .map((item) => item.id)
+        .sort(),
+    ).toEqual([
+      'axon-connection://public-gcs/first-bucket',
+      'axon-connection://public-gcs/second-bucket',
+    ]);
   });
 
   it('does not persist session-handle local Delta tables', () => {
@@ -121,8 +242,10 @@ describe('connected catalog persistence', () => {
     const raw = storage.getItem(STORAGE_KEY);
     expect(raw).not.toBeNull();
     const persisted = JSON.parse(raw ?? '[]') as ConnectedCatalog[];
-    expect(persisted.map((item) => item.id)).toEqual(['durable']);
-    expect(loadConnectedCatalogs().map((item) => item.id)).toEqual(['durable']);
+    expect(persisted.map((item) => item.id)).toEqual(['axon-connection://public-gcs/durable']);
+    expect(loadConnectedCatalogs().map((item) => item.id)).toEqual([
+      'axon-connection://public-gcs/durable',
+    ]);
   });
 
   it('rejects identity-tampered generated metadata before write and after read', () => {
@@ -139,10 +262,12 @@ describe('connected catalog persistence', () => {
 
     storage.setItem(STORAGE_KEY, JSON.stringify([catalog('previous')]));
     saveConnectedCatalogs([tampered]);
-    expect(loadConnectedCatalogs().map((item) => item.id)).toEqual(['previous']);
+    expect(loadConnectedCatalogs().map((item) => item.id)).toEqual([
+      'axon-connection://public-gcs/previous',
+    ]);
 
     storage.setItem(STORAGE_KEY, JSON.stringify([tampered]));
-    expect(loadConnectedCatalogs()).toEqual([SAMPLE_CONNECTED_CATALOG]);
+    expect(loadConnectedCatalogs()).toEqual([]);
   });
 
   it.each([
@@ -168,25 +293,23 @@ describe('connected catalog persistence', () => {
 
     storage.setItem(STORAGE_KEY, JSON.stringify([catalog('previous')]));
     saveConnectedCatalogs([malformed]);
-    expect(loadConnectedCatalogs().map((item) => item.id)).toEqual(['previous']);
+    expect(loadConnectedCatalogs().map((item) => item.id)).toEqual([
+      'axon-connection://public-gcs/previous',
+    ]);
 
     storage.setItem(STORAGE_KEY, JSON.stringify([malformed]));
-    expect(loadConnectedCatalogs()).toEqual([SAMPLE_CONNECTED_CATALOG]);
+    expect(loadConnectedCatalogs()).toEqual([]);
   });
 
-  it('rejects duplicate table identities instead of validating metadata through the first match', () => {
+  it('merges repeated canonical table identities while retaining safe metadata', () => {
     const duplicate = catalog('events');
     duplicate.schemas[0].tables.push({
       ...duplicate.schemas[0].tables[0],
-      catalogMetadataJson: { table: {} },
     });
 
-    storage.setItem(STORAGE_KEY, JSON.stringify([catalog('previous')]));
     saveConnectedCatalogs([duplicate]);
-    expect(loadConnectedCatalogs().map((item) => item.id)).toEqual(['previous']);
-
-    storage.setItem(STORAGE_KEY, JSON.stringify([duplicate]));
-    expect(loadConnectedCatalogs()).toEqual([SAMPLE_CONNECTED_CATALOG]);
+    expect(loadConnectedCatalogs()).toHaveLength(1);
+    expect(loadConnectedCatalogs()[0]?.schemas[0]?.tables).toHaveLength(1);
   });
 
   it('projects provider-generated local discovery and persists only normalized metadata JSON', async () => {
@@ -354,3 +477,69 @@ describe('connected catalog persistence', () => {
     expect(JSON.stringify(table?.catalogMetadataJson)).not.toContain('descriptor_resolution_count');
   });
 });
+
+async function publicCatalog({
+  bucket,
+  path,
+  tableName = 'events',
+  alias,
+}: {
+  bucket: string;
+  path: string;
+  tableName?: string;
+  alias: string;
+}): Promise<ConnectedCatalog> {
+  const tableUri = `gs://${bucket}/${path}`;
+  const connectionId = `axon-connection://public-gcs/${encodeURIComponent(bucket)}`;
+  const descriptor = create(BrowserHttpSnapshotDescriptorSchema, {
+    tableUri,
+    snapshotVersion: 1n,
+  });
+  const catalogDiscovery = await discoverFlatCatalog(
+    createPublicObjectStorageCatalogProvider({
+      provider: 'gcs',
+      connectionId,
+      normalizedTableUri: tableUri,
+      schemaName: 'default',
+      tableName,
+      metadata: publicObjectStorageCatalogMetadata(descriptor),
+    }),
+    create(PageRequestSchema),
+    {
+      signal: new AbortController().signal,
+      correlationId: `store-${bucket}-${path}`,
+    },
+  );
+  return buildCatalogFromResult({
+    source: 'object_store',
+    alias,
+    selection: { default: 'all' },
+    catalogDiscovery,
+    discovered: { summary: 'generated', schemas: [] },
+    form: {
+      path: '',
+      detected: null,
+      localDelta: null,
+      localCatalogDiscovery: null,
+      provider: 'gcs',
+      uri: tableUri,
+      region: 'us-central1',
+      endpoint: '',
+      objectStorage: {
+        tableUri,
+        tableName,
+        catalogDiscovery,
+      },
+      uc_mode: 'databricks',
+      uc_host: '',
+      uc_bff_url: '',
+      uc_session_label: '',
+      uc_catalog: '',
+      uc_schema_filter: '',
+      ds_mode: 'profile',
+      ds_profile_name: '',
+      ds_endpoint: '',
+      ds_share: '',
+    },
+  });
+}

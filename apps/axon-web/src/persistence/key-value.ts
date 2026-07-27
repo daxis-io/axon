@@ -134,6 +134,7 @@ export type LocalStorageKeyValueStoreOptions<T extends KeyValueRecord> = {
   storageKey: string;
   storage?: SyncStorage;
   fallback?: () => T[];
+  invalidFallback?: () => T[];
   afterRead?: (records: T[]) => T[];
   beforeWrite?: (records: T[]) => T[];
 };
@@ -151,17 +152,18 @@ export function createLocalStorageKeyValueStore<T extends KeyValueRecord>(
   options: LocalStorageKeyValueStoreOptions<T>,
 ): SyncKeyValueStore<T> {
   const fallback = () => options.fallback?.() ?? [];
+  const invalidFallback = () => options.invalidFallback?.() ?? fallback();
   const readAll = (): T[] => {
     try {
       const storage = options.storage ?? globalLocalStorage();
       if (!storage) return fallback();
       const raw = storage.getItem(options.storageKey);
-      if (!raw) return fallback();
+      if (raw === null) return fallback();
       const parsed = JSON.parse(raw) as unknown;
-      if (!Array.isArray(parsed)) return fallback();
+      if (!Array.isArray(parsed)) return invalidFallback();
       return options.afterRead?.(parsed as T[]) ?? (parsed as T[]);
     } catch {
-      return fallback();
+      return invalidFallback();
     }
   };
 

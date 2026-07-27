@@ -59,14 +59,10 @@ export type QueryTableSource =
 
 export type QuerySourceIdentity =
   | readonly ['manifest', string, string, string, string, string, string, number | null]
-  | readonly ['local_delta', string, string, string, string, string, string, number | null]
+  | readonly ['local_delta', string, number | null]
   | readonly [
       'object_store_table_root',
       PublicObjectStorageProvider,
-      string,
-      string,
-      string,
-      string,
       string,
       string,
       number | null,
@@ -87,26 +83,13 @@ export function querySourceIdentity(source: QueryTableSource): QuerySourceIdenti
   }
 
   if (source.kind === 'local_delta') {
-    return [
-      'local_delta',
-      source.catalogName,
-      source.schemaName,
-      source.tableName,
-      source.localRegistryId,
-      source.storage,
-      source.region,
-      source.snapshot ?? null,
-    ] as const;
+    return ['local_delta', source.localRegistryId, source.snapshot ?? null] as const;
   }
 
   return [
     'object_store_table_root',
     source.provider,
-    source.catalogName,
-    source.schemaName,
-    source.tableName,
     source.tableUri,
-    source.storage,
     source.region,
     source.snapshot ?? null,
   ] as const;

@@ -1,5 +1,6 @@
 import type { DiscoveryPayload, ObjectStoreProviderId, SourceId } from './data.ts';
 import type { CatalogDiscoverySnapshot } from '../../services/catalog-provider.ts';
+import type { TableNode } from '../../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 import type { LocalDeltaPersistenceMode, LocalDeltaRuntime } from '../../services/local-delta.ts';
 import type { PublicObjectStorageDescriptorResolutionMetrics } from '../../services/object-storage.ts';
 
@@ -73,6 +74,7 @@ export type ConnectedCatalogSchema = {
     manifestUrl?: string;
     localRegistryId?: string;
     localPersistence?: LocalDeltaPersistenceMode;
+    logicalTable?: TableNode;
     catalogMetadataJson?: Readonly<Record<string, unknown>>;
     descriptorResolutionMetrics?: PublicObjectStorageDescriptorResolutionMetrics;
     source?: ConnectedTableSourceBinding;
@@ -81,6 +83,7 @@ export type ConnectedCatalogSchema = {
 
 export type ConnectedCatalog = {
   id: string;
+  catalogName?: string;
   alias: string;
   kind: SourceId;
   provider?: ObjectStoreProviderId;

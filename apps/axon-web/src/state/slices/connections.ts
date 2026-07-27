@@ -200,14 +200,7 @@ function querySourcesForCatalogs(catalogs: ConnectedCatalog[]): QueryTableSource
 }
 
 function mergedCatalogIdFor(catalogs: ConnectedCatalog[], incoming: ConnectedCatalog): string {
-  return (
-    catalogs.find((catalog) => catalogAliasKey(catalog) === catalogAliasKey(incoming))?.id ??
-    incoming.id
-  );
-}
-
-function catalogAliasKey(catalog: ConnectedCatalog): string {
-  return catalog.alias.trim().toLowerCase();
+  return catalogs.find((catalog) => catalog.id === incoming.id)?.id ?? incoming.id;
 }
 
 function tableCount(catalog: ConnectedCatalog): number {

@@ -1,5 +1,6 @@
-import { create } from '@bufbuild/protobuf';
+import { clone, create, fromJson, type JsonValue } from '@bufbuild/protobuf';
 import {
+  TableMetadataSchema,
   TableNodeSchema,
   TableType,
   type TableNode,
@@ -81,6 +82,45 @@ export function createPublicObjectStorageCanonicalTable(
     tableType: TableType.TABLE,
     name: tableName,
   });
+}
+
+export function canonicalTableFromMetadataJson(
+  metadataJson: Readonly<Record<string, unknown>>,
+): TableNode {
+  const metadata = fromJson(TableMetadataSchema, metadataJson as JsonValue);
+  if (!metadata.table) {
+    throw new Error('catalog metadata omitted canonical table identity');
+  }
+  return validatedCanonicalTable(metadata.table);
+}
+
+export function validatedCanonicalTable(table: TableNode): TableNode {
+  const resource = table.resource;
+  if (
+    !resource ||
+    !resource.connectionId.trim() ||
+    !resource.providerNamespace.trim() ||
+    resource.kind !== ResourceKind.TABLE ||
+    (resource.identity.case !== 'providerObjectId' &&
+      resource.identity.case !== 'canonicalLocator') ||
+    !resource.identity.value.trim() ||
+    !table.name.trim()
+  ) {
+    throw new Error('canonical table identity is invalid');
+  }
+  return clone(TableNodeSchema, table);
+}
+
+export function canonicalTableIdentityKey(table: TableNode): string {
+  const validated = validatedCanonicalTable(table);
+  const resource = validated.resource!;
+  return JSON.stringify([
+    resource.connectionId,
+    resource.providerNamespace,
+    resource.kind,
+    resource.identity.case,
+    resource.identity.value,
+  ]);
 }
 
 function normalizedS3Region(region: string | undefined): string {

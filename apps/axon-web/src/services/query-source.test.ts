@@ -5,7 +5,11 @@ import type {
   QueryCatalogCandidate,
   QuerySourceSelection,
 } from './query-source.ts';
-import { SAMPLE_QUERY_SOURCE, querySourcesForCatalog } from './query-source.ts';
+import {
+  SAMPLE_QUERY_SOURCE,
+  querySourceIdentity,
+  querySourcesForCatalog,
+} from './query-source.ts';
 
 type ResolveQuerySourceSelection = (
   catalogs: QueryCatalogCandidate[],
@@ -218,6 +222,27 @@ describe('resolveQuerySourceSelection', () => {
 });
 
 describe('querySourcesForCatalog', () => {
+  it('keeps canonical source identity stable when the catalog alias changes', () => {
+    const first = querySourcesForCatalog(
+      catalog({
+        id: 'axon-connection://public-gcs/workspace',
+        alias: 'Workspace',
+        manifestUrl: '',
+        uri: 'gs://workspace/events',
+      }),
+    )[0]!;
+    const renamed = querySourcesForCatalog(
+      catalog({
+        id: 'axon-connection://public-gcs/workspace',
+        alias: 'Renamed workspace',
+        manifestUrl: '',
+        uri: 'gs://workspace/events',
+      }),
+    )[0]!;
+
+    expect(querySourceIdentity(renamed)).toEqual(querySourceIdentity(first));
+  });
+
   it('extracts queryable table sources from a connected catalog', () => {
     const catalog: QueryCatalogCandidate = {
       id: 'workspace',

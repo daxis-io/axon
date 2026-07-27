@@ -1,8 +1,12 @@
 // Persistence for connected catalogs from the Connect Catalog workflow.
 // Stored in localStorage so non-sensitive catalog metadata survives reloads.
 
-import { toJson } from '@bufbuild/protobuf';
-import { TableMetadataSchema } from '../../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
+import { clone, toJson } from '@bufbuild/protobuf';
+import {
+  TableMetadataSchema,
+  TableNodeSchema,
+  type TableNode,
+} from '../../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 import type { CatalogDiscoverySnapshot } from '../../services/catalog-provider.ts';
 import {
   availabilityForSource,
@@ -12,6 +16,10 @@ import {
 import type { ConnectResult, ConnectedCatalog, ConnectedCatalogSchema } from './types.ts';
 import { createLocalStorageKeyValueStore } from '../../persistence/key-value.ts';
 import { validatePersistedCatalogMetadata } from '../../services/catalog.ts';
+import {
+  canonicalTableFromMetadataJson,
+  canonicalTableIdentityKey,
+} from '../../services/canonical-table-identity.ts';
 import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
 import {
   SAMPLE_QUERY_SOURCE,
@@ -30,6 +38,7 @@ export type ConnectedCatalogUpsertResult = {
 
 export const SAMPLE_CONNECTED_CATALOG: ConnectedCatalog = {
   id: SAMPLE_QUERY_SOURCE_REF.catalogId,
+  catalogName: SAMPLE_QUERY_SOURCE.catalogName,
   alias: SAMPLE_QUERY_SOURCE.catalogName,
   kind: 'object_store',
   provider: 'gcs',
@@ -74,9 +83,15 @@ export const SAMPLE_CONNECTED_CATALOG: ConnectedCatalog = {
 const connectedCatalogStore = createLocalStorageKeyValueStore<ConnectedCatalog>({
   storageKey: STORAGE_KEY,
   fallback: () => [SAMPLE_CONNECTED_CATALOG],
-  afterRead: (catalogs) => validateConnectedCatalogMetadata(dedupeConnectedCatalogs(catalogs)),
+  invalidFallback: () => [],
+  afterRead: (catalogs) =>
+    validateConnectedCatalogMetadata(dedupeConnectedCatalogs(migrateConnectedCatalogs(catalogs))),
   beforeWrite: (catalogs) =>
-    validateConnectedCatalogMetadata(dedupeConnectedCatalogs(durableConnectedCatalogs(catalogs))),
+    validateConnectedCatalogMetadata(
+      dedupeConnectedCatalogs(
+        migrateConnectedCatalogs(durableConnectedCatalogs(catalogs), { rejectInvalid: true }),
+      ),
+    ),
 });
 
 export function loadConnectedCatalogs(): ConnectedCatalog[] {
@@ -111,23 +126,20 @@ export function upsertConnectedCatalog(
   catalogs: ConnectedCatalog[],
   catalog: ConnectedCatalog,
 ): ConnectedCatalogUpsertResult {
-  const incomingKeys = tableSourceKeys(catalog);
-  const targetCatalogKey = catalogAliasKey(catalog);
+  const targetCatalogKey = catalog.id;
   const replaced: ConnectedCatalog[] = [];
   const retained: ConnectedCatalog[] = [];
   let merged = catalog;
 
   for (const existing of catalogs) {
-    if (catalogAliasKey(existing) === targetCatalogKey) {
+    if (existing.id === targetCatalogKey) {
       const merge = mergeCatalogs(existing, merged);
       merged = merge.catalog;
       if (merge.removed) replaced.push(merge.removed);
       continue;
     }
 
-    const pruned = removeTablesBySourceKeys(existing, incomingKeys);
-    if (pruned.removed) replaced.push(pruned.removed);
-    if (pruned.catalog) retained.push(pruned.catalog);
+    retained.push(existing);
   }
 
   return { catalogs: [summarizeCatalog(merged), ...retained.map(summarizeCatalog)], replaced };
@@ -149,7 +161,7 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
   const catalogMetadataJson = result.catalogDiscovery
     ? generatedMetadataJson(result.catalogDiscovery.metadata)
     : undefined;
-  const catalogAlias = normalizeCatalogAlias(alias) || DEFAULT_AXON_CATALOG_ALIAS;
+  const catalogAlias = displayCatalogAlias(alias) || DEFAULT_AXON_CATALOG_ALIAS;
   const storage = storageForResult(result);
   const host =
     source === 'unity_catalog'
@@ -173,7 +185,9 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
       return {
         name: schemaName,
         tables: tables.map((t) => ({
-          id: `${schemaName}.${t.name}`,
+          id: result.catalogDiscovery
+            ? canonicalTableIdentityKey(result.catalogDiscovery.table)
+            : `${schemaName}.${t.name}`,
           name: t.name,
           snapshot: t.snapshot,
           rows: t.rows,
@@ -190,6 +204,9 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
               : undefined),
           localRegistryId: source === 'local' ? form.localDelta?.registryId : undefined,
           localPersistence: source === 'local' ? form.localDelta?.persistence : undefined,
+          logicalTable: result.catalogDiscovery
+            ? clone(TableNodeSchema, result.catalogDiscovery.table)
+            : undefined,
           catalogMetadataJson,
           source: {
             id: sourceBindingId(source, storage, schemaName, t.name),
@@ -218,7 +235,8 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
     .filter((s): s is NonNullable<typeof s> => s != null);
 
   return summarizeCatalog({
-    id: catalogIdForAlias(catalogAlias),
+    id: result.catalogDiscovery?.catalog.connectionId ?? catalogIdForAlias(catalogAlias),
+    catalogName: result.catalogDiscovery?.catalog.name ?? catalogAlias,
     alias: catalogAlias,
     kind: source,
     provider: source === 'object_store' ? (form.provider as ObjectStoreProviderId) : undefined,
@@ -236,7 +254,6 @@ function mergeCatalogs(
   existing: ConnectedCatalog,
   incoming: ConnectedCatalog,
 ): { catalog: ConnectedCatalog; removed?: ConnectedCatalog } {
-  const removedSchemas: ConnectedCatalogSchema[] = [];
   const schemas = existing.schemas.map((schema) => ({
     ...schema,
     tables: [...schema.tables],
@@ -249,63 +266,28 @@ function mergeCatalogs(
       continue;
     }
 
-    const removedTables: typeof targetSchema.tables = [];
     for (const incomingTable of incomingSchema.tables) {
       const incomingSourceKey = tableSourceKey(incomingTable, incoming);
       targetSchema.tables = targetSchema.tables.filter((existingTable) => {
-        const samePath = existingTable.name === incomingTable.name;
         const sameSource = tableSourceKey(existingTable, existing) === incomingSourceKey;
-        if (samePath || sameSource) {
-          removedTables.push(existingTable);
+        if (sameSource) {
           return false;
         }
         return true;
       });
       targetSchema.tables.push(incomingTable);
     }
-    if (removedTables.length > 0) {
-      removedSchemas.push({ name: targetSchema.name, tables: removedTables });
-    }
   }
 
   const catalog = summarizeCatalog({
     ...incoming,
-    id: existing.id,
-    alias: existing.alias,
+    id: incoming.id,
+    alias: incoming.alias,
     connectedAt: existing.connectedAt || incoming.connectedAt,
     schemas,
   });
 
-  return {
-    catalog,
-    removed: removedSchemas.length > 0 ? { ...existing, schemas: removedSchemas } : undefined,
-  };
-}
-
-function removeTablesBySourceKeys(
-  catalog: ConnectedCatalog,
-  sourceKeys: Set<string>,
-): { catalog?: ConnectedCatalog; removed?: ConnectedCatalog } {
-  if (sourceKeys.size === 0) return { catalog };
-
-  const keptSchemas: ConnectedCatalogSchema[] = [];
-  const removedSchemas: ConnectedCatalogSchema[] = [];
-
-  for (const schema of catalog.schemas) {
-    const keptTables = [];
-    const removedTables = [];
-    for (const table of schema.tables) {
-      if (sourceKeys.has(tableSourceKey(table, catalog))) removedTables.push(table);
-      else keptTables.push(table);
-    }
-    if (keptTables.length > 0) keptSchemas.push({ ...schema, tables: keptTables });
-    if (removedTables.length > 0) removedSchemas.push({ ...schema, tables: removedTables });
-  }
-
-  return {
-    catalog: keptSchemas.length > 0 ? { ...catalog, schemas: keptSchemas } : undefined,
-    removed: removedSchemas.length > 0 ? { ...catalog, schemas: removedSchemas } : undefined,
-  };
+  return { catalog };
 }
 
 function dedupeConnectedCatalogs(catalogs: ConnectedCatalog[]): ConnectedCatalog[] {
@@ -316,6 +298,92 @@ function dedupeConnectedCatalogs(catalogs: ConnectedCatalog[]): ConnectedCatalog
   return deduped;
 }
 
+function migrateConnectedCatalogs(
+  catalogs: ConnectedCatalog[],
+  options: { rejectInvalid?: boolean } = {},
+): ConnectedCatalog[] {
+  const migrated: ConnectedCatalog[] = [];
+  for (const catalog of catalogs) {
+    if (isExplicitSampleCatalog(catalog)) {
+      migrated.push({ ...catalog, catalogName: SAMPLE_QUERY_SOURCE.catalogName });
+      continue;
+    }
+    for (const schema of catalog.schemas ?? []) {
+      for (const table of schema.tables ?? []) {
+        const logicalTable = logicalTableForPersistedTable(table);
+        const connectionId = logicalTable?.resource?.connectionId;
+        if (!logicalTable || !connectionId) {
+          if (options.rejectInvalid) {
+            throw new Error('connected catalog table omitted a valid logical identity');
+          }
+          continue;
+        }
+        migrated.push({
+          ...catalog,
+          id: connectionId,
+          catalogName: catalog.catalogName?.trim() || catalogNameFor(catalog),
+          schemas: [
+            {
+              ...schema,
+              tables: [
+                {
+                  ...table,
+                  id: canonicalTableIdentityKey(logicalTable),
+                  logicalTable,
+                },
+              ],
+            },
+          ],
+        });
+      }
+    }
+  }
+  return migrated;
+}
+
+function logicalTableForPersistedTable(
+  table: ConnectedCatalogSchema['tables'][number],
+): TableNode | undefined {
+  try {
+    if (table.catalogMetadataJson) {
+      return canonicalTableFromMetadataJson(table.catalogMetadataJson);
+    }
+    if (table.logicalTable) {
+      canonicalTableIdentityKey(table.logicalTable);
+      return clone(TableNodeSchema, table.logicalTable);
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function catalogNameFor(catalog: ConnectedCatalog): string {
+  if (catalog.kind === 'local') return 'local-delta';
+  if (
+    catalog.kind === 'object_store' &&
+    (catalog.provider === 'gcs' || catalog.provider === 's3')
+  ) {
+    return `public-${catalog.provider}`;
+  }
+  return catalog.alias;
+}
+
+function isExplicitSampleCatalog(catalog: ConnectedCatalog): boolean {
+  return (
+    catalog.id === SAMPLE_QUERY_SOURCE_REF.catalogId &&
+    catalog.schemas.some(
+      (schema) =>
+        schema.name === SAMPLE_QUERY_SOURCE_REF.schemaName &&
+        schema.tables.some(
+          (table) =>
+            table.name === SAMPLE_QUERY_SOURCE_REF.tableName &&
+            table.manifestUrl === SAMPLE_QUERY_SOURCE.manifestUrl,
+        ),
+    )
+  );
+}
+
 function validateConnectedCatalogMetadata(catalogs: ConnectedCatalog[]): ConnectedCatalog[] {
   for (const catalog of catalogs) {
     const schemaNames = new Set<string>();
@@ -324,12 +392,15 @@ function validateConnectedCatalogMetadata(catalogs: ConnectedCatalog[]): Connect
         throw new Error('persisted catalog contains a duplicate schema identity');
       }
       schemaNames.add(schema.name);
-      const tableNames = new Set<string>();
+      const tableIdentities = new Set<string>();
       for (const table of schema.tables) {
-        if (tableNames.has(table.name)) {
+        const identity = table.logicalTable
+          ? canonicalTableIdentityKey(table.logicalTable)
+          : tableSourceKey(table, catalog);
+        if (tableIdentities.has(identity)) {
           throw new Error('persisted catalog contains a duplicate table identity');
         }
-        tableNames.add(table.name);
+        tableIdentities.add(identity);
         if (!table.catalogMetadataJson) continue;
         const source = querySourceForConnectedTableRef([catalog], {
           catalogId: catalog.id,
@@ -370,6 +441,7 @@ function durableConnectedCatalog(
 ): ConnectedCatalog {
   return {
     id: catalog.id,
+    catalogName: catalog.catalogName,
     alias: catalog.alias,
     kind: catalog.kind,
     provider: catalog.provider,
@@ -399,6 +471,7 @@ function durableConnectedTable(
     manifestUrl: table.manifestUrl,
     localRegistryId: table.localRegistryId,
     localPersistence: table.localPersistence,
+    logicalTable: table.logicalTable,
     catalogMetadataJson: table.catalogMetadataJson,
     descriptorResolutionMetrics: table.descriptorResolutionMetrics,
     source: table.source
@@ -506,19 +579,13 @@ function summarizeCatalog(catalog: ConnectedCatalog): ConnectedCatalog {
   };
 }
 
-function tableSourceKeys(catalog: ConnectedCatalog): Set<string> {
-  return new Set(
-    catalog.schemas.flatMap((schema) =>
-      schema.tables.map((table) => tableSourceKey(table, catalog)),
-    ),
-  );
-}
-
 function tableSourceKey(
   table: ConnectedCatalogSchema['tables'][number],
   catalog: ConnectedCatalog,
 ): string {
-  return table.source?.canonicalKey ?? legacyTableSourceKey(table, catalog);
+  return table.logicalTable
+    ? canonicalTableIdentityKey(table.logicalTable)
+    : (table.source?.canonicalKey ?? legacyTableSourceKey(table, catalog));
 }
 
 function legacyTableSourceKey(
@@ -577,12 +644,12 @@ function catalogIdForAlias(alias: string): string {
   return `catalog-${slug(alias)}`;
 }
 
-function catalogAliasKey(catalog: ConnectedCatalog): string {
-  return normalizeCatalogAlias(catalog.alias);
-}
-
 function normalizeCatalogAlias(alias: string | undefined): string {
   return (alias ?? '').trim().toLowerCase();
+}
+
+function displayCatalogAlias(alias: string | undefined): string {
+  return (alias ?? '').trim();
 }
 
 function normalizeCatalogLocator(locator: string | undefined): string {

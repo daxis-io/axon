@@ -123,4 +123,20 @@ describe('createLocalStorageKeyValueStore', () => {
     expect(store.get('durable')).toEqual({ id: 'durable', value: 'object_store' });
     expect(store.get('ephemeral')).toBeUndefined();
   });
+
+  it('distinguishes a missing first-run record from malformed persisted data', () => {
+    const storage = new MemoryStorage();
+    const store = createLocalStorageKeyValueStore<TestRecord>({
+      storageKey: 'axon.connect.catalogs.v1',
+      storage,
+      fallback: () => [{ id: 'sample', value: 'fixture' }],
+      invalidFallback: () => [],
+    });
+
+    expect(store.getAll()).toEqual([{ id: 'sample', value: 'fixture' }]);
+
+    storage.setItem('axon.connect.catalogs.v1', '{');
+
+    expect(store.getAll()).toEqual([]);
+  });
 });

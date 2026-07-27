@@ -1,3 +1,4 @@
+import { create, toJson } from '@bufbuild/protobuf';
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HandleStore, type LocalDeltaHandleStoreRecord } from '../persistence/handle-store.ts';
@@ -18,6 +19,11 @@ import {
   SAMPLE_CONNECTED_CATALOG,
 } from '../editor/connect/store.ts';
 import type { ConnectedCatalog } from '../editor/connect/types.ts';
+import { TableMetadataSchema } from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
+import {
+  createLocalDeltaCanonicalTable,
+  localDeltaConnectionId,
+} from './canonical-table-identity.ts';
 import { resolve_delta_snapshot_from_manifest } from '../wasm/axon_web_wasm.js';
 
 vi.mock('../wasm/axon_web_wasm.js', () => ({
@@ -410,7 +416,9 @@ describe('local Delta registry persistence', () => {
 
     const durableCatalog = connectedCatalog('durable', 'metadata_only_reselect');
     saveConnectedCatalogs([connectedCatalog('session-only', runtime.persistence), durableCatalog]);
-    expect(loadConnectedCatalogs().map((catalog) => catalog.id)).toEqual(['durable']);
+    expect(loadConnectedCatalogs().map((catalog) => catalog.id)).toEqual([
+      localDeltaConnectionId('durable'),
+    ]);
   });
 
   it('materializes a requested snapshot once and reuses its generated descriptor and Blob URLs', async () => {
@@ -516,9 +524,15 @@ function fileWithBrowserPath(relativePath: string, body: string, type: string): 
 }
 
 function connectedCatalog(id: string, persistence: LocalDeltaPersistenceMode): ConnectedCatalog {
+  const storageLocation = `browser-local://delta-table/${encodeURIComponent(id)}`;
+  const logicalTable = createLocalDeltaCanonicalTable({
+    registryId: id,
+    tableName: id,
+  });
   return {
     ...SAMPLE_CONNECTED_CATALOG,
-    id,
+    id: localDeltaConnectionId(id),
+    catalogName: 'local-delta',
     alias: id,
     kind: 'local',
     storage: 'local',
@@ -535,8 +549,25 @@ function connectedCatalog(id: string, persistence: LocalDeltaPersistenceMode): C
             files: 1,
             size: '7 bytes',
             protocol: 'r1/w2',
-            uri: `browser-local://delta-table/${id}`,
+            uri: storageLocation,
+            localRegistryId: id,
             localPersistence: persistence,
+            logicalTable,
+            catalogMetadataJson: toJson(
+              TableMetadataSchema,
+              create(TableMetadataSchema, {
+                table: logicalTable,
+                storageLocation,
+              }),
+            ) as Readonly<Record<string, unknown>>,
+            source: {
+              id: `source-${id}`,
+              kind: 'local',
+              storage: storageLocation,
+              region: 'browser-local',
+              canonicalKey: `local|||${storageLocation}|||default|${id}`,
+              connectedAt: id,
+            },
           },
         ],
       },
