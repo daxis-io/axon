@@ -13,10 +13,10 @@ schema_version = 1
 [harness]
 repository = "git@github.com:ethan-tyler/gpt56-codex-engineering-harness.git"
 local_path = "~/gpt56-codex-engineering-harness"
-revision = "e6588387519890a17efade03dfdf57ad1bc13801"
-branch = "harness/instruction-consistency"
-harness_id = "e2bd18a9d2ebdef1"
-pinned_on = "2026-07-26"
+revision = "f87c1aef0b20082bde5d71f344e6d8b695c3093c"
+branch = "main"
+harness_id = "03d0477fc784f973"
+pinned_on = "2026-07-27"
 
 [runtime]
 codex_version = "codex-cli 0.145.0"
