@@ -13,7 +13,7 @@ schema_version = 2
 [harness]
 repository = "git@github.com:ethan-tyler/gpt56-codex-engineering-harness.git"
 local_path = "~/gpt56-codex-engineering-harness"
-revision = "8557fab756ff7998084e8145e0f036c229e07730"
+revision = "6cf7b7af636ad3f1b1e49b980b1687f51fd9e775"
 branch = "main"
 pinned_on = "2026-07-27"
 
@@ -28,9 +28,9 @@ pinned_on = "2026-07-27"
 #
 # The split exists because quarantining five user-scope skills changed real
 # behavior while leaving harness_id untouched. See HCP-0005.
-instructions_id = "e9f65598c122df78"
-harness_id = "a64d7c62bef65599"
-environment_id = "cea63fb47ee4ef35"
+instructions_id = "83b4bd2fca252d3d"
+harness_id = "09de5e9348f1373b"
+environment_id = "483e94ba55f834bc"
 
 [runtime]
 codex_version = "codex-cli 0.145.0"
