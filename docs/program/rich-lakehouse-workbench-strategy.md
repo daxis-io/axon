@@ -81,7 +81,9 @@ The following statements describe landed implementation, not the target architec
   common, data-access, execution, and filesystem proof, not catalog. The
   filesystem package is messages-only substrate; its E8 provider, adapter, UI,
   and runtime adoption remain proposed. Axon has completed E9 local/public
-  adoption. App-layer E1 `CatalogProvider` adoption remains proposed.
+  adoption. App-layer E1 `CatalogProvider` discovery has landed for local Delta
+  and public GCS/S3 in `de8855f^..b0a7e1c`; table-first Explorer completion and
+  session-proxied Unity Catalog remain separate work.
 - **Slice 3 remains proposed:** Unity Catalog discovery,
   governed browser-read resolution, logical-resource/native execution, remote
   execution, and filesystem browsing do not yet work end to end.
@@ -122,7 +124,7 @@ Adopt the generated discovery messages behind a **discovery-only** `CatalogProvi
 - **Generated contracts are landed.** E1 adopts the `axon/catalog/v1` messages; the UC adapter maps vendored OpenAPI responses at one validated boundary.
 - **Session-proxied metadata access.** UC requests use the same-origin session boundary from E6. No catalog token or cloud credential enters browser packages.
 
-> **Update (2026-07-15).** [ADR-0010 "Pluggable Catalog Providers"](../adr/ADR-0010-pluggable-catalog-providers.md) defines the discovery boundary. Generated catalog messages are landed; provider adoption and the Unity Catalog vertical slice are not. E9 owns access resolution and execution. Development can reach a real OSS UC server through a same-origin Vite proxy; production uses a deployment-owned session proxy with the same browser contract.
+> **Update (2026-07-27).** [ADR-0010 "Pluggable Catalog Providers"](../adr/ADR-0010-pluggable-catalog-providers.md) defines the discovery boundary. Generated catalog messages and local Delta/public GCS/S3 provider adoption are landed. The adoption changed no contracts, dependencies, access resolution, or execution; the only application-layer SDK table open remains in `services/query.ts:788`. E1 M1 still owns stable connection/resource routing and the table-first Explorer. E1 M2 and E6 still own the session-proxied Unity Catalog metadata boundary, which E9 Slice 3 composes into a protected browser query.
 
 Dependency: needs E0, E3A (contract messages), and E6 (auth for remote APIs); feeds E2, E4, E7, E8, and E9 (table refs).
 

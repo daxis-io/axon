@@ -452,6 +452,40 @@ Record exact commits, verification results, live/readiness classification, zero 
 
 Format the four docs, inspect the staged diff, and commit. Then repeat the complete final matrix against the exact final `HEAD`.
 
+## M0 closure evidence
+
+M0 landed on `origin/main` as the exact five-commit range
+`de8855f^..b0a7e1c` (inclusive):
+
+1. `de8855f` — `docs(plan): define E1 local and public catalog adoption`
+2. `eeaa11f` — `refactor(web): route local discovery through CatalogProvider`
+3. `6e252e1` — `refactor(web): route public discovery through CatalogProvider`
+4. `9e21b1a` — `refactor(web): consolidate catalog queries and identity`
+5. `b0a7e1c` — `fix(web): harden catalog discovery lifecycle`
+
+Local Delta and anonymous public GCS/S3 discovery now flow through the same
+generated-contract-backed `CatalogProvider` shape and shared canonical identity
+builders. E9 still owns access resolution and execution, and the sole
+application-layer SDK table open remains in `services/query.ts:788`. The range
+changes no protobuf, generated-contract, Rust-contract, Cargo manifest/lock,
+web package manifest, or web lockfile.
+
+The research verification recorded 15 focused files and 177 tests passing,
+`tsc --noEmit` passing, and `codegen:check` passing. The clean M1 bootstrap on
+2026-07-27 reran the current 15-file baseline with 176 tests passing after
+building the fixture, application WASM, and worker WASM. The remote
+`codegen:contracts:check` gate remains an environment-policy block because
+`buf.build` was unreachable and an escalated descriptor-disclosing retry was
+not authorized. The original security guard run stopped on the then-missing
+prebuilt worker WASM artifact and is not reported green. The GCS URI, S3 URI,
+and S3 region live variables were all unset, so public live browser suites were
+readiness skips rather than live proof.
+
+M0 added no Unity Catalog implementation, provider registry framework, data
+access, descriptor resolution, or execution behavior. E1 M1 table-first
+identity/Explorer work and M2 session-proxied Unity Catalog work remain
+separate, as do E6 and E9 Slice 3.
+
 ## Final audit
 
 The branch must contain these five local commits:

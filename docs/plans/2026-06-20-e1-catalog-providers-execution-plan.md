@@ -1,10 +1,10 @@
 # E1 — Catalog Providers and Table Explorer — Revised Execution Plan
 
 - Original date: 2026-06-20
-- Revised: 2026-07-16
-- Status: Proposed, narrowed after architecture review
+- Revised: 2026-07-27
+- Status: In progress; M0 landed, M1 and M2 remain separate
 - Audited baseline: `origin/main` at
-  `7681f1dfa5bdaaae3ff2ccff79cc8be76ec1503a`
+  `b0a7e1c05fe4f5ace64aa095d11eeb1a4bf68ba0`
 - Depends on: E0 state, routing, and persistence; E9 Slice 1 source authority and
   lifecycle; the following E3A pre-adoption contract correction; E6
   session-proxied remote access
@@ -33,7 +33,8 @@ The audited baseline already has:
 - local Delta and public object-storage connection and query paths;
 - a persisted connected-catalog tree and active table selection;
 - a single-table runtime source model in `services/query-source.ts`;
-- generated `axon/catalog/v1` messages, not yet adopted by catalog providers;
+- generated `axon/catalog/v1` messages, adopted by the local Delta and public
+  GCS/S3 catalog providers;
 - generated `axon/fs/v1` messages, with E8 provider, adapter, UI, and runtime
   adoption still deferred;
 - generated `axon.common.v1.ProviderCapabilities.authority`, an unadopted field
@@ -42,10 +43,11 @@ The audited baseline already has:
 - Unity Catalog connection UI whose production access posture is not yet the
   E1 target end to end.
 
-There is not yet one `CatalogProvider` interface used by all sources. Discovery,
-connection state, and execution-source selection remain coupled in existing UI
-and service modules. E1 must preserve the working query paths while it extracts
-discovery.
+Local Delta and public GCS/S3 discovery now use one `CatalogProvider` interface
+and generated catalog values. Session-proxied Unity Catalog has not adopted the
+interface. Connection identity, route-owned logical selection, and the complete
+table-first Explorer remain M1 work; E1 must preserve the working query paths
+while completing those surfaces.
 
 ## Target boundary
 
@@ -67,10 +69,22 @@ type DiscoveryPageRequest = DiscoveryContext & { cursor?: string };
 interface CatalogProvider {
   readonly connection: CatalogConnection;
   listCatalogs(request: DiscoveryPageRequest): Promise<Page<CatalogNode>>;
-  listSchemas(catalog: CatalogRef, request: DiscoveryPageRequest): Promise<Page<SchemaNode>>;
-  listTables(schema: SchemaRef, request: DiscoveryPageRequest): Promise<Page<TableNode>>;
-  getTableMetadata(ref: TableRef, context: DiscoveryContext): Promise<TableMetadata>;
-  listVolumeRoots(schema: SchemaRef, request: DiscoveryPageRequest): Promise<Page<VolumeNode>>;
+  listSchemas(
+    catalog: CatalogRef,
+    request: DiscoveryPageRequest,
+  ): Promise<Page<SchemaNode>>;
+  listTables(
+    schema: SchemaRef,
+    request: DiscoveryPageRequest,
+  ): Promise<Page<TableNode>>;
+  getTableMetadata(
+    ref: TableRef,
+    context: DiscoveryContext,
+  ): Promise<TableMetadata>;
+  listVolumeRoots(
+    schema: SchemaRef,
+    request: DiscoveryPageRequest,
+  ): Promise<Page<VolumeNode>>;
 }
 ```
 
@@ -223,6 +237,34 @@ baseline. E1 must not preserve or wrap the old wrong-source behavior.
 Gate: local Delta, public object-storage, and editor smoke tests remain green;
 provider tests cover registry dispatch, table identity, pagination absence, and
 structured errors.
+
+**Landed 2026-07-26.** The exact M0 range is `de8855f^..b0a7e1c`
+(inclusive):
+
+1. `de8855f` — `docs(plan): define E1 local and public catalog adoption`
+2. `eeaa11f` — `refactor(web): route local discovery through CatalogProvider`
+3. `6e252e1` — `refactor(web): route public discovery through CatalogProvider`
+4. `9e21b1a` — `refactor(web): consolidate catalog queries and identity`
+5. `b0a7e1c` — `fix(web): harden catalog discovery lifecycle`
+
+The landed slice synthesizes generated local and public catalog hierarchies,
+uses one shared canonical table identity implementation, and leaves E9 access
+resolution and execution unchanged. It added no provider registry framework,
+Unity Catalog adapter or code generation, data-access behavior, execution
+behavior, protobuf or generated-contract changes, Rust-contract changes, or
+dependency changes. The only application-layer SDK table open remains
+`apps/axon-web/src/services/query.ts:788`.
+
+The M0 research gate recorded 15 focused files and 177 tests passing,
+`tsc --noEmit` passing, and `codegen:check` passing. A clean M1 bootstrap on
+2026-07-27 reran the current 15-file baseline with 176 tests passing.
+`codegen:contracts:check` could not reach `buf.build`; policy did not authorize
+disclosing descriptors for an escalated retry, so that gate is not reported
+green. The original security guard run stopped because its prebuilt worker WASM
+artifact was absent. Live public GCS/S3 browser suites were readiness skips
+because `AXON_LIVE_PUBLIC_GCS_TABLE_URI`, `AXON_LIVE_PUBLIC_S3_TABLE_URI`, and
+`AXON_LIVE_PUBLIC_S3_REGION` were unset. These environment limitations are not
+live proof. M1 and M2 remain independent follow-on slices.
 
 ### M1 — Table-first connections and Explorer
 

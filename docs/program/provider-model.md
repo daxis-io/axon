@@ -2,7 +2,7 @@
 
 - Status: Working architecture
 - Date: 2026-06-20
-- Revised: 2026-07-23
+- Revised: 2026-07-27
 - Scope: Axon's source-profile composition, provider boundaries, authority, and host integration boundary
 - Related:
   - [Axon workbench architecture](./axon-workbench-architecture.md)
@@ -30,9 +30,20 @@ single-buffer Arrow IPC messages carry the app execution path.
 The repository generates `axon/common/v1`, `axon/catalog/v1`,
 `axon/dataaccess/v1`, `axon/exec/v1`, and `axon/fs/v1` messages. The filesystem
 package remains messages-only contract substrate; no E8 provider, adapter, UI,
-or runtime consumer has landed. App-layer `CatalogProvider`, Unity Catalog
-discovery, governed read resolution, logical-resource/native execution, remote
-execution, and filesystem adoption remain proposed work.
+or runtime consumer has landed. App-layer local Delta and public GCS/S3
+`CatalogProvider` discovery has landed using generated catalog messages and the
+same canonical table identity as E9. Unity Catalog discovery, governed read
+resolution, logical-resource/native execution, remote execution, and filesystem
+adoption remain proposed work.
+
+The local/public catalog adoption is the five-commit range
+`de8855f^..b0a7e1c` (inclusive). It does not resolve byte access, build
+descriptors, open tables, or execute SQL. It changed no protobufs, generated
+contracts, Rust contracts, or dependencies, and the sole application-layer SDK
+table-open boundary remains `services/query.ts:788`. Stable persisted
+connection identity, canonical resource routes, generated logical editor
+selection, and the complete Explorer are the separate E1 M1 slice. A
+session-proxied Unity Catalog adapter remains M2 and depends on E6.
 
 The landed `axon.exec.v1` commands and events describe the browser worker compatibility boundary. They are not a portable remote execution service contract. A remote service contract is deferred until a concrete host implementation can prove its identity, admission, streaming, cancellation, retry, and audit requirements.
 
