@@ -20,6 +20,7 @@ import {
   discoverFlatCatalog,
 } from '../../services/catalog-provider.ts';
 import { publicObjectStorageCatalogMetadata } from '../../services/object-storage.ts';
+import { querySourcesForCatalog } from '../../services/query-source.ts';
 import type { ConnectedCatalog, ConnectResult } from './types.ts';
 import {
   buildCatalogFromResult,
@@ -227,6 +228,101 @@ describe('connected catalog persistence', () => {
       'axon-connection://public-gcs/first-bucket',
       'axon-connection://public-gcs/second-bucket',
     ]);
+  });
+
+  it('migrates the exact parent-version local, GCS, and S3 durable records', () => {
+    const legacyCatalogs: ConnectedCatalog[] = [
+      legacyCatalog({
+        source: 'local',
+        tableName: 'local_events',
+        storage: 'Local folder: events',
+        localRegistryId: 'local-events-registry',
+      }),
+      legacyCatalog({
+        source: 'gcs',
+        tableName: 'gcs_events',
+        storage: 'gs://public-events/delta/events',
+      }),
+      legacyCatalog({
+        source: 's3',
+        tableName: 's3_events',
+        storage: 's3://public-events/delta/events',
+        region: 'us-east-1',
+      }),
+    ];
+
+    storage.setItem(STORAGE_KEY, JSON.stringify(legacyCatalogs));
+
+    const loaded = loadConnectedCatalogs().sort((left, right) => left.id.localeCompare(right.id));
+    expect(loaded.map((item) => item.id)).toEqual([
+      'axon-connection://local-delta/local-events-registry',
+      'axon-connection://public-gcs/public-events',
+      'axon-connection://public-s3/us-east-1/public-events',
+    ]);
+    expect(
+      loaded
+        .flatMap(querySourcesForCatalog)
+        .map((source) => source.kind)
+        .sort(),
+    ).toEqual(['local_delta', 'object_store_table_root', 'object_store_table_root']);
+  });
+
+  it('splits a mixed legacy alias record using each table source envelope', () => {
+    const local = legacyCatalog({
+      source: 'local',
+      tableName: 'local_events',
+      storage: 'Local folder: events',
+      localRegistryId: 'local-events-registry',
+    }).schemas[0]!.tables[0]!;
+    const gcs = legacyCatalog({
+      source: 'gcs',
+      tableName: 'gcs_events',
+      storage: 'gs://gcs-events/delta/events',
+    }).schemas[0]!.tables[0]!;
+    const s3 = legacyCatalog({
+      source: 's3',
+      tableName: 's3_events',
+      storage: 's3://s3-events/delta/events',
+      region: 'us-west-2',
+    }).schemas[0]!.tables[0]!;
+    const mixed = legacyCatalog({
+      source: 'gcs',
+      tableName: 'ignored',
+      storage: 'gs://ignored/delta/table',
+    });
+    mixed.schemas = [
+      { name: 'local_schema', tables: [local] },
+      { name: 'gcs_schema', tables: [gcs] },
+      { name: 's3_schema', tables: [s3] },
+    ];
+
+    storage.setItem(STORAGE_KEY, JSON.stringify([mixed]));
+
+    const loaded = loadConnectedCatalogs().sort((left, right) => left.id.localeCompare(right.id));
+    expect(loaded).toMatchObject([
+      {
+        id: 'axon-connection://local-delta/local-events-registry',
+        catalogName: 'local-delta',
+        kind: 'local',
+        provider: undefined,
+      },
+      {
+        id: 'axon-connection://public-gcs/gcs-events',
+        catalogName: 'public-gcs',
+        kind: 'object_store',
+        provider: 'gcs',
+        storage: 'gs://gcs-events/delta/events',
+      },
+      {
+        id: 'axon-connection://public-s3/us-west-2/s3-events',
+        catalogName: 'public-s3',
+        kind: 'object_store',
+        provider: 's3',
+        storage: 's3://s3-events/delta/events',
+        region: 'us-west-2',
+      },
+    ]);
+    expect(loaded.every((item) => querySourcesForCatalog(item).length === 1)).toBe(true);
   });
 
   it('does not persist session-handle local Delta tables', () => {
@@ -477,6 +573,66 @@ describe('connected catalog persistence', () => {
     expect(JSON.stringify(table?.catalogMetadataJson)).not.toContain('descriptor_resolution_count');
   });
 });
+
+function legacyCatalog(input: {
+  source: 'local' | 'gcs' | 's3';
+  tableName: string;
+  storage: string;
+  region?: string;
+  localRegistryId?: string;
+}): ConnectedCatalog {
+  const kind = input.source === 'local' ? 'local' : 'object_store';
+  const provider = input.source === 'local' ? undefined : input.source;
+  const region = input.source === 'local' ? 'browser-local' : (input.region ?? 'us');
+  return {
+    id: 'catalog-workspace',
+    alias: 'workspace',
+    kind,
+    provider,
+    storage: input.storage,
+    path: input.source === 'local' ? input.storage : undefined,
+    region,
+    status: 'connected',
+    connectedAt: 'parent version',
+    schemas: [
+      {
+        name: 'default',
+        tables: [
+          {
+            id: `default.${input.tableName}`,
+            name: input.tableName,
+            snapshot: 7,
+            rows: 11,
+            files: 2,
+            size: '12 bytes',
+            protocol: 'r1/w2',
+            uri: input.source === 'local' ? input.tableName : input.storage,
+            localRegistryId: input.localRegistryId,
+            localPersistence: input.source === 'local' ? 'metadata_only_reselect' : undefined,
+            source: {
+              id: `source-${input.tableName}`,
+              kind,
+              provider,
+              storage: input.storage,
+              path: input.source === 'local' ? input.storage : undefined,
+              region,
+              canonicalKey: [
+                kind,
+                provider ?? '',
+                input.storage,
+                '',
+                input.source === 'local' ? input.storage : '',
+                'default',
+                input.tableName,
+              ].join('|'),
+              connectedAt: 'parent version',
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
 
 async function publicCatalog({
   bucket,

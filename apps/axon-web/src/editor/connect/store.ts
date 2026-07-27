@@ -19,8 +19,16 @@ import { validatePersistedCatalogMetadata } from '../../services/catalog.ts';
 import {
   canonicalTableFromMetadataJson,
   canonicalTableIdentityKey,
+  createLocalDeltaCanonicalTable,
+  createPublicObjectStorageCanonicalTable,
+  LOCAL_DELTA_PROVIDER_NAMESPACE,
 } from '../../services/canonical-table-identity.ts';
 import type { ConnectorFeatureFlags } from '../../services/connector-features.ts';
+import {
+  parsePublicObjectStorageTableRoot,
+  publicObjectStorageConnectionId,
+  type PublicObjectStorageProvider,
+} from '../../services/object-storage.ts';
 import {
   SAMPLE_QUERY_SOURCE,
   SAMPLE_QUERY_SOURCE_REF,
@@ -310,7 +318,7 @@ function migrateConnectedCatalogs(
     }
     for (const schema of catalog.schemas ?? []) {
       for (const table of schema.tables ?? []) {
-        const logicalTable = logicalTableForPersistedTable(table);
+        const logicalTable = logicalTableForPersistedTable(table, catalog);
         const connectionId = logicalTable?.resource?.connectionId;
         if (!logicalTable || !connectionId) {
           if (options.rejectInvalid) {
@@ -318,10 +326,12 @@ function migrateConnectedCatalogs(
           }
           continue;
         }
+        const envelope = migratedCatalogEnvelope(catalog, table, logicalTable);
         migrated.push({
           ...catalog,
+          ...envelope,
           id: connectionId,
-          catalogName: catalog.catalogName?.trim() || catalogNameFor(catalog),
+          catalogName: catalogNameForLogicalTable(logicalTable, catalog),
           schemas: [
             {
               ...schema,
@@ -343,6 +353,7 @@ function migrateConnectedCatalogs(
 
 function logicalTableForPersistedTable(
   table: ConnectedCatalogSchema['tables'][number],
+  catalog: ConnectedCatalog,
 ): TableNode | undefined {
   try {
     if (table.catalogMetadataJson) {
@@ -352,21 +363,105 @@ function logicalTableForPersistedTable(
       canonicalTableIdentityKey(table.logicalTable);
       return clone(TableNodeSchema, table.logicalTable);
     }
+    if (table.localRegistryId) {
+      return createLocalDeltaCanonicalTable({
+        registryId: table.localRegistryId,
+        tableName: table.name,
+      });
+    }
+    const provider = publicObjectStorageProvider(table.source?.provider ?? catalog.provider);
+    if (!provider) return undefined;
+    const tableUri = table.uri ?? table.source?.storage ?? catalog.storage;
+    const root = parsePublicObjectStorageTableRoot({
+      provider,
+      tableUri,
+      region: table.source?.region ?? catalog.region,
+    });
+    const connectionId = publicObjectStorageConnectionId(root);
+    if (provider === 'gcs') {
+      return createPublicObjectStorageCanonicalTable({
+        provider,
+        connectionId,
+        normalizedTableUri: root.tableUri,
+        tableName: table.name,
+      });
+    }
+    if (root.provider !== 's3') {
+      throw new Error('public S3 identity resolved as a non-S3 table root');
+    }
+    return createPublicObjectStorageCanonicalTable({
+      provider,
+      connectionId,
+      normalizedTableUri: root.tableUri,
+      tableName: table.name,
+      region: root.region,
+    });
   } catch {
     return undefined;
   }
+}
+
+function migratedCatalogEnvelope(
+  catalog: ConnectedCatalog,
+  table: ConnectedCatalogSchema['tables'][number],
+  logicalTable: TableNode,
+): Pick<ConnectedCatalog, 'kind' | 'provider' | 'storage' | 'host' | 'path' | 'region'> {
+  const namespace = logicalTable.resource?.providerNamespace;
+  if (namespace === LOCAL_DELTA_PROVIDER_NAMESPACE) {
+    return {
+      kind: 'local',
+      provider: undefined,
+      storage: table.source?.storage ?? catalog.storage,
+      host: undefined,
+      path: table.source?.path ?? catalog.path,
+      region: table.source?.region ?? 'browser-local',
+    };
+  }
+  const provider = publicObjectStorageProviderForNamespace(namespace);
+  if (provider) {
+    const canonicalLocator =
+      logicalTable.resource?.identity.case === 'canonicalLocator'
+        ? logicalTable.resource.identity.value
+        : undefined;
+    return {
+      kind: 'object_store',
+      provider,
+      storage: canonicalLocator ?? table.source?.storage ?? table.uri ?? catalog.storage,
+      host: undefined,
+      path: undefined,
+      region: table.source?.region ?? catalog.region,
+    };
+  }
+  return {
+    kind: catalog.kind,
+    provider: catalog.provider,
+    storage: catalog.storage,
+    host: catalog.host,
+    path: catalog.path,
+    region: catalog.region,
+  };
+}
+
+function catalogNameForLogicalTable(logicalTable: TableNode, catalog: ConnectedCatalog): string {
+  const namespace = logicalTable.resource?.providerNamespace;
+  if (namespace === LOCAL_DELTA_PROVIDER_NAMESPACE) return 'local-delta';
+  const provider = publicObjectStorageProviderForNamespace(namespace);
+  if (provider) return `public-${provider}`;
+  return catalog.catalogName?.trim() || catalog.alias;
+}
+
+function publicObjectStorageProviderForNamespace(
+  namespace: string | undefined,
+): PublicObjectStorageProvider | undefined {
+  if (namespace === 'axon.public-gcs/v1') return 'gcs';
+  if (namespace === 'axon.public-s3/v1') return 's3';
   return undefined;
 }
 
-function catalogNameFor(catalog: ConnectedCatalog): string {
-  if (catalog.kind === 'local') return 'local-delta';
-  if (
-    catalog.kind === 'object_store' &&
-    (catalog.provider === 'gcs' || catalog.provider === 's3')
-  ) {
-    return `public-${catalog.provider}`;
-  }
-  return catalog.alias;
+function publicObjectStorageProvider(
+  provider: ObjectStoreProviderId | undefined,
+): PublicObjectStorageProvider | undefined {
+  return provider === 'gcs' || provider === 's3' ? provider : undefined;
 }
 
 function isExplicitSampleCatalog(catalog: ConnectedCatalog): boolean {
