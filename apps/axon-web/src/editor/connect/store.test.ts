@@ -113,11 +113,42 @@ function catalog(id: string, alias = id): ConnectedCatalog {
 }
 
 function legacySampleCatalog(): ConnectedCatalog {
-  const legacy = structuredClone(SAMPLE_CONNECTED_CATALOG);
-  legacy.id = 'sample-lake-fixture';
-  legacy.catalogName = undefined;
-  legacy.schemas[0]!.tables[0]!.logicalTable = undefined;
-  return legacy;
+  return {
+    id: 'sample-lake-fixture',
+    alias: 'sample-lake',
+    kind: 'object_store',
+    provider: 'gcs',
+    storage: 'gs://axon-sample/prod-like-events',
+    region: 'browser-local',
+    status: 'connected',
+    connectedAt: 'sample fixture',
+    schemas: [
+      {
+        name: 'prod_like',
+        tables: [
+          {
+            id: 'prod_like.events',
+            name: 'events',
+            snapshot: 3,
+            rows: 6,
+            files: 1,
+            size: 'fixture',
+            protocol: 'r2/w5',
+            manifestUrl: '/fixtures/prod-like/delta-log-manifest.json',
+            source: {
+              id: 'source-sample-lake-fixture',
+              kind: 'object_store',
+              provider: 'gcs',
+              storage: 'gs://axon-sample/prod-like-events',
+              region: 'browser-local',
+              canonicalKey: 'object_store|gcs|gs://axon-sample/prod-like-events|||prod_like|events',
+              connectedAt: 'sample fixture',
+            },
+          },
+        ],
+      },
+    ],
+  };
 }
 
 describe('connected catalog persistence', () => {
