@@ -11,7 +11,6 @@ import {
 } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  ExecutionLifecycleState,
   ExecutionRejectionReason,
   ExecutionTarget as ContractExecutionTarget,
 } from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
@@ -30,10 +29,6 @@ import {
 import { subscribeEngineStatus } from '../services/engine.ts';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
 import { sameCanonicalTableIdentity } from '../services/canonical-table-identity.ts';
-import {
-  cancelExecutionRequest,
-  createExecutionController,
-} from '../services/execution-lifecycle.ts';
 import { hasLocalDeltaRuntime } from '../services/local-delta-session.ts';
 import {
   browserQueryRequest,
@@ -107,6 +102,15 @@ import { catalogTableSqlPath, savedQueryPath } from './catalog-navigation.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { formatBytes, formatRows, prettifySql } from './lib/format.ts';
 import { navigate } from './router.tsx';
+import {
+  activeEditorExecutionId,
+  cancelActiveEditorExecution,
+  claimActiveEditorExecution,
+  displaceActiveEditorExecution,
+  editorExecutionController,
+  executionMayPublish,
+  releaseActiveEditorExecution,
+} from './execution-ownership.ts';
 
 const ConnectModal = lazy(() =>
   import('./connect/ConnectModal.tsx').then((module) => ({ default: module.ConnectModal })),
@@ -121,11 +125,6 @@ const TARGET_OPTIONS = SERVER_QUERY_FALLBACK_ENABLED
   : [{ id: 'browser_wasm' as const, short: 'Browser', cls: 'browser' }];
 
 const EDITOR_EXECUTION_TIMEOUT_MS = 120_000;
-const editorExecutionController = createExecutionController();
-
-type ActiveCancellation = {
-  executionId: string;
-};
 
 export function clearOwnedRunTimer(
   timerRef: { current: number | null },
@@ -273,7 +272,6 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
   const resultPageRun = selectRunResultPageRun(axonClientStore.getState());
   const runActions = useAxonClientStore(selectRunActions);
 
-  const cancelRef = useRef<ActiveCancellation | null>(null);
   const runTimer = useRef<number | null>(null);
   const activeConnectedTable = useMemo(
     () => connectedTableForRef(availableConnectedCatalogs, activeTableRef),
@@ -323,8 +321,10 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
 
   const handleConnected = useCallback(
     async (result: ConnectResult) => {
-      const mutation = await runConnectionMutationLifecycle(queryClient, () =>
-        connectionActions.connect(result),
+      const mutation = await runConnectionMutationLifecycle(
+        queryClient,
+        () => connectionActions.connect(result),
+        { cancelActiveExecution: () => void displaceActiveEditorExecution() },
       );
       uiActions.closeConnectModal();
       window.setTimeout(() => connectionActions.clearFreshCatalogId(), 4500);
@@ -339,7 +339,9 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
 
   const removeConnectedCatalog = useCallback(
     async (id: string) => {
-      await runConnectionMutationLifecycle(queryClient, () => connectionActions.removeCatalog(id));
+      await runConnectionMutationLifecycle(queryClient, () => connectionActions.removeCatalog(id), {
+        cancelActiveExecution: () => void displaceActiveEditorExecution(),
+      });
     },
     [connectionActions, queryClient],
   );
@@ -352,6 +354,8 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
   useEffect(() => {
     return subscribeAppEngineStatus(engineActions);
   }, [engineActions]);
+
+  useEffect(() => () => void displaceActiveEditorExecution(), []);
 
   // ─── Tab editing ───────────────────────────────────────
   const updateActiveSql = useCallback(
@@ -400,9 +404,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
       return;
     }
 
-    if (cancelRef.current) {
-      editorExecutionController.cancel(cancelExecutionRequest(cancelRef.current.executionId));
-    }
+    cancelActiveEditorExecution();
     const ctrl = new AbortController();
     const deadlineCtrl = new AbortController();
     const target = tab.preferred === 'native' ? 'native' : 'browser_wasm';
@@ -418,7 +420,9 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
 
     const { execution } = prepared;
     const executionId = execution.executionId;
-    cancelRef.current = { executionId };
+    claimActiveEditorExecution(executionId, (cancelledExecutionId) =>
+      runActions.requestRunCancellation(cancelledExecutionId),
+    );
     runActions.createRun(executionId, target);
     editorExecutionController.attachCancellation(executionId, () => ctrl.abort());
     const unsubscribe = editorExecutionController.subscribe(executionId, (delivery) => {
@@ -438,6 +442,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
         return;
       }
       const event = delivery.payload as QueryEvent;
+      if (!executionMayPublish(executionId)) return;
       if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') return;
       runActions.appendRunEvent(executionId, event);
     });
@@ -524,6 +529,19 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
         ctrl.signal,
         deadlineCtrl.signal,
       );
+      if (!executionMayPublish(executionId)) {
+        const terminal = editorExecutionController.confirmCancelled(executionId, outcome);
+        if (terminal.kind === 'transitioned') {
+          runActions.finishRunCancelled({
+            status: 'cancelled',
+            executionId,
+            target,
+            ms: Math.round(performance.now() - startedAt),
+            message: 'Query cancelled because its catalog connection changed.',
+          });
+        }
+        return;
+      }
 
       if (outcome.status === 'done') {
         const terminal = editorExecutionController.complete(executionId, outcome);
@@ -686,7 +704,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
     } finally {
       clearOwnedRunTimer(runTimer, ownedTimer);
       unsubscribe();
-      if (cancelRef.current?.executionId === executionId) cancelRef.current = null;
+      releaseActiveEditorExecution(executionId);
     }
   }, [
     active,
@@ -731,7 +749,9 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
     }
     const { execution } = prepared;
     const executionId = execution.executionId;
-    cancelRef.current = { executionId };
+    claimActiveEditorExecution(executionId, (cancelledExecutionId) =>
+      runActions.finishLoadMoreRows(cancelledExecutionId),
+    );
     editorExecutionController.attachCancellation(executionId, () => ctrl.abort());
     runActions.startLoadMoreRows(executionId);
     const unsubscribe = editorExecutionController.subscribe(executionId, (delivery) => {
@@ -744,6 +764,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
         return;
       }
       const event = delivery.payload as QueryEvent;
+      if (!executionMayPublish(executionId)) return;
       if (!SERVER_QUERY_FALLBACK_ENABLED && event.kind === 'fallback') return;
       runActions.appendRunEvent(executionId, event);
     });
@@ -780,6 +801,11 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
         ctrl.signal,
         deadlineCtrl.signal,
       );
+      if (!executionMayPublish(executionId)) {
+        editorExecutionController.confirmCancelled(executionId, outcome);
+        runActions.finishLoadMoreRows(executionId);
+        return;
+      }
 
       if (outcome.status === 'done') {
         const terminal = editorExecutionController.complete(executionId, outcome);
@@ -845,22 +871,16 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
       }
     } finally {
       unsubscribe();
-      if (cancelRef.current?.executionId === executionId) cancelRef.current = null;
+      releaseActiveEditorExecution(executionId);
     }
   }, [activeResultPageRun, queryClient, runActions, showToast]);
 
   const cancelRun = useCallback(() => {
-    const activeCancellation = cancelRef.current;
-    if (!activeCancellation) return;
-    const cancellation = editorExecutionController.cancel(
-      cancelExecutionRequest(activeCancellation.executionId),
-    );
-    if (cancellation.state === ExecutionLifecycleState.CANCEL_REQUESTED) {
-      runActions.requestRunCancellation(activeCancellation.executionId);
-    }
+    if (!activeEditorExecutionId()) return;
+    cancelActiveEditorExecution();
     if (runTimer.current != null) clearOwnedRunTimer(runTimer, runTimer.current);
     showToast('Cancellation requested', 'warn');
-  }, [runActions, showToast]);
+  }, [showToast]);
 
   const formatSql = useCallback(() => {
     tabActions.formatActiveSql(prettifySql);

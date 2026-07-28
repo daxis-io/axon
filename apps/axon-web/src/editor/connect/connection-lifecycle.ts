@@ -8,6 +8,7 @@ type ConnectionLifecycleMutation = Pick<
 >;
 
 type ConnectionLifecycleOptions = {
+  cancelActiveExecution?: () => void | Promise<void>;
   discardActiveQuerySession?: () => void | Promise<void>;
   unregisterLocalDeltaRuntime?: (registryId: string) => void | Promise<void>;
   reportError?: (message: string, error: unknown) => void;
@@ -84,6 +85,14 @@ export async function applyConnectionLifecycleCleanup(
   options: ConnectionLifecycleOptions = {},
 ): Promise<void> {
   const report = options.reportError ?? reportError;
+  if (mutation.shouldDiscardActiveQuerySession && options.cancelActiveExecution) {
+    try {
+      await options.cancelActiveExecution();
+    } catch (error) {
+      report('failed to cancel active editor execution:', error);
+    }
+  }
+
   try {
     await purgeCatalogSourcesCache(queryClient, mutation.discardedSources);
   } catch (error) {

@@ -9,6 +9,7 @@ import { runConnectionMutationLifecycle } from './connect/connection-lifecycle.t
 import { availabilityForSource, type SourceId } from './connect/data.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { IconBolt, IconChevR, IconPlus, IconSettings } from './components/icons.tsx';
+import { displaceActiveEditorExecution } from './execution-ownership.ts';
 import { navigate } from './router.tsx';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
 import { SERVER_QUERY_FALLBACK_ENABLED } from '../services/server-fallback.ts';
@@ -41,7 +42,9 @@ export function ConnectPage() {
 
   const onConnect = useCallback(
     async (result: ConnectResult) => {
-      await runConnectionMutationLifecycle(queryClient, () => connectionActions.connect(result));
+      await runConnectionMutationLifecycle(queryClient, () => connectionActions.connect(result), {
+        cancelActiveExecution: () => void displaceActiveEditorExecution(),
+      });
       setModalOpen(false);
       window.setTimeout(() => connectionActions.clearFreshCatalogId(), 4500);
     },
@@ -50,7 +53,9 @@ export function ConnectPage() {
 
   const removeCatalog = useCallback(
     async (id: string) => {
-      await runConnectionMutationLifecycle(queryClient, () => connectionActions.removeCatalog(id));
+      await runConnectionMutationLifecycle(queryClient, () => connectionActions.removeCatalog(id), {
+        cancelActiveExecution: () => void displaceActiveEditorExecution(),
+      });
     },
     [connectionActions, queryClient],
   );

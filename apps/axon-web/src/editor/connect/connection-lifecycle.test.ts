@@ -90,6 +90,9 @@ describe('connection lifecycle cleanup', () => {
     const discardActiveQuerySession = vi.fn(async () => {
       order.push('discard');
     });
+    const cancelActiveExecution = vi.fn(() => {
+      order.push('cancel-execution');
+    });
     const unregisterLocalDeltaRuntime = vi.fn(async (registryId: string) => {
       order.push(`unregister:${registryId}`);
     });
@@ -112,13 +115,15 @@ describe('connection lifecycle cleanup', () => {
         shouldDiscardActiveQuerySession: true,
       }),
       {
+        cancelActiveExecution,
         discardActiveQuerySession,
         unregisterLocalDeltaRuntime,
       },
     );
     await vi.waitFor(() => expect(cancelQueries).toHaveBeenCalledTimes(1));
 
-    expect(order).toEqual(['cancel']);
+    expect(order).toEqual(['cancel-execution', 'cancel']);
+    expect(cancelActiveExecution).toHaveBeenCalledTimes(1);
     expect(discardActiveQuerySession).not.toHaveBeenCalled();
     expect(unregisterLocalDeltaRuntime).not.toHaveBeenCalled();
 
@@ -126,6 +131,7 @@ describe('connection lifecycle cleanup', () => {
     await cleanup;
 
     expect(order).toEqual([
+      'cancel-execution',
       'cancel',
       'remove',
       'invalidate',
@@ -149,16 +155,62 @@ describe('connection lifecycle cleanup', () => {
     expect(getQueryRuntimeState(sameConnection)).toBeUndefined();
   });
 
+  it('cancels an execution held in source resolution before it can open a session or publish', async () => {
+    const client = new QueryClient();
+    let releaseResolution!: () => void;
+    const resolutionGate = new Promise<void>((resolve) => {
+      releaseResolution = resolve;
+    });
+    let cancelled = false;
+    const runQuery = vi.fn();
+    const openSession = vi.fn();
+    const publishResults = vi.fn();
+    const appendHistory = vi.fn();
+    const pendingExecution = (async () => {
+      await resolutionGate;
+      if (cancelled) return;
+      openSession();
+      runQuery();
+      publishResults();
+      appendHistory();
+    })();
+
+    await applyConnectionLifecycleCleanup(
+      client,
+      mutation({
+        discardedSources: [first],
+        shouldDiscardActiveQuerySession: true,
+      }),
+      {
+        cancelActiveExecution: () => {
+          cancelled = true;
+        },
+        discardActiveQuerySession: vi.fn(),
+      },
+    );
+    releaseResolution();
+    await pendingExecution;
+
+    expect(cancelled).toBe(true);
+    expect(openSession).not.toHaveBeenCalled();
+    expect(runQuery).not.toHaveBeenCalled();
+    expect(publishResults).not.toHaveBeenCalled();
+    expect(appendHistory).not.toHaveBeenCalled();
+  });
+
   it('does not touch runtime teardown when a mutation has nothing to release', async () => {
     const client = new QueryClient();
+    const cancelActiveExecution = vi.fn();
     const discardActiveQuerySession = vi.fn();
     const unregisterLocalDeltaRuntime = vi.fn();
 
     await applyConnectionLifecycleCleanup(client, mutation(), {
+      cancelActiveExecution,
       discardActiveQuerySession,
       unregisterLocalDeltaRuntime,
     });
 
+    expect(cancelActiveExecution).not.toHaveBeenCalled();
     expect(discardActiveQuerySession).not.toHaveBeenCalled();
     expect(unregisterLocalDeltaRuntime).not.toHaveBeenCalled();
   });
