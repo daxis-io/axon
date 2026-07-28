@@ -5,6 +5,7 @@ import { clone, toJson } from '@bufbuild/protobuf';
 import {
   TableMetadataSchema,
   TableNodeSchema,
+  TableType,
   type TableNode,
 } from '../../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 import type { CatalogDiscoverySnapshot } from '../../services/catalog-provider.ts';
@@ -498,6 +499,7 @@ function validateConnectedCatalogMetadata(catalogs: ConnectedCatalog[]): Connect
         }
         tableIdentities.add(identity);
         if (!table.catalogMetadataJson) continue;
+        if (table.logicalTable?.tableType !== TableType.TABLE) continue;
         const source = table.logicalTable
           ? querySourceForConnectedTableRef([catalog], table.logicalTable)
           : undefined;

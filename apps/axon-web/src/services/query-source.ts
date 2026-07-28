@@ -1,6 +1,7 @@
 import { clone } from '@bufbuild/protobuf';
 import {
   TableNodeSchema,
+  TableType,
   type TableNode,
 } from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 import type { CanonicalResourceRef } from '../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
@@ -109,6 +110,7 @@ export function querySourceIdentity(source: QueryTableSource): QuerySourceIdenti
 
 export type QueryCatalogCandidate = {
   id: string;
+  catalogName?: string;
   alias: string;
   storage: string;
   region?: string;
@@ -345,6 +347,9 @@ function querySourceForTable(
   schemaName: string,
   table: QueryCatalogCandidate['schemas'][number]['tables'][number],
 ): QueryTableSource | undefined {
+  if (table.logicalTable && table.logicalTable.tableType !== TableType.TABLE) {
+    return undefined;
+  }
   if (table.localRegistryId) {
     return {
       kind: 'local_delta',

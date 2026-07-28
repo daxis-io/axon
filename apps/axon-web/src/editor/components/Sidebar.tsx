@@ -5,7 +5,7 @@ import {
 } from '../../services/canonical-table-identity.ts';
 import type { ActiveConnectedTableRef } from '../../services/query-source.ts';
 import type { Catalog, CatalogTable, HistoryEntry, SavedQuery } from '../../services/types.ts';
-import { isQueryableCatalogTable } from '../catalog-navigation.ts';
+import { isQueryableCatalogTable, tableKindLabel } from '../catalog-navigation.ts';
 import type { ConnectedCatalog } from '../connect/types.ts';
 import { formatBytes, formatRows } from '../lib/format.ts';
 import {
@@ -205,17 +205,20 @@ export function Sidebar({
                                   (open ? 'open ' : '') +
                                   (selected ? 'selected ' : '')
                                 }
-                                onClick={() => ref && pickConnectedTable(ref, key)}
+                                onClick={() => {
+                                  if (queryable && ref) pickConnectedTable(ref, key);
+                                }}
                                 onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
                                   if (event.key !== 'Enter' && event.key !== ' ') return;
                                   event.preventDefault();
-                                  if (ref) pickConnectedTable(ref, key);
+                                  if (queryable && ref) pickConnectedTable(ref, key);
                                 }}
-                                onDoubleClick={() =>
+                                onDoubleClick={() => {
+                                  if (!queryable) return;
                                   onInsert(`SELECT *
 FROM ${table.name}
-LIMIT 100;`)
-                                }
+LIMIT 100;`);
+                                }}
                                 onMouseEnter={() => setHoverTbl(detail)}
                                 onMouseLeave={() => setHoverTbl(undefined)}
                                 title={
@@ -231,7 +234,12 @@ LIMIT 100;`)
                                 <span className="ico">
                                   <IconTable size={12} />
                                 </span>
-                                <span>{table.name}</span>
+                                <span>
+                                  {table.name}{' '}
+                                  <span className="resource-kind">
+                                    {ref ? tableKindLabel(ref.tableType) : 'Unspecified'}
+                                  </span>
+                                </span>
                                 <span className="meta">
                                   <span style={{ color: 'var(--accent)', marginRight: 5 }}>
                                     v{table.snapshot ?? '—'}

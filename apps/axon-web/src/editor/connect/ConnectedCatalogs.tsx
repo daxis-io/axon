@@ -2,14 +2,14 @@
 // Anchors to the connection pill in the top bar.
 
 import { useState, type KeyboardEvent, type MouseEvent } from 'react';
-import { IconChevR, IconClose, IconRefresh, IconTable } from '../components/icons.tsx';
+import { IconChevR, IconClose, IconTable } from '../components/icons.tsx';
 import {
   canonicalTableIdentityKey,
   sameCanonicalTableIdentity,
 } from '../../services/canonical-table-identity.ts';
 import type { ActiveConnectedTableRef } from '../../services/query-source.ts';
-import { isQueryableCatalogTable } from '../catalog-navigation.ts';
-import { IconCog, IconDots } from './icons.tsx';
+import { isQueryableCatalogTable, tableKindLabel } from '../catalog-navigation.ts';
+import { IconDots } from './icons.tsx';
 import type { ConnectedCatalog } from './types.ts';
 
 type Props = {
@@ -155,6 +155,9 @@ export function ConnectedCatalogsPanel({
                                   <IconTable size={11} />
                                 </span>
                                 <span className="name">{tbl.name}</span>
+                                <span className="kind">
+                                  {ref ? tableKindLabel(ref.tableType) : 'Unspecified'}
+                                </span>
                                 <span className="v">v{tbl.snapshot}</span>
                                 <span className="rc">{tbl.size}</span>
                                 {isActive && <span className="active-label">active</span>}
@@ -207,8 +210,6 @@ function ManageDrawer({
   onClose: () => void;
   onRemove: () => void;
 }) {
-  const owners = runtimeOwnersFor(catalog);
-
   return (
     <div className="cc-manage-drawer">
       <div className="hdr">
@@ -223,12 +224,12 @@ function ManageDrawer({
           <span className="l">Type</span>
           <span className="v">
             {catalog.kind === 'local'
-              ? 'Local files'
+              ? 'Local Delta'
               : catalog.kind === 'unity_catalog'
-                ? 'Unity Catalog (brokered)'
+                ? 'Unity Catalog'
                 : catalog.kind === 'delta_share'
                   ? 'Delta Sharing'
-                  : 'Object storage (' + (catalog.provider || '').toUpperCase() + ')'}
+                  : 'Public ' + (catalog.provider || 'object storage').toUpperCase()}
           </span>
         </div>
         <div className="field-row">
@@ -248,33 +249,13 @@ function ManageDrawer({
           <span className="v">{catalog.schemas.reduce((a, s) => a + s.tables.length, 0)}</span>
         </div>
         <div className="field-row">
-          <span className="l">Access</span>
-          <span className="v">{owners.access}</span>
-        </div>
-        <div className="field-row">
-          <span className="l">Snapshot</span>
-          <span className="v">{owners.snapshot}</span>
-        </div>
-        <div className="field-row">
-          <span className="l">Query</span>
-          <span className="v">{owners.query}</span>
-        </div>
-        <div className="field-row">
           <span className="l">Connected</span>
           <span className="v">{catalog.connectedAt || 'just now'}</span>
         </div>
 
-        <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
-          <button className="cc-btn" style={{ flex: 1 }}>
-            <IconRefresh size={11} /> Resync
-          </button>
-          <button className="cc-btn" style={{ flex: 1 }}>
-            <IconCog size={11} /> Edit session
-          </button>
-        </div>
         <button
           className="cc-btn danger"
-          style={{ marginTop: 8, width: '100%' }}
+          style={{ marginTop: 18, width: '100%' }}
           onClick={onRemove}
         >
           <IconClose size={11} /> Disconnect catalog
@@ -282,25 +263,4 @@ function ManageDrawer({
       </div>
     </div>
   );
-}
-
-function runtimeOwnersFor(catalog: ConnectedCatalog) {
-  if (catalog.kind === 'local') {
-    return { access: 'Browser', snapshot: 'Browser', query: 'Browser' };
-  }
-  if (catalog.kind === 'unity_catalog') {
-    return { access: 'UC brokered', snapshot: 'Browser', query: 'Browser' };
-  }
-  if (catalog.kind === 'delta_share') {
-    return {
-      access: 'Provider brokered',
-      snapshot: 'Browser materialized',
-      query: 'Browser',
-    };
-  }
-  return {
-    access: catalog.region === 'browser-local' ? 'Browser' : 'Brokered',
-    snapshot: 'Browser',
-    query: 'Browser',
-  };
 }

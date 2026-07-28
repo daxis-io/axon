@@ -1222,6 +1222,11 @@
   min-width: 0;
   flex: 1;
 }
+.cc-tbl-row .kind {
+  color: var(--ink-4);
+  font-size: 10.5px;
+  flex-shrink: 0;
+}
 .cc-tbl-row .v {
   margin-left: auto;
   font: 500 11px var(--mono);

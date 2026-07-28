@@ -1,4 +1,11 @@
+import { create, toJson } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
+import {
+  ColumnNodeSchema,
+  DeltaProtocolFeatureSchema,
+  TableMetadataSchema,
+  TableType,
+} from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 import {
   createLocalDeltaCanonicalTable,
   createPublicObjectStorageCanonicalTable,
@@ -6,6 +13,7 @@ import {
 import type { ActiveConnectedTableRef, QueryCatalogCandidate } from '../services/query-source.ts';
 import {
   catalogExplorerModel,
+  catalogExplorerTableDetail,
   catalogTablePath,
   catalogTableResourceFromParams,
   catalogTableSqlPath,
@@ -180,6 +188,129 @@ describe('canonical catalog navigation', () => {
       tableCount: 0,
       queryableTableCount: 0,
       catalogs: [],
+    });
+  });
+
+  it('projects generated overview and semantic columns without resolving access', () => {
+    const table = publicTable('gs://shared-bucket/events');
+    table.comment = 'Curated event stream';
+    const catalogs = [catalogWithTables([table])];
+    catalogs[0]!.schemas[0]!.tables[0]!.catalogMetadataJson = toJson(
+      TableMetadataSchema,
+      create(TableMetadataSchema, {
+        table,
+        columns: [
+          create(ColumnNodeSchema, {
+            name: 'event_date',
+            type: 'date',
+            nullable: false,
+            comment: 'UTC event date',
+          }),
+          create(ColumnNodeSchema, {
+            name: 'payload',
+            type: 'string',
+            nullable: true,
+          }),
+        ],
+        partitionColumns: ['event_date'],
+        rowCount: 1_200n,
+        sizeBytes: 44_040_192n,
+        fileCount: 3n,
+        latestSnapshotVersion: 12n,
+        minReaderVersion: 2,
+        minWriterVersion: 5,
+        protocolFeatures: [
+          create(DeltaProtocolFeatureSchema, {
+            name: 'columnMapping',
+            reader: true,
+            writer: true,
+          }),
+        ],
+        storageLocation: 'gs://shared-bucket/events',
+      }),
+    ) as Readonly<Record<string, unknown>>;
+
+    expect(catalogExplorerTableDetail(catalogs, table)).toEqual({
+      status: 'ready',
+      ref: table,
+      connectionAlias: 'Workspace',
+      catalogName: 'Workspace',
+      schemaName: 'default',
+      tableName: 'events',
+      tableKind: 'Table',
+      comment: 'Curated event stream',
+      queryable: true,
+      sqlPath: catalogTableSqlPath(table),
+      overview: {
+        storageLocation: 'gs://shared-bucket/events',
+        snapshot: 12,
+        rows: 1200,
+        files: 3,
+        sizeBytes: 44_040_192,
+        protocol: 'r2/w5',
+        features: ['columnMapping'],
+        partitions: ['event_date'],
+      },
+      columnsStatus: 'ready',
+      columns: [
+        {
+          name: 'event_date',
+          type: 'date',
+          nullable: false,
+          comment: 'UTC event date',
+          partition: true,
+        },
+        {
+          name: 'payload',
+          type: 'string',
+          nullable: true,
+          comment: undefined,
+          partition: false,
+        },
+      ],
+    });
+  });
+
+  it('keeps generated views browseable but unavailable to the SQL editor', () => {
+    const view = publicTable('gs://shared-bucket/views/events');
+    view.tableType = TableType.VIEW;
+    const catalogs = [catalogWithTables([view])];
+    catalogs[0]!.schemas[0]!.tables[0]!.catalogMetadataJson = toJson(
+      TableMetadataSchema,
+      create(TableMetadataSchema, { table: view, storageLocation: 'logical view' }),
+    ) as Readonly<Record<string, unknown>>;
+
+    expect(catalogExplorerTableDetail(catalogs, view)).toMatchObject({
+      status: 'ready',
+      tableKind: 'View',
+      queryable: false,
+      sqlPath: undefined,
+      columnsStatus: 'empty',
+    });
+  });
+
+  it('distinguishes no selection, stale selection, and unavailable metadata', () => {
+    const selected = publicTable('gs://shared-bucket/events');
+    const catalogs = [catalogWithTables([selected])];
+
+    expect(catalogExplorerTableDetail(catalogs)).toEqual({ status: 'no_selection' });
+    expect(catalogExplorerTableDetail(catalogs, publicTable('gs://shared-bucket/removed'))).toEqual(
+      {
+        status: 'unavailable',
+        reason: 'stale',
+      },
+    );
+    expect(catalogExplorerTableDetail(catalogs, selected)).toMatchObject({
+      status: 'metadata_unavailable',
+      reason: 'missing',
+      ref: selected,
+    });
+
+    catalogs[0]!.schemas[0]!.tables[0]!.catalogMetadataJson = { table: {} };
+    expect(catalogExplorerTableDetail(catalogs, selected)).toMatchObject({
+      status: 'metadata_unavailable',
+      reason: 'invalid',
+      ref: selected,
     });
   });
 });

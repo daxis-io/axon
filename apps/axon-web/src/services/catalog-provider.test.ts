@@ -336,6 +336,33 @@ describe('public object storage CatalogProvider', () => {
     expect(registrationIndex).toBeGreaterThan(ownershipGuardIndex);
   });
 
+  it('preserves a generated table comment without weakening canonical identity validation', async () => {
+    const tableUri = 'gs://public-bucket/events';
+    const table = createPublicObjectStorageCanonicalTable({
+      provider: 'gcs',
+      connectionId: 'axon-connection://public-gcs/public-bucket',
+      normalizedTableUri: tableUri,
+      tableName: 'events',
+    });
+    table.comment = 'Generated event facts.';
+    const provider = createPublicObjectStorageCatalogProvider({
+      provider: 'gcs',
+      connectionId: table.resource!.connectionId,
+      normalizedTableUri: tableUri,
+      schemaName: 'default',
+      tableName: table.name,
+      metadata: create(TableMetadataSchema, {
+        table,
+        storageLocation: tableUri,
+      }),
+    });
+
+    const discovered = await discoverFlatCatalog(provider, page, context());
+
+    expect(discovered.table.comment).toBe('Generated event facts.');
+    expect(discovered.metadata.table?.comment).toBe('Generated event facts.');
+  });
+
   it.each([
     [
       'gcs' as const,

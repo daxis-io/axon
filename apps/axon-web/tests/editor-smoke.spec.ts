@@ -1,7 +1,14 @@
 import { expect, test, type Locator, type Page, type Request, type Route } from '@playwright/test';
+import { create, toJson } from '@bufbuild/protobuf';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  ColumnNodeSchema,
+  DeltaProtocolFeatureSchema,
+  TableMetadataSchema,
+  TableType,
+} from '../src/generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 import { ExecutionTarget as ContractExecutionTarget } from '../src/generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
 import {
   buildCatalogFromResult,
@@ -573,8 +580,10 @@ test.describe('editor (Phase 1 smoke)', () => {
     const secondTableSqlPath = catalogTableSqlPath(secondTable);
 
     await page.goto('/catalogs');
-    await expect(page.locator('.catalogs-title')).toContainText('Catalogs');
-    await expect(page.locator('.catalogs-stats')).toContainText('2 catalogs');
+    await expect(page.locator('.catalogs-title')).toContainText('Catalog Explorer');
+    await expect(page.locator('.catalogs-stats')).toContainText('2 connections');
+    await expect(page.getByRole('heading', { name: 'Select a table or view' })).toBeVisible();
+    await expect(page.locator('.catalog-table-row.active')).toHaveCount(0);
     await page
       .locator('.catalog-block', { hasText: 'second-lake' })
       .locator('.catalog-table-row', { hasText: 'events' })
@@ -595,13 +604,82 @@ test.describe('editor (Phase 1 smoke)', () => {
     ).toHaveClass(/active/);
 
     await page.goBack();
-    await expect(page.locator('.catalogs-title')).toContainText('Catalogs');
+    await expect(page.locator('.catalogs-title')).toContainText('Catalog Explorer');
 
     await page.goForward();
     await expect(page).toHaveURL(new RegExp(`${secondTablePath}$`));
 
     await page.goto(secondTableSqlPath);
     await expect(page.locator('.conn-pill')).toContainText('second-lake');
+  });
+
+  test('catalog explorer renders generated overview, columns, views, and logical SQL handoff', async ({
+    page,
+  }) => {
+    const catalog = catalogExplorerFixture();
+    await page.addInitScript(
+      (value) => {
+        localStorage.setItem('axon.connect.catalogs.v1', JSON.stringify(value));
+      },
+      [catalog],
+    );
+    const table = catalog.schemas[0]!.tables.find(({ name }) => name === 'orders')!.logicalTable!;
+    const view = catalog.schemas[0]!.tables.find(
+      ({ name }) => name === 'weekly_orders',
+    )!.logicalTable!;
+    const metadataMissing = catalog.schemas[0]!.tables.find(
+      ({ name }) => name === 'metadata_missing',
+    )!.logicalTable!;
+    const requests = trackRelevantRequests(page);
+
+    await page.goto(catalogTablePath(table));
+
+    await expect(page.getByRole('heading', { name: 'orders' })).toBeVisible();
+    await expect(page.locator('.catalog-kind-badge')).toHaveText('Table');
+    await expect(page.getByText('Generated order facts for Explorer QA.')).toBeVisible();
+    await expect(page.locator('.catalog-overview')).toContainText('gs://axon-explorer/orders');
+    await expect(page.locator('.catalog-overview')).toContainText('r2/w7');
+    await expect(page.locator('.catalog-overview')).toContainText('deletionVectors');
+    await expect(page.locator('.catalog-overview')).toContainText('order_date');
+    const columns = page.getByRole('table', { name: 'Columns for orders' });
+    await expect(columns.getByRole('row')).toHaveCount(3);
+    await expect(
+      columns.getByRole('row', { name: /order_id bigint No No primary key/i }),
+    ).toBeVisible();
+    await expect(columns.getByRole('row', { name: /order_date date No Yes/i })).toBeVisible();
+
+    const beforeSqlHandoff = requests.length;
+    await page.getByRole('button', { name: 'Open in SQL editor' }).click();
+    await expect(page).toHaveURL(new RegExp(`${catalogTableSqlPath(table)}$`));
+    await expect(page.locator('.conn-pill')).toContainText('explorer-lake');
+    const handoffRequests = requests.slice(beforeSqlHandoff);
+    expect(handoffRequests.filter((request) => request.resourceType === 'worker')).toEqual([]);
+    expectRequestLogExcludes(handoffRequests, [
+      '_delta_log',
+      'sandbox-query-worker',
+      'axon_web_wasm_bg.wasm',
+    ]);
+
+    await page.goto(catalogTablePath(view));
+    await expect(page.getByRole('heading', { name: 'weekly_orders' })).toBeVisible();
+    await expect(page.locator('.catalog-kind-badge')).toHaveText('View');
+    await expect(page.getByText(/browseable but not queryable/i)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open in SQL editor' })).toHaveCount(0);
+
+    await page.goto(catalogTablePath(metadataMissing));
+    await expect(page.getByRole('heading', { name: 'Metadata unavailable' })).toBeVisible();
+    await expect(page.getByText(/did not report generated metadata/i)).toBeVisible();
+  });
+
+  test('catalog explorer distinguishes an empty connection state', async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('axon.connect.catalogs.v1', '[]');
+    });
+
+    await page.goto('/catalogs');
+
+    await expect(page.getByRole('heading', { name: 'No connections available' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Connect a source' })).toBeVisible();
   });
 
   test('invalid catalog table routes render a catalog recovery action', async ({ page }) => {
@@ -1822,9 +1900,8 @@ function connectedCatalogFixture(overrides: Partial<ConnectedCatalog> = {}): Con
     ]
   ).map((schema) => ({
     ...schema,
-    tables: schema.tables.map((table) => ({
-      ...table,
-      logicalTable:
+    tables: schema.tables.map((table) => {
+      const logicalTable =
         table.logicalTable ??
         (isSample
           ? SAMPLE_QUERY_SOURCE_REF
@@ -1833,8 +1910,28 @@ function connectedCatalogFixture(overrides: Partial<ConnectedCatalog> = {}): Con
               connectionId: defaultTable.resource!.connectionId,
               normalizedTableUri: table.uri ?? storage,
               tableName: table.name,
-            })),
-    })),
+            }));
+      return {
+        ...table,
+        logicalTable,
+        catalogMetadataJson:
+          table.catalogMetadataJson ??
+          (isSample
+            ? undefined
+            : (toJson(
+                TableMetadataSchema,
+                create(TableMetadataSchema, {
+                  table: logicalTable,
+                  storageLocation: table.uri ?? storage,
+                  latestSnapshotVersion: BigInt(table.snapshot ?? 0),
+                  rowCount: BigInt(table.rows ?? 0),
+                  fileCount: BigInt(table.files ?? 0),
+                  minReaderVersion: 2,
+                  minWriterVersion: 5,
+                }),
+              ) as Readonly<Record<string, unknown>>)),
+      };
+    }),
   }));
   return {
     kind: 'object_store',
@@ -1849,6 +1946,111 @@ function connectedCatalogFixture(overrides: Partial<ConnectedCatalog> = {}): Con
     storage,
     schemas,
   };
+}
+
+function catalogExplorerFixture(): ConnectedCatalog {
+  const catalog = connectedCatalogFixture({
+    alias: 'explorer-lake',
+    storage: 'gs://axon-explorer/orders',
+    schemas: [
+      {
+        name: 'analytics',
+        tables: [
+          {
+            name: 'orders',
+            snapshot: 14,
+            rows: 1_250,
+            files: 8,
+            size: '4 KiB',
+            protocol: 'r2/w7',
+            uri: 'gs://axon-explorer/orders',
+          },
+        ],
+      },
+    ],
+  });
+  const schema = catalog.schemas[0]!;
+  const orders = schema.tables[0]!;
+  orders.logicalTable!.comment = 'Generated order facts for Explorer QA.';
+  orders.catalogMetadataJson = toJson(
+    TableMetadataSchema,
+    create(TableMetadataSchema, {
+      table: orders.logicalTable,
+      columns: [
+        create(ColumnNodeSchema, {
+          name: 'order_id',
+          type: 'bigint',
+          nullable: false,
+          comment: 'primary key',
+        }),
+        create(ColumnNodeSchema, {
+          name: 'order_date',
+          type: 'date',
+          nullable: false,
+        }),
+      ],
+      partitionColumns: ['order_date'],
+      rowCount: 1_250n,
+      sizeBytes: 4_096n,
+      fileCount: 8n,
+      latestSnapshotVersion: 14n,
+      minReaderVersion: 2,
+      minWriterVersion: 7,
+      protocolFeatures: [
+        create(DeltaProtocolFeatureSchema, {
+          name: 'deletionVectors',
+          reader: true,
+          writer: true,
+        }),
+      ],
+      storageLocation: 'gs://axon-explorer/orders',
+    }),
+  ) as Readonly<Record<string, unknown>>;
+
+  const connectionId = orders.logicalTable!.resource!.connectionId;
+  const view = createPublicObjectStorageCanonicalTable({
+    provider: 'gcs',
+    connectionId,
+    normalizedTableUri: 'gs://axon-explorer/weekly-orders',
+    tableName: 'weekly_orders',
+  });
+  view.tableType = TableType.VIEW;
+  view.comment = 'A generated weekly view.';
+  schema.tables.push({
+    name: view.name,
+    snapshot: 14,
+    rows: 50,
+    files: 0,
+    size: 'logical',
+    protocol: 'r2/w7',
+    uri: 'gs://axon-explorer/weekly-orders',
+    logicalTable: view,
+    catalogMetadataJson: toJson(
+      TableMetadataSchema,
+      create(TableMetadataSchema, {
+        table: view,
+        storageLocation: 'gs://axon-explorer/weekly-orders',
+      }),
+    ) as Readonly<Record<string, unknown>>,
+  });
+
+  const metadataMissing = createPublicObjectStorageCanonicalTable({
+    provider: 'gcs',
+    connectionId,
+    normalizedTableUri: 'gs://axon-explorer/metadata-missing',
+    tableName: 'metadata_missing',
+  });
+  schema.tables.push({
+    name: metadataMissing.name,
+    snapshot: 0,
+    rows: 0,
+    files: 0,
+    size: 'not reported',
+    protocol: 'not reported',
+    uri: 'gs://axon-explorer/metadata-missing',
+    logicalTable: metadataMissing,
+  });
+  return catalog;
 }
 
 function publicObjectStoreTableRootCatalogFixture(): ConnectedCatalog {

@@ -127,6 +127,90 @@ describe('connected catalog persistence', () => {
     expect(loadConnectedCatalogs()).toEqual([]);
   });
 
+  it('restores generated view metadata for browsing without treating it as queryable', () => {
+    const viewCatalog = catalog('weekly_events');
+    const view = viewCatalog.schemas[0]!.tables[0]!;
+    view.logicalTable!.tableType = TableType.VIEW;
+    view.catalogMetadataJson = toJson(
+      TableMetadataSchema,
+      create(TableMetadataSchema, {
+        table: view.logicalTable,
+        storageLocation: view.uri,
+      }),
+    ) as Readonly<Record<string, unknown>>;
+
+    saveConnectedCatalogs([viewCatalog]);
+
+    const restoredCatalogs = loadConnectedCatalogs();
+    const restored = restoredCatalogs[0]?.schemas[0]?.tables[0];
+    expect(restored?.logicalTable?.tableType).toBe(TableType.VIEW);
+    expect(restoredCatalogs.flatMap(querySourcesForCatalog)).toEqual([]);
+  });
+
+  it('restores a mixed table, view, and metadata-missing catalog on one connection', () => {
+    const mixed = catalog('orders');
+    const base = mixed.schemas[0]!.tables[0]!.logicalTable!;
+    const view = create(TableNodeSchema, {
+      resource: create(CanonicalResourceRefSchema, {
+        connectionId: base.resource!.connectionId,
+        providerNamespace: base.resource!.providerNamespace,
+        kind: ResourceKind.TABLE,
+        identity: { case: 'canonicalLocator', value: 'gs://orders/weekly-view' },
+      }),
+      tableType: TableType.VIEW,
+      name: 'weekly_orders',
+    });
+    const metadataMissing = create(TableNodeSchema, {
+      resource: create(CanonicalResourceRefSchema, {
+        connectionId: base.resource!.connectionId,
+        providerNamespace: base.resource!.providerNamespace,
+        kind: ResourceKind.TABLE,
+        identity: { case: 'canonicalLocator', value: 'gs://orders/metadata-missing' },
+      }),
+      tableType: TableType.TABLE,
+      name: 'metadata_missing',
+    });
+    mixed.schemas[0]!.tables.push(
+      {
+        name: view.name,
+        snapshot: 1,
+        rows: 0,
+        files: 0,
+        size: 'logical',
+        protocol: 'r1/w1',
+        uri: 'gs://orders/weekly-view',
+        logicalTable: view,
+        catalogMetadataJson: toJson(
+          TableMetadataSchema,
+          create(TableMetadataSchema, {
+            table: view,
+            storageLocation: 'gs://orders/weekly-view',
+          }),
+        ) as Readonly<Record<string, unknown>>,
+      },
+      {
+        name: metadataMissing.name,
+        snapshot: 0,
+        rows: 0,
+        files: 0,
+        size: 'not reported',
+        protocol: 'not reported',
+        uri: 'gs://orders/metadata-missing',
+        logicalTable: metadataMissing,
+      },
+    );
+
+    saveConnectedCatalogs([mixed]);
+
+    const restored = loadConnectedCatalogs();
+    expect(restored).toHaveLength(1);
+    expect(restored[0]?.schemas[0]?.tables.map((table) => table.name)).toEqual([
+      'orders',
+      'weekly_orders',
+      'metadata_missing',
+    ]);
+  });
+
   it('uses generated connection identity while keeping aliases mutable presentation', async () => {
     const first = await publicCatalog({
       bucket: 'shared-bucket',

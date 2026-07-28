@@ -85,9 +85,21 @@ function ConnectRoute() {
 
 function CatalogsRoute({ routeTable }: { routeTable?: ActiveConnectedTableRef }) {
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<CatalogExplorerLoadingState />}>
       <CatalogsPage routeTable={routeTable} />
     </Suspense>
+  );
+}
+
+function CatalogExplorerLoadingState() {
+  return (
+    <main className="route-empty" aria-live="polite" aria-busy="true">
+      <span className="route-empty-mark" aria-hidden="true">
+        A
+      </span>
+      <h1>Loading catalog metadata</h1>
+      <p>The Catalog Explorer is preparing generated resource metadata.</p>
+    </main>
   );
 }
 

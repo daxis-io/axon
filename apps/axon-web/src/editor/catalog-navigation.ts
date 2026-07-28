@@ -1,4 +1,9 @@
-import { create } from '@bufbuild/protobuf';
+import { create, fromJson, type JsonValue } from '@bufbuild/protobuf';
+import {
+  TableMetadataSchema,
+  TableType,
+  type TableMetadata,
+} from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 import {
   CanonicalResourceRefSchema,
   ResourceKind,
@@ -65,6 +70,7 @@ export type LegacyCatalogTableRouteResolution =
 export type CatalogExplorerTable = {
   key: string;
   name: string;
+  tableKind: string;
   ref?: ActiveConnectedTableRef;
   active: boolean;
   queryable: boolean;
@@ -86,6 +92,7 @@ export type CatalogExplorerSchema = {
 
 export type CatalogExplorerCatalog = {
   id: string;
+  catalogName?: string;
   alias: string;
   storage: string;
   region?: string;
@@ -101,6 +108,50 @@ export type CatalogExplorerModel = {
   queryableTableCount: number;
   catalogs: CatalogExplorerCatalog[];
 };
+
+export type CatalogExplorerTableDetail =
+  | { status: 'no_selection' }
+  | { status: 'unavailable'; reason: 'stale' }
+  | {
+      status: 'metadata_unavailable';
+      reason: 'missing' | 'invalid';
+      ref: ActiveConnectedTableRef;
+      connectionAlias: string;
+      schemaName: string;
+      tableName: string;
+      tableKind: string;
+      queryable: boolean;
+    }
+  | {
+      status: 'ready';
+      ref: ActiveConnectedTableRef;
+      connectionAlias: string;
+      catalogName: string;
+      schemaName: string;
+      tableName: string;
+      tableKind: string;
+      comment?: string;
+      queryable: boolean;
+      sqlPath?: CatalogTableSqlHref;
+      overview: {
+        storageLocation: string;
+        snapshot?: number;
+        rows?: number;
+        files?: number;
+        sizeBytes?: number;
+        protocol: string;
+        features: string[];
+        partitions: string[];
+      };
+      columnsStatus: 'ready' | 'empty';
+      columns: Array<{
+        name: string;
+        type: string;
+        nullable: boolean;
+        comment?: string;
+        partition: boolean;
+      }>;
+    };
 
 export function catalogTablePath(ref: ActiveConnectedTableRef): CatalogTableHref {
   const resource = validatedTableResource(ref);
@@ -255,6 +306,7 @@ export function catalogExplorerModel(
         return {
           key: ref ? canonicalTableIdentityKey(ref) : `${catalog.id}/${schema.name}/${table.name}`,
           name: table.name,
+          tableKind: ref ? tableKindLabel(ref.tableType) : 'Unspecified',
           ref,
           active: !!ref && !!activeTable && sameCanonicalTableIdentity(activeTable, ref),
           path: ref ? catalogTablePath(ref) : undefined,
@@ -278,6 +330,7 @@ export function catalogExplorerModel(
 
     return {
       id: catalog.id,
+      catalogName: catalog.catalogName,
       alias: catalog.alias,
       storage: catalog.storage,
       region: catalog.region,
@@ -296,6 +349,80 @@ export function catalogExplorerModel(
   };
 }
 
+export function catalogExplorerTableDetail(
+  catalogs: QueryCatalogCandidate[],
+  activeTable?: ActiveConnectedTableRef,
+): CatalogExplorerTableDetail {
+  if (!activeTable) return { status: 'no_selection' };
+  const resource = activeTable.resource;
+  if (!resource) return { status: 'unavailable', reason: 'stale' };
+  const locations = connectedTableLocationsForResource(catalogs, resource);
+  if (locations.length !== 1) return { status: 'unavailable', reason: 'stale' };
+  const { catalog, schema, table } = locations[0]!;
+  const ref = table.logicalTable!;
+  const tableKind = tableKindLabel(ref.tableType);
+  const queryable =
+    ref.tableType === TableType.TABLE &&
+    querySourceForConnectedTableRef(catalogs, ref) !== undefined;
+  const identity = {
+    ref,
+    connectionAlias: catalog.alias,
+    schemaName: schema.name,
+    tableName: table.name,
+    tableKind,
+    queryable,
+  };
+  if (!table.catalogMetadataJson) {
+    return { status: 'metadata_unavailable', reason: 'missing', ...identity };
+  }
+
+  let metadata: TableMetadata;
+  try {
+    metadata = fromJson(TableMetadataSchema, table.catalogMetadataJson as JsonValue);
+    if (!metadata.table || !sameCanonicalTableIdentity(metadata.table, ref)) {
+      throw new Error('metadata table identity did not match the selected resource');
+    }
+  } catch {
+    return { status: 'metadata_unavailable', reason: 'invalid', ...identity };
+  }
+
+  try {
+    const partitionNames = new Set(metadata.partitionColumns);
+    const columns = metadata.columns.map((column) => ({
+      name: column.name,
+      type: column.type,
+      nullable: column.nullable,
+      comment: column.comment.trim() || undefined,
+      partition: partitionNames.has(column.name),
+    }));
+    return {
+      status: 'ready',
+      ...identity,
+      catalogName: catalog.catalogName?.trim() || catalog.alias,
+      comment: ref.comment.trim() || undefined,
+      sqlPath: queryable ? catalogTableSqlPath(ref) : undefined,
+      overview: {
+        storageLocation:
+          metadata.storageLocation || table.source?.storage || table.uri || catalog.storage,
+        snapshot: browserSafeOptionalInteger(metadata.latestSnapshotVersion),
+        rows: browserSafeOptionalInteger(metadata.rowCount),
+        files: browserSafeOptionalInteger(metadata.fileCount),
+        sizeBytes: browserSafeOptionalInteger(metadata.sizeBytes),
+        protocol:
+          metadata.minReaderVersion !== undefined && metadata.minWriterVersion !== undefined
+            ? `r${metadata.minReaderVersion}/w${metadata.minWriterVersion}`
+            : 'not reported',
+        features: metadata.protocolFeatures.map((feature) => feature.name),
+        partitions: [...metadata.partitionColumns],
+      },
+      columnsStatus: columns.length === 0 ? 'empty' : 'ready',
+      columns,
+    };
+  } catch {
+    return { status: 'metadata_unavailable', reason: 'invalid', ...identity };
+  }
+}
+
 function validatedTableResource(ref: ActiveConnectedTableRef): CanonicalResourceRef {
   if (!ref.resource) throw new Error('canonical table route requires a resource identity');
   return validatedCanonicalResourceRef(ref.resource);
@@ -305,6 +432,30 @@ function routeIdentityArm(resource: CanonicalResourceRef): CatalogTableIdentityA
   if (resource.identity.case === 'providerObjectId') return 'provider-object-id';
   if (resource.identity.case === 'canonicalLocator') return 'canonical-locator';
   throw new Error('canonical table route requires a supported identity arm');
+}
+
+export function tableKindLabel(tableType: TableType): string {
+  switch (tableType) {
+    case TableType.TABLE:
+      return 'Table';
+    case TableType.VIEW:
+      return 'View';
+    case TableType.MATERIALIZED_VIEW:
+      return 'Materialized view';
+    case TableType.STREAMING_TABLE:
+      return 'Streaming table';
+    case TableType.UNSPECIFIED:
+      return 'Unspecified';
+  }
+}
+
+function browserSafeOptionalInteger(value: bigint | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) {
+    throw new Error('generated catalog metadata integer was outside the browser-safe range');
+  }
+  return number;
 }
 
 function legacyCatalogIdForAlias(alias: string): string {

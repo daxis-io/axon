@@ -133,6 +133,9 @@ export function createLocalDeltaCatalogProvider(
     name: input.schemaName,
   });
   const metadata = clone(TableMetadataSchema, input.metadata);
+  if (metadata.table) {
+    table.comment = metadata.table.comment;
+  }
   if (metadata.table && !equals(TableNodeSchema, metadata.table, table)) {
     throw new CatalogProviderError(
       'invalid_request',
@@ -187,6 +190,9 @@ export function createPublicObjectStorageCatalogProvider(
     name: input.schemaName,
   });
   const metadata = clone(TableMetadataSchema, input.metadata);
+  if (metadata.table) {
+    table.comment = metadata.table.comment;
+  }
   if (
     metadata.storageLocation !== normalizedTableUri ||
     (metadata.table && !equals(TableNodeSchema, metadata.table, table))
