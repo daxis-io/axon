@@ -128,151 +128,80 @@ test.describe('editor (Phase 1 smoke)', () => {
     });
   });
 
-  test('connected catalog store merges different sources into one Axon catalog', () => {
-    const localCatalog = buildCatalogFromResult(
-      connectResultFixture({
-        alias: 'workspace',
-        source: 'local',
-        schemaName: 'default',
-        tableName: 'orders_local',
-      }),
-    );
-    const objectCatalog = buildCatalogFromResult(
-      connectResultFixture({
-        alias: 'workspace',
-        source: 'object_store',
-        schemaName: 'analytics',
-        tableName: 'events',
-      }),
-    );
+  test('connected catalog store keeps same-alias generated connections distinct', () => {
+    const first = connectedCatalogFixture({
+      alias: 'workspace',
+      storage: 'gs://first-lake/events',
+    });
+    const second = connectedCatalogFixture({
+      alias: 'workspace',
+      storage: 'gs://second-lake/events',
+    });
 
-    const result = upsertConnectedCatalog([localCatalog], objectCatalog);
+    const result = upsertConnectedCatalog([first], second);
 
-    expect(result.catalogs).toHaveLength(1);
-    expect(result.catalogs[0].alias).toBe('workspace');
-    expect(result.catalogs[0].schemas.map((schema) => schema.name)).toEqual([
-      'default',
-      'analytics',
+    expect(result.catalogs).toHaveLength(2);
+    expect(result.catalogs.map((catalog) => catalog.alias)).toEqual(['workspace', 'workspace']);
+    expect(result.catalogs.map((catalog) => catalog.id).sort()).toEqual([
+      'axon-connection://public-gcs/first-lake',
+      'axon-connection://public-gcs/second-lake',
     ]);
-    expect(
-      result.catalogs[0].schemas.flatMap((schema) => schema.tables.map((table) => table.name)),
-    ).toEqual(['orders_local', 'events']);
-
-    const selection = resolveQuerySourceSelection(
-      result.catalogs,
-      result.catalogs[0].schemas
-        .find((schema) => schema.name === 'analytics')!
-        .tables.find((table) => table.name === 'events')!.logicalTable!,
-    );
+    const selected = second.schemas[0]!.tables[0]!.logicalTable!;
+    const selection = resolveQuerySourceSelection(result.catalogs, selected);
     expect(selection).toMatchObject({
       kind: 'resource',
       source: {
         catalogName: 'workspace',
-        schemaName: 'analytics',
+        schemaName: 'prod_like',
         tableName: 'events',
-        storage: 'gs://acme-lake/silver',
-        region: 'us-central1',
+        storage: 'gs://second-lake/events',
       },
     });
   });
 
-  test('connector feature gates filter tables inside mixed Axon catalogs', () => {
-    const catalog = connectedCatalogFixture({
-      id: 'workspace',
-      alias: 'workspace',
-      kind: 'unity_catalog',
-      storage: '2 sources',
-      region: 'mixed',
-      schemas: [
-        {
-          name: 'default',
-          tables: [
-            {
-              name: 'local_orders',
-              snapshot: 3,
-              rows: 6,
-              files: 1,
-              size: 'fixture',
-              protocol: 'r2/w5',
-              localRegistryId: 'local-registry-orders',
-              source: {
-                id: 'source-local-orders',
-                kind: 'local',
-                storage: 'Local folder: local-orders',
-                region: 'browser-local',
-                canonicalKey: 'local||||default|local_orders',
-                connectedAt: 'test fixture',
-              },
-            },
-            {
-              name: 'governed_orders',
-              snapshot: 3,
-              rows: 6,
-              files: 1,
-              size: 'fixture',
-              protocol: 'r2/w5',
-              manifestUrl: '/fixtures/prod-like/delta-log-manifest.json',
-              source: {
-                id: 'source-uc-orders',
-                kind: 'unity_catalog',
-                storage: '/api/uc/read-access-plan',
-                region: 'brokered',
-                canonicalKey:
-                  'unity_catalog|||https://acme.cloud.databricks.com||default|governed_orders',
-                connectedAt: 'test fixture',
-              },
-            },
-          ],
-        },
-      ],
-    });
+  test('connector feature gates filter disabled connections without mixing their tables', () => {
+    const local = buildCatalogFromResult(
+      connectResultFixture({
+        alias: 'local',
+        source: 'local',
+        schemaName: 'default',
+        tableName: 'local_orders',
+      }),
+    );
+    const governed = buildCatalogFromResult(
+      connectResultFixture({
+        alias: 'governed',
+        source: 'unity_catalog',
+        schemaName: 'default',
+        tableName: 'governed_orders',
+      }),
+    );
 
-    const filtered = catalogsAvailableForFeatures([catalog], { bffAuthServiceConnectors: false });
+    const filtered = catalogsAvailableForFeatures([local, governed], {
+      bffAuthServiceConnectors: false,
+    });
 
     expect(filtered).toHaveLength(1);
     expect(filtered[0].schemas[0]?.tables.map((table) => table.name)).toEqual(['local_orders']);
   });
 
-  test('local registry cleanup includes local tables inside mixed Axon catalogs', () => {
-    const catalog = connectedCatalogFixture({
-      id: 'workspace',
-      alias: 'workspace',
-      kind: 'object_store',
-      storage: '2 sources',
-      region: 'mixed',
-      schemas: [
-        {
-          name: 'default',
-          tables: [
-            {
-              name: 'local_orders',
-              snapshot: 3,
-              rows: 6,
-              files: 1,
-              size: 'fixture',
-              protocol: 'r2/w5',
-              localRegistryId: 'local-registry-orders',
-              source: {
-                id: 'source-local-orders',
-                kind: 'local',
-                storage: 'Local folder: local-orders',
-                region: 'browser-local',
-                canonicalKey: 'local||||default|local_orders',
-                connectedAt: 'test fixture',
-              },
-            },
-          ],
-        },
-      ],
-    });
+  test('local registry cleanup derives ids from the exact local connection', () => {
+    const catalog = buildCatalogFromResult(
+      connectResultFixture({
+        alias: 'local',
+        source: 'local',
+        schemaName: 'default',
+        tableName: 'local_orders',
+      }),
+    );
 
     expect(localRegistryIdsForCatalogs([catalog])).toEqual(['local-registry-orders']);
   });
 
-  test('merged Axon catalogs keep incoming tables addressable by the final catalog id', () => {
+  test('reconnecting one generated connection keeps incoming tables canonically addressable', () => {
     const existing = connectedCatalogFixture({
-      id: 'legacy-workspace-id',
       alias: 'workspace',
+      storage: 'gs://acme-lake/orders',
       schemas: [
         {
           name: 'default',
@@ -284,26 +213,39 @@ test.describe('editor (Phase 1 smoke)', () => {
               files: 1,
               size: 'fixture',
               protocol: 'r2/w5',
-              manifestUrl: '/fixtures/prod-like/delta-log-manifest.json',
+              uri: 'gs://acme-lake/orders',
             },
           ],
         },
       ],
     });
-    const incoming = buildCatalogFromResult(
-      connectResultFixture({
-        alias: 'workspace',
-        source: 'object_store',
-        schemaName: 'analytics',
-        tableName: 'events',
-      }),
-    );
+    const incoming = connectedCatalogFixture({
+      alias: 'renamed workspace',
+      storage: 'gs://acme-lake/events',
+      schemas: [
+        {
+          name: 'analytics',
+          tables: [
+            {
+              name: 'events',
+              snapshot: 4,
+              rows: 7,
+              files: 2,
+              size: 'fixture',
+              protocol: 'r2/w5',
+              uri: 'gs://acme-lake/events',
+            },
+          ],
+        },
+      ],
+    });
 
     const result = upsertConnectedCatalog([existing], incoming);
     const merged = result.catalogs[0];
 
-    expect(merged.id).toBe('legacy-workspace-id');
-    expect(merged.id).not.toBe(incoming.id);
+    expect(result.catalogs).toHaveLength(1);
+    expect(merged.id).toBe('axon-connection://public-gcs/acme-lake');
+    expect(merged.alias).toBe('renamed workspace');
     expect(
       resolveQuerySourceSelection(
         result.catalogs,
@@ -314,10 +256,10 @@ test.describe('editor (Phase 1 smoke)', () => {
     ).toMatchObject({
       kind: 'resource',
       source: {
-        catalogName: 'workspace',
+        catalogName: 'renamed workspace',
         schemaName: 'analytics',
         tableName: 'events',
-        storage: 'gs://acme-lake/silver',
+        storage: 'gs://acme-lake/events',
       },
     });
   });
@@ -332,21 +274,18 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(source).toContain('Catalog alias');
   });
 
-  test('connected catalog store keeps only the newest catalog for each source', () => {
+  test('connected catalog store keeps the newest presentation for each canonical connection', () => {
     const original = connectedCatalogFixture({
-      id: 'old-acme',
       alias: 'old-acme',
-      storage: 'gs://acme-lake/silver/',
+      storage: 'gs://acme-lake/silver',
     });
     const other = connectedCatalogFixture({
-      id: 'other-lake',
       alias: 'other-lake',
       storage: 'gs://other-lake/silver',
     });
     const updated = connectedCatalogFixture({
-      id: 'new-acme',
       alias: 'new-acme',
-      storage: ' gs://acme-lake/silver ',
+      storage: 'gs://acme-lake/silver',
     });
     const previousLocalStorage = globalThis.localStorage;
     const storage = new Map<string, string>([
@@ -364,10 +303,13 @@ test.describe('editor (Phase 1 smoke)', () => {
     try {
       expect(
         upsertConnectedCatalog([original, other], updated).catalogs.map((catalog) => catalog.id),
-      ).toEqual(['new-acme', 'other-lake']);
+      ).toEqual([
+        'axon-connection://public-gcs/acme-lake',
+        'axon-connection://public-gcs/other-lake',
+      ]);
       expect(loadConnectedCatalogs().map((catalog) => catalog.id)).toEqual([
-        'new-acme',
-        'other-lake',
+        'axon-connection://public-gcs/acme-lake',
+        'axon-connection://public-gcs/other-lake',
       ]);
     } finally {
       if (previousLocalStorage === undefined) {
@@ -771,7 +713,6 @@ test.describe('editor (Phase 1 smoke)', () => {
       'sandbox-query-worker',
       '/src/services/query.ts',
       '/src/services/local-delta.ts',
-      '/src/services/object-storage.ts',
       '/src/wasm/',
     ]);
     expect(initial.filter((request) => request.resourceType === 'worker')).toEqual([]);
@@ -796,7 +737,7 @@ test.describe('editor (Phase 1 smoke)', () => {
       .toEqual({ queryRuntime: true, worker: true, wasm: true });
   });
 
-  test('lazy startup keeps the connect route storage runtimes deferred to validation actions', async ({
+  test('lazy startup keeps connect query and WASM runtimes deferred to validation actions', async ({
     page,
   }) => {
     const requests = trackRelevantRequests(page);
@@ -818,7 +759,6 @@ test.describe('editor (Phase 1 smoke)', () => {
       '/src/services/query.ts',
       'sandbox-query-worker',
       '/src/services/local-delta.ts',
-      '/src/services/object-storage.ts',
       '/src/wasm/',
       'axon_web_wasm_bg.wasm',
     ]);
@@ -832,7 +772,6 @@ test.describe('editor (Phase 1 smoke)', () => {
       afterModal.some((request) => request.url.includes('/src/editor/connect/ConnectModal.tsx')),
     ).toBe(true);
     expectRequestLogExcludes(afterModal, [
-      '/src/services/object-storage.ts',
       '/src/services/local-delta.ts',
       '/src/wasm/',
       'axon_web_wasm_bg.wasm',
@@ -851,9 +790,6 @@ test.describe('editor (Phase 1 smoke)', () => {
     );
 
     const validationRequests = requests.slice(beforeValidationCount);
-    expect(
-      validationRequests.some((request) => request.url.includes('/src/services/object-storage.ts')),
-    ).toBe(true);
     expect(
       validationRequests.some(
         (request) =>
@@ -1097,7 +1033,7 @@ test.describe('editor (Phase 1 smoke)', () => {
     await configDialog.getByRole('button', { name: /Discover tables/ }).click();
 
     const reviewDialog = page.getByRole('dialog', { name: 'Review & name catalog' });
-    await expect(reviewDialog).toContainText(/Detected 1 public Delta table/i);
+    await expect(reviewDialog).toContainText(/Detected 1 (?:public Delta|catalog) table/i);
     await expect(reviewDialog).toContainText(/silver/i);
     await reviewDialog.getByRole('button', { name: /Connect catalog/ }).click();
 
@@ -1221,59 +1157,15 @@ test.describe('editor (Phase 1 smoke)', () => {
     page,
   }) => {
     const catalogs = [
-      {
-        id: 'sample-lake-fixture',
-        alias: 'sample-lake',
-        kind: 'object_store',
-        provider: 'gcs',
-        storage: 'gs://axon-sample/prod-like-events',
-        region: 'browser-local',
-        status: 'connected',
-        connectedAt: 'sample fixture',
-        schemas: [
-          {
-            name: 'prod_like',
-            tables: [
-              {
-                name: 'events',
-                snapshot: 3,
-                rows: 6,
-                files: 1,
-                size: 'fixture',
-                protocol: 'r2/w5',
-                manifestUrl: '/fixtures/prod-like/delta-log-manifest.json',
-              },
-            ],
-          },
-        ],
-      },
-      {
-        id: 'second-lake-fixture',
+      connectedCatalogFixture(),
+      connectedCatalogFixture({
         alias: 'second-lake',
-        kind: 'object_store',
-        provider: 'gcs',
         storage: 'gs://axon-second/prod-like-events',
-        region: 'browser-local',
-        status: 'connected',
         connectedAt: 'test fixture',
-        schemas: [
-          {
-            name: 'prod_like',
-            tables: [
-              {
-                name: 'events',
-                snapshot: 3,
-                rows: 6,
-                files: 1,
-                size: 'fixture',
-                protocol: 'r2/w5',
-                manifestUrl: '/fixtures/prod-like/delta-log-manifest.json',
-              },
-            ],
-          },
-        ],
-      },
+      }),
     ];
+    const secondTable = catalogs[1].schemas[0]!.tables[0]!.logicalTable!;
+    const secondTablePath = catalogTableSqlPath(secondTable);
     await page.addInitScript((value) => {
       localStorage.setItem('axon.connect.catalogs.v1', JSON.stringify(value));
     }, catalogs);
@@ -1284,6 +1176,7 @@ test.describe('editor (Phase 1 smoke)', () => {
 
     await activateConnectedTable(page, 'second-lake', 'prod_like', 'events');
 
+    await expect(page).toHaveURL(new RegExp(`${secondTablePath}$`));
     await expect(page.locator('.conn-pill')).toContainText('second-lake');
     await page.locator('.btn.primary', { hasText: 'Run' }).click();
     await expect(page.locator('.res-meta')).toContainText(/rows/i, { timeout: 30_000 });
@@ -1388,7 +1281,9 @@ test.describe('editor (Phase 1 smoke)', () => {
     );
     expect(connectState).toContain('local-prod-like');
     expect(connectState).toContain('localRegistryId');
-    expect(connectState).not.toMatch(/bytes|ArrayBuffer|secret|bearer|token|client[_-]?secret/i);
+    expect(connectState).not.toMatch(
+      /ArrayBuffer|signed[_-]?url|descriptor|bearer|token|client[_-]?secret|credential|grant|session[_-]?value/i,
+    );
 
     const registryRecord = await localDeltaRegistryRecord(page, localRegistryId);
     expect(registryRecord?.backend).toBe('metadata_only');
