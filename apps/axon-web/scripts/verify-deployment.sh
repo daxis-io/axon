@@ -24,10 +24,27 @@ fail() {
   failures=$((failures + 1))
 }
 
+# Protected deployments (Vercel Deployment Protection) answer every request with a redirect to an
+# SSO login, so the assets are unreachable without a bypass. Send the automation bypass header when
+# one is configured.
+curl_args=(-sS --max-time 60)
+if [[ -n "${VERCEL_AUTOMATION_BYPASS_SECRET:-}" ]]; then
+  curl_args+=(-H "x-vercel-protection-bypass: ${VERCEL_AUTOMATION_BYPASS_SECRET}")
+fi
+
 # Prints "<status> <content-type>" for a URL.
 probe() {
-  curl -sS -o /dev/null -w '%{http_code} %{content_type}' --max-time 60 "$1"
+  curl "${curl_args[@]}" -o /dev/null -w '%{http_code} %{content_type}' "$1"
 }
+
+# A protected deployment is not a defect, so report it and skip rather than failing every check.
+redirect_target=$(curl "${curl_args[@]}" -o /dev/null -w '%{redirect_url}' "${deploy_url}/")
+if [[ "${redirect_target}" == *"vercel.com/sso"* ]]; then
+  echo "Deployment protection is enabled on ${deploy_url} and no bypass secret is configured;"
+  echo "skipping asset verification. Set VERCEL_AUTOMATION_BYPASS_SECRET to verify protected"
+  echo "deployments (Project Settings -> Deployment Protection -> Protection Bypass for Automation)."
+  exit 0
+fi
 
 expect_asset() {
   local path="$1" expected_type="$2" result status content_type
