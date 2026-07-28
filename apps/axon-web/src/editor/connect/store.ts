@@ -45,7 +45,7 @@ export type ConnectedCatalogUpsertResult = {
 };
 
 export const SAMPLE_CONNECTED_CATALOG: ConnectedCatalog = {
-  id: SAMPLE_QUERY_SOURCE_REF.catalogId,
+  id: SAMPLE_QUERY_SOURCE_REF.resource!.connectionId,
   catalogName: SAMPLE_QUERY_SOURCE.catalogName,
   alias: SAMPLE_QUERY_SOURCE.catalogName,
   kind: 'object_store',
@@ -67,6 +67,7 @@ export const SAMPLE_CONNECTED_CATALOG: ConnectedCatalog = {
           size: 'fixture',
           protocol: 'r2/w5',
           manifestUrl: SAMPLE_QUERY_SOURCE.manifestUrl,
+          logicalTable: clone(TableNodeSchema, SAMPLE_QUERY_SOURCE_REF),
           source: {
             id: 'source-sample-lake-fixture',
             kind: 'object_store',
@@ -466,13 +467,13 @@ function publicObjectStorageProvider(
 
 function isExplicitSampleCatalog(catalog: ConnectedCatalog): boolean {
   return (
-    catalog.id === SAMPLE_QUERY_SOURCE_REF.catalogId &&
+    catalog.id === SAMPLE_QUERY_SOURCE_REF.resource?.connectionId &&
     catalog.schemas.some(
       (schema) =>
-        schema.name === SAMPLE_QUERY_SOURCE_REF.schemaName &&
+        schema.name === SAMPLE_QUERY_SOURCE.schemaName &&
         schema.tables.some(
           (table) =>
-            table.name === SAMPLE_QUERY_SOURCE_REF.tableName &&
+            table.name === SAMPLE_QUERY_SOURCE.tableName &&
             table.manifestUrl === SAMPLE_QUERY_SOURCE.manifestUrl,
         ),
     )
@@ -497,11 +498,9 @@ function validateConnectedCatalogMetadata(catalogs: ConnectedCatalog[]): Connect
         }
         tableIdentities.add(identity);
         if (!table.catalogMetadataJson) continue;
-        const source = querySourceForConnectedTableRef([catalog], {
-          catalogId: catalog.id,
-          schemaName: schema.name,
-          tableName: table.name,
-        });
+        const source = table.logicalTable
+          ? querySourceForConnectedTableRef([catalog], table.logicalTable)
+          : undefined;
         if (!source || source.kind === 'manifest') {
           throw new Error('persisted generated metadata source is invalid');
         }

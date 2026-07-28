@@ -18,6 +18,10 @@ import {
   dataAccessResolverForSelection,
 } from './browser-read-resolution.ts';
 import {
+  createLocalDeltaCanonicalTable,
+  createPublicObjectStorageCanonicalTable,
+} from './canonical-table-identity.ts';
+import {
   BrowserExecutionValidationError,
   createValidatedBrowserExecutionProvider,
   type BrowserExecuteInput,
@@ -30,11 +34,10 @@ import {
 
 const localSelection: AvailableQuerySourceSelection = {
   kind: 'resource',
-  ref: {
-    catalogId: 'local-catalog',
-    schemaName: 'default',
+  ref: createLocalDeltaCanonicalTable({
+    registryId: 'local-events',
     tableName: 'events',
-  },
+  }),
   source: {
     kind: 'local_delta',
     catalogName: 'Local events',
@@ -49,7 +52,12 @@ const localSelection: AvailableQuerySourceSelection = {
 
 const publicSelection: AvailableQuerySourceSelection = {
   kind: 'resource',
-  ref: { catalogId: 'public-gcs', schemaName: 'default', tableName: 'events' },
+  ref: createPublicObjectStorageCanonicalTable({
+    provider: 'gcs',
+    connectionId: 'axon-connection://public-gcs/public-bucket',
+    normalizedTableUri: 'gs://public-bucket/events',
+    tableName: 'events',
+  }),
   source: {
     kind: 'object_store_table_root',
     provider: 'gcs',

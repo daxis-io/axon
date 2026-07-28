@@ -1,4 +1,8 @@
 import { Fragment, useState, type KeyboardEvent, type MouseEvent } from 'react';
+import {
+  canonicalTableIdentityKey,
+  sameCanonicalTableIdentity,
+} from '../../services/canonical-table-identity.ts';
 import type { ActiveConnectedTableRef } from '../../services/query-source.ts';
 import type { Catalog, CatalogTable, HistoryEntry, SavedQuery } from '../../services/types.ts';
 import { isQueryableCatalogTable } from '../catalog-navigation.ts';
@@ -174,23 +178,19 @@ export function Sidebar({
                           </span>
                         </div>
                         {schema.tables.map((table) => {
-                          const key = connectedTableKey(cat.id, schema.name, table.name);
-                          const ref = {
-                            catalogId: cat.id,
-                            schemaName: schema.name,
-                            tableName: table.name,
-                          };
+                          const ref = table.logicalTable;
+                          const key = ref
+                            ? canonicalTableIdentityKey(ref)
+                            : connectedTableKey(cat.id, schema.name, table.name);
                           const open = !!openTbl[key];
-                          const queryable = isQueryableCatalogTable(connectedCatalogs, ref);
+                          const queryable =
+                            !!ref && isQueryableCatalogTable(connectedCatalogs, ref);
                           const selected =
-                            activeTable?.catalogId === cat.id &&
-                            activeTable.schemaName === schema.name &&
-                            activeTable.tableName === table.name;
+                            !!activeTable && !!ref && sameCanonicalTableIdentity(activeTable, ref);
                           const detail = detailForConnectedTable(
                             catalog,
                             activeTable,
-                            cat.id,
-                            schema.name,
+                            ref,
                             table.name,
                           );
                           return (
@@ -205,11 +205,11 @@ export function Sidebar({
                                   (open ? 'open ' : '') +
                                   (selected ? 'selected ' : '')
                                 }
-                                onClick={() => pickConnectedTable(ref, key)}
+                                onClick={() => ref && pickConnectedTable(ref, key)}
                                 onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
                                   if (event.key !== 'Enter' && event.key !== ' ') return;
                                   event.preventDefault();
-                                  pickConnectedTable(ref, key);
+                                  if (ref) pickConnectedTable(ref, key);
                                 }}
                                 onDoubleClick={() =>
                                   onInsert(`SELECT *
@@ -523,15 +523,10 @@ function connectedTableKey(catalogId: string, schemaName: string, tableName: str
 function detailForConnectedTable(
   catalog: Catalog | undefined,
   activeTable: ActiveConnectedTableRef | undefined,
-  catalogId: string,
-  schemaName: string,
+  ref: ActiveConnectedTableRef | undefined,
   tableName: string,
 ): CatalogTable | undefined {
-  if (
-    activeTable?.catalogId !== catalogId ||
-    activeTable.schemaName !== schemaName ||
-    activeTable.tableName !== tableName
-  ) {
+  if (!activeTable || !ref || !sameCanonicalTableIdentity(activeTable, ref)) {
     return undefined;
   }
   return catalog?.tables.find((table) => table.name === tableName);

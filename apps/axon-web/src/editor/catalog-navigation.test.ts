@@ -1,203 +1,178 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createLocalDeltaCanonicalTable,
+  createPublicObjectStorageCanonicalTable,
+} from '../services/canonical-table-identity.ts';
+import type { ActiveConnectedTableRef, QueryCatalogCandidate } from '../services/query-source.ts';
+import {
   catalogExplorerModel,
   catalogTablePath,
-  catalogTableRefFromParams,
-  isQueryableCatalogTable,
+  catalogTableResourceFromParams,
+  catalogTableSqlPath,
+  legacyCatalogTablePath,
   resolveCatalogTableRoute,
+  resolveLegacyCatalogTableRoute,
   savedQueryPath,
   tableRefForRouteSelection,
+  type CatalogTableRouteParams,
 } from './catalog-navigation.ts';
-import type { QueryCatalogCandidate } from '../services/query-source.ts';
 
-function connectedCatalogs(): QueryCatalogCandidate[] {
-  return [
-    {
-      id: 'cat/local 1',
-      alias: 'local lake',
-      storage: '/tmp/lake',
-      region: 'browser-local',
-      kind: 'local',
-      schemas: [
-        {
-          name: 'sales ops',
-          tables: [
-            {
-              name: 'orders/returns',
-              manifestUrl: '/fixtures/orders-manifest.json',
-              source: {
-                storage: 'gs://unit-test/orders',
-                region: 'us-test1',
-              },
-              snapshot: 9,
-              rows: 42,
-            },
-          ],
-        },
-      ],
-    },
-  ];
-}
-
-function publicObjectStoreCatalogs(): QueryCatalogCandidate[] {
-  return [
-    {
-      id: 'public-gcs',
-      alias: 'public gcs',
-      storage: 'gs://public-bucket/silver/events',
-      region: 'us-test1',
-      kind: 'object_store',
+describe('canonical catalog navigation', () => {
+  it('round-trips encoded local provider-object IDs and public canonical locators', () => {
+    const local = createLocalDeltaCanonicalTable({
+      registryId: 'local registry/id',
+      tableName: 'events',
+    });
+    const publicTable = createPublicObjectStorageCanonicalTable({
       provider: 'gcs',
-      schemas: [
-        {
-          name: 'default',
-          tables: [
-            {
-              name: 'events',
-              uri: 'gs://public-bucket/silver/events',
-              snapshot: 12,
-              rows: 1200,
-              files: 3,
-              size: '42 MB',
-            },
-          ],
-        },
-      ],
-    },
-  ];
-}
+      connectionId: 'axon-connection://public-gcs/public-bucket',
+      normalizedTableUri: 'gs://public-bucket/sales%20ops/events',
+      tableName: 'events',
+    });
 
-describe('catalog navigation helpers', () => {
-  it('encodes catalog table route segments without losing slashes or spaces', () => {
-    expect(
-      catalogTablePath({
-        catalogId: 'cat/local 1',
-        schemaName: 'sales ops',
-        tableName: 'orders/returns',
-      }),
-    ).toBe('/catalog/cat%2Flocal%201/sales%20ops/orders%2Freturns');
+    expect(catalogTablePath(local)).toBe(
+      '/catalog/axon-connection%3A%2F%2Flocal-delta%2Flocal%2520registry%252Fid/table/' +
+        'axon.local-delta%2Fv1/provider-object-id/local%20registry%2Fid',
+    );
+    expect(catalogTableSqlPath(publicTable)).toBe(
+      '/catalog/axon-connection%3A%2F%2Fpublic-gcs%2Fpublic-bucket/table/' +
+        'axon.public-gcs%2Fv1/canonical-locator/gs%3A%2F%2Fpublic-bucket%2Fsales%2520ops%2Fevents/sql',
+    );
+    expect(catalogTableResourceFromParams(paramsFor(local))).toEqual(local.resource);
+    expect(catalogTableResourceFromParams(paramsFor(publicTable))).toEqual(publicTable.resource);
   });
 
-  it('encodes saved query ids as route segments', () => {
-    expect(savedQueryPath('saved/query 42')).toBe('/saved/saved%2Fquery%2042');
-  });
+  it('selects the exact resource despite identical aliases and display coordinates', () => {
+    const first = publicTable('gs://shared-bucket/first/events');
+    const second = publicTable('gs://shared-bucket/second/events');
+    const catalogs = [catalogWithTables([first, second])];
 
-  it('rejects incomplete table params before touching catalog state', () => {
-    expect(
-      catalogTableRefFromParams({
-        catalogId: 'cat/local 1',
-        schemaName: '',
-        tableName: 'orders/returns',
-      }),
-    ).toBeUndefined();
-  });
-
-  it('resolves valid table params to a connected table source without sample fallback', () => {
-    expect(
-      resolveCatalogTableRoute(connectedCatalogs(), {
-        catalogId: 'cat/local 1',
-        schemaName: 'sales ops',
-        tableName: 'orders/returns',
-      }),
-    ).toEqual({
+    expect(resolveCatalogTableRoute(catalogs, paramsFor(second))).toMatchObject({
       status: 'valid',
-      ref: {
-        catalogId: 'cat/local 1',
-        schemaName: 'sales ops',
-        tableName: 'orders/returns',
-      },
-      source: {
-        kind: 'manifest',
-        catalogName: 'local lake',
-        schemaName: 'sales ops',
-        tableName: 'orders/returns',
-        manifestUrl: '/fixtures/orders-manifest.json',
-        storage: 'gs://unit-test/orders',
-        region: 'us-test1',
-        snapshot: 9,
-        rows: 42,
-        files: undefined,
-        size: undefined,
-        protocol: undefined,
-      },
+      ref: second,
+      source: { tableUri: 'gs://shared-bucket/second/events' },
     });
   });
 
-  it('reports missing table params as invalid instead of falling back to the sample table', () => {
+  it('fails closed for malformed, disconnected, stale, and connection-mismatched routes', () => {
+    const selected = publicTable('gs://shared-bucket/events');
+    const catalogs = [catalogWithTables([selected])];
+
     expect(
-      resolveCatalogTableRoute(connectedCatalogs(), {
-        catalogId: 'cat/local 1',
-        schemaName: 'sales ops',
-        tableName: 'missing',
+      resolveCatalogTableRoute(catalogs, {
+        ...paramsFor(selected),
+        identityArm: 'wrong-arm',
       }),
-    ).toEqual({
+    ).toEqual({ status: 'invalid', reason: 'malformed_route' });
+    expect(
+      resolveCatalogTableRoute(catalogs, {
+        ...paramsFor(selected),
+        connectionId: 'axon-connection://public-gcs/disconnected',
+      }),
+    ).toMatchObject({ status: 'invalid', reason: 'disconnected_connection' });
+    expect(
+      resolveCatalogTableRoute(catalogs, {
+        ...paramsFor(selected),
+        identityValue: 'gs://shared-bucket/removed',
+      }),
+    ).toMatchObject({ status: 'invalid', reason: 'stale_resource' });
+    expect(
+      resolveCatalogTableRoute(catalogs, {
+        ...paramsFor(selected),
+        providerNamespace: 'axon.public-s3/v1',
+      }),
+    ).toMatchObject({ status: 'invalid', reason: 'stale_resource' });
+  });
+
+  it('keeps an exact non-queryable resource browseable but blocks its SQL route', () => {
+    const selected = publicTable('gs://shared-bucket/events');
+    const catalogs = [catalogWithTables([selected], { provider: 's3' })];
+
+    expect(resolveCatalogTableRoute(catalogs, paramsFor(selected))).toEqual({
+      status: 'valid',
+      ref: selected,
+      source: undefined,
+    });
+    expect(
+      resolveCatalogTableRoute(catalogs, paramsFor(selected), { requireQueryable: true }),
+    ).toMatchObject({
       status: 'invalid',
-      reason: 'table_not_found',
-      ref: {
-        catalogId: 'cat/local 1',
-        schemaName: 'sales ops',
-        tableName: 'missing',
-      },
+      reason: 'non_queryable',
     });
   });
 
-  it('builds explorer rows with active and queryable route state', () => {
-    expect(
-      catalogExplorerModel(connectedCatalogs(), {
-        catalogId: 'cat/local 1',
-        schemaName: 'sales ops',
-        tableName: 'orders/returns',
-      }),
-    ).toEqual({
+  it('bridges a unique legacy display route and rejects ambiguous legacy coordinates', () => {
+    const first = publicTable('gs://shared-bucket/first/events');
+    const second = publicTable('gs://shared-bucket/second/events');
+    const unique = catalogWithTables([first], { alias: 'Workspace' });
+    const params = {
+      catalogId: 'catalog-workspace',
+      schemaName: 'default',
+      tableName: 'events',
+    };
+
+    expect(legacyCatalogTablePath(params)).toBe('/catalog/catalog-workspace/default/events');
+    expect(resolveLegacyCatalogTableRoute([unique], params)).toEqual({
+      status: 'valid',
+      ref: first,
+      redirect: catalogTableSqlPath(first),
+    });
+    expect(resolveLegacyCatalogTableRoute([catalogWithTables([first, second])], params)).toEqual({
+      status: 'invalid',
+      reason: 'ambiguous_legacy_route',
+    });
+  });
+
+  it('builds collision-free Explorer rows from canonical identities', () => {
+    const first = publicTable('gs://shared-bucket/first/events');
+    const second = publicTable('gs://shared-bucket/second/events');
+    const model = catalogExplorerModel([catalogWithTables([first, second])], second);
+
+    expect(model).toMatchObject({
       status: 'ready',
       catalogCount: 1,
       schemaCount: 1,
-      tableCount: 1,
-      queryableTableCount: 1,
-      catalogs: [
-        {
-          id: 'cat/local 1',
-          alias: 'local lake',
-          storage: '/tmp/lake',
-          region: 'browser-local',
-          kind: 'local',
-          schemas: [
-            {
-              name: 'sales ops',
-              tableCount: 1,
-              tables: [
-                {
-                  key: 'cat/local 1/sales ops/orders/returns',
-                  name: 'orders/returns',
-                  active: true,
-                  path: '/catalog/cat%2Flocal%201/sales%20ops/orders%2Freturns',
-                  queryable: true,
-                  snapshot: 9,
-                  rows: 42,
-                  files: undefined,
-                  size: undefined,
-                  storage: 'gs://unit-test/orders',
-                  region: 'us-test1',
-                },
-              ],
-            },
-          ],
-        },
-      ],
+      tableCount: 2,
+      queryableTableCount: 2,
     });
-  });
-
-  it('treats public object-store table roots as queryable route targets', () => {
-    expect(
-      isQueryableCatalogTable(publicObjectStoreCatalogs(), {
-        catalogId: 'public-gcs',
-        schemaName: 'default',
-        tableName: 'events',
+    expect(model.catalogs[0]!.schemas[0]!.tables).toEqual([
+      expect.objectContaining({
+        name: 'events',
+        active: false,
+        path: catalogTablePath(first),
+        sqlPath: catalogTableSqlPath(first),
       }),
-    ).toBe(true);
+      expect.objectContaining({
+        name: 'events',
+        active: true,
+        path: catalogTablePath(second),
+        sqlPath: catalogTableSqlPath(second),
+      }),
+    ]);
+    expect(model.catalogs[0]!.schemas[0]!.tables[0]!.key).not.toBe(
+      model.catalogs[0]!.schemas[0]!.tables[1]!.key,
+    );
   });
 
-  it('reports an empty explorer model when no catalogs are connected', () => {
+  it('mirrors only a changed valid route selection into presentation state', () => {
+    const selected = publicTable('gs://shared-bucket/events');
+    const resolution = resolveCatalogTableRoute(
+      [catalogWithTables([selected])],
+      paramsFor(selected),
+    );
+
+    expect(tableRefForRouteSelection(resolution)).toEqual(selected);
+    expect(tableRefForRouteSelection(resolution, selected)).toBeUndefined();
+    expect(
+      tableRefForRouteSelection({ status: 'invalid', reason: 'malformed_route' }),
+    ).toBeUndefined();
+  });
+
+  it('keeps saved query IDs encoded independently of catalog routing', () => {
+    expect(savedQueryPath('saved/query 42')).toBe('/saved/saved%2Fquery%2042');
+  });
+
+  it('reports an empty Explorer model without substituting sample data', () => {
     expect(catalogExplorerModel([])).toEqual({
       status: 'empty',
       catalogCount: 0,
@@ -207,31 +182,55 @@ describe('catalog navigation helpers', () => {
       catalogs: [],
     });
   });
-
-  it('selects a route table only when the valid route differs from current state', () => {
-    const resolution = resolveCatalogTableRoute(connectedCatalogs(), {
-      catalogId: 'cat/local 1',
-      schemaName: 'sales ops',
-      tableName: 'orders/returns',
-    });
-
-    expect(tableRefForRouteSelection(resolution)).toEqual({
-      catalogId: 'cat/local 1',
-      schemaName: 'sales ops',
-      tableName: 'orders/returns',
-    });
-    expect(
-      tableRefForRouteSelection(resolution, {
-        catalogId: 'cat/local 1',
-        schemaName: 'sales ops',
-        tableName: 'orders/returns',
-      }),
-    ).toBeUndefined();
-    expect(
-      tableRefForRouteSelection({
-        status: 'invalid',
-        reason: 'table_not_found',
-      }),
-    ).toBeUndefined();
-  });
 });
+
+function publicTable(locator: string): ActiveConnectedTableRef {
+  return createPublicObjectStorageCanonicalTable({
+    provider: 'gcs',
+    connectionId: 'axon-connection://public-gcs/shared-bucket',
+    normalizedTableUri: locator,
+    tableName: 'events',
+  });
+}
+
+function catalogWithTables(
+  tables: ActiveConnectedTableRef[],
+  options: { alias?: string; provider?: string } = {},
+): QueryCatalogCandidate {
+  return {
+    id: tables[0]!.resource!.connectionId,
+    alias: options.alias ?? 'Workspace',
+    kind: 'object_store',
+    provider: options.provider ?? 'gcs',
+    storage: 'gs://shared-bucket',
+    region: 'us-central1',
+    schemas: [
+      {
+        name: 'default',
+        tables: tables.map((table) => ({
+          name: table.name,
+          uri:
+            table.resource?.identity.case === 'canonicalLocator'
+              ? table.resource.identity.value
+              : undefined,
+          logicalTable: table,
+          snapshot: 12,
+          rows: 1200,
+          files: 3,
+          size: '42 MB',
+        })),
+      },
+    ],
+  };
+}
+
+function paramsFor(table: ActiveConnectedTableRef): CatalogTableRouteParams {
+  const resource = table.resource!;
+  return {
+    connectionId: resource.connectionId,
+    providerNamespace: resource.providerNamespace,
+    identityArm:
+      resource.identity.case === 'providerObjectId' ? 'provider-object-id' : 'canonical-locator',
+    identityValue: resource.identity.value ?? '',
+  };
+}

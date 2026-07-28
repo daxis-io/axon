@@ -3,6 +3,10 @@
 
 import { useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { IconChevR, IconClose, IconRefresh, IconTable } from '../components/icons.tsx';
+import {
+  canonicalTableIdentityKey,
+  sameCanonicalTableIdentity,
+} from '../../services/canonical-table-identity.ts';
 import type { ActiveConnectedTableRef } from '../../services/query-source.ts';
 import { isQueryableCatalogTable } from '../catalog-navigation.ts';
 import { IconCog, IconDots } from './icons.tsx';
@@ -117,19 +121,19 @@ export function ConnectedCatalogsPanel({
                             </span>
                           </div>
                           {sch.tables.map((tbl) => {
-                            const ref = {
-                              catalogId: cat.id,
-                              schemaName: sch.name,
-                              tableName: tbl.name,
-                            };
+                            const ref = tbl.logicalTable;
                             const isActive =
-                              activeTable?.catalogId === cat.id &&
-                              activeTable.schemaName === sch.name &&
-                              activeTable.tableName === tbl.name;
-                            const queryable = isQueryableCatalogTable(catalogs, ref);
+                              !!activeTable &&
+                              !!ref &&
+                              sameCanonicalTableIdentity(activeTable, ref);
+                            const queryable = !!ref && isQueryableCatalogTable(catalogs, ref);
                             return (
                               <button
-                                key={tbl.name}
+                                key={
+                                  ref
+                                    ? canonicalTableIdentityKey(ref)
+                                    : `${cat.id}/${sch.name}/${tbl.name}`
+                                }
                                 type="button"
                                 className={'cc-tbl-row ' + (isActive ? 'active ' : '')}
                                 disabled={!queryable}
@@ -142,7 +146,7 @@ export function ConnectedCatalogsPanel({
                                 }
                                 onClick={(event) => {
                                   event.stopPropagation();
-                                  if (!queryable) return;
+                                  if (!queryable || !ref) return;
                                   onActivate?.(ref);
                                   onClose();
                                 }}

@@ -8,9 +8,18 @@ import {
 import {
   CanonicalResourceRefSchema,
   ResourceKind,
+  type CanonicalResourceRef,
 } from '../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
+import {
+  parsePublicObjectStorageTableRoot,
+  publicObjectStorageConnectionId,
+  type PublicObjectStorageProvider,
+} from './object-storage.ts';
 
 export const LOCAL_DELTA_PROVIDER_NAMESPACE = 'axon.local-delta/v1';
+export const SAMPLE_FIXTURE_CONNECTION_ID = 'axon-connection://sample-fixture/sample-lake';
+export const SAMPLE_FIXTURE_PROVIDER_NAMESPACE = 'axon.sample-fixture/v1';
+export const SAMPLE_FIXTURE_LOCATOR = 'axon-fixture://sample-lake/prod_like/events';
 
 export type LocalDeltaCanonicalTableInput = Readonly<{
   registryId: string;
@@ -26,6 +35,20 @@ type PublicObjectStorageCanonicalTableBase = Readonly<{
 export type PublicObjectStorageCanonicalTableInput =
   | (PublicObjectStorageCanonicalTableBase & Readonly<{ provider: 'gcs'; region?: never }>)
   | (PublicObjectStorageCanonicalTableBase & Readonly<{ provider: 's3'; region: string }>);
+
+export type CanonicalQueryTableSource =
+  | Readonly<{
+      kind: 'local_delta';
+      localRegistryId: string;
+      tableName: string;
+    }>
+  | Readonly<{
+      kind: 'object_store_table_root';
+      provider: PublicObjectStorageProvider;
+      tableUri: string;
+      region: string;
+      tableName: string;
+    }>;
 
 export function localDeltaConnectionId(registryId: string): string {
   const opaqueId = requiredIdentityPart(registryId, 'local registry ID');
@@ -84,6 +107,48 @@ export function createPublicObjectStorageCanonicalTable(
   });
 }
 
+export function createSampleFixtureCanonicalTable(tableName: string): TableNode {
+  return create(TableNodeSchema, {
+    resource: create(CanonicalResourceRefSchema, {
+      connectionId: SAMPLE_FIXTURE_CONNECTION_ID,
+      providerNamespace: SAMPLE_FIXTURE_PROVIDER_NAMESPACE,
+      kind: ResourceKind.TABLE,
+      identity: {
+        case: 'canonicalLocator',
+        value: SAMPLE_FIXTURE_LOCATOR,
+      },
+    }),
+    tableType: TableType.TABLE,
+    name: requiredIdentityPart(tableName, 'table name'),
+  });
+}
+
+export function canonicalTableForQuerySource(source: CanonicalQueryTableSource): TableNode {
+  if (source.kind === 'local_delta') {
+    return createLocalDeltaCanonicalTable({
+      registryId: source.localRegistryId,
+      tableName: source.tableName,
+    });
+  }
+  const root = parsePublicObjectStorageTableRoot({
+    provider: source.provider,
+    tableUri: source.tableUri,
+    region: source.region,
+  });
+  const identity = {
+    connectionId: publicObjectStorageConnectionId(root),
+    normalizedTableUri: root.tableUri,
+    tableName: source.tableName,
+  };
+  return root.provider === 's3'
+    ? createPublicObjectStorageCanonicalTable({
+        ...identity,
+        provider: root.provider,
+        region: root.region,
+      })
+    : createPublicObjectStorageCanonicalTable({ ...identity, provider: root.provider });
+}
+
 export function canonicalTableFromMetadataJson(
   metadataJson: Readonly<Record<string, unknown>>,
 ): TableNode {
@@ -95,32 +160,51 @@ export function canonicalTableFromMetadataJson(
 }
 
 export function validatedCanonicalTable(table: TableNode): TableNode {
-  const resource = table.resource;
-  if (
-    !resource ||
-    !resource.connectionId.trim() ||
-    !resource.providerNamespace.trim() ||
-    resource.kind !== ResourceKind.TABLE ||
-    (resource.identity.case !== 'providerObjectId' &&
-      resource.identity.case !== 'canonicalLocator') ||
-    !resource.identity.value.trim() ||
-    !table.name.trim()
-  ) {
+  if (!table.resource || !table.name.trim()) {
     throw new Error('canonical table identity is invalid');
   }
+  validatedCanonicalResourceRef(table.resource);
   return clone(TableNodeSchema, table);
 }
 
 export function canonicalTableIdentityKey(table: TableNode): string {
   const validated = validatedCanonicalTable(table);
-  const resource = validated.resource!;
+  return canonicalResourceIdentityKey(validated.resource!);
+}
+
+export function validatedCanonicalResourceRef(
+  resource: CanonicalResourceRef,
+): CanonicalResourceRef {
+  if (
+    !resource.connectionId.trim() ||
+    !resource.providerNamespace.trim() ||
+    resource.kind !== ResourceKind.TABLE ||
+    (resource.identity.case !== 'providerObjectId' &&
+      resource.identity.case !== 'canonicalLocator') ||
+    !resource.identity.value.trim()
+  ) {
+    throw new Error('canonical table resource identity is invalid');
+  }
+  return clone(CanonicalResourceRefSchema, resource);
+}
+
+export function canonicalResourceIdentityKey(resource: CanonicalResourceRef): string {
+  const validated = validatedCanonicalResourceRef(resource);
   return JSON.stringify([
-    resource.connectionId,
-    resource.providerNamespace,
-    resource.kind,
-    resource.identity.case,
-    resource.identity.value,
+    validated.connectionId,
+    validated.providerNamespace,
+    validated.kind,
+    validated.identity.case,
+    validated.identity.value,
   ]);
+}
+
+export function sameCanonicalTableIdentity(left: TableNode, right: TableNode): boolean {
+  try {
+    return canonicalTableIdentityKey(left) === canonicalTableIdentityKey(right);
+  } catch {
+    return false;
+  }
 }
 
 function normalizedS3Region(region: string | undefined): string {

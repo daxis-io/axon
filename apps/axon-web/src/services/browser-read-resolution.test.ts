@@ -26,6 +26,10 @@ import {
 } from './query-source.ts';
 import { LocalDeltaError } from './local-delta.ts';
 import {
+  createLocalDeltaCanonicalTable,
+  createPublicObjectStorageCanonicalTable,
+} from './canonical-table-identity.ts';
+import {
   BrowserReadResolutionFailure,
   canonicalTableForSelection,
   dataAccessResolverForSelection,
@@ -34,11 +38,10 @@ import {
 
 const localSelection: AvailableQuerySourceSelection = {
   kind: 'resource',
-  ref: {
-    catalogId: 'local-catalog',
-    schemaName: 'default',
+  ref: createLocalDeltaCanonicalTable({
+    registryId: 'local events/2026',
     tableName: 'events',
-  },
+  }),
   source: {
     kind: 'local_delta',
     catalogName: 'Local events',
@@ -53,11 +56,12 @@ const localSelection: AvailableQuerySourceSelection = {
 
 const publicGcsSelection: AvailableQuerySourceSelection = {
   kind: 'resource',
-  ref: {
-    catalogId: 'public-gcs',
-    schemaName: 'default',
+  ref: createPublicObjectStorageCanonicalTable({
+    provider: 'gcs',
+    connectionId: 'axon-connection://public-gcs/Public-Bucket',
+    normalizedTableUri: 'gs://Public-Bucket/events/table',
     tableName: 'events',
-  },
+  }),
   source: {
     kind: 'object_store_table_root',
     provider: 'gcs',
@@ -73,11 +77,13 @@ const publicGcsSelection: AvailableQuerySourceSelection = {
 
 const publicS3Selection: AvailableQuerySourceSelection = {
   kind: 'resource',
-  ref: {
-    catalogId: 'public-s3',
-    schemaName: 'default',
+  ref: createPublicObjectStorageCanonicalTable({
+    provider: 's3',
+    connectionId: 'axon-connection://public-s3/us-east-2/public-bucket',
+    normalizedTableUri: 's3://public-bucket/events/table',
     tableName: 'events',
-  },
+    region: 'us-east-2',
+  }),
   source: {
     kind: 'object_store_table_root',
     provider: 's3',
@@ -92,6 +98,17 @@ const publicS3Selection: AvailableQuerySourceSelection = {
 };
 
 describe('browser read canonical identity', () => {
+  it.each([
+    ['local Delta', localSelection],
+    ['public GCS', publicGcsSelection],
+    ['public S3', publicS3Selection],
+  ] as const)(
+    'keeps the Explorer %s TableNode unchanged through the E9 handoff',
+    (_label, selection) => {
+      expect(canonicalTableForSelection(selection)).toEqual(selection.ref);
+    },
+  );
+
   it.each([
     ['access_denied', ExecutionRejectionReason.ACCESS_DENIED],
     ['unsupported_feature', ExecutionRejectionReason.UNSUPPORTED],

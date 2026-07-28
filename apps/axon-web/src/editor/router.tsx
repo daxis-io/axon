@@ -3,14 +3,14 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  useNavigate,
   useParams,
   type RouterHistory,
 } from '@tanstack/react-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { Suspense, lazy, useEffect, useMemo } from 'react';
-import { catalogQueryOptions, commitsQueryOptions } from '../query/catalog.ts';
 import { savedQueriesQueryOptions } from '../query/local.ts';
-import { resolveQuerySourceSelection } from '../services/query-source.ts';
+import type { ActiveConnectedTableRef } from '../services/query-source.ts';
 import {
   selectActiveConnectedTableRef,
   selectAvailableConnectedCatalogs,
@@ -20,22 +20,29 @@ import {
 } from '../state/hooks.ts';
 import {
   catalogTablePath,
+  catalogTableSqlPath,
   resolveCatalogTableRoute,
+  resolveLegacyCatalogTableRoute,
   savedQueryPath,
   tableRefForRouteSelection,
   type CatalogTableHref,
   type CatalogTableRouteParams,
+  type CatalogTableSqlHref,
+  type LegacyCatalogTableHref,
   type SavedQueryHref,
 } from './catalog-navigation.ts';
 
-export { catalogTablePath, savedQueryPath };
+export { catalogTablePath, catalogTableSqlPath, savedQueryPath };
 
 export const editorRouteTemplates = {
   root: '/',
   connect: '/connect',
   catalogs: '/catalogs',
   settings: '/settings',
-  catalogTable: '/catalog/$catalogId/$schemaName/$tableName',
+  catalogTable: '/catalog/$connectionId/table/$providerNamespace/$identityArm/$identityValue',
+  catalogTableSql:
+    '/catalog/$connectionId/table/$providerNamespace/$identityArm/$identityValue/sql',
+  legacyCatalogTable: '/catalog/$catalogId/$schemaName/$tableName',
   savedQuery: '/saved/$savedId',
 } as const;
 
@@ -45,6 +52,8 @@ export type EditorRouteHref =
   | '/catalogs'
   | '/settings'
   | CatalogTableHref
+  | CatalogTableSqlHref
+  | LegacyCatalogTableHref
   | SavedQueryHref;
 
 const App = lazy(() => import('./App.tsx').then((module) => ({ default: module.App })));
@@ -58,10 +67,10 @@ const SettingsPage = lazy(() =>
   import('./SettingsPage.tsx').then((module) => ({ default: module.SettingsPage })),
 );
 
-function WorkspaceRoute() {
+function WorkspaceRoute({ routeTable }: { routeTable?: ActiveConnectedTableRef }) {
   return (
     <Suspense fallback={null}>
-      <App />
+      <App routeTable={routeTable} />
     </Suspense>
   );
 }
@@ -74,10 +83,10 @@ function ConnectRoute() {
   );
 }
 
-function CatalogsRoute() {
+function CatalogsRoute({ routeTable }: { routeTable?: ActiveConnectedTableRef }) {
   return (
     <Suspense fallback={null}>
-      <CatalogsPage />
+      <CatalogsPage routeTable={routeTable} />
     </Suspense>
   );
 }
@@ -90,43 +99,78 @@ function SettingsRoute() {
   );
 }
 
-function CatalogTableRoute() {
+function CanonicalCatalogTableRoute() {
   const params = useParams({ from: editorRouteTemplates.catalogTable });
+  const resolution = useCanonicalCatalogRoute(params);
+  useMirrorRouteSelection(resolution);
+
+  if (resolution.status !== 'valid') {
+    return <CatalogRouteEmptyState reason={resolution.reason} />;
+  }
+  return <CatalogsRoute routeTable={resolution.ref} />;
+}
+
+function CanonicalCatalogTableSqlRoute() {
+  const params = useParams({ from: editorRouteTemplates.catalogTableSql });
   const availableCatalogs = useAxonClientStore(selectAvailableConnectedCatalogs);
-  const activeTable = useAxonClientStore(selectActiveConnectedTableRef);
-  const connectionActions = useAxonClientStore(selectConnectionActions);
-  const queryClient = useQueryClient();
   const resolution = useMemo(
-    () => resolveCatalogTableRoute(availableCatalogs, params),
+    () => resolveCatalogTableRoute(availableCatalogs, params, { requireQueryable: true }),
+    [availableCatalogs, params],
+  );
+  useMirrorRouteSelection(resolution);
+
+  if (resolution.status !== 'valid') {
+    return <CatalogRouteEmptyState reason={resolution.reason} />;
+  }
+  return <WorkspaceRoute routeTable={resolution.ref} />;
+}
+
+function LegacyCatalogTableRoute() {
+  const params = useParams({ from: editorRouteTemplates.legacyCatalogTable });
+  const availableCatalogs = useAxonClientStore(selectAvailableConnectedCatalogs);
+  const routeNavigate = useNavigate();
+  const resolution = useMemo(
+    () => resolveLegacyCatalogTableRoute(availableCatalogs, params),
     [availableCatalogs, params],
   );
 
   useEffect(() => {
     if (resolution.status !== 'valid') return;
+    void routeNavigate({ href: resolution.redirect, replace: true });
+  }, [resolution, routeNavigate]);
 
+  if (resolution.status === 'valid') return null;
+  return (
+    <RouteEmptyState
+      title={
+        resolution.reason === 'ambiguous_legacy_route'
+          ? 'Legacy table route is ambiguous'
+          : 'Legacy table route unavailable'
+      }
+      detail="This display-name link does not resolve to exactly one connected logical table."
+      actionLabel="View catalogs"
+      actionHref="/catalogs"
+    />
+  );
+}
+
+function useCanonicalCatalogRoute(params: CatalogTableRouteParams) {
+  const availableCatalogs = useAxonClientStore(selectAvailableConnectedCatalogs);
+  return useMemo(
+    () => resolveCatalogTableRoute(availableCatalogs, params),
+    [availableCatalogs, params],
+  );
+}
+
+function useMirrorRouteSelection(resolution: ReturnType<typeof resolveCatalogTableRoute>): void {
+  const activeTable = useAxonClientStore(selectActiveConnectedTableRef);
+  const connectionActions = useAxonClientStore(selectConnectionActions);
+
+  useEffect(() => {
+    if (resolution.status !== 'valid') return;
     const nextRef = tableRefForRouteSelection(resolution, activeTable);
-    if (nextRef) {
-      connectionActions.selectTable(nextRef);
-    }
-
-    const selection = resolveQuerySourceSelection(availableCatalogs, resolution.ref);
-    if (selection.kind === 'unavailable') return;
-    void queryClient.ensureQueryData(catalogQueryOptions(selection));
-    void queryClient.ensureQueryData(commitsQueryOptions(selection));
-  }, [activeTable, availableCatalogs, connectionActions, queryClient, resolution]);
-
-  if (resolution.status !== 'valid') {
-    return (
-      <RouteEmptyState
-        title="Table route not found"
-        detail="The catalog, schema, or table in this URL is not connected."
-        actionLabel="View catalogs"
-        actionHref="/catalogs"
-      />
-    );
-  }
-
-  return <WorkspaceRoute />;
+    if (nextRef) connectionActions.selectTable(nextRef);
+  }, [activeTable, connectionActions, resolution]);
 }
 
 function SavedQueryRoute() {
@@ -143,10 +187,7 @@ function SavedQueryRoute() {
     tabActions.openSavedQuery(savedQuery);
   }, [savedQuery, tabActions]);
 
-  if (!savedQuery && savedQueries.isFetching) {
-    return null;
-  }
-
+  if (!savedQuery && savedQueries.isFetching) return null;
   if (!savedQuery) {
     return (
       <RouteEmptyState
@@ -157,7 +198,6 @@ function SavedQueryRoute() {
       />
     );
   }
-
   return <WorkspaceRoute />;
 }
 
@@ -186,7 +226,17 @@ function createRouteTree() {
   const catalogTableRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: editorRouteTemplates.catalogTable,
-    component: CatalogTableRoute,
+    component: CanonicalCatalogTableRoute,
+  });
+  const catalogTableSqlRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: editorRouteTemplates.catalogTableSql,
+    component: CanonicalCatalogTableSqlRoute,
+  });
+  const legacyCatalogTableRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: editorRouteTemplates.legacyCatalogTable,
+    component: LegacyCatalogTableRoute,
   });
   const savedRoute = createRoute({
     getParentRoute: () => rootRoute,
@@ -200,15 +250,14 @@ function createRouteTree() {
     catalogsRoute,
     settingsRoute,
     catalogTableRoute,
+    catalogTableSqlRoute,
+    legacyCatalogTableRoute,
     savedRoute,
   ]);
 }
 
 export function createEditorRouter(options: { history?: RouterHistory } = {}) {
-  return createRouter({
-    routeTree: createRouteTree(),
-    history: options.history,
-  });
+  return createRouter({ routeTree: createRouteTree(), history: options.history });
 }
 
 export const router = createEditorRouter();
@@ -227,8 +276,27 @@ export function navigate(next: EditorRouteHref): void {
   void router.navigate({ href: next });
 }
 
-export function catalogTableParamsPath(params: CatalogTableRouteParams): string {
-  return catalogTablePath(params);
+function CatalogRouteEmptyState({
+  reason,
+}: {
+  reason: Exclude<ReturnType<typeof resolveCatalogTableRoute>, { status: 'valid' }>['reason'];
+}) {
+  const detail = {
+    malformed_route: 'The canonical table identity in this URL is malformed.',
+    disconnected_connection: 'The connection in this URL is no longer connected.',
+    stale_resource: 'The exact table resource in this URL is no longer reported.',
+    ambiguous_resource: 'The exact table resource resolves to more than one current location.',
+    non_queryable:
+      'This exact table can be browsed, but it is not queryable in this browser build.',
+  }[reason];
+  return (
+    <RouteEmptyState
+      title="Table route unavailable"
+      detail={detail}
+      actionLabel="View catalogs"
+      actionHref="/catalogs"
+    />
+  );
 }
 
 function RouteEmptyState({

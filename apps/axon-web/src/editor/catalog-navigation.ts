@@ -1,37 +1,75 @@
+import { create } from '@bufbuild/protobuf';
 import {
+  CanonicalResourceRefSchema,
+  ResourceKind,
+  type CanonicalResourceRef,
+} from '../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
+import {
+  canonicalTableIdentityKey,
+  sameCanonicalTableIdentity,
+  validatedCanonicalResourceRef,
+} from '../services/canonical-table-identity.ts';
+import {
+  connectedTableLocationsForResource,
   querySourceForConnectedTableRef,
   type ActiveConnectedTableRef,
   type QueryCatalogCandidate,
   type QueryTableSource,
 } from '../services/query-source.ts';
 
+export type CatalogTableIdentityArm = 'provider-object-id' | 'canonical-locator';
+
 export type CatalogTableRouteParams = {
+  connectionId: string;
+  providerNamespace: string;
+  identityArm: string;
+  identityValue: string;
+};
+
+export type LegacyCatalogTableRouteParams = {
   catalogId: string;
   schemaName: string;
   tableName: string;
 };
 
-export type CatalogTableHref = `/catalog/${string}/${string}/${string}`;
+export type CatalogTableHref =
+  `/catalog/${string}/table/${string}/${CatalogTableIdentityArm}/${string}`;
+export type CatalogTableSqlHref = `${CatalogTableHref}/sql`;
+export type LegacyCatalogTableHref = `/catalog/${string}/${string}/${string}`;
 export type SavedQueryHref = `/saved/${string}`;
 
 export type CatalogTableRouteResolution =
   | {
       status: 'valid';
       ref: ActiveConnectedTableRef;
-      source: QueryTableSource;
+      source?: QueryTableSource;
     }
   | {
       status: 'invalid';
-      reason: 'missing_params' | 'table_not_found';
-      ref?: ActiveConnectedTableRef;
+      reason:
+        | 'malformed_route'
+        | 'disconnected_connection'
+        | 'stale_resource'
+        | 'ambiguous_resource'
+        | 'non_queryable';
+      resource?: CanonicalResourceRef;
+    };
+
+export type LegacyCatalogTableRouteResolution =
+  | { status: 'valid'; ref: ActiveConnectedTableRef; redirect: CatalogTableSqlHref }
+  | {
+      status: 'invalid';
+      reason: 'malformed_route' | 'legacy_table_not_found' | 'ambiguous_legacy_route';
     };
 
 export type CatalogExplorerTable = {
   key: string;
   name: string;
+  ref?: ActiveConnectedTableRef;
   active: boolean;
   queryable: boolean;
   path?: CatalogTableHref;
+  sqlPath?: CatalogTableSqlHref;
   snapshot?: number;
   rows?: number;
   files?: number;
@@ -65,44 +103,119 @@ export type CatalogExplorerModel = {
 };
 
 export function catalogTablePath(ref: ActiveConnectedTableRef): CatalogTableHref {
-  return `/catalog/${encodePathSegment(ref.catalogId)}/${encodePathSegment(
-    ref.schemaName,
-  )}/${encodePathSegment(ref.tableName)}`;
+  const resource = validatedTableResource(ref);
+  return `/catalog/${encodePathSegment(resource.connectionId)}/table/${encodePathSegment(
+    resource.providerNamespace,
+  )}/${routeIdentityArm(resource)}/${encodePathSegment(resource.identity.value ?? '')}`;
+}
+
+export function catalogTableSqlPath(ref: ActiveConnectedTableRef): CatalogTableSqlHref {
+  return `${catalogTablePath(ref)}/sql`;
+}
+
+export function legacyCatalogTablePath(
+  params: LegacyCatalogTableRouteParams,
+): LegacyCatalogTableHref {
+  return `/catalog/${encodePathSegment(params.catalogId)}/${encodePathSegment(
+    params.schemaName,
+  )}/${encodePathSegment(params.tableName)}`;
 }
 
 export function savedQueryPath(id: string): SavedQueryHref {
   return `/saved/${encodePathSegment(id)}`;
 }
 
-export function catalogTableRefFromParams(
+export function catalogTableResourceFromParams(
   params: CatalogTableRouteParams,
-): ActiveConnectedTableRef | undefined {
-  if (!nonEmptySegment(params.catalogId)) return undefined;
-  if (!nonEmptySegment(params.schemaName)) return undefined;
-  if (!nonEmptySegment(params.tableName)) return undefined;
+): CanonicalResourceRef | undefined {
+  if (!nonEmptySegment(params.connectionId)) return undefined;
+  if (!nonEmptySegment(params.providerNamespace)) return undefined;
+  if (!nonEmptySegment(params.identityValue)) return undefined;
+  const identityCase =
+    params.identityArm === 'provider-object-id'
+      ? 'providerObjectId'
+      : params.identityArm === 'canonical-locator'
+        ? 'canonicalLocator'
+        : undefined;
+  if (!identityCase) return undefined;
 
-  return {
-    catalogId: params.catalogId,
-    schemaName: params.schemaName,
-    tableName: params.tableName,
-  };
+  try {
+    return validatedCanonicalResourceRef(
+      create(CanonicalResourceRefSchema, {
+        connectionId: params.connectionId,
+        providerNamespace: params.providerNamespace,
+        kind: ResourceKind.TABLE,
+        identity: { case: identityCase, value: params.identityValue },
+      }),
+    );
+  } catch {
+    return undefined;
+  }
 }
 
 export function resolveCatalogTableRoute(
   catalogs: QueryCatalogCandidate[],
   params: CatalogTableRouteParams,
+  options: { requireQueryable?: boolean } = {},
 ): CatalogTableRouteResolution {
-  const ref = catalogTableRefFromParams(params);
-  if (!ref) {
-    return { status: 'invalid', reason: 'missing_params' };
+  const resource = catalogTableResourceFromParams(params);
+  if (!resource) return { status: 'invalid', reason: 'malformed_route' };
+  if (!catalogs.some((catalog) => catalog.id === resource.connectionId)) {
+    return { status: 'invalid', reason: 'disconnected_connection', resource };
   }
 
+  const locations = connectedTableLocationsForResource(catalogs, resource);
+  if (locations.length === 0) {
+    return { status: 'invalid', reason: 'stale_resource', resource };
+  }
+  if (locations.length > 1) {
+    return { status: 'invalid', reason: 'ambiguous_resource', resource };
+  }
+  const ref = locations[0]!.table.logicalTable!;
   const source = querySourceForConnectedTableRef(catalogs, ref);
-  if (!source) {
-    return { status: 'invalid', reason: 'table_not_found', ref };
+  if (options.requireQueryable && !source) {
+    return { status: 'invalid', reason: 'non_queryable', resource };
+  }
+  return { status: 'valid', ref, source };
+}
+
+export function resolveLegacyCatalogTableRoute(
+  catalogs: QueryCatalogCandidate[],
+  params: LegacyCatalogTableRouteParams,
+): LegacyCatalogTableRouteResolution {
+  if (
+    !nonEmptySegment(params.catalogId) ||
+    !nonEmptySegment(params.schemaName) ||
+    !nonEmptySegment(params.tableName)
+  ) {
+    return { status: 'invalid', reason: 'malformed_route' };
   }
 
-  return { status: 'valid', ref, source };
+  const matches = catalogs.flatMap((catalog) => {
+    if (
+      catalog.id !== params.catalogId &&
+      legacyCatalogIdForAlias(catalog.alias) !== params.catalogId
+    ) {
+      return [];
+    }
+    return catalog.schemas.flatMap((schema) => {
+      if (schema.name !== params.schemaName) return [];
+      return schema.tables
+        .filter((table) => table.name === params.tableName && table.logicalTable)
+        .map((table) => table.logicalTable!);
+    });
+  });
+  if (matches.length === 0) {
+    return { status: 'invalid', reason: 'legacy_table_not_found' };
+  }
+  if (matches.length > 1) {
+    return { status: 'invalid', reason: 'ambiguous_legacy_route' };
+  }
+  const ref = matches[0]!;
+  if (!querySourceForConnectedTableRef(catalogs, ref)) {
+    return { status: 'invalid', reason: 'legacy_table_not_found' };
+  }
+  return { status: 'valid', ref, redirect: catalogTableSqlPath(ref) };
 }
 
 export function isQueryableCatalogTable(
@@ -116,18 +229,8 @@ export function tableRefForRouteSelection(
   resolution: CatalogTableRouteResolution,
   current?: ActiveConnectedTableRef,
 ): ActiveConnectedTableRef | undefined {
-  if (resolution.status !== 'valid') {
-    return undefined;
-  }
-
-  if (
-    current?.catalogId === resolution.ref.catalogId &&
-    current.schemaName === resolution.ref.schemaName &&
-    current.tableName === resolution.ref.tableName
-  ) {
-    return undefined;
-  }
-
+  if (resolution.status !== 'valid') return undefined;
+  if (current && sameCanonicalTableIdentity(current, resolution.ref)) return undefined;
   return resolution.ref;
 }
 
@@ -145,22 +248,17 @@ export function catalogExplorerModel(
       tableCount += schema.tables.length;
 
       const tables = schema.tables.map((table) => {
-        const ref = {
-          catalogId: catalog.id,
-          schemaName: schema.name,
-          tableName: table.name,
-        };
-        const queryable = isQueryableCatalogTable(catalogs, ref);
+        const ref = table.logicalTable;
+        const queryable = !!ref && isQueryableCatalogTable(catalogs, ref);
         if (queryable) queryableTableCount += 1;
 
         return {
-          key: `${catalog.id}/${schema.name}/${table.name}`,
+          key: ref ? canonicalTableIdentityKey(ref) : `${catalog.id}/${schema.name}/${table.name}`,
           name: table.name,
-          active:
-            activeTable?.catalogId === catalog.id &&
-            activeTable.schemaName === schema.name &&
-            activeTable.tableName === table.name,
-          path: queryable ? catalogTablePath(ref) : undefined,
+          ref,
+          active: !!ref && !!activeTable && sameCanonicalTableIdentity(activeTable, ref),
+          path: ref ? catalogTablePath(ref) : undefined,
+          sqlPath: queryable && ref ? catalogTableSqlPath(ref) : undefined,
           queryable,
           snapshot: table.snapshot,
           rows: table.rows,
@@ -196,6 +294,27 @@ export function catalogExplorerModel(
     queryableTableCount,
     catalogs: explorerCatalogs,
   };
+}
+
+function validatedTableResource(ref: ActiveConnectedTableRef): CanonicalResourceRef {
+  if (!ref.resource) throw new Error('canonical table route requires a resource identity');
+  return validatedCanonicalResourceRef(ref.resource);
+}
+
+function routeIdentityArm(resource: CanonicalResourceRef): CatalogTableIdentityArm {
+  if (resource.identity.case === 'providerObjectId') return 'provider-object-id';
+  if (resource.identity.case === 'canonicalLocator') return 'canonical-locator';
+  throw new Error('canonical table route requires a supported identity arm');
+}
+
+function legacyCatalogIdForAlias(alias: string): string {
+  const slug =
+    alias
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'default';
+  return `catalog-${slug}`;
 }
 
 function encodePathSegment(segment: string): string {

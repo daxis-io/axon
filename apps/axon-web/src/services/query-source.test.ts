@@ -1,4 +1,14 @@
+import { create } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
+import {
+  TableNodeSchema,
+  TableType,
+} from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
+import {
+  CanonicalResourceRefSchema,
+  ResourceKind,
+} from '../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
+import { createPublicObjectStorageCanonicalTable } from './canonical-table-identity.ts';
 import * as QuerySourceModule from './query-source.ts';
 import type {
   ActiveConnectedTableRef,
@@ -72,6 +82,7 @@ function catalog({
             uri,
             localRegistryId,
             catalogMetadataJson,
+            logicalTable: testTable(id, table),
           },
         ],
       },
@@ -84,7 +95,8 @@ function ref(
   schemaName = 'default',
   tableName = 'events',
 ): ActiveConnectedTableRef {
-  return { catalogId, schemaName, tableName };
+  void schemaName;
+  return testTable(catalogId, tableName);
 }
 
 describe('resolveQuerySourceSelection', () => {
@@ -124,16 +136,17 @@ describe('resolveQuerySourceSelection', () => {
   });
 
   it('returns sample only for the explicitly selected sample fixture table', () => {
-    const sampleRef = ref('sample-lake-fixture', 'prod_like', 'events');
+    const sampleRef = QuerySourceModule.SAMPLE_QUERY_SOURCE_REF;
     const sample = catalog({
-      id: sampleRef.catalogId,
+      id: sampleRef.resource!.connectionId,
       alias: SAMPLE_QUERY_SOURCE.catalogName,
-      schema: sampleRef.schemaName,
-      table: sampleRef.tableName,
+      schema: SAMPLE_QUERY_SOURCE.schemaName,
+      table: SAMPLE_QUERY_SOURCE.tableName,
       manifestUrl: SAMPLE_QUERY_SOURCE.manifestUrl,
       storage: SAMPLE_QUERY_SOURCE.storage,
       region: SAMPLE_QUERY_SOURCE.region,
     });
+    sample.schemas[0]!.tables[0]!.logicalTable = sampleRef;
     Object.assign(sample.schemas[0]!.tables[0]!, {
       snapshot: 3,
       rows: 6,
@@ -152,10 +165,10 @@ describe('resolveQuerySourceSelection', () => {
   it('treats a non-fixture catalog with copied sample source fields as a resource', () => {
     const selected = ref('connected-copy', 'prod_like', 'events');
     const copiedSample = catalog({
-      id: selected.catalogId,
+      id: selected.resource!.connectionId,
       alias: SAMPLE_QUERY_SOURCE.catalogName,
-      schema: selected.schemaName,
-      table: selected.tableName,
+      schema: 'prod_like',
+      table: selected.name,
       manifestUrl: SAMPLE_QUERY_SOURCE.manifestUrl,
       storage: SAMPLE_QUERY_SOURCE.storage,
       region: SAMPLE_QUERY_SOURCE.region,
@@ -219,7 +232,64 @@ describe('resolveQuerySourceSelection', () => {
       source: { catalogMetadataJson },
     });
   });
+
+  it('selects the exact same-named canonical table instead of the first display-name match', () => {
+    const connectionId = 'axon-connection://public-gcs/workspace';
+    const first = createPublicObjectStorageCanonicalTable({
+      provider: 'gcs',
+      connectionId,
+      normalizedTableUri: 'gs://workspace/first/events',
+      tableName: 'events',
+    });
+    const second = createPublicObjectStorageCanonicalTable({
+      provider: 'gcs',
+      connectionId,
+      normalizedTableUri: 'gs://workspace/second/events',
+      tableName: 'events',
+    });
+    const candidate = catalog({
+      id: connectionId,
+      manifestUrl: '',
+      uri: 'gs://workspace/first/events',
+    });
+    candidate.schemas[0]!.tables = [
+      {
+        name: 'events',
+        uri: 'gs://workspace/first/events',
+        logicalTable: first,
+      },
+      {
+        name: 'events',
+        uri: 'gs://workspace/second/events',
+        logicalTable: second,
+      },
+    ];
+
+    expect(
+      resolveSelection([candidate], second as unknown as ActiveConnectedTableRef),
+    ).toMatchObject({
+      kind: 'resource',
+      ref: second,
+      source: {
+        kind: 'object_store_table_root',
+        tableUri: 'gs://workspace/second/events',
+      },
+    });
+  });
 });
+
+function testTable(connectionId: string, tableName: string): ActiveConnectedTableRef {
+  return create(TableNodeSchema, {
+    resource: create(CanonicalResourceRefSchema, {
+      connectionId,
+      providerNamespace: 'axon.test/v1',
+      kind: ResourceKind.TABLE,
+      identity: { case: 'canonicalLocator', value: `test://${connectionId}/${tableName}` },
+    }),
+    tableType: TableType.TABLE,
+    name: tableName,
+  });
+}
 
 describe('querySourcesForCatalog', () => {
   it('keeps canonical source identity stable when the catalog alias changes', () => {

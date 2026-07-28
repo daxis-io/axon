@@ -68,7 +68,7 @@ export function createConnectionsSlice<TState extends ConnectionsSlice>(
     const mergedCatalogId = mergedCatalogIdFor(upsert.catalogs, catalog);
     const soleIncomingTable = soleQueryableTableRef([catalog]);
     const activeCatalogWasReplaced = upsert.replaced.some(
-      (replaced) => replaced.id === current.selectedTableRef?.catalogId,
+      (replaced) => replaced.id === current.selectedTableRef?.resource?.connectionId,
     );
     const retainedSelection =
       !activeCatalogWasReplaced &&
@@ -79,7 +79,7 @@ export function createConnectionsSlice<TState extends ConnectionsSlice>(
     const selectedTableRef = activeCatalogWasReplaced
       ? undefined
       : soleIncomingTable
-        ? { ...soleIncomingTable, catalogId: mergedCatalogId }
+        ? soleIncomingTable
         : retainedSelection;
     const localRegistryIdsToUnregister = localRegistryIdsForCatalogs(upsert.replaced);
     const shouldDiscardActiveQuerySession = activeCatalogWasReplaced;
@@ -128,14 +128,15 @@ export function createConnectionsSlice<TState extends ConnectionsSlice>(
         const catalogs = current.catalogs.filter((catalog) => catalog.id !== id);
         const availableCatalogs = catalogsAvailableForFeatures(catalogs, CONNECTOR_FEATURES);
         const selectedTableRef =
-          current.selectedTableRef?.catalogId === id
+          current.selectedTableRef?.resource?.connectionId === id
             ? undefined
             : current.selectedTableRef &&
                 querySourceForConnectedTableRef(availableCatalogs, current.selectedTableRef)
               ? current.selectedTableRef
               : undefined;
         const localRegistryIdsToUnregister = localRegistryIdsForCatalogs([removed]);
-        const shouldDiscardActiveQuerySession = current.selectedTableRef?.catalogId === id;
+        const shouldDiscardActiveQuerySession =
+          current.selectedTableRef?.resource?.connectionId === id;
 
         saveConnectedCatalogs(catalogs);
         set((state) => ({

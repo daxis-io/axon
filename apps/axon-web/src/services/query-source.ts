@@ -1,3 +1,15 @@
+import { clone } from '@bufbuild/protobuf';
+import {
+  TableNodeSchema,
+  type TableNode,
+} from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
+import type { CanonicalResourceRef } from '../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
+import {
+  canonicalResourceIdentityKey,
+  canonicalTableForQuerySource,
+  createSampleFixtureCanonicalTable,
+  sameCanonicalTableIdentity,
+} from './canonical-table-identity.ts';
 import type {
   PublicObjectStorageDescriptorResolutionMetrics,
   PublicObjectStorageProvider,
@@ -114,6 +126,7 @@ export type QueryCatalogCandidate = {
       manifestUrl?: string;
       localRegistryId?: string;
       catalogMetadataJson?: Readonly<Record<string, unknown>>;
+      logicalTable?: TableNode;
       source?: {
         storage: string;
         region: string;
@@ -124,11 +137,7 @@ export type QueryCatalogCandidate = {
   }>;
 };
 
-export type ActiveConnectedTableRef = {
-  catalogId: string;
-  schemaName: string;
-  tableName: string;
-};
+export type ActiveConnectedTableRef = TableNode;
 
 export type QuerySourceSelection =
   | { kind: 'resource'; ref: ActiveConnectedTableRef; source: QueryTableSource }
@@ -154,11 +163,9 @@ export const SAMPLE_QUERY_SOURCE: ManifestQueryTableSource = {
   region: 'browser-local',
 };
 
-export const SAMPLE_QUERY_SOURCE_REF: Readonly<ActiveConnectedTableRef> = Object.freeze({
-  catalogId: 'sample-lake-fixture',
-  schemaName: SAMPLE_QUERY_SOURCE.schemaName,
-  tableName: SAMPLE_QUERY_SOURCE.tableName,
-});
+export const SAMPLE_QUERY_SOURCE_REF: Readonly<ActiveConnectedTableRef> = Object.freeze(
+  createSampleFixtureCanonicalTable(SAMPLE_QUERY_SOURCE.tableName),
+);
 
 export function isExplicitSampleFixtureSelection(
   selection: AvailableQuerySourceSelection,
@@ -181,15 +188,20 @@ export function resolveQuerySourceSelection(
     };
   }
 
-  const catalog = catalogs.find((candidate) => candidate.id === selectedRef.catalogId);
-  const schema = catalog?.schemas.find((candidate) => candidate.name === selectedRef.schemaName);
-  const table = schema?.tables.find((candidate) => candidate.name === selectedRef.tableName);
-  if (!catalog || !schema || !table) {
+  const location = connectedTableLocationForRef(catalogs, selectedRef);
+  if (!location) {
     return { kind: 'unavailable', reason: 'stale', ref: selectedRef };
   }
 
-  const source = querySourceForTable(catalog, schema.name, table);
+  const source = querySourceForTable(location.catalog, location.schema.name, location.table);
   if (!source) {
+    return { kind: 'unavailable', reason: 'unqueryable', ref: selectedRef };
+  }
+  if (
+    source.kind !== 'manifest' &&
+    isGeneratedQuerySourceNamespace(selectedRef.resource?.providerNamespace) &&
+    !sameCanonicalTableIdentity(canonicalTableForQuerySource(source), selectedRef)
+  ) {
     return { kind: 'unavailable', reason: 'unqueryable', ref: selectedRef };
   }
 
@@ -201,6 +213,14 @@ export function resolveQuerySourceSelection(
     ref: selectedRef,
     source,
   };
+}
+
+function isGeneratedQuerySourceNamespace(namespace: string | undefined): boolean {
+  return (
+    namespace === 'axon.local-delta/v1' ||
+    namespace === 'axon.public-gcs/v1' ||
+    namespace === 'axon.public-s3/v1'
+  );
 }
 
 function isSampleFixtureSource(source: QueryTableSource): boolean {
@@ -219,11 +239,7 @@ function sameConnectedTableRef(
   left: ActiveConnectedTableRef,
   right: ActiveConnectedTableRef,
 ): boolean {
-  return (
-    left.catalogId === right.catalogId &&
-    left.schemaName === right.schemaName &&
-    left.tableName === right.tableName
-  );
+  return sameCanonicalTableIdentity(left, right);
 }
 
 export function sameAvailableQuerySourceSelection(
@@ -244,13 +260,9 @@ export function soleQueryableTableRef(
   for (const catalog of catalogs) {
     for (const schema of catalog.schemas) {
       for (const table of schema.tables) {
-        if (!isQueryableTable(catalog, table)) continue;
+        if (!table.logicalTable || !isQueryableTable(catalog, table)) continue;
         if (selected) return undefined;
-        selected = {
-          catalogId: catalog.id,
-          schemaName: schema.name,
-          tableName: table.name,
-        };
+        selected = clone(TableNodeSchema, table.logicalTable);
       }
     }
   }
@@ -269,11 +281,52 @@ export function querySourceForConnectedTableRef(
   catalogs: QueryCatalogCandidate[],
   activeTable: ActiveConnectedTableRef,
 ): QueryTableSource | undefined {
-  const catalog = catalogs.find((candidate) => candidate.id === activeTable.catalogId);
-  const schema = catalog?.schemas.find((candidate) => candidate.name === activeTable.schemaName);
-  const table = schema?.tables.find((candidate) => candidate.name === activeTable.tableName);
-  if (!catalog || !schema || !table) return undefined;
-  return querySourceForTable(catalog, schema.name, table);
+  const location = connectedTableLocationForRef(catalogs, activeTable);
+  if (!location) return undefined;
+  return querySourceForTable(location.catalog, location.schema.name, location.table);
+}
+
+export type ConnectedTableLocation = Readonly<{
+  catalog: QueryCatalogCandidate;
+  schema: QueryCatalogCandidate['schemas'][number];
+  table: QueryCatalogCandidate['schemas'][number]['tables'][number];
+}>;
+
+export function connectedTableLocationForRef(
+  catalogs: QueryCatalogCandidate[],
+  activeTable: ActiveConnectedTableRef,
+): ConnectedTableLocation | undefined {
+  if (!activeTable.resource) return undefined;
+  const matches = connectedTableLocationsForResource(catalogs, activeTable.resource);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+export function connectedTableLocationsForResource(
+  catalogs: QueryCatalogCandidate[],
+  resource: CanonicalResourceRef,
+): ConnectedTableLocation[] {
+  let identity: string;
+  try {
+    identity = canonicalResourceIdentityKey(resource);
+  } catch {
+    return [];
+  }
+  const matches: ConnectedTableLocation[] = [];
+  for (const catalog of catalogs) {
+    if (catalog.id !== resource.connectionId) continue;
+    for (const schema of catalog.schemas) {
+      for (const table of schema.tables) {
+        if (!table.logicalTable?.resource) continue;
+        try {
+          if (canonicalResourceIdentityKey(table.logicalTable.resource) !== identity) continue;
+        } catch {
+          continue;
+        }
+        matches.push({ catalog, schema, table });
+      }
+    }
+  }
+  return matches;
 }
 
 export function querySourcesForCatalog(catalog: QueryCatalogCandidate): QueryTableSource[] {

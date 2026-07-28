@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 
 import {
   resolveQuerySourceSelection,
+  SAMPLE_QUERY_SOURCE_REF,
   sameQuerySource,
   type ActiveConnectedTableRef,
   type QueryCatalogCandidate,
@@ -14,6 +15,14 @@ import {
   saveConnectedCatalogs,
 } from '../src/editor/connect/store.ts';
 import type { ConnectedCatalog } from '../src/editor/connect/types.ts';
+import {
+  createLocalDeltaCanonicalTable,
+  createPublicObjectStorageCanonicalTable,
+} from '../src/services/canonical-table-identity.ts';
+import {
+  parsePublicObjectStorageTableRoot,
+  publicObjectStorageConnectionId,
+} from '../src/services/object-storage.ts';
 import {
   markSessionSetupMetricsEmitted,
   pendingSessionSetupMetrics,
@@ -45,14 +54,52 @@ class MemoryStorage implements Pick<Storage, 'getItem' | 'setItem' | 'removeItem
 
 function selectedSource(
   catalogs: QueryCatalogCandidate[],
-  ref: ActiveConnectedTableRef,
+  coordinates: { catalogId: string; schemaName: string; tableName: string },
 ): QueryTableSource {
+  const catalog = catalogs.find((candidate) => candidate.id === coordinates.catalogId);
+  const schema = catalog?.schemas.find((candidate) => candidate.name === coordinates.schemaName);
+  const table = schema?.tables.find((candidate) => candidate.name === coordinates.tableName);
+  if (!catalog || !table) throw new Error('test selection coordinates did not resolve');
+  const ref = table.logicalTable ?? testLogicalTable(catalog, table);
+  table.logicalTable = ref;
+  catalog.id = ref.resource!.connectionId;
   const selection = resolveQuerySourceSelection(catalogs, ref);
   expect(selection.kind).not.toBe('unavailable');
   if (selection.kind === 'unavailable') {
     throw new Error(`expected selected query source, got ${selection.reason}`);
   }
   return selection.source;
+}
+
+function testLogicalTable(
+  catalog: QueryCatalogCandidate,
+  table: QueryCatalogCandidate['schemas'][number]['tables'][number],
+): ActiveConnectedTableRef {
+  if (table.manifestUrl) return SAMPLE_QUERY_SOURCE_REF;
+  if (table.localRegistryId) {
+    return createLocalDeltaCanonicalTable({
+      registryId: table.localRegistryId,
+      tableName: table.name,
+    });
+  }
+  const provider = catalog.provider === 's3' ? 's3' : 'gcs';
+  const root = parsePublicObjectStorageTableRoot({
+    provider,
+    tableUri: table.uri ?? catalog.storage,
+    region: catalog.region,
+  });
+  const identity = {
+    connectionId: publicObjectStorageConnectionId(root),
+    normalizedTableUri: root.tableUri,
+    tableName: table.name,
+  };
+  return root.provider === 's3'
+    ? createPublicObjectStorageCanonicalTable({
+        ...identity,
+        provider: root.provider,
+        region: root.region,
+      })
+    : createPublicObjectStorageCanonicalTable({ ...identity, provider: root.provider });
 }
 
 test.describe('query source', () => {

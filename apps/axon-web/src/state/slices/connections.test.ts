@@ -115,7 +115,12 @@ function catalog({
 }
 
 function activeRef(catalogId: string, table = catalogId): ActiveConnectedTableRef {
-  return { catalogId: publicConnectionId(catalogId), schemaName: 'default', tableName: table };
+  return createPublicObjectStorageCanonicalTable({
+    provider: 'gcs',
+    connectionId: publicConnectionId(catalogId),
+    normalizedTableUri: `gs://${catalogId}/${table}`,
+    tableName: table,
+  });
 }
 
 function publicConnectionId(id: string): string {
@@ -244,11 +249,7 @@ describe('connections slice', () => {
 
     expect(result.mergedCatalogId).toBe(publicConnectionId('incoming'));
     expect(result.tableCount).toBe(1);
-    expect(store.getState().connections.selectedTableRef).toEqual({
-      catalogId: publicConnectionId('incoming'),
-      schemaName: 'default',
-      tableName: 'orders',
-    });
+    expect(store.getState().connections.selectedTableRef).toEqual(activeRef('incoming', 'orders'));
     expect(store.getState().connections.catalogs).toHaveLength(2);
   });
 

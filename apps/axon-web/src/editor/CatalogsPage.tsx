@@ -1,7 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { catalogQueryOptions } from '../query/catalog.ts';
-import { resolveQuerySourceSelection } from '../services/query-source.ts';
+import {
+  resolveQuerySourceSelection,
+  type ActiveConnectedTableRef,
+} from '../services/query-source.ts';
 import {
   selectActiveConnectedTableRef,
   selectAvailableConnectedCatalogs,
@@ -12,9 +15,10 @@ import { IconChevR, IconDatabase, IconPlus, IconSettings, IconTable } from './co
 import { formatRows } from './lib/format.ts';
 import { navigate } from './router.tsx';
 
-export function CatalogsPage() {
+export function CatalogsPage({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {}) {
   const availableCatalogs = useAxonClientStore(selectAvailableConnectedCatalogs);
-  const activeTable = useAxonClientStore(selectActiveConnectedTableRef);
+  const storedActiveTable = useAxonClientStore(selectActiveConnectedTableRef);
+  const activeTable = routeTable ?? storedActiveTable;
   const model = useMemo(
     () => catalogExplorerModel(availableCatalogs, activeTable),
     [activeTable, availableCatalogs],

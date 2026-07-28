@@ -1,9 +1,8 @@
-import { create, equals } from '@bufbuild/protobuf';
+import { clone, create, equals } from '@bufbuild/protobuf';
 import {
   CanonicalResourceRefSchema,
   ProviderErrorCode,
   ProviderErrorSchema,
-  ResourceKind,
   type CanonicalResourceRef,
 } from '../generated/contracts/protobuf/axon/common/v1/common_pb.ts';
 import {
@@ -19,7 +18,6 @@ import {
 } from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 import {
   TableNodeSchema,
-  TableType,
   type TableNode,
 } from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 import { ExecutionRejectionReason } from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
@@ -33,12 +31,13 @@ import {
   LocalDeltaError,
 } from './local-delta.ts';
 import {
-  createLocalDeltaCanonicalTable,
-  createPublicObjectStorageCanonicalTable,
+  canonicalTableForQuerySource,
+  createSampleFixtureCanonicalTable,
+  SAMPLE_FIXTURE_PROVIDER_NAMESPACE,
+  sameCanonicalTableIdentity,
 } from './canonical-table-identity.ts';
 import {
   parsePublicObjectStorageTableRoot,
-  publicObjectStorageConnectionId,
   PublicObjectStorageError,
   type PublicObjectStorageProvider,
 } from './object-storage.ts';
@@ -154,42 +153,22 @@ type BrowserReadResolutionDependencies = Readonly<{
   }) => Promise<BrowserHttpSnapshotDescriptor>;
 }>;
 
-const SAMPLE_FIXTURE_CONNECTION_ID = 'axon-connection://sample-fixture/sample-lake';
-const SAMPLE_FIXTURE_NAMESPACE = 'axon.sample-fixture/v1';
-const SAMPLE_FIXTURE_LOCATOR = 'axon-fixture://sample-lake/prod_like/events';
 const SAMPLE_FIXTURE_TABLE_URI = 'gs://axon-sandbox/prod-like-events';
 
 export function canonicalTableForSelection(selection: AvailableQuerySourceSelection): TableNode {
-  if (selection.source.kind === 'local_delta') {
-    return createLocalDeltaCanonicalTable({
-      registryId: selection.source.localRegistryId,
-      tableName: selection.source.tableName,
-    });
+  const projected = projectedCanonicalTableForSelection(selection);
+  if (!sameCanonicalTableIdentity(projected, selection.ref)) {
+    throw new Error('logical table selection did not match its query source identity');
   }
-  if (selection.source.kind === 'object_store_table_root') {
-    const root = parsePublicObjectStorageTableRoot({
-      provider: selection.source.provider,
-      tableUri: selection.source.tableUri,
-      region: selection.source.region,
-    });
-    const identity = {
-      connectionId: publicObjectStorageConnectionId(root),
-      normalizedTableUri: root.tableUri,
-      tableName: selection.source.tableName,
-    };
-    return root.provider === 's3'
-      ? createPublicObjectStorageCanonicalTable({
-          ...identity,
-          provider: root.provider,
-          region: root.region,
-        })
-      : createPublicObjectStorageCanonicalTable({ ...identity, provider: root.provider });
+  return clone(TableNodeSchema, selection.ref);
+}
+
+function projectedCanonicalTableForSelection(selection: AvailableQuerySourceSelection): TableNode {
+  if (selection.source.kind !== 'manifest') {
+    return canonicalTableForQuerySource(selection.source);
   }
-  return create(TableNodeSchema, {
-    resource: canonicalResourceForSelection(selection),
-    tableType: TableType.TABLE,
-    name: selection.source.tableName,
-  });
+  assertExactSampleFixtureSelection(selection);
+  return createSampleFixtureCanonicalTable(selection.source.tableName);
 }
 
 export function dataAccessResolverForSelection(
@@ -211,47 +190,7 @@ export function dataAccessResolverForSelection(
 function canonicalResourceForSelection(
   selection: AvailableQuerySourceSelection,
 ): CanonicalResourceRef {
-  const source = selection.source;
-  if (source.kind === 'manifest') {
-    assertExactSampleFixtureSelection(selection);
-    return create(CanonicalResourceRefSchema, {
-      connectionId: SAMPLE_FIXTURE_CONNECTION_ID,
-      providerNamespace: SAMPLE_FIXTURE_NAMESPACE,
-      kind: ResourceKind.TABLE,
-      identity: {
-        case: 'canonicalLocator',
-        value: SAMPLE_FIXTURE_LOCATOR,
-      },
-    });
-  }
-  switch (source.kind) {
-    case 'local_delta':
-      return createLocalDeltaCanonicalTable({
-        registryId: source.localRegistryId,
-        tableName: source.tableName,
-      }).resource!;
-    case 'object_store_table_root': {
-      const root = parsePublicObjectStorageTableRoot({
-        provider: source.provider,
-        tableUri: source.tableUri,
-        region: source.region,
-      });
-      const identity = {
-        connectionId: publicObjectStorageConnectionId(root),
-        normalizedTableUri: root.tableUri,
-        tableName: source.tableName,
-      };
-      return (
-        root.provider === 's3'
-          ? createPublicObjectStorageCanonicalTable({
-              ...identity,
-              provider: root.provider,
-              region: root.region,
-            })
-          : createPublicObjectStorageCanonicalTable({ ...identity, provider: root.provider })
-      ).resource!;
-    }
-  }
+  return canonicalTableForSelection(selection).resource!;
 }
 
 function sampleFixtureResolver(
@@ -317,7 +256,7 @@ function sampleFixtureResolver(
             accessClass: BrowserAccessClass.PUBLIC,
             correlationId: context.executionId,
             provenance: {
-              resolverId: SAMPLE_FIXTURE_NAMESPACE,
+              resolverId: SAMPLE_FIXTURE_PROVIDER_NAMESPACE,
               resolutionId: `${context.executionId}:sample-fixture`,
             },
           }),

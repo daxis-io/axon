@@ -32,6 +32,7 @@ import {
 } from '../services/capabilities.ts';
 import { subscribeEngineStatus } from '../services/engine.ts';
 import { CONNECTOR_FEATURES } from '../services/connector-features.ts';
+import { sameCanonicalTableIdentity } from '../services/canonical-table-identity.ts';
 import {
   cancelExecutionRequest,
   createExecutionController,
@@ -45,6 +46,7 @@ import {
   type QueryResultPageRun,
 } from '../services/query-pagination.ts';
 import {
+  connectedTableLocationForRef,
   resolveQuerySourceSelection,
   type ActiveConnectedTableRef,
   type AvailableQuerySourceSelection,
@@ -99,7 +101,7 @@ import {
   IconTable,
 } from './components/icons.tsx';
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
-import { catalogTablePath, savedQueryPath } from './catalog-navigation.ts';
+import { catalogTableSqlPath, savedQueryPath } from './catalog-navigation.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { formatBytes, formatRows, prettifySql } from './lib/format.ts';
 import { navigate } from './router.tsx';
@@ -182,12 +184,7 @@ function sameSelectedTable(
   left: AvailableQuerySourceSelection,
   right: AvailableQuerySourceSelection,
 ): boolean {
-  return (
-    left.kind === right.kind &&
-    left.ref.catalogId === right.ref.catalogId &&
-    left.ref.schemaName === right.ref.schemaName &&
-    left.ref.tableName === right.ref.tableName
-  );
+  return left.kind === right.kind && sameCanonicalTableIdentity(left.ref, right.ref);
 }
 
 function connectedTableForRef(
@@ -195,12 +192,19 @@ function connectedTableForRef(
   ref?: ActiveConnectedTableRef,
 ): ConnectedCatalog['schemas'][number]['tables'][number] | undefined {
   if (!ref) return undefined;
-  const catalog = catalogs.find((candidate) => candidate.id === ref.catalogId);
-  const schema = catalog?.schemas.find((candidate) => candidate.name === ref.schemaName);
-  return schema?.tables.find((candidate) => candidate.name === ref.tableName);
+  return connectedTableLocationForRef(catalogs, ref)?.table as
+    | ConnectedCatalog['schemas'][number]['tables'][number]
+    | undefined;
 }
 
-export function App() {
+export function activeTableForEditorRender(
+  routeTable: ActiveConnectedTableRef | undefined,
+  storedTable: ActiveConnectedTableRef | undefined,
+): ActiveConnectedTableRef | undefined {
+  return routeTable ?? storedTable;
+}
+
+export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {}) {
   const { sidebarW, resultsH } = useAxonClientStore(selectLayout);
   const layoutActions = useAxonClientStore(selectLayoutActions);
   const configuredDefaultTarget = useAxonClientStore(selectDefaultTarget);
@@ -209,7 +213,8 @@ export function App() {
     SERVER_QUERY_FALLBACK_ENABLED,
   );
   const availableConnectedCatalogs = useAxonClientStore(selectAvailableConnectedCatalogs);
-  const activeTableRef = useAxonClientStore(selectActiveConnectedTableRef);
+  const storedActiveTableRef = useAxonClientStore(selectActiveConnectedTableRef);
+  const activeTableRef = activeTableForEditorRender(routeTable, storedActiveTableRef);
   const freshCatalogId = useAxonClientStore(selectFreshCatalogId);
   const connectionActions = useAxonClientStore(selectConnectionActions);
   const tabsState = useAxonClientStore(selectTabs);
@@ -337,7 +342,7 @@ export function App() {
   );
 
   const navigateToConnectedTable = useCallback((ref: ActiveConnectedTableRef) => {
-    navigate(catalogTablePath(ref));
+    navigate(catalogTableSqlPath(ref));
   }, []);
 
   // ─── Subscribe to engine status ─────────────────────────
@@ -962,7 +967,7 @@ export function App() {
               </>
             ) : (
               <>
-                {catalog?.name ?? querySelection.source.catalogName} <span className="sep">/</span>{' '}
+                {querySelection.source.catalogName} <span className="sep">/</span>{' '}
                 <span className="db">
                   {catalog?.region ?? querySelection.source.region} · delta
                 </span>

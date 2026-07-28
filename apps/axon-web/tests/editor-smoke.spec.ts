@@ -10,7 +10,11 @@ import {
   localRegistryIdsForCatalogs,
   upsertConnectedCatalog,
 } from '../src/editor/connect/store.ts';
-import { catalogTablePath, savedQueryPath } from '../src/editor/catalog-navigation.ts';
+import {
+  catalogTablePath,
+  catalogTableSqlPath,
+  savedQueryPath,
+} from '../src/editor/catalog-navigation.ts';
 import type { ConnectedCatalog, ConnectResult } from '../src/editor/connect/types.ts';
 import {
   resolveQuerySourceSelection,
@@ -19,6 +23,7 @@ import {
 } from '../src/services/query-source.ts';
 import { connectorFeaturesFromEnv } from '../src/services/connector-features.ts';
 import { canonicalTableForSelection } from '../src/services/browser-read-resolution.ts';
+import { createPublicObjectStorageCanonicalTable } from '../src/services/canonical-table-identity.ts';
 import {
   QUERY_RESULT_PAGE_SIZE,
   browserQueryRequest,
@@ -146,11 +151,12 @@ test.describe('editor (Phase 1 smoke)', () => {
       result.catalogs[0].schemas.flatMap((schema) => schema.tables.map((table) => table.name)),
     ).toEqual(['orders_local', 'events']);
 
-    const selection = resolveQuerySourceSelection(result.catalogs, {
-      catalogId: result.catalogs[0].id,
-      schemaName: 'analytics',
-      tableName: 'events',
-    });
+    const selection = resolveQuerySourceSelection(
+      result.catalogs,
+      result.catalogs[0].schemas
+        .find((schema) => schema.name === 'analytics')!
+        .tables.find((table) => table.name === 'events')!.logicalTable!,
+    );
     expect(selection).toMatchObject({
       kind: 'resource',
       source: {
@@ -292,11 +298,12 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(merged.id).toBe('legacy-workspace-id');
     expect(merged.id).not.toBe(incoming.id);
     expect(
-      resolveQuerySourceSelection(result.catalogs, {
-        catalogId: merged.id,
-        schemaName: 'analytics',
-        tableName: 'events',
-      }),
+      resolveQuerySourceSelection(
+        result.catalogs,
+        merged.schemas
+          .find((schema) => schema.name === 'analytics')!
+          .tables.find((table) => table.name === 'events')!.logicalTable!,
+      ),
     ).toMatchObject({
       kind: 'resource',
       source: {
@@ -534,17 +541,36 @@ test.describe('editor (Phase 1 smoke)', () => {
         alias: 'second-lake',
         storage: 'gs://axon-second/prod-like-events',
         connectedAt: 'second fixture',
+        schemas: [
+          {
+            name: 'prod_like',
+            tables: [
+              {
+                name: 'events',
+                snapshot: 3,
+                rows: 6,
+                files: 1,
+                size: 'fixture',
+                protocol: 'r2/w5',
+                uri: 'gs://axon-second/prod-like-events',
+              },
+            ],
+          },
+        ],
       }),
     ];
     await page.addInitScript((value) => {
       localStorage.setItem('axon.connect.catalogs.v1', JSON.stringify(value));
     }, catalogs);
 
-    const secondTablePath = catalogTablePath({
-      catalogId: 'second-lake-fixture',
-      schemaName: 'prod_like',
+    const secondTable = createPublicObjectStorageCanonicalTable({
+      provider: 'gcs',
+      connectionId: 'axon-connection://public-gcs/axon-second',
+      normalizedTableUri: 'gs://axon-second/prod-like-events',
       tableName: 'events',
     });
+    const secondTablePath = catalogTablePath(secondTable);
+    const secondTableSqlPath = catalogTableSqlPath(secondTable);
 
     await page.goto('/catalogs');
     await expect(page.locator('.catalogs-title')).toContainText('Catalogs');
@@ -555,15 +581,26 @@ test.describe('editor (Phase 1 smoke)', () => {
       .click();
 
     await expect(page).toHaveURL(new RegExp(`${secondTablePath}$`));
-    await expect(page.locator('.conn-pill')).toContainText('second-lake');
+    await expect(
+      page
+        .locator('.catalog-block', { hasText: 'second-lake' })
+        .locator('.catalog-table-row', { hasText: 'events' }),
+    ).toHaveClass(/active/);
 
     await page.reload();
-    await expect(page.locator('.conn-pill')).toContainText('second-lake', { timeout: 15_000 });
+    await expect(
+      page
+        .locator('.catalog-block', { hasText: 'second-lake' })
+        .locator('.catalog-table-row', { hasText: 'events' }),
+    ).toHaveClass(/active/);
 
     await page.goBack();
     await expect(page.locator('.catalogs-title')).toContainText('Catalogs');
 
     await page.goForward();
+    await expect(page).toHaveURL(new RegExp(`${secondTablePath}$`));
+
+    await page.goto(secondTableSqlPath);
     await expect(page.locator('.conn-pill')).toContainText('second-lake');
   });
 
@@ -577,7 +614,9 @@ test.describe('editor (Phase 1 smoke)', () => {
 
     await page.goto('/catalog/sample-lake-fixture/prod_like/missing');
 
-    await expect(page.getByRole('heading', { name: 'Table route not found' })).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'Legacy table route unavailable' }),
+    ).toBeVisible();
     await page.getByRole('button', { name: 'View catalogs' }).click();
     await expect(page).toHaveURL(/\/catalogs$/);
   });
@@ -1173,16 +1212,15 @@ test.describe('editor (Phase 1 smoke)', () => {
     page,
   }) => {
     const publicRoot = publicObjectStoreTableRootCatalogFixture();
-    const publicRootPath = catalogTablePath({
-      catalogId: publicRoot.id,
-      schemaName: 'default',
-      tableName: 'events',
-    });
-    const samplePath = catalogTablePath({
-      catalogId: 'sample-lake-fixture',
-      schemaName: 'prod_like',
-      tableName: 'events',
-    });
+    const publicRootPath = catalogTableSqlPath(
+      createPublicObjectStorageCanonicalTable({
+        provider: 'gcs',
+        connectionId: 'axon-connection://public-gcs/axon-public',
+        normalizedTableUri: 'gs://axon-public/direct-events',
+        tableName: 'events',
+      }),
+    );
+    const samplePath = catalogTableSqlPath(SAMPLE_QUERY_SOURCE_REF);
     await page.addInitScript(
       (value) => {
         localStorage.setItem('axon.connect.catalogs.v1', JSON.stringify(value));
@@ -1753,16 +1791,19 @@ function connectResultFixture({
 }
 
 function connectedCatalogFixture(overrides: Partial<ConnectedCatalog> = {}): ConnectedCatalog {
-  return {
-    id: 'sample-lake-fixture',
-    alias: 'sample-lake',
-    kind: 'object_store',
-    provider: 'gcs',
-    storage: 'gs://axon-sample/prod-like-events',
-    region: 'browser-local',
-    status: 'connected',
-    connectedAt: 'test fixture',
-    schemas: [
+  const alias = overrides.alias ?? 'sample-lake';
+  const storage = overrides.storage ?? 'gs://axon-sample/prod-like-events';
+  const isSample = alias === 'sample-lake' && storage === 'gs://axon-sample/prod-like-events';
+  const defaultTable = isSample
+    ? SAMPLE_QUERY_SOURCE_REF
+    : createPublicObjectStorageCanonicalTable({
+        provider: 'gcs',
+        connectionId: `axon-connection://public-gcs/${new URL(storage).hostname}`,
+        normalizedTableUri: storage,
+        tableName: 'events',
+      });
+  const schemas = (
+    overrides.schemas ?? [
       {
         name: 'prod_like',
         tables: [
@@ -1773,12 +1814,40 @@ function connectedCatalogFixture(overrides: Partial<ConnectedCatalog> = {}): Con
             files: 1,
             size: 'fixture',
             protocol: 'r2/w5',
-            manifestUrl: '/fixtures/prod-like/delta-log-manifest.json',
+            manifestUrl: isSample ? '/fixtures/prod-like/delta-log-manifest.json' : undefined,
+            uri: isSample ? undefined : storage,
           },
         ],
       },
-    ],
+    ]
+  ).map((schema) => ({
+    ...schema,
+    tables: schema.tables.map((table) => ({
+      ...table,
+      logicalTable:
+        table.logicalTable ??
+        (isSample
+          ? SAMPLE_QUERY_SOURCE_REF
+          : createPublicObjectStorageCanonicalTable({
+              provider: 'gcs',
+              connectionId: defaultTable.resource!.connectionId,
+              normalizedTableUri: table.uri ?? storage,
+              tableName: table.name,
+            })),
+    })),
+  }));
+  return {
+    kind: 'object_store',
+    provider: 'gcs',
+    region: 'browser-local',
+    status: 'connected',
+    connectedAt: 'test fixture',
     ...overrides,
+    id: defaultTable.resource!.connectionId,
+    catalogName: isSample ? 'sample-lake' : 'public-gcs',
+    alias,
+    storage,
+    schemas,
   };
 }
 

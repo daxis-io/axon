@@ -124,9 +124,9 @@ export const queryKeys = {
         'unavailable',
         resource,
         selection.reason,
-        selection.ref?.catalogId ?? null,
-        selection.ref?.schemaName ?? null,
-        selection.ref?.tableName ?? null,
+        selection.ref?.resource?.connectionId ?? null,
+        selection.ref?.resource?.providerNamespace ?? null,
+        selection.ref?.resource?.identity.value ?? null,
       ] as const,
   },
   local: {

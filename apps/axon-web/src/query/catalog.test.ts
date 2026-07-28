@@ -7,6 +7,7 @@ import {
 } from '../services/query-runtime-state.ts';
 import type { QuerySourceSelection, QueryTableSource } from '../services/query-source.ts';
 import { snapshotCatalog } from '../services/catalog.ts';
+import { createLocalDeltaCanonicalTable } from '../services/canonical-table-identity.ts';
 import type { Catalog } from '../services/types.ts';
 import {
   catalogQueryOptions,
@@ -69,7 +70,10 @@ const otherSource: QueryTableSource = {
 
 const selection: QuerySourceSelection = {
   kind: 'resource',
-  ref: { catalogId: 'catalog-a', schemaName: 'schema-a', tableName: 'table-a' },
+  ref: createLocalDeltaCanonicalTable({
+    registryId: 'registry-a',
+    tableName: 'table-a',
+  }),
   source,
 };
 
@@ -118,11 +122,16 @@ describe('catalog query adapters', () => {
   it.each(['missing', 'empty', 'stale', 'unqueryable'] as const)(
     'disables catalog and commit queries for %s selection without invoking loaders',
     async (reason) => {
-      const selection: QuerySourceSelection = {
+      const selection: Extract<QuerySourceSelection, { kind: 'unavailable' }> = {
         kind: 'unavailable',
         reason,
         ...(reason === 'stale' || reason === 'unqueryable'
-          ? { ref: { catalogId: 'gone', schemaName: 'default', tableName: 'events' } }
+          ? {
+              ref: createLocalDeltaCanonicalTable({
+                registryId: 'gone',
+                tableName: 'events',
+              }),
+            }
           : {}),
       };
       const client = new QueryClient();

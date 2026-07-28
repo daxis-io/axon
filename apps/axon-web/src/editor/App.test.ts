@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { ExecutionRejectionReason } from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
 import type { EngineStatus } from '../services/types.ts';
+import { createLocalDeltaCanonicalTable } from '../services/canonical-table-identity.ts';
 import { selectEngineActions, selectEngineStatus } from '../state/hooks.ts';
 import { createAxonClientStore, createMemoryClientStateStorage } from '../state/store.ts';
 import type { RunUiState } from '../state/slices/run.ts';
@@ -67,6 +68,22 @@ describe('App engine status subscription', () => {
     expect(selectEngineStatus(store.getState())).toEqual(status);
     expect(cleanup).toBe(unsubscribe);
     expect(subscribe).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('App route selection authority', () => {
+  it('uses the route TableNode on the first render before presentation state is mirrored', () => {
+    const stored = createLocalDeltaCanonicalTable({
+      registryId: 'stored-table',
+      tableName: 'events',
+    });
+    const routed = createLocalDeltaCanonicalTable({
+      registryId: 'routed-table',
+      tableName: 'events',
+    });
+
+    expect(AppModule.activeTableForEditorRender(routed, stored)).toBe(routed);
+    expect(AppModule.activeTableForEditorRender(undefined, stored)).toBe(stored);
   });
 });
 
