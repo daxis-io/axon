@@ -418,6 +418,139 @@ This worktree must contain these seven local-only commits above `b0a7e1c`:
 Necessary review repairs remain separate, ordinary commits unless they fit
 cleanly before the named task commit. Do not rewrite history to hide them.
 
+## Completion record — 2026-07-27
+
+M1 is complete in the isolated local worktree. The exact pre-closure commit
+sequence above `b0a7e1c` is:
+
+1. `b26f1a1` — `docs: close E1 local and public catalog adoption`
+2. `7bb73e3` — `docs(plan): define E1 table-first explorer completion`
+3. `cbaa91b` — `refactor(web): stabilize catalog connection identity`
+4. `ea4b22e` — `fix(web): preserve legacy catalog identity migration`
+5. `84f04f5` — `refactor(web): make catalog routes resource authoritative`
+6. `0201f4a` — `feat(web): complete table-first catalog explorer`
+7. `6986504` — `refactor(web): centralize catalog connection cleanup`
+8. `17eab9c` — `test(web): align smoke coverage with canonical catalogs`
+9. `27cf5ba` — `fix(web): harden catalog replacement lifecycle`
+10. `5383b5e` — `fix(web): gate queries during catalog cleanup`
+11. `9951835` — `fix(web): subscribe editor to catalog cleanup`
+
+The final documentation commit is
+`docs: close E1 table-first explorer completion`. History was not rewritten;
+the migration and lifecycle review repairs remain visible as ordinary commits.
+
+### Delivered behavior
+
+- Persisted and runtime connection identity is the validated generated
+  connection ID. Aliases are presentation-only, same-alias connections remain
+  distinct, and legacy local/GCS/S3 or mixed-provider records migrate through
+  their durable per-table identities.
+- A present partially or wholly malformed persisted record fails closed to an
+  empty state. The explicit sample fixture is used only when the storage record
+  is genuinely absent.
+- Active selection and canonical routes use generated `TableNode` identity.
+  Canonical resources are unique across a whole connection, including schema
+  moves, and legacy display-coordinate links redirect only on one exact match.
+- Catalog Explorer renders connection, catalog, schema, table/view hierarchy,
+  generated overview metadata, semantic columns, explicit unavailable states,
+  and a logical-only SQL editor handoff. Views remain browseable and
+  non-queryable.
+- Reconnect and disconnect mutations report exact displaced resources, purge
+  the complete canonical connection prefix, and order query/session/local
+  runtime teardown before a later connection mutation can publish.
+  QueryClient-scoped pending state is a subscribable external store, so both a
+  continuously mounted and a remounted editor block catalog queries, SQL runs,
+  and result-page loads until cleanup completes.
+- Explorer and routing remain outside data-access, descriptor, worker/session,
+  `services/query.ts`, and SDK-open ownership. No preview, descriptor
+  resolution, access resolution, query execution, or new provider registry was
+  added.
+
+### Review record
+
+The independent principal/maintainer review of `b0a7e1c..17eab9c` requested
+changes for four Important findings and no Critical findings:
+
+1. exact same-resource replacement did not report displaced ownership;
+2. fire-and-forget cleanup could overtake a reconnect or new session;
+3. mixed valid/malformed persistence was partially salvaged;
+4. equal canonical resources in different schemas could remain ambiguous.
+
+`27cf5ba` added exact displaced-resource accounting, retained-registry
+filtering, connection-wide canonical uniqueness, whole-record fail-closed
+migration, and serialized connection mutations. Follow-up review identified
+the execution window during the same replacement; `5383b5e` added a counted
+pending gate around catalog queries and execution. A second follow-up found a
+remount notification edge; `9951835` replaced per-component callbacks with a
+QueryClient-keyed `useSyncExternalStore` subscription and a listener-handoff
+regression test.
+
+The final follow-up verdict approved `9951835`: no remaining Critical or
+Important findings. The reviewer noted only that a full React
+mount/unmount integration test for the external-store transition would be
+additional non-blocking coverage; the store contract, snapshot-on-remount, and
+production wiring are directly exercised.
+
+### Verification and readiness
+
+The production state at `9951835` passed:
+
+- focused matrix: 15 files, 197 tests;
+- complete Vitest matrix: 43 files, 398 tests;
+- TypeScript `--noEmit`, ESLint, and Prettier checks;
+- generated web code drift check;
+- SDK tests: 154 tests;
+- editor browser smoke: 45 passed, 2 fixture-dependent skips;
+- local Delta browser suite: 10 passed;
+- full Chromium/Firefox/WebKit E2E matrix: 52 passed, 2 declared
+  browser-specific skips;
+- `browser-sdk`: 27 integration/example tests;
+- `axon-contract-proto`: 9 contract smoke tests;
+- browser dependency and bundle security guardrails, after building the exact
+  locked release worker-WASM artifact;
+- `git diff --check`.
+
+`npm run codegen:contracts:check` remains an environment-policy block because
+it requires sending protobuf descriptors to `buf.build`; no escalation was
+requested or performed, and the gate is not reported green. Local
+`npm run codegen:check` passed. Exact diff checks show zero protobuf,
+generated-contract, Rust-contract, Cargo manifest/lock, or web dependency
+changes.
+
+The sole application-layer SDK table open remains
+`apps/axon-web/src/services/query.ts:788`. SDK implementation methods are
+reported separately and are not new application opens.
+
+All three public-live inputs were unset:
+
+- `AXON_LIVE_PUBLIC_GCS_TABLE_URI`
+- `AXON_LIVE_PUBLIC_S3_TABLE_URI`
+- `AXON_LIVE_PUBLIC_S3_REGION`
+
+The GCS and S3 live suites are therefore readiness skips, not live proof.
+
+The final remote refresh found `origin/main` at
+`7651d2e5722353196ab8128d1022be7c0213948f`. `b0a7e1c` remains an ancestor.
+The three intervening commits change only `.claude` harness configuration,
+`harness/pinned.toml`, and `.gitignore`; there is no relevant M1 overlap and no
+rebase was performed.
+
+### Remaining gates and rollback
+
+M2 still owns multi-catalog/session-proxied provider restructuring. E6 and E8
+remain separate roadmap work. E9 Slice 3 still owns later descriptor,
+access-resolution, and execution changes. Public GCS/S3 live proof remains
+gated on the named environment inputs.
+
+Rollback uses ordinary reverse commit reverts, beginning with the closure
+documentation and review repairs, then lifecycle, Explorer, routing, and
+identity commits. The existing persistence key and backward-readable superset
+remain intact. Rolling application code back does not promise compatibility
+with newly published canonical URLs.
+
+This work remains local-only. No push, remote branch, pull request, merge,
+deployment, release, or tag was created.
+
 ## Rollback and publication boundary
 
 - Roll back with ordinary commit reverts, never reset or history rewriting.
