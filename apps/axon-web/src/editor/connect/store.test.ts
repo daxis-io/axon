@@ -20,7 +20,11 @@ import {
   discoverFlatCatalog,
 } from '../../services/catalog-provider.ts';
 import { publicObjectStorageCatalogMetadata } from '../../services/object-storage.ts';
-import { querySourcesForCatalog } from '../../services/query-source.ts';
+import {
+  querySourcesForCatalog,
+  resolveQuerySourceSelection,
+  SAMPLE_QUERY_SOURCE_REF,
+} from '../../services/query-source.ts';
 import type { ConnectedCatalog, ConnectResult } from './types.ts';
 import {
   buildCatalogFromResult,
@@ -108,6 +112,14 @@ function catalog(id: string, alias = id): ConnectedCatalog {
   };
 }
 
+function legacySampleCatalog(): ConnectedCatalog {
+  const legacy = structuredClone(SAMPLE_CONNECTED_CATALOG);
+  legacy.id = 'sample-lake-fixture';
+  legacy.catalogName = undefined;
+  legacy.schemas[0]!.tables[0]!.logicalTable = undefined;
+  return legacy;
+}
+
 describe('connected catalog persistence', () => {
   let storage: MemoryStorage;
 
@@ -136,6 +148,42 @@ describe('connected catalog persistence', () => {
     expect(restored.flatMap(querySourcesForCatalog)).toEqual(
       querySourcesForCatalog(SAMPLE_CONNECTED_CATALOG),
     );
+  });
+
+  it('upgrades the exact b0a7e1c sample record to the current explicit sample identity', () => {
+    storage.setItem(STORAGE_KEY, JSON.stringify([legacySampleCatalog()]));
+
+    const restored = loadConnectedCatalogs();
+
+    expect(restored).toEqual([SAMPLE_CONNECTED_CATALOG]);
+    expect(resolveQuerySourceSelection(restored, SAMPLE_QUERY_SOURCE_REF)).toMatchObject({
+      kind: 'sample',
+    });
+  });
+
+  it.each([
+    [
+      'extra table',
+      (legacy: ConnectedCatalog) => {
+        legacy.schemas[0]!.tables.push({
+          ...structuredClone(legacy.schemas[0]!.tables[0]!),
+          id: 'prod_like.invalid',
+          name: 'invalid',
+        });
+      },
+    ],
+    [
+      'field mismatch',
+      (legacy: ConnectedCatalog) => {
+        legacy.schemas[0]!.tables[0]!.source!.region = 'us-east-1';
+      },
+    ],
+  ])('rejects a b0a7e1c sample record with %s', (_label, mutate) => {
+    const legacy = legacySampleCatalog();
+    mutate(legacy);
+    storage.setItem(STORAGE_KEY, JSON.stringify([legacy]));
+
+    expect(loadConnectedCatalogs()).toEqual([]);
   });
 
   it('rejects a persisted sample record when an extra table is malformed', () => {

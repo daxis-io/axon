@@ -37,6 +37,7 @@ import {
 } from '../../services/query-source.ts';
 
 const STORAGE_KEY = 'axon.connect.catalogs.v1';
+const LEGACY_SAMPLE_CATALOG_ID = 'sample-lake-fixture';
 export const DEFAULT_AXON_CATALOG_ALIAS = 'workspace';
 export const DEFAULT_AXON_SCHEMA_NAME = 'default';
 
@@ -336,6 +337,11 @@ function migrateConnectedCatalogs(
 ): ConnectedCatalog[] {
   const migrated: ConnectedCatalog[] = [];
   for (const catalog of catalogs) {
+    const legacySample = migrateLegacyExplicitSampleCatalogClaim(catalog, options);
+    if (legacySample) {
+      migrated.push(legacySample);
+      continue;
+    }
     validateExplicitSampleCatalogClaim(catalog, options);
     for (const schema of catalog.schemas ?? []) {
       for (const table of schema.tables ?? []) {
@@ -483,6 +489,119 @@ function publicObjectStorageProvider(
   provider: ObjectStoreProviderId | undefined,
 ): PublicObjectStorageProvider | undefined {
   return provider === 'gcs' || provider === 's3' ? provider : undefined;
+}
+
+function migrateLegacyExplicitSampleCatalogClaim(
+  catalog: ConnectedCatalog,
+  options: { rejectInvalid?: boolean },
+): ConnectedCatalog | undefined {
+  if (catalog.id !== LEGACY_SAMPLE_CATALOG_ID) return undefined;
+  if (isExactLegacyExplicitSampleCatalog(catalog)) {
+    return cloneExplicitSampleConnectedCatalog();
+  }
+  if (options.rejectInvalid) {
+    throw new Error('persisted legacy sample catalog did not match the explicit sample fixture');
+  }
+  return undefined;
+}
+
+function isExactLegacyExplicitSampleCatalog(catalog: ConnectedCatalog): boolean {
+  const schema = catalog.schemas?.[0];
+  const table = schema?.tables?.[0];
+  const source = table?.source;
+  const sampleTable = SAMPLE_CONNECTED_CATALOG.schemas[0]!.tables[0]!;
+  const sampleSource = sampleTable.source!;
+  return (
+    hasExactOwnKeys(catalog, [
+      'alias',
+      'connectedAt',
+      'id',
+      'kind',
+      'provider',
+      'region',
+      'schemas',
+      'status',
+      'storage',
+    ]) &&
+    catalog.alias === SAMPLE_CONNECTED_CATALOG.alias &&
+    catalog.kind === SAMPLE_CONNECTED_CATALOG.kind &&
+    catalog.provider === SAMPLE_CONNECTED_CATALOG.provider &&
+    catalog.storage === SAMPLE_CONNECTED_CATALOG.storage &&
+    catalog.region === SAMPLE_CONNECTED_CATALOG.region &&
+    catalog.status === SAMPLE_CONNECTED_CATALOG.status &&
+    catalog.connectedAt === SAMPLE_CONNECTED_CATALOG.connectedAt &&
+    catalog.schemas.length === 1 &&
+    hasExactOwnKeys(schema, ['name', 'tables']) &&
+    schema?.name === SAMPLE_QUERY_SOURCE.schemaName &&
+    schema.tables.length === 1 &&
+    hasExactOwnKeys(table, [
+      'files',
+      'id',
+      'manifestUrl',
+      'name',
+      'protocol',
+      'rows',
+      'size',
+      'snapshot',
+      'source',
+    ]) &&
+    table?.id === sampleTable.id &&
+    table.name === sampleTable.name &&
+    table.snapshot === sampleTable.snapshot &&
+    table.rows === sampleTable.rows &&
+    table.files === sampleTable.files &&
+    table.size === sampleTable.size &&
+    table.protocol === sampleTable.protocol &&
+    table.manifestUrl === sampleTable.manifestUrl &&
+    hasExactOwnKeys(source, [
+      'canonicalKey',
+      'connectedAt',
+      'id',
+      'kind',
+      'provider',
+      'region',
+      'storage',
+    ]) &&
+    source?.id === sampleSource.id &&
+    source.kind === sampleSource.kind &&
+    source.provider === sampleSource.provider &&
+    source.storage === sampleSource.storage &&
+    source.region === sampleSource.region &&
+    source.canonicalKey === sampleSource.canonicalKey &&
+    source.connectedAt === sampleSource.connectedAt
+  );
+}
+
+function cloneExplicitSampleConnectedCatalog(): ConnectedCatalog {
+  const schema = SAMPLE_CONNECTED_CATALOG.schemas[0]!;
+  const table = schema.tables[0]!;
+  return {
+    ...SAMPLE_CONNECTED_CATALOG,
+    schemas: [
+      {
+        ...schema,
+        tables: [
+          {
+            ...table,
+            logicalTable: table.logicalTable
+              ? clone(TableNodeSchema, table.logicalTable)
+              : undefined,
+            source: table.source ? { ...table.source } : undefined,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function hasExactOwnKeys(value: object | null | undefined, expected: readonly string[]): boolean {
+  if (!value) return false;
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return (
+    actual.length === sortedExpected.length &&
+    actual.every((key, index) => key === sortedExpected[index])
+  );
 }
 
 function validateExplicitSampleCatalogClaim(
