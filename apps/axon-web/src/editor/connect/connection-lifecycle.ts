@@ -11,14 +11,29 @@ type ConnectionLifecycleOptions = {
   discardActiveQuerySession?: () => void | Promise<void>;
   unregisterLocalDeltaRuntime?: (registryId: string) => void | Promise<void>;
   reportError?: (message: string, error: unknown) => void;
-  onPendingChange?: (pending: boolean) => void;
 };
 
 const mutationQueues = new WeakMap<QueryClient, Promise<void>>();
 const pendingMutationCounts = new WeakMap<QueryClient, number>();
+const pendingMutationListeners = new WeakMap<QueryClient, Set<() => void>>();
 
 export function connectionMutationPending(queryClient: QueryClient): boolean {
   return (pendingMutationCounts.get(queryClient) ?? 0) > 0;
+}
+
+export function subscribeConnectionMutationPending(
+  queryClient: QueryClient,
+  listener: () => void,
+): () => void {
+  const listeners = pendingMutationListeners.get(queryClient) ?? new Set<() => void>();
+  listeners.add(listener);
+  pendingMutationListeners.set(queryClient, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) {
+      pendingMutationListeners.delete(queryClient);
+    }
+  };
 }
 
 export function runConnectionMutationLifecycle<TMutation extends ConnectionLifecycleMutation>(
@@ -26,7 +41,7 @@ export function runConnectionMutationLifecycle<TMutation extends ConnectionLifec
   mutate: () => TMutation,
   options: ConnectionLifecycleOptions = {},
 ): Promise<TMutation> {
-  updatePendingMutationCount(queryClient, 1, options.onPendingChange);
+  updatePendingMutationCount(queryClient, 1);
   const previous = mutationQueues.get(queryClient) ?? Promise.resolve();
   const run = previous
     .catch(() => undefined)
@@ -36,7 +51,7 @@ export function runConnectionMutationLifecycle<TMutation extends ConnectionLifec
       return mutation;
     })
     .finally(() => {
-      updatePendingMutationCount(queryClient, -1, options.onPendingChange);
+      updatePendingMutationCount(queryClient, -1);
     });
   const tail = run.then(
     () => undefined,
@@ -51,18 +66,16 @@ export function runConnectionMutationLifecycle<TMutation extends ConnectionLifec
   return run;
 }
 
-function updatePendingMutationCount(
-  queryClient: QueryClient,
-  delta: 1 | -1,
-  onPendingChange: ((pending: boolean) => void) | undefined,
-): void {
+function updatePendingMutationCount(queryClient: QueryClient, delta: 1 | -1): void {
   const next = Math.max(0, (pendingMutationCounts.get(queryClient) ?? 0) + delta);
   if (next === 0) {
     pendingMutationCounts.delete(queryClient);
   } else {
     pendingMutationCounts.set(queryClient, next);
   }
-  onPendingChange?.(next > 0);
+  for (const listener of pendingMutationListeners.get(queryClient) ?? []) {
+    listener();
+  }
 }
 
 export async function applyConnectionLifecycleCleanup(

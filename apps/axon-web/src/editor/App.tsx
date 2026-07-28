@@ -4,7 +4,7 @@ import {
   lazy,
   useMemo,
   useRef,
-  useState,
+  useSyncExternalStore,
   Suspense,
   type CSSProperties,
   type MouseEvent,
@@ -87,6 +87,7 @@ import { Sidebar } from './components/Sidebar.tsx';
 import {
   connectionMutationPending,
   runConnectionMutationLifecycle,
+  subscribeConnectionMutationPending,
 } from './connect/connection-lifecycle.ts';
 import {
   IconChevDownTiny,
@@ -237,7 +238,19 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
   const activeTabId = tabsState.activeTabId;
   const active = activeSqlTab ?? tabs[0]!;
   const queryClient = useQueryClient();
-  const [connectionLifecycleBusy, setConnectionLifecycleBusy] = useState(false);
+  const subscribeToConnectionLifecycle = useCallback(
+    (listener: () => void) => subscribeConnectionMutationPending(queryClient, listener),
+    [queryClient],
+  );
+  const readConnectionLifecycle = useCallback(
+    () => connectionMutationPending(queryClient),
+    [queryClient],
+  );
+  const connectionLifecycleBusy = useSyncExternalStore(
+    subscribeToConnectionLifecycle,
+    readConnectionLifecycle,
+    readConnectionLifecycle,
+  );
   const querySelection = useMemo(
     () => resolveQuerySourceSelection(availableConnectedCatalogs, activeTableRef),
     [activeTableRef, availableConnectedCatalogs],
@@ -310,10 +323,8 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
 
   const handleConnected = useCallback(
     async (result: ConnectResult) => {
-      const mutation = await runConnectionMutationLifecycle(
-        queryClient,
-        () => connectionActions.connect(result),
-        { onPendingChange: setConnectionLifecycleBusy },
+      const mutation = await runConnectionMutationLifecycle(queryClient, () =>
+        connectionActions.connect(result),
       );
       uiActions.closeConnectModal();
       window.setTimeout(() => connectionActions.clearFreshCatalogId(), 4500);
@@ -328,9 +339,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
 
   const removeConnectedCatalog = useCallback(
     async (id: string) => {
-      await runConnectionMutationLifecycle(queryClient, () => connectionActions.removeCatalog(id), {
-        onPendingChange: setConnectionLifecycleBusy,
-      });
+      await runConnectionMutationLifecycle(queryClient, () => connectionActions.removeCatalog(id));
     },
     [connectionActions, queryClient],
   );

@@ -13,6 +13,7 @@ import {
   applyConnectionLifecycleCleanup,
   connectionMutationPending,
   runConnectionMutationLifecycle,
+  subscribeConnectionMutationPending,
 } from './connection-lifecycle.ts';
 
 const first: QueryTableSource = {
@@ -191,6 +192,8 @@ describe('connection lifecycle cleanup', () => {
       order.push('reconnect mutation');
       return mutation();
     });
+    const firstMountListener = vi.fn();
+    const unsubscribeFirstMount = subscribeConnectionMutationPending(client, firstMountListener);
 
     const disconnecting = runConnectionMutationLifecycle(client, disconnect, {
       discardActiveQuerySession,
@@ -201,6 +204,11 @@ describe('connection lifecycle cleanup', () => {
 
     expect(reconnect).not.toHaveBeenCalled();
     expect(connectionMutationPending(client)).toBe(true);
+    expect(firstMountListener).toHaveBeenCalledTimes(2);
+    unsubscribeFirstMount();
+    const remountedListener = vi.fn();
+    const unsubscribeRemounted = subscribeConnectionMutationPending(client, remountedListener);
+    expect(connectionMutationPending(client)).toBe(true);
     const startQuery = vi.fn();
     if (!connectionMutationPending(client)) startQuery();
     expect(startQuery).not.toHaveBeenCalled();
@@ -209,6 +217,8 @@ describe('connection lifecycle cleanup', () => {
     await reconnecting;
 
     expect(connectionMutationPending(client)).toBe(false);
+    expect(remountedListener).toHaveBeenCalledTimes(2);
+    unsubscribeRemounted();
     if (!connectionMutationPending(client)) startQuery();
     expect(startQuery).toHaveBeenCalledTimes(1);
     expect(order).toEqual([
