@@ -1,7 +1,7 @@
 // Persistence for connected catalogs from the Connect Catalog workflow.
 // Stored in localStorage so non-sensitive catalog metadata survives reloads.
 
-import { clone, toJson } from '@bufbuild/protobuf';
+import { clone, equals, toJson } from '@bufbuild/protobuf';
 import {
   TableMetadataSchema,
   TableNodeSchema,
@@ -336,10 +336,7 @@ function migrateConnectedCatalogs(
 ): ConnectedCatalog[] {
   const migrated: ConnectedCatalog[] = [];
   for (const catalog of catalogs) {
-    if (isExplicitSampleCatalog(catalog)) {
-      migrated.push({ ...catalog, catalogName: SAMPLE_QUERY_SOURCE.catalogName });
-      continue;
-    }
+    validateExplicitSampleCatalogClaim(catalog, options);
     for (const schema of catalog.schemas ?? []) {
       for (const table of schema.tables ?? []) {
         const logicalTable = logicalTableForPersistedTable(table, catalog);
@@ -488,19 +485,23 @@ function publicObjectStorageProvider(
   return provider === 'gcs' || provider === 's3' ? provider : undefined;
 }
 
-function isExplicitSampleCatalog(catalog: ConnectedCatalog): boolean {
-  return (
-    catalog.id === SAMPLE_QUERY_SOURCE_REF.resource?.connectionId &&
-    catalog.schemas.some(
-      (schema) =>
-        schema.name === SAMPLE_QUERY_SOURCE.schemaName &&
-        schema.tables.some(
-          (table) =>
-            table.name === SAMPLE_QUERY_SOURCE.tableName &&
-            table.manifestUrl === SAMPLE_QUERY_SOURCE.manifestUrl,
-        ),
-    )
-  );
+function validateExplicitSampleCatalogClaim(
+  catalog: ConnectedCatalog,
+  options: { rejectInvalid?: boolean },
+): void {
+  if (catalog.id !== SAMPLE_QUERY_SOURCE_REF.resource?.connectionId) return;
+  const schema = catalog.schemas?.[0];
+  const table = schema?.tables?.[0];
+  const valid =
+    catalog.schemas.length === 1 &&
+    schema?.name === SAMPLE_QUERY_SOURCE.schemaName &&
+    schema.tables.length === 1 &&
+    table?.name === SAMPLE_QUERY_SOURCE.tableName &&
+    table.manifestUrl === SAMPLE_QUERY_SOURCE.manifestUrl &&
+    table.logicalTable !== undefined &&
+    equals(TableNodeSchema, table.logicalTable, SAMPLE_QUERY_SOURCE_REF);
+  if (valid || !options.rejectInvalid) return;
+  throw new Error('persisted sample catalog did not match the explicit sample fixture');
 }
 
 function validateConnectedCatalogMetadata(catalogs: ConnectedCatalog[]): ConnectedCatalog[] {

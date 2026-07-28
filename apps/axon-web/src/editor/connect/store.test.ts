@@ -127,6 +127,55 @@ describe('connected catalog persistence', () => {
     expect(loadConnectedCatalogs()).toEqual([]);
   });
 
+  it('round-trips the exact explicit sample fixture through whole-record validation', () => {
+    saveConnectedCatalogs([SAMPLE_CONNECTED_CATALOG]);
+
+    const restored = loadConnectedCatalogs();
+    expect(restored).toHaveLength(1);
+    expect(restored[0]?.id).toBe(SAMPLE_CONNECTED_CATALOG.id);
+    expect(restored.flatMap(querySourcesForCatalog)).toEqual(
+      querySourcesForCatalog(SAMPLE_CONNECTED_CATALOG),
+    );
+  });
+
+  it('rejects a persisted sample record when an extra table is malformed', () => {
+    const malformed = structuredClone(SAMPLE_CONNECTED_CATALOG);
+    const extra = structuredClone(malformed.schemas[0]!.tables[0]!);
+    extra.id = 'default.invalid';
+    extra.name = 'invalid';
+    extra.manifestUrl = undefined;
+    extra.logicalTable = undefined;
+    extra.source = undefined;
+    malformed.schemas[0]!.tables.push(extra);
+
+    storage.setItem(STORAGE_KEY, JSON.stringify([malformed]));
+
+    expect(loadConnectedCatalogs()).toEqual([]);
+  });
+
+  it.each([
+    [
+      'missing',
+      (malformed: ConnectedCatalog) => {
+        malformed.schemas[0]!.tables[0]!.logicalTable = undefined;
+      },
+    ],
+    [
+      'mismatched',
+      (malformed: ConnectedCatalog) => {
+        malformed.schemas[0]!.tables[0]!.logicalTable!.resource!.connectionId =
+          'axon-connection://public-gcs/not-the-sample';
+      },
+    ],
+  ])('rejects a persisted sample record with %s logical identity', (_label, mutate) => {
+    const malformed = structuredClone(SAMPLE_CONNECTED_CATALOG);
+    mutate(malformed);
+
+    storage.setItem(STORAGE_KEY, JSON.stringify([malformed]));
+
+    expect(loadConnectedCatalogs()).toEqual([]);
+  });
+
   it('restores generated view metadata for browsing without treating it as queryable', () => {
     const viewCatalog = catalog('weekly_events');
     const view = viewCatalog.schemas[0]!.tables[0]!;
