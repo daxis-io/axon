@@ -58,7 +58,7 @@ Keep keys stable and route new query key families through this module.
 
 `commitsQueryOptions(selection)` wraps commit-log loading and uses the same disabled behavior for unavailable selection. `AppProviders` installs a ref-counted runtime bridge that writes published runtime catalogs to the matching catalog query and invalidates the matching commits query.
 
-`purgeCatalogSourceCache(queryClient, source)` cancels, removes, and invalidates the entire `queryKeys.catalog.connection(source)` subtree, in that order, then clears matching runtime presentation state. It is used when connected sources are removed or replaced. The catalog and commits query adapters also call `purgeCatalogSourceCacheForError` so auth/session-style failures (`401`, `403`, `419`, `440`) discard only that connection-scoped catalog cache. These helpers do not purge `queryKeys.local.history()` or `queryKeys.local.saved()`.
+`purgeCatalogSourceCache(queryClient, source)` awaits cancellation, then removes and invalidates the entire `queryKeys.catalog.connection(source)` subtree before clearing matching runtime presentation state. It is used when connected sources are removed or replaced. `purgeCatalogSourcesCache` deduplicates sources at that canonical connection prefix. The catalog and commits query adapters also await `purgeCatalogSourceCacheForError` so auth/session-style failures (`401`, `403`, `419`, `440`) discard only that connection-scoped catalog cache. These helpers do not purge `queryKeys.local.history()` or `queryKeys.local.saved()`.
 
 ## Local Metadata Server State
 

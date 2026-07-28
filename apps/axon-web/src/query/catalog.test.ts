@@ -227,7 +227,7 @@ describe('catalog query adapters', () => {
     expect(invalidateQueries).toHaveBeenCalledTimes(2);
   });
 
-  it('purges source-scoped catalog cache without clearing local metadata or other sources', () => {
+  it('purges source-scoped catalog cache without clearing local metadata or other sources', async () => {
     const client = new QueryClient();
     const cancelQueries = vi.spyOn(client, 'cancelQueries');
     const sourceCatalog = runtimeCatalog('source-catalog');
@@ -242,7 +242,7 @@ describe('catalog query adapters', () => {
     client.setQueryData(queryKeys.local.saved(), saved);
     publishQueryRuntimeState({ source, catalog: sourceCatalog }, 10);
 
-    purgeCatalogSourceCache(client, source);
+    await purgeCatalogSourceCache(client, source);
 
     expect(cancelQueries).toHaveBeenCalledWith({
       queryKey: queryKeys.catalog.connection(source),
@@ -274,7 +274,7 @@ describe('catalog query adapters', () => {
     });
     await vi.waitFor(() => expect(catalogServiceMocks.loadCatalog).toHaveBeenCalled());
 
-    purgeCatalogSourceCache(client, source);
+    await purgeCatalogSourceCache(client, source);
     resolveLoad(runtimeCatalog('late'));
 
     await expect(pending).rejects.toThrow('CancelledError');
@@ -282,7 +282,7 @@ describe('catalog query adapters', () => {
     expect(client.getQueryData(queryKeys.catalog.tableDerived(source))).toBeUndefined();
   });
 
-  it('purges every table leaf beneath the same public connection prefix', () => {
+  it('purges every table leaf beneath the same public connection prefix', async () => {
     const client = new QueryClient();
     const first: QueryTableSource = {
       kind: 'object_store_table_root',
@@ -306,26 +306,28 @@ describe('catalog query adapters', () => {
     client.setQueryData(queryKeys.catalog.tableDerived(second), runtimeCatalog('second'));
     publishQueryRuntimeState({ source: second, catalog: runtimeCatalog('runtime-second') }, 10);
 
-    purgeCatalogSourceCache(client, first);
+    await purgeCatalogSourceCache(client, first);
 
     expect(client.getQueryData(queryKeys.catalog.tableDerived(first))).toBeUndefined();
     expect(client.getQueryData(queryKeys.catalog.tableDerived(second))).toBeUndefined();
     expect(getQueryRuntimeState(second)).toBeUndefined();
   });
 
-  it('purges source-scoped catalog cache for auth or session style failures only', () => {
+  it('purges source-scoped catalog cache for auth or session style failures only', async () => {
     const client = new QueryClient();
     const sourceCatalog = runtimeCatalog('source-catalog');
 
     client.setQueryData(queryKeys.catalog.tableDerived(source), sourceCatalog);
 
-    expect(purgeCatalogSourceCacheForError(client, source, { response: { status: 403 } })).toBe(
-      true,
-    );
+    await expect(
+      purgeCatalogSourceCacheForError(client, source, { response: { status: 403 } }),
+    ).resolves.toBe(true);
     expect(client.getQueryData(queryKeys.catalog.tableDerived(source))).toBeUndefined();
 
     client.setQueryData(queryKeys.catalog.tableDerived(source), sourceCatalog);
-    expect(purgeCatalogSourceCacheForError(client, source, { status: 404 })).toBe(false);
+    await expect(purgeCatalogSourceCacheForError(client, source, { status: 404 })).resolves.toBe(
+      false,
+    );
     expect(client.getQueryData(queryKeys.catalog.tableDerived(source))).toEqual(sourceCatalog);
   });
 

@@ -14,11 +14,7 @@ import {
   ExecutionRejectionReason,
   ExecutionTarget as ContractExecutionTarget,
 } from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
-import {
-  catalogQueryOptions,
-  commitsQueryOptions,
-  purgeCatalogSourcesCache,
-} from '../query/catalog.ts';
+import { catalogQueryOptions, commitsQueryOptions } from '../query/catalog.ts';
 import {
   appendHistoryEntry,
   historyQueryOptions,
@@ -87,6 +83,7 @@ import { Editor } from './components/Editor.tsx';
 import { RunResultsPanel } from './components/RunResultsPanel.tsx';
 import { SaveDialog } from './components/SaveDialog.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
+import { applyConnectionLifecycleCleanup } from './connect/connection-lifecycle.ts';
 import {
   IconChevDownTiny,
   IconDatabase,
@@ -303,16 +300,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
   const handleConnected = useCallback(
     (result: ConnectResult) => {
       const mutation = connectionActions.connect(result);
-      purgeCatalogSourcesCache(queryClient, mutation.discardedSources);
-      if (mutation.shouldDiscardActiveQuerySession) {
-        discardActiveQuerySession();
-      }
-      if (mutation.localRegistryIdsToUnregister.length > 0) {
-        unregisterLocalDeltaRuntimeIds(
-          mutation.localRegistryIdsToUnregister,
-          'failed to unregister duplicate local Delta catalog:',
-        );
-      }
+      void applyConnectionLifecycleCleanup(queryClient, mutation);
       uiActions.closeConnectModal();
       window.setTimeout(() => connectionActions.clearFreshCatalogId(), 4500);
       showToast(
@@ -327,16 +315,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
   const removeConnectedCatalog = useCallback(
     (id: string) => {
       const mutation = connectionActions.removeCatalog(id);
-      purgeCatalogSourcesCache(queryClient, mutation.discardedSources);
-      if (mutation.shouldDiscardActiveQuerySession) {
-        discardActiveQuerySession();
-      }
-      if (mutation.localRegistryIdsToUnregister.length > 0) {
-        unregisterLocalDeltaRuntimeIds(
-          mutation.localRegistryIdsToUnregister,
-          'failed to unregister local Delta catalog:',
-        );
-      }
+      void applyConnectionLifecycleCleanup(queryClient, mutation);
     },
     [connectionActions, queryClient],
   );
@@ -1317,18 +1296,4 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
       )}
     </div>
   );
-}
-
-function discardActiveQuerySession(): void {
-  void import('../services/query.ts')
-    .then(({ discardQuerySession }) => discardQuerySession())
-    .catch((error) => console.warn('failed to discard query session:', error));
-}
-
-function unregisterLocalDeltaRuntimeIds(registryIds: string[], message: string): void {
-  void import('../services/local-delta.ts')
-    .then(({ unregisterLocalDeltaRuntime }) =>
-      Promise.all(registryIds.map((registryId) => unregisterLocalDeltaRuntime(registryId))),
-    )
-    .catch((error) => console.warn(message, error));
 }

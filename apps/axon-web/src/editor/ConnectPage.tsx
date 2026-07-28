@@ -4,8 +4,8 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import { Suspense, lazy, useCallback, useState } from 'react';
-import { purgeCatalogSourcesCache } from '../query/catalog.ts';
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
+import { applyConnectionLifecycleCleanup } from './connect/connection-lifecycle.ts';
 import { availabilityForSource, type SourceId } from './connect/data.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { IconBolt, IconChevR, IconPlus, IconSettings } from './components/icons.tsx';
@@ -18,8 +18,6 @@ import {
   selectFreshCatalogId,
   useAxonClientStore,
 } from '../state/hooks.ts';
-import type { ConnectionMutationResult } from '../state/slices/connections.ts';
-import type { QueryTableSource } from '../services/query-source.ts';
 
 const ConnectModal = lazy(() =>
   import('./connect/ConnectModal.tsx').then((module) => ({ default: module.ConnectModal })),
@@ -44,13 +42,7 @@ export function ConnectPage() {
   const onConnect = useCallback(
     (result: ConnectResult) => {
       const mutation = connectionActions.connect(result);
-      applyConnectPageMutationSideEffects(
-        mutation,
-        'failed to unregister duplicate local Delta catalog:',
-        {
-          purgeCatalogSources: (sources) => purgeCatalogSourcesCache(queryClient, sources),
-        },
-      );
+      void applyConnectionLifecycleCleanup(queryClient, mutation);
       setModalOpen(false);
       window.setTimeout(() => connectionActions.clearFreshCatalogId(), 4500);
     },
@@ -60,9 +52,7 @@ export function ConnectPage() {
   const removeCatalog = useCallback(
     (id: string) => {
       const mutation = connectionActions.removeCatalog(id);
-      applyConnectPageMutationSideEffects(mutation, 'failed to unregister local Delta catalog:', {
-        purgeCatalogSources: (sources) => purgeCatalogSourcesCache(queryClient, sources),
-      });
+      void applyConnectionLifecycleCleanup(queryClient, mutation);
     },
     [connectionActions, queryClient],
   );
@@ -244,48 +234,4 @@ function glyphClass(c: ConnectedCatalog) {
   if (c.kind === 'unity_catalog') return 'uc';
   if (c.kind === 'delta_share') return 'ds';
   return c.provider || 'gcs';
-}
-
-type ConnectPageMutationSideEffectOptions = {
-  discardActiveQuerySession?: () => void;
-  purgeCatalogSources?: (sources: QueryTableSource[]) => void;
-  unregisterLocalDeltaRuntimeIds?: (registryIds: string[], message: string) => void;
-};
-
-export function applyConnectPageMutationSideEffects(
-  mutation: Pick<
-    ConnectionMutationResult,
-    'discardedSources' | 'localRegistryIdsToUnregister' | 'shouldDiscardActiveQuerySession'
-  >,
-  unregisterMessage: string,
-  options: ConnectPageMutationSideEffectOptions = {},
-): void {
-  if (mutation.discardedSources.length > 0) {
-    options.purgeCatalogSources?.(mutation.discardedSources);
-  }
-
-  if (mutation.shouldDiscardActiveQuerySession) {
-    (options.discardActiveQuerySession ?? discardActiveQuerySession)();
-  }
-
-  if (mutation.localRegistryIdsToUnregister.length > 0) {
-    (options.unregisterLocalDeltaRuntimeIds ?? unregisterLocalDeltaRuntimeIds)(
-      mutation.localRegistryIdsToUnregister,
-      unregisterMessage,
-    );
-  }
-}
-
-function discardActiveQuerySession(): void {
-  void import('../services/query.ts')
-    .then(({ discardQuerySession }) => discardQuerySession())
-    .catch((error) => console.warn('failed to discard query session:', error));
-}
-
-function unregisterLocalDeltaRuntimeIds(registryIds: string[], message: string): void {
-  void import('../services/local-delta.ts')
-    .then(({ unregisterLocalDeltaRuntime }) =>
-      Promise.all(registryIds.map((registryId) => unregisterLocalDeltaRuntime(registryId))),
-    )
-    .catch((error) => console.warn(message, error));
 }

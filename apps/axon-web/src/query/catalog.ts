@@ -92,49 +92,73 @@ async function loadWithCatalogSourcePurge<T>(
   try {
     return await load();
   } catch (error) {
-    purgeCatalogSourceCacheForError(queryClient, source, error);
+    try {
+      await purgeCatalogSourceCacheForError(queryClient, source, error);
+    } catch {
+      // Preserve the provider failure that triggered eviction.
+    }
     throw error;
   }
 }
 
-export function purgeCatalogSourceCache(queryClient: QueryClient, source: QueryTableSource): void {
-  void queryClient.cancelQueries({
+export async function purgeCatalogSourceCache(
+  queryClient: QueryClient,
+  source: QueryTableSource,
+): Promise<void> {
+  const connectionQuery = {
     queryKey: queryKeys.catalog.connection(source),
     exact: false,
-  });
-  queryClient.removeQueries({
-    queryKey: queryKeys.catalog.connection(source),
-    exact: false,
-  });
-  void queryClient.invalidateQueries({
-    queryKey: queryKeys.catalog.connection(source),
-    exact: false,
-  });
+  } as const;
+  let cleanupError: unknown;
+  try {
+    await queryClient.cancelQueries(connectionQuery);
+  } catch (error) {
+    cleanupError = error;
+  }
+  try {
+    queryClient.removeQueries(connectionQuery);
+  } catch (error) {
+    cleanupError ??= error;
+  }
+  try {
+    await queryClient.invalidateQueries(connectionQuery);
+  } catch (error) {
+    cleanupError ??= error;
+  }
   const runtimeState = getQueryRuntimeState();
   if (runtimeState && sameCatalogConnection(runtimeState.source, source)) {
     clearQueryRuntimeState();
   }
+  if (cleanupError) throw cleanupError;
 }
 
-export function purgeCatalogSourcesCache(
+export async function purgeCatalogSourcesCache(
   queryClient: QueryClient,
   sources: readonly QueryTableSource[],
-): void {
+): Promise<void> {
+  const connections = new Map<string, QueryTableSource>();
   for (const source of sources) {
-    purgeCatalogSourceCache(queryClient, source);
+    connections.set(JSON.stringify(queryKeys.catalog.connection(source)), source);
   }
+  const results = await Promise.allSettled(
+    [...connections.values()].map((source) => purgeCatalogSourceCache(queryClient, source)),
+  );
+  const failure = results.find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (failure) throw failure.reason;
 }
 
-export function purgeCatalogSourceCacheForError(
+export async function purgeCatalogSourceCacheForError(
   queryClient: QueryClient,
   source: QueryTableSource,
   error: unknown,
-): boolean {
+): Promise<boolean> {
   if (!isCatalogSourceDiscardError(error)) {
     return false;
   }
 
-  purgeCatalogSourceCache(queryClient, source);
+  await purgeCatalogSourceCache(queryClient, source);
   return true;
 }
 

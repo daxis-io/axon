@@ -682,6 +682,37 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.getByRole('button', { name: 'Connect a source' })).toBeVisible();
   });
 
+  test('canonical SQL route fails closed when its exact connection is disconnected', async ({
+    page,
+  }) => {
+    const catalog = connectedCatalogFixture({
+      alias: 'disconnect-lake',
+      storage: 'gs://axon-disconnect/events',
+    });
+    const table = catalog.schemas[0]!.tables[0]!.logicalTable!;
+    await page.addInitScript(
+      (value) => {
+        localStorage.setItem('axon.connect.catalogs.v1', JSON.stringify(value));
+      },
+      [catalog],
+    );
+
+    await page.goto(catalogTableSqlPath(table));
+    await expect(page.locator('.conn-pill')).toContainText('disconnect-lake');
+    await page.locator('.conn-pill').click();
+    const panel = page.getByRole('dialog', { name: 'Connected catalogs' });
+    await panel.getByTitle('Manage connection').click();
+    await panel.getByRole('button', { name: 'Disconnect catalog' }).click();
+
+    await expect(page.getByRole('heading', { name: 'Table route unavailable' })).toBeVisible();
+    await expect(page.getByText(/no longer connected/i)).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => JSON.parse(localStorage.getItem('axon.connect.catalogs.v1') ?? '[]')),
+      )
+      .toEqual([]);
+  });
+
   test('invalid catalog table routes render a catalog recovery action', async ({ page }) => {
     await page.addInitScript(
       (value) => {
@@ -2133,7 +2164,7 @@ async function connectLocalDeltaFolder(
   await expect(localDialog).toContainText(/source check passed/i);
   await localDialog.getByRole('button', { name: /Discover tables/ }).click();
   const reviewDialog = page.getByRole('dialog', { name: 'Review & name catalog' });
-  await expect(reviewDialog).toContainText(/Detected 1 local Delta table/i);
+  await expect(reviewDialog).toContainText(/Detected 1 (?:local Delta|catalog) table/i);
   await setCustomCatalogAlias(reviewDialog, alias);
   await reviewDialog.getByRole('button', { name: /Connect catalog/ }).click();
 
@@ -2293,7 +2324,7 @@ async function connectLocalDeltaDirectoryHandle(
   await expect(localDialog).toContainText(/source check passed/i);
   await localDialog.getByRole('button', { name: /Discover tables/ }).click();
   const reviewDialog = page.getByRole('dialog', { name: 'Review & name catalog' });
-  await expect(reviewDialog).toContainText(/Detected 1 local Delta table/i);
+  await expect(reviewDialog).toContainText(/Detected 1 (?:local Delta|catalog) table/i);
   await setCustomCatalogAlias(reviewDialog, alias);
   await reviewDialog.getByRole('button', { name: /Connect catalog/ }).click();
 
