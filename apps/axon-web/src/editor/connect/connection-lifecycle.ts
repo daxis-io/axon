@@ -13,6 +13,34 @@ type ConnectionLifecycleOptions = {
   reportError?: (message: string, error: unknown) => void;
 };
 
+const mutationQueues = new WeakMap<QueryClient, Promise<void>>();
+
+export function runConnectionMutationLifecycle<TMutation extends ConnectionLifecycleMutation>(
+  queryClient: QueryClient,
+  mutate: () => TMutation,
+  options: ConnectionLifecycleOptions = {},
+): Promise<TMutation> {
+  const previous = mutationQueues.get(queryClient) ?? Promise.resolve();
+  const run = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const mutation = mutate();
+      await applyConnectionLifecycleCleanup(queryClient, mutation, options);
+      return mutation;
+    });
+  const tail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  mutationQueues.set(queryClient, tail);
+  void tail.then(() => {
+    if (mutationQueues.get(queryClient) === tail) {
+      mutationQueues.delete(queryClient);
+    }
+  });
+  return run;
+}
+
 export async function applyConnectionLifecycleCleanup(
   queryClient: QueryClient,
   mutation: ConnectionLifecycleMutation,

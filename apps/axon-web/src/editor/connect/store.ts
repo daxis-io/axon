@@ -95,7 +95,9 @@ const connectedCatalogStore = createLocalStorageKeyValueStore<ConnectedCatalog>(
   fallback: () => [SAMPLE_CONNECTED_CATALOG],
   invalidFallback: () => [],
   afterRead: (catalogs) =>
-    validateConnectedCatalogMetadata(dedupeConnectedCatalogs(migrateConnectedCatalogs(catalogs))),
+    validateConnectedCatalogMetadata(
+      dedupeConnectedCatalogs(migrateConnectedCatalogs(catalogs, { rejectInvalid: true })),
+    ),
   beforeWrite: (catalogs) =>
     validateConnectedCatalogMetadata(
       dedupeConnectedCatalogs(
@@ -268,23 +270,36 @@ function mergeCatalogs(
     ...schema,
     tables: [...schema.tables],
   }));
+  const removedSchemas: ConnectedCatalog['schemas'] = [];
 
   for (const incomingSchema of incoming.schemas) {
-    const targetSchema = schemas.find((schema) => schema.name === incomingSchema.name);
+    let targetSchema = schemas.find((schema) => schema.name === incomingSchema.name);
     if (!targetSchema) {
-      schemas.push({ ...incomingSchema, tables: [...incomingSchema.tables] });
-      continue;
+      targetSchema = { ...incomingSchema, tables: [] };
+      schemas.push(targetSchema);
     }
 
     for (const incomingTable of incomingSchema.tables) {
       const incomingSourceKey = tableSourceKey(incomingTable, incoming);
-      targetSchema.tables = targetSchema.tables.filter((existingTable) => {
-        const sameSource = tableSourceKey(existingTable, existing) === incomingSourceKey;
-        if (sameSource) {
-          return false;
+      for (const schema of schemas) {
+        const removedTables = schema.tables.filter(
+          (existingTable) => tableSourceKey(existingTable, existing) === incomingSourceKey,
+        );
+        if (removedTables.length > 0) {
+          const removedSchema = removedSchemas.find((candidate) => candidate.name === schema.name);
+          if (removedSchema) {
+            removedSchema.tables.push(...removedTables);
+          } else {
+            removedSchemas.push({
+              ...schema,
+              tables: removedTables,
+            });
+          }
         }
-        return true;
-      });
+        schema.tables = schema.tables.filter(
+          (existingTable) => tableSourceKey(existingTable, existing) !== incomingSourceKey,
+        );
+      }
       targetSchema.tables.push(incomingTable);
     }
   }
@@ -294,10 +309,17 @@ function mergeCatalogs(
     id: incoming.id,
     alias: incoming.alias,
     connectedAt: existing.connectedAt || incoming.connectedAt,
-    schemas,
+    schemas: schemas.filter((schema) => schema.tables.length > 0),
   });
+  const removed =
+    removedSchemas.length > 0
+      ? summarizeCatalog({
+          ...existing,
+          schemas: removedSchemas,
+        })
+      : undefined;
 
-  return { catalog };
+  return { catalog, removed };
 }
 
 function dedupeConnectedCatalogs(catalogs: ConnectedCatalog[]): ConnectedCatalog[] {
@@ -484,12 +506,12 @@ function isExplicitSampleCatalog(catalog: ConnectedCatalog): boolean {
 function validateConnectedCatalogMetadata(catalogs: ConnectedCatalog[]): ConnectedCatalog[] {
   for (const catalog of catalogs) {
     const schemaNames = new Set<string>();
+    const tableIdentities = new Set<string>();
     for (const schema of catalog.schemas) {
       if (schemaNames.has(schema.name)) {
         throw new Error('persisted catalog contains a duplicate schema identity');
       }
       schemaNames.add(schema.name);
-      const tableIdentities = new Set<string>();
       for (const table of schema.tables) {
         const identity = table.logicalTable
           ? canonicalTableIdentityKey(table.logicalTable)

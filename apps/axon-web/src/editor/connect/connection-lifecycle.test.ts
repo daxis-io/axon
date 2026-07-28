@@ -9,7 +9,10 @@ import {
 import { SAMPLE_QUERY_SOURCE, type QueryTableSource } from '../../services/query-source.ts';
 import type { Catalog } from '../../services/types.ts';
 import type { ConnectionMutationResult } from '../../state/slices/connections.ts';
-import { applyConnectionLifecycleCleanup } from './connection-lifecycle.ts';
+import {
+  applyConnectionLifecycleCleanup,
+  runConnectionMutationLifecycle,
+} from './connection-lifecycle.ts';
 
 const first: QueryTableSource = {
   kind: 'object_store_table_root',
@@ -156,6 +159,57 @@ describe('connection lifecycle cleanup', () => {
 
     expect(discardActiveQuerySession).not.toHaveBeenCalled();
     expect(unregisterLocalDeltaRuntime).not.toHaveBeenCalled();
+  });
+
+  it('serializes a reconnect behind teardown for the prior connection owner', async () => {
+    const client = new QueryClient();
+    const order: string[] = [];
+    let releaseCancellation!: () => void;
+    const cancellationGate = new Promise<void>((resolve) => {
+      releaseCancellation = resolve;
+    });
+    vi.spyOn(client, 'cancelQueries').mockImplementation(async () => {
+      order.push('cancel');
+      await cancellationGate;
+    });
+    const discardActiveQuerySession = vi.fn(() => {
+      order.push('discard');
+    });
+    const unregisterLocalDeltaRuntime = vi.fn((registryId: string) => {
+      order.push(`unregister:${registryId}`);
+    });
+    const disconnect = vi.fn(() => {
+      order.push('disconnect mutation');
+      return mutation({
+        discardedSources: [first],
+        localRegistryIdsToUnregister: ['registry-a'],
+        shouldDiscardActiveQuerySession: true,
+      });
+    });
+    const reconnect = vi.fn(() => {
+      order.push('reconnect mutation');
+      return mutation();
+    });
+
+    const disconnecting = runConnectionMutationLifecycle(client, disconnect, {
+      discardActiveQuerySession,
+      unregisterLocalDeltaRuntime,
+    });
+    await vi.waitFor(() => expect(client.cancelQueries).toHaveBeenCalledTimes(1));
+    const reconnecting = runConnectionMutationLifecycle(client, reconnect);
+
+    expect(reconnect).not.toHaveBeenCalled();
+    releaseCancellation();
+    await disconnecting;
+    await reconnecting;
+
+    expect(order).toEqual([
+      'disconnect mutation',
+      'cancel',
+      'discard',
+      'unregister:registry-a',
+      'reconnect mutation',
+    ]);
   });
 
   it('still evicts and tears down runtime ownership when cancellation reports an error', async () => {

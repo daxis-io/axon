@@ -83,7 +83,7 @@ import { Editor } from './components/Editor.tsx';
 import { RunResultsPanel } from './components/RunResultsPanel.tsx';
 import { SaveDialog } from './components/SaveDialog.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
-import { applyConnectionLifecycleCleanup } from './connect/connection-lifecycle.ts';
+import { runConnectionMutationLifecycle } from './connect/connection-lifecycle.ts';
 import {
   IconChevDownTiny,
   IconDatabase,
@@ -298,9 +298,10 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
   }, [uiActions]);
 
   const handleConnected = useCallback(
-    (result: ConnectResult) => {
-      const mutation = connectionActions.connect(result);
-      void applyConnectionLifecycleCleanup(queryClient, mutation);
+    async (result: ConnectResult) => {
+      const mutation = await runConnectionMutationLifecycle(queryClient, () =>
+        connectionActions.connect(result),
+      );
       uiActions.closeConnectModal();
       window.setTimeout(() => connectionActions.clearFreshCatalogId(), 4500);
       showToast(
@@ -313,9 +314,8 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
   );
 
   const removeConnectedCatalog = useCallback(
-    (id: string) => {
-      const mutation = connectionActions.removeCatalog(id);
-      void applyConnectionLifecycleCleanup(queryClient, mutation);
+    async (id: string) => {
+      await runConnectionMutationLifecycle(queryClient, () => connectionActions.removeCatalog(id));
     },
     [connectionActions, queryClient],
   );

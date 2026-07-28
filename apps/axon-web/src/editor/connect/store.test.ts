@@ -236,6 +236,19 @@ describe('connected catalog persistence', () => {
       catalogName: 'public-gcs',
       alias: 'Renamed workspace',
     });
+    expect(upsert.replaced).toEqual([
+      expect.objectContaining({
+        id: first.id,
+        alias: 'Workspace',
+        schemas: [
+          expect.objectContaining({
+            tables: [
+              expect.objectContaining({ logicalTable: first.schemas[0]!.tables[0]!.logicalTable }),
+            ],
+          }),
+        ],
+      }),
+    ]);
   });
 
   it('keeps same-alias connections and same-name canonical resources distinct', async () => {
@@ -481,6 +494,15 @@ describe('connected catalog persistence', () => {
     expect(loadConnectedCatalogs()).toEqual([]);
   });
 
+  it('fails the whole persisted record closed when one table is malformed', () => {
+    const malformed = catalog('malformed');
+    malformed.schemas[0]!.tables[0]!.catalogMetadataJson = { table: {} };
+
+    storage.setItem(STORAGE_KEY, JSON.stringify([catalog('valid'), malformed]));
+
+    expect(loadConnectedCatalogs()).toEqual([]);
+  });
+
   it('merges repeated canonical table identities while retaining safe metadata', () => {
     const duplicate = catalog('events');
     duplicate.schemas[0].tables.push({
@@ -490,6 +512,21 @@ describe('connected catalog persistence', () => {
     saveConnectedCatalogs([duplicate]);
     expect(loadConnectedCatalogs()).toHaveLength(1);
     expect(loadConnectedCatalogs()[0]?.schemas[0]?.tables).toHaveLength(1);
+  });
+
+  it('keeps one location when a canonical table identity appears in multiple schemas', () => {
+    const duplicate = catalog('events');
+    duplicate.schemas[0]!.tables[0]!.catalogMetadataJson = undefined;
+    duplicate.schemas.push({
+      name: 'archive',
+      tables: [{ ...duplicate.schemas[0]!.tables[0]! }],
+    });
+
+    storage.setItem(STORAGE_KEY, JSON.stringify([duplicate]));
+
+    const loaded = loadConnectedCatalogs();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]!.schemas.flatMap((schema) => schema.tables)).toHaveLength(1);
   });
 
   it('projects provider-generated local discovery and persists only normalized metadata JSON', async () => {

@@ -308,6 +308,13 @@ describe('connections slice', () => {
       }),
     );
 
+    expect(replacement.replaced).toHaveLength(1);
+    expect(replacement.discardedSources).toEqual([
+      expect.objectContaining({
+        kind: 'local_delta',
+        localRegistryId: 'local-reg-1',
+      }),
+    ]);
     expect(replacement.localRegistryIdsToUnregister).toEqual([]);
 
     store.getState().connectionActions.upsertCatalog(
@@ -372,6 +379,32 @@ describe('connections slice', () => {
     expect(store.getState().connections.selectedTableRef).toEqual(activeRef('existing', 'events'));
   });
 
+  it('does not discard the active session when another exact resource is reconnected', () => {
+    const initial = withSecondQueryableTable(
+      catalog({ id: 'existing', alias: 'workspace', table: 'events' }),
+      'orders',
+    );
+    localStorage.setItem(CONNECTED_CATALOGS_STORAGE_KEY, JSON.stringify([initial]));
+    const store = createAxonClientStore({ storage: createMemoryClientStateStorage() });
+    store.getState().connectionActions.selectTable(activeRef('existing', 'events'));
+    const incoming = withSecondQueryableTable(
+      catalog({ id: 'existing', alias: 'renamed workspace', table: 'events' }),
+      'orders',
+    );
+    incoming.schemas[0]!.tables = [incoming.schemas[0]!.tables[1]!];
+
+    const replacement = store.getState().connectionActions.upsertCatalog(incoming);
+
+    expect(replacement.replaced).toHaveLength(1);
+    expect(replacement.discardedSources).toEqual([
+      expect.objectContaining({
+        tableUri: 'gs://existing/events-orders',
+      }),
+    ]);
+    expect(replacement.shouldDiscardActiveQuerySession).toBe(false);
+    expect(store.getState().connections.selectedTableRef).toEqual(activeRef('existing', 'events'));
+  });
+
   it('retains the selected canonical resource when reconnecting it with new presentation', () => {
     localStorage.setItem(
       CONNECTED_CATALOGS_STORAGE_KEY,
@@ -380,12 +413,20 @@ describe('connections slice', () => {
     const store = createAxonClientStore({ storage: createMemoryClientStateStorage() });
     store.getState().connectionActions.selectTable(activeRef('existing', 'events'));
 
-    store
+    const replacement = store
       .getState()
       .connectionActions.upsertCatalog(
         catalog({ id: 'existing', alias: 'renamed workspace', table: 'events' }),
       );
 
+    expect(replacement.replaced).toHaveLength(1);
+    expect(replacement.discardedSources).toEqual([
+      expect.objectContaining({
+        kind: 'object_store_table_root',
+        tableUri: 'gs://existing/events',
+      }),
+    ]);
+    expect(replacement.shouldDiscardActiveQuerySession).toBe(true);
     expect(store.getState().connections.selectedTableRef).toEqual(activeRef('existing', 'events'));
     expect(store.getState().connections.catalogs[0]?.alias).toBe('renamed workspace');
   });

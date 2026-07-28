@@ -15,6 +15,7 @@ import {
   upsertConnectedCatalog,
 } from '../../editor/connect/store.ts';
 import type { ConnectedCatalog, ConnectResult } from '../../editor/connect/types.ts';
+import { sameCanonicalTableIdentity } from '../../services/canonical-table-identity.ts';
 
 export type ConnectionsState = {
   catalogs: ConnectedCatalog[];
@@ -67,22 +68,31 @@ export function createConnectionsSlice<TState extends ConnectionsSlice>(
     const upsert = upsertConnectedCatalog(current.catalogs, catalog);
     const mergedCatalogId = mergedCatalogIdFor(upsert.catalogs, catalog);
     const soleIncomingTable = soleQueryableTableRef([catalog]);
-    const activeCatalogWasReplaced = upsert.replaced.some(
-      (replaced) => replaced.id === current.selectedTableRef?.resource?.connectionId,
-    );
+    const priorSelection = current.selectedTableRef;
+    const activeResourceWasReplaced =
+      priorSelection !== undefined &&
+      upsert.replaced.some((replaced) =>
+        replaced.schemas.some((schema) =>
+          schema.tables.some(
+            (table) =>
+              table.logicalTable !== undefined &&
+              sameCanonicalTableIdentity(table.logicalTable, priorSelection),
+          ),
+        ),
+      );
     const retainedSelection =
-      !activeCatalogWasReplaced &&
-      current.selectedTableRef &&
-      querySourceForConnectedTableRef(upsert.catalogs, current.selectedTableRef)
-        ? current.selectedTableRef
+      priorSelection && querySourceForConnectedTableRef(upsert.catalogs, priorSelection)
+        ? priorSelection
         : undefined;
-    const selectedTableRef = activeCatalogWasReplaced
-      ? undefined
-      : soleIncomingTable
-        ? soleIncomingTable
-        : retainedSelection;
-    const localRegistryIdsToUnregister = localRegistryIdsForCatalogs(upsert.replaced);
-    const shouldDiscardActiveQuerySession = activeCatalogWasReplaced;
+    const retainedSameConnectionSelection =
+      retainedSelection?.resource?.connectionId === catalog.id ? retainedSelection : undefined;
+    const selectedTableRef =
+      retainedSameConnectionSelection ?? soleIncomingTable ?? retainedSelection;
+    const retainedLocalRegistryIds = new Set(localRegistryIdsForCatalogs(upsert.catalogs));
+    const localRegistryIdsToUnregister = localRegistryIdsForCatalogs(upsert.replaced).filter(
+      (registryId) => !retainedLocalRegistryIds.has(registryId),
+    );
+    const shouldDiscardActiveQuerySession = activeResourceWasReplaced;
 
     saveConnectedCatalogs(upsert.catalogs);
     set((state) => ({

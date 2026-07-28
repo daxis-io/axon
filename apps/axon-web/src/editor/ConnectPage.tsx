@@ -5,7 +5,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { Suspense, lazy, useCallback, useState } from 'react';
 import { ConnectedCatalogsPanel } from './connect/ConnectedCatalogs.tsx';
-import { applyConnectionLifecycleCleanup } from './connect/connection-lifecycle.ts';
+import { runConnectionMutationLifecycle } from './connect/connection-lifecycle.ts';
 import { availabilityForSource, type SourceId } from './connect/data.ts';
 import type { ConnectedCatalog, ConnectResult } from './connect/types.ts';
 import { IconBolt, IconChevR, IconPlus, IconSettings } from './components/icons.tsx';
@@ -40,9 +40,8 @@ export function ConnectPage() {
   }, []);
 
   const onConnect = useCallback(
-    (result: ConnectResult) => {
-      const mutation = connectionActions.connect(result);
-      void applyConnectionLifecycleCleanup(queryClient, mutation);
+    async (result: ConnectResult) => {
+      await runConnectionMutationLifecycle(queryClient, () => connectionActions.connect(result));
       setModalOpen(false);
       window.setTimeout(() => connectionActions.clearFreshCatalogId(), 4500);
     },
@@ -50,9 +49,8 @@ export function ConnectPage() {
   );
 
   const removeCatalog = useCallback(
-    (id: string) => {
-      const mutation = connectionActions.removeCatalog(id);
-      void applyConnectionLifecycleCleanup(queryClient, mutation);
+    async (id: string) => {
+      await runConnectionMutationLifecycle(queryClient, () => connectionActions.removeCatalog(id));
     },
     [connectionActions, queryClient],
   );
