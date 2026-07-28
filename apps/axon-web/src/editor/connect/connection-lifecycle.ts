@@ -11,15 +11,22 @@ type ConnectionLifecycleOptions = {
   discardActiveQuerySession?: () => void | Promise<void>;
   unregisterLocalDeltaRuntime?: (registryId: string) => void | Promise<void>;
   reportError?: (message: string, error: unknown) => void;
+  onPendingChange?: (pending: boolean) => void;
 };
 
 const mutationQueues = new WeakMap<QueryClient, Promise<void>>();
+const pendingMutationCounts = new WeakMap<QueryClient, number>();
+
+export function connectionMutationPending(queryClient: QueryClient): boolean {
+  return (pendingMutationCounts.get(queryClient) ?? 0) > 0;
+}
 
 export function runConnectionMutationLifecycle<TMutation extends ConnectionLifecycleMutation>(
   queryClient: QueryClient,
   mutate: () => TMutation,
   options: ConnectionLifecycleOptions = {},
 ): Promise<TMutation> {
+  updatePendingMutationCount(queryClient, 1, options.onPendingChange);
   const previous = mutationQueues.get(queryClient) ?? Promise.resolve();
   const run = previous
     .catch(() => undefined)
@@ -27,6 +34,9 @@ export function runConnectionMutationLifecycle<TMutation extends ConnectionLifec
       const mutation = mutate();
       await applyConnectionLifecycleCleanup(queryClient, mutation, options);
       return mutation;
+    })
+    .finally(() => {
+      updatePendingMutationCount(queryClient, -1, options.onPendingChange);
     });
   const tail = run.then(
     () => undefined,
@@ -39,6 +49,20 @@ export function runConnectionMutationLifecycle<TMutation extends ConnectionLifec
     }
   });
   return run;
+}
+
+function updatePendingMutationCount(
+  queryClient: QueryClient,
+  delta: 1 | -1,
+  onPendingChange: ((pending: boolean) => void) | undefined,
+): void {
+  const next = Math.max(0, (pendingMutationCounts.get(queryClient) ?? 0) + delta);
+  if (next === 0) {
+    pendingMutationCounts.delete(queryClient);
+  } else {
+    pendingMutationCounts.set(queryClient, next);
+  }
+  onPendingChange?.(next > 0);
 }
 
 export async function applyConnectionLifecycleCleanup(

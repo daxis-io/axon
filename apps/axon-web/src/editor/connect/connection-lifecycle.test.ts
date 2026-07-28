@@ -11,6 +11,7 @@ import type { Catalog } from '../../services/types.ts';
 import type { ConnectionMutationResult } from '../../state/slices/connections.ts';
 import {
   applyConnectionLifecycleCleanup,
+  connectionMutationPending,
   runConnectionMutationLifecycle,
 } from './connection-lifecycle.ts';
 
@@ -199,10 +200,17 @@ describe('connection lifecycle cleanup', () => {
     const reconnecting = runConnectionMutationLifecycle(client, reconnect);
 
     expect(reconnect).not.toHaveBeenCalled();
+    expect(connectionMutationPending(client)).toBe(true);
+    const startQuery = vi.fn();
+    if (!connectionMutationPending(client)) startQuery();
+    expect(startQuery).not.toHaveBeenCalled();
     releaseCancellation();
     await disconnecting;
     await reconnecting;
 
+    expect(connectionMutationPending(client)).toBe(false);
+    if (!connectionMutationPending(client)) startQuery();
+    expect(startQuery).toHaveBeenCalledTimes(1);
     expect(order).toEqual([
       'disconnect mutation',
       'cancel',

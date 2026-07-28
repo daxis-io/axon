@@ -4,6 +4,7 @@ import {
   lazy,
   useMemo,
   useRef,
+  useState,
   Suspense,
   type CSSProperties,
   type MouseEvent,
@@ -83,7 +84,10 @@ import { Editor } from './components/Editor.tsx';
 import { RunResultsPanel } from './components/RunResultsPanel.tsx';
 import { SaveDialog } from './components/SaveDialog.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
-import { runConnectionMutationLifecycle } from './connect/connection-lifecycle.ts';
+import {
+  connectionMutationPending,
+  runConnectionMutationLifecycle,
+} from './connect/connection-lifecycle.ts';
 import {
   IconChevDownTiny,
   IconDatabase,
@@ -233,12 +237,19 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
   const activeTabId = tabsState.activeTabId;
   const active = activeSqlTab ?? tabs[0]!;
   const queryClient = useQueryClient();
+  const [connectionLifecycleBusy, setConnectionLifecycleBusy] = useState(false);
   const querySelection = useMemo(
     () => resolveQuerySourceSelection(availableConnectedCatalogs, activeTableRef),
     [activeTableRef, availableConnectedCatalogs],
   );
-  const { data: catalog } = useQuery(catalogQueryOptions(querySelection));
-  const { data: commits = [] } = useQuery(commitsQueryOptions(querySelection));
+  const { data: catalog } = useQuery({
+    ...catalogQueryOptions(querySelection),
+    enabled: !connectionLifecycleBusy && querySelection.kind !== 'unavailable',
+  });
+  const { data: commits = [] } = useQuery({
+    ...commitsQueryOptions(querySelection),
+    enabled: !connectionLifecycleBusy && querySelection.kind !== 'unavailable',
+  });
   const { data: history = [] } = useQuery(historyQueryOptions());
   const { data: saved = [] } = useQuery(savedQueriesQueryOptions());
   const querySource = querySelection.kind === 'unavailable' ? undefined : querySelection.source;
@@ -299,8 +310,10 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
 
   const handleConnected = useCallback(
     async (result: ConnectResult) => {
-      const mutation = await runConnectionMutationLifecycle(queryClient, () =>
-        connectionActions.connect(result),
+      const mutation = await runConnectionMutationLifecycle(
+        queryClient,
+        () => connectionActions.connect(result),
+        { onPendingChange: setConnectionLifecycleBusy },
       );
       uiActions.closeConnectModal();
       window.setTimeout(() => connectionActions.clearFreshCatalogId(), 4500);
@@ -315,7 +328,9 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
 
   const removeConnectedCatalog = useCallback(
     async (id: string) => {
-      await runConnectionMutationLifecycle(queryClient, () => connectionActions.removeCatalog(id));
+      await runConnectionMutationLifecycle(queryClient, () => connectionActions.removeCatalog(id), {
+        onPendingChange: setConnectionLifecycleBusy,
+      });
     },
     [connectionActions, queryClient],
   );
@@ -358,6 +373,10 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
   // ─── Run lifecycle ─────────────────────────────────────
   const runActive = useCallback(async () => {
     if (runIsRunning) return;
+    if (connectionMutationPending(queryClient)) {
+      showToast('Wait for catalog connection cleanup before running SQL.', 'warn');
+      return;
+    }
     const tab = active;
     if (querySelection.kind === 'unavailable') {
       showToast('Select a queryable table before running SQL.', 'warn');
@@ -673,6 +692,10 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
   ]);
 
   const loadMoreRows = useCallback(async () => {
+    if (connectionMutationPending(queryClient)) {
+      showToast('Wait for catalog connection cleanup before loading more rows.', 'warn');
+      return;
+    }
     const runSnapshot = axonClientStore.getState();
     if (selectRunIsRunning(runSnapshot) || selectRunLoadingMoreRows(runSnapshot)) return;
     const currentResult = selectRunResultData(runSnapshot);
@@ -815,7 +838,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
       unsubscribe();
       if (cancelRef.current?.executionId === executionId) cancelRef.current = null;
     }
-  }, [activeResultPageRun, runActions, showToast]);
+  }, [activeResultPageRun, queryClient, runActions, showToast]);
 
   const cancelRun = useCallback(() => {
     const activeCancellation = cancelRef.current;
@@ -1033,11 +1056,13 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
               <button
                 className="btn primary"
                 onClick={runActive}
-                disabled={querySelection.kind === 'unavailable'}
+                disabled={connectionLifecycleBusy || querySelection.kind === 'unavailable'}
                 title={
-                  querySelection.kind === 'unavailable'
-                    ? 'Select a queryable table before running SQL'
-                    : 'Run query'
+                  connectionLifecycleBusy
+                    ? 'Wait for catalog connection cleanup before running SQL'
+                    : querySelection.kind === 'unavailable'
+                      ? 'Select a queryable table before running SQL'
+                      : 'Run query'
                 }
               >
                 <IconPlay size={11} /> Run
