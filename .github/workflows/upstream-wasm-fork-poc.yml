@@ -1,9 +1,31 @@
 name: Upstream WASM fork POC
 
+# The POC branch was merged into main, so a branch-scoped trigger could never
+# fire again and the proof silently went stale. These jobs are expensive (a cold
+# ~250-package wasm graph, a 28 MB release build, and a two-browser Playwright
+# run), so they are filtered to the surface that can actually invalidate the
+# proof: the POC itself, its verifiers, and the two Axon crates the harness
+# consumes at the result boundary.
+#
+# The two path lists below must stay identical. GitHub Actions does not support
+# YAML anchors, so they cannot be shared.
 on:
+  pull_request:
+    paths:
+      - poc/**
+      - tests/conformance/verify_upstream_wasm_fork_stack*.sh
+      - crates/browser-sdk/**
+      - crates/query-contract/**
+      - .github/workflows/upstream-wasm-fork-poc.yml
   push:
     branches:
-      - poc/upstream-wasm-fork-stack
+      - main
+    paths:
+      - poc/**
+      - tests/conformance/verify_upstream_wasm_fork_stack*.sh
+      - crates/browser-sdk/**
+      - crates/query-contract/**
+      - .github/workflows/upstream-wasm-fork-poc.yml
   workflow_dispatch:
 
 permissions:
@@ -84,6 +106,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
+      # The compiler-free job deliberately builds cold in a bare container; these
+      # two do not, and now run on every PR touching the POC surface.
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
       - name: Install verifier dependencies
         run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - name: Reject fork pins in shipping workspaces
@@ -110,6 +136,8 @@ jobs:
         with:
           toolchain: 1.95.0
           targets: wasm32-unknown-unknown
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
       - name: Install the exact browser toolchain
         run: |
           cargo install wasm-bindgen-cli --version 0.2.114 --locked
