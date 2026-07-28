@@ -1,27 +1,153 @@
 # Daxis Upstream-WASM Fork POC Evidence
 
-- Technical POC status: complete after independent audit closure
+- Technical POC status: complete after the resumed-range correction repin
 - Canonical-upstream status: prepared, with the Delta Kernel and delta-rs slices blocked as
   described below
 - Original POC date: 2026-07-23
 - Audit closure date: 2026-07-25 local / 2026-07-26 UTC
+- Resumed-range repin date: 2026-07-27 local / 2026-07-28 UTC
 - Umbrella issue: [daxis-io/axon#2](https://github.com/daxis-io/axon/issues/2)
-- Axon branch: `poc/upstream-wasm-fork-stack`
-- Axon audit repin revision: `1237da4b98fbff03f5c655550674db75b051103d`
-- Axon audit proof revision: `4837c331b98e911cb7f9d4d87c3094b942461bb8`
 - Axon compatibility base: `62d4c465e10dc329221023eaaf2c67c542c408ce`
-- Current immutable POC tag in every fork: `daxis-poc/wasm32-browser-e2e-2026-07-25`
-- Superseded tag retained without mutation: `daxis-poc/wasm32-browser-e2e-2026-07-23`
+- Current immutable POC tag in every fork: `daxis-poc/wasm32-browser-e2e-2026-07-27`
+- Superseded tags retained without mutation: `daxis-poc/wasm32-browser-e2e-2026-07-25`,
+  `daxis-poc/wasm32-browser-e2e-2026-07-23`
 - Raw evidence root:
-  `target/upstream-wasm-fork-poc-evidence/988adae4f505953bb22675cc5e564cf4da077d4bec1ca7059865167d3f8187ea/`
+  `target/upstream-wasm-fork-poc-evidence/64493c37b42c815b8768a8408cae4acdebc9e6b05c276855a9b4897463d82ecf/`
 
-The audit-corrected release-based Daxis fork stack passes its native, exact-target graph,
-compiler-independent, browser-runtime, protocol, measurement, and Axon-boundary gates. It proves a
-browser-only read/query path without replacing Axon's shipping Rust dependencies. The correction
-set closes all five independent review findings without rewriting any published candidate, stack,
-forward-port revision, or tag.
+Each section below is an immutable record of what was proven at its own date. Where a revision,
+tag, measurement, or artifact hash differs, the newest section is authoritative.
+
+## Resumed-Range Correction Repin
+
+### Why The Previous Stack Was Replaced
+
+Canonical forward-port work on current upstream found a defect in the shared resumed-read retry
+path that the accepted POC stack still carried. Before delivering any resumed byte, that path:
+
+- accepted any successful 2xx continuation rather than requiring `206`;
+- ignored a change in the total representation size reported by `Content-Range`; and
+- accepted an enclosing range and trimmed the unwanted prefix, hiding a server that had ignored
+  the requested range.
+
+The fix landed on the current-upstream clean branch
+`upstream/2026-07-26/wasm32-browser-retry` as `bc578ea1c52cbc572e6374c24a5fd731800ac17d`
+("fix: validate resumed object ranges"). Note that the canonicalization record cites the branch
+tip `d0066c218eaf3336bc6b5e5ca3141fe78e4fea8d`, which is a shellcheck one-liner with no source
+change; `bc578ea` is the substantive commit.
+
+That branch is rooted at current canonical `object_store`, not at the `0.13.2` compatibility base,
+so the correction was backported onto the POC candidate rather than consumed directly. The
+backport is the same change minus one hunk that belongs to the newer base
+(`extensions: parts.extensions` on `GetResult`, which `0.13.2` does not have).
+
+The POC's fork-only bounded full-object fallback
+(`HttpBuilder::with_max_full_object_fallback_size`) is deliberately **not** included in the
+correction. It concerns the initial request, not the resumed-read path, and the canonical lane
+defers the arbitrary-`200` policy to upstream issue #806.
+
+### Accepted Revisions
+
+| Repository | Candidate revision | Stack revision | Tag object |
+| ---------- | ------------------ | -------------- | ---------- |
+| [`daxis-io/arrow-rs-object-store`](https://github.com/daxis-io/arrow-rs-object-store) | `502ec006d58e11f0921a173210d54a4485d1f5a3` | `ab9fda65805487edf5487e63082cab8111f0a178` | `1f8c9002b666` |
+| [`daxis-io/arrow-rs`](https://github.com/daxis-io/arrow-rs) | unchanged (`f24c67c536e98f85f2ed8a289a6eb1d55916ffb9`) | `52c8fb2e9c28b9d89d08c313e1bc938a35c29c99` | `9235fe431f4e` |
+| [`daxis-io/datafusion`](https://github.com/daxis-io/datafusion) | unchanged (`693aa0b5d2a3c925db963776a472d6144352116e`) | `54a376b161a059d08c806d3e959b87802a85ec4f` | `e6e6f401bffa` |
+| [`daxis-io/delta-kernel-rs`](https://github.com/daxis-io/delta-kernel-rs) | unchanged (`c9a475f3394adc5296c4f16587c1f69c6e87213e`) | `21ecea739e647eefa0cbf7a8e0d70d3e7363c0da` | `4dd81261792c` |
+| [`daxis-io/delta-rs`](https://github.com/daxis-io/delta-rs) | unchanged (`0611f31ee39ef9942c04c6ccaeb44897d8ca923e`) | `e75d11d790e1197cb0e09edbf2d908866f4825bb` | `3d5d89730b3a` |
+
+Only `object_store` carries a new candidate revision. The other four forks carry a single additive
+stack commit that repins the corrected leaf; no candidate, stack, forward-port revision, or tag
+was rewritten.
+
+### Native Gate
+
+The `object_store` candidate passes its default-feature suite (83 passed, 1 ignored) and its
+all-feature suite (201 passed, 4 ignored, plus integration and doc tests), `cargo fmt --check`, and
+`cargo clippy --all-targets --all-features` with no new diagnostics. The two surviving Clippy
+warnings are pre-existing in `src/client/list.rs`.
+
+Four focused tests cover the corrected path directly. Reverting only the three production guards
+while keeping the tests fails three of them, each by accepting `b"world"` where the read must be
+rejected; the fourth already failed correctly under the previous code's final `else` arm. An S3
+mock (`test_range_rejects_s3_200_response`) proves provider paths converge on the same rejection.
+
+One pre-existing POC-lane test, `test_retry_validates_content_range_and_sends_if_range`, asserted
+the removed behavior: it answered an outstanding `5..10` with an enclosing `bytes 0-9/10`. Its
+purpose is to prove the continuation carries `Range`, `If-Range`, and `Accept-Encoding`, so its
+mock was corrected to a properly framed `bytes 5-9/10`. Enclosing-range rejection is now covered by
+its own test.
+
+### Browser Gate
+
+The two-origin suite adds four scenarios in which the continuation's validator still matches but
+its framing does not cover exactly the outstanding range. The 36-byte object truncates at 18, so
+each is answered against an outstanding range of `18..36`. Chrome `150.0.7871.187` and Firefox
+`144.0.2` produced identical results:
+
+| Scenario | Continuation | GET statuses | Diagnostic |
+| -------- | ------------ | ------------ | ---------- |
+| `retry-non-partial` | `200` with a matching validator | `200`, `200` | `Server did not honor If-Range …` |
+| `retry-changed-size` | `bytes 18-35/37` | `200`, `206` | `Retry response changed object size from 36 to 37` |
+| `retry-enclosing` | `bytes 0-35/36` | `200`, `206` | `Requested 18..36, got 0..36` |
+| `retry-shifted-range` | `bytes 19-35/36` | `200`, `206` | `Requested 18..36, got 19..36` |
+
+Each records exactly two GETs, so the malformed continuation is rejected without a further request
+and without delivering a resumed byte. Before the correction, `retry-enclosing` would have
+succeeded and returned the complete object.
+
+`retry-non-partial` is rejected by the HTTP store's own `If-Range` guard, which requires a `206`
+before it will compare validators, so it never reaches the shared `NotPartial` check. That
+diagnostic names the validator even when the rejection was caused by the status; the shared check
+is covered by the unit tests and the S3 mock instead. The store-level message is worth tightening
+before the canonical PR, and is recorded here rather than fixed in this repin.
+
+The unchanged gates still pass: snapshot `0`, `alpha=7,beta=10`, row count `2`, one Arrow IPC
+stream whose SHA-256 matches across both engines, `browser_wasm`, no native fallback, and the zstd
+fixture reaching schema replay before failing at the first compressed page.
+
+### Local Measurements
+
+| Browser | Version | Cold end-to-end | Warm median | Warm max | WASM memory high-water |
+| ------- | ------- | --------------: | ----------: | -------: | ---------------------: |
+| Chrome | `150.0.7871.187` | 171.93 ms | 6.5 ms | 6.8 ms | 14,614,528 bytes |
+| Firefox | `144.0.2` | 372.52 ms | 14.0 ms | 15.0 ms | 14,614,528 bytes |
+
+The local bundle is 28,139,523 raw bytes, 6,688,541 gzip bytes, and 4,303,712 Brotli bytes, with
+WASM SHA-256 `8dd2b4c42945dece01c3d04114d3403017adec65711faea65b00953331e99368`.
+
+| Artifact | SHA-256 |
+| -------- | ------- |
+| `stack.lock.toml` | `64493c37b42c815b8768a8408cae4acdebc9e6b05c276855a9b4897463d82ecf` |
+| Browser `Cargo.lock` | `2d78d33e2af5ec836dd41feed72dcb3309cb07536e904eaa27073ee697206e7c` |
+
+### Graph And Boundary Gates
+
+`verify_upstream_wasm_fork_stack.sh --final` reports
+`mode=final repositories=5 graph_packages=250` — the same package count as the superseded stack.
+The exact `wasm32-unknown-unknown` graph compiles `--locked`, `verify-browser-graph.sh` passes the
+denied-dependency and single-source-universe policy, the released-crate fixtures verify unchanged,
+and `cargo test -p query-contract -p browser-sdk` passes.
+
+The two `object_store 0.13.2` entries in the browser `Cargo.lock` are expected, not a duplicate
+universe: `delta-kernel-rs` declares `object_store_13_native` (crates.io) under
+`cfg(not(all(target_arch = "wasm32", target_os = "unknown")))` and `object_store_13_stack` (the
+fork) for the browser. A `Cargo.lock` is target-agnostic, so both appear; only the fork enters the
+`wasm32` graph, which is what both verifiers check.
+
+### Continuous Coverage
+
+`.github/workflows/upstream-wasm-fork-poc.yml` previously triggered only on pushes to
+`poc/upstream-wasm-fork-stack`. That branch is already an ancestor of `main`, so the trigger could
+never fire again and the proof could go stale without any signal. It now runs on `pull_request` and
+on pushes to `main`, filtered to `poc/**`, the stack verifiers, `crates/browser-sdk/**`, and
+`crates/query-contract/**` — the last two because they are the only shipping surface the harness
+consumes at the result boundary.
 
 ## Audit Closure
+
+Preserved as the immutable 2026-07-25 freeze. Its revisions, tags, measurements, and artifact
+hashes were superseded by the resumed-range repin above; the findings and corrections it records
+remain in force and are carried forward by that stack.
 
 ### Findings And Additive Corrections
 
