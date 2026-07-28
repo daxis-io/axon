@@ -134,6 +134,15 @@ The Axon web app uses Vite for local browser testing. For an application-owned e
 
 `apps/axon-web` has one product HTML entry: `index.html` for the editor SPA. The editor uses History API routes, so static hosts have to rewrite `/connect` and any future editor routes to `index.html`. The legacy sandbox page is not a production entrypoint.
 
+Rewrite those routes **explicitly**, one entry per route. A catch-all rewrite answers every unknown path with `index.html` and a `200`, so a missing worker chunk or WASM bundle arrives at the browser as HTML instead of a `404`. The worker then fails to parse and every query reports `browser query session invalidated: child worker crashed`, with nothing to indicate that an asset was simply absent. `vercel.json` at the repo root enumerates the routes for that reason.
+
+Two guards enforce this and run in `.github/workflows/deploy-axon-web.yml`:
+
+- `apps/axon-web/scripts/verify-build-output.sh <dist>` — asserts the build emitted no TypeScript, that both the coordinator and child workers exist as compiled JavaScript, that the coordinator references the compiled child chunk, and that the WASM bundle is present. The nested child worker is only compiled when `new URL('./sandbox-query-child-worker.ts', import.meta.url)` stays inline inside `new Worker(...)`; hand the constructor a precomputed URL and the bundler copies the TypeScript source through as a static asset, which parses only on a dev server that transpiles it.
+- `apps/axon-web/scripts/verify-deployment.sh <url> <dist>` — asserts the deployed origin serves those assets with a JavaScript and `application/wasm` content type, that `/connect` still reaches the app, and that a deliberately missing asset returns `404` rather than HTML.
+
+The editor's own worker is bundled by Vite and does not use the `/workers/*` manifest URLs; those remain a host-supplied contract for embedders.
+
 Example manifest override:
 
 ```ts

@@ -1,4 +1,12 @@
-import { expect, test, type Locator, type Page, type Request, type Route } from '@playwright/test';
+import {
+  expect,
+  test,
+  type ConsoleMessage,
+  type Locator,
+  type Page,
+  type Request,
+  type Route,
+} from '@playwright/test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +38,23 @@ import {
 } from '../src/services/query-pagination.ts';
 
 const APP_ORIGIN = new URL(process.env.PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:5174').origin;
+
+// Console noise that says nothing about the app under test.
+const IGNORABLE_CONSOLE_ERRORS = [
+  // Cancelling an in-flight WASM fetch during navigation.
+  /WebAssembly compilation aborted: Network error: Response body loading was aborted/i,
+  // Vercel Analytics is injected into production builds and served only by Vercel's edge, so it
+  // 404s whenever a production build is exercised anywhere else.
+  /_vercel\/insights/i,
+];
+
+// A failed subresource logs only "Failed to load resource: ... 404 ()", so the URL that identifies
+// it lives in the message location rather than the text.
+function isIgnorableConsoleError(message: ConsoleMessage): boolean {
+  const text = message.text();
+  const url = message.location().url;
+  return IGNORABLE_CONSOLE_ERRORS.some((pattern) => pattern.test(text) || pattern.test(url));
+}
 const LOCAL_DELTA_ACTIVE_ID_KEY = 'axon-local-delta-active-id';
 
 type LocalDeltaFixtureFile = {
@@ -490,12 +515,7 @@ test.describe('editor (Phase 1 smoke)', () => {
     const consoleErrors: string[] = [];
     page.on('console', (msg) => {
       const text = msg.text();
-      if (
-        msg.type() === 'error' &&
-        !/WebAssembly compilation aborted: Network error: Response body loading was aborted/i.test(
-          text,
-        )
-      ) {
+      if (msg.type() === 'error' && !isIgnorableConsoleError(msg)) {
         consoleErrors.push(text);
       }
     });
@@ -1597,7 +1617,8 @@ test.describe('editor (Phase 1 smoke)', () => {
   }) => {
     const consoleErrors: string[] = [];
     page.on('console', (msg) => {
-      if (msg.type() === 'error') consoleErrors.push(msg.text());
+      const text = msg.text();
+      if (msg.type() === 'error' && !isIgnorableConsoleError(msg)) consoleErrors.push(text);
     });
     page.on('pageerror', (err) => consoleErrors.push(err.message));
     await context.grantPermissions(['clipboard-read', 'clipboard-write'], {

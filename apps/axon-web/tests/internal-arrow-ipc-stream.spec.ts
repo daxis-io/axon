@@ -785,6 +785,138 @@ test('one-child coordinator fails a forwarded command once when the child crashe
   });
 });
 
+test('one-child coordinator classifies a boot failure and recovers on the retry', async ({
+  page,
+}) => {
+  await page.goto('/');
+
+  const result = await page.evaluate(async () => {
+    type PublicMessage = {
+      coordinator_test_ready?: boolean;
+      log?: { context?: { phase?: string }; level?: string; message?: string };
+    };
+    const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+    const worker = new Worker(
+      new URL('/src/sandbox-query-worker-test-harness.ts?first_child=boot-crash', location.href),
+      { type: 'module' },
+    );
+    let readyResolver: (() => void) | undefined;
+    const ready = new Promise<void>((resolve) => {
+      readyResolver = resolve;
+    });
+    // No command is issued before this resolves, so the coordinator reports the crash on its
+    // context-free log channel rather than through a per-request error.
+    let crashResolver: ((message: string) => void) | undefined;
+    const bootCrashLog = new Promise<string>((resolve) => {
+      crashResolver = resolve;
+    });
+    worker.addEventListener('message', (event: MessageEvent<PublicMessage>) => {
+      if (event.data.coordinator_test_ready) readyResolver?.();
+      const message = event.data.log?.message;
+      if (message?.includes('child worker crashed')) crashResolver?.(message);
+    });
+    await ready;
+    const bootError = await bootCrashLog;
+    const client = sdk.createAxonBrowserClient({ worker });
+
+    try {
+      // The replacement child is the real one, so this must succeed after the boot failure.
+      await client.openDeltaTable(
+        'boot_crash_recovery',
+        {
+          table_uri: new URL('/fixtures/browser-datafusion-runtime/boot-crash', location.href).href,
+          snapshot_version: 0,
+          partition_column_types: {},
+          browser_compatibility: { capabilities: {} },
+          required_capabilities: { capabilities: {} },
+          active_files: [],
+        },
+        { requestId: 'open-after-boot-crash' },
+      );
+      return { bootError, recovered: true };
+    } finally {
+      client.terminate();
+    }
+  });
+
+  expect(result.recovered).toBe(true);
+  expect(result.bootError).toMatch(/child worker crashed \(boot\):/);
+  expect(result.bootError).toContain('browser query session invalidated:');
+  expect(result.bootError).toContain('injected sandbox query child boot failure');
+});
+
+test('one-child coordinator stops respawning once boot failures are exhausted', async ({
+  page,
+}) => {
+  await page.goto('/');
+
+  const result = await page.evaluate(async () => {
+    type PublicMessage = {
+      coordinator_test_ready?: boolean;
+      log?: { message?: string };
+    };
+    const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+    const worker = new Worker(
+      new URL(
+        '/src/sandbox-query-worker-test-harness.ts?first_child=boot-crash&max_boot_failures=1',
+        location.href,
+      ),
+      { type: 'module' },
+    );
+    let readyResolver: (() => void) | undefined;
+    const ready = new Promise<void>((resolve) => {
+      readyResolver = resolve;
+    });
+    // Wait for the terminal state before issuing any command, so this asserts the guard rather
+    // than racing the recycle path.
+    let terminalResolver: ((message: string) => void) | undefined;
+    const unrecoverableLog = new Promise<string>((resolve) => {
+      terminalResolver = resolve;
+    });
+    worker.addEventListener('message', (event: MessageEvent<PublicMessage>) => {
+      if (event.data.coordinator_test_ready) readyResolver?.();
+      const message = event.data.log?.message;
+      if (message?.includes('session unrecoverable')) terminalResolver?.(message);
+    });
+    await ready;
+    const terminalLog = await unrecoverableLog;
+    const client = sdk.createAxonBrowserClient({ worker });
+
+    try {
+      await client.openDeltaTable(
+        'boot_terminal_after',
+        {
+          table_uri: new URL('/fixtures/browser-datafusion-runtime/boot-terminal', location.href)
+            .href,
+          snapshot_version: 0,
+          partition_column_types: {},
+          browser_compatibility: { capabilities: {} },
+          required_capabilities: { capabilities: {} },
+          active_files: [],
+        },
+        { requestId: 'open-after-boot-exhausted' },
+      );
+      return { terminalLog, after: { message: '', code: '' } };
+    } catch (error) {
+      const candidate = error as { queryError?: { code?: string; message?: string } };
+      return {
+        terminalLog,
+        after: {
+          message: String(candidate.queryError?.message),
+          code: String(candidate.queryError?.code),
+        },
+      };
+    } finally {
+      client.terminate();
+    }
+  });
+
+  expect(result.terminalLog).toMatch(/child worker crashed \(boot\):/);
+  expect(result.after.code).toBe('execution_failed');
+  expect(result.after.message).toContain('browser query session invalidated:');
+  expect(result.after.message).toContain('session unrecoverable');
+});
+
 test('one-child coordinator fails active SQL atomically when the child crashes', async ({
   page,
 }) => {

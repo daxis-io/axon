@@ -18,6 +18,11 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
   },
+  // Workers are constructed with `{ type: 'module' }`, so emit them as ES modules rather than the
+  // default IIFE.
+  worker: {
+    format: 'es',
+  },
   build: {
     rollupOptions: {
       input: {

@@ -93,6 +93,13 @@ export type PrivateChildMessage =
       version: typeof PRIVATE_STREAM_PROTOCOL_VERSION;
       query_id: string;
       error: QueryError;
+    }
+  // Reported when the child fails outside any single query, so it carries no query_id.
+  | {
+      kind: 'child_fault';
+      version: typeof PRIVATE_STREAM_PROTOCOL_VERSION;
+      stage: 'wasm_init' | 'module_eval';
+      error: QueryError;
     };
 
 export type StagedCredit = {

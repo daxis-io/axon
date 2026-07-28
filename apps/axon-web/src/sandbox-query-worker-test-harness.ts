@@ -3,6 +3,9 @@ type CoordinatorTestConfig = {
   watchdogMs?: number;
   maxRequests?: number;
   maxStagedBytes?: number;
+  bootTimeoutMs?: number;
+  maxBootFailures?: number;
+  maxRuntimeCrashes?: number;
   crashOnCommandNumber?: number;
   firstChildUrl?: string;
 };
@@ -19,13 +22,18 @@ const firstChild = parameters.get('first_child');
 const firstChildUrl =
   firstChild === 'hang'
     ? new URL('./sandbox-query-child-hang-test-worker.ts', import.meta.url).href
-    : undefined;
+    : firstChild === 'boot-crash'
+      ? new URL('./sandbox-query-child-boot-crash-test-worker.ts', import.meta.url).href
+      : undefined;
 
 scope.__AXON_SANDBOX_QUERY_COORDINATOR_TEST_CONFIG__ = {
   ...positiveIntegerParameter(parameters, 'deadline_ms', 'deadlineMs'),
   ...positiveIntegerParameter(parameters, 'watchdog_ms', 'watchdogMs'),
   ...positiveIntegerParameter(parameters, 'max_requests', 'maxRequests'),
   ...positiveIntegerParameter(parameters, 'max_staged_bytes', 'maxStagedBytes'),
+  ...positiveIntegerParameter(parameters, 'boot_timeout_ms', 'bootTimeoutMs'),
+  ...positiveIntegerParameter(parameters, 'max_boot_failures', 'maxBootFailures'),
+  ...positiveIntegerParameter(parameters, 'max_runtime_crashes', 'maxRuntimeCrashes'),
   ...(firstChild === 'crash-on-command' ? { crashOnCommandNumber: 1 } : {}),
   ...positiveIntegerParameter(parameters, 'crash_on_command', 'crashOnCommandNumber'),
   ...(firstChildUrl ? { firstChildUrl } : {}),
@@ -37,7 +45,15 @@ scope.postMessage({ coordinator_test_ready: true });
 function positiveIntegerParameter(
   parameters: URLSearchParams,
   parameter: string,
-  property: 'deadlineMs' | 'watchdogMs' | 'maxRequests' | 'maxStagedBytes' | 'crashOnCommandNumber',
+  property:
+    | 'deadlineMs'
+    | 'watchdogMs'
+    | 'maxRequests'
+    | 'maxStagedBytes'
+    | 'bootTimeoutMs'
+    | 'maxBootFailures'
+    | 'maxRuntimeCrashes'
+    | 'crashOnCommandNumber',
 ): Partial<CoordinatorTestConfig> {
   const raw = parameters.get(parameter);
   if (raw === null) return {};
