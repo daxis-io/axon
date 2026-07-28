@@ -551,6 +551,90 @@ with newly published canonical URLs.
 This work remains local-only. No push, remote branch, pull request, merge,
 deployment, release, or tag was created.
 
+## Post-closure audit repair record — 2026-07-28
+
+A fresh independent audit of `b0a7e1c..cf41b6e` found two must-fix issues
+after the initial closure:
+
+1. connection cleanup could discard an existing query session without
+   cancelling an editor execution still held in source resolution, allowing a
+   later session open or stale result/history publication;
+2. current sample-shaped persisted records could bypass whole-record
+   validation when they contained an extra malformed table or a
+   missing/mismatched logical identity.
+
+The repair chain above the original closure commit is:
+
+1. `fe83a57` — `fix(web): validate persisted sample catalogs`
+2. `48f59b2` — `fix(web): cancel displaced editor executions`
+3. `1c677d0` — `fix(web): migrate legacy sample catalog exactly`
+4. `b44805d` — `test(web): pin legacy sample migration fixture`
+
+`fe83a57` removed the current sample persistence bypass and requires the exact
+current logical sample identity with no extra schemas or tables. `48f59b2`
+made execution displacement the first step of serialized connection cleanup.
+The editor execution owner now aborts held resolution, leaves a cancellation
+tombstone that rejects later admission, and denies frame/result/history
+publication to displaced already-admitted executions for initial queries and
+pagination. App and ConnectPage replacement/removal paths use the same
+displacement seam, and App unmount displaces any remaining owned execution.
+
+The first follow-up audit confirmed both original blockers closed, then found
+one backward-compatibility issue: the exact sample record serialized by
+`b0a7e1c` used `sample-lake-fixture` and had no generated `logicalTable`.
+Generic migration incorrectly projected it as a public GCS resource.
+`1c677d0` now recognizes only that exact legacy serialized shape and upgrades
+it to the current explicit sample fixture. Extra-table or field-mismatch
+variants fail the whole record closed. `b44805d` pins the literal `b0a7e1c`
+record rather than deriving the regression fixture from current constants.
+
+The final independent follow-up at `b44805d` returned **Go** with no confirmed
+Critical, Important, or must-fix findings. It directly confirmed:
+
+- held pre-admission resolution cannot reach session open or `runQuery`;
+- displaced admitted work cannot deliver frames, results, or history;
+- the current exact sample round-trips;
+- malformed current and legacy sample claims fail closed;
+- the exact legacy sample upgrades and resolves as `kind: "sample"`.
+
+The reviewer recorded two non-blocking residual coverage gaps: there is no
+mounted React integration test for the complete disconnect flow, and no test
+uses an already-admitted `runQuery` implementation that ignores cancellation
+and returns late. The production ownership guards cover both inspected paths.
+
+Repair verification included:
+
+- repair-focused matrix: 17 files, 209 tests;
+- complete Vitest matrix after the final persistence repair: 44 files,
+  408 tests;
+- reviewer-focused final matrix: 8 files, 95 tests;
+- TypeScript `--noEmit`, ESLint, Prettier, and `git diff --check`;
+- generated web code drift check;
+- SDK matrix: 154 tests;
+- editor Chromium smoke against a prestarted local HTTPS Vite server:
+  45 passed and 2 fixture-dependent skips;
+- browser dependency and release worker-WASM security guardrails.
+
+The first browser-smoke attempt was environment-blocked by the macOS sandbox's
+Chromium Mach port denial. A second attempt correctly launched Chromium but
+had no prestarted server, as required by the standalone Playwright config.
+The authoritative rerun used an explicit local Vite server and approved
+outside-sandbox Chromium launch and passed. `npm run codegen:check` likewise
+passed after approved access to `buf.build`.
+`npm run codegen:contracts:check` was not rerun; its earlier descriptor-upload
+policy block remains unreported as green. Exact diff inspection still shows no
+protobuf, generated-contract, Rust-contract, or web dependency changes in the
+M1 branch. The application-layer SDK open remains only
+`apps/axon-web/src/services/query.ts:788`.
+
+The final remote refresh found `origin/main` at
+`6ef33b9b15c8957cbe041f0d3e1d9091088cabfe`; `b0a7e1c` remains an ancestor.
+The new remote commit changes browser child-worker/deployment code,
+`Cargo.lock`, and `apps/axon-web/tests/editor-smoke.spec.ts`. The smoke file is
+a same-file overlap with M1, although the M1 repair files do not overlap. No
+automatic rebase or integration was attempted; that remote overlap remains an
+explicit publication-time review gate.
+
 ## Rollback and publication boundary
 
 - Roll back with ordinary commit reverts, never reset or history rewriting.
