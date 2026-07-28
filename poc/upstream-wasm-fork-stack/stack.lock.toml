@@ -29,11 +29,11 @@ compatibility_source = "https://github.com/buoyant-data/delta-kernel-rs"
 fork = "https://github.com/daxis-io/delta-kernel-rs"
 base_rev = "f4602a43fe886f45cc3523360bc2488b8f3a2e58"
 candidate_rev = "c9a475f3394adc5296c4f16587c1f69c6e87213e"
-stack_rev = "21ecea739e647eefa0cbf7a8e0d70d3e7363c0da"
+stack_rev = "056f7223af0c5c6d6e56502615c3943cfb94132a"
 
 [repositories.delta_rs]
 canonical = "https://github.com/delta-io/delta-rs"
 fork = "https://github.com/daxis-io/delta-rs"
 base_rev = "df72cc6d3fba014a77243ce80514a6122b46a89b"
 candidate_rev = "0611f31ee39ef9942c04c6ccaeb44897d8ca923e"
-stack_rev = "e75d11d790e1197cb0e09edbf2d908866f4825bb"
+stack_rev = "2481e60db2a2fcfb0d5f723fd4fada1dcf05106c"

@@ -12,7 +12,7 @@
 - Superseded tags retained without mutation: `daxis-poc/wasm32-browser-e2e-2026-07-25`,
   `daxis-poc/wasm32-browser-e2e-2026-07-23`
 - Raw evidence root:
-  `target/upstream-wasm-fork-poc-evidence/64493c37b42c815b8768a8408cae4acdebc9e6b05c276855a9b4897463d82ecf/`
+  `target/upstream-wasm-fork-poc-evidence/f2feffe7c851daed01802749b0f8eec16b5c265d6c2eaacceede075d1c9759f3/`
 
 Each section below is an immutable record of what was proven at its own date. Where a revision,
 tag, measurement, or artifact hash differs, the newest section is authoritative.
@@ -49,11 +49,11 @@ defers the arbitrary-`200` policy to upstream issue #806.
 
 | Repository | Candidate revision | Stack revision | Tag object |
 | ---------- | ------------------ | -------------- | ---------- |
-| [`daxis-io/arrow-rs-object-store`](https://github.com/daxis-io/arrow-rs-object-store) | `502ec006d58e11f0921a173210d54a4485d1f5a3` | `ab9fda65805487edf5487e63082cab8111f0a178` | `1f8c9002b666` |
-| [`daxis-io/arrow-rs`](https://github.com/daxis-io/arrow-rs) | unchanged (`f24c67c536e98f85f2ed8a289a6eb1d55916ffb9`) | `52c8fb2e9c28b9d89d08c313e1bc938a35c29c99` | `9235fe431f4e` |
-| [`daxis-io/datafusion`](https://github.com/daxis-io/datafusion) | unchanged (`693aa0b5d2a3c925db963776a472d6144352116e`) | `54a376b161a059d08c806d3e959b87802a85ec4f` | `e6e6f401bffa` |
-| [`daxis-io/delta-kernel-rs`](https://github.com/daxis-io/delta-kernel-rs) | unchanged (`c9a475f3394adc5296c4f16587c1f69c6e87213e`) | `21ecea739e647eefa0cbf7a8e0d70d3e7363c0da` | `4dd81261792c` |
-| [`daxis-io/delta-rs`](https://github.com/daxis-io/delta-rs) | unchanged (`0611f31ee39ef9942c04c6ccaeb44897d8ca923e`) | `e75d11d790e1197cb0e09edbf2d908866f4825bb` | `3d5d89730b3a` |
+| [`daxis-io/arrow-rs-object-store`](https://github.com/daxis-io/arrow-rs-object-store) | `502ec006d58e11f0921a173210d54a4485d1f5a3` | `ab9fda65805487edf5487e63082cab8111f0a178` | `2b35798aadda` |
+| [`daxis-io/arrow-rs`](https://github.com/daxis-io/arrow-rs) | unchanged (`f24c67c536e98f85f2ed8a289a6eb1d55916ffb9`) | `52c8fb2e9c28b9d89d08c313e1bc938a35c29c99` | `8cfa79bdf95d` |
+| [`daxis-io/datafusion`](https://github.com/daxis-io/datafusion) | unchanged (`693aa0b5d2a3c925db963776a472d6144352116e`) | `54a376b161a059d08c806d3e959b87802a85ec4f` | `3a123ac82bb1` |
+| [`daxis-io/delta-kernel-rs`](https://github.com/daxis-io/delta-kernel-rs) | unchanged (`c9a475f3394adc5296c4f16587c1f69c6e87213e`) | `056f7223af0c5c6d6e56502615c3943cfb94132a` | `5b9ed8813d15` |
+| [`daxis-io/delta-rs`](https://github.com/daxis-io/delta-rs) | unchanged (`0611f31ee39ef9942c04c6ccaeb44897d8ca923e`) | `2481e60db2a2fcfb0d5f723fd4fada1dcf05106c` | `6c7c5deffb5c` |
 
 Only `object_store` carries a new candidate revision. The other four forks carry a single additive
 stack commit that repins the corrected leaf; no candidate, stack, forward-port revision, or tag
@@ -109,16 +109,16 @@ fixture reaching schema replay before failing at the first compressed page.
 
 | Browser | Version | Cold end-to-end | Warm median | Warm max | WASM memory high-water |
 | ------- | ------- | --------------: | ----------: | -------: | ---------------------: |
-| Chrome | `150.0.7871.187` | 171.93 ms | 6.5 ms | 6.8 ms | 14,614,528 bytes |
-| Firefox | `144.0.2` | 372.52 ms | 14.0 ms | 15.0 ms | 14,614,528 bytes |
+| Chrome | `150.0.7871.187` | 167.52 ms | 5.8 ms | 7.3 ms | 14,614,528 bytes |
+| Firefox | `144.0.2` | 381.27 ms | 11.0 ms | 13.0 ms | 14,614,528 bytes |
 
-The local bundle is 28,139,523 raw bytes, 6,688,541 gzip bytes, and 4,303,712 Brotli bytes, with
-WASM SHA-256 `8dd2b4c42945dece01c3d04114d3403017adec65711faea65b00953331e99368`.
+The local bundle is 28,139,523 raw bytes, 6,688,799 gzip bytes, and 4,303,938 Brotli bytes, with
+WASM SHA-256 `0a3f3e0d6f020241e174e30dd3ba94bf954b56215b93c85152a65a1dfcfe8970`.
 
 | Artifact | SHA-256 |
 | -------- | ------- |
-| `stack.lock.toml` | `64493c37b42c815b8768a8408cae4acdebc9e6b05c276855a9b4897463d82ecf` |
-| Browser `Cargo.lock` | `2d78d33e2af5ec836dd41feed72dcb3309cb07536e904eaa27073ee697206e7c` |
+| `stack.lock.toml` | `f2feffe7c851daed01802749b0f8eec16b5c265d6c2eaacceede075d1c9759f3` |
+| Browser `Cargo.lock` | `6c433951fa8fe03f6e414f27a6cdd7f7bdb88b30623a665dea22ca3927bed988` |
 
 ### Graph And Boundary Gates
 

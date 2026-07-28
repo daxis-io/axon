@@ -614,7 +614,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "buoyant_kernel"
 version = "0.22.2"
-source = "git+https://github.com/daxis-io/delta-kernel-rs?rev=21ecea739e647eefa0cbf7a8e0d70d3e7363c0da#21ecea739e647eefa0cbf7a8e0d70d3e7363c0da"
+source = "git+https://github.com/daxis-io/delta-kernel-rs?rev=056f7223af0c5c6d6e56502615c3943cfb94132a#056f7223af0c5c6d6e56502615c3943cfb94132a"
 dependencies = [
  "arrow 58.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "arrow 58.3.0 (git+https://github.com/daxis-io/arrow-rs?rev=52c8fb2e9c28b9d89d08c313e1bc938a35c29c99)",
@@ -648,7 +648,7 @@ dependencies = [
 [[package]]
 name = "buoyant_kernel_derive"
 version = "1.0.0"
-source = "git+https://github.com/daxis-io/delta-kernel-rs?rev=21ecea739e647eefa0cbf7a8e0d70d3e7363c0da#21ecea739e647eefa0cbf7a8e0d70d3e7363c0da"
+source = "git+https://github.com/daxis-io/delta-kernel-rs?rev=056f7223af0c5c6d6e56502615c3943cfb94132a#056f7223af0c5c6d6e56502615c3943cfb94132a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1479,7 +1479,7 @@ dependencies = [
 [[package]]
 name = "deltalake-browser"
 version = "0.32.4"
-source = "git+https://github.com/daxis-io/delta-rs?rev=e75d11d790e1197cb0e09edbf2d908866f4825bb#e75d11d790e1197cb0e09edbf2d908866f4825bb"
+source = "git+https://github.com/daxis-io/delta-rs?rev=2481e60db2a2fcfb0d5f723fd4fada1dcf05106c#2481e60db2a2fcfb0d5f723fd4fada1dcf05106c"
 dependencies = [
  "arrow-array 58.3.0",
  "arrow-ipc 58.3.0",
