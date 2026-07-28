@@ -8,10 +8,10 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-arrow-array = { git = "https://github.com/daxis-io/arrow-rs", rev = "518663f4fb39ec0be672718432bbd7bb8a5456fc" }
-arrow-ipc = { git = "https://github.com/daxis-io/arrow-rs", rev = "518663f4fb39ec0be672718432bbd7bb8a5456fc" }
+arrow-array = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+arrow-ipc = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
 browser-sdk = { path = "../../../crates/browser-sdk" }
-deltalake-browser = { git = "https://github.com/daxis-io/delta-rs", rev = "be60607f67951459e886915e8104273880dcc5cb" }
+deltalake-browser = { git = "https://github.com/daxis-io/delta-rs", rev = "e75d11d790e1197cb0e09edbf2d908866f4825bb" }
 js-sys = "=0.3.91"
 query-contract = { path = "../../../crates/query-contract" }
 url = "2"
@@ -19,7 +19,7 @@ wasm-bindgen = "=0.2.114"
 wasm-bindgen-futures = "=0.4.64"
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
-object_store = { git = "https://github.com/daxis-io/arrow-rs-object-store", rev = "a04240eafdc5833e34fe21d4b348ee399177def6", default-features = false, features = ["http-base", "reqwest", "web"] }
+object_store = { git = "https://github.com/daxis-io/arrow-rs-object-store", rev = "ab9fda65805487edf5487e63082cab8111f0a178", default-features = false, features = ["http-base", "reqwest", "web"] }
 
 [dev-dependencies]
 bytes = "=1.11.1"

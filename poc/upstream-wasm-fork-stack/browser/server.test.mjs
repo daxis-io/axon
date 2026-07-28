@@ -50,6 +50,63 @@ test("retry continuation responses preserve the validator and requested range", 
   assert.deepEqual(plan.body, SAMPLE.subarray(18));
 });
 
+test("invalid continuations keep a matching validator so only the framing is wrong", () => {
+  const outstanding = { range: "bytes=18-35", "if-range": '"sample"' };
+  const plan = (scenario) =>
+    planObjectResponse({
+      body: SAMPLE,
+      etag: '"sample"',
+      headers: outstanding,
+      scenario,
+      attempt: 2,
+    });
+
+  const nonPartial = plan("retry-non-partial");
+  assert.equal(nonPartial.status, 200);
+  assert.equal(nonPartial.headers.etag, '"sample"');
+
+  const changedSize = plan("retry-changed-size");
+  assert.equal(changedSize.status, 206);
+  assert.equal(changedSize.headers["content-range"], "bytes 18-35/37");
+  assert.equal(changedSize.headers["content-length"], "18");
+
+  const enclosing = plan("retry-enclosing");
+  assert.equal(enclosing.status, 206);
+  assert.equal(enclosing.headers["content-range"], "bytes 0-35/36");
+  assert.equal(enclosing.headers["content-length"], "36");
+
+  const shifted = plan("retry-shifted-range");
+  assert.equal(shifted.status, 206);
+  assert.equal(shifted.headers["content-range"], "bytes 19-35/36");
+  assert.equal(shifted.headers["content-length"], "17");
+
+  // Every one of them must still declare a length that agrees with its
+  // Content-Range, so the read fails on the property under test rather than on
+  // declared-length validation.
+  for (const invalid of [changedSize, enclosing, shifted]) {
+    assert.equal(Number(invalid.headers["content-length"]), invalid.body.length);
+  }
+});
+
+test("invalid continuation scenarios truncate their first response to force a retry", () => {
+  for (const scenario of [
+    "retry-non-partial",
+    "retry-changed-size",
+    "retry-enclosing",
+    "retry-shifted-range",
+  ]) {
+    const plan = planObjectResponse({
+      body: SAMPLE,
+      etag: '"sample"',
+      headers: {},
+      scenario,
+      attempt: 1,
+    });
+    assert.equal(plan.status, 200, scenario);
+    assert.equal(plan.truncateAt, 18, scenario);
+  }
+});
+
 test("encoded range scenario reaches the identity-encoding validator after valid range framing", () => {
   const plan = planObjectResponse({
     body: SAMPLE,
