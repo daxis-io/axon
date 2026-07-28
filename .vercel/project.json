@@ -1,0 +1,16 @@
+{
+  "projectId": "prj_jCOA0Y55yO141kVicQ3S55EIs07t",
+  "orgId": "team_6IZpCCCwp6s0gWM5gVGSCQOo",
+  "projectName": "axon-web",
+  "settings": {
+    "createdAt": 1779507397806,
+    "framework": null,
+    "devCommand": null,
+    "installCommand": null,
+    "buildCommand": null,
+    "outputDirectory": null,
+    "rootDirectory": null,
+    "directoryListing": false,
+    "nodeVersion": "24.x"
+  }
+}

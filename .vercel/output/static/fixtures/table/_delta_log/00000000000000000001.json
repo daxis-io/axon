@@ -1,0 +1,2 @@
+{"remove":{"path":"category=A/data/a.parquet"}}
+{"add":{"path":"data/b.parquet","size":20,"partitionValues":{"category":"B"}}}

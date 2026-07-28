@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "fixture_revision": "s3-browser-perf-v1",
+  "table_uri": "s3://axon-public-s3-fixture-452456948477/fixtures/s3-browser-perf/table",
+  "region": "us-east-2",
+  "manifest_sha256": "18d1c4c3b5e1ce78ce156ce51247a94a46e44401cad9688ec0d14ceaa01b6ab3",
+  "object_checksums_sha256": "05f6c5823a88c49559eef70072165b584dfe3c320ae8a435c6f6f82f30d719a9",
+  "required_object_count": 21,
+  "active_file_count": 8,
+  "active_data_bytes": 82057700,
+  "generator": {
+    "binary": "generate-s3-perf-fixture",
+    "seed": 11889888866900516902,
+    "target_active_bytes": 134217728,
+    "active_file_count": 8,
+    "row_groups_per_file": 4,
+    "rows_per_row_group": 32768,
+    "data_page_size_bytes": 65536,
+    "data_page_row_count_limit": 16384
+  }
+}

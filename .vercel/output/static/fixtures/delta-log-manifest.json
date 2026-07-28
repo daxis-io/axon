@@ -1,0 +1,13 @@
+{
+  "table_uri": "gs://axon-sandbox/events",
+  "objects": [
+    {
+      "relative_path": "_delta_log/00000000000000000000.json",
+      "url_path": "/fixtures/table/_delta_log/00000000000000000000.json"
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000001.json",
+      "url_path": "/fixtures/table/_delta_log/00000000000000000001.json"
+    }
+  ]
+}

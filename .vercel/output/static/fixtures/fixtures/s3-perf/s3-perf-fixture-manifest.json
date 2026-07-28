@@ -1,0 +1,258 @@
+{
+  "schema_version": 1,
+  "fixture_revision": "s3-browser-perf-v1",
+  "name": "S3 browser performance Delta table",
+  "table_uri": "s3://axon-public-s3-fixture-452456948477/fixtures/s3-browser-perf/table",
+  "region": "us-east-2",
+  "generator": {
+    "seed": 11889888866900516902,
+    "target_active_bytes": 134217728,
+    "active_file_count": 8,
+    "row_groups_per_file": 4,
+    "rows_per_row_group": 32768,
+    "data_page_size_bytes": 65536,
+    "data_page_row_count_limit": 16384
+  },
+  "expected_latest_version": 10,
+  "checkpoint_version": 2,
+  "target_active_data_bytes": 134217728,
+  "actual_active_data_bytes": 82057700,
+  "active_file_count": 8,
+  "row_groups_per_file": 4,
+  "rows_per_row_group": 32768,
+  "generated_steps": [
+    {
+      "version": 0,
+      "label": "create table",
+      "detail": "Create browser-compatible Delta metadata with event_date and region partitions."
+    },
+    {
+      "version": 1,
+      "label": "append historical north america",
+      "detail": "Write old active data that will later be removed by overwrite."
+    },
+    {
+      "version": 2,
+      "label": "append historical europe + checkpoint",
+      "detail": "Append a second historical partition and write a checkpoint at version 2."
+    },
+    {
+      "version": 3,
+      "label": "overwrite active file 1",
+      "detail": "Full-table overwrite removes historical files and starts the active snapshot."
+    },
+    {
+      "version": 4,
+      "label": "append active file 2",
+      "detail": "Append deterministic active partition data file 2 of 8."
+    },
+    {
+      "version": 5,
+      "label": "append active file 3",
+      "detail": "Append deterministic active partition data file 3 of 8."
+    },
+    {
+      "version": 6,
+      "label": "append active file 4",
+      "detail": "Append deterministic active partition data file 4 of 8."
+    },
+    {
+      "version": 7,
+      "label": "append active file 5",
+      "detail": "Append deterministic active partition data file 5 of 8."
+    },
+    {
+      "version": 8,
+      "label": "append active file 6",
+      "detail": "Append deterministic active partition data file 6 of 8."
+    },
+    {
+      "version": 9,
+      "label": "append active file 7",
+      "detail": "Append deterministic active partition data file 7 of 8."
+    },
+    {
+      "version": 10,
+      "label": "append active file 8",
+      "detail": "Append deterministic active partition data file 8 of 8."
+    }
+  ],
+  "objects": [
+    {
+      "relative_path": "_delta_log/00000000000000000000.json",
+      "url_path": "/fixtures/s3-perf/table/_delta_log/00000000000000000000.json",
+      "kind": "commit_json",
+      "size_bytes": 3943
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000001.json",
+      "url_path": "/fixtures/s3-perf/table/_delta_log/00000000000000000001.json",
+      "kind": "commit_json",
+      "size_bytes": 1719
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000002.checkpoint.parquet",
+      "url_path": "/fixtures/s3-perf/table/_delta_log/00000000000000000002.checkpoint.parquet",
+      "kind": "checkpoint_parquet",
+      "size_bytes": 17047
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000002.json",
+      "url_path": "/fixtures/s3-perf/table/_delta_log/00000000000000000002.json",
+      "kind": "commit_json",
+      "size_bytes": 1720
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000003.json",
+      "url_path": "/fixtures/s3-perf/table/_delta_log/00000000000000000003.json",
+      "kind": "commit_json",
+      "size_bytes": 2306
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000004.json",
+      "url_path": "/fixtures/s3-perf/table/_delta_log/00000000000000000004.json",
+      "kind": "commit_json",
+      "size_bytes": 1712
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000005.json",
+      "url_path": "/fixtures/s3-perf/table/_delta_log/00000000000000000005.json",
+      "kind": "commit_json",
+      "size_bytes": 1712
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000006.json",
+      "url_path": "/fixtures/s3-perf/table/_delta_log/00000000000000000006.json",
+      "kind": "commit_json",
+      "size_bytes": 1714
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000007.json",
+      "url_path": "/fixtures/s3-perf/table/_delta_log/00000000000000000007.json",
+      "kind": "commit_json",
+      "size_bytes": 1710
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000008.json",
+      "url_path": "/fixtures/s3-perf/table/_delta_log/00000000000000000008.json",
+      "kind": "commit_json",
+      "size_bytes": 1712
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000009.json",
+      "url_path": "/fixtures/s3-perf/table/_delta_log/00000000000000000009.json",
+      "kind": "commit_json",
+      "size_bytes": 1711
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000010.json",
+      "url_path": "/fixtures/s3-perf/table/_delta_log/00000000000000000010.json",
+      "kind": "commit_json",
+      "size_bytes": 1713
+    },
+    {
+      "relative_path": "_delta_log/_last_checkpoint",
+      "url_path": "/fixtures/s3-perf/table/_delta_log/_last_checkpoint",
+      "kind": "last_checkpoint",
+      "size_bytes": 61
+    }
+  ],
+  "active_data_files": [
+    {
+      "relative_path": "event_date=2026-01-01/region=ap-south/part-00000-012410b9-68e0-499f-bcfa-477b9f610b0f-c000.snappy.parquet",
+      "url_path": "/fixtures/s3-perf/table/event_date=2026-01-01/region=ap-south/part-00000-012410b9-68e0-499f-bcfa-477b9f610b0f-c000.snappy.parquet",
+      "size_bytes": 10259619,
+      "row_count": 131072,
+      "row_group_count": 4,
+      "compression": "SNAPPY",
+      "partition_values": {
+        "event_date": "2026-01-01",
+        "region": "ap-south"
+      }
+    },
+    {
+      "relative_path": "event_date=2026-01-01/region=eu-west/part-00000-23342aeb-0495-4053-b315-c30f4b175e26-c000.snappy.parquet",
+      "url_path": "/fixtures/s3-perf/table/event_date=2026-01-01/region=eu-west/part-00000-23342aeb-0495-4053-b315-c30f4b175e26-c000.snappy.parquet",
+      "size_bytes": 10255575,
+      "row_count": 131072,
+      "row_group_count": 4,
+      "compression": "SNAPPY",
+      "partition_values": {
+        "event_date": "2026-01-01",
+        "region": "eu-west"
+      }
+    },
+    {
+      "relative_path": "event_date=2026-01-01/region=us-east/part-00000-af109cfc-2a37-47cc-9e89-486b9e9d0b85-c000.snappy.parquet",
+      "url_path": "/fixtures/s3-perf/table/event_date=2026-01-01/region=us-east/part-00000-af109cfc-2a37-47cc-9e89-486b9e9d0b85-c000.snappy.parquet",
+      "size_bytes": 10242424,
+      "row_count": 131072,
+      "row_group_count": 4,
+      "compression": "SNAPPY",
+      "partition_values": {
+        "event_date": "2026-01-01",
+        "region": "us-east"
+      }
+    },
+    {
+      "relative_path": "event_date=2026-01-01/region=us-west/part-00000-2c9daee5-f65d-49cd-968a-6dafc6b712bb-c000.snappy.parquet",
+      "url_path": "/fixtures/s3-perf/table/event_date=2026-01-01/region=us-west/part-00000-2c9daee5-f65d-49cd-968a-6dafc6b712bb-c000.snappy.parquet",
+      "size_bytes": 10253650,
+      "row_count": 131072,
+      "row_group_count": 4,
+      "compression": "SNAPPY",
+      "partition_values": {
+        "event_date": "2026-01-01",
+        "region": "us-west"
+      }
+    },
+    {
+      "relative_path": "event_date=2026-01-02/region=ap-south/part-00000-f46f6022-7f1c-4a12-9f55-a589842a385b-c000.snappy.parquet",
+      "url_path": "/fixtures/s3-perf/table/event_date=2026-01-02/region=ap-south/part-00000-f46f6022-7f1c-4a12-9f55-a589842a385b-c000.snappy.parquet",
+      "size_bytes": 10265445,
+      "row_count": 131072,
+      "row_group_count": 4,
+      "compression": "SNAPPY",
+      "partition_values": {
+        "event_date": "2026-01-02",
+        "region": "ap-south"
+      }
+    },
+    {
+      "relative_path": "event_date=2026-01-02/region=eu-west/part-00000-580fb735-6f6c-4770-bb13-b24795973bd0-c000.snappy.parquet",
+      "url_path": "/fixtures/s3-perf/table/event_date=2026-01-02/region=eu-west/part-00000-580fb735-6f6c-4770-bb13-b24795973bd0-c000.snappy.parquet",
+      "size_bytes": 10257351,
+      "row_count": 131072,
+      "row_group_count": 4,
+      "compression": "SNAPPY",
+      "partition_values": {
+        "event_date": "2026-01-02",
+        "region": "eu-west"
+      }
+    },
+    {
+      "relative_path": "event_date=2026-01-02/region=us-east/part-00000-c161fd75-315e-4578-8759-e24d61215fd0-c000.snappy.parquet",
+      "url_path": "/fixtures/s3-perf/table/event_date=2026-01-02/region=us-east/part-00000-c161fd75-315e-4578-8759-e24d61215fd0-c000.snappy.parquet",
+      "size_bytes": 10260683,
+      "row_count": 131072,
+      "row_group_count": 4,
+      "compression": "SNAPPY",
+      "partition_values": {
+        "event_date": "2026-01-02",
+        "region": "us-east"
+      }
+    },
+    {
+      "relative_path": "event_date=2026-01-02/region=us-west/part-00000-070640e1-4fe8-49be-b6d1-7bcb75546b9b-c000.snappy.parquet",
+      "url_path": "/fixtures/s3-perf/table/event_date=2026-01-02/region=us-west/part-00000-070640e1-4fe8-49be-b6d1-7bcb75546b9b-c000.snappy.parquet",
+      "size_bytes": 10262953,
+      "row_count": 131072,
+      "row_group_count": 4,
+      "compression": "SNAPPY",
+      "partition_values": {
+        "event_date": "2026-01-02",
+        "region": "us-west"
+      }
+    }
+  ]
+}

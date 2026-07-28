@@ -1,0 +1,56 @@
+{
+  "version": 3,
+  "routes": [
+    {
+      "src": "^/assets(?:/(.*))$",
+      "headers": {
+        "Cache-Control": "public, max-age=31536000, immutable"
+      },
+      "continue": true
+    },
+    {
+      "src": "^(?:/(.*))\\.wasm$",
+      "headers": {
+        "Content-Type": "application/wasm"
+      },
+      "continue": true
+    },
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "^/connect$",
+      "dest": "/index.html",
+      "check": true
+    },
+    {
+      "src": "^/catalogs$",
+      "dest": "/index.html",
+      "check": true
+    },
+    {
+      "src": "^/settings$",
+      "dest": "/index.html",
+      "check": true
+    },
+    {
+      "src": "^/catalog(?:/([^/]+?))(?:/([^/]+?))(?:/([^/]+?))$",
+      "dest": "/index.html?catalogId=$1&schemaName=$2&tableName=$3",
+      "check": true
+    },
+    {
+      "src": "^/saved(?:/([^/]+?))$",
+      "dest": "/index.html?savedId=$1",
+      "check": true
+    },
+    {
+      "handle": "error"
+    },
+    {
+      "status": 404,
+      "src": "^(?!/api).*$",
+      "dest": "/404.html"
+    }
+  ],
+  "crons": []
+}

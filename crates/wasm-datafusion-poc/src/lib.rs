@@ -2864,10 +2864,13 @@ fn map_datafusion_error(error: datafusion::error::DataFusionError) -> QueryError
         return query_error;
     }
 
-    match error {
+    // Classify on the root error. DataFusion wraps failures raised deep in an operator with
+    // context, and a wrapped ResourcesExhausted still means the browser hit a runtime limit the
+    // caller can fall back on rather than an opaque execution failure.
+    match error.find_root() {
         DataFusionError::NotImplemented(message) => QueryError::new(
             QueryErrorCode::UnsupportedFeature,
-            message,
+            message.clone(),
             runtime_target(),
         ),
         DataFusionError::ResourcesExhausted(message) => QueryError::new(
@@ -2876,9 +2879,9 @@ fn map_datafusion_error(error: datafusion::error::DataFusionError) -> QueryError
             runtime_target(),
         )
         .with_fallback_reason(FallbackReason::BrowserRuntimeConstraint),
-        other => QueryError::new(
+        _ => QueryError::new(
             QueryErrorCode::ExecutionFailed,
-            format!("experimental browser DataFusion query failed: {other}"),
+            format!("experimental browser DataFusion query failed: {error}"),
             runtime_target(),
         ),
     }
