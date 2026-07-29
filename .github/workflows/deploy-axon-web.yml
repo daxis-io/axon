@@ -3,6 +3,9 @@ name: Deploy axon-web
 # The browser editor needs a Rust toolchain to produce its WASM bundle, which Vercel's build image
 # does not provide. The build therefore runs here and ships as a prebuilt deployment.
 #
+# Push to main  -> preview deployment.
+# Manual run    -> preview, or production when the environment input says so.
+#
 # Requires three repository secrets. Without VERCEL_TOKEN every step is skipped, so the workflow
 # stays green until deployment is wired up rather than failing on each push:
 #   VERCEL_TOKEN       - account token from https://vercel.com/account/tokens
@@ -85,7 +88,9 @@ jobs:
         env:
           PRODUCTION_URL: ${{ vars.AXON_PRODUCTION_URL || 'https://axon.daxistech.io' }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.environment }}" = "production" ]; then
+          # Production requires an explicit workflow_dispatch. A push to main publishes a preview
+          # so a bad commit cannot reach users on its own; nothing here gates on the test suites.
+          if [ "${{ inputs.environment }}" = "production" ]; then
             echo "environment=production" >> "$GITHUB_OUTPUT"
             echo "prod_flag=--prod" >> "$GITHUB_OUTPUT"
             # Verify the public alias, not the per-deployment URL. Vercel protects the generated
