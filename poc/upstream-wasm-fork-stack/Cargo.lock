@@ -1479,7 +1479,7 @@ dependencies = [
 [[package]]
 name = "deltalake-browser"
 version = "0.32.4"
-source = "git+https://github.com/daxis-io/delta-rs?rev=2481e60db2a2fcfb0d5f723fd4fada1dcf05106c#2481e60db2a2fcfb0d5f723fd4fada1dcf05106c"
+source = "git+https://github.com/daxis-io/delta-rs?rev=8e5e163f67b9c85e5a71e2671e35e8991a09e4bc#8e5e163f67b9c85e5a71e2671e35e8991a09e4bc"
 dependencies = [
  "arrow-array 58.3.0",
  "arrow-ipc 58.3.0",
@@ -1490,6 +1490,7 @@ dependencies = [
  "datafusion",
  "futures",
  "object_store 0.13.2 (git+https://github.com/daxis-io/arrow-rs-object-store?rev=ab9fda65805487edf5487e63082cab8111f0a178)",
+ "serde_json",
  "thiserror",
  "url",
 ]

@@ -8,20 +8,28 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use serde_json::{Value, json};
+use url::Url;
 use sha2::{Digest, Sha256};
 
 const QUERY: &str =
     "SELECT category, SUM(value) AS total FROM delta GROUP BY category ORDER BY category";
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let output = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("fixtures"));
-    generate(&output).expect("fixture generation must succeed");
+    let mut tables = generate(&output).expect("fixture generation must succeed");
+    tables.push(
+        generate_checkpointed(&output)
+            .await
+            .expect("checkpoint fixture generation must succeed"),
+    );
+    write_manifest(&output, tables).expect("manifest must be written");
 }
 
-fn generate(output: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn generate(output: &Path) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("category", DataType::Utf8, false),
         Field::new("value", DataType::Int64, false),
@@ -153,11 +161,16 @@ fn generate(output: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
 
+    Ok(tables)
+}
+
+fn write_manifest(output: &Path, tables: Vec<Value>) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = json!({
         "schema_version": 1,
         "generator": {
             "arrow": "58.3.0",
-            "parquet": "58.3.0"
+            "parquet": "58.3.0",
+            "deltalake": "0.32.4"
         },
         "tables": tables
     });
@@ -165,6 +178,142 @@ fn generate(output: &Path) -> Result<(), Box<dyn std::error::Error>> {
         output.join("manifest.json"),
         format!("{}\n", serde_json::to_string_pretty(&manifest)?),
     )?;
+    Ok(())
+}
+
+/// Build a table whose pre-checkpoint commits have been cleaned up.
+///
+/// Versions 0 and 1 are written, checkpointed, and then their commit JSON is
+/// deleted — which the Delta protocol permits once a checkpoint covers them.
+/// Version 2 is appended afterwards. A reader that ignores the checkpoint can
+/// therefore only see the version-2 rows, so this fixture distinguishes real
+/// checkpoint replay from a reader that merely tolerates a checkpoint's
+/// presence.
+async fn generate_checkpointed(output: &Path) -> Result<Value, Box<dyn std::error::Error>> {
+    use deltalake::kernel::{DataType as DeltaDataType, PrimitiveType, StructField};
+    use deltalake::operations::DeltaOps;
+    use deltalake::protocol::checkpoints::create_checkpoint;
+
+    let name = "checkpointed";
+    let table_root = output.join(name);
+    if table_root.exists() {
+        fs::remove_dir_all(&table_root)?;
+    }
+    fs::create_dir_all(&table_root)?;
+    let table_url = Url::from_directory_path(table_root.canonicalize()?)
+        .map_err(|_| "fixture table root must be an absolute path")?;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("category", DataType::Utf8, false),
+        Field::new("value", DataType::Int64, false),
+    ]));
+
+    let table = DeltaOps::try_from_url(table_url)
+        .await?
+        .create()
+        .with_columns(vec![
+            StructField::new(
+                "category",
+                DeltaDataType::Primitive(PrimitiveType::String),
+                false,
+            ),
+            StructField::new(
+                "value",
+                DeltaDataType::Primitive(PrimitiveType::Long),
+                false,
+            ),
+        ])
+        .await?;
+
+    // v1 and v2 are covered by the checkpoint; v3 lands after it.
+    let commits: [&[(&str, i64)]; 3] = [
+        &[("alpha", 2), ("beta", 3)],
+        &[("alpha", 5), ("beta", 7)],
+        &[("alpha", 11), ("beta", 13)],
+    ];
+    let mut table = table;
+    for (index, rows) in commits.iter().enumerate() {
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(
+                    rows.iter().map(|(c, _)| *c).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+                )),
+            ],
+        )?;
+        table = DeltaOps(table).write(vec![batch]).await?;
+        if index == 1 {
+            create_checkpoint(&table, None).await?;
+        }
+    }
+
+    // Read the checkpoint version the writer actually chose rather than assuming
+    // one: `create()` consumes version 0, so the writes land at 1..=3.
+    let log_root = table_root.join("_delta_log");
+    let last_checkpoint: Value =
+        serde_json::from_slice(&fs::read(log_root.join("_last_checkpoint"))?)?;
+    let checkpoint_version = last_checkpoint["version"]
+        .as_u64()
+        .ok_or("_last_checkpoint is missing a version")?;
+
+    // Delete every commit the checkpoint subsumes, so the checkpoint is the only
+    // route to those rows.
+    let mut removed = Vec::new();
+    for version in 0..checkpoint_version {
+        let commit = log_root.join(format!("{version:020}.json"));
+        if commit.exists() {
+            fs::remove_file(&commit)?;
+            removed.push(format!("_delta_log/{version:020}.json"));
+        }
+    }
+
+    let mut files = Vec::new();
+    collect_files(output, &table_root, &mut files)?;
+    files.sort_by_key(|value| value["path"].as_str().unwrap_or_default().to_string());
+
+    Ok(json!({
+        "name": name,
+        "codec": "snappy",
+        "root": name,
+        "checkpoint": {
+            "version": checkpoint_version,
+            "removed_commits": removed,
+            "latest_version": table.version()
+        },
+        "schema": [
+            {"name": "category", "type": "string", "nullable": false},
+            {"name": "value", "type": "long", "nullable": false}
+        ],
+        "expected": {
+            "query": QUERY,
+            "row_count": 2,
+            // Only correct if the checkpoint is replayed: alpha 2+5+11, beta 3+7+13.
+            "rows": [
+                {"category": "alpha", "total": 18},
+                {"category": "beta", "total": 23}
+            ]
+        },
+        "files": files
+    }))
+}
+
+fn collect_files(
+    output: &Path,
+    dir: &Path,
+    files: &mut Vec<Value>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_files(output, &path, files)?;
+        } else {
+            let bytes = fs::read(&path)?;
+            files.push(file_record(output, &path, &bytes));
+        }
+    }
     Ok(())
 }
 
