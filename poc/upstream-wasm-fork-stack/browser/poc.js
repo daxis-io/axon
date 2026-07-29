@@ -214,6 +214,40 @@ async function runProtocolSuite() {
   assert(retryGets[1].range, "retry continuation omitted Range");
   assert(retryGets[1].if_range, "retry continuation omitted If-Range");
 
+  // A continuation whose validator still matches but whose framing does not
+  // cover exactly the outstanding range must be rejected before any resumed
+  // byte reaches the caller. The 36-byte object truncates at 18, so every
+  // continuation below is answered against an outstanding range of 18..36.
+  const invalidContinuations = {};
+  // `retry-non-partial` is caught by the HTTP store's own If-Range guard, which
+  // requires a 206 before it will compare validators, so it never reaches the
+  // shared `NotPartial` check. The shared check is covered by the object_store
+  // unit tests and by the S3 mock; here the property proven is that the browser
+  // rejects the non-206 continuation at all.
+  for (const [scenario, expected] of [
+    ["retry-non-partial", ["did not honor If-Range"]],
+    ["retry-changed-size", ["Retry response changed object size from 36 to 37"]],
+    ["retry-enclosing", ["Requested 18..36", "got 0..36"]],
+    ["retry-shifted-range", ["Requested 18..36", "got 19..36"]],
+  ]) {
+    await reset(scenario);
+    const error = await expectedFailure(
+      () => probeStream(`${dataOrigin}/${scenario}/sample.bin`),
+      expected,
+    );
+    const observed = await stats(scenario);
+    const gets = observed.requests.filter(({ method }) => method === "GET");
+    assert(
+      gets.length === 2,
+      `${scenario} expected two GETs; received ${gets.length}`,
+    );
+    assert(
+      gets[1].range && gets[1].if_range,
+      `${scenario} continuation omitted Range or If-Range`,
+    );
+    invalidContinuations[scenario] = { error, requests: observed.requests };
+  }
+
   await reset("validator-mismatch");
   const validatorMismatchError = await expectedFailure(
     () => probeStream(`${dataOrigin}/validator-mismatch/sample.bin`),
@@ -280,6 +314,7 @@ async function runProtocolSuite() {
     encoded,
     encoded_error: encodedError,
     invalid_content_range_error: invalidContentRangeError,
+    invalid_continuations: invalidContinuations,
     invalid_length_error: invalidLengthError,
     missing_length_error: missingLengthError,
     normal_range: normal,

@@ -1,0 +1,62 @@
+# Which agent-harness configuration this repository is operated under.
+#
+# The harness itself lives in a separate repository. This file records which
+# revision of it was active, so a result produced here can be attributed to a
+# specific configuration rather than to a model name alone. Update it when the
+# harness changes, and record the harness_id in any run ledger under .ai/runs/.
+#
+# Regenerate the values with, from the harness repository:
+#     python3 scripts/capture-manifest.py --json
+
+schema_version = 2
+
+[harness]
+repository = "git@github.com:ethan-tyler/gpt56-codex-engineering-harness.git"
+local_path = "~/gpt56-codex-engineering-harness"
+revision = "8557fab756ff7998084e8145e0f036c229e07730"
+branch = "main"
+pinned_on = "2026-07-27"
+
+# Three identities, each answering a different question. Record the narrowest
+# one that covers what you are comparing.
+#
+#   instructions_id  the harness repository's instruction surface alone.
+#                    Reproducible anywhere from the repo; the only id CI checks.
+#   harness_id       + Codex CLI version, effective config, and feature flags.
+#   environment_id   + the whole installed surface, including user-scope skills
+#                    the harness repo does not own.
+#
+# The split exists because quarantining five user-scope skills changed real
+# behavior while leaving harness_id untouched. See HCP-0005.
+instructions_id = "e9f65598c122df78"
+harness_id = "a64d7c62bef65599"
+environment_id = "cea63fb47ee4ef35"
+
+[runtime]
+codex_version = "codex-cli 0.145.0"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+network_access = false
+max_concurrent_threads_per_session = 3
+default_subagent_model = "gpt-5.6-terra"
+default_subagent_reasoning_effort = "medium"
+registered_agent_roles = 12
+
+# How Claude Code reaches those agents. The dispatch rules live in
+# .claude/skills/codex-team/SKILL.md; the role profiles are installed from the
+# harness repository into ~/.codex/agents/ and are read at dispatch time.
+[mcp]
+server = "codex"
+tools = ["mcp__codex__codex", "mcp__codex__codex-reply"]
+
+# Known limits of this pinning, so they are not rediscovered later.
+#
+# - harness_id covers the instruction surface, CLI version, and runtime posture.
+#   It does not cover the model weights behind a model name.
+# - Codex enforces the sandbox; it does not enforce which sandbox this repo's
+#   skill asks for. Claude Code permission rules match tool names, not
+#   arguments, so read-only dispatch remains a convention of the skill text.
+# - max_concurrent_threads_per_session bounds Codex-native spawning. It does not
+#   bound parallel MCP calls issued from Claude Code.

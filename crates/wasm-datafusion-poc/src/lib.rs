@@ -34,6 +34,7 @@ use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::ScalarValue;
 use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
+use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
 use datafusion::execution::memory_pool::{
     GreedyMemoryPool, MemoryLimit, MemoryPool, MemoryReservation, TrackConsumersPool,
 };
@@ -2274,6 +2275,13 @@ impl WasmDataFusionEngine {
         let runtime_memory_pool: Arc<dyn MemoryPool> = memory_pool.clone();
         let runtime = RuntimeEnvBuilder::new()
             .with_memory_pool(runtime_memory_pool)
+            // The browser has no filesystem. Left at its default the disk manager resolves a
+            // spill directory through std::env::temp_dir(), which panics on wasm32 with "no
+            // filesystem on this platform" and takes the worker down. Disabled, an operator that
+            // would spill returns a resources-exhausted error the query path can report.
+            .with_disk_manager_builder(
+                DiskManagerBuilder::default().with_mode(DiskManagerMode::Disabled),
+            )
             .build()
             .expect("browser DataFusion runtime with an in-memory pool should construct");
         Self {
@@ -2856,10 +2864,13 @@ fn map_datafusion_error(error: datafusion::error::DataFusionError) -> QueryError
         return query_error;
     }
 
-    match error {
+    // Classify on the root error. DataFusion wraps failures raised deep in an operator with
+    // context, and a wrapped ResourcesExhausted still means the browser hit a runtime limit the
+    // caller can fall back on rather than an opaque execution failure.
+    match error.find_root() {
         DataFusionError::NotImplemented(message) => QueryError::new(
             QueryErrorCode::UnsupportedFeature,
-            message,
+            message.clone(),
             runtime_target(),
         ),
         DataFusionError::ResourcesExhausted(message) => QueryError::new(
@@ -2868,9 +2879,9 @@ fn map_datafusion_error(error: datafusion::error::DataFusionError) -> QueryError
             runtime_target(),
         )
         .with_fallback_reason(FallbackReason::BrowserRuntimeConstraint),
-        other => QueryError::new(
+        _ => QueryError::new(
             QueryErrorCode::ExecutionFailed,
-            format!("experimental browser DataFusion query failed: {other}"),
+            format!("experimental browser DataFusion query failed: {error}"),
             runtime_target(),
         ),
     }
@@ -2900,6 +2911,25 @@ mod tests {
 
     use parquet::data_type::Int64Type;
     use parquet::file::properties::WriterProperties;
+
+    #[test]
+    fn browser_datafusion_runtime_disables_disk_spill() {
+        // The browser has no filesystem. DataFusion's default disk manager resolves a spill
+        // directory through std::env::temp_dir(), which panics outright on wasm32 with "no
+        // filesystem on this platform" rather than surfacing a query error. Any operator that
+        // decides to spill under the memory limit would take the whole worker down, so the
+        // runtime must refuse spilling up front.
+        let engine = WasmDataFusionEngine::new();
+        let runtime = engine.ctx.runtime_env();
+        let error = runtime
+            .disk_manager
+            .create_tmp_file("browser spill probe")
+            .expect_err("browser runtime must refuse to create a spill file");
+        assert!(
+            error.to_string().contains("DiskManager is disabled"),
+            "expected a disabled-disk-manager error, got: {error}"
+        );
+    }
 
     #[test]
     fn browser_datafusion_memory_pool_tracks_current_and_peak_reservations() {

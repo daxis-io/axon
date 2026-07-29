@@ -51,6 +51,16 @@ function baseHeaders(body, etag) {
   };
 }
 
+// Continuations that answer a resumed read with something other than exactly the
+// outstanding range. Each must be rejected before any resumed byte is delivered,
+// rather than trimmed or accepted.
+const INVALID_CONTINUATION_SCENARIOS = [
+  "retry-non-partial",
+  "retry-changed-size",
+  "retry-enclosing",
+  "retry-shifted-range",
+];
+
 export function planObjectResponse({ body, etag, headers, scenario, attempt }) {
   const range = parseRange(headers.range, body.length);
   const responseHeaders = baseHeaders(body, etag);
@@ -73,6 +83,35 @@ export function planObjectResponse({ body, etag, headers, scenario, attempt }) {
     };
   }
 
+  if (INVALID_CONTINUATION_SCENARIOS.includes(scenario) && attempt > 1 && range) {
+    // The validator still matches, so only the framing of the continuation is
+    // wrong. Content-Length always agrees with Content-Range so the read fails
+    // on the property under test rather than on declared-length validation.
+    if (scenario === "retry-non-partial") {
+      return { status: 200, headers: responseHeaders, body };
+    }
+
+    const framed = (start, end, size) => ({
+      status: 206,
+      headers: {
+        ...responseHeaders,
+        "content-length": String(end - start),
+        "content-range": `bytes ${start}-${end - 1}/${size}`,
+      },
+      body: body.subarray(start, end),
+    });
+
+    if (scenario === "retry-changed-size") {
+      return framed(range.start, range.end, body.length + 1);
+    }
+    if (scenario === "retry-enclosing") {
+      return framed(0, body.length, body.length);
+    }
+    // retry-shifted-range: starts one byte past the outstanding range, so
+    // accepting it would silently drop a byte.
+    return framed(range.start + 1, range.end, body.length);
+  }
+
   const response = range
     ? {
         status: 206,
@@ -88,7 +127,9 @@ export function planObjectResponse({ body, etag, headers, scenario, attempt }) {
   if (
     !range &&
     attempt === 1 &&
-    (scenario === "retry" || scenario === "validator-mismatch")
+    (scenario === "retry" ||
+      scenario === "validator-mismatch" ||
+      INVALID_CONTINUATION_SCENARIOS.includes(scenario))
   ) {
     response.truncateAt = Math.max(1, Math.floor(body.length / 2));
   }

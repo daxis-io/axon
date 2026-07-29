@@ -356,6 +356,16 @@ impl Drop for ActivePullGuard {
     }
 }
 
+/// Installs the panic hook during `init()`, before any session is constructed.
+///
+/// Without it a Rust panic reaches JavaScript as a bare `RuntimeError: unreachable executed` with
+/// no message, which is indistinguishable from an out-of-memory abort.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(start)]
+pub fn __axon_web_wasm_start() {
+    console_error_panic_hook::set_once();
+}
+
 #[wasm_bindgen]
 pub struct SandboxQuerySession {
     session: BrowserDataFusionSession,

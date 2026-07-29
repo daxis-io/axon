@@ -42,6 +42,9 @@ wasm-http-object-store = { path = "../../crates/wasm-http-object-store" }
 wasm-parquet-engine = { path = "../../crates/wasm-parquet-engine" }
 wasm-query-runtime = { path = "../../crates/wasm-query-runtime" }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "=0.1.7"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 deltalake = { version = "=0.32.4", features = ["datafusion"], optional = true }
 sha2 = { version = "=0.10.9", optional = true }

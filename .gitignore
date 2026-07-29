@@ -1,5 +1,8 @@
 target/
+.DS_Store
 .worktrees/
+.ai/
+.claude/settings.local.json
 .generated-delta/
 node_modules/
 apps/axon-web/dist/
@@ -9,3 +12,6 @@ apps/axon-web/public/fixtures/s3-perf/table/
 apps/axon-web/playwright-report/
 apps/axon-web/src/wasm/
 apps/axon-web/test-results/
+
+# Vercel CLI link and prebuilt output
+.vercel/

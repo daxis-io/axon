@@ -67,6 +67,7 @@ type SandboxTerminalMetadata = PrivateTerminalMetadata & {
 };
 
 type PublicWorkerScope = {
+  location: { href: string };
   addEventListener(
     type: 'message',
     listener: (event: MessageEvent<BrowserWorkerCommand>) => void,
@@ -92,11 +93,18 @@ type PendingForwardedCommand = {
   context: BrowserWorkerEventContext;
 };
 
+type ChildPhase = 'boot' | 'runtime';
+
+type ChildHealth = 'booting' | 'ready' | 'unrecoverable';
+
 type CoordinatorRuntimeConfig = {
   deadlineMs: number;
   watchdogMs: number;
   maxRequests: number;
   maxStagedBytes: number;
+  bootTimeoutMs: number;
+  maxBootFailures: number;
+  maxRuntimeCrashes: number;
   crashOnCommandNumber?: number;
   firstChildUrl?: string;
 };
@@ -107,6 +115,14 @@ type CoordinatorConfiguredScope = PublicWorkerScope & {
 
 const DEFAULT_PRIVATE_QUERY_DEADLINE_MS = 120_000;
 const DEFAULT_PRIVATE_QUERY_WATCHDOG_MS = 5_000;
+// `ready` is posted before the child touches wasm, so it lands in well under a second in practice.
+const DEFAULT_CHILD_BOOT_TIMEOUT_MS = 10_000;
+// One boot retry. A child whose script will not load will not load on the third attempt either,
+// and without a cap the coordinator spawns a fresh worker per failure forever.
+const DEFAULT_MAX_CHILD_BOOT_FAILURES = 2;
+const DEFAULT_MAX_CHILD_RUNTIME_CRASHES = 5;
+// The first respawn stays synchronous so the very next query still reaches a live child.
+const CHILD_RESPAWN_BACKOFF_MS = [0, 250, 500, 1_000, 2_000];
 const workerScope = self as unknown as PublicWorkerScope;
 const runtimeConfig = coordinatorRuntimeConfig(self as unknown as CoordinatorConfiguredScope);
 const memoryBudget = new CoordinatorMemoryBudget(runtimeConfig.maxStagedBytes);
@@ -114,6 +130,16 @@ const activeQueries = new Map<string, ActiveCoordinatorQuery>();
 const pendingForwardedCommands = new Map<string, PendingForwardedCommand>();
 let childCreationCount = 0;
 let coordinatorCommandCount = 0;
+// A child that dies before it posts `ready` failed to load its script or evaluate its module; one
+// that dies after `ready` trapped at runtime. The two need very different fixes, so the crash
+// reason records which happened.
+let childPhase: ChildPhase = 'boot';
+let childHealth: ChildHealth = 'booting';
+let consecutiveBootFailures = 0;
+let consecutiveRuntimeCrashes = 0;
+let unrecoverableReason: string | undefined;
+let bootTimer: ReturnType<typeof setTimeout> | undefined;
+let respawnTimer: ReturnType<typeof setTimeout> | undefined;
 let child = createChild();
 
 workerScope.addEventListener('message', (event) => {
@@ -132,6 +158,11 @@ workerScope.addEventListener('message', (event) => {
 function forwardCommand(command: BrowserWorkerCommand): void {
   const requestId = commandRequestId(command);
   const context = commandContext(command);
+  const unavailable = childUnavailableError();
+  if (unavailable) {
+    postQueryError(requestId, context, unavailable);
+    return;
+  }
   if (activeQueries.has(requestId) || pendingForwardedCommands.has(requestId)) {
     postQueryError(
       requestId,
@@ -170,32 +201,142 @@ function createChild(): Worker {
   const configuredFirstChildUrl =
     childCreationCount === 0 ? runtimeConfig.firstChildUrl : undefined;
   childCreationCount += 1;
-  const childUrl = configuredFirstChildUrl
-    ? new URL(configuredFirstChildUrl)
-    : new URL('./sandbox-query-child-worker.ts', import.meta.url);
-  const next = new Worker(childUrl, {
-    type: 'module',
-    name: 'axon-sandbox-query-child',
-  });
+  // Only the test override has a URL known ahead of time. The default child is addressed by the
+  // inline `new URL(..., import.meta.url)` below and its real location is reported by the browser
+  // on the error event, so diagnostics prefer that over anything computed here.
+  const configuredUrl = configuredFirstChildUrl
+    ? new URL(configuredFirstChildUrl, workerScope.location.href).href
+    : undefined;
+  childPhase = 'boot';
+  childHealth = 'booting';
+  clearBootTimer();
+  let next: Worker;
+  try {
+    // The default branch must keep `new URL('./sandbox-query-child-worker.ts', import.meta.url)`
+    // inline inside `new Worker(...)`. That exact shape is what makes the bundler compile the child
+    // into a worker chunk; hand it a precomputed URL and it copies the TypeScript source through as
+    // a static asset instead, which parses only on a dev server that transpiles it on the fly.
+    next = configuredUrl
+      ? new Worker(new URL(configuredUrl), {
+          type: 'module',
+          name: 'axon-sandbox-query-child',
+        })
+      : new Worker(new URL('./sandbox-query-child-worker.ts', import.meta.url), {
+          type: 'module',
+          name: 'axon-sandbox-query-child',
+        });
+  } catch (error) {
+    // Construction throws rather than firing `error` when the environment refuses the worker
+    // outright, such as a host that cannot route nested module workers.
+    const reason = `child worker spawn rejected: ${describeErrorValue(error)}`;
+    console.error('[axon] sandbox query child worker could not be constructed', {
+      url: configuredUrl ?? '(bundled child worker chunk)',
+      error,
+    });
+    emitLog({ phase: 'instantiate' }, 'error', reason);
+    throw new Error(reason, { cause: error });
+  }
   next.addEventListener('message', (event: MessageEvent<PrivateChildMessage>) => {
     if (child !== next) return;
     handleChildMessage(event.data);
   });
   next.addEventListener('error', (event) => {
     if (child !== next) return;
+    // Keep preventDefault so the error does not also propagate to the coordinator's global scope,
+    // but log the detail first: preventDefault suppresses the browser's own console report, which
+    // is why these crashes previously left no trace anywhere.
     event.preventDefault();
-    handleChildCrash('child worker crashed');
+    const phase = childPhase;
+    // A script that loaded but failed to parse — the shape a host takes when it answers the worker
+    // request with HTML or TypeScript — reports its real URL here.
+    const reportedUrl = event.filename || configuredUrl;
+    handleChildCrash(childErrorReason(event, reportedUrl, phase));
+    if (phase === 'boot' && reportedUrl) void reportChildScriptProbe(reportedUrl);
   });
-  next.addEventListener('messageerror', () => {
+  next.addEventListener('messageerror', (event) => {
     if (child !== next) return;
-    handleChildCrash('child worker emitted an invalid structured-clone message');
+    console.error('[axon] sandbox query child worker sent an uncloneable message', {
+      url: configuredUrl ?? '(bundled child worker chunk)',
+      data: event.data,
+    });
+    handleChildCrash(
+      `child worker emitted an invalid structured-clone message: ${describeMessagePayload(event.data)}`,
+    );
   });
+  bootTimer = setTimeout(() => {
+    if (child !== next || childHealth !== 'booting') return;
+    handleChildCrash(`child worker never signalled ready within ${runtimeConfig.bootTimeoutMs}ms`);
+  }, runtimeConfig.bootTimeoutMs);
   return next;
+}
+
+function clearBootTimer(): void {
+  if (bootTimer === undefined) return;
+  clearTimeout(bootTimer);
+  bootTimer = undefined;
+}
+
+function describeErrorValue(value: unknown): string {
+  if (value instanceof Error) return value.stack ?? `${value.name}: ${value.message}`;
+  if (typeof value === 'string') return value;
+  if (value === undefined || value === null) return '';
+  try {
+    return String(value);
+  } catch {
+    return '(unstringifiable error value)';
+  }
+}
+
+function describeMessagePayload(value: unknown): string {
+  if (value === undefined || value === null) return '(no payload)';
+  const name = (value as { constructor?: { name?: string } }).constructor?.name;
+  return name ?? typeof value;
+}
+
+function childErrorReason(event: ErrorEvent, url: string | undefined, phase: ChildPhase): string {
+  // A WebAssembly trap arrives as a RuntimeError whose stack carries the wasm frame offsets, so
+  // prefer the error object over the bare message when both are present.
+  const detail = event.message || describeErrorValue(event.error) || '(empty ErrorEvent)';
+  const at = event.filename ? ` at ${event.filename}:${event.lineno}:${event.colno}` : '';
+  console.error('[axon] sandbox query child worker error', {
+    phase,
+    url: url ?? '(bundled child worker chunk)',
+    message: event.message,
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno,
+    error: event.error,
+  });
+  return `child worker crashed (${phase}): ${detail}${at}`;
+}
+
+async function reportChildScriptProbe(url: string): Promise<void> {
+  // Browsers report a worker script that failed to fetch as an ErrorEvent with an empty message,
+  // so the status and content-type of the script itself are the only way to tell a 404 from a
+  // wrong MIME type from an SPA fallback that answered 200 with HTML.
+  const probe = await probeChildScript(url);
+  console.error('[axon] sandbox query child script probe', { url, probe });
+  emitLog({ phase: 'instantiate' }, 'error', `child worker boot failure; ${probe}`);
+}
+
+async function probeChildScript(url: string): Promise<string> {
+  try {
+    const response = await fetch(url, { cache: 'no-store' });
+    const contentType = response.headers.get('content-type') ?? '(no content-type)';
+    return `child script probe: ${response.status} ${contentType}`;
+  } catch (error) {
+    return `child script probe failed: ${describeErrorValue(error)}`;
+  }
 }
 
 function startCoordinatedQuery(command: BrowserWorkerSqlCommand): void {
   const queryId = command.request_id;
   const context = commandContext({ sql: command });
+  const unavailable = childUnavailableError();
+  if (unavailable) {
+    postQueryError(queryId, context, unavailable);
+    return;
+  }
   if (activeQueries.has(queryId) || pendingForwardedCommands.has(queryId)) {
     postQueryError(
       queryId,
@@ -303,11 +444,27 @@ function handleCancel(command: BrowserWorkerCancelCommand): void {
 function handleChildMessage(message: PrivateChildMessage): void {
   try {
     requireProtocolVersion(message.version);
-    if (message.kind === 'ready') return;
+    if (message.kind === 'ready') {
+      childPhase = 'runtime';
+      childHealth = 'ready';
+      consecutiveBootFailures = 0;
+      clearBootTimer();
+      return;
+    }
     if (message.kind === 'public') {
       workerScope.postMessage(message.envelope);
       const requestId = responseRequestId(message.envelope);
       if (requestId) pendingForwardedCommands.delete(requestId);
+      return;
+    }
+    if (message.kind === 'child_fault') {
+      // Carries no query_id: the child failed outside any one query, so report it on its own
+      // channel and let the per-query error arrive through the normal command failure path.
+      console.error('[axon] sandbox query child fault', {
+        stage: message.stage,
+        error: message.error,
+      });
+      emitLog({ phase: 'instantiate' }, 'error', message.error.message);
       return;
     }
     const active = activeQueries.get(message.query_id);
@@ -392,6 +549,8 @@ function finishFromTerminal(
   try {
     chunks = active.stage.commit(metadata);
     if (!active.lifecycle.beginDrain('succeeded')) return;
+    // The child completed a query, so any earlier crash streak is not a persistent fault.
+    consecutiveRuntimeCrashes = 0;
     commitSuccessfulQuery(active, metadata, chunks, datafusionMemory);
   } catch (error) {
     active.lifecycle.beginDrain('failed');
@@ -594,6 +753,7 @@ function recycleChild(invalidationReason: string): void {
     'execution_failed',
     querySessionInvalidationMessage(invalidationReason),
   );
+  const hadInFlightWork = activeQueries.size > 0 || pendingForwardedCommands.size > 0;
   for (const [queryId, active] of activeQueries) {
     active.stage.discard();
     releaseActiveMemory(active);
@@ -609,9 +769,93 @@ function recycleChild(invalidationReason: string): void {
     postQueryError(requestId, pending.context, invalidationError);
   }
   pendingForwardedCommands.clear();
+  // A child that dies with nothing in flight — the common shape of a boot failure — reports through
+  // neither loop above, so surface the reason on its own channel too.
+  if (!hadInFlightWork) {
+    emitLog({ phase: 'instantiate' }, 'error', invalidationError.message);
+  }
+
   const previousChild = child;
-  child = createChild();
+  const crashedPhase = childPhase;
+  clearBootTimer();
+
+  let exhausted: boolean;
+  let backoffMs: number;
+  if (crashedPhase === 'boot') {
+    consecutiveBootFailures += 1;
+    exhausted = consecutiveBootFailures >= runtimeConfig.maxBootFailures;
+    backoffMs = 0;
+  } else {
+    consecutiveRuntimeCrashes += 1;
+    exhausted = consecutiveRuntimeCrashes >= runtimeConfig.maxRuntimeCrashes;
+    backoffMs =
+      CHILD_RESPAWN_BACKOFF_MS[
+        Math.min(consecutiveRuntimeCrashes - 1, CHILD_RESPAWN_BACKOFF_MS.length - 1)
+      ] ?? 0;
+  }
+
+  if (exhausted) {
+    enterUnrecoverable(invalidationReason, crashedPhase);
+    previousChild.terminate();
+    return;
+  }
+
+  if (backoffMs === 0) {
+    respawnChild(previousChild, invalidationReason, crashedPhase);
+    return;
+  }
+  respawnTimer = setTimeout(() => {
+    respawnTimer = undefined;
+    respawnChild(previousChild, invalidationReason, crashedPhase);
+  }, backoffMs);
+}
+
+function respawnChild(previousChild: Worker, reason: string, phase: ChildPhase): void {
+  try {
+    child = createChild();
+  } catch (error) {
+    // createChild only throws when the environment refuses to construct the worker at all, which
+    // no amount of retrying will fix.
+    enterUnrecoverable(`${reason}; respawn failed: ${describeErrorValue(error)}`, phase);
+    previousChild.terminate();
+    return;
+  }
   previousChild.terminate();
+}
+
+function enterUnrecoverable(reason: string, phase: ChildPhase): void {
+  childHealth = 'unrecoverable';
+  unrecoverableReason = reason;
+  clearBootTimer();
+  console.error('[axon] sandbox query child is unrecoverable; no further respawns', {
+    phase,
+    reason,
+    bootFailures: consecutiveBootFailures,
+    runtimeCrashes: consecutiveRuntimeCrashes,
+  });
+  emitLog(
+    { phase: 'instantiate' },
+    'error',
+    querySessionInvalidationMessage(`${reason} (session unrecoverable)`),
+  );
+}
+
+// Returns the error that should reject new work, or undefined when the child can accept it.
+function childUnavailableError(): QueryError | undefined {
+  if (childHealth === 'unrecoverable') {
+    return queryError(
+      'execution_failed',
+      querySessionInvalidationMessage(`${unrecoverableReason} (session unrecoverable)`),
+    );
+  }
+  if (respawnTimer !== undefined) {
+    return queryError(
+      'fallback_required',
+      'browser query child worker is restarting after a crash',
+      'browser_runtime_constraint',
+    );
+  }
+  return undefined;
 }
 
 function coordinatorRuntimeConfig(scope: CoordinatorConfiguredScope): CoordinatorRuntimeConfig {
@@ -629,6 +873,18 @@ function coordinatorRuntimeConfig(scope: CoordinatorConfiguredScope): Coordinato
     maxStagedBytes: configuredPositiveInteger(
       configured?.maxStagedBytes,
       MAX_COORDINATOR_STAGED_ARROW_IPC_BYTES,
+    ),
+    bootTimeoutMs: configuredPositiveInteger(
+      configured?.bootTimeoutMs,
+      DEFAULT_CHILD_BOOT_TIMEOUT_MS,
+    ),
+    maxBootFailures: configuredPositiveInteger(
+      configured?.maxBootFailures,
+      DEFAULT_MAX_CHILD_BOOT_FAILURES,
+    ),
+    maxRuntimeCrashes: configuredPositiveInteger(
+      configured?.maxRuntimeCrashes,
+      DEFAULT_MAX_CHILD_RUNTIME_CRASHES,
     ),
     ...(typeof configured?.crashOnCommandNumber === 'number'
       ? {

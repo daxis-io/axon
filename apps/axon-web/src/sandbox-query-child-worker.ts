@@ -368,12 +368,46 @@ function ensureSession(context: BrowserWorkerEventContext): Promise<SandboxQuery
   const instantiateContext = { ...context, phase: 'instantiate' as const };
   emitProgress(instantiateContext, 'started');
   emitLog(instantiateContext, 'info', 'sandbox child instantiating query bridge');
-  sessionPromise = init().then(() => {
-    const session = new SandboxQuerySession();
-    emitProgress(instantiateContext, 'finished');
-    return session;
-  });
-  return sessionPromise;
+  const pending = init().then(
+    () => {
+      const session = new SandboxQuerySession();
+      emitProgress(instantiateContext, 'finished');
+      return session;
+    },
+    (error: unknown) => {
+      // Do not leave a rejected promise memoized: every later command would replay this same
+      // rejection with no chance to retry and no fresh diagnosis.
+      if (sessionPromise === pending) sessionPromise = undefined;
+      const failure = queryError('execution_failed', describeWasmInitFailure(error));
+      postPrivate({
+        kind: 'child_fault',
+        version: PRIVATE_STREAM_PROTOCOL_VERSION,
+        stage: 'wasm_init',
+        error: failure,
+      });
+      throw failure;
+    },
+  );
+  sessionPromise = pending;
+  return pending;
+}
+
+function describeWasmInitFailure(error: unknown): string {
+  const detail =
+    error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error);
+  return `browser wasm module failed to instantiate${wasmInitFailureHint(detail)}: ${detail}`;
+}
+
+function wasmInitFailureHint(detail: string): string {
+  if (/out of memory|could not allocate|Array buffer allocation failed/i.test(detail)) {
+    return ' (likely out of memory)';
+  }
+  // wasm-bindgen surfaces a served-as-HTML or wrong-MIME asset as a magic-word or MIME complaint,
+  // which is the signature of a host answering 200 with an SPA fallback instead of the .wasm file.
+  if (/magic word|MIME type|Failed to fetch|NetworkError|404/i.test(detail)) {
+    return ' (wasm asset was not served as application/wasm)';
+  }
+  return '';
 }
 
 function queryWithBrowserSafeLimits(

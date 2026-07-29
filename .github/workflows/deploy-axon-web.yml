@@ -1,0 +1,130 @@
+name: Deploy axon-web
+
+# The browser editor needs a Rust toolchain to produce its WASM bundle, which Vercel's build image
+# does not provide. The build therefore runs here and ships as a prebuilt deployment.
+#
+# Push to main  -> preview deployment.
+# Manual run    -> preview, or production when the environment input says so.
+#
+# Requires three repository secrets. Without VERCEL_TOKEN every step is skipped, so the workflow
+# stays green until deployment is wired up rather than failing on each push:
+#   VERCEL_TOKEN       - account token from https://vercel.com/account/tokens
+#   VERCEL_ORG_ID      - "orgId" from .vercel/project.json after `vercel link`
+#   VERCEL_PROJECT_ID  - "projectId" from the same file
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Deployment environment
+        type: choice
+        options:
+          - preview
+          - production
+        default: preview
+
+concurrency:
+  group: deploy-axon-web-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+jobs:
+  deploy:
+    name: Build and deploy axon-web
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check deployment credentials
+        id: guard
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -z "${VERCEL_TOKEN}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping deploy: VERCEL_TOKEN is not set. Add VERCEL_TOKEN, VERCEL_ORG_ID and VERCEL_PROJECT_ID to the repository secrets to enable it."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out repository
+        if: steps.guard.outputs.configured == 'true'
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        if: steps.guard.outputs.configured == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Restore cargo cache
+        if: steps.guard.outputs.configured == 'true'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-bindgen CLI
+        if: steps.guard.outputs.configured == 'true'
+        run: cargo install wasm-bindgen-cli --version 0.2.114 --locked
+
+      - name: Set up Node.js
+        if: steps.guard.outputs.configured == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/axon-web/package-lock.json
+
+      - name: Install Vercel CLI
+        if: steps.guard.outputs.configured == 'true'
+        run: npm install --global vercel@latest
+
+      - name: Resolve deployment target
+        if: steps.guard.outputs.configured == 'true'
+        id: target
+        env:
+          PRODUCTION_URL: ${{ vars.AXON_PRODUCTION_URL || 'https://axon.daxistech.io' }}
+        run: |
+          # Production requires an explicit workflow_dispatch. A push to main publishes a preview
+          # so a bad commit cannot reach users on its own; nothing here gates on the test suites.
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            echo "environment=production" >> "$GITHUB_OUTPUT"
+            echo "prod_flag=--prod" >> "$GITHUB_OUTPUT"
+            # Verify the public alias, not the per-deployment URL. Vercel protects the generated
+            # *.vercel.app URL even for production, so checking it would skip every real assertion
+            # on the one deployment users actually reach.
+            echo "verify_url=${PRODUCTION_URL}" >> "$GITHUB_OUTPUT"
+          else
+            echo "environment=preview" >> "$GITHUB_OUTPUT"
+            echo "prod_flag=" >> "$GITHUB_OUTPUT"
+            echo "verify_url=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pull Vercel environment
+        if: steps.guard.outputs.configured == 'true'
+        run: vercel pull --yes --environment=${{ steps.target.outputs.environment }} --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build
+        if: steps.guard.outputs.configured == 'true'
+        run: vercel build ${{ steps.target.outputs.prod_flag }} --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Verify the build emitted compiled workers and the WASM bundle
+        if: steps.guard.outputs.configured == 'true'
+        run: bash apps/axon-web/scripts/verify-build-output.sh .vercel/output/static
+
+      - name: Deploy
+        if: steps.guard.outputs.configured == 'true'
+        id: deploy
+        run: |
+          url="$(vercel deploy --prebuilt ${{ steps.target.outputs.prod_flag }} --token=${{ secrets.VERCEL_TOKEN }})"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployed to $url"
+
+      - name: Verify deployed assets are reachable
+        if: steps.guard.outputs.configured == 'true'
+        env:
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: bash apps/axon-web/scripts/verify-deployment.sh "${{ steps.target.outputs.verify_url || steps.deploy.outputs.url }}" .vercel/output/static
