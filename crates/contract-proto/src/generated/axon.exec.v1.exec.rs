@@ -643,6 +643,542 @@ impl ::buffa::Enumeration for BrowserAccessMode {
         ]
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(i32)]
+pub enum PageIndexMode {
+    PAGE_INDEX_MODE_UNSPECIFIED = 0i32,
+    PAGE_INDEX_MODE_SKIP = 1i32,
+    PAGE_INDEX_MODE_PREDICATE = 2i32,
+    PAGE_INDEX_MODE_ADAPTIVE = 3i32,
+}
+impl PageIndexMode {
+    ///Idiomatic alias for [`Self::PAGE_INDEX_MODE_UNSPECIFIED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Unspecified: Self = Self::PAGE_INDEX_MODE_UNSPECIFIED;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_MODE_SKIP`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Skip: Self = Self::PAGE_INDEX_MODE_SKIP;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_MODE_PREDICATE`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Predicate: Self = Self::PAGE_INDEX_MODE_PREDICATE;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_MODE_ADAPTIVE`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Adaptive: Self = Self::PAGE_INDEX_MODE_ADAPTIVE;
+}
+impl ::core::default::Default for PageIndexMode {
+    fn default() -> Self {
+        Self::PAGE_INDEX_MODE_UNSPECIFIED
+    }
+}
+impl ::buffa::Enumeration for PageIndexMode {
+    fn from_i32(value: i32) -> ::core::option::Option<Self> {
+        match value {
+            0i32 => ::core::option::Option::Some(Self::PAGE_INDEX_MODE_UNSPECIFIED),
+            1i32 => ::core::option::Option::Some(Self::PAGE_INDEX_MODE_SKIP),
+            2i32 => ::core::option::Option::Some(Self::PAGE_INDEX_MODE_PREDICATE),
+            3i32 => ::core::option::Option::Some(Self::PAGE_INDEX_MODE_ADAPTIVE),
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn to_i32(&self) -> i32 {
+        *self as i32
+    }
+    fn proto_name(&self) -> &'static str {
+        match self {
+            Self::PAGE_INDEX_MODE_UNSPECIFIED => "PAGE_INDEX_MODE_UNSPECIFIED",
+            Self::PAGE_INDEX_MODE_SKIP => "PAGE_INDEX_MODE_SKIP",
+            Self::PAGE_INDEX_MODE_PREDICATE => "PAGE_INDEX_MODE_PREDICATE",
+            Self::PAGE_INDEX_MODE_ADAPTIVE => "PAGE_INDEX_MODE_ADAPTIVE",
+        }
+    }
+    fn from_proto_name(name: &str) -> ::core::option::Option<Self> {
+        match name {
+            "PAGE_INDEX_MODE_UNSPECIFIED" => {
+                ::core::option::Option::Some(Self::PAGE_INDEX_MODE_UNSPECIFIED)
+            }
+            "PAGE_INDEX_MODE_SKIP" => {
+                ::core::option::Option::Some(Self::PAGE_INDEX_MODE_SKIP)
+            }
+            "PAGE_INDEX_MODE_PREDICATE" => {
+                ::core::option::Option::Some(Self::PAGE_INDEX_MODE_PREDICATE)
+            }
+            "PAGE_INDEX_MODE_ADAPTIVE" => {
+                ::core::option::Option::Some(Self::PAGE_INDEX_MODE_ADAPTIVE)
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn values() -> &'static [Self] {
+        &[
+            Self::PAGE_INDEX_MODE_UNSPECIFIED,
+            Self::PAGE_INDEX_MODE_SKIP,
+            Self::PAGE_INDEX_MODE_PREDICATE,
+            Self::PAGE_INDEX_MODE_ADAPTIVE,
+        ]
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(i32)]
+pub enum PageIndexPlan {
+    PAGE_INDEX_PLAN_UNSPECIFIED = 0i32,
+    PAGE_INDEX_PLAN_SKIP = 1i32,
+    PAGE_INDEX_PLAN_PREDICATE = 2i32,
+    PAGE_INDEX_PLAN_MIXED = 3i32,
+}
+impl PageIndexPlan {
+    ///Idiomatic alias for [`Self::PAGE_INDEX_PLAN_UNSPECIFIED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Unspecified: Self = Self::PAGE_INDEX_PLAN_UNSPECIFIED;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_PLAN_SKIP`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Skip: Self = Self::PAGE_INDEX_PLAN_SKIP;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_PLAN_PREDICATE`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Predicate: Self = Self::PAGE_INDEX_PLAN_PREDICATE;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_PLAN_MIXED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Mixed: Self = Self::PAGE_INDEX_PLAN_MIXED;
+}
+impl ::core::default::Default for PageIndexPlan {
+    fn default() -> Self {
+        Self::PAGE_INDEX_PLAN_UNSPECIFIED
+    }
+}
+impl ::buffa::Enumeration for PageIndexPlan {
+    fn from_i32(value: i32) -> ::core::option::Option<Self> {
+        match value {
+            0i32 => ::core::option::Option::Some(Self::PAGE_INDEX_PLAN_UNSPECIFIED),
+            1i32 => ::core::option::Option::Some(Self::PAGE_INDEX_PLAN_SKIP),
+            2i32 => ::core::option::Option::Some(Self::PAGE_INDEX_PLAN_PREDICATE),
+            3i32 => ::core::option::Option::Some(Self::PAGE_INDEX_PLAN_MIXED),
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn to_i32(&self) -> i32 {
+        *self as i32
+    }
+    fn proto_name(&self) -> &'static str {
+        match self {
+            Self::PAGE_INDEX_PLAN_UNSPECIFIED => "PAGE_INDEX_PLAN_UNSPECIFIED",
+            Self::PAGE_INDEX_PLAN_SKIP => "PAGE_INDEX_PLAN_SKIP",
+            Self::PAGE_INDEX_PLAN_PREDICATE => "PAGE_INDEX_PLAN_PREDICATE",
+            Self::PAGE_INDEX_PLAN_MIXED => "PAGE_INDEX_PLAN_MIXED",
+        }
+    }
+    fn from_proto_name(name: &str) -> ::core::option::Option<Self> {
+        match name {
+            "PAGE_INDEX_PLAN_UNSPECIFIED" => {
+                ::core::option::Option::Some(Self::PAGE_INDEX_PLAN_UNSPECIFIED)
+            }
+            "PAGE_INDEX_PLAN_SKIP" => {
+                ::core::option::Option::Some(Self::PAGE_INDEX_PLAN_SKIP)
+            }
+            "PAGE_INDEX_PLAN_PREDICATE" => {
+                ::core::option::Option::Some(Self::PAGE_INDEX_PLAN_PREDICATE)
+            }
+            "PAGE_INDEX_PLAN_MIXED" => {
+                ::core::option::Option::Some(Self::PAGE_INDEX_PLAN_MIXED)
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn values() -> &'static [Self] {
+        &[
+            Self::PAGE_INDEX_PLAN_UNSPECIFIED,
+            Self::PAGE_INDEX_PLAN_SKIP,
+            Self::PAGE_INDEX_PLAN_PREDICATE,
+            Self::PAGE_INDEX_PLAN_MIXED,
+        ]
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(i32)]
+pub enum PageIndexDecisionReason {
+    PAGE_INDEX_DECISION_REASON_UNSPECIFIED = 0i32,
+    PAGE_INDEX_DECISION_REASON_REQUESTED_SKIP = 1i32,
+    PAGE_INDEX_DECISION_REASON_REQUESTED_PREDICATE = 2i32,
+    PAGE_INDEX_DECISION_REASON_UNCALIBRATED_MODEL = 3i32,
+    PAGE_INDEX_DECISION_REASON_UNSUPPORTED_PREDICATE = 4i32,
+    PAGE_INDEX_DECISION_REASON_MISSING_OR_INVALID_INDEXES = 5i32,
+    PAGE_INDEX_DECISION_REASON_UNSAFE_OBJECT_IDENTITY = 6i32,
+    PAGE_INDEX_DECISION_REASON_INSUFFICIENT_RANGE_SAMPLES = 7i32,
+    PAGE_INDEX_DECISION_REASON_INSUFFICIENT_DECODE_SAMPLES = 8i32,
+    PAGE_INDEX_DECISION_REASON_MEMORY_PRESSURE = 9i32,
+    PAGE_INDEX_DECISION_REASON_SCAN_TOO_SMALL = 10i32,
+    PAGE_INDEX_DECISION_REASON_PREDICTED_SKIP_FASTER = 11i32,
+    PAGE_INDEX_DECISION_REASON_PREDICTED_PREDICATE_FASTER = 12i32,
+    PAGE_INDEX_DECISION_REASON_REALIZED_PLAN_LOST = 13i32,
+    PAGE_INDEX_DECISION_REASON_INDEX_LOAD_FAILED_OPEN = 14i32,
+    PAGE_INDEX_DECISION_REASON_MIXED_OBJECT_DECISIONS = 15i32,
+}
+impl PageIndexDecisionReason {
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_UNSPECIFIED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Unspecified: Self = Self::PAGE_INDEX_DECISION_REASON_UNSPECIFIED;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_REQUESTED_SKIP`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const RequestedSkip: Self = Self::PAGE_INDEX_DECISION_REASON_REQUESTED_SKIP;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_REQUESTED_PREDICATE`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const RequestedPredicate: Self = Self::PAGE_INDEX_DECISION_REASON_REQUESTED_PREDICATE;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_UNCALIBRATED_MODEL`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const UncalibratedModel: Self = Self::PAGE_INDEX_DECISION_REASON_UNCALIBRATED_MODEL;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_UNSUPPORTED_PREDICATE`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const UnsupportedPredicate: Self = Self::PAGE_INDEX_DECISION_REASON_UNSUPPORTED_PREDICATE;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_MISSING_OR_INVALID_INDEXES`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const MissingOrInvalidIndexes: Self = Self::PAGE_INDEX_DECISION_REASON_MISSING_OR_INVALID_INDEXES;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_UNSAFE_OBJECT_IDENTITY`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const UnsafeObjectIdentity: Self = Self::PAGE_INDEX_DECISION_REASON_UNSAFE_OBJECT_IDENTITY;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_INSUFFICIENT_RANGE_SAMPLES`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const InsufficientRangeSamples: Self = Self::PAGE_INDEX_DECISION_REASON_INSUFFICIENT_RANGE_SAMPLES;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_INSUFFICIENT_DECODE_SAMPLES`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const InsufficientDecodeSamples: Self = Self::PAGE_INDEX_DECISION_REASON_INSUFFICIENT_DECODE_SAMPLES;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_MEMORY_PRESSURE`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const MemoryPressure: Self = Self::PAGE_INDEX_DECISION_REASON_MEMORY_PRESSURE;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_SCAN_TOO_SMALL`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const ScanTooSmall: Self = Self::PAGE_INDEX_DECISION_REASON_SCAN_TOO_SMALL;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_PREDICTED_SKIP_FASTER`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const PredictedSkipFaster: Self = Self::PAGE_INDEX_DECISION_REASON_PREDICTED_SKIP_FASTER;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_PREDICTED_PREDICATE_FASTER`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const PredictedPredicateFaster: Self = Self::PAGE_INDEX_DECISION_REASON_PREDICTED_PREDICATE_FASTER;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_REALIZED_PLAN_LOST`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const RealizedPlanLost: Self = Self::PAGE_INDEX_DECISION_REASON_REALIZED_PLAN_LOST;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_INDEX_LOAD_FAILED_OPEN`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const IndexLoadFailedOpen: Self = Self::PAGE_INDEX_DECISION_REASON_INDEX_LOAD_FAILED_OPEN;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_DECISION_REASON_MIXED_OBJECT_DECISIONS`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const MixedObjectDecisions: Self = Self::PAGE_INDEX_DECISION_REASON_MIXED_OBJECT_DECISIONS;
+}
+impl ::core::default::Default for PageIndexDecisionReason {
+    fn default() -> Self {
+        Self::PAGE_INDEX_DECISION_REASON_UNSPECIFIED
+    }
+}
+impl ::buffa::Enumeration for PageIndexDecisionReason {
+    fn from_i32(value: i32) -> ::core::option::Option<Self> {
+        match value {
+            0i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_UNSPECIFIED,
+                )
+            }
+            1i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_REQUESTED_SKIP,
+                )
+            }
+            2i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_REQUESTED_PREDICATE,
+                )
+            }
+            3i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_UNCALIBRATED_MODEL,
+                )
+            }
+            4i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_UNSUPPORTED_PREDICATE,
+                )
+            }
+            5i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_MISSING_OR_INVALID_INDEXES,
+                )
+            }
+            6i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_UNSAFE_OBJECT_IDENTITY,
+                )
+            }
+            7i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_INSUFFICIENT_RANGE_SAMPLES,
+                )
+            }
+            8i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_INSUFFICIENT_DECODE_SAMPLES,
+                )
+            }
+            9i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_MEMORY_PRESSURE,
+                )
+            }
+            10i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_SCAN_TOO_SMALL,
+                )
+            }
+            11i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_PREDICTED_SKIP_FASTER,
+                )
+            }
+            12i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_PREDICTED_PREDICATE_FASTER,
+                )
+            }
+            13i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_REALIZED_PLAN_LOST,
+                )
+            }
+            14i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_INDEX_LOAD_FAILED_OPEN,
+                )
+            }
+            15i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_MIXED_OBJECT_DECISIONS,
+                )
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn to_i32(&self) -> i32 {
+        *self as i32
+    }
+    fn proto_name(&self) -> &'static str {
+        match self {
+            Self::PAGE_INDEX_DECISION_REASON_UNSPECIFIED => {
+                "PAGE_INDEX_DECISION_REASON_UNSPECIFIED"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_REQUESTED_SKIP => {
+                "PAGE_INDEX_DECISION_REASON_REQUESTED_SKIP"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_REQUESTED_PREDICATE => {
+                "PAGE_INDEX_DECISION_REASON_REQUESTED_PREDICATE"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_UNCALIBRATED_MODEL => {
+                "PAGE_INDEX_DECISION_REASON_UNCALIBRATED_MODEL"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_UNSUPPORTED_PREDICATE => {
+                "PAGE_INDEX_DECISION_REASON_UNSUPPORTED_PREDICATE"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_MISSING_OR_INVALID_INDEXES => {
+                "PAGE_INDEX_DECISION_REASON_MISSING_OR_INVALID_INDEXES"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_UNSAFE_OBJECT_IDENTITY => {
+                "PAGE_INDEX_DECISION_REASON_UNSAFE_OBJECT_IDENTITY"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_INSUFFICIENT_RANGE_SAMPLES => {
+                "PAGE_INDEX_DECISION_REASON_INSUFFICIENT_RANGE_SAMPLES"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_INSUFFICIENT_DECODE_SAMPLES => {
+                "PAGE_INDEX_DECISION_REASON_INSUFFICIENT_DECODE_SAMPLES"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_MEMORY_PRESSURE => {
+                "PAGE_INDEX_DECISION_REASON_MEMORY_PRESSURE"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_SCAN_TOO_SMALL => {
+                "PAGE_INDEX_DECISION_REASON_SCAN_TOO_SMALL"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_PREDICTED_SKIP_FASTER => {
+                "PAGE_INDEX_DECISION_REASON_PREDICTED_SKIP_FASTER"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_PREDICTED_PREDICATE_FASTER => {
+                "PAGE_INDEX_DECISION_REASON_PREDICTED_PREDICATE_FASTER"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_REALIZED_PLAN_LOST => {
+                "PAGE_INDEX_DECISION_REASON_REALIZED_PLAN_LOST"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_INDEX_LOAD_FAILED_OPEN => {
+                "PAGE_INDEX_DECISION_REASON_INDEX_LOAD_FAILED_OPEN"
+            }
+            Self::PAGE_INDEX_DECISION_REASON_MIXED_OBJECT_DECISIONS => {
+                "PAGE_INDEX_DECISION_REASON_MIXED_OBJECT_DECISIONS"
+            }
+        }
+    }
+    fn from_proto_name(name: &str) -> ::core::option::Option<Self> {
+        match name {
+            "PAGE_INDEX_DECISION_REASON_UNSPECIFIED" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_UNSPECIFIED,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_REQUESTED_SKIP" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_REQUESTED_SKIP,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_REQUESTED_PREDICATE" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_REQUESTED_PREDICATE,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_UNCALIBRATED_MODEL" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_UNCALIBRATED_MODEL,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_UNSUPPORTED_PREDICATE" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_UNSUPPORTED_PREDICATE,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_MISSING_OR_INVALID_INDEXES" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_MISSING_OR_INVALID_INDEXES,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_UNSAFE_OBJECT_IDENTITY" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_UNSAFE_OBJECT_IDENTITY,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_INSUFFICIENT_RANGE_SAMPLES" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_INSUFFICIENT_RANGE_SAMPLES,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_INSUFFICIENT_DECODE_SAMPLES" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_INSUFFICIENT_DECODE_SAMPLES,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_MEMORY_PRESSURE" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_MEMORY_PRESSURE,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_SCAN_TOO_SMALL" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_SCAN_TOO_SMALL,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_PREDICTED_SKIP_FASTER" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_PREDICTED_SKIP_FASTER,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_PREDICTED_PREDICATE_FASTER" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_PREDICTED_PREDICATE_FASTER,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_REALIZED_PLAN_LOST" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_REALIZED_PLAN_LOST,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_INDEX_LOAD_FAILED_OPEN" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_INDEX_LOAD_FAILED_OPEN,
+                )
+            }
+            "PAGE_INDEX_DECISION_REASON_MIXED_OBJECT_DECISIONS" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_DECISION_REASON_MIXED_OBJECT_DECISIONS,
+                )
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn values() -> &'static [Self] {
+        &[
+            Self::PAGE_INDEX_DECISION_REASON_UNSPECIFIED,
+            Self::PAGE_INDEX_DECISION_REASON_REQUESTED_SKIP,
+            Self::PAGE_INDEX_DECISION_REASON_REQUESTED_PREDICATE,
+            Self::PAGE_INDEX_DECISION_REASON_UNCALIBRATED_MODEL,
+            Self::PAGE_INDEX_DECISION_REASON_UNSUPPORTED_PREDICATE,
+            Self::PAGE_INDEX_DECISION_REASON_MISSING_OR_INVALID_INDEXES,
+            Self::PAGE_INDEX_DECISION_REASON_UNSAFE_OBJECT_IDENTITY,
+            Self::PAGE_INDEX_DECISION_REASON_INSUFFICIENT_RANGE_SAMPLES,
+            Self::PAGE_INDEX_DECISION_REASON_INSUFFICIENT_DECODE_SAMPLES,
+            Self::PAGE_INDEX_DECISION_REASON_MEMORY_PRESSURE,
+            Self::PAGE_INDEX_DECISION_REASON_SCAN_TOO_SMALL,
+            Self::PAGE_INDEX_DECISION_REASON_PREDICTED_SKIP_FASTER,
+            Self::PAGE_INDEX_DECISION_REASON_PREDICTED_PREDICATE_FASTER,
+            Self::PAGE_INDEX_DECISION_REASON_REALIZED_PLAN_LOST,
+            Self::PAGE_INDEX_DECISION_REASON_INDEX_LOAD_FAILED_OPEN,
+            Self::PAGE_INDEX_DECISION_REASON_MIXED_OBJECT_DECISIONS,
+        ]
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(i32)]
+pub enum PageIndexModelVersion {
+    PAGE_INDEX_MODEL_VERSION_UNSPECIFIED = 0i32,
+    PAGE_INDEX_MODEL_VERSION_ADAPTIVE_PAGE_INDEX_V1 = 1i32,
+}
+impl PageIndexModelVersion {
+    ///Idiomatic alias for [`Self::PAGE_INDEX_MODEL_VERSION_UNSPECIFIED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Unspecified: Self = Self::PAGE_INDEX_MODEL_VERSION_UNSPECIFIED;
+    ///Idiomatic alias for [`Self::PAGE_INDEX_MODEL_VERSION_ADAPTIVE_PAGE_INDEX_V1`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const AdaptivePageIndexV1: Self = Self::PAGE_INDEX_MODEL_VERSION_ADAPTIVE_PAGE_INDEX_V1;
+}
+impl ::core::default::Default for PageIndexModelVersion {
+    fn default() -> Self {
+        Self::PAGE_INDEX_MODEL_VERSION_UNSPECIFIED
+    }
+}
+impl ::buffa::Enumeration for PageIndexModelVersion {
+    fn from_i32(value: i32) -> ::core::option::Option<Self> {
+        match value {
+            0i32 => {
+                ::core::option::Option::Some(Self::PAGE_INDEX_MODEL_VERSION_UNSPECIFIED)
+            }
+            1i32 => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_MODEL_VERSION_ADAPTIVE_PAGE_INDEX_V1,
+                )
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn to_i32(&self) -> i32 {
+        *self as i32
+    }
+    fn proto_name(&self) -> &'static str {
+        match self {
+            Self::PAGE_INDEX_MODEL_VERSION_UNSPECIFIED => {
+                "PAGE_INDEX_MODEL_VERSION_UNSPECIFIED"
+            }
+            Self::PAGE_INDEX_MODEL_VERSION_ADAPTIVE_PAGE_INDEX_V1 => {
+                "PAGE_INDEX_MODEL_VERSION_ADAPTIVE_PAGE_INDEX_V1"
+            }
+        }
+    }
+    fn from_proto_name(name: &str) -> ::core::option::Option<Self> {
+        match name {
+            "PAGE_INDEX_MODEL_VERSION_UNSPECIFIED" => {
+                ::core::option::Option::Some(Self::PAGE_INDEX_MODEL_VERSION_UNSPECIFIED)
+            }
+            "PAGE_INDEX_MODEL_VERSION_ADAPTIVE_PAGE_INDEX_V1" => {
+                ::core::option::Option::Some(
+                    Self::PAGE_INDEX_MODEL_VERSION_ADAPTIVE_PAGE_INDEX_V1,
+                )
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn values() -> &'static [Self] {
+        &[
+            Self::PAGE_INDEX_MODEL_VERSION_UNSPECIFIED,
+            Self::PAGE_INDEX_MODEL_VERSION_ADAPTIVE_PAGE_INDEX_V1,
+        ]
+    }
+}
 /// Identifies the Arrow IPC container carried in an opaque result.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[repr(i32)]
@@ -1936,6 +2472,402 @@ impl ::buffa::ExtensionSet for QueryError {
         &mut self.__buffa_unknown_fields
     }
 }
+#[derive(Clone, PartialEq, Default)]
+pub struct PageIndexDecisionSummary {
+    /// Field 1: `requested_mode`
+    pub requested_mode: ::buffa::EnumValue<PageIndexMode>,
+    /// Field 2: `chosen_plan`
+    pub chosen_plan: ::buffa::EnumValue<PageIndexPlan>,
+    /// Field 3: `decision_reason`
+    pub decision_reason: ::buffa::EnumValue<PageIndexDecisionReason>,
+    /// Field 4: `model_version`
+    pub model_version: ::buffa::EnumValue<PageIndexModelVersion>,
+    /// Field 5: `decision_duration_us`
+    pub decision_duration_us: u64,
+    /// Field 6: `range_sample_count`
+    pub range_sample_count: u64,
+    /// Field 7: `decode_sample_count`
+    pub decode_sample_count: u64,
+    /// Field 8: `confidence_eligible`
+    pub confidence_eligible: bool,
+    /// Field 9: `predicted_skip_time_us`
+    pub predicted_skip_time_us: ::core::option::Option<u64>,
+    /// Field 10: `predicted_predicate_time_us`
+    pub predicted_predicate_time_us: ::core::option::Option<u64>,
+    /// Field 11: `index_bytes`
+    pub index_bytes: u64,
+    /// Field 12: `index_requests`
+    pub index_requests: u64,
+    /// Field 13: `pages_selected`
+    pub pages_selected: u64,
+    /// Field 14: `pages_skipped`
+    pub pages_skipped: u64,
+    /// Field 15: `pages_touched`
+    pub pages_touched: u64,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
+}
+impl ::core::fmt::Debug for PageIndexDecisionSummary {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("PageIndexDecisionSummary")
+            .field("requested_mode", &self.requested_mode)
+            .field("chosen_plan", &self.chosen_plan)
+            .field("decision_reason", &self.decision_reason)
+            .field("model_version", &self.model_version)
+            .field("decision_duration_us", &self.decision_duration_us)
+            .field("range_sample_count", &self.range_sample_count)
+            .field("decode_sample_count", &self.decode_sample_count)
+            .field("confidence_eligible", &self.confidence_eligible)
+            .field("predicted_skip_time_us", &self.predicted_skip_time_us)
+            .field("predicted_predicate_time_us", &self.predicted_predicate_time_us)
+            .field("index_bytes", &self.index_bytes)
+            .field("index_requests", &self.index_requests)
+            .field("pages_selected", &self.pages_selected)
+            .field("pages_skipped", &self.pages_skipped)
+            .field("pages_touched", &self.pages_touched)
+            .finish()
+    }
+}
+impl PageIndexDecisionSummary {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/axon.exec.v1.PageIndexDecisionSummary";
+}
+impl PageIndexDecisionSummary {
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::predicted_skip_time_us`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_predicted_skip_time_us(mut self, value: u64) -> Self {
+        self.predicted_skip_time_us = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::predicted_predicate_time_us`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_predicted_predicate_time_us(mut self, value: u64) -> Self {
+        self.predicted_predicate_time_us = Some(value);
+        self
+    }
+}
+::buffa::impl_default_instance!(PageIndexDecisionSummary);
+impl ::buffa::MessageName for PageIndexDecisionSummary {
+    const PACKAGE: &'static str = "axon.exec.v1";
+    const NAME: &'static str = "PageIndexDecisionSummary";
+    const FULL_NAME: &'static str = "axon.exec.v1.PageIndexDecisionSummary";
+    const TYPE_URL: &'static str = "type.googleapis.com/axon.exec.v1.PageIndexDecisionSummary";
+}
+impl ::buffa::Message for PageIndexDecisionSummary {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        {
+            let val = self.requested_mode.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        {
+            let val = self.chosen_plan.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        {
+            let val = self.decision_reason.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        {
+            let val = self.model_version.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        if self.decision_duration_us != 0u64 {
+            size
+                += 1u32
+                    + ::buffa::types::uint64_encoded_len(self.decision_duration_us)
+                        as u32;
+        }
+        if self.range_sample_count != 0u64 {
+            size
+                += 1u32
+                    + ::buffa::types::uint64_encoded_len(self.range_sample_count) as u32;
+        }
+        if self.decode_sample_count != 0u64 {
+            size
+                += 1u32
+                    + ::buffa::types::uint64_encoded_len(self.decode_sample_count)
+                        as u32;
+        }
+        if self.confidence_eligible {
+            size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
+        }
+        if let Some(v) = self.predicted_skip_time_us {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.predicted_predicate_time_us {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if self.index_bytes != 0u64 {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(self.index_bytes) as u32;
+        }
+        if self.index_requests != 0u64 {
+            size
+                += 1u32 + ::buffa::types::uint64_encoded_len(self.index_requests) as u32;
+        }
+        if self.pages_selected != 0u64 {
+            size
+                += 1u32 + ::buffa::types::uint64_encoded_len(self.pages_selected) as u32;
+        }
+        if self.pages_skipped != 0u64 {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(self.pages_skipped) as u32;
+        }
+        if self.pages_touched != 0u64 {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(self.pages_touched) as u32;
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        {
+            let val = self.requested_mode.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(1u32, val, buf);
+            }
+        }
+        {
+            let val = self.chosen_plan.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(2u32, val, buf);
+            }
+        }
+        {
+            let val = self.decision_reason.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(3u32, val, buf);
+            }
+        }
+        {
+            let val = self.model_version.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(4u32, val, buf);
+            }
+        }
+        if self.decision_duration_us != 0u64 {
+            ::buffa::types::put_uint64_field(5u32, self.decision_duration_us, buf);
+        }
+        if self.range_sample_count != 0u64 {
+            ::buffa::types::put_uint64_field(6u32, self.range_sample_count, buf);
+        }
+        if self.decode_sample_count != 0u64 {
+            ::buffa::types::put_uint64_field(7u32, self.decode_sample_count, buf);
+        }
+        if self.confidence_eligible {
+            ::buffa::types::put_bool_field(8u32, self.confidence_eligible, buf);
+        }
+        if let Some(v) = self.predicted_skip_time_us {
+            ::buffa::types::put_uint64_field(9u32, v, buf);
+        }
+        if let Some(v) = self.predicted_predicate_time_us {
+            ::buffa::types::put_uint64_field(10u32, v, buf);
+        }
+        if self.index_bytes != 0u64 {
+            ::buffa::types::put_uint64_field(11u32, self.index_bytes, buf);
+        }
+        if self.index_requests != 0u64 {
+            ::buffa::types::put_uint64_field(12u32, self.index_requests, buf);
+        }
+        if self.pages_selected != 0u64 {
+            ::buffa::types::put_uint64_field(13u32, self.pages_selected, buf);
+        }
+        if self.pages_skipped != 0u64 {
+            ::buffa::types::put_uint64_field(14u32, self.pages_skipped, buf);
+        }
+        if self.pages_touched != 0u64 {
+            ::buffa::types::put_uint64_field(15u32, self.pages_touched, buf);
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.requested_mode = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.chosen_plan = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            3u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.decision_reason = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            4u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.model_version = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            5u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.decision_duration_us = ::buffa::types::decode_uint64(buf)?;
+            }
+            6u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.range_sample_count = ::buffa::types::decode_uint64(buf)?;
+            }
+            7u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.decode_sample_count = ::buffa::types::decode_uint64(buf)?;
+            }
+            8u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.confidence_eligible = ::buffa::types::decode_bool(buf)?;
+            }
+            9u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.predicted_skip_time_us = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            10u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.predicted_predicate_time_us = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            11u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.index_bytes = ::buffa::types::decode_uint64(buf)?;
+            }
+            12u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.index_requests = ::buffa::types::decode_uint64(buf)?;
+            }
+            13u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.pages_selected = ::buffa::types::decode_uint64(buf)?;
+            }
+            14u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.pages_skipped = ::buffa::types::decode_uint64(buf)?;
+            }
+            15u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.pages_touched = ::buffa::types::decode_uint64(buf)?;
+            }
+            _ => {
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.requested_mode = ::buffa::EnumValue::from(0);
+        self.chosen_plan = ::buffa::EnumValue::from(0);
+        self.decision_reason = ::buffa::EnumValue::from(0);
+        self.model_version = ::buffa::EnumValue::from(0);
+        self.decision_duration_us = 0u64;
+        self.range_sample_count = 0u64;
+        self.decode_sample_count = 0u64;
+        self.confidence_eligible = false;
+        self.predicted_skip_time_us = ::core::option::Option::None;
+        self.predicted_predicate_time_us = ::core::option::Option::None;
+        self.index_bytes = 0u64;
+        self.index_requests = 0u64;
+        self.pages_selected = 0u64;
+        self.pages_skipped = 0u64;
+        self.pages_touched = 0u64;
+        self.__buffa_unknown_fields.clear();
+    }
+}
+impl ::buffa::ExtensionSet for PageIndexDecisionSummary {
+    const PROTO_FQN: &'static str = "axon.exec.v1.PageIndexDecisionSummary";
+    fn unknown_fields(&self) -> &::buffa::UnknownFields {
+        &self.__buffa_unknown_fields
+    }
+    fn unknown_fields_mut(&mut self) -> &mut ::buffa::UnknownFields {
+        &mut self.__buffa_unknown_fields
+    }
+}
 /// Summarizes query, I/O, caching, and encoding work reported by an executor.
 #[derive(Clone, PartialEq, Default)]
 pub struct QueryMetricsSummary {
@@ -2053,6 +2985,8 @@ pub struct QueryMetricsSummary {
     pub cursor_peak_pending_encoded_bytes: ::core::option::Option<u64>,
     /// Field 58: `cursor_peak_transport_chunk_bytes`
     pub cursor_peak_transport_chunk_bytes: ::core::option::Option<u64>,
+    /// Field 59: `page_index_decision`
+    pub page_index_decision: ::buffa::MessageField<PageIndexDecisionSummary>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
@@ -2137,6 +3071,7 @@ impl ::core::fmt::Debug for QueryMetricsSummary {
                 "cursor_peak_transport_chunk_bytes",
                 &self.cursor_peak_transport_chunk_bytes,
             )
+            .field("page_index_decision", &self.page_index_decision)
             .finish()
     }
 }
@@ -2565,7 +3500,7 @@ impl ::buffa::Message for QueryMetricsSummary {
     /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
     /// compliant message will never overflow this type.
     #[allow(clippy::let_and_return)]
-    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
         let mut size = 0u32;
@@ -2740,12 +3675,20 @@ impl ::buffa::Message for QueryMetricsSummary {
         if let Some(v) = self.cursor_peak_transport_chunk_bytes {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
+        if self.page_index_decision.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.page_index_decision.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 2u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
     fn write_to(
         &self,
-        _cache: &mut ::buffa::SizeCache,
+        __cache: &mut ::buffa::SizeCache,
         buf: &mut impl ::buffa::bytes::BufMut,
     ) {
         #[allow(unused_imports)]
@@ -2920,6 +3863,10 @@ impl ::buffa::Message for QueryMetricsSummary {
         }
         if let Some(v) = self.cursor_peak_transport_chunk_bytes {
             ::buffa::types::put_uint64_field(58u32, v, buf);
+        }
+        if self.page_index_decision.is_set() {
+            ::buffa::types::put_len_delimited_header(59u32, __cache.consume_next(), buf);
+            self.page_index_decision.write_to(__cache, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -3447,6 +4394,17 @@ impl ::buffa::Message for QueryMetricsSummary {
                     ::buffa::types::decode_uint64(buf)?,
                 );
             }
+            59u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::Message::merge_length_delimited(
+                    self.page_index_decision.get_or_insert_default(),
+                    buf,
+                    ctx,
+                )?;
+            }
             _ => {
                 self.__buffa_unknown_fields
                     .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
@@ -3512,6 +4470,7 @@ impl ::buffa::Message for QueryMetricsSummary {
         self.coordinator_staging_limit_bytes = ::core::option::Option::None;
         self.cursor_peak_pending_encoded_bytes = ::core::option::Option::None;
         self.cursor_peak_transport_chunk_bytes = ::core::option::Option::None;
+        self.page_index_decision = ::buffa::MessageField::none();
         self.__buffa_unknown_fields.clear();
     }
 }
@@ -7640,6 +8599,8 @@ pub struct BrowserWorkerRangeReadMetricsEvent {
     pub cursor_peak_pending_encoded_bytes: ::core::option::Option<u64>,
     /// Field 58: `cursor_peak_transport_chunk_bytes`
     pub cursor_peak_transport_chunk_bytes: ::core::option::Option<u64>,
+    /// Field 59: `page_index_decision`
+    pub page_index_decision: ::buffa::MessageField<PageIndexDecisionSummary>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
@@ -7724,6 +8685,7 @@ impl ::core::fmt::Debug for BrowserWorkerRangeReadMetricsEvent {
                 "cursor_peak_transport_chunk_bytes",
                 &self.cursor_peak_transport_chunk_bytes,
             )
+            .field("page_index_decision", &self.page_index_decision)
             .finish()
     }
 }
@@ -8325,6 +9287,14 @@ impl ::buffa::Message for BrowserWorkerRangeReadMetricsEvent {
         if let Some(v) = self.cursor_peak_transport_chunk_bytes {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
+        if self.page_index_decision.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.page_index_decision.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 2u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
@@ -8506,6 +9476,10 @@ impl ::buffa::Message for BrowserWorkerRangeReadMetricsEvent {
         }
         if let Some(v) = self.cursor_peak_transport_chunk_bytes {
             ::buffa::types::put_uint64_field(58u32, v, buf);
+        }
+        if self.page_index_decision.is_set() {
+            ::buffa::types::put_len_delimited_header(59u32, __cache.consume_next(), buf);
+            self.page_index_decision.write_to(__cache, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -9035,6 +10009,17 @@ impl ::buffa::Message for BrowserWorkerRangeReadMetricsEvent {
                     ::buffa::types::decode_uint64(buf)?,
                 );
             }
+            59u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::Message::merge_length_delimited(
+                    self.page_index_decision.get_or_insert_default(),
+                    buf,
+                    ctx,
+                )?;
+            }
             _ => {
                 self.__buffa_unknown_fields
                     .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
@@ -9100,6 +10085,7 @@ impl ::buffa::Message for BrowserWorkerRangeReadMetricsEvent {
         self.coordinator_staging_limit_bytes = ::core::option::Option::None;
         self.cursor_peak_pending_encoded_bytes = ::core::option::Option::None;
         self.cursor_peak_transport_chunk_bytes = ::core::option::Option::None;
+        self.page_index_decision = ::buffa::MessageField::none();
         self.__buffa_unknown_fields.clear();
     }
 }

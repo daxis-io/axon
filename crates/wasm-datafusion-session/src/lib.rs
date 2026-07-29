@@ -11,8 +11,8 @@ use std::ops::ControlFlow;
 use arrow_schema::TimeUnit;
 use query_contract::{
     BrowserHttpParquetDatasetDescriptor, BrowserHttpSnapshotDescriptor, CapabilityReport,
-    ExecutionTarget, FallbackReason, ParquetInspectionSummary, PartitionColumnType, QueryError,
-    QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse, QueryResultPage,
+    ExecutionTarget, FallbackReason, PageIndexMode, ParquetInspectionSummary, PartitionColumnType,
+    QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse, QueryResultPage,
     QueryRuntimeLimits, MAX_QUERY_RESULT_PAGE_LIMIT,
 };
 use sqlparser::ast::{
@@ -31,8 +31,6 @@ use wasm_datafusion_poc::{
     DeltaTableDescriptor, DeltaTableFieldDataType, DeltaTableSchema, DeltaTableSchemaField,
     IpcCursorItem, QueryCancelHandle, QueryTerminal, WasmDataFusionEngine,
 };
-#[cfg(feature = "page-index-experiment")]
-use wasm_parquet_engine::ParquetPageIndexPolicy;
 use wasm_query_runtime::{
     runtime_target, BootstrappedBrowserSnapshot, BrowserExecutionBudget,
     BrowserParquetConvertedType, BrowserParquetField, BrowserParquetLogicalType,
@@ -302,18 +300,22 @@ impl BrowserDataFusionSession {
         max_cached_bytes: u64,
         query_budget: BrowserDataFusionQueryBudget,
     ) -> Result<Self, QueryError> {
+        let page_index_mode = config.page_index_mode;
+        let adaptive_page_index_error_margin_us = config.adaptive_page_index_error_margin_us;
         let runtime = BrowserRuntimeSession::new(config)?;
         let metadata_cache = runtime.metadata_cache().clone();
         let range_cache = runtime.range_cache().clone();
+        let mut datafusion = WasmDataFusionEngine::with_budget_cancellation_and_caches(
+            query_budget.into(),
+            BrowserQueryCancellation::default(),
+            metadata_cache,
+            range_cache,
+        );
+        datafusion.set_page_index_mode(page_index_mode, adaptive_page_index_error_margin_us)?;
         Ok(Self {
             runtime,
             query_budget,
-            datafusion: WasmDataFusionEngine::with_budget_cancellation_and_caches(
-                query_budget.into(),
-                BrowserQueryCancellation::default(),
-                metadata_cache,
-                range_cache,
-            ),
+            datafusion,
             tables: BTreeMap::new(),
             max_cached_bytes,
             next_access_millis: 0,
@@ -328,13 +330,13 @@ impl BrowserDataFusionSession {
         self.query_budget
     }
 
-    #[cfg(feature = "page-index-experiment")]
-    pub fn set_page_index_policy_for_experiment(&mut self, enabled: bool) {
-        self.datafusion.set_page_index_policy(if enabled {
-            ParquetPageIndexPolicy::Predicate
-        } else {
-            ParquetPageIndexPolicy::Skip
-        });
+    pub fn set_page_index_mode(
+        &mut self,
+        mode: PageIndexMode,
+        calibration_error_margin_us: Option<u64>,
+    ) -> Result<PageIndexMode, QueryError> {
+        self.datafusion
+            .set_page_index_mode(mode, calibration_error_margin_us)
     }
 
     pub fn cancellation_handle(&self) -> BrowserDataFusionCancellation {
@@ -1400,6 +1402,7 @@ fn datafusion_query_metrics(
         coordinator_staging_limit_bytes: None,
         cursor_peak_pending_encoded_bytes: None,
         cursor_peak_transport_chunk_bytes: None,
+        page_index_decision: scan_metrics.page_index_decision,
     }
 }
 

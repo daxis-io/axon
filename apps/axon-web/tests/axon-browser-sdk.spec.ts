@@ -4375,6 +4375,23 @@ test('projects cache and dormant readahead metrics through events and final resp
     coordinator_staging_limit_bytes: 8_388_608,
     cursor_peak_pending_encoded_bytes: 2_048,
     cursor_peak_transport_chunk_bytes: 1_048_576,
+    page_index_decision: {
+      requested_mode: 'adaptive' as const,
+      chosen_plan: 'predicate' as const,
+      decision_reason: 'predicted_predicate_faster' as const,
+      model_version: 'adaptive_page_index_v1' as const,
+      decision_duration_us: 42,
+      range_sample_count: 5,
+      decode_sample_count: 3,
+      confidence_eligible: true,
+      predicted_skip_time_us: 120_000,
+      predicted_predicate_time_us: 40_000,
+      index_bytes: 8_192,
+      index_requests: 2,
+      pages_selected: 4,
+      pages_skipped: 60,
+      pages_touched: 4,
+    },
   };
   worker.emitRawMessage({
     range_read_metrics: {

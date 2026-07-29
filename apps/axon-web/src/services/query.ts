@@ -21,6 +21,7 @@ import {
   type CapabilityKey,
   type CapabilityState,
   type ExecutionTarget,
+  type PageIndexDecisionSummary,
   type PartitionColumnType,
   type QueryError,
   type QueryExecutionOptions,
@@ -64,6 +65,11 @@ import {
   ExecutionTerminalFrameSchema,
   ExecutionTerminalStateSchema,
   ExecutionTarget as ContractExecutionTarget,
+  PageIndexDecisionReason as ContractPageIndexDecisionReason,
+  PageIndexDecisionSummarySchema as ContractPageIndexDecisionSummarySchema,
+  PageIndexMode as ContractPageIndexMode,
+  PageIndexModelVersion as ContractPageIndexModelVersion,
+  PageIndexPlan as ContractPageIndexPlan,
   PreviewCellSchema,
   QueryErrorCode as ContractQueryErrorCode,
   QueryErrorSchema as ContractQueryErrorSchema,
@@ -78,6 +84,7 @@ import {
   type ExecuteResponse,
   type ExecutionCompleted,
   type ExecutionTerminalState as ContractExecutionTerminalState,
+  type PageIndexDecisionSummary as ContractPageIndexDecisionSummary,
   type QueryMetricsSummary as ContractQueryMetricsSummary,
   type QueryRequest as ContractQueryRequest,
 } from '../generated/contracts/protobuf/axon/exec/v1/exec_pb.ts';
@@ -669,6 +676,7 @@ export function queryMetricsFromRangeReadMetricsEvent(
       planning_duration_ms: metrics.planning_duration_ms,
       arrow_ipc_encode_duration_ms: metrics.arrow_ipc_encode_duration_ms,
       preview_duration_ms: metrics.preview_duration_ms,
+      page_index_decision: metrics.page_index_decision,
     },
     setupMetrics,
   );
@@ -1297,6 +1305,7 @@ function contractRangeReadMetricsEvent(
     if (value !== undefined) target[contractName] = value;
   }
   event.accessMode = generatedMetrics.accessMode;
+  event.pageIndexDecision = generatedMetrics.pageIndexDecision;
   return event;
 }
 
@@ -1610,6 +1619,80 @@ function contractCapabilityState(value: CapabilityState): ContractCapabilityStat
   }
 }
 
+const CONTRACT_PAGE_INDEX_MODES: Record<
+  PageIndexDecisionSummary['requested_mode'],
+  ContractPageIndexMode
+> = {
+  skip: ContractPageIndexMode.SKIP,
+  predicate: ContractPageIndexMode.PREDICATE,
+  adaptive: ContractPageIndexMode.ADAPTIVE,
+};
+
+const CONTRACT_PAGE_INDEX_PLANS: Record<
+  PageIndexDecisionSummary['chosen_plan'],
+  ContractPageIndexPlan
+> = {
+  skip: ContractPageIndexPlan.SKIP,
+  predicate: ContractPageIndexPlan.PREDICATE,
+  mixed: ContractPageIndexPlan.MIXED,
+};
+
+const CONTRACT_PAGE_INDEX_REASONS: Record<
+  PageIndexDecisionSummary['decision_reason'],
+  ContractPageIndexDecisionReason
+> = {
+  requested_skip: ContractPageIndexDecisionReason.REQUESTED_SKIP,
+  requested_predicate: ContractPageIndexDecisionReason.REQUESTED_PREDICATE,
+  uncalibrated_model: ContractPageIndexDecisionReason.UNCALIBRATED_MODEL,
+  unsupported_predicate: ContractPageIndexDecisionReason.UNSUPPORTED_PREDICATE,
+  missing_or_invalid_indexes: ContractPageIndexDecisionReason.MISSING_OR_INVALID_INDEXES,
+  unsafe_object_identity: ContractPageIndexDecisionReason.UNSAFE_OBJECT_IDENTITY,
+  insufficient_range_samples: ContractPageIndexDecisionReason.INSUFFICIENT_RANGE_SAMPLES,
+  insufficient_decode_samples: ContractPageIndexDecisionReason.INSUFFICIENT_DECODE_SAMPLES,
+  memory_pressure: ContractPageIndexDecisionReason.MEMORY_PRESSURE,
+  scan_too_small: ContractPageIndexDecisionReason.SCAN_TOO_SMALL,
+  predicted_skip_faster: ContractPageIndexDecisionReason.PREDICTED_SKIP_FASTER,
+  predicted_predicate_faster: ContractPageIndexDecisionReason.PREDICTED_PREDICATE_FASTER,
+  realized_plan_lost: ContractPageIndexDecisionReason.REALIZED_PLAN_LOST,
+  index_load_failed_open: ContractPageIndexDecisionReason.INDEX_LOAD_FAILED_OPEN,
+  mixed_object_decisions: ContractPageIndexDecisionReason.MIXED_OBJECT_DECISIONS,
+};
+
+function metricBigInt(value: number, field: string): bigint {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`query metric ${field} is outside JavaScript-safe range`);
+  }
+  return BigInt(value);
+}
+
+function contractPageIndexDecision(
+  summary: PageIndexDecisionSummary,
+): ContractPageIndexDecisionSummary {
+  return create(ContractPageIndexDecisionSummarySchema, {
+    requestedMode: CONTRACT_PAGE_INDEX_MODES[summary.requested_mode],
+    chosenPlan: CONTRACT_PAGE_INDEX_PLANS[summary.chosen_plan],
+    decisionReason: CONTRACT_PAGE_INDEX_REASONS[summary.decision_reason],
+    modelVersion: ContractPageIndexModelVersion.ADAPTIVE_PAGE_INDEX_V1,
+    decisionDurationUs: metricBigInt(summary.decision_duration_us, 'decision_duration_us'),
+    rangeSampleCount: metricBigInt(summary.range_sample_count, 'range_sample_count'),
+    decodeSampleCount: metricBigInt(summary.decode_sample_count, 'decode_sample_count'),
+    confidenceEligible: summary.confidence_eligible,
+    predictedSkipTimeUs:
+      summary.predicted_skip_time_us === undefined
+        ? undefined
+        : metricBigInt(summary.predicted_skip_time_us, 'predicted_skip_time_us'),
+    predictedPredicateTimeUs:
+      summary.predicted_predicate_time_us === undefined
+        ? undefined
+        : metricBigInt(summary.predicted_predicate_time_us, 'predicted_predicate_time_us'),
+    indexBytes: metricBigInt(summary.index_bytes, 'index_bytes'),
+    indexRequests: metricBigInt(summary.index_requests, 'index_requests'),
+    pagesSelected: metricBigInt(summary.pages_selected, 'pages_selected'),
+    pagesSkipped: metricBigInt(summary.pages_skipped, 'pages_skipped'),
+    pagesTouched: metricBigInt(summary.pages_touched, 'pages_touched'),
+  });
+}
+
 function contractQueryMetrics(metrics: QueryMetricsSummary): ContractQueryMetricsSummary {
   const result = create(ContractQueryMetricsSummarySchema);
   const writable = result as unknown as Record<string, unknown>;
@@ -1626,7 +1709,127 @@ function contractQueryMetrics(metrics: QueryMetricsSummary): ContractQueryMetric
         ? ContractBrowserAccessMode.CLOUD_OBJECT_STORE
         : ContractBrowserAccessMode.BROWSER_SAFE_HTTP;
   }
+  if (metrics.page_index_decision) {
+    result.pageIndexDecision = contractPageIndexDecision(metrics.page_index_decision);
+  }
   return result;
+}
+
+function sdkPageIndexMode(
+  value: ContractPageIndexMode,
+): PageIndexDecisionSummary['requested_mode'] {
+  switch (value) {
+    case ContractPageIndexMode.SKIP:
+      return 'skip';
+    case ContractPageIndexMode.PREDICATE:
+      return 'predicate';
+    case ContractPageIndexMode.ADAPTIVE:
+      return 'adaptive';
+    case ContractPageIndexMode.UNSPECIFIED:
+      throw new Error('page-index requested mode must be specified');
+  }
+}
+
+function sdkPageIndexPlan(value: ContractPageIndexPlan): PageIndexDecisionSummary['chosen_plan'] {
+  switch (value) {
+    case ContractPageIndexPlan.SKIP:
+      return 'skip';
+    case ContractPageIndexPlan.PREDICATE:
+      return 'predicate';
+    case ContractPageIndexPlan.MIXED:
+      return 'mixed';
+    case ContractPageIndexPlan.UNSPECIFIED:
+      throw new Error('page-index chosen plan must be specified');
+  }
+}
+
+function sdkPageIndexReason(
+  value: ContractPageIndexDecisionReason,
+): PageIndexDecisionSummary['decision_reason'] {
+  switch (value) {
+    case ContractPageIndexDecisionReason.REQUESTED_SKIP:
+      return 'requested_skip';
+    case ContractPageIndexDecisionReason.REQUESTED_PREDICATE:
+      return 'requested_predicate';
+    case ContractPageIndexDecisionReason.UNCALIBRATED_MODEL:
+      return 'uncalibrated_model';
+    case ContractPageIndexDecisionReason.UNSUPPORTED_PREDICATE:
+      return 'unsupported_predicate';
+    case ContractPageIndexDecisionReason.MISSING_OR_INVALID_INDEXES:
+      return 'missing_or_invalid_indexes';
+    case ContractPageIndexDecisionReason.UNSAFE_OBJECT_IDENTITY:
+      return 'unsafe_object_identity';
+    case ContractPageIndexDecisionReason.INSUFFICIENT_RANGE_SAMPLES:
+      return 'insufficient_range_samples';
+    case ContractPageIndexDecisionReason.INSUFFICIENT_DECODE_SAMPLES:
+      return 'insufficient_decode_samples';
+    case ContractPageIndexDecisionReason.MEMORY_PRESSURE:
+      return 'memory_pressure';
+    case ContractPageIndexDecisionReason.SCAN_TOO_SMALL:
+      return 'scan_too_small';
+    case ContractPageIndexDecisionReason.PREDICTED_SKIP_FASTER:
+      return 'predicted_skip_faster';
+    case ContractPageIndexDecisionReason.PREDICTED_PREDICATE_FASTER:
+      return 'predicted_predicate_faster';
+    case ContractPageIndexDecisionReason.REALIZED_PLAN_LOST:
+      return 'realized_plan_lost';
+    case ContractPageIndexDecisionReason.INDEX_LOAD_FAILED_OPEN:
+      return 'index_load_failed_open';
+    case ContractPageIndexDecisionReason.MIXED_OBJECT_DECISIONS:
+      return 'mixed_object_decisions';
+    case ContractPageIndexDecisionReason.UNSPECIFIED:
+      throw new Error('page-index decision reason must be specified');
+  }
+}
+
+function sdkPageIndexDecision(summary: ContractPageIndexDecisionSummary): PageIndexDecisionSummary {
+  if (summary.modelVersion !== ContractPageIndexModelVersion.ADAPTIVE_PAGE_INDEX_V1) {
+    throw new Error('page-index model version must be specified');
+  }
+  return {
+    requested_mode: sdkPageIndexMode(summary.requestedMode),
+    chosen_plan: sdkPageIndexPlan(summary.chosenPlan),
+    decision_reason: sdkPageIndexReason(summary.decisionReason),
+    model_version: 'adaptive_page_index_v1',
+    decision_duration_us: safeContractInteger(
+      summary.decisionDurationUs,
+      'page_index_decision.decision_duration_us',
+    ),
+    range_sample_count: safeContractInteger(
+      summary.rangeSampleCount,
+      'page_index_decision.range_sample_count',
+    ),
+    decode_sample_count: safeContractInteger(
+      summary.decodeSampleCount,
+      'page_index_decision.decode_sample_count',
+    ),
+    confidence_eligible: summary.confidenceEligible,
+    predicted_skip_time_us:
+      summary.predictedSkipTimeUs === undefined
+        ? undefined
+        : safeContractInteger(
+            summary.predictedSkipTimeUs,
+            'page_index_decision.predicted_skip_time_us',
+          ),
+    predicted_predicate_time_us:
+      summary.predictedPredicateTimeUs === undefined
+        ? undefined
+        : safeContractInteger(
+            summary.predictedPredicateTimeUs,
+            'page_index_decision.predicted_predicate_time_us',
+          ),
+    index_bytes: safeContractInteger(summary.indexBytes, 'page_index_decision.index_bytes'),
+    index_requests: safeContractInteger(
+      summary.indexRequests,
+      'page_index_decision.index_requests',
+    ),
+    pages_selected: safeContractInteger(
+      summary.pagesSelected,
+      'page_index_decision.pages_selected',
+    ),
+    pages_skipped: safeContractInteger(summary.pagesSkipped, 'page_index_decision.pages_skipped'),
+    pages_touched: safeContractInteger(summary.pagesTouched, 'page_index_decision.pages_touched'),
+  };
 }
 
 function sdkQueryMetrics(
@@ -1651,6 +1854,9 @@ function sdkQueryMetrics(
     result.access_mode = 'cloud_object_store';
   } else if (metrics.accessMode === ContractBrowserAccessMode.BROWSER_SAFE_HTTP) {
     result.access_mode = 'browser_safe_http';
+  }
+  if (metrics.pageIndexDecision) {
+    result.page_index_decision = sdkPageIndexDecision(metrics.pageIndexDecision);
   }
   return result;
 }

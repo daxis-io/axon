@@ -209,6 +209,7 @@ async fn cached_scan_validates_identity_before_pruning_from_reused_metadata() {
         Some(&ParquetRowGroupPruningPredicate {
             column: "id".to_string(),
             comparison: ParquetIntegerComparison::Gt(100),
+            page_index_supported: true,
         }),
         Some(&cache),
     )

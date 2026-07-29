@@ -22,9 +22,9 @@ use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
 use query_contract::{
     BrowserAccessMode, BrowserHttpFileDescriptor, BrowserHttpSnapshotDescriptor, CapabilityKey,
-    CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, PartitionColumnType,
-    QueryErrorCode, QueryRequest, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
-    SnapshotResolutionRequest,
+    CapabilityReport, CapabilityState, ExecutionTarget, FallbackReason, PageIndexMode,
+    PartitionColumnType, QueryErrorCode, QueryRequest, ResolvedFileDescriptor,
+    ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 use serde::Deserialize;
 use support::TestTableFixture;
@@ -132,6 +132,7 @@ fn default_config_constructs_a_browser_runtime_session() {
 
     assert_eq!(runtime_target(), ExecutionTarget::BrowserWasm);
     assert_eq!(session.config(), &BrowserRuntimeConfig::default());
+    assert_eq!(session.config().page_index_mode, PageIndexMode::Skip);
 }
 
 #[test]

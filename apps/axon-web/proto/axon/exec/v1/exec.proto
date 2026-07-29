@@ -64,6 +64,44 @@ enum BrowserAccessMode {
   BROWSER_ACCESS_MODE_CLOUD_OBJECT_STORE = 2;
 }
 
+enum PageIndexMode {
+  PAGE_INDEX_MODE_UNSPECIFIED = 0;
+  PAGE_INDEX_MODE_SKIP = 1;
+  PAGE_INDEX_MODE_PREDICATE = 2;
+  PAGE_INDEX_MODE_ADAPTIVE = 3;
+}
+
+enum PageIndexPlan {
+  PAGE_INDEX_PLAN_UNSPECIFIED = 0;
+  PAGE_INDEX_PLAN_SKIP = 1;
+  PAGE_INDEX_PLAN_PREDICATE = 2;
+  PAGE_INDEX_PLAN_MIXED = 3;
+}
+
+enum PageIndexDecisionReason {
+  PAGE_INDEX_DECISION_REASON_UNSPECIFIED = 0;
+  PAGE_INDEX_DECISION_REASON_REQUESTED_SKIP = 1;
+  PAGE_INDEX_DECISION_REASON_REQUESTED_PREDICATE = 2;
+  PAGE_INDEX_DECISION_REASON_UNCALIBRATED_MODEL = 3;
+  PAGE_INDEX_DECISION_REASON_UNSUPPORTED_PREDICATE = 4;
+  PAGE_INDEX_DECISION_REASON_MISSING_OR_INVALID_INDEXES = 5;
+  PAGE_INDEX_DECISION_REASON_UNSAFE_OBJECT_IDENTITY = 6;
+  PAGE_INDEX_DECISION_REASON_INSUFFICIENT_RANGE_SAMPLES = 7;
+  PAGE_INDEX_DECISION_REASON_INSUFFICIENT_DECODE_SAMPLES = 8;
+  PAGE_INDEX_DECISION_REASON_MEMORY_PRESSURE = 9;
+  PAGE_INDEX_DECISION_REASON_SCAN_TOO_SMALL = 10;
+  PAGE_INDEX_DECISION_REASON_PREDICTED_SKIP_FASTER = 11;
+  PAGE_INDEX_DECISION_REASON_PREDICTED_PREDICATE_FASTER = 12;
+  PAGE_INDEX_DECISION_REASON_REALIZED_PLAN_LOST = 13;
+  PAGE_INDEX_DECISION_REASON_INDEX_LOAD_FAILED_OPEN = 14;
+  PAGE_INDEX_DECISION_REASON_MIXED_OBJECT_DECISIONS = 15;
+}
+
+enum PageIndexModelVersion {
+  PAGE_INDEX_MODEL_VERSION_UNSPECIFIED = 0;
+  PAGE_INDEX_MODEL_VERSION_ADAPTIVE_PAGE_INDEX_V1 = 1;
+}
+
 // Identifies the Arrow IPC container carried in an opaque result.
 enum ArrowIpcFormat {
   ARROW_IPC_FORMAT_UNSPECIFIED = 0;
@@ -148,6 +186,24 @@ message QueryError {
   ExecutionTarget target = 3;
 }
 
+message PageIndexDecisionSummary {
+  PageIndexMode requested_mode = 1 [json_name = "requested_mode"];
+  PageIndexPlan chosen_plan = 2 [json_name = "chosen_plan"];
+  PageIndexDecisionReason decision_reason = 3 [json_name = "decision_reason"];
+  PageIndexModelVersion model_version = 4 [json_name = "model_version"];
+  uint64 decision_duration_us = 5 [json_name = "decision_duration_us"];
+  uint64 range_sample_count = 6 [json_name = "range_sample_count"];
+  uint64 decode_sample_count = 7 [json_name = "decode_sample_count"];
+  bool confidence_eligible = 8 [json_name = "confidence_eligible"];
+  optional uint64 predicted_skip_time_us = 9 [json_name = "predicted_skip_time_us"];
+  optional uint64 predicted_predicate_time_us = 10 [json_name = "predicted_predicate_time_us"];
+  uint64 index_bytes = 11 [json_name = "index_bytes"];
+  uint64 index_requests = 12 [json_name = "index_requests"];
+  uint64 pages_selected = 13 [json_name = "pages_selected"];
+  uint64 pages_skipped = 14 [json_name = "pages_skipped"];
+  uint64 pages_touched = 15 [json_name = "pages_touched"];
+}
+
 // Summarizes query, I/O, caching, and encoding work reported by an executor.
 message QueryMetricsSummary {
   reserved 38;
@@ -210,6 +266,7 @@ message QueryMetricsSummary {
   optional uint64 coordinator_staging_limit_bytes = 56 [json_name = "coordinator_staging_limit_bytes"];
   optional uint64 cursor_peak_pending_encoded_bytes = 57 [json_name = "cursor_peak_pending_encoded_bytes"];
   optional uint64 cursor_peak_transport_chunk_bytes = 58 [json_name = "cursor_peak_transport_chunk_bytes"];
+  PageIndexDecisionSummary page_index_decision = 59 [json_name = "page_index_decision"];
 }
 
 // Carries execution metadata shared by full results and previews.
@@ -472,6 +529,7 @@ message BrowserWorkerRangeReadMetricsEvent {
   optional uint64 coordinator_staging_limit_bytes = 56 [json_name = "coordinator_staging_limit_bytes"];
   optional uint64 cursor_peak_pending_encoded_bytes = 57 [json_name = "cursor_peak_pending_encoded_bytes"];
   optional uint64 cursor_peak_transport_chunk_bytes = 58 [json_name = "cursor_peak_transport_chunk_bytes"];
+  PageIndexDecisionSummary page_index_decision = 59 [json_name = "page_index_decision"];
 }
 
 // Summarizes persistent transport-cache reuse and validation failures.

@@ -18,7 +18,9 @@ use futures_util::{
     stream::{self, BoxStream},
     FutureExt, StreamExt, TryStreamExt,
 };
-use parquet::arrow::arrow_reader::{ArrowReaderOptions, RowSelection, RowSelector};
+use parquet::arrow::arrow_reader::{
+    ArrowReaderMetadata, ArrowReaderOptions, RowSelection, RowSelector,
+};
 use parquet::arrow::async_reader::AsyncFileReader;
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::ProjectionMask;
@@ -31,16 +33,19 @@ use parquet::basic::{
 use parquet::errors::ParquetError;
 use parquet::file::reader::{FileReader as ParquetFileReader, SerializedFileReader};
 use parquet::file::{
-    metadata::{PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader},
+    metadata::{ColumnChunkMetaData, PageIndexPolicy, ParquetMetaData, ParquetMetaDataReader},
     page_index::column_index::ColumnIndexMetaData,
     statistics::Statistics as ParquetStatistics,
 };
 use parquet::record::Field as ParquetField;
 use query_contract::{
-    ExecutionTarget, FallbackReason, ParquetCompressionSummary, ParquetInspectionColumn,
-    ParquetInspectionColumnChunk, ParquetInspectionRowGroup, ParquetInspectionSummary,
-    PartitionColumnType, QueryError, QueryErrorCode,
+    ExecutionTarget, FallbackReason, PageIndexDecisionReason, PageIndexDecisionSummary,
+    PageIndexMode, PageIndexModelVersion, PageIndexPlan, ParquetCompressionSummary,
+    ParquetInspectionColumn, ParquetInspectionColumnChunk, ParquetInspectionRowGroup,
+    ParquetInspectionSummary, PartitionColumnType, QueryError, QueryErrorCode,
 };
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_http_object_store::{
     ByteExtent, HttpByteRange, HttpMetadataProbeRequirements, HttpRangeReadResult, HttpRangeReader,
     HttpRangeValidation, MemoryRangeCache, MemoryRangeCacheReservation, RangeCacheIdentity,
@@ -53,6 +58,10 @@ pub const MAX_PARQUET_FOOTER_SIZE_BYTES: u64 = 16 * 1024 * 1024;
 pub const PARQUET_TRAILER_SIZE_BYTES: u64 = 8;
 pub const PARQUET_MAGIC: &[u8; 4] = b"PAR1";
 pub const DEFAULT_STREAM_BATCH_SIZE: usize = 1024;
+pub const ADAPTIVE_PAGE_INDEX_EWMA_NUMERATOR: u64 = 1;
+pub const ADAPTIVE_PAGE_INDEX_EWMA_DENOMINATOR: u64 = 4;
+pub const ADAPTIVE_PAGE_INDEX_MIN_RANGE_SAMPLES: u64 = 5;
+pub const ADAPTIVE_PAGE_INDEX_MIN_DECODE_SAMPLES: u64 = 3;
 const MAX_COALESCED_INDIVIDUAL_GAP_BYTES: u64 = 16 * 1024;
 const MAX_COALESCED_CUMULATIVE_GAP_BYTES: u64 = 64 * 1024;
 const MAX_COALESCED_GAP_AMPLIFICATION_NUMERATOR: u64 = 1;
@@ -288,6 +297,7 @@ pub enum ParquetIntegerComparison {
 pub struct ParquetRowGroupPruningPredicate {
     pub column: String,
     pub comparison: ParquetIntegerComparison,
+    pub page_index_supported: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -295,6 +305,590 @@ pub enum ParquetPageIndexPolicy {
     #[default]
     Skip,
     Predicate,
+    Adaptive,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AdaptiveRangeSample {
+    pub bytes: u64,
+    pub effective_rtt_us: u64,
+    pub queue_delay_us: u64,
+    pub transfer_duration_us: u64,
+    pub uncached: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AdaptiveDecodeSample {
+    pub decoded_bytes: u64,
+    pub duration_us: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AdaptivePageIndexDecisionInput {
+    pub requested_mode: PageIndexMode,
+    pub predicate_supported: bool,
+    pub indexes_valid: bool,
+    pub identity_safe: bool,
+    pub memory_pressure: bool,
+    pub full_data_bytes: u64,
+    pub predicate_data_bytes: u64,
+    pub full_data_requests: u64,
+    pub predicate_data_requests: u64,
+    pub index_bytes: u64,
+    pub index_requests: u64,
+    pub pages_selected: u64,
+    pub pages_skipped: u64,
+    pub pages_touched: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AdaptivePageIndexStateSnapshot {
+    pub effective_rtt_us: Option<u64>,
+    pub throughput_bytes_per_second: Option<u64>,
+    pub queue_delay_us: Option<u64>,
+    pub decode_bytes_per_second: Option<u64>,
+    pub range_sample_count: u64,
+    pub decode_sample_count: u64,
+    pub active_range_requests: u64,
+    pub calibration_error_margin_us: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AdaptivePageIndexState {
+    inner: Arc<Mutex<AdaptivePageIndexEstimates>>,
+}
+
+#[derive(Debug)]
+struct AdaptivePageIndexEstimates {
+    effective_rtt_us: Option<u64>,
+    throughput_bytes_per_second: Option<u64>,
+    queue_delay_us: Option<u64>,
+    decode_bytes_per_second: Option<u64>,
+    effective_rtt_deviation_us: Option<u64>,
+    throughput_deviation_bytes_per_second: Option<u64>,
+    queue_delay_deviation_us: Option<u64>,
+    decode_deviation_bytes_per_second: Option<u64>,
+    range_sample_count: u64,
+    decode_sample_count: u64,
+    active_range_requests: u64,
+    max_parallel_requests: u64,
+    calibration_error_margin_us: Option<u64>,
+}
+
+impl AdaptivePageIndexState {
+    pub fn new(max_parallel_requests: usize, calibration_error_margin_us: Option<u64>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(AdaptivePageIndexEstimates {
+                effective_rtt_us: None,
+                throughput_bytes_per_second: None,
+                queue_delay_us: None,
+                decode_bytes_per_second: None,
+                effective_rtt_deviation_us: None,
+                throughput_deviation_bytes_per_second: None,
+                queue_delay_deviation_us: None,
+                decode_deviation_bytes_per_second: None,
+                range_sample_count: 0,
+                decode_sample_count: 0,
+                active_range_requests: 0,
+                max_parallel_requests: u64::try_from(max_parallel_requests.max(1))
+                    .unwrap_or(u64::MAX),
+                calibration_error_margin_us,
+            })),
+        }
+    }
+
+    pub fn snapshot(&self) -> Result<AdaptivePageIndexStateSnapshot, QueryError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| execution_runtime_error("adaptive page-index state was poisoned"))?;
+        Ok(AdaptivePageIndexStateSnapshot {
+            effective_rtt_us: state.effective_rtt_us,
+            throughput_bytes_per_second: state.throughput_bytes_per_second,
+            queue_delay_us: state.queue_delay_us,
+            decode_bytes_per_second: state.decode_bytes_per_second,
+            range_sample_count: state.range_sample_count,
+            decode_sample_count: state.decode_sample_count,
+            active_range_requests: state.active_range_requests,
+            calibration_error_margin_us: state.calibration_error_margin_us,
+        })
+    }
+
+    pub fn set_calibration_error_margin_us(
+        &self,
+        calibration_error_margin_us: Option<u64>,
+    ) -> Result<Option<u64>, QueryError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| execution_runtime_error("adaptive page-index state was poisoned"))?;
+        Ok(std::mem::replace(
+            &mut state.calibration_error_margin_us,
+            calibration_error_margin_us,
+        ))
+    }
+
+    pub fn record_range_sample(&self, sample: AdaptiveRangeSample) -> Result<(), QueryError> {
+        if !sample.uncached {
+            return Ok(());
+        }
+        if sample.bytes == 0 || sample.transfer_duration_us == 0 {
+            return Err(execution_runtime_error(
+                "adaptive page-index range samples require positive bytes and transfer duration",
+            ));
+        }
+        let throughput = rate_per_second(sample.bytes, sample.transfer_duration_us)?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| execution_runtime_error("adaptive page-index state was poisoned"))?;
+        let AdaptivePageIndexEstimates {
+            effective_rtt_us,
+            throughput_bytes_per_second,
+            queue_delay_us,
+            effective_rtt_deviation_us,
+            throughput_deviation_bytes_per_second,
+            queue_delay_deviation_us,
+            ..
+        } = &mut *state;
+        update_ewma_with_deviation(
+            effective_rtt_us,
+            effective_rtt_deviation_us,
+            sample.effective_rtt_us,
+        );
+        update_ewma_with_deviation(
+            throughput_bytes_per_second,
+            throughput_deviation_bytes_per_second,
+            throughput,
+        );
+        update_ewma_with_deviation(
+            queue_delay_us,
+            queue_delay_deviation_us,
+            sample.queue_delay_us,
+        );
+        state.range_sample_count = state.range_sample_count.saturating_add(1);
+        Ok(())
+    }
+
+    pub fn record_decode_sample(&self, sample: AdaptiveDecodeSample) -> Result<(), QueryError> {
+        if sample.decoded_bytes == 0 || sample.duration_us == 0 {
+            return Err(execution_runtime_error(
+                "adaptive page-index decode samples require positive bytes and duration",
+            ));
+        }
+        let throughput = rate_per_second(sample.decoded_bytes, sample.duration_us)?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| execution_runtime_error("adaptive page-index state was poisoned"))?;
+        let AdaptivePageIndexEstimates {
+            decode_bytes_per_second,
+            decode_deviation_bytes_per_second,
+            ..
+        } = &mut *state;
+        update_ewma_with_deviation(
+            decode_bytes_per_second,
+            decode_deviation_bytes_per_second,
+            throughput,
+        );
+        state.decode_sample_count = state.decode_sample_count.saturating_add(1);
+        Ok(())
+    }
+
+    pub fn decide(
+        &self,
+        input: AdaptivePageIndexDecisionInput,
+    ) -> Result<PageIndexDecisionSummary, QueryError> {
+        self.decide_internal(input, false)
+    }
+
+    pub fn decide_realized(
+        &self,
+        input: AdaptivePageIndexDecisionInput,
+    ) -> Result<PageIndexDecisionSummary, QueryError> {
+        self.decide_internal(input, true)
+    }
+
+    fn begin_range_observation(
+        &self,
+        network_elapsed_us: Arc<Mutex<u64>>,
+    ) -> Result<AdaptiveRangeObservation, QueryError> {
+        let queue_delay_us = {
+            let mut state = self
+                .inner
+                .lock()
+                .map_err(|_| execution_runtime_error("adaptive page-index state was poisoned"))?;
+            state.active_range_requests = state.active_range_requests.saturating_add(1);
+            let queued_requests = state
+                .active_range_requests
+                .saturating_sub(state.max_parallel_requests);
+            let queue_rounds = queued_requests
+                .saturating_add(state.max_parallel_requests.saturating_sub(1))
+                / state.max_parallel_requests;
+            queue_rounds.saturating_mul(state.effective_rtt_us.unwrap_or_default())
+        };
+        Ok(AdaptiveRangeObservation {
+            state: self.clone(),
+            started_at: AdaptiveInstant::now(),
+            queue_delay_us,
+            network_elapsed_us,
+            completed: false,
+        })
+    }
+
+    fn decide_internal(
+        &self,
+        input: AdaptivePageIndexDecisionInput,
+        realized: bool,
+    ) -> Result<PageIndexDecisionSummary, QueryError> {
+        let started_at = AdaptiveInstant::now();
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| execution_runtime_error("adaptive page-index state was poisoned"))?;
+        let decision = (|| {
+            let mut summary = empty_page_index_decision(&input, &state);
+
+            if input.requested_mode == PageIndexMode::Skip {
+                summary.decision_reason = PageIndexDecisionReason::RequestedSkip;
+                return Ok(summary);
+            }
+            if !input.predicate_supported {
+                summary.decision_reason = PageIndexDecisionReason::UnsupportedPredicate;
+                return Ok(summary);
+            }
+            if !input.indexes_valid {
+                summary.decision_reason = PageIndexDecisionReason::MissingOrInvalidIndexes;
+                return Ok(summary);
+            }
+            if input.requested_mode == PageIndexMode::Predicate {
+                summary.chosen_plan = PageIndexPlan::Predicate;
+                summary.decision_reason = PageIndexDecisionReason::RequestedPredicate;
+                charge_page_index_shape(&mut summary, &input);
+                return Ok(summary);
+            }
+            if !input.identity_safe {
+                summary.decision_reason = PageIndexDecisionReason::UnsafeObjectIdentity;
+                return Ok(summary);
+            }
+            let Some(error_margin_us) = state.calibration_error_margin_us else {
+                summary.decision_reason = PageIndexDecisionReason::UncalibratedModel;
+                return Ok(summary);
+            };
+            if state.range_sample_count < ADAPTIVE_PAGE_INDEX_MIN_RANGE_SAMPLES {
+                summary.decision_reason = PageIndexDecisionReason::InsufficientRangeSamples;
+                return Ok(summary);
+            }
+            if state.decode_sample_count < ADAPTIVE_PAGE_INDEX_MIN_DECODE_SAMPLES {
+                summary.decision_reason = PageIndexDecisionReason::InsufficientDecodeSamples;
+                return Ok(summary);
+            }
+            if input.memory_pressure {
+                summary.decision_reason = PageIndexDecisionReason::MemoryPressure;
+                return Ok(summary);
+            }
+            if !realized
+                && input.full_data_bytes
+                    <= input.predicate_data_bytes.saturating_add(input.index_bytes)
+            {
+                summary.decision_reason = PageIndexDecisionReason::ScanTooSmall;
+                return Ok(summary);
+            }
+
+            let skip_time = predicted_critical_path_us(
+                input.full_data_requests,
+                input.full_data_bytes,
+                &state,
+                PredictionBound::Lower,
+            )?;
+            let predicate_time = predicted_critical_path_us(
+                input
+                    .predicate_data_requests
+                    .saturating_add(input.index_requests),
+                input.predicate_data_bytes.saturating_add(input.index_bytes),
+                &state,
+                PredictionBound::Upper,
+            )?
+            .saturating_add(error_margin_us);
+            summary.predicted_skip_time_us = Some(skip_time);
+            summary.predicted_predicate_time_us = Some(predicate_time);
+            summary.confidence_eligible = true;
+
+            if predicate_time < skip_time {
+                summary.chosen_plan = PageIndexPlan::Predicate;
+                summary.decision_reason = PageIndexDecisionReason::PredictedPredicateFaster;
+                charge_page_index_shape(&mut summary, &input);
+            } else {
+                summary.decision_reason = if realized {
+                    PageIndexDecisionReason::RealizedPlanLost
+                } else {
+                    PageIndexDecisionReason::PredictedSkipFaster
+                };
+                if realized {
+                    summary.index_bytes = input.index_bytes;
+                    summary.index_requests = input.index_requests;
+                }
+            }
+            Ok(summary)
+        })();
+        decision.map(|mut summary: PageIndexDecisionSummary| {
+            summary.decision_duration_us = started_at.elapsed_us();
+            summary
+        })
+    }
+}
+
+impl Default for AdaptivePageIndexState {
+    fn default() -> Self {
+        Self::new(1, None)
+    }
+}
+
+struct AdaptiveRangeObservation {
+    state: AdaptivePageIndexState,
+    started_at: AdaptiveInstant,
+    queue_delay_us: u64,
+    network_elapsed_us: Arc<Mutex<u64>>,
+    completed: bool,
+}
+
+impl AdaptiveRangeObservation {
+    fn complete(mut self, bytes: u64) -> Result<(), QueryError> {
+        let elapsed_us = self.started_at.elapsed_us().max(1);
+        let prior_throughput = {
+            let mut state =
+                self.state.inner.lock().map_err(|_| {
+                    execution_runtime_error("adaptive page-index state was poisoned")
+                })?;
+            state.active_range_requests = state.active_range_requests.saturating_sub(1);
+            state.throughput_bytes_per_second
+        };
+        {
+            let mut network_elapsed_us = self.network_elapsed_us.lock().map_err(|_| {
+                execution_runtime_error("adaptive page-index read timing was poisoned")
+            })?;
+            *network_elapsed_us = network_elapsed_us.saturating_add(elapsed_us);
+        }
+        self.completed = true;
+        let estimated_transfer_us = prior_throughput
+            .filter(|throughput| *throughput > 0)
+            .map(|throughput| bytes.saturating_mul(1_000_000) / throughput)
+            .unwrap_or_else(|| elapsed_us / 2)
+            .min(elapsed_us);
+        let effective_rtt_us = elapsed_us
+            .saturating_sub(self.queue_delay_us)
+            .saturating_sub(estimated_transfer_us);
+        self.state.record_range_sample(AdaptiveRangeSample {
+            bytes,
+            effective_rtt_us,
+            queue_delay_us: self.queue_delay_us,
+            transfer_duration_us: estimated_transfer_us.max(1),
+            uncached: true,
+        })
+    }
+}
+
+impl Drop for AdaptiveRangeObservation {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        if let Ok(mut state) = self.state.inner.lock() {
+            state.active_range_requests = state.active_range_requests.saturating_sub(1);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdaptiveInstant {
+    #[cfg(not(target_arch = "wasm32"))]
+    inner: std::time::Instant,
+    #[cfg(target_arch = "wasm32")]
+    inner_us: f64,
+}
+
+impl AdaptiveInstant {
+    fn now() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self {
+                inner: std::time::Instant::now(),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Self {
+                inner_us: adaptive_monotonic_now_us(),
+            }
+        }
+    }
+
+    fn elapsed_us(self) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            u64::try_from(self.inner.elapsed().as_micros()).unwrap_or(u64::MAX)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let elapsed = adaptive_monotonic_now_us() - self.inner_us;
+            if !elapsed.is_finite() || elapsed <= 0.0 {
+                0
+            } else if elapsed >= u64::MAX as f64 {
+                u64::MAX
+            } else {
+                elapsed as u64
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn adaptive_monotonic_now_us() -> f64 {
+    let global = js_sys::global();
+    let performance_key = JsValue::from_str("performance");
+    let now_key = JsValue::from_str("now");
+    if let Ok(performance) = js_sys::Reflect::get(&global, &performance_key) {
+        if let Ok(now_value) = js_sys::Reflect::get(&performance, &now_key) {
+            if let Some(now_function) = now_value.dyn_ref::<js_sys::Function>() {
+                if let Ok(value) = now_function.call0(&performance) {
+                    if let Some(now_ms) = value.as_f64() {
+                        if now_ms.is_finite() {
+                            return now_ms * 1_000.0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    js_sys::Date::now() * 1_000.0
+}
+
+#[derive(Clone, Copy)]
+enum PredictionBound {
+    Lower,
+    Upper,
+}
+
+fn empty_page_index_decision(
+    input: &AdaptivePageIndexDecisionInput,
+    state: &AdaptivePageIndexEstimates,
+) -> PageIndexDecisionSummary {
+    PageIndexDecisionSummary {
+        requested_mode: input.requested_mode,
+        chosen_plan: PageIndexPlan::Skip,
+        decision_reason: PageIndexDecisionReason::RequestedSkip,
+        model_version: PageIndexModelVersion::AdaptivePageIndexV1,
+        decision_duration_us: 0,
+        range_sample_count: state.range_sample_count,
+        decode_sample_count: state.decode_sample_count,
+        confidence_eligible: false,
+        predicted_skip_time_us: None,
+        predicted_predicate_time_us: None,
+        index_bytes: 0,
+        index_requests: 0,
+        pages_selected: 0,
+        pages_skipped: 0,
+        pages_touched: 0,
+    }
+}
+
+fn charge_page_index_shape(
+    summary: &mut PageIndexDecisionSummary,
+    input: &AdaptivePageIndexDecisionInput,
+) {
+    summary.index_bytes = input.index_bytes;
+    summary.index_requests = input.index_requests;
+    summary.pages_selected = input.pages_selected;
+    summary.pages_skipped = input.pages_skipped;
+    summary.pages_touched = input.pages_touched;
+}
+
+fn update_ewma_with_deviation(
+    estimate: &mut Option<u64>,
+    deviation: &mut Option<u64>,
+    sample: u64,
+) {
+    let Some(previous) = *estimate else {
+        *estimate = Some(sample);
+        *deviation = Some(0);
+        return;
+    };
+    let absolute_error = previous.abs_diff(sample);
+    *estimate = Some(ewma(previous, sample));
+    *deviation = Some(match *deviation {
+        Some(previous_deviation) => ewma(previous_deviation, absolute_error),
+        None => absolute_error,
+    });
+}
+
+fn ewma(previous: u64, sample: u64) -> u64 {
+    previous
+        .saturating_mul(ADAPTIVE_PAGE_INDEX_EWMA_DENOMINATOR - ADAPTIVE_PAGE_INDEX_EWMA_NUMERATOR)
+        .saturating_add(sample.saturating_mul(ADAPTIVE_PAGE_INDEX_EWMA_NUMERATOR))
+        / ADAPTIVE_PAGE_INDEX_EWMA_DENOMINATOR
+}
+
+fn rate_per_second(bytes: u64, duration_us: u64) -> Result<u64, QueryError> {
+    if duration_us == 0 {
+        return Err(execution_runtime_error(
+            "adaptive page-index sample duration must be positive",
+        ));
+    }
+    Ok(bytes.saturating_mul(1_000_000) / duration_us)
+}
+
+fn bounded_estimate(
+    estimate: Option<u64>,
+    deviation: Option<u64>,
+    bound: PredictionBound,
+) -> Result<u64, QueryError> {
+    let estimate = estimate.ok_or_else(|| {
+        execution_runtime_error("adaptive page-index estimate was unavailable after warmup")
+    })?;
+    let deviation = deviation.unwrap_or_default();
+    Ok(match bound {
+        PredictionBound::Lower => estimate.saturating_sub(deviation).max(1),
+        PredictionBound::Upper => estimate.saturating_add(deviation).max(1),
+    })
+}
+
+fn predicted_critical_path_us(
+    requests: u64,
+    bytes: u64,
+    state: &AdaptivePageIndexEstimates,
+    bound: PredictionBound,
+) -> Result<u64, QueryError> {
+    let rtt_us = bounded_estimate(
+        state.effective_rtt_us,
+        state.effective_rtt_deviation_us,
+        bound,
+    )?;
+    let queue_delay_us =
+        bounded_estimate(state.queue_delay_us, state.queue_delay_deviation_us, bound)?;
+    let transfer_throughput = bounded_estimate(
+        state.throughput_bytes_per_second,
+        state.throughput_deviation_bytes_per_second,
+        match bound {
+            PredictionBound::Lower => PredictionBound::Upper,
+            PredictionBound::Upper => PredictionBound::Lower,
+        },
+    )?;
+    let decode_throughput = bounded_estimate(
+        state.decode_bytes_per_second,
+        state.decode_deviation_bytes_per_second,
+        match bound {
+            PredictionBound::Lower => PredictionBound::Upper,
+            PredictionBound::Upper => PredictionBound::Lower,
+        },
+    )?;
+    let rounds = requests.saturating_add(state.max_parallel_requests.saturating_sub(1))
+        / state.max_parallel_requests;
+    let request_time = rounds.saturating_mul(rtt_us.saturating_add(queue_delay_us));
+    let transfer_time = bytes.saturating_mul(1_000_000) / transfer_throughput;
+    let decode_time = bytes.saturating_mul(1_000_000) / decode_throughput;
+    Ok(request_time
+        .saturating_add(transfer_time)
+        .saturating_add(decode_time))
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -318,6 +912,7 @@ pub struct ScanTargetMetricsSnapshot {
     pub footer_reads: u64,
     pub metadata_probe_round_trips: u64,
     pub range_read_metrics: ParquetRangeReadMetrics,
+    pub page_index_decision: Option<PageIndexDecisionSummary>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1573,9 +2168,62 @@ impl ScanTargetMetricsHandle for AggregateScanTargetMetricsHandle {
                         &aggregate.range_read_metrics,
                         &snapshot.range_read_metrics,
                     );
+                    aggregate.page_index_decision = merge_page_index_decision_summaries(
+                        aggregate.page_index_decision,
+                        snapshot.page_index_decision,
+                    );
                     aggregate
                 },
             )
+    }
+}
+
+pub fn merge_page_index_decision_summaries(
+    left: Option<PageIndexDecisionSummary>,
+    right: Option<PageIndexDecisionSummary>,
+) -> Option<PageIndexDecisionSummary> {
+    match (left, right) {
+        (None, summary) | (summary, None) => summary,
+        (Some(left), Some(right)) => Some(PageIndexDecisionSummary {
+            requested_mode: left.requested_mode,
+            chosen_plan: if left.chosen_plan == right.chosen_plan {
+                left.chosen_plan
+            } else {
+                PageIndexPlan::Mixed
+            },
+            decision_reason: if left.decision_reason == right.decision_reason {
+                left.decision_reason
+            } else {
+                PageIndexDecisionReason::MixedObjectDecisions
+            },
+            model_version: left.model_version,
+            decision_duration_us: left
+                .decision_duration_us
+                .saturating_add(right.decision_duration_us),
+            range_sample_count: left.range_sample_count.max(right.range_sample_count),
+            decode_sample_count: left.decode_sample_count.max(right.decode_sample_count),
+            confidence_eligible: left.confidence_eligible && right.confidence_eligible,
+            predicted_skip_time_us: merge_optional_page_index_metric(
+                left.predicted_skip_time_us,
+                right.predicted_skip_time_us,
+            ),
+            predicted_predicate_time_us: merge_optional_page_index_metric(
+                left.predicted_predicate_time_us,
+                right.predicted_predicate_time_us,
+            ),
+            index_bytes: left.index_bytes.saturating_add(right.index_bytes),
+            index_requests: left.index_requests.saturating_add(right.index_requests),
+            pages_selected: left.pages_selected.saturating_add(right.pages_selected),
+            pages_skipped: left.pages_skipped.saturating_add(right.pages_skipped),
+            pages_touched: left.pages_touched.saturating_add(right.pages_touched),
+        }),
+    }
+}
+
+fn merge_optional_page_index_metric(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.saturating_add(right)),
+        _ => None,
     }
 }
 
@@ -1870,6 +2518,28 @@ fn range_len(range: &Range<u64>) -> Result<u64, QueryError> {
 }
 
 #[derive(Clone)]
+struct AdaptivePageIndexReadContext {
+    state: AdaptivePageIndexState,
+    network_elapsed_us: Arc<Mutex<u64>>,
+}
+
+impl AdaptivePageIndexReadContext {
+    fn new(state: AdaptivePageIndexState) -> Self {
+        Self {
+            state,
+            network_elapsed_us: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    fn network_elapsed_us(&self) -> Result<u64, QueryError> {
+        self.network_elapsed_us
+            .lock()
+            .map(|elapsed| *elapsed)
+            .map_err(|_| execution_runtime_error("adaptive page-index read timing was poisoned"))
+    }
+}
+
+#[derive(Clone)]
 struct HttpRangeAsyncFileReader {
     reader: HttpRangeReader,
     target: ScanTarget,
@@ -1877,6 +2547,7 @@ struct HttpRangeAsyncFileReader {
     metadata_cache: Option<ParquetMetadataCache>,
     range_cache: Option<ParquetRangeCache>,
     query_context: Option<ParquetRangeQueryContext>,
+    adaptive_page_index_context: Option<AdaptivePageIndexReadContext>,
     metrics: SharedScanTargetMetricsHandle,
     count_metadata_fetches: bool,
     metadata_probe_round_trips: u64,
@@ -1927,6 +2598,7 @@ impl HttpRangeAsyncFileReader {
             metadata_cache,
             range_cache,
             query_context: None,
+            adaptive_page_index_context: None,
             metrics,
             count_metadata_fetches: false,
             metadata_probe_round_trips: 0,
@@ -1938,6 +2610,15 @@ impl HttpRangeAsyncFileReader {
         self
     }
 
+    fn with_adaptive_page_index_state(
+        mut self,
+        adaptive_page_index_state: AdaptivePageIndexState,
+    ) -> Self {
+        self.adaptive_page_index_context =
+            Some(AdaptivePageIndexReadContext::new(adaptive_page_index_state));
+        self
+    }
+
     fn validation(&self) -> Option<HttpRangeValidation> {
         self.target
             .object_etag
@@ -1946,6 +2627,7 @@ impl HttpRangeAsyncFileReader {
             .map(HttpRangeValidation::if_range_etag)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn fetch_range_owned(
         reader: HttpRangeReader,
         target: ScanTarget,
@@ -1954,6 +2636,7 @@ impl HttpRangeAsyncFileReader {
         metrics: SharedScanTargetMetricsHandle,
         range_cache: Option<ParquetRangeCache>,
         query_context: Option<ParquetRangeQueryContext>,
+        adaptive_page_index_context: Option<AdaptivePageIndexReadContext>,
         phase: ParquetRangeReadPhase,
         range: Range<u64>,
         origin: PhysicalRangeReadOrigin,
@@ -1973,6 +2656,7 @@ impl HttpRangeAsyncFileReader {
             metrics.clone(),
             range_cache,
             query_context.clone(),
+            adaptive_page_index_context,
             phase,
             range.clone(),
             origin,
@@ -1998,6 +2682,7 @@ impl HttpRangeAsyncFileReader {
         Ok(read)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn fetch_coalesced_range_owned(
         reader: HttpRangeReader,
         target: ScanTarget,
@@ -2006,6 +2691,7 @@ impl HttpRangeAsyncFileReader {
         metrics: SharedScanTargetMetricsHandle,
         range_cache: Option<ParquetRangeCache>,
         query_context: Option<ParquetRangeQueryContext>,
+        adaptive_page_index_context: Option<AdaptivePageIndexReadContext>,
         phase: ParquetRangeReadPhase,
         range: Range<u64>,
     ) -> Result<PhysicalRangeRead, QueryError> {
@@ -2017,6 +2703,7 @@ impl HttpRangeAsyncFileReader {
             metrics,
             range_cache,
             query_context,
+            adaptive_page_index_context,
             phase,
             range,
             PhysicalRangeReadOrigin::Coalesced,
@@ -2033,6 +2720,7 @@ impl HttpRangeAsyncFileReader {
         metrics: SharedScanTargetMetricsHandle,
         range_cache: Option<ParquetRangeCache>,
         query_context: Option<ParquetRangeQueryContext>,
+        adaptive_page_index_context: Option<AdaptivePageIndexReadContext>,
         phase: ParquetRangeReadPhase,
         range: Range<u64>,
         origin: PhysicalRangeReadOrigin,
@@ -2075,6 +2763,14 @@ impl HttpRangeAsyncFileReader {
             .map(|request| request.expanded_range.clone())
             .unwrap_or_else(|| range.clone());
         let physical_length = range_len(&physical_range)?;
+        let range_observation = adaptive_page_index_context
+            .as_ref()
+            .map(|context| {
+                context
+                    .state
+                    .begin_range_observation(Arc::clone(&context.network_elapsed_us))
+            })
+            .transpose()?;
         let read = reader
             .read_range_with_validation(
                 &target.object_source.url,
@@ -2086,6 +2782,12 @@ impl HttpRangeAsyncFileReader {
                 request_timeout,
             )
             .await?;
+        if let Some(observation) = range_observation {
+            observation.complete(
+                u64::try_from(read.bytes.len())
+                    .map_err(|_| execution_runtime_error("scan byte totals overflowed u64"))?,
+            )?;
+        }
         if origin == PhysicalRangeReadOrigin::Coalesced
             || identity_drift_detected
             || readahead.is_some()
@@ -2145,6 +2847,7 @@ impl HttpRangeAsyncFileReader {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn fetch_byte_ranges_owned(
         reader: HttpRangeReader,
         target: ScanTarget,
@@ -2153,6 +2856,7 @@ impl HttpRangeAsyncFileReader {
         metrics: SharedScanTargetMetricsHandle,
         range_cache: Option<ParquetRangeCache>,
         query_context: Option<ParquetRangeQueryContext>,
+        adaptive_page_index_context: Option<AdaptivePageIndexReadContext>,
         phase: ParquetRangeReadPhase,
         ranges: Vec<Range<u64>>,
     ) -> Result<Vec<Bytes>, QueryError> {
@@ -2172,6 +2876,7 @@ impl HttpRangeAsyncFileReader {
                     metrics.clone(),
                     range_cache.clone(),
                     query_context.clone(),
+                    adaptive_page_index_context.clone(),
                     phase,
                     planned.physical_range.clone(),
                 )
@@ -2256,6 +2961,7 @@ impl HttpRangeAsyncFileReader {
                     metrics.clone(),
                     range_cache.clone(),
                     query_context.clone(),
+                    adaptive_page_index_context.clone(),
                     phase,
                     logical.range,
                     PhysicalRangeReadOrigin::Batch,
@@ -2403,6 +3109,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
             let metrics = self.metrics.clone();
             let range_cache = self.range_cache.clone();
             let query_context = self.query_context.clone();
+            let adaptive_page_index_context = self.adaptive_page_index_context.clone();
             let phase = if self.count_metadata_fetches {
                 ParquetRangeReadPhase::ScanFooter
             } else {
@@ -2417,6 +3124,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
                     metrics,
                     range_cache,
                     query_context,
+                    adaptive_page_index_context,
                     phase,
                     range,
                     PhysicalRangeReadOrigin::Single,
@@ -2451,6 +3159,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
                 self.metrics.clone(),
                 self.range_cache.clone(),
                 self.query_context.clone(),
+                self.adaptive_page_index_context.clone(),
                 phase,
                 range,
                 PhysicalRangeReadOrigin::Single,
@@ -2495,6 +3204,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
             let metrics = self.metrics.clone();
             let range_cache = self.range_cache.clone();
             let query_context = self.query_context.clone();
+            let adaptive_page_index_context = self.adaptive_page_index_context.clone();
             let (future, handle) = async move {
                 Self::fetch_byte_ranges_owned(
                     reader,
@@ -2504,6 +3214,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
                     metrics,
                     range_cache,
                     query_context,
+                    adaptive_page_index_context,
                     phase,
                     ranges,
                 )
@@ -2525,6 +3236,7 @@ impl AsyncFileReader for HttpRangeAsyncFileReader {
                 self.metrics.clone(),
                 self.range_cache.clone(),
                 self.query_context.clone(),
+                self.adaptive_page_index_context.clone(),
                 phase,
                 ranges,
             )
@@ -2839,6 +3551,39 @@ pub async fn stream_scan_target_batches_with_row_group_pruning_caches_query_and_
     page_index_policy: ParquetPageIndexPolicy,
 ) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
 {
+    stream_scan_target_batches_with_adaptive_page_index_policy(
+        reader,
+        target,
+        required_columns,
+        partition_column_types,
+        request_timeout,
+        row_group_predicate,
+        metadata_cache,
+        range_cache,
+        query_context,
+        page_index_policy,
+        None,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn stream_scan_target_batches_with_adaptive_page_index_policy(
+    reader: &HttpRangeReader,
+    target: &ScanTarget,
+    required_columns: &[String],
+    partition_column_types: &BTreeMap<String, PartitionColumnType>,
+    request_timeout: Option<Duration>,
+    row_group_predicate: Option<&ParquetRowGroupPruningPredicate>,
+    metadata_cache: Option<&ParquetMetadataCache>,
+    range_cache: Option<&ParquetRangeCache>,
+    query_context: Option<&ParquetRangeQueryContext>,
+    page_index_policy: ParquetPageIndexPolicy,
+    adaptive_page_index_state: Option<&AdaptivePageIndexState>,
+    memory_pressure: bool,
+) -> Result<ScanTargetBatchStream<BoxStream<'static, Result<RecordBatch, QueryError>>>, QueryError>
+{
     let metrics_handle = SharedScanTargetMetricsHandle::new(ScanTargetMetricsSnapshot {
         files_touched: 1,
         files_skipped: 0,
@@ -2852,6 +3597,7 @@ pub async fn stream_scan_target_batches_with_row_group_pruning_caches_query_and_
         footer_reads: 1,
         metadata_probe_round_trips: 0,
         range_read_metrics: ParquetRangeReadMetrics::default(),
+        page_index_decision: None,
     });
     let metrics: Arc<dyn ScanTargetMetricsHandle + Send + Sync> = Arc::new(metrics_handle.clone());
     let mut async_reader = HttpRangeAsyncFileReader::new(
@@ -2865,40 +3611,22 @@ pub async fn stream_scan_target_batches_with_row_group_pruning_caches_query_and_
     if let Some(query_context) = query_context {
         async_reader = async_reader.with_query_context(query_context.clone());
     }
-    let reader_options = match page_index_policy {
-        ParquetPageIndexPolicy::Skip => ArrowReaderOptions::new(),
-        ParquetPageIndexPolicy::Predicate => ArrowReaderOptions::new()
-            .with_column_index_policy(PageIndexPolicy::Optional)
-            .with_offset_index_policy(PageIndexPolicy::Optional),
-    };
+    if let Some(adaptive_page_index_state) = adaptive_page_index_state {
+        async_reader =
+            async_reader.with_adaptive_page_index_state(adaptive_page_index_state.clone());
+    }
+    let decode_context = async_reader.adaptive_page_index_context.clone();
     let fallback_reader = async_reader.clone();
-    let builder =
-        match ParquetRecordBatchStreamBuilder::new_with_options(async_reader, reader_options).await {
-            Ok(builder) => builder,
-            Err(error)
-                if page_index_policy == ParquetPageIndexPolicy::Predicate
-                    && page_index_error_can_fail_open(&error) =>
-            {
-                ParquetRecordBatchStreamBuilder::new(fallback_reader)
-                    .await
-                    .map_err(|fallback_error| {
-                        query_error_from_parquet_error(fallback_error, |message| {
-                            format!(
-                                "browser runtime could not open parquet file '{}' for batch decoding: {message}",
-                                target.path
-                            )
-                        })
-                    })?
-            }
-            Err(error) => {
-                return Err(query_error_from_parquet_error(error, |message| {
-                    format!(
-                        "browser runtime could not open parquet file '{}' for batch decoding: {message}",
-                        target.path
-                    )
-                }));
-            }
-        };
+    let mut builder = ParquetRecordBatchStreamBuilder::new(async_reader)
+        .await
+        .map_err(|error| {
+            query_error_from_parquet_error(error, |message| {
+                format!(
+                    "browser runtime could not open parquet file '{}' for batch decoding: {message}",
+                    target.path
+                )
+            })
+        })?;
     let row_group_plan = plan_parquet_row_groups(builder.metadata(), row_group_predicate)?;
     {
         let mut snapshot = metrics_handle.snapshot.lock().map_err(|_| {
@@ -2908,19 +3636,170 @@ pub async fn stream_scan_target_batches_with_row_group_pruning_caches_query_and_
         snapshot.row_groups_skipped = row_group_plan.row_groups_skipped;
     }
     if row_group_plan.row_groups.is_empty() {
+        let decision_state = adaptive_page_index_state
+            .cloned()
+            .unwrap_or_else(AdaptivePageIndexState::default);
+        let decision_started_at = AdaptiveInstant::now();
+        let mut input = page_index_decision_input_for_metadata(
+            page_index_mode(page_index_policy),
+            builder.metadata(),
+            &row_group_plan.row_groups,
+            required_columns,
+            row_group_predicate,
+            target,
+            memory_pressure,
+            None,
+        )?;
+        input.full_data_bytes = 0;
+        input.predicate_data_bytes = 0;
+        let mut decision = decision_state.decide(input)?;
+        decision.decision_duration_us = decision_started_at.elapsed_us();
+        if decision.requested_mode != PageIndexMode::Skip {
+            decision.decision_reason = PageIndexDecisionReason::ScanTooSmall;
+        }
+        metrics_handle
+            .snapshot
+            .lock()
+            .map_err(|_| {
+                execution_runtime_error(
+                    "scan target metrics handle was poisoned during page-index planning",
+                )
+            })?
+            .page_index_decision = Some(decision);
         return Ok(ScanTargetBatchStream {
             batches: stream::empty().boxed(),
             metrics,
         });
     }
+    let decision_state = adaptive_page_index_state
+        .cloned()
+        .unwrap_or_else(AdaptivePageIndexState::default);
+    let requested_mode = page_index_mode(page_index_policy);
+    let initial_decision_started_at = AdaptiveInstant::now();
+    let initial_input = page_index_decision_input_for_metadata(
+        requested_mode,
+        builder.metadata(),
+        &row_group_plan.row_groups,
+        required_columns,
+        row_group_predicate,
+        target,
+        memory_pressure,
+        None,
+    )?;
+    let mut decision = decision_state.decide(initial_input)?;
+    decision.decision_duration_us = initial_decision_started_at.elapsed_us();
+    let mut page_selection = None;
+    if decision.chosen_plan == PageIndexPlan::Predicate {
+        let reader_options = ArrowReaderOptions::new()
+            .with_column_index_policy(PageIndexPolicy::Optional)
+            .with_offset_index_policy(PageIndexPolicy::Optional);
+        let mut page_index_reader = fallback_reader;
+        page_index_reader.count_metadata_fetches = true;
+        let mut metadata_reader =
+            ParquetMetaDataReader::new_with_metadata(builder.metadata().as_ref().clone())
+                .with_column_index_policy(PageIndexPolicy::Optional)
+                .with_offset_index_policy(PageIndexPolicy::Optional);
+        let loaded = metadata_reader
+            .load_page_index(&mut page_index_reader)
+            .await;
+        let metadata = match loaded {
+            Ok(()) => metadata_reader.finish(),
+            Err(error) if page_index_error_can_fail_open(&error) => {
+                decision.chosen_plan = PageIndexPlan::Skip;
+                decision.decision_reason = PageIndexDecisionReason::IndexLoadFailedOpen;
+                decision.index_bytes = initial_input.index_bytes;
+                decision.index_requests = initial_input.index_requests;
+                metrics_handle
+                    .snapshot
+                    .lock()
+                    .map_err(|_| {
+                        execution_runtime_error(
+                            "scan target metrics handle was poisoned during page-index fail-open",
+                        )
+                    })?
+                    .page_index_decision = Some(decision);
+                metadata_reader.finish()
+            }
+            Err(error) => Err(error),
+        };
+        if decision.chosen_plan == PageIndexPlan::Predicate {
+            let metadata = metadata.map_err(|error| {
+                query_error_from_parquet_error(error, |message| {
+                    format!(
+                        "browser runtime could not load parquet page indexes for '{}': {message}",
+                        target.path
+                    )
+                })
+            })?;
+            let arrow_metadata = ArrowReaderMetadata::try_new(
+                Arc::new(metadata),
+                reader_options,
+            )
+            .map_err(|error| {
+                query_error_from_parquet_error(error, |message| {
+                    format!(
+                        "browser runtime could not construct indexed parquet metadata for '{}': {message}",
+                        target.path
+                    )
+                })
+            })?;
+            let indexed_builder = ParquetRecordBatchStreamBuilder::new_with_metadata(
+                page_index_reader,
+                arrow_metadata,
+            );
+            let realized_decision_started_at = AdaptiveInstant::now();
+            let initial_decision_duration_us = decision.decision_duration_us;
+            let actual_selection = match row_group_predicate {
+                Some(predicate) => plan_parquet_pages(
+                    indexed_builder.metadata(),
+                    &row_group_plan.row_groups,
+                    predicate,
+                )?,
+                None => None,
+            };
+            if let Some(actual_selection) = actual_selection {
+                if requested_mode == PageIndexMode::Adaptive {
+                    let realized_input = page_index_decision_input_for_metadata(
+                        requested_mode,
+                        indexed_builder.metadata(),
+                        &row_group_plan.row_groups,
+                        required_columns,
+                        row_group_predicate,
+                        target,
+                        memory_pressure,
+                        Some(&actual_selection),
+                    )?;
+                    decision = decision_state.decide_realized(realized_input)?;
+                } else {
+                    decision.pages_selected = actual_selection.pages_selected;
+                    decision.pages_skipped = actual_selection.pages_skipped;
+                    decision.pages_touched = actual_selection.pages_touched;
+                }
+                if decision.chosen_plan == PageIndexPlan::Predicate {
+                    builder = indexed_builder;
+                    page_selection = Some(actual_selection);
+                }
+            } else {
+                decision.chosen_plan = PageIndexPlan::Skip;
+                decision.decision_reason = PageIndexDecisionReason::MissingOrInvalidIndexes;
+                decision.index_bytes = initial_input.index_bytes;
+                decision.index_requests = initial_input.index_requests;
+            }
+            decision.decision_duration_us = initial_decision_duration_us
+                .saturating_add(realized_decision_started_at.elapsed_us());
+        }
+    }
+    metrics_handle
+        .snapshot
+        .lock()
+        .map_err(|_| {
+            execution_runtime_error(
+                "scan target metrics handle was poisoned during page-index decision",
+            )
+        })?
+        .page_index_decision = Some(decision);
     let projection =
         projection_mask_for_required_columns(builder.parquet_schema(), target, required_columns);
-    let page_selection = match (page_index_policy, row_group_predicate) {
-        (ParquetPageIndexPolicy::Predicate, Some(predicate)) => {
-            plan_parquet_pages(builder.metadata(), &row_group_plan.row_groups, predicate)?
-        }
-        _ => None,
-    };
     if let Some(page_selection) = &page_selection {
         let mut snapshot = metrics_handle.snapshot.lock().map_err(|_| {
             execution_runtime_error("scan target metrics handle was poisoned during page planning")
@@ -2939,16 +3818,49 @@ pub async fn stream_scan_target_batches_with_row_group_pruning_caches_query_and_
     if let Some(page_selection) = page_selection {
         builder = builder.with_row_selection(page_selection.selection);
     }
-    let batches = builder
-        .build()
-        .map_err(|error| {
-            query_error_from_parquet_error(error, |message| {
-                format!(
-                    "browser runtime could not build a parquet batch reader for file '{}': {message}",
-                    target.path
-                )
-            })
-        })?
+    let raw_batches = builder.build().map_err(|error| {
+        query_error_from_parquet_error(error, |message| {
+            format!(
+                "browser runtime could not build a parquet batch reader for file '{}': {message}",
+                target.path
+            )
+        })
+    })?;
+    let measured_batches = stream::unfold(raw_batches, move |mut raw_batches| {
+        let decode_context = decode_context.clone();
+        async move {
+            let started_at = AdaptiveInstant::now();
+            let network_before = decode_context
+                .as_ref()
+                .and_then(|context| context.network_elapsed_us().ok())
+                .unwrap_or_default();
+            let item = raw_batches.next().await?;
+            let elapsed_us = started_at.elapsed_us();
+            let network_after = decode_context
+                .as_ref()
+                .and_then(|context| context.network_elapsed_us().ok())
+                .unwrap_or(network_before);
+            let item = match (item, decode_context.as_ref()) {
+                (Ok(batch), Some(context)) => {
+                    let decoded_bytes =
+                        u64::try_from(batch.get_array_memory_size()).unwrap_or(u64::MAX);
+                    let decode_duration_us = elapsed_us
+                        .saturating_sub(network_after.saturating_sub(network_before))
+                        .max(1);
+                    match context.state.record_decode_sample(AdaptiveDecodeSample {
+                        decoded_bytes: decoded_bytes.max(1),
+                        duration_us: decode_duration_us,
+                    }) {
+                        Ok(()) => Ok(batch),
+                        Err(error) => Err(parquet_error_from_query_error(error)),
+                    }
+                }
+                (item, _) => item,
+            };
+            Some((item, raw_batches))
+        }
+    });
+    let batches = measured_batches
         .map(move |result| {
             let batch = result.map_err(|error| {
                 query_error_from_parquet_error(error, |message| {
@@ -3183,11 +4095,288 @@ pub fn plan_parquet_row_groups(
     })
 }
 
+fn page_index_mode(policy: ParquetPageIndexPolicy) -> PageIndexMode {
+    match policy {
+        ParquetPageIndexPolicy::Skip => PageIndexMode::Skip,
+        ParquetPageIndexPolicy::Predicate => PageIndexMode::Predicate,
+        ParquetPageIndexPolicy::Adaptive => PageIndexMode::Adaptive,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn page_index_decision_input_for_metadata(
+    requested_mode: PageIndexMode,
+    metadata: &ParquetMetaData,
+    row_groups: &[usize],
+    required_columns: &[String],
+    predicate: Option<&ParquetRowGroupPruningPredicate>,
+    target: &ScanTarget,
+    memory_pressure: bool,
+    realized_selection: Option<&ParquetPageSelectionPlan>,
+) -> Result<AdaptivePageIndexDecisionInput, QueryError> {
+    let (full_data_bytes, full_data_requests) =
+        projected_data_shape(metadata, row_groups, required_columns, target)?;
+    let (indexes_valid, index_bytes, index_requests) =
+        page_index_extent_shape(metadata, row_groups, predicate, target)?;
+    let (
+        predicate_data_bytes,
+        predicate_data_requests,
+        pages_selected,
+        pages_skipped,
+        pages_touched,
+    ) = match realized_selection {
+        Some(selection) => {
+            let (data_bytes, data_requests) = projected_page_data_shape(
+                metadata,
+                row_groups,
+                required_columns,
+                target,
+                selection,
+            )?;
+            (
+                data_bytes,
+                data_requests,
+                selection.pages_selected,
+                selection.pages_skipped,
+                selection.pages_touched,
+            )
+        }
+        None => {
+            let selectivity_ppm =
+                estimated_predicate_selectivity_ppm(metadata, row_groups, predicate);
+            (
+                proportional_shape(full_data_bytes, selectivity_ppm, 1_000_000),
+                proportional_shape(full_data_requests, selectivity_ppm, 1_000_000),
+                0,
+                0,
+                0,
+            )
+        }
+    };
+    Ok(AdaptivePageIndexDecisionInput {
+        requested_mode,
+        predicate_supported: predicate.is_some_and(|predicate| predicate.page_index_supported),
+        indexes_valid,
+        identity_safe: target
+            .object_etag
+            .as_deref()
+            .and_then(strong_object_etag)
+            .is_some()
+            && target.size_bytes > 0,
+        memory_pressure,
+        full_data_bytes,
+        predicate_data_bytes,
+        full_data_requests,
+        predicate_data_requests,
+        index_bytes,
+        index_requests,
+        pages_selected,
+        pages_skipped,
+        pages_touched,
+    })
+}
+
+fn projected_data_shape(
+    metadata: &ParquetMetaData,
+    row_groups: &[usize],
+    required_columns: &[String],
+    target: &ScanTarget,
+) -> Result<(u64, u64), QueryError> {
+    let required = required_columns
+        .iter()
+        .map(|column| normalize_name(column))
+        .collect::<BTreeSet<_>>();
+    let column_indices = metadata
+        .file_metadata()
+        .schema_descr()
+        .columns()
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| required.contains(&normalize_name(&column.path().string())))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let mut ranges = Vec::new();
+    for &row_group_index in row_groups {
+        let row_group = metadata.row_group(row_group_index);
+        for &column_index in &column_indices {
+            let (offset, length) = row_group.column(column_index).byte_range();
+            let end = offset.checked_add(length).ok_or_else(|| {
+                execution_runtime_error("parquet column chunk byte range overflowed u64")
+            })?;
+            if offset < end && end <= target.size_bytes {
+                ranges.push(offset..end);
+            }
+        }
+    }
+    let plan = plan_range_reads(
+        ranges,
+        target
+            .object_etag
+            .as_deref()
+            .and_then(strong_object_etag)
+            .is_some(),
+        target.size_bytes,
+    )?;
+    let bytes = plan.iter().try_fold(0_u64, |total, read| {
+        total
+            .checked_add(range_len(&read.physical_range)?)
+            .ok_or_else(|| execution_runtime_error("parquet projected bytes overflowed u64"))
+    })?;
+    Ok((bytes, u64::try_from(plan.len()).unwrap_or(u64::MAX)))
+}
+
+fn page_index_extent_shape(
+    metadata: &ParquetMetaData,
+    row_groups: &[usize],
+    predicate: Option<&ParquetRowGroupPruningPredicate>,
+    target: &ScanTarget,
+) -> Result<(bool, u64, u64), QueryError> {
+    let Some(predicate) = predicate else {
+        return Ok((false, 0, 0));
+    };
+    let Some(predicate_column) = parquet_column_index_for_name(metadata, &predicate.column) else {
+        return Ok((false, 0, 0));
+    };
+    let mut ranges = Vec::new();
+    let mut predicate_indexes_valid = true;
+    for &row_group_index in row_groups {
+        let row_group = metadata.row_group(row_group_index);
+        for (column_index, column) in row_group.columns().iter().enumerate() {
+            let column_extent = parquet_index_extent(
+                column.column_index_offset(),
+                column.column_index_length(),
+                target.size_bytes,
+            );
+            let offset_extent = parquet_index_extent(
+                column.offset_index_offset(),
+                column.offset_index_length(),
+                target.size_bytes,
+            );
+            if column_index == predicate_column
+                && (column_extent.is_none() || offset_extent.is_none())
+            {
+                predicate_indexes_valid = false;
+            }
+            ranges.extend(column_extent);
+            ranges.extend(offset_extent);
+        }
+    }
+    if !predicate_indexes_valid || ranges.is_empty() {
+        return Ok((false, 0, 0));
+    }
+    let plan = plan_range_reads(
+        ranges,
+        target
+            .object_etag
+            .as_deref()
+            .and_then(strong_object_etag)
+            .is_some(),
+        target.size_bytes,
+    )?;
+    let bytes = plan.iter().try_fold(0_u64, |total, read| {
+        total
+            .checked_add(range_len(&read.physical_range)?)
+            .ok_or_else(|| execution_runtime_error("parquet page-index bytes overflowed u64"))
+    })?;
+    Ok((true, bytes, u64::try_from(plan.len()).unwrap_or(u64::MAX)))
+}
+
+fn parquet_index_extent(
+    offset: Option<i64>,
+    length: Option<i32>,
+    object_size: u64,
+) -> Option<Range<u64>> {
+    let start = u64::try_from(offset?).ok()?;
+    let length = u64::try_from(length?).ok()?;
+    let end = start.checked_add(length)?;
+    (length > 0 && end <= object_size).then_some(start..end)
+}
+
+fn estimated_predicate_selectivity_ppm(
+    metadata: &ParquetMetaData,
+    row_groups: &[usize],
+    predicate: Option<&ParquetRowGroupPruningPredicate>,
+) -> u64 {
+    let Some(predicate) = predicate else {
+        return 1_000_000;
+    };
+    let Some(column_index) = parquet_column_index_for_name(metadata, &predicate.column) else {
+        return 1_000_000;
+    };
+    let mut weighted_ppm = 0_u128;
+    let mut total_rows = 0_u128;
+    for &row_group_index in row_groups {
+        let row_group = metadata.row_group(row_group_index);
+        let rows = u128::try_from(row_group.num_rows()).unwrap_or(u128::MAX);
+        let ppm = row_group
+            .column(column_index)
+            .statistics()
+            .and_then(parquet_integer_min_max)
+            .and_then(|(min, max)| Some(selectivity_ppm(min?, max?, &predicate.comparison)))
+            .unwrap_or(1_000_000);
+        weighted_ppm = weighted_ppm.saturating_add(rows.saturating_mul(u128::from(ppm)));
+        total_rows = total_rows.saturating_add(rows);
+    }
+    u64::try_from(
+        weighted_ppm
+            .checked_div(total_rows)
+            .unwrap_or(u128::from(1_000_000_u64)),
+    )
+    .unwrap_or(1_000_000)
+    .min(1_000_000)
+}
+
+fn selectivity_ppm(min: i64, max: i64, comparison: &ParquetIntegerComparison) -> u64 {
+    if min > max {
+        return 1_000_000;
+    }
+    let width = i128::from(max)
+        .saturating_sub(i128::from(min))
+        .saturating_add(1);
+    let selected = match comparison {
+        ParquetIntegerComparison::Eq(value) => {
+            if *value >= min && *value <= max {
+                1
+            } else {
+                0
+            }
+        }
+        ParquetIntegerComparison::Gt(value) => i128::from(max)
+            .saturating_sub(i128::from(*value))
+            .clamp(0, width),
+        ParquetIntegerComparison::Gte(value) => i128::from(max)
+            .saturating_sub(i128::from(*value))
+            .saturating_add(1)
+            .clamp(0, width),
+        ParquetIntegerComparison::Lt(value) => i128::from(*value)
+            .saturating_sub(i128::from(min))
+            .clamp(0, width),
+        ParquetIntegerComparison::Lte(value) => i128::from(*value)
+            .saturating_sub(i128::from(min))
+            .saturating_add(1)
+            .clamp(0, width),
+    };
+    u64::try_from(selected.saturating_mul(1_000_000) / width)
+        .unwrap_or(1_000_000)
+        .min(1_000_000)
+}
+
+fn proportional_shape(total: u64, numerator: u64, denominator: u64) -> u64 {
+    if total == 0 || numerator == 0 || denominator == 0 {
+        return 0;
+    }
+    total
+        .saturating_mul(numerator)
+        .saturating_add(denominator.saturating_sub(1))
+        / denominator
+}
+
 struct ParquetPageSelectionPlan {
     selection: RowSelection,
     pages_selected: u64,
     pages_skipped: u64,
     pages_touched: u64,
+    selected_rows_by_row_group: BTreeMap<usize, Vec<Range<usize>>>,
 }
 
 fn plan_parquet_pages(
@@ -3208,6 +4397,7 @@ fn plan_parquet_pages(
     let mut selectors = Vec::new();
     let mut pages_selected = 0_u64;
     let mut pages_skipped = 0_u64;
+    let mut selected_rows_by_row_group = BTreeMap::new();
     for &row_group_index in row_groups {
         let Some(row_group_column_indexes) = column_indexes.get(row_group_index) else {
             return Ok(None);
@@ -3237,13 +4427,19 @@ fn plan_parquet_pages(
             return Ok(None);
         };
 
+        let mut row_offset = 0_usize;
+        let mut selected_rows = Vec::new();
         for (page_index, row_count) in page_row_counts.into_iter().enumerate() {
+            let row_end = row_offset.checked_add(row_count).ok_or_else(|| {
+                execution_runtime_error("parquet selected-page row ranges overflowed usize")
+            })?;
             let matches =
                 page_integer_index_matches(column_index, page_index, &predicate.comparison);
             selectors.push(if matches {
                 pages_selected = pages_selected.checked_add(1).ok_or_else(|| {
                     execution_runtime_error("parquet selected-page counts overflowed u64")
                 })?;
+                selected_rows.push(row_offset..row_end);
                 RowSelector::select(row_count)
             } else {
                 pages_skipped = pages_skipped.checked_add(1).ok_or_else(|| {
@@ -3251,7 +4447,9 @@ fn plan_parquet_pages(
                 })?;
                 RowSelector::skip(row_count)
             });
+            row_offset = row_end;
         }
+        selected_rows_by_row_group.insert(row_group_index, selected_rows);
     }
 
     let pages_touched = pages_selected;
@@ -3260,7 +4458,154 @@ fn plan_parquet_pages(
         pages_selected,
         pages_skipped,
         pages_touched,
+        selected_rows_by_row_group,
     }))
+}
+
+fn projected_page_data_shape(
+    metadata: &ParquetMetaData,
+    row_groups: &[usize],
+    required_columns: &[String],
+    target: &ScanTarget,
+    selection: &ParquetPageSelectionPlan,
+) -> Result<(u64, u64), QueryError> {
+    let required = required_columns
+        .iter()
+        .map(|column| normalize_name(column))
+        .collect::<BTreeSet<_>>();
+    let column_indices = metadata
+        .file_metadata()
+        .schema_descr()
+        .columns()
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| required.contains(&normalize_name(&column.path().string())))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let offset_indexes = metadata.offset_index();
+    let mut ranges = Vec::new();
+
+    for &row_group_index in row_groups {
+        let row_group = metadata.row_group(row_group_index);
+        let selected_rows = selection
+            .selected_rows_by_row_group
+            .get(&row_group_index)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if selected_rows.is_empty() {
+            continue;
+        }
+        let row_group_rows = usize::try_from(row_group.num_rows())
+            .map_err(|_| execution_runtime_error("parquet row-group rows overflowed usize"))?;
+
+        for &column_index in &column_indices {
+            let column = row_group.column(column_index);
+            let full_range = parquet_column_chunk_range(column, target.size_bytes)?;
+            let Some(page_locations) = offset_indexes
+                .and_then(|indexes| indexes.get(row_group_index))
+                .and_then(|indexes| indexes.get(column_index))
+                .map(|index| index.page_locations())
+            else {
+                ranges.push(full_range);
+                continue;
+            };
+            let page_starts = page_locations
+                .iter()
+                .map(|location| location.first_row_index)
+                .collect::<Vec<_>>();
+            let Some(page_row_counts) = validated_page_row_counts(&page_starts, row_group_rows)
+            else {
+                ranges.push(full_range);
+                continue;
+            };
+            let first_data_page_start = page_locations
+                .first()
+                .and_then(|location| u64::try_from(location.offset).ok())
+                .filter(|offset| *offset >= full_range.start && *offset < full_range.end);
+            let Some(first_data_page_start) = first_data_page_start else {
+                ranges.push(full_range);
+                continue;
+            };
+
+            let mut selected_column_ranges = Vec::new();
+            for (page_index, (location, row_count)) in
+                page_locations.iter().zip(page_row_counts).enumerate()
+            {
+                let page_start = usize::try_from(location.first_row_index).map_err(|_| {
+                    execution_runtime_error("parquet page first-row index overflowed usize")
+                })?;
+                let page_end = page_start.checked_add(row_count).ok_or_else(|| {
+                    execution_runtime_error("parquet projected page row range overflowed usize")
+                })?;
+                if !selected_rows
+                    .iter()
+                    .any(|selected| selected.start < page_end && page_start < selected.end)
+                {
+                    continue;
+                }
+                let page_start = u64::try_from(location.offset).map_err(|_| {
+                    execution_runtime_error(format!(
+                        "parquet projected page {page_index} has a negative byte offset"
+                    ))
+                })?;
+                let page_length = u64::try_from(location.compressed_page_size).map_err(|_| {
+                    execution_runtime_error(format!(
+                        "parquet projected page {page_index} has a negative compressed size"
+                    ))
+                })?;
+                let page_end = page_start.checked_add(page_length).ok_or_else(|| {
+                    execution_runtime_error("parquet projected page byte range overflowed u64")
+                })?;
+                if page_length == 0 || page_start < full_range.start || page_end > full_range.end {
+                    selected_column_ranges.clear();
+                    selected_column_ranges.push(full_range.clone());
+                    break;
+                }
+                selected_column_ranges.push(page_start..page_end);
+            }
+
+            if selected_column_ranges.is_empty() {
+                ranges.push(full_range);
+                continue;
+            }
+            if first_data_page_start > full_range.start {
+                ranges.push(full_range.start..first_data_page_start);
+            }
+            ranges.extend(selected_column_ranges);
+        }
+    }
+
+    let plan = plan_range_reads(
+        ranges,
+        target
+            .object_etag
+            .as_deref()
+            .and_then(strong_object_etag)
+            .is_some(),
+        target.size_bytes,
+    )?;
+    let bytes = plan.iter().try_fold(0_u64, |total, read| {
+        total
+            .checked_add(range_len(&read.physical_range)?)
+            .ok_or_else(|| execution_runtime_error("parquet projected page bytes overflowed u64"))
+    })?;
+    Ok((bytes, u64::try_from(plan.len()).unwrap_or(u64::MAX)))
+}
+
+fn parquet_column_chunk_range(
+    column: &ColumnChunkMetaData,
+    object_size: u64,
+) -> Result<Range<u64>, QueryError> {
+    let (start, length) = column.byte_range();
+    let end = start
+        .checked_add(length)
+        .ok_or_else(|| execution_runtime_error("parquet column chunk byte range overflowed u64"))?;
+    if start >= end || end > object_size {
+        return Err(execution_runtime_error(
+            "parquet column chunk byte range exceeded object bounds",
+        ));
+    }
+    Ok(start..end)
 }
 
 fn validated_page_row_counts(page_starts: &[i64], row_group_rows: usize) -> Option<Vec<usize>> {
@@ -4662,14 +6007,16 @@ fn execution_runtime_error(message: impl Into<String>) -> QueryError {
 mod tests {
     use super::{
         merge_parquet_range_read_metrics, page_index_policies, validated_page_row_counts,
-        HttpRangeAsyncFileReader, ObjectSource, ParquetObjectIdentity, ParquetRangeCache,
-        ParquetRangeQueryContext, ParquetRangeReadKey, ParquetRangeReadMetrics,
+        AdaptiveDecodeSample, AdaptivePageIndexDecisionInput, AdaptivePageIndexState,
+        AdaptiveRangeSample, HttpRangeAsyncFileReader, ObjectSource, ParquetObjectIdentity,
+        ParquetRangeCache, ParquetRangeQueryContext, ParquetRangeReadKey, ParquetRangeReadMetrics,
         ParquetRangeReadPhase, ParquetReadaheadPolicy, ScanTarget, SharedScanTargetMetricsHandle,
     };
     use crate::{ScanTargetMetricsHandle, ScanTargetMetricsSnapshot};
     use parquet::arrow::arrow_reader::ArrowReaderOptions;
     use parquet::arrow::async_reader::AsyncFileReader;
     use parquet::file::metadata::PageIndexPolicy;
+    use query_contract::{PageIndexDecisionReason, PageIndexMode, PageIndexPlan};
     use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -4678,6 +6025,174 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread::{self, JoinHandle};
     use wasm_http_object_store::HttpRangeReader;
+
+    fn eligible_adaptive_input() -> AdaptivePageIndexDecisionInput {
+        AdaptivePageIndexDecisionInput {
+            requested_mode: PageIndexMode::Adaptive,
+            predicate_supported: true,
+            indexes_valid: true,
+            identity_safe: true,
+            memory_pressure: false,
+            full_data_bytes: 8 * 1024 * 1024,
+            predicate_data_bytes: 512 * 1024,
+            full_data_requests: 16,
+            predicate_data_requests: 2,
+            index_bytes: 32 * 1024,
+            index_requests: 1,
+            pages_selected: 4,
+            pages_skipped: 60,
+            pages_touched: 4,
+        }
+    }
+
+    fn warm_adaptive_state() -> AdaptivePageIndexState {
+        let state = AdaptivePageIndexState::new(4, Some(5_000));
+        for _ in 0..5 {
+            state
+                .record_range_sample(AdaptiveRangeSample {
+                    bytes: 1024 * 1024,
+                    effective_rtt_us: 20_000,
+                    queue_delay_us: 1_000,
+                    transfer_duration_us: 80_000,
+                    uncached: true,
+                })
+                .expect("range samples should be accepted");
+        }
+        for _ in 0..3 {
+            state
+                .record_decode_sample(AdaptiveDecodeSample {
+                    decoded_bytes: 4 * 1024 * 1024,
+                    duration_us: 20_000,
+                })
+                .expect("decode samples should be accepted");
+        }
+        state
+    }
+
+    #[test]
+    fn adaptive_page_index_state_uses_frozen_ewma_and_cold_start_gate() {
+        let state = AdaptivePageIndexState::new(4, Some(5_000));
+        state
+            .record_range_sample(AdaptiveRangeSample {
+                bytes: 1_000_000,
+                effective_rtt_us: 1,
+                queue_delay_us: 0,
+                transfer_duration_us: 1,
+                uncached: false,
+            })
+            .expect("cache-hit observations should be ignored");
+        state
+            .record_range_sample(AdaptiveRangeSample {
+                bytes: 1_000_000,
+                effective_rtt_us: 10_000,
+                queue_delay_us: 2_000,
+                transfer_duration_us: 100_000,
+                uncached: true,
+            })
+            .expect("first range sample should be accepted");
+        state
+            .record_range_sample(AdaptiveRangeSample {
+                bytes: 1_000_000,
+                effective_rtt_us: 30_000,
+                queue_delay_us: 6_000,
+                transfer_duration_us: 50_000,
+                uncached: true,
+            })
+            .expect("second range sample should be accepted");
+
+        let snapshot = state.snapshot().expect("adaptive state should snapshot");
+        assert_eq!(snapshot.range_sample_count, 2);
+        assert_eq!(snapshot.effective_rtt_us, Some(15_000));
+        assert_eq!(snapshot.queue_delay_us, Some(3_000));
+        assert_eq!(snapshot.throughput_bytes_per_second, Some(12_500_000));
+
+        let decision = state
+            .decide(eligible_adaptive_input())
+            .expect("cold-start decision should succeed");
+        assert_eq!(decision.chosen_plan, PageIndexPlan::Skip);
+        assert_eq!(
+            decision.decision_reason,
+            PageIndexDecisionReason::InsufficientRangeSamples
+        );
+        assert_eq!(decision.index_bytes, 0);
+        assert_eq!(decision.index_requests, 0);
+    }
+
+    #[test]
+    fn adaptive_page_index_state_requires_three_decode_samples_after_range_warmup() {
+        let state = AdaptivePageIndexState::new(4, Some(5_000));
+        for _ in 0..5 {
+            state
+                .record_range_sample(AdaptiveRangeSample {
+                    bytes: 1_000_000,
+                    effective_rtt_us: 20_000,
+                    queue_delay_us: 0,
+                    transfer_duration_us: 80_000,
+                    uncached: true,
+                })
+                .expect("range sample should be accepted");
+        }
+
+        let decision = state
+            .decide(eligible_adaptive_input())
+            .expect("decode cold-start decision should succeed");
+        assert_eq!(decision.chosen_plan, PageIndexPlan::Skip);
+        assert_eq!(
+            decision.decision_reason,
+            PageIndexDecisionReason::InsufficientDecodeSamples
+        );
+    }
+
+    #[test]
+    fn adaptive_page_index_state_chooses_selective_plan_and_rejects_small_scans() {
+        let state = warm_adaptive_state();
+        let predicate = state
+            .decide(eligible_adaptive_input())
+            .expect("eligible adaptive decision should succeed");
+        assert_eq!(predicate.chosen_plan, PageIndexPlan::Predicate);
+        assert_eq!(
+            predicate.decision_reason,
+            PageIndexDecisionReason::PredictedPredicateFaster
+        );
+        assert!(predicate.predicted_predicate_time_us < predicate.predicted_skip_time_us);
+
+        let mut too_small = eligible_adaptive_input();
+        too_small.full_data_bytes = too_small
+            .predicate_data_bytes
+            .saturating_add(too_small.index_bytes);
+        let skip = state
+            .decide(too_small)
+            .expect("small-scan adaptive decision should succeed");
+        assert_eq!(skip.chosen_plan, PageIndexPlan::Skip);
+        assert_eq!(skip.decision_reason, PageIndexDecisionReason::ScanTooSmall);
+        assert_eq!(skip.index_bytes, 0);
+    }
+
+    #[test]
+    fn adaptive_realized_plan_charges_spent_indexes_when_fragmentation_loses() {
+        let state = warm_adaptive_state();
+        let initial = state
+            .decide(eligible_adaptive_input())
+            .expect("initial adaptive decision should succeed");
+        assert_eq!(initial.chosen_plan, PageIndexPlan::Predicate);
+
+        let mut fragmented = eligible_adaptive_input();
+        fragmented.predicate_data_bytes = fragmented.full_data_bytes;
+        fragmented.predicate_data_requests = fragmented.full_data_requests.saturating_mul(4);
+        fragmented.pages_selected = 64;
+        fragmented.pages_skipped = 0;
+        fragmented.pages_touched = 64;
+        let realized = state
+            .decide_realized(fragmented)
+            .expect("realized adaptive decision should succeed");
+        assert_eq!(realized.chosen_plan, PageIndexPlan::Skip);
+        assert_eq!(
+            realized.decision_reason,
+            PageIndexDecisionReason::RealizedPlanLost
+        );
+        assert_eq!(realized.index_bytes, 32 * 1024);
+        assert_eq!(realized.index_requests, 1);
+    }
 
     #[test]
     fn page_row_counts_reject_inconsistent_offset_indexes() {

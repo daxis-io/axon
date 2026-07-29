@@ -6,7 +6,8 @@ use futures_util::lock::Mutex as AsyncMutex;
 use js_sys::{BigInt, Object, Reflect, Uint8Array};
 use query_contract::{
     BrowserHttpParquetDatasetDescriptor, BrowserHttpSnapshotDescriptor, ExecutionTarget,
-    QueryError, QueryErrorCode, QueryRequest, QueryResponse, SnapshotResolutionRequest,
+    PageIndexMode, QueryError, QueryErrorCode, QueryRequest, QueryResponse,
+    SnapshotResolutionRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -395,9 +396,37 @@ impl SandboxQuerySession {
         }
     }
 
-    #[cfg(feature = "page-index-experiment")]
-    pub fn set_page_index_policy_for_experiment(&mut self, enabled: bool) {
-        self.session.set_page_index_policy_for_experiment(enabled);
+    pub fn set_page_index_mode(
+        &mut self,
+        mode: String,
+        calibration_error_margin_us: Option<f64>,
+    ) -> Result<(), JsValue> {
+        let mode = match mode.as_str() {
+            "skip" => PageIndexMode::Skip,
+            "predicate" => PageIndexMode::Predicate,
+            "adaptive" => PageIndexMode::Adaptive,
+            _ => {
+                return Err(JsValue::from_str(
+                    "page-index mode must be 'skip', 'predicate', or 'adaptive'",
+                ))
+            }
+        };
+        let calibration_error_margin_us = calibration_error_margin_us
+            .map(|margin| {
+                if !margin.is_finite()
+                    || !(0.0..=JAVASCRIPT_MAX_SAFE_INTEGER).contains(&margin)
+                {
+                    return Err(JsValue::from_str(
+                        "adaptive page-index calibration margin must be a non-negative safe integer",
+                    ));
+                }
+                Ok(margin as u64)
+            })
+            .transpose()?;
+        self.session
+            .set_page_index_mode(mode, calibration_error_margin_us)
+            .map(|_| ())
+            .map_err(query_error_to_js_value)
     }
 
     pub async fn open_delta_table(

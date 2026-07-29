@@ -14,6 +14,8 @@ query-contract = { path = "../query-contract" }
 wasm-http-object-store = { path = "../wasm-http-object-store" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "=0.3.91"
+wasm-bindgen = "=0.2.114"
 wasm-bindgen-futures = "=0.4.64"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

@@ -52,6 +52,10 @@ pub use self::__buffa::view::QueryErrorView;
 #[doc(inline)]
 pub use self::__buffa::view::QueryErrorOwnedView;
 #[doc(inline)]
+pub use self::__buffa::view::PageIndexDecisionSummaryView;
+#[doc(inline)]
+pub use self::__buffa::view::PageIndexDecisionSummaryOwnedView;
+#[doc(inline)]
 pub use self::__buffa::view::QueryMetricsSummaryView;
 #[doc(inline)]
 pub use self::__buffa::view::QueryMetricsSummaryOwnedView;

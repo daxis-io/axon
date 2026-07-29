@@ -618,6 +618,44 @@ export type UnityCatalogOpenResult =
 
 export type BrowserAccessMode = 'browser_safe_http' | 'cloud_object_store';
 
+export type PageIndexMode = 'skip' | 'predicate' | 'adaptive';
+export type PageIndexPlan = 'skip' | 'predicate' | 'mixed';
+export type PageIndexDecisionReason =
+  | 'requested_skip'
+  | 'requested_predicate'
+  | 'uncalibrated_model'
+  | 'unsupported_predicate'
+  | 'missing_or_invalid_indexes'
+  | 'unsafe_object_identity'
+  | 'insufficient_range_samples'
+  | 'insufficient_decode_samples'
+  | 'memory_pressure'
+  | 'scan_too_small'
+  | 'predicted_skip_faster'
+  | 'predicted_predicate_faster'
+  | 'realized_plan_lost'
+  | 'index_load_failed_open'
+  | 'mixed_object_decisions';
+export type PageIndexModelVersion = 'adaptive_page_index_v1';
+
+export type PageIndexDecisionSummary = {
+  requested_mode: PageIndexMode;
+  chosen_plan: PageIndexPlan;
+  decision_reason: PageIndexDecisionReason;
+  model_version: PageIndexModelVersion;
+  decision_duration_us: number;
+  range_sample_count: number;
+  decode_sample_count: number;
+  confidence_eligible: boolean;
+  predicted_skip_time_us?: number;
+  predicted_predicate_time_us?: number;
+  index_bytes: number;
+  index_requests: number;
+  pages_selected: number;
+  pages_skipped: number;
+  pages_touched: number;
+};
+
 export type QueryMetricsSummary = {
   bytes_fetched: number;
   duration_ms: number;
@@ -677,6 +715,7 @@ export type QueryMetricsSummary = {
   coordinator_staging_limit_bytes?: number;
   cursor_peak_pending_encoded_bytes?: number;
   cursor_peak_transport_chunk_bytes?: number;
+  page_index_decision?: PageIndexDecisionSummary;
 };
 
 export type QueryResponse = {
@@ -967,6 +1006,7 @@ export type BrowserWorkerRangeReadMetricsEvent = {
   coordinator_staging_limit_bytes?: number;
   cursor_peak_pending_encoded_bytes?: number;
   cursor_peak_transport_chunk_bytes?: number;
+  page_index_decision?: PageIndexDecisionSummary;
 };
 
 export type BrowserWorkerTransportCacheMetrics = {
@@ -4819,6 +4859,10 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
             payload.preview_duration_ms,
             'range_read_metrics.preview_duration_ms',
           ),
+          page_index_decision: normalizeOptionalPageIndexDecisionSummary(
+            payload.page_index_decision,
+            'range_read_metrics.page_index_decision',
+          ),
         },
       };
     case 'cache_metrics':
@@ -4943,6 +4987,59 @@ function normalizeWorkerEventContext(value: unknown, path: string): BrowserWorke
     request_id: optionalString(value.request_id, `${path}.request_id`),
     query_id: optionalString(value.query_id, `${path}.query_id`),
     table_name: optionalString(value.table_name, `${path}.table_name`),
+  };
+}
+
+function normalizeOptionalPageIndexDecisionSummary(
+  value: unknown,
+  path: string,
+): PageIndexDecisionSummary | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isObject(value)) {
+    throw new AxonProtocolError(`${path} must be an object`);
+  }
+
+  return {
+    requested_mode: requiredEnum(value.requested_mode, `${path}.requested_mode`, PAGE_INDEX_MODES),
+    chosen_plan: requiredEnum(value.chosen_plan, `${path}.chosen_plan`, PAGE_INDEX_PLANS),
+    decision_reason: requiredEnum(
+      value.decision_reason,
+      `${path}.decision_reason`,
+      PAGE_INDEX_DECISION_REASONS,
+    ),
+    model_version: requiredEnum(
+      value.model_version,
+      `${path}.model_version`,
+      PAGE_INDEX_MODEL_VERSIONS,
+    ),
+    decision_duration_us: requiredNonNegativeInteger(
+      value.decision_duration_us,
+      `${path}.decision_duration_us`,
+    ),
+    range_sample_count: requiredNonNegativeInteger(
+      value.range_sample_count,
+      `${path}.range_sample_count`,
+    ),
+    decode_sample_count: requiredNonNegativeInteger(
+      value.decode_sample_count,
+      `${path}.decode_sample_count`,
+    ),
+    confidence_eligible: requiredBoolean(value.confidence_eligible, `${path}.confidence_eligible`),
+    predicted_skip_time_us: optionalNonNegativeInteger(
+      value.predicted_skip_time_us,
+      `${path}.predicted_skip_time_us`,
+    ),
+    predicted_predicate_time_us: optionalNonNegativeInteger(
+      value.predicted_predicate_time_us,
+      `${path}.predicted_predicate_time_us`,
+    ),
+    index_bytes: requiredNonNegativeInteger(value.index_bytes, `${path}.index_bytes`),
+    index_requests: requiredNonNegativeInteger(value.index_requests, `${path}.index_requests`),
+    pages_selected: requiredNonNegativeInteger(value.pages_selected, `${path}.pages_selected`),
+    pages_skipped: requiredNonNegativeInteger(value.pages_skipped, `${path}.pages_skipped`),
+    pages_touched: requiredNonNegativeInteger(value.pages_touched, `${path}.pages_touched`),
   };
 }
 
@@ -5607,6 +5704,32 @@ const BROWSER_ACCESS_MODES = [
   'browser_safe_http',
   'cloud_object_store',
 ] as const satisfies readonly BrowserAccessMode[];
+const PAGE_INDEX_MODES = [
+  'skip',
+  'predicate',
+  'adaptive',
+] as const satisfies readonly PageIndexMode[];
+const PAGE_INDEX_PLANS = ['skip', 'predicate', 'mixed'] as const satisfies readonly PageIndexPlan[];
+const PAGE_INDEX_DECISION_REASONS = [
+  'requested_skip',
+  'requested_predicate',
+  'uncalibrated_model',
+  'unsupported_predicate',
+  'missing_or_invalid_indexes',
+  'unsafe_object_identity',
+  'insufficient_range_samples',
+  'insufficient_decode_samples',
+  'memory_pressure',
+  'scan_too_small',
+  'predicted_skip_faster',
+  'predicted_predicate_faster',
+  'realized_plan_lost',
+  'index_load_failed_open',
+  'mixed_object_decisions',
+] as const satisfies readonly PageIndexDecisionReason[];
+const PAGE_INDEX_MODEL_VERSIONS = [
+  'adaptive_page_index_v1',
+] as const satisfies readonly PageIndexModelVersion[];
 
 const WASM_SIMD_DETECTION_MODULE = new Uint8Array([
   0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b, 0x03,

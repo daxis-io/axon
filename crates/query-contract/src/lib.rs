@@ -1470,6 +1470,71 @@ pub enum BrowserAccessMode {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageIndexMode {
+    #[default]
+    Skip,
+    Predicate,
+    Adaptive,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageIndexPlan {
+    #[default]
+    Skip,
+    Predicate,
+    Mixed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageIndexDecisionReason {
+    RequestedSkip,
+    RequestedPredicate,
+    UncalibratedModel,
+    UnsupportedPredicate,
+    MissingOrInvalidIndexes,
+    UnsafeObjectIdentity,
+    InsufficientRangeSamples,
+    InsufficientDecodeSamples,
+    MemoryPressure,
+    ScanTooSmall,
+    PredictedSkipFaster,
+    PredictedPredicateFaster,
+    RealizedPlanLost,
+    IndexLoadFailedOpen,
+    MixedObjectDecisions,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageIndexModelVersion {
+    AdaptivePageIndexV1,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PageIndexDecisionSummary {
+    pub requested_mode: PageIndexMode,
+    pub chosen_plan: PageIndexPlan,
+    pub decision_reason: PageIndexDecisionReason,
+    pub model_version: PageIndexModelVersion,
+    pub decision_duration_us: u64,
+    pub range_sample_count: u64,
+    pub decode_sample_count: u64,
+    pub confidence_eligible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicted_skip_time_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicted_predicate_time_us: Option<u64>,
+    pub index_bytes: u64,
+    pub index_requests: u64,
+    pub pages_selected: u64,
+    pub pages_skipped: u64,
+    pub pages_touched: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct QueryMetricsSummary {
     /// Bytes scanned by the executed query plan when the runtime can report them; otherwise `0`.
     pub bytes_fetched: u64,
@@ -1641,6 +1706,9 @@ pub struct QueryMetricsSummary {
     /// Peak single transport chunk emitted by the Rust cursor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor_peak_transport_chunk_bytes: Option<u64>,
+    /// Redacted page-index plan decision and physical-shape summary when page-index planning ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_index_decision: Option<PageIndexDecisionSummary>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

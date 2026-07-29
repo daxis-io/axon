@@ -14,14 +14,71 @@ use query_contract::{
     DeltaLocationResolverErrorCode, DeltaObjectStoreProvider, DeltaProtocolFeatureClass,
     DeltaProtocolFeatureEnablement, DeltaProtocolFeatureKind, DirectExternalEngineReadSupport,
     ExecutionTarget, FallbackReason, ObjectGrantBatchSignRequest, ObjectGrantHeadRequest,
-    ObjectGrantListRequest, PartitionColumnType, PolicyAuthorityKind, QueryError, QueryErrorCode,
-    QueryExecutionOptions, QueryMetricsSummary, QueryRequest, QueryResponse, QueryResultPage,
-    ReadAccessPlan, ReadAccessPlanReason, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
-    ResolverActualAccessMode, ResolverRequestedAccessMode, SnapshotResolutionRequest,
-    SqlFallbackRequiredPlan,
+    ObjectGrantListRequest, PageIndexDecisionReason, PageIndexDecisionSummary, PageIndexMode,
+    PageIndexModelVersion, PageIndexPlan, PartitionColumnType, PolicyAuthorityKind, QueryError,
+    QueryErrorCode, QueryExecutionOptions, QueryMetricsSummary, QueryRequest, QueryResponse,
+    QueryResultPage, ReadAccessPlan, ReadAccessPlanReason, ResolvedFileDescriptor,
+    ResolvedSnapshotDescriptor, ResolverActualAccessMode, ResolverRequestedAccessMode,
+    SnapshotResolutionRequest, SqlFallbackRequiredPlan,
 };
 use schemars::schema_for;
 use serde_json::{json, Value};
+
+#[test]
+fn page_index_contract_defaults_preserve_skip_and_omit_decision_telemetry() {
+    assert_eq!(PageIndexMode::default(), PageIndexMode::Skip);
+
+    let metrics = QueryMetricsSummary::default();
+    let json = serde_json::to_value(metrics).expect("default query metrics should serialize");
+    assert_eq!(json.get("page_index_decision"), None);
+}
+
+#[test]
+fn page_index_decision_summary_is_additive_and_contains_no_object_identifiers() {
+    let metrics = QueryMetricsSummary {
+        page_index_decision: Some(PageIndexDecisionSummary {
+            requested_mode: PageIndexMode::Adaptive,
+            chosen_plan: PageIndexPlan::Predicate,
+            decision_reason: PageIndexDecisionReason::PredictedPredicateFaster,
+            model_version: PageIndexModelVersion::AdaptivePageIndexV1,
+            decision_duration_us: 42,
+            range_sample_count: 5,
+            decode_sample_count: 3,
+            confidence_eligible: true,
+            predicted_skip_time_us: Some(120_000),
+            predicted_predicate_time_us: Some(40_000),
+            index_bytes: 8_192,
+            index_requests: 2,
+            pages_selected: 4,
+            pages_skipped: 60,
+            pages_touched: 4,
+        }),
+        ..QueryMetricsSummary::default()
+    };
+
+    let json = serde_json::to_value(metrics).expect("page-index metrics should serialize");
+    let serialized = serde_json::to_string(&json).expect("metrics JSON should stringify");
+    assert_eq!(
+        json["page_index_decision"]["requested_mode"],
+        serde_json::json!("adaptive")
+    );
+    assert_eq!(
+        json["page_index_decision"]["chosen_plan"],
+        serde_json::json!("predicate")
+    );
+    for forbidden in [
+        "raw_sql",
+        "predicate_literal",
+        "table_uri",
+        "object_path",
+        "credential",
+    ] {
+        assert!(
+            !serialized.contains(forbidden),
+            "decision telemetry must not expose {forbidden}"
+        );
+    }
+}
 
 #[test]
 fn delta_protocol_feature_catalog_covers_browser_routing_matrix() {
@@ -218,6 +275,7 @@ fn query_response_serializes_without_absent_fallback_reason() {
             coordinator_staging_limit_bytes: None,
             cursor_peak_pending_encoded_bytes: None,
             cursor_peak_transport_chunk_bytes: None,
+            page_index_decision: None,
         },
         explain: None,
     };
@@ -375,6 +433,7 @@ fn query_response_serializes_browser_telemetry_when_present() {
             coordinator_staging_limit_bytes: None,
             cursor_peak_pending_encoded_bytes: None,
             cursor_peak_transport_chunk_bytes: None,
+            page_index_decision: None,
         },
         explain: None,
     };
@@ -1261,6 +1320,7 @@ fn query_response_serializes_arrow_ipc_preview_and_phase_metrics() {
             coordinator_staging_limit_bytes: None,
             cursor_peak_pending_encoded_bytes: None,
             cursor_peak_transport_chunk_bytes: None,
+            page_index_decision: None,
         },
         explain: None,
     };

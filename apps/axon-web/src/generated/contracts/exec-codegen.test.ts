@@ -1522,6 +1522,28 @@ function normalizeMetricFields(metrics: object): JsonObject {
   if (typeof source.access_mode === 'string') {
     normalized.access_mode = enumSymbol('BROWSER_ACCESS_MODE', source.access_mode);
   }
+  if (source.page_index_decision && typeof source.page_index_decision === 'object') {
+    const decision = source.page_index_decision as QueryMetricsSummary['page_index_decision'];
+    if (decision) {
+      normalized.page_index_decision = compact({
+        requested_mode: enumSymbol('PAGE_INDEX_MODE', decision.requested_mode),
+        chosen_plan: enumSymbol('PAGE_INDEX_PLAN', decision.chosen_plan),
+        decision_reason: enumSymbol('PAGE_INDEX_DECISION_REASON', decision.decision_reason),
+        model_version: enumSymbol('PAGE_INDEX_MODEL_VERSION', decision.model_version),
+        decision_duration_us: decimal(decision.decision_duration_us),
+        range_sample_count: decimal(decision.range_sample_count),
+        decode_sample_count: decimal(decision.decode_sample_count),
+        confidence_eligible: decision.confidence_eligible,
+        predicted_skip_time_us: decimal(decision.predicted_skip_time_us),
+        predicted_predicate_time_us: decimal(decision.predicted_predicate_time_us),
+        index_bytes: decimal(decision.index_bytes),
+        index_requests: decimal(decision.index_requests),
+        pages_selected: decimal(decision.pages_selected),
+        pages_skipped: decimal(decision.pages_skipped),
+        pages_touched: decimal(decision.pages_touched),
+      });
+    }
+  }
   return normalized;
 }
 
@@ -1877,6 +1899,23 @@ function representativeMetrics(): QueryMetricsSummary {
     planning_duration_ms: 2,
     arrow_ipc_encode_duration_ms: 3,
     preview_duration_ms: 1,
+    page_index_decision: {
+      requested_mode: 'adaptive',
+      chosen_plan: 'predicate',
+      decision_reason: 'predicted_predicate_faster',
+      model_version: 'adaptive_page_index_v1',
+      decision_duration_us: 42,
+      range_sample_count: 5,
+      decode_sample_count: 3,
+      confidence_eligible: true,
+      predicted_skip_time_us: 120_000,
+      predicted_predicate_time_us: 40_000,
+      index_bytes: 8_192,
+      index_requests: 2,
+      pages_selected: 4,
+      pages_skipped: 60,
+      pages_touched: 4,
+    },
   };
 }
 

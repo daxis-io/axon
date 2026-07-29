@@ -23,7 +23,7 @@ use parquet::record::Field as ParquetField;
 use query_contract::{
     validate_browser_object_url, BrowserAccessMode, BrowserHttpParquetDatasetDescriptor,
     BrowserHttpSnapshotDescriptor, BrowserObjectUrlPolicy, CapabilityKey, CapabilityReport,
-    CapabilityState, ExecutionTarget, FallbackReason, ParquetInspectionSummary,
+    CapabilityState, ExecutionTarget, FallbackReason, PageIndexMode, ParquetInspectionSummary,
     PartitionColumnType, PartitionLiteralValue, QueryError, QueryErrorCode, QueryMetricsSummary,
     QueryRequest, ResolvedFileDescriptor, ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
@@ -162,6 +162,10 @@ pub enum BrowserObjectAccessMode {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BrowserRuntimeConfig {
     pub target_partitions: usize,
+    /// Page-index execution policy. Missing configuration and library defaults remain `Skip`.
+    pub page_index_mode: PageIndexMode,
+    /// Frozen calibration p95 error margin for Adaptive. `None` keeps Adaptive fail-closed to Skip.
+    pub adaptive_page_index_error_margin_us: Option<u64>,
     pub object_access_mode: BrowserObjectAccessMode,
     pub allow_cloud_credentials: bool,
     /// Maximum time applied to each outbound HTTP request issued by the browser runtime.
@@ -184,6 +188,8 @@ impl Default for BrowserRuntimeConfig {
     fn default() -> Self {
         Self {
             target_partitions: 1,
+            page_index_mode: PageIndexMode::Skip,
+            adaptive_page_index_error_margin_us: None,
             object_access_mode: BrowserObjectAccessMode::BrowserSafeHttp,
             allow_cloud_credentials: false,
             request_timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
@@ -2684,6 +2690,7 @@ fn execution_metrics(
         coordinator_staging_limit_bytes: None,
         cursor_peak_pending_encoded_bytes: None,
         cursor_peak_transport_chunk_bytes: None,
+        page_index_decision: None,
     })
 }
 
@@ -2691,7 +2698,11 @@ fn parquet_row_group_predicate_for_filter(
     filter: Option<&BrowserFilterExpr>,
 ) -> Option<wasm_parquet_engine::ParquetRowGroupPruningPredicate> {
     let (column, comparison) = parquet_integer_comparison_for_filter(filter?)?;
-    Some(wasm_parquet_engine::ParquetRowGroupPruningPredicate { column, comparison })
+    Some(wasm_parquet_engine::ParquetRowGroupPruningPredicate {
+        column,
+        comparison,
+        page_index_supported: true,
+    })
 }
 
 fn parquet_integer_comparison_for_filter(

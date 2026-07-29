@@ -290,6 +290,92 @@ test('records real browser-Wasm page-index byte-savings A/B evidence', async ({
   expect(decision).toBe('positive_local_browser_byte_savings_keep_default_off');
 });
 
+test('adaptive cold start chooses Skip without loading page indexes', async ({
+  browser,
+  baseURL,
+}) => {
+  if (!baseURL) throw new Error('adaptive page-index smoke requires a Playwright base URL');
+  const manifest = JSON.parse(
+    await readFile(resolve('public/fixtures/prod-like/page-index-ab/manifest.json'), 'utf8'),
+  ) as FixtureManifest;
+  validateManifest(manifest);
+  const context = await browser.newContext({
+    ignoreHTTPSErrors: true,
+    serviceWorkers: 'block',
+  });
+  const page = await context.newPage();
+  const responses: Array<Promise<PhysicalRequest | undefined>> = [];
+  page.on('response', (response) => responses.push(captureFixtureResponse(response, manifest)));
+  try {
+    await page.goto(baseURL);
+    const metrics = await page.evaluate(
+      async ({ manifest, sql }) => {
+        const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+        const workerUrl = new URL('/src/sandbox-query-worker.ts', location.href);
+        workerUrl.searchParams.set('page_index_mode', 'adaptive');
+        workerUrl.searchParams.set('page_index_error_margin_us', '0');
+        const client = sdk.createAxonBrowserClient({
+          worker: new Worker(workerUrl, { type: 'module', name: 'page-index-adaptive-cold' }),
+        });
+        try {
+          await client.openParquetDataset(
+            'page_index_events',
+            {
+              table_uri: new URL('/fixtures/prod-like/page-index-ab', location.href).href,
+              partition_column_types: {},
+              browser_compatibility: { capabilities: {} },
+              required_capabilities: { capabilities: {} },
+              files: [
+                {
+                  path: 'event-id.parquet',
+                  url: new URL(manifest.url_path, location.href).href,
+                  size_bytes: manifest.size_bytes,
+                  partition_values: {},
+                },
+              ],
+            },
+            { requestId: 'page-index-adaptive-cold-open' },
+          );
+          const result = await client.query('page_index_events', sql, {
+            requestId: 'page-index-adaptive-cold-query',
+            preferredTarget: 'browser_wasm',
+            queryOptions: { collect_metrics: true },
+          });
+          return result.response.metrics;
+        } finally {
+          client.terminate();
+        }
+      },
+      { manifest, sql: SQL },
+    );
+    await page.waitForTimeout(0);
+    const physical = (await Promise.all(responses)).filter(
+      (response): response is PhysicalRequest => response !== undefined,
+    );
+    const decision = metrics.page_index_decision;
+    expect(decision).toBeDefined();
+    expect(decision).toMatchObject({
+      requested_mode: 'adaptive',
+      chosen_plan: 'skip',
+      model_version: 'adaptive_page_index_v1',
+      confidence_eligible: false,
+      index_bytes: 0,
+      index_requests: 0,
+    });
+    expect([
+      'unsafe_object_identity',
+      'insufficient_range_samples',
+      'insufficient_decode_samples',
+    ]).toContain(decision?.decision_reason);
+    const indexExtents = [...manifest.column_index_extents, ...manifest.offset_index_extents];
+    expect(physical.every((request) => unionIntersectionBytes(request, indexExtents) === 0)).toBe(
+      true,
+    );
+  } finally {
+    await context.close();
+  }
+});
+
 test('rejects invalid byte ranges and credential-shaped evidence', () => {
   expect(parseRangeHeader('bytes=0-9', 100)).toEqual({
     range: 'bytes=0-9',
@@ -350,7 +436,7 @@ async function runArm(
           };
         }> = [];
         const workerUrl = new URL('/src/sandbox-query-worker.ts', location.href);
-        if (arm === 'predicate') workerUrl.searchParams.set('page_index_policy', 'predicate');
+        workerUrl.searchParams.set('page_index_mode', arm);
         const worker = new Worker(workerUrl, {
           type: 'module',
           name: `page-index-ab-${arm}-${repetition}`,

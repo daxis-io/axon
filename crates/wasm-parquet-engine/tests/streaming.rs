@@ -195,6 +195,7 @@ async fn row_group_stats_pruning_skips_ranges_after_footer_read() {
         Some(&ParquetRowGroupPruningPredicate {
             column: "id".to_string(),
             comparison: ParquetIntegerComparison::Gte(10),
+            page_index_supported: true,
         }),
     )
     .await
@@ -241,6 +242,7 @@ async fn predicate_page_index_policy_skips_pages_with_exact_result_parity() {
     let predicate = ParquetRowGroupPruningPredicate {
         column: "id".to_string(),
         comparison: ParquetIntegerComparison::Gte(63_488),
+        page_index_supported: true,
     };
 
     let arm_a_server = RequestCapturingServer::new(object.clone(), Duration::from_millis(0), false);
@@ -307,6 +309,16 @@ async fn predicate_page_index_policy_skips_pages_with_exact_result_parity() {
     assert_eq!(arm_b_metrics.snapshot().pages_selected, 2);
     assert_eq!(arm_b_metrics.snapshot().pages_skipped, 62);
     assert_eq!(arm_b_metrics.snapshot().pages_touched, 2);
+    let arm_b_snapshot = arm_b_metrics.snapshot();
+    let decision = arm_b_snapshot
+        .page_index_decision
+        .as_ref()
+        .expect("predicate scans should report their page-index decision");
+    assert_eq!(decision.pages_selected, 2);
+    assert_eq!(decision.pages_skipped, 62);
+    assert_eq!(decision.pages_touched, 2);
+    assert!(decision.index_bytes > 0);
+    assert!(decision.index_requests > 0);
     assert!(
         arm_b_metrics.snapshot().bytes_fetched < arm_a_metrics.snapshot().bytes_fetched,
         "page selection should avoid physical data bytes after index overhead"
@@ -360,6 +372,7 @@ async fn malformed_page_indexes_fail_open_to_full_scan() {
         Some(&ParquetRowGroupPruningPredicate {
             column: "id".to_string(),
             comparison: ParquetIntegerComparison::Gte(63_488),
+            page_index_supported: true,
         }),
         ParquetPageIndexPolicy::Predicate,
     )

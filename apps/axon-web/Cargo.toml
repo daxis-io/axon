@@ -15,7 +15,6 @@ fixture-generator = [
   "dep:sha2",
   "dep:tokio",
 ]
-page-index-experiment = ["wasm-datafusion-session/page-index-experiment"]
 
 [[bin]]
 name = "generate-prod-fixture"
@@ -25,6 +24,11 @@ required-features = ["fixture-generator"]
 [[bin]]
 name = "generate-s3-perf-fixture"
 path = "src/bin/generate_s3_perf_fixture.rs"
+required-features = ["fixture-generator"]
+
+[[bin]]
+name = "generate-page-index-v2-fixture"
+path = "src/bin/generate_page_index_v2_fixture.rs"
 required-features = ["fixture-generator"]
 
 [dependencies]

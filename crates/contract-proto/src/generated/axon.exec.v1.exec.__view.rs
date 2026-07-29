@@ -1446,6 +1446,571 @@ impl ::buffa::HasMessageView for super::super::QueryError {
     type View<'a> = QueryErrorView<'a>;
     type ViewHandle = QueryErrorOwnedView;
 }
+#[derive(Clone, Debug, Default)]
+pub struct PageIndexDecisionSummaryView<'a> {
+    /// Field 1: `requested_mode`
+    pub requested_mode: ::buffa::EnumValue<super::super::PageIndexMode>,
+    /// Field 2: `chosen_plan`
+    pub chosen_plan: ::buffa::EnumValue<super::super::PageIndexPlan>,
+    /// Field 3: `decision_reason`
+    pub decision_reason: ::buffa::EnumValue<super::super::PageIndexDecisionReason>,
+    /// Field 4: `model_version`
+    pub model_version: ::buffa::EnumValue<super::super::PageIndexModelVersion>,
+    /// Field 5: `decision_duration_us`
+    pub decision_duration_us: u64,
+    /// Field 6: `range_sample_count`
+    pub range_sample_count: u64,
+    /// Field 7: `decode_sample_count`
+    pub decode_sample_count: u64,
+    /// Field 8: `confidence_eligible`
+    pub confidence_eligible: bool,
+    /// Field 9: `predicted_skip_time_us`
+    pub predicted_skip_time_us: ::core::option::Option<u64>,
+    /// Field 10: `predicted_predicate_time_us`
+    pub predicted_predicate_time_us: ::core::option::Option<u64>,
+    /// Field 11: `index_bytes`
+    pub index_bytes: u64,
+    /// Field 12: `index_requests`
+    pub index_requests: u64,
+    /// Field 13: `pages_selected`
+    pub pages_selected: u64,
+    /// Field 14: `pages_skipped`
+    pub pages_skipped: u64,
+    /// Field 15: `pages_touched`
+    pub pages_touched: u64,
+    pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
+}
+impl<'a> ::buffa::MessageView<'a> for PageIndexDecisionSummaryView<'a> {
+    type Owned = super::super::PageIndexDecisionSummary;
+    fn decode_view(buf: &'a [u8]) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        let __limit = ::core::cell::Cell::new(::buffa::DEFAULT_UNKNOWN_FIELD_LIMIT);
+        <Self as ::buffa::MessageView>::decode_view_ctx(
+            buf,
+            ::buffa::DecodeContext::new(::buffa::RECURSION_LIMIT, &__limit),
+        )
+    }
+    fn decode_view_with_ctx(
+        buf: &'a [u8],
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        <Self as ::buffa::MessageView>::decode_view_ctx(buf, ctx)
+    }
+    fn merge_view_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        cur: &'a [u8],
+        before_tag: &'a [u8],
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<&'a [u8], ::buffa::DecodeError> {
+        let _ = ctx;
+        #[allow(unused_variables)]
+        let view = self;
+        let mut cur = cur;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.requested_mode = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(&mut cur)?,
+                );
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.chosen_plan = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(&mut cur)?,
+                );
+            }
+            3u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.decision_reason = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(&mut cur)?,
+                );
+            }
+            4u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.model_version = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(&mut cur)?,
+                );
+            }
+            5u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.decision_duration_us = ::buffa::types::decode_uint64(&mut cur)?;
+            }
+            6u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.range_sample_count = ::buffa::types::decode_uint64(&mut cur)?;
+            }
+            7u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.decode_sample_count = ::buffa::types::decode_uint64(&mut cur)?;
+            }
+            8u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.confidence_eligible = ::buffa::types::decode_bool(&mut cur)?;
+            }
+            9u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.predicted_skip_time_us = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            10u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.predicted_predicate_time_us = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            11u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.index_bytes = ::buffa::types::decode_uint64(&mut cur)?;
+            }
+            12u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.index_requests = ::buffa::types::decode_uint64(&mut cur)?;
+            }
+            13u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.pages_selected = ::buffa::types::decode_uint64(&mut cur)?;
+            }
+            14u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.pages_skipped = ::buffa::types::decode_uint64(&mut cur)?;
+            }
+            15u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.pages_touched = ::buffa::types::decode_uint64(&mut cur)?;
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
+                let span_len = before_tag.len() - cur.len();
+                view.__buffa_unknown_fields.push_record(before_tag, span_len, ctx)?;
+            }
+        }
+        ::core::result::Result::Ok(cur)
+    }
+    fn to_owned_message(
+        &self,
+    ) -> ::core::result::Result<
+        super::super::PageIndexDecisionSummary,
+        ::buffa::DecodeError,
+    > {
+        self.to_owned_from_source(None)
+    }
+    #[allow(clippy::useless_conversion, clippy::needless_update)]
+    fn to_owned_from_source(
+        &self,
+        __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+    ) -> ::core::result::Result<
+        super::super::PageIndexDecisionSummary,
+        ::buffa::DecodeError,
+    > {
+        #[allow(unused_imports)]
+        use ::buffa::alloc::string::ToString as _;
+        let _ = __buffa_src;
+        ::core::result::Result::Ok(super::super::PageIndexDecisionSummary {
+            requested_mode: self.requested_mode,
+            chosen_plan: self.chosen_plan,
+            decision_reason: self.decision_reason,
+            model_version: self.model_version,
+            decision_duration_us: self.decision_duration_us,
+            range_sample_count: self.range_sample_count,
+            decode_sample_count: self.decode_sample_count,
+            confidence_eligible: self.confidence_eligible,
+            predicted_skip_time_us: self.predicted_skip_time_us,
+            predicted_predicate_time_us: self.predicted_predicate_time_us,
+            index_bytes: self.index_bytes,
+            index_requests: self.index_requests,
+            pages_selected: self.pages_selected,
+            pages_skipped: self.pages_skipped,
+            pages_touched: self.pages_touched,
+            __buffa_unknown_fields: self.__buffa_unknown_fields.to_owned()?.into(),
+            ..::core::default::Default::default()
+        })
+    }
+}
+impl<'a> ::buffa::ViewEncode<'a> for PageIndexDecisionSummaryView<'a> {
+    #[allow(clippy::needless_borrow, clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        {
+            let val = self.requested_mode.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        {
+            let val = self.chosen_plan.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        {
+            let val = self.decision_reason.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        {
+            let val = self.model_version.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        if self.decision_duration_us != 0u64 {
+            size
+                += 1u32
+                    + ::buffa::types::uint64_encoded_len(self.decision_duration_us)
+                        as u32;
+        }
+        if self.range_sample_count != 0u64 {
+            size
+                += 1u32
+                    + ::buffa::types::uint64_encoded_len(self.range_sample_count) as u32;
+        }
+        if self.decode_sample_count != 0u64 {
+            size
+                += 1u32
+                    + ::buffa::types::uint64_encoded_len(self.decode_sample_count)
+                        as u32;
+        }
+        if self.confidence_eligible {
+            size += 1u32 + ::buffa::types::BOOL_ENCODED_LEN as u32;
+        }
+        if let Some(v) = self.predicted_skip_time_us {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.predicted_predicate_time_us {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if self.index_bytes != 0u64 {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(self.index_bytes) as u32;
+        }
+        if self.index_requests != 0u64 {
+            size
+                += 1u32 + ::buffa::types::uint64_encoded_len(self.index_requests) as u32;
+        }
+        if self.pages_selected != 0u64 {
+            size
+                += 1u32 + ::buffa::types::uint64_encoded_len(self.pages_selected) as u32;
+        }
+        if self.pages_skipped != 0u64 {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(self.pages_skipped) as u32;
+        }
+        if self.pages_touched != 0u64 {
+            size += 1u32 + ::buffa::types::uint64_encoded_len(self.pages_touched) as u32;
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        size
+    }
+    #[allow(clippy::needless_borrow)]
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        {
+            let val = self.requested_mode.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(1u32, val, buf);
+            }
+        }
+        {
+            let val = self.chosen_plan.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(2u32, val, buf);
+            }
+        }
+        {
+            let val = self.decision_reason.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(3u32, val, buf);
+            }
+        }
+        {
+            let val = self.model_version.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(4u32, val, buf);
+            }
+        }
+        if self.decision_duration_us != 0u64 {
+            ::buffa::types::put_uint64_field(5u32, self.decision_duration_us, buf);
+        }
+        if self.range_sample_count != 0u64 {
+            ::buffa::types::put_uint64_field(6u32, self.range_sample_count, buf);
+        }
+        if self.decode_sample_count != 0u64 {
+            ::buffa::types::put_uint64_field(7u32, self.decode_sample_count, buf);
+        }
+        if self.confidence_eligible {
+            ::buffa::types::put_bool_field(8u32, self.confidence_eligible, buf);
+        }
+        if let Some(v) = self.predicted_skip_time_us {
+            ::buffa::types::put_uint64_field(9u32, v, buf);
+        }
+        if let Some(v) = self.predicted_predicate_time_us {
+            ::buffa::types::put_uint64_field(10u32, v, buf);
+        }
+        if self.index_bytes != 0u64 {
+            ::buffa::types::put_uint64_field(11u32, self.index_bytes, buf);
+        }
+        if self.index_requests != 0u64 {
+            ::buffa::types::put_uint64_field(12u32, self.index_requests, buf);
+        }
+        if self.pages_selected != 0u64 {
+            ::buffa::types::put_uint64_field(13u32, self.pages_selected, buf);
+        }
+        if self.pages_skipped != 0u64 {
+            ::buffa::types::put_uint64_field(14u32, self.pages_skipped, buf);
+        }
+        if self.pages_touched != 0u64 {
+            ::buffa::types::put_uint64_field(15u32, self.pages_touched, buf);
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+}
+impl<'a> ::buffa::MessageName for PageIndexDecisionSummaryView<'a> {
+    const PACKAGE: &'static str = "axon.exec.v1";
+    const NAME: &'static str = "PageIndexDecisionSummary";
+    const FULL_NAME: &'static str = "axon.exec.v1.PageIndexDecisionSummary";
+    const TYPE_URL: &'static str = "type.googleapis.com/axon.exec.v1.PageIndexDecisionSummary";
+}
+::buffa::impl_default_view_instance!(PageIndexDecisionSummaryView);
+::buffa::impl_view_reborrow!(PageIndexDecisionSummaryView);
+/** Self-contained, `'static` owned view of a `PageIndexDecisionSummary` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`PageIndexDecisionSummaryView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`PageIndexDecisionSummaryView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+#[derive(Clone, Debug)]
+pub struct PageIndexDecisionSummaryOwnedView(
+    ::buffa::OwnedView<PageIndexDecisionSummaryView<'static>>,
+);
+impl PageIndexDecisionSummaryOwnedView {
+    /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+    ///
+    /// The view borrows directly from the buffer's data; the buffer is
+    /// retained inside the returned handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+    /// protobuf data.
+    pub fn decode(
+        bytes: ::buffa::bytes::Bytes,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        ::core::result::Result::Ok(
+            PageIndexDecisionSummaryOwnedView(::buffa::OwnedView::decode(bytes)?),
+        )
+    }
+    /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+    /// max message size).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+    /// exceeds the configured limits.
+    pub fn decode_with_options(
+        bytes: ::buffa::bytes::Bytes,
+        opts: &::buffa::DecodeOptions,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        ::core::result::Result::Ok(
+            PageIndexDecisionSummaryOwnedView(
+                ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+            ),
+        )
+    }
+    /// Build from an owned message via an encode → decode round-trip.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+    /// somehow invalid (should not happen for well-formed messages).
+    pub fn from_owned(
+        msg: &super::super::PageIndexDecisionSummary,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        ::core::result::Result::Ok(
+            PageIndexDecisionSummaryOwnedView(::buffa::OwnedView::from_owned(msg)?),
+        )
+    }
+    /// Borrow the full [`PageIndexDecisionSummaryView`] with its lifetime tied to `&self`.
+    #[must_use]
+    pub fn view(&self) -> &PageIndexDecisionSummaryView<'_> {
+        self.0.reborrow()
+    }
+    /// Convert to the owned message type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if re-materializing preserved unknown fields
+    /// fails (e.g. the unknown-field limit is exceeded).
+    pub fn to_owned_message(
+        &self,
+    ) -> ::core::result::Result<
+        super::super::PageIndexDecisionSummary,
+        ::buffa::DecodeError,
+    > {
+        self.0.to_owned_message()
+    }
+    /// The underlying bytes buffer.
+    #[must_use]
+    pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+        self.0.bytes()
+    }
+    /// Consume the handle, returning the underlying bytes buffer.
+    #[must_use]
+    pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+        self.0.into_bytes()
+    }
+    /// Field 1: `requested_mode`
+    #[must_use]
+    pub fn requested_mode(&self) -> ::buffa::EnumValue<super::super::PageIndexMode> {
+        self.0.reborrow().requested_mode
+    }
+    /// Field 2: `chosen_plan`
+    #[must_use]
+    pub fn chosen_plan(&self) -> ::buffa::EnumValue<super::super::PageIndexPlan> {
+        self.0.reborrow().chosen_plan
+    }
+    /// Field 3: `decision_reason`
+    #[must_use]
+    pub fn decision_reason(
+        &self,
+    ) -> ::buffa::EnumValue<super::super::PageIndexDecisionReason> {
+        self.0.reborrow().decision_reason
+    }
+    /// Field 4: `model_version`
+    #[must_use]
+    pub fn model_version(
+        &self,
+    ) -> ::buffa::EnumValue<super::super::PageIndexModelVersion> {
+        self.0.reborrow().model_version
+    }
+    /// Field 5: `decision_duration_us`
+    #[must_use]
+    pub fn decision_duration_us(&self) -> u64 {
+        self.0.reborrow().decision_duration_us
+    }
+    /// Field 6: `range_sample_count`
+    #[must_use]
+    pub fn range_sample_count(&self) -> u64 {
+        self.0.reborrow().range_sample_count
+    }
+    /// Field 7: `decode_sample_count`
+    #[must_use]
+    pub fn decode_sample_count(&self) -> u64 {
+        self.0.reborrow().decode_sample_count
+    }
+    /// Field 8: `confidence_eligible`
+    #[must_use]
+    pub fn confidence_eligible(&self) -> bool {
+        self.0.reborrow().confidence_eligible
+    }
+    /// Field 9: `predicted_skip_time_us`
+    #[must_use]
+    pub fn predicted_skip_time_us(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().predicted_skip_time_us
+    }
+    /// Field 10: `predicted_predicate_time_us`
+    #[must_use]
+    pub fn predicted_predicate_time_us(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().predicted_predicate_time_us
+    }
+    /// Field 11: `index_bytes`
+    #[must_use]
+    pub fn index_bytes(&self) -> u64 {
+        self.0.reborrow().index_bytes
+    }
+    /// Field 12: `index_requests`
+    #[must_use]
+    pub fn index_requests(&self) -> u64 {
+        self.0.reborrow().index_requests
+    }
+    /// Field 13: `pages_selected`
+    #[must_use]
+    pub fn pages_selected(&self) -> u64 {
+        self.0.reborrow().pages_selected
+    }
+    /// Field 14: `pages_skipped`
+    #[must_use]
+    pub fn pages_skipped(&self) -> u64 {
+        self.0.reborrow().pages_skipped
+    }
+    /// Field 15: `pages_touched`
+    #[must_use]
+    pub fn pages_touched(&self) -> u64 {
+        self.0.reborrow().pages_touched
+    }
+}
+impl ::core::convert::From<::buffa::OwnedView<PageIndexDecisionSummaryView<'static>>>
+for PageIndexDecisionSummaryOwnedView {
+    fn from(inner: ::buffa::OwnedView<PageIndexDecisionSummaryView<'static>>) -> Self {
+        PageIndexDecisionSummaryOwnedView(inner)
+    }
+}
+impl ::core::convert::From<PageIndexDecisionSummaryOwnedView>
+for ::buffa::OwnedView<PageIndexDecisionSummaryView<'static>> {
+    fn from(wrapper: PageIndexDecisionSummaryOwnedView) -> Self {
+        wrapper.0
+    }
+}
+impl ::core::convert::AsRef<::buffa::OwnedView<PageIndexDecisionSummaryView<'static>>>
+for PageIndexDecisionSummaryOwnedView {
+    fn as_ref(&self) -> &::buffa::OwnedView<PageIndexDecisionSummaryView<'static>> {
+        &self.0
+    }
+}
+impl ::buffa::HasMessageView for super::super::PageIndexDecisionSummary {
+    type View<'a> = PageIndexDecisionSummaryView<'a>;
+    type ViewHandle = PageIndexDecisionSummaryOwnedView;
+}
 /// Summarizes query, I/O, caching, and encoding work reported by an executor.
 #[derive(Clone, Debug, Default)]
 pub struct QueryMetricsSummaryView<'a> {
@@ -1565,6 +2130,10 @@ pub struct QueryMetricsSummaryView<'a> {
     pub cursor_peak_pending_encoded_bytes: ::core::option::Option<u64>,
     /// Field 58: `cursor_peak_transport_chunk_bytes`
     pub cursor_peak_transport_chunk_bytes: ::core::option::Option<u64>,
+    /// Field 59: `page_index_decision`
+    pub page_index_decision: ::buffa::MessageFieldView<
+        super::super::__buffa::view::PageIndexDecisionSummaryView<'a>,
+    >,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
@@ -2081,6 +2650,27 @@ impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
                     ::buffa::types::decode_uint64(&mut cur)?,
                 );
             }
+            59u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                let __sub_ctx = ctx.descend()?;
+                let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                match view.page_index_decision.as_mut() {
+                    Some(existing) => {
+                        ::buffa::MessageView::merge_into_view(existing, sub, __sub_ctx)?
+                    }
+                    None => {
+                        view.page_index_decision = ::buffa::MessageFieldView::set(
+                            <super::super::__buffa::view::PageIndexDecisionSummaryView as ::buffa::MessageView>::decode_view_ctx(
+                                sub,
+                                __sub_ctx,
+                            )?,
+                        );
+                    }
+                }
+            }
             _ => {
                 ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
                 let span_len = before_tag.len() - cur.len();
@@ -2169,6 +2759,14 @@ impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
             coordinator_staging_limit_bytes: self.coordinator_staging_limit_bytes,
             cursor_peak_pending_encoded_bytes: self.cursor_peak_pending_encoded_bytes,
             cursor_peak_transport_chunk_bytes: self.cursor_peak_transport_chunk_bytes,
+            page_index_decision: match self.page_index_decision.as_option() {
+                Some(v) => {
+                    ::buffa::MessageField::<
+                        super::super::PageIndexDecisionSummary,
+                    >::some(v.to_owned_from_source(__buffa_src)?)
+                }
+                None => ::buffa::MessageField::none(),
+            },
             __buffa_unknown_fields: self.__buffa_unknown_fields.to_owned()?.into(),
             ..::core::default::Default::default()
         })
@@ -2176,7 +2774,7 @@ impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
 }
 impl<'a> ::buffa::ViewEncode<'a> for QueryMetricsSummaryView<'a> {
     #[allow(clippy::needless_borrow, clippy::let_and_return)]
-    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
         let mut size = 0u32;
@@ -2351,13 +2949,21 @@ impl<'a> ::buffa::ViewEncode<'a> for QueryMetricsSummaryView<'a> {
         if let Some(v) = self.cursor_peak_transport_chunk_bytes {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
+        if self.page_index_decision.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.page_index_decision.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 2u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
     #[allow(clippy::needless_borrow)]
     fn write_to(
         &self,
-        _cache: &mut ::buffa::SizeCache,
+        __cache: &mut ::buffa::SizeCache,
         buf: &mut impl ::buffa::bytes::BufMut,
     ) {
         #[allow(unused_imports)]
@@ -2532,6 +3138,10 @@ impl<'a> ::buffa::ViewEncode<'a> for QueryMetricsSummaryView<'a> {
         }
         if let Some(v) = self.cursor_peak_transport_chunk_bytes {
             ::buffa::types::put_uint64_field(58u32, v, buf);
+        }
+        if self.page_index_decision.is_set() {
+            ::buffa::types::put_len_delimited_header(59u32, __cache.consume_next(), buf);
+            self.page_index_decision.write_to(__cache, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -2915,6 +3525,15 @@ impl QueryMetricsSummaryOwnedView {
     #[must_use]
     pub fn cursor_peak_transport_chunk_bytes(&self) -> ::core::option::Option<u64> {
         self.0.reborrow().cursor_peak_transport_chunk_bytes
+    }
+    /// Field 59: `page_index_decision`
+    #[must_use]
+    pub fn page_index_decision(
+        &self,
+    ) -> &::buffa::MessageFieldView<
+        super::super::__buffa::view::PageIndexDecisionSummaryView<'_>,
+    > {
+        &self.0.reborrow().page_index_decision
     }
 }
 impl ::core::convert::From<::buffa::OwnedView<QueryMetricsSummaryView<'static>>>
@@ -10249,6 +10868,10 @@ pub struct BrowserWorkerRangeReadMetricsEventView<'a> {
     pub cursor_peak_pending_encoded_bytes: ::core::option::Option<u64>,
     /// Field 58: `cursor_peak_transport_chunk_bytes`
     pub cursor_peak_transport_chunk_bytes: ::core::option::Option<u64>,
+    /// Field 59: `page_index_decision`
+    pub page_index_decision: ::buffa::MessageFieldView<
+        super::super::__buffa::view::PageIndexDecisionSummaryView<'a>,
+    >,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ::buffa::MessageView<'a> for BrowserWorkerRangeReadMetricsEventView<'a> {
@@ -10779,6 +11402,27 @@ impl<'a> ::buffa::MessageView<'a> for BrowserWorkerRangeReadMetricsEventView<'a>
                     ::buffa::types::decode_uint64(&mut cur)?,
                 );
             }
+            59u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                let __sub_ctx = ctx.descend()?;
+                let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                match view.page_index_decision.as_mut() {
+                    Some(existing) => {
+                        ::buffa::MessageView::merge_into_view(existing, sub, __sub_ctx)?
+                    }
+                    None => {
+                        view.page_index_decision = ::buffa::MessageFieldView::set(
+                            <super::super::__buffa::view::PageIndexDecisionSummaryView as ::buffa::MessageView>::decode_view_ctx(
+                                sub,
+                                __sub_ctx,
+                            )?,
+                        );
+                    }
+                }
+            }
             _ => {
                 ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
                 let span_len = before_tag.len() - cur.len();
@@ -10874,6 +11518,14 @@ impl<'a> ::buffa::MessageView<'a> for BrowserWorkerRangeReadMetricsEventView<'a>
             coordinator_staging_limit_bytes: self.coordinator_staging_limit_bytes,
             cursor_peak_pending_encoded_bytes: self.cursor_peak_pending_encoded_bytes,
             cursor_peak_transport_chunk_bytes: self.cursor_peak_transport_chunk_bytes,
+            page_index_decision: match self.page_index_decision.as_option() {
+                Some(v) => {
+                    ::buffa::MessageField::<
+                        super::super::PageIndexDecisionSummary,
+                    >::some(v.to_owned_from_source(__buffa_src)?)
+                }
+                None => ::buffa::MessageField::none(),
+            },
             __buffa_unknown_fields: self.__buffa_unknown_fields.to_owned()?.into(),
             ..::core::default::Default::default()
         })
@@ -11061,6 +11713,14 @@ impl<'a> ::buffa::ViewEncode<'a> for BrowserWorkerRangeReadMetricsEventView<'a> 
         if let Some(v) = self.cursor_peak_transport_chunk_bytes {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
+        if self.page_index_decision.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.page_index_decision.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 2u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
@@ -11243,6 +11903,10 @@ impl<'a> ::buffa::ViewEncode<'a> for BrowserWorkerRangeReadMetricsEventView<'a> 
         }
         if let Some(v) = self.cursor_peak_transport_chunk_bytes {
             ::buffa::types::put_uint64_field(58u32, v, buf);
+        }
+        if self.page_index_decision.is_set() {
+            ::buffa::types::put_len_delimited_header(59u32, __cache.consume_next(), buf);
+            self.page_index_decision.write_to(__cache, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -11634,6 +12298,15 @@ impl BrowserWorkerRangeReadMetricsEventOwnedView {
     #[must_use]
     pub fn cursor_peak_transport_chunk_bytes(&self) -> ::core::option::Option<u64> {
         self.0.reborrow().cursor_peak_transport_chunk_bytes
+    }
+    /// Field 59: `page_index_decision`
+    #[must_use]
+    pub fn page_index_decision(
+        &self,
+    ) -> &::buffa::MessageFieldView<
+        super::super::__buffa::view::PageIndexDecisionSummaryView<'_>,
+    > {
+        &self.0.reborrow().page_index_decision
     }
 }
 impl ::core::convert::From<

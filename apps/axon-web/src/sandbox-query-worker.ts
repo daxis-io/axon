@@ -210,11 +210,19 @@ function createChild(): Worker {
   childPhase = 'boot';
   childHealth = 'booting';
   clearBootTimer();
-  const pageIndexPolicy = new URL(globalThis.location.href).searchParams.get('page_index_policy');
+  const workerSearchParams = new URL(globalThis.location.href).searchParams;
+  const childConfig = new URLSearchParams();
+  const pageIndexMode = workerSearchParams.get('page_index_mode');
+  if (pageIndexMode !== null) childConfig.set('page_index_mode', pageIndexMode);
+  const pageIndexErrorMarginUs = workerSearchParams.get('page_index_error_margin_us');
+  if (pageIndexErrorMarginUs !== null) {
+    childConfig.set('page_index_error_margin_us', pageIndexErrorMarginUs);
+  }
+  const serializedChildConfig = childConfig.toString();
   const childName =
-    pageIndexPolicy === 'predicate'
-      ? 'axon-sandbox-query-child?page_index_policy=predicate'
-      : 'axon-sandbox-query-child';
+    serializedChildConfig.length === 0
+      ? 'axon-sandbox-query-child'
+      : `axon-sandbox-query-child?${serializedChildConfig}`;
   let next: Worker;
   try {
     // The default branch must keep `new URL('./sandbox-query-child-worker.ts', import.meta.url)`

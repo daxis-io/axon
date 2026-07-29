@@ -49,6 +49,7 @@ type WasmStreamChunk = Omit<PrivateStreamChunk, 'version' | 'query_id'>;
 type WasmStreamItem = { chunk: WasmStreamChunk } | { terminal: { metadata_json: string } } | null;
 
 type PrivateChildScope = {
+  readonly name: string;
   addEventListener(
     type: 'message',
     listener: (event: MessageEvent<PrivateCoordinatorMessage>) => void,
@@ -62,8 +63,8 @@ type ActiveQuery = {
   stream?: SandboxSqlStream;
 };
 
-type ExperimentalPageIndexSession = SandboxQuerySession & {
-  set_page_index_policy_for_experiment?: (enabled: boolean) => void;
+type PageIndexSession = SandboxQuerySession & {
+  set_page_index_mode?: (mode: string, calibrationErrorMarginUs?: number) => void;
 };
 
 const QUERY_PREVIEW_LIMIT = QUERY_RESULT_PAGE_SIZE + 1;
@@ -375,13 +376,25 @@ function ensureSession(context: BrowserWorkerEventContext): Promise<SandboxQuery
   const pending = init().then(
     () => {
       const session = new SandboxQuerySession();
-      const workerConfig = new URLSearchParams(globalThis.name.split('?', 2)[1] ?? '');
-      if (workerConfig.get('page_index_policy') === 'predicate') {
-        const experimentalSession = session as ExperimentalPageIndexSession;
-        if (typeof experimentalSession.set_page_index_policy_for_experiment !== 'function') {
-          throw new Error('page-index experiment requested from a production-default Wasm build');
+      const workerConfig = new URLSearchParams(childScope.name.split('?', 2)[1] ?? '');
+      const pageIndexMode = workerConfig.get('page_index_mode');
+      if (pageIndexMode !== null) {
+        if (!['skip', 'predicate', 'adaptive'].includes(pageIndexMode)) {
+          throw new Error('invalid page-index mode requested from sandbox worker');
         }
-        experimentalSession.set_page_index_policy_for_experiment(true);
+        const pageIndexSession = session as PageIndexSession;
+        if (typeof pageIndexSession.set_page_index_mode !== 'function') {
+          throw new Error('page-index mode requested from an incompatible Wasm build');
+        }
+        const margin = workerConfig.get('page_index_error_margin_us');
+        const calibrationErrorMarginUs = margin === null ? undefined : Number(margin);
+        if (
+          calibrationErrorMarginUs !== undefined &&
+          (!Number.isSafeInteger(calibrationErrorMarginUs) || calibrationErrorMarginUs < 0)
+        ) {
+          throw new Error('invalid adaptive page-index calibration margin requested');
+        }
+        pageIndexSession.set_page_index_mode(pageIndexMode, calibrationErrorMarginUs);
       }
       emitProgress(instantiateContext, 'finished');
       return session;

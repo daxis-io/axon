@@ -54,15 +54,15 @@ use futures_util::{
     StreamExt, TryStreamExt,
 };
 use query_contract::{
-    BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, PartitionColumnType,
-    PartitionLiteralValue, QueryError, QueryErrorCode,
+    BrowserHttpSnapshotDescriptor, ExecutionTarget, FallbackReason, PageIndexDecisionSummary,
+    PageIndexMode, PartitionColumnType, PartitionLiteralValue, QueryError, QueryErrorCode,
 };
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 use wasm_http_object_store::HttpRangeReader;
 use wasm_parquet_engine::{
-    merge_parquet_range_read_metrics,
-    stream_scan_target_batches_with_row_group_pruning_caches_query_and_page_index_policy,
+    merge_page_index_decision_summaries, merge_parquet_range_read_metrics,
+    stream_scan_target_batches_with_adaptive_page_index_policy, AdaptivePageIndexState,
     ObjectSource, ParquetIntegerComparison, ParquetMetadataCache, ParquetPageIndexPolicy,
     ParquetRangeCache, ParquetRangeQueryContext, ParquetRangeReadMetrics,
     ParquetRowGroupPruningPredicate, ScanTarget, ScanTargetMetricsHandle,
@@ -71,6 +71,17 @@ use wasm_parquet_engine::{
 
 const DEFAULT_CATALOG_NAME: &str = "datafusion";
 const DEFAULT_SCHEMA_NAME: &str = "public";
+
+#[derive(Clone, Copy, Debug)]
+struct PageIndexMemoryPressure(bool);
+
+fn parquet_page_index_policy(mode: PageIndexMode) -> ParquetPageIndexPolicy {
+    match mode {
+        PageIndexMode::Skip => ParquetPageIndexPolicy::Skip,
+        PageIndexMode::Predicate => ParquetPageIndexPolicy::Predicate,
+        PageIndexMode::Adaptive => ParquetPageIndexPolicy::Adaptive,
+    }
+}
 
 type TableScanFuture<'a> =
     Pin<Box<dyn Future<Output = DataFusionResult<Arc<dyn ExecutionPlan>>> + Send + 'a>>;
@@ -300,6 +311,7 @@ pub struct DataFusionScanMetricsSummary {
     pub rows_emitted: u64,
     pub bytes_fetched: u64,
     pub range_read_metrics: ParquetRangeReadMetrics,
+    pub page_index_decision: Option<PageIndexDecisionSummary>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -454,6 +466,7 @@ pub struct AxonParquetScanTrace {
     pub bytes_fetched: u64,
     pub rows_emitted: u64,
     pub range_read_metrics: ParquetRangeReadMetrics,
+    pub page_index_decision: Option<PageIndexDecisionSummary>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -488,6 +501,7 @@ impl AxonParquetScanDebug {
             bytes_fetched: metrics.bytes_fetched,
             rows_emitted: metrics.rows_emitted,
             range_read_metrics: metrics.range_read_metrics,
+            page_index_decision: metrics.page_index_decision,
         }
     }
 }
@@ -499,6 +513,7 @@ struct AxonParquetScanMetrics {
     bytes_fetched: u64,
     rows_emitted: u64,
     range_read_metrics: ParquetRangeReadMetrics,
+    page_index_decision: Option<PageIndexDecisionSummary>,
 }
 
 #[derive(Clone, Debug)]
@@ -623,15 +638,23 @@ impl TableProvider for AxonDeltaTableProvider {
                 .map(|context| context.as_ref().clone());
             let page_index_policy = state
                 .config()
-                .get_extension::<ParquetPageIndexPolicy>()
-                .map(|policy| *policy)
+                .get_extension::<PageIndexMode>()
+                .map(|mode| parquet_page_index_policy(*mode))
                 .unwrap_or_default();
+            let adaptive_page_index_state = state
+                .config()
+                .get_extension::<AdaptivePageIndexState>()
+                .map(|state| state.as_ref().clone());
+            let page_index_memory_pressure = state
+                .config()
+                .get_extension::<PageIndexMemoryPressure>()
+                .is_some_and(|pressure| pressure.0);
             let cancellation = state
                 .config()
                 .get_extension::<BrowserQueryCancellation>()
                 .map(|cancellation| cancellation.as_ref().clone())
                 .unwrap_or_else(|| self.cancellation.snapshot());
-            Ok(Arc::new(AxonParquetScanExec::new(
+            let mut scan = AxonParquetScanExec::new(
                 Arc::clone(&self.descriptor),
                 schema,
                 projection.cloned(),
@@ -644,7 +667,10 @@ impl TableProvider for AxonDeltaTableProvider {
                 self.range_cache.clone(),
                 query_context,
                 page_index_policy,
-            )) as Arc<dyn ExecutionPlan>)
+            );
+            scan.adaptive_page_index_state = adaptive_page_index_state;
+            scan.page_index_memory_pressure = page_index_memory_pressure;
+            Ok(Arc::new(scan) as Arc<dyn ExecutionPlan>)
         })
     }
 
@@ -688,6 +714,8 @@ pub struct AxonParquetScanExec {
     range_cache: ParquetRangeCache,
     query_context: Option<ParquetRangeQueryContext>,
     page_index_policy: ParquetPageIndexPolicy,
+    adaptive_page_index_state: Option<AdaptivePageIndexState>,
+    page_index_memory_pressure: bool,
 }
 
 impl AxonParquetScanExec {
@@ -741,6 +769,8 @@ impl AxonParquetScanExec {
             range_cache,
             query_context,
             page_index_policy,
+            adaptive_page_index_state: None,
+            page_index_memory_pressure: false,
         }
     }
 
@@ -838,6 +868,8 @@ impl AxonParquetScanExec {
         let range_cache = self.range_cache.clone();
         let query_context = self.query_context.clone();
         let page_index_policy = self.page_index_policy;
+        let adaptive_page_index_state = self.adaptive_page_index_state.clone();
+        let page_index_memory_pressure = self.page_index_memory_pressure;
         let stream_schema = Arc::clone(&self.projected_schema);
         let projected_schema = Arc::clone(&self.projected_schema);
         let parquet_batches = stream::once(async move {
@@ -856,6 +888,8 @@ impl AxonParquetScanExec {
                 range_cache,
                 query_context,
                 page_index_policy,
+                adaptive_page_index_state,
+                page_index_memory_pressure,
             )
             .await
             .map(|scan| {
@@ -955,13 +989,20 @@ impl AxonScanPlan {
             files_skipped,
         };
 
+        let mut row_group_predicate = filters
+            .iter()
+            .find_map(|filter| row_group_pruning_predicate(filter, descriptor));
+        if conjuncts.len() != 1 {
+            if let Some(predicate) = &mut row_group_predicate {
+                predicate.page_index_supported = false;
+            }
+        }
+
         Self {
             limit,
             planned_file_indices,
             planned_partition_indices,
-            row_group_predicate: filters
-                .iter()
-                .find_map(|filter| row_group_pruning_predicate(filter, descriptor)),
+            row_group_predicate,
             debug,
         }
     }
@@ -1517,6 +1558,7 @@ fn integer_comparison_predicate(
     Some(ParquetRowGroupPruningPredicate {
         column: column.name.clone(),
         comparison,
+        page_index_supported: true,
     })
 }
 
@@ -1564,6 +1606,7 @@ fn record_scan_parquet_metrics(
     scan_metrics.row_groups_skipped = snapshot.row_groups_skipped;
     scan_metrics.bytes_fetched = snapshot.bytes_fetched;
     scan_metrics.range_read_metrics = snapshot.range_read_metrics;
+    scan_metrics.page_index_decision = snapshot.page_index_decision;
 }
 
 fn add_scan_metrics(
@@ -1591,6 +1634,10 @@ fn add_scan_metrics(
         range_read_metrics: merge_parquet_range_read_metrics(
             &left.range_read_metrics,
             &right.range_read_metrics,
+        ),
+        page_index_decision: merge_page_index_decision_summaries(
+            left.page_index_decision,
+            right.page_index_decision,
         ),
     }
 }
@@ -1657,6 +1704,8 @@ struct PlannedScanTargetsState {
     range_cache: ParquetRangeCache,
     query_context: Option<ParquetRangeQueryContext>,
     page_index_policy: ParquetPageIndexPolicy,
+    adaptive_page_index_state: Option<AdaptivePageIndexState>,
+    page_index_memory_pressure: bool,
 }
 
 async fn stream_planned_scan_targets(
@@ -1674,6 +1723,8 @@ async fn stream_planned_scan_targets(
     range_cache: ParquetRangeCache,
     query_context: Option<ParquetRangeQueryContext>,
     page_index_policy: ParquetPageIndexPolicy,
+    adaptive_page_index_state: Option<AdaptivePageIndexState>,
+    page_index_memory_pressure: bool,
 ) -> Result<PlannedScanTargetBatchStream, QueryError> {
     let state = PlannedScanTargetsState {
         reader,
@@ -1694,6 +1745,8 @@ async fn stream_planned_scan_targets(
         range_cache,
         query_context,
         page_index_policy,
+        adaptive_page_index_state,
+        page_index_memory_pressure,
     };
     let batches = stream::try_unfold(state, |mut state| async move {
         loop {
@@ -1753,8 +1806,7 @@ async fn stream_planned_scan_targets(
             state.cancellation.check_cancelled_at("scan stream")?;
             let target = scan_target_for_planned_index(state.descriptor.as_ref(), file_index)?;
 
-            let scan =
-                stream_scan_target_batches_with_row_group_pruning_caches_query_and_page_index_policy(
+            let scan = stream_scan_target_batches_with_adaptive_page_index_policy(
                 &state.reader,
                 &target,
                 &state.required_columns,
@@ -1765,6 +1817,8 @@ async fn stream_planned_scan_targets(
                 Some(&state.range_cache),
                 state.query_context.as_ref(),
                 state.page_index_policy,
+                state.adaptive_page_index_state.as_ref(),
+                state.page_index_memory_pressure,
             )
             .await?;
             state.cancellation.check_cancelled_at("scan stream")?;
@@ -2206,7 +2260,8 @@ pub struct WasmDataFusionEngine {
     cancellation: BrowserQueryCancellation,
     metadata_cache: ParquetMetadataCache,
     range_cache: ParquetRangeCache,
-    page_index_policy: ParquetPageIndexPolicy,
+    page_index_mode: PageIndexMode,
+    adaptive_page_index_state: AdaptivePageIndexState,
 }
 
 impl fmt::Debug for WasmDataFusionEngine {
@@ -2312,7 +2367,8 @@ impl WasmDataFusionEngine {
             cancellation,
             metadata_cache,
             range_cache,
-            page_index_policy: ParquetPageIndexPolicy::Skip,
+            page_index_mode: PageIndexMode::Skip,
+            adaptive_page_index_state: AdaptivePageIndexState::default(),
         }
     }
 
@@ -2330,12 +2386,31 @@ impl WasmDataFusionEngine {
         previous
     }
 
-    #[cfg(any(test, feature = "page-index-experiment"))]
+    pub fn set_page_index_mode(
+        &mut self,
+        page_index_mode: PageIndexMode,
+        calibration_error_margin_us: Option<u64>,
+    ) -> Result<PageIndexMode, QueryError> {
+        self.adaptive_page_index_state
+            .set_calibration_error_margin_us(calibration_error_margin_us)?;
+        Ok(std::mem::replace(
+            &mut self.page_index_mode,
+            page_index_mode,
+        ))
+    }
+
+    #[cfg(test)]
     pub fn set_page_index_policy(
         &mut self,
         page_index_policy: ParquetPageIndexPolicy,
     ) -> ParquetPageIndexPolicy {
-        std::mem::replace(&mut self.page_index_policy, page_index_policy)
+        let previous = parquet_page_index_policy(self.page_index_mode);
+        self.page_index_mode = match page_index_policy {
+            ParquetPageIndexPolicy::Skip => PageIndexMode::Skip,
+            ParquetPageIndexPolicy::Predicate => PageIndexMode::Predicate,
+            ParquetPageIndexPolicy::Adaptive => PageIndexMode::Adaptive,
+        };
+        previous
     }
 
     pub fn cancellation_token(&self) -> BrowserQueryCancellation {
@@ -2608,7 +2683,16 @@ impl WasmDataFusionEngine {
             .set_extension(Arc::new(cancellation.clone()));
         state
             .config_mut()
-            .set_extension(Arc::new(self.page_index_policy));
+            .set_extension(Arc::new(self.page_index_mode));
+        state
+            .config_mut()
+            .set_extension(Arc::new(self.adaptive_page_index_state.clone()));
+        let memory = self.memory_pool.metrics();
+        let memory_pressure =
+            memory.reserved_bytes.saturating_mul(10) >= memory.limit_bytes.saturating_mul(9);
+        state
+            .config_mut()
+            .set_extension(Arc::new(PageIndexMemoryPressure(memory_pressure)));
         (SessionContext::new_with_state(state), query_context)
     }
 }
@@ -2867,6 +2951,8 @@ fn add_scan_trace_to_datafusion_metrics(
         checked_datafusion_metric_add(metrics.bytes_fetched, trace.bytes_fetched, "bytes fetched")?;
     metrics.range_read_metrics =
         merge_parquet_range_read_metrics(&metrics.range_read_metrics, &trace.range_read_metrics);
+    metrics.page_index_decision =
+        merge_page_index_decision_summaries(metrics.page_index_decision, trace.page_index_decision);
 
     Ok(())
 }
@@ -2995,6 +3081,53 @@ mod tests {
     use parquet::schema::parser::parse_message_type;
 
     #[test]
+    fn compound_filters_keep_row_group_pruning_but_reject_page_index_selection() {
+        use datafusion::prelude::{col, lit};
+
+        let batch = synthetic_record_batch().expect("synthetic batch should build");
+        let descriptor = DeltaTableDescriptor {
+            table_name: DEFAULT_TABLE_NAME.to_string(),
+            table_version: 1,
+            schema: batch.schema(),
+            partition_columns: Vec::new(),
+            partition_column_types: BTreeMap::new(),
+            active_files: vec![DeltaActiveFile {
+                path: "part-000.parquet".to_string(),
+                url: "https://example.test/part-000.parquet".to_string(),
+                size_bytes: 1_024,
+                partition_values: BTreeMap::new(),
+                object_etag: Some("\"stable\"".to_string()),
+                stats_json: None,
+                deletion_vector: None,
+            }],
+        };
+        let simple = AxonScanPlan::new(
+            &descriptor,
+            &batch.schema(),
+            &[col("id").gt(lit(1_i32))],
+            None,
+            &[],
+        );
+        assert!(simple
+            .row_group_predicate
+            .as_ref()
+            .is_some_and(|predicate| predicate.page_index_supported));
+
+        let compound = AxonScanPlan::new(
+            &descriptor,
+            &batch.schema(),
+            &[col("id").gt(lit(1_i32)).and(col("value").lt(lit(20_i32)))],
+            None,
+            &[],
+        );
+        assert!(compound.row_group_predicate.is_some());
+        assert!(!compound
+            .row_group_predicate
+            .as_ref()
+            .is_some_and(|predicate| predicate.page_index_supported));
+    }
+
+    #[test]
     fn delta_table_schema_field_preserves_arrow_data_type() {
         let schema = DeltaTableSchema::new(vec![DeltaTableSchemaField::new(
             "payload",
@@ -3051,6 +3184,7 @@ mod tests {
                     rows_emitted: 1,
                     bytes_fetched: 0,
                     range_read_metrics: ParquetRangeReadMetrics::default(),
+                    page_index_decision: None,
                 }
             );
         });
@@ -3255,6 +3389,8 @@ mod tests {
                 ParquetRangeCache::default(),
                 None,
                 ParquetPageIndexPolicy::Skip,
+                None,
+                false,
             )
             .await;
             let error = match stream {
@@ -3405,6 +3541,8 @@ mod tests {
                 ParquetRangeCache::default(),
                 None,
                 ParquetPageIndexPolicy::Skip,
+                None,
+                false,
             )
             .await
             .expect("stream construction should not validate later planned files eagerly");
