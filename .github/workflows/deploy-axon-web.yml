@@ -82,13 +82,20 @@ jobs:
       - name: Resolve deployment target
         if: steps.guard.outputs.configured == 'true'
         id: target
+        env:
+          PRODUCTION_URL: ${{ vars.AXON_PRODUCTION_URL || 'https://axon.daxistech.io' }}
         run: |
           if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.environment }}" = "production" ]; then
             echo "environment=production" >> "$GITHUB_OUTPUT"
             echo "prod_flag=--prod" >> "$GITHUB_OUTPUT"
+            # Verify the public alias, not the per-deployment URL. Vercel protects the generated
+            # *.vercel.app URL even for production, so checking it would skip every real assertion
+            # on the one deployment users actually reach.
+            echo "verify_url=${PRODUCTION_URL}" >> "$GITHUB_OUTPUT"
           else
             echo "environment=preview" >> "$GITHUB_OUTPUT"
             echo "prod_flag=" >> "$GITHUB_OUTPUT"
+            echo "verify_url=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Pull Vercel environment
@@ -115,4 +122,4 @@ jobs:
         if: steps.guard.outputs.configured == 'true'
         env:
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-        run: bash apps/axon-web/scripts/verify-deployment.sh "${{ steps.deploy.outputs.url }}" .vercel/output/static
+        run: bash apps/axon-web/scripts/verify-deployment.sh "${{ steps.target.outputs.verify_url || steps.deploy.outputs.url }}" .vercel/output/static
