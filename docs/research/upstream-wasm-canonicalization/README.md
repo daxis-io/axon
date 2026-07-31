@@ -245,8 +245,13 @@ The immutable POC tag `daxis-poc/wasm32-browser-e2e-2026-07-25` resolves to:
   compiler-free graph through `zstd-sys`.
 - Real proof retained by the branch: version-zero replay, table-root confinement, projection and
   aggregation, valid Arrow IPC, and an 8 MiB serialized-output cap.
-- Residual risks: version-zero only, no checkpoints, non-request-scoped metrics, no query working
-  memory bound, no cancellation/deadlines, and ignored filter pushdown.
+- The 2026-07-30 compatibility POC candidate
+  `af7764c098bf0edf92e16de3f865b84b706780f6` and stack
+  `8e5e163f67b9c85e5a71e2671e35e8991a09e4bc` add checkpoint replay and pass Axon's browser proof.
+  They remain rooted in the release-compatibility graph and fork-only Kernel interfaces, so they do
+  not satisfy or replace this current-head forward branch.
+- Residual risks on the current-head branch: version-zero only, no checkpoints, non-request-scoped
+  metrics, no query working memory bound, no cancellation/deadlines, and ignored filter pushdown.
 - Decision: preserve the branch as evidence, redesign around accepted canonical Kernel handlers,
   and do not advance or publish a stable crate.
 - Removal condition: Kernel concern 8 lands, compatible leaf releases exist, and the rebased browser

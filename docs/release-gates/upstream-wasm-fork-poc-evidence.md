@@ -1,21 +1,84 @@
 # Daxis Upstream-WASM Fork POC Evidence
 
-- Technical POC status: complete after the resumed-range correction repin
+- Technical POC status: complete after the checkpoint integration repin
 - Canonical-upstream status: prepared, with the Delta Kernel and delta-rs slices blocked as
   described below
 - Original POC date: 2026-07-23
 - Audit closure date: 2026-07-25 local / 2026-07-26 UTC
 - Resumed-range repin date: 2026-07-27 local / 2026-07-28 UTC
+- Checkpoint integration repin date: 2026-07-30 local / 2026-07-31 UTC
 - Umbrella issue: [daxis-io/axon#2](https://github.com/daxis-io/axon/issues/2)
 - Axon compatibility base: `62d4c465e10dc329221023eaaf2c67c542c408ce`
-- Current immutable POC tag in every fork: `daxis-poc/wasm32-browser-e2e-2026-07-27`
-- Superseded tags retained without mutation: `daxis-poc/wasm32-browser-e2e-2026-07-25`,
-  `daxis-poc/wasm32-browser-e2e-2026-07-23`
+- Current immutable POC tag in every fork: `daxis-poc/wasm32-browser-e2e-2026-07-30`
+- Superseded tags retained without mutation: `daxis-poc/wasm32-browser-e2e-2026-07-27`,
+  `daxis-poc/wasm32-browser-e2e-2026-07-25`, `daxis-poc/wasm32-browser-e2e-2026-07-23`
 - Raw evidence root:
-  `target/upstream-wasm-fork-poc-evidence/f2feffe7c851daed01802749b0f8eec16b5c265d6c2eaacceede075d1c9759f3/`
+  `target/upstream-wasm-fork-poc-evidence/6143a298a75f9a99cfa7eb7c670ebc52ec7c1b7a1d43fdf4a1281f8fe8e465a6/`
 
 Each section below is an immutable record of what was proven at its own date. Where a revision,
 tag, measurement, or artifact hash differs, the newest section is authoritative.
+
+## Checkpoint Integration Repin
+
+Axon current main had moved to `f67d6b7c6bbf4799f8df1846ec499b99e1d7e214` while the
+accepted compatibility POC still pinned a delta-rs candidate that no longer had an advertised fork
+ref. The replacement candidate `af7764c098bf0edf92e16de3f865b84b706780f6` adds checkpoint-aware
+prefetch and replay; stack revision `8e5e163f67b9c85e5a71e2671e35e8991a09e4bc` repins it onto the
+unchanged accepted Arrow, `object_store`, DataFusion, and Kernel graph.
+
+The fixture deletes the JSON commits before its checkpoint boundary. Both browser engines therefore
+had to read `_last_checkpoint`, replay `00000000000000000002.checkpoint.parquet`, inspect the
+version 2 boundary commit, apply the version 3 trailing commit, and query three active Parquet
+files. Chrome and Firefox both resolved snapshot `3`, returned `alpha=18,beta=23`, and produced
+identical Arrow IPC SHA-256
+`9259e7a44259f97bb004d6387accf62e7e82b6796b6d02eb8a7a799bc05afee1`. Each browser
+recorded 13 data requests and 17,415 transferred bytes for that checkpointed query.
+
+Current Axon added `page_index_decision` and the expanded phase, result, coordinator, and cursor
+metrics after the checkpoint branch was cut. Five stale browser-SDK response fixtures failed to
+compile on current main. The integration repairs those literals explicitly: absent fields remain
+`None`, while the telemetry fixture asserts representative values for every new metric. The native
+boundary now passes 18 browser-SDK IPC tests, 9 browser-SDK release examples, 3 query-contract unit
+tests, 60 query-contract integration tests, and 13 query-contract release examples.
+
+The exact tree also passes the local equivalents of all three Axon workflow jobs:
+
+- final live-ref verification and the locked 250-package `wasm32-unknown-unknown` graph;
+- denied-dependency, single-source-universe, released-fixture, native-boundary, and verifier
+  regression checks; and
+- the deterministic two-origin Chrome and Firefox runtime proof, including the existing version-0,
+  retry/range, zstd failure-boundary, and new checkpoint scenarios.
+
+### Accepted Revisions And Immutable Tag
+
+| Repository | Candidate revision | Stack revision | Tag object |
+| ---------- | ------------------ | -------------- | ---------- |
+| [`daxis-io/arrow-rs`](https://github.com/daxis-io/arrow-rs) | `f24c67c536e98f85f2ed8a289a6eb1d55916ffb9` | `52c8fb2e9c28b9d89d08c313e1bc938a35c29c99` | `0143748eab87adb980a47454468c7d940b90929a` |
+| [`daxis-io/arrow-rs-object-store`](https://github.com/daxis-io/arrow-rs-object-store) | `502ec006d58e11f0921a173210d54a4485d1f5a3` | `ab9fda65805487edf5487e63082cab8111f0a178` | `d16b78d6b7d35516fb6e0fa6ae4f2cb94f666ae0` |
+| [`daxis-io/datafusion`](https://github.com/daxis-io/datafusion) | `693aa0b5d2a3c925db963776a472d6144352116e` | `54a376b161a059d08c806d3e959b87802a85ec4f` | `4fdc7ccb0cf072f71cdaf98b9789d4b8d848b24d` |
+| [`daxis-io/delta-kernel-rs`](https://github.com/daxis-io/delta-kernel-rs) | `c9a475f3394adc5296c4f16587c1f69c6e87213e` | `056f7223af0c5c6d6e56502615c3943cfb94132a` | `8b13eadd4fd868d67207984348530b139198afb1` |
+| [`daxis-io/delta-rs`](https://github.com/daxis-io/delta-rs) | `af7764c098bf0edf92e16de3f865b84b706780f6` | `8e5e163f67b9c85e5a71e2671e35e8991a09e4bc` | `d66d3a47bf953a1aad6a2b7e7dc1efc61c1f182c` |
+
+All five annotated tag objects are published as
+`daxis-poc/wasm32-browser-e2e-2026-07-30` and peel to the stack revisions above. No prior tag was
+moved.
+
+### Local Measurements And Artifacts
+
+| Browser | Version | Cold end-to-end | Warm median | Warm max | WASM memory high-water |
+| ------- | ------- | --------------: | ----------: | -------: | ---------------------: |
+| Chrome | `150.0.7871.187` | 240.57 ms | 6.9 ms | 7.5 ms | 14,614,528 bytes |
+| Firefox | `144.0.2` | 340.97 ms | 14.0 ms | 14.0 ms | 14,614,528 bytes |
+
+The release bundle is 28,146,282 raw bytes, 6,588,165 gzip bytes, and 4,305,206 Brotli bytes, with
+WASM SHA-256 `ce138c6a6da4b51b1ca86cade8b259b55451f41064e20a0c7d70e80c61886b4c`.
+
+| Artifact | SHA-256 |
+| -------- | ------- |
+| `stack.lock.toml` | `6143a298a75f9a99cfa7eb7c670ebc52ec7c1b7a1d43fdf4a1281f8fe8e465a6` |
+| Browser `Cargo.lock` | `4743d3bf2c3fb5ed453e9d4577de6ec8ffa411c176d50260ca6a6ddf0beff570` |
+| Fixture-generator `Cargo.lock` | `95f5a4a0ee0ccf9df7197caddd15cdb7315d1c97189080c567b737d29325ce8e` |
+| Fixture manifest | `e2115f9a080f29e798ab707ed29e53521703d253122972a4b1329c17337141da` |
 
 ## Resumed-Range Correction Repin
 
@@ -53,7 +116,7 @@ defers the arbitrary-`200` policy to upstream issue #806.
 | [`daxis-io/arrow-rs`](https://github.com/daxis-io/arrow-rs) | unchanged (`f24c67c536e98f85f2ed8a289a6eb1d55916ffb9`) | `52c8fb2e9c28b9d89d08c313e1bc938a35c29c99` | `8cfa79bdf95d` |
 | [`daxis-io/datafusion`](https://github.com/daxis-io/datafusion) | unchanged (`693aa0b5d2a3c925db963776a472d6144352116e`) | `54a376b161a059d08c806d3e959b87802a85ec4f` | `3a123ac82bb1` |
 | [`daxis-io/delta-kernel-rs`](https://github.com/daxis-io/delta-kernel-rs) | unchanged (`c9a475f3394adc5296c4f16587c1f69c6e87213e`) | `056f7223af0c5c6d6e56502615c3943cfb94132a` | `5b9ed8813d15` |
-| [`daxis-io/delta-rs`](https://github.com/daxis-io/delta-rs) | unchanged (`af7764c098bf0edf92e16de3f865b84b706780f6`) | `2481e60db2a2fcfb0d5f723fd4fada1dcf05106c` | `6c7c5deffb5c` |
+| [`daxis-io/delta-rs`](https://github.com/daxis-io/delta-rs) | unchanged (`0611f31ee39ef9942c04c6ccaeb44897d8ca923e`) | `2481e60db2a2fcfb0d5f723fd4fada1dcf05106c` | `6c7c5deffb5c` |
 
 Only `object_store` carries a new candidate revision. The other four forks carry a single additive
 stack commit that repins the corrected leaf; no candidate, stack, forward-port revision, or tag
@@ -155,7 +218,7 @@ remain in force and are carried forward by that stack.
 | ------- | ------------- | -------------------------- |
 | `object_store` could retry and stitch a truncated representation after a weak or malformed ETag. | A `W/"abc"` response attempted a second request. | Candidate `1d6cb49ba43e219ab50d33284c69d56cfa48aba0` accepts only an RFC entity-tag-shaped strong validator before continuation. Missing, weak, unquoted, unterminated, list-shaped, and whitespace-containing values all stop after one request; strong-validator retry and mutation rejection still pass. Twelve focused tests and the all-feature suite passed: 196 passed and 4 ignored, plus integration and doc tests. |
 | The encoded-range browser scenario could fail at generic `200` range framing before reaching identity-encoding validation. | The previous server returned a gzip full-object `200`, and the harness accepted three unrelated alternative errors. | Axon `4837c331b98e911cb7f9d4d87c3094b942461bb8` returns a correctly framed four-byte `206` with `Content-Encoding: identity, identity`. Chrome and Firefox each record that `206` and then require `Range response used unsupported Content-Encoding "identity, identity"; expected identity`. |
-| delta-rs enforced the 8 MiB IPC budget only after collecting and allocating the complete result. | The prior query path collected all batches before serialization and length validation. | Candidate `af7764c098bf0edf92e16de3f865b84b706780f6` uses `execute_stream` and a capped IPC writer. The regression test proves the buffer never exceeds its limit and the query stream is not polled after the first over-budget write. |
+| delta-rs enforced the 8 MiB IPC budget only after collecting and allocating the complete result. | The prior query path collected all batches before serialization and length validation. | Candidate `0611f31ee39ef9942c04c6ccaeb44897d8ca923e` uses `execute_stream` and a capped IPC writer. The regression test proves the buffer never exceeds its limit and the query stream is not polled after the first over-budget write. |
 | Delta add paths could escape the configured table prefix. | `../outside.parquet` resolved outside the table root. | The same delta-rs candidate rejects cross-origin URLs, absolute paths, traversal, encoded traversal, and prefix escapes with `ActiveFileOutsideTable`, while allowing descendants of the table root. |
 | Kernel synchronous storage ignored requested read ranges and panicked on `copy_atomic`. | A requested range returned the full object and atomic copy panicked. | Candidate `c9a475f3394adc5296c4f16587c1f69c6e87213e` delegates ranged reads to `ObjectStore::get_range` and returns a typed `Unsupported` error for atomic copy. Ten focused storage tests and the 7,432-test native nextest suite passed, with 20 skipped. |
 
@@ -171,7 +234,7 @@ rejects those strings.
 | [`daxis-io/arrow-rs-object-store`](https://github.com/daxis-io/arrow-rs-object-store) | `1d6cb49ba43e219ab50d33284c69d56cfa48aba0` | `a04240eafdc5833e34fe21d4b348ee399177def6` | [#1](https://github.com/daxis-io/arrow-rs-object-store/pull/1) | [Candidate browser 30181759233](https://github.com/daxis-io/arrow-rs-object-store/actions/runs/30181759233), [stack browser 30182216792](https://github.com/daxis-io/arrow-rs-object-store/actions/runs/30182216792). |
 | [`daxis-io/datafusion`](https://github.com/daxis-io/datafusion) | `693aa0b5d2a3c925db963776a472d6144352116e` | `aa1d3bfb591e0e10594160119d8899d4b856c3f5` | [#1](https://github.com/daxis-io/datafusion/pull/1) | [Browser 30182304149](https://github.com/daxis-io/datafusion/actions/runs/30182304149), [Dev 30182304133](https://github.com/daxis-io/datafusion/actions/runs/30182304133). |
 | [`daxis-io/delta-kernel-rs`](https://github.com/daxis-io/delta-kernel-rs) | `c9a475f3394adc5296c4f16587c1f69c6e87213e` | `bbccfb394bf4a3eac54e125d71996a66a5a0e13a` | [#2](https://github.com/daxis-io/delta-kernel-rs/pull/2) | [Browser 30183035000](https://github.com/daxis-io/delta-kernel-rs/actions/runs/30183035000). |
-| [`daxis-io/delta-rs`](https://github.com/daxis-io/delta-rs) | `af7764c098bf0edf92e16de3f865b84b706780f6` | `be60607f67951459e886915e8104273880dcc5cb` | [#1](https://github.com/daxis-io/delta-rs/pull/1) | [Candidate browser 30182186031](https://github.com/daxis-io/delta-rs/actions/runs/30182186031), [stack browser 30183181311](https://github.com/daxis-io/delta-rs/actions/runs/30183181311). |
+| [`daxis-io/delta-rs`](https://github.com/daxis-io/delta-rs) | `0611f31ee39ef9942c04c6ccaeb44897d8ca923e` | `be60607f67951459e886915e8104273880dcc5cb` | [#1](https://github.com/daxis-io/delta-rs/pull/1) | [Candidate browser 30182186031](https://github.com/daxis-io/delta-rs/actions/runs/30182186031), [stack browser 30183181311](https://github.com/daxis-io/delta-rs/actions/runs/30183181311). |
 
 The Axon correction stack passed all three jobs in
 [run 30183442839](https://github.com/daxis-io/axon/actions/runs/30183442839) at exact revision

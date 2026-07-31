@@ -188,10 +188,11 @@ async function directCorsRangeProbe() {
   return stats("normal");
 }
 
-// A table whose pre-checkpoint commits were deleted after checkpointing, which
-// the Delta protocol permits. A reader that skipped the checkpoint would see
-// only the post-checkpoint commit and produce alpha=11,beta=13, so the totals
-// below are what distinguish real checkpoint replay from tolerating one.
+// A table whose commits before the checkpoint boundary were deleted after
+// checkpointing, which the Delta protocol permits. A reader that skipped the
+// checkpoint could at most reconstruct versions 2 and 3 and produce
+// alpha=16,beta=20, so the totals below distinguish real checkpoint replay from
+// merely tolerating a checkpoint's presence.
 const CHECKPOINT_EXPECTED_ROWS = "alpha=18,beta=23";
 
 async function runCheckpointed() {

@@ -19,15 +19,16 @@ All rows are owned by the runtime / engine team and tracked by
 | `object_store` target-safe HTTP, retry, and range protocol | [`daxis-io/arrow-rs-object-store`](https://github.com/daxis-io/arrow-rs-object-store) | `7a65b75b0d26fd8a282999462cb7030fb85fdcc3` | `502ec006d58e11f0921a173210d54a4485d1f5a3` | `ab9fda65805487edf5487e63082cab8111f0a178` | [#1](https://github.com/daxis-io/arrow-rs-object-store/pull/1) | `proposed`           | Adopt an upstream `object_store` release containing the HTTP-manifest, retry, and range slices, pass Axon's locked browser rehearsal, and remove the fork revision.                                               |
 | DataFusion browser feature ownership and runtime profile   | [`daxis-io/datafusion`](https://github.com/daxis-io/datafusion)                       | `eae7bf4fa1c037c0a065d1f36d0669f5bb97a9cf` | `693aa0b5d2a3c925db963776a472d6144352116e` | `54a376b161a059d08c806d3e959b87802a85ec4f` | [#1](https://github.com/daxis-io/datafusion/pull/1)            | `proposed`           | Adopt upstream DataFusion releases containing the feature-ownership and browser-runtime slices after the Arrow and `object_store` prerequisites, pass the locked browser rehearsal, and remove the fork revision. |
 | Delta Kernel read-only core target safety                  | [`daxis-io/delta-kernel-rs`](https://github.com/daxis-io/delta-kernel-rs)             | `f4602a43fe886f45cc3523360bc2488b8f3a2e58` | `c9a475f3394adc5296c4f16587c1f69c6e87213e` | `056f7223af0c5c6d6e56502615c3943cfb94132a` | [#2](https://github.com/daxis-io/delta-kernel-rs/pull/2)       | `temporary`          | Design and land a target-safe core against current canonical Kernel without broad native-core surgery, adopt the compatible release, pass downstream replay, and remove the fork revision.                        |
-| delta-rs browser-engine incubation                         | [`daxis-io/delta-rs`](https://github.com/daxis-io/delta-rs)                           | `df72cc6d3fba014a77243ce80514a6122b46a89b` | `af7764c098bf0edf92e16de3f865b84b706780f6` | `2481e60db2a2fcfb0d5f723fd4fada1dcf05106c` | [#1](https://github.com/daxis-io/delta-rs/pull/1)              | `proposed`           | Land the browser-engine boundary after the Kernel redesign and preceding graph slices, adopt compatible releases, pass Axon's browser proof, and remove the fork revision.                                        |
+| delta-rs browser-engine incubation                         | [`daxis-io/delta-rs`](https://github.com/daxis-io/delta-rs)                           | `df72cc6d3fba014a77243ce80514a6122b46a89b` | `af7764c098bf0edf92e16de3f865b84b706780f6` | `8e5e163f67b9c85e5a71e2671e35e8991a09e4bc` | [#1](https://github.com/daxis-io/delta-rs/pull/1)              | `proposed`           | Land the browser-engine boundary after the Kernel redesign and preceding graph slices, adopt compatible releases, pass Axon's browser proof, and remove the fork revision.                                        |
 
 Every accepted stack revision is also protected by the annotated tag
-`daxis-poc/wasm32-browser-e2e-2026-07-27`. The earlier `2026-07-25` and `2026-07-23` tags remain
-immutable as superseded evidence freezes.
+`daxis-poc/wasm32-browser-e2e-2026-07-30`. The earlier `2026-07-27`, `2026-07-25`, and
+`2026-07-23` tags remain immutable as superseded evidence freezes.
 
 The `object_store` candidate revision above carries the resumed-range correction backported from
-the current-upstream clean branch; the other four rows carry an additive stack repin only. Their
-candidate revisions are unchanged.
+the current-upstream clean branch. The delta-rs candidate adds checkpoint replay and its stack
+revision repins that candidate with the accepted dependency graph. The other three candidate
+revisions are unchanged.
 
 ## Canonical Forward Branches
 

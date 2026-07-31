@@ -51,9 +51,10 @@ for table in tables:
         if digest != record["sha256"]:
             raise SystemExit(f"fixture SHA-256 mismatch: {path}")
 
-# The checkpointed table only proves checkpoint replay while the commits the
-# checkpoint subsumes stay deleted. If they came back, a reader that ignored the
-# checkpoint would still pass, and the fixture would be worthless.
+# The checkpointed table only proves checkpoint replay while the earlier commits
+# needed to reconstruct the checkpoint state stay deleted. If they came back, a
+# reader that ignored the checkpoint could still pass, and the fixture would be
+# worthless.
 checkpointed = next(table for table in tables if table["name"] == "checkpointed")
 checkpoint = checkpointed.get("checkpoint", {})
 version = checkpoint.get("version")

@@ -8,8 +8,8 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use serde_json::{Value, json};
-use url::Url;
 use sha2::{Digest, Sha256};
+use url::Url;
 
 const QUERY: &str =
     "SELECT category, SUM(value) AS total FROM delta GROUP BY category ORDER BY category";
@@ -183,15 +183,16 @@ fn write_manifest(output: &Path, tables: Vec<Value>) -> Result<(), Box<dyn std::
 
 /// Build a table whose pre-checkpoint commits have been cleaned up.
 ///
-/// Versions 0 and 1 are written, checkpointed, and then their commit JSON is
-/// deleted — which the Delta protocol permits once a checkpoint covers them.
-/// Version 2 is appended afterwards. A reader that ignores the checkpoint can
-/// therefore only see the version-2 rows, so this fixture distinguishes real
+/// Creation writes version 0, the first two data writes produce versions 1 and
+/// 2, and version 2 is checkpointed. The version 0 and 1 commit JSON files are
+/// then deleted — which the Delta protocol permits once a checkpoint covers
+/// them — before version 3 is appended. A reader that ignores the checkpoint
+/// cannot reconstruct the version-1 rows, so this fixture distinguishes real
 /// checkpoint replay from a reader that merely tolerates a checkpoint's
 /// presence.
 async fn generate_checkpointed(output: &Path) -> Result<Value, Box<dyn std::error::Error>> {
+    use deltalake::DeltaTable;
     use deltalake::kernel::{DataType as DeltaDataType, PrimitiveType, StructField};
-    use deltalake::operations::DeltaOps;
     use deltalake::protocol::checkpoints::create_checkpoint;
 
     let name = "checkpointed";
@@ -208,7 +209,7 @@ async fn generate_checkpointed(output: &Path) -> Result<Value, Box<dyn std::erro
         Field::new("value", DataType::Int64, false),
     ]));
 
-    let table = DeltaOps::try_from_url(table_url)
+    let table = DeltaTable::try_from_url(table_url)
         .await?
         .create()
         .with_columns(vec![
@@ -244,7 +245,7 @@ async fn generate_checkpointed(output: &Path) -> Result<Value, Box<dyn std::erro
                 )),
             ],
         )?;
-        table = DeltaOps(table).write(vec![batch]).await?;
+        table = table.write(vec![batch]).await?;
         if index == 1 {
             create_checkpoint(&table, None).await?;
         }
@@ -259,8 +260,8 @@ async fn generate_checkpointed(output: &Path) -> Result<Value, Box<dyn std::erro
         .as_u64()
         .ok_or("_last_checkpoint is missing a version")?;
 
-    // Delete every commit the checkpoint subsumes, so the checkpoint is the only
-    // route to those rows.
+    // Delete every commit before the checkpoint boundary, so the checkpoint is
+    // the only route to the version-1 rows.
     let mut removed = Vec::new();
     for version in 0..checkpoint_version {
         let commit = log_root.join(format!("{version:020}.json"));

@@ -22,6 +22,11 @@
   filters, not the held feature/runtime seam. The other three canonical heads were unchanged.
 - The prepared Arrow PRs must likewise be refreshed additively from the close-time or later head
   immediately before canonical submission.
+- Compatibility-POC update, 2026-07-30 local: delta-rs candidate
+  `af7764c098bf0edf92e16de3f865b84b706780f6` and stack
+  `8e5e163f67b9c85e5a71e2671e35e8991a09e4bc` now prove checkpoint replay in Chrome and Firefox.
+  This closes the compatibility fixture gap only. It does not change the dependency order below or
+  clear the current-head Kernel design gate.
 
 ## Fresh Bases And Dispositions
 
