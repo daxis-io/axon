@@ -101,6 +101,12 @@ async function runBrowser(config, pageOrigin, dataOrigin, evidenceDir) {
     const protocol = await evaluateStep(page, config.name, "protocol suite", () =>
       window.pocHarness.runProtocolSuite(),
     );
+    const checkpointed = await evaluateStep(
+      page,
+      config.name,
+      "checkpointed snapshot",
+      () => window.pocHarness.runCheckpointed(),
+    );
     const zstd = await evaluateStep(page, config.name, "zstd failure boundary", () =>
       window.pocHarness.runZstdFailure(),
     );
@@ -112,6 +118,7 @@ async function runBrowser(config, pageOrigin, dataOrigin, evidenceDir) {
     return {
       browser: config.name,
       browser_version: browserVersion,
+      checkpointed,
       cold,
       console: consoleMessages,
       discarded_warmup: discardedWarmup,

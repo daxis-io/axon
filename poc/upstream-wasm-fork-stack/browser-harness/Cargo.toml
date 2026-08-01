@@ -11,7 +11,7 @@ crate-type = ["cdylib", "rlib"]
 arrow-array = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
 arrow-ipc = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
 browser-sdk = { path = "../../../crates/browser-sdk" }
-deltalake-browser = { git = "https://github.com/daxis-io/delta-rs", rev = "2481e60db2a2fcfb0d5f723fd4fada1dcf05106c" }
+deltalake-browser = { git = "https://github.com/daxis-io/delta-rs", rev = "8e5e163f67b9c85e5a71e2671e35e8991a09e4bc" }
 js-sys = "=0.3.91"
 query-contract = { path = "../../../crates/query-contract" }
 url = "2"

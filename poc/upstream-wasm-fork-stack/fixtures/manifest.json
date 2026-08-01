@@ -1,6 +1,7 @@
 {
   "generator": {
     "arrow": "58.3.0",
+    "deltalake": "0.32.4",
     "parquet": "58.3.0"
   },
   "schema_version": 1,
@@ -114,6 +115,82 @@
           "value": 7
         }
       ],
+      "schema": [
+        {
+          "name": "category",
+          "nullable": false,
+          "type": "string"
+        },
+        {
+          "name": "value",
+          "nullable": false,
+          "type": "long"
+        }
+      ]
+    },
+    {
+      "checkpoint": {
+        "latest_version": 3,
+        "removed_commits": [
+          "_delta_log/00000000000000000000.json",
+          "_delta_log/00000000000000000001.json"
+        ],
+        "version": 2
+      },
+      "codec": "snappy",
+      "expected": {
+        "query": "SELECT category, SUM(value) AS total FROM delta GROUP BY category ORDER BY category",
+        "row_count": 2,
+        "rows": [
+          {
+            "category": "alpha",
+            "total": 18
+          },
+          {
+            "category": "beta",
+            "total": 23
+          }
+        ]
+      },
+      "files": [
+        {
+          "bytes": 13871,
+          "path": "checkpointed/_delta_log/00000000000000000002.checkpoint.parquet",
+          "sha256": "6c62ffb4582b26e4e61578ea17f8cdda77490959add7545f2ed27bf85d982cec"
+        },
+        {
+          "bytes": 719,
+          "path": "checkpointed/_delta_log/00000000000000000002.json",
+          "sha256": "9edd7e7a92044f3af298e4c26e4eadd1282d4f510c3439fe8d584a5f5edfed6b"
+        },
+        {
+          "bytes": 721,
+          "path": "checkpointed/_delta_log/00000000000000000003.json",
+          "sha256": "204a07c5c2379be471fe4833d7d3c2b147ad870e84410bfbc47e5b4781729e11"
+        },
+        {
+          "bytes": 61,
+          "path": "checkpointed/_delta_log/_last_checkpoint",
+          "sha256": "15c14924ad3176589bd110831a8cefa3e5c588d122a95669bf19a63dd30d06e9"
+        },
+        {
+          "bytes": 764,
+          "path": "checkpointed/part-00000-020bbb6e-d950-46ad-ae6f-227b66db70b8-c000.snappy.parquet",
+          "sha256": "7938d37460864175550e2ca859f0af63f6c4680597ff60eb4e1240ecb35fd92f"
+        },
+        {
+          "bytes": 764,
+          "path": "checkpointed/part-00000-0c3f92c6-638c-49e7-8e3f-bbce420583b7-c000.snappy.parquet",
+          "sha256": "5815b860de3c8f8c9df55d1a9124a073da55d2a4118d15b0ee8222a041fce33c"
+        },
+        {
+          "bytes": 764,
+          "path": "checkpointed/part-00000-15db8b6d-7584-49d9-be03-c85adb9b1fd4-c000.snappy.parquet",
+          "sha256": "db5d24fbe0d7f0c71cd9c42099f53ab3e17f59ad8bdc5fd9be068060da029430"
+        }
+      ],
+      "name": "checkpointed",
+      "root": "checkpointed",
       "schema": [
         {
           "name": "category",

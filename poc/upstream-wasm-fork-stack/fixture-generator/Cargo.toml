@@ -14,3 +14,10 @@ arrow-schema = "=58.3.0"
 parquet = { version = "=58.3.0", features = ["arrow", "snap", "zstd"] }
 serde_json = "1"
 sha2 = "0.10"
+# The checkpoint fixture is written by the released Delta implementation rather
+# than hand-rolled, so a spec-correct checkpoint is guaranteed. This is a
+# released crate, not a Daxis fork: fixtures stay independent of the stack they
+# are used to test.
+deltalake = { version = "=0.32.4", features = ["datafusion"] }
+url = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

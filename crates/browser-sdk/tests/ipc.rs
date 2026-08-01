@@ -566,6 +566,7 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
                 coordinator_staging_limit_bytes: Some(8_388_608),
                 cursor_peak_pending_encoded_bytes: Some(2),
                 cursor_peak_transport_chunk_bytes: Some(1_048_576),
+                page_index_decision: None,
             },
             explain: None,
         },
@@ -683,6 +684,7 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             coordinator_staging_limit_bytes: Some(8_388_608),
             cursor_peak_pending_encoded_bytes: Some(512),
             cursor_peak_transport_chunk_bytes: Some(256),
+            page_index_decision: None,
         },
     );
 
@@ -1072,6 +1074,7 @@ fn sample_query_response(
             coordinator_staging_limit_bytes: None,
             cursor_peak_pending_encoded_bytes: None,
             cursor_peak_transport_chunk_bytes: None,
+            page_index_decision: None,
         },
         explain: None,
     }

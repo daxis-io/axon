@@ -188,6 +188,67 @@ async function directCorsRangeProbe() {
   return stats("normal");
 }
 
+// A table whose commits before the checkpoint boundary were deleted after
+// checkpointing, which the Delta protocol permits. A reader that skipped the
+// checkpoint could at most reconstruct versions 2 and 3 and produce
+// alpha=16,beta=20, so the totals below distinguish real checkpoint replay from
+// merely tolerating a checkpoint's presence.
+const CHECKPOINT_EXPECTED_ROWS = "alpha=18,beta=23";
+
+async function runCheckpointed() {
+  await reset("normal");
+  const table = await PocBrowserTable.open(
+    `${dataOrigin}/normal/checkpointed/`,
+    2 * 1024 * 1024,
+  );
+  try {
+    assert(
+      Number(table.snapshotVersion) === 3,
+      `expected snapshot version 3; received ${table.snapshotVersion}`,
+    );
+    const result = await table.query(AGGREGATE_SQL);
+    try {
+      const bytes = result.ipcBytes;
+      assert(result.rowCount === 2, `expected 2 rows; received ${result.rowCount}`);
+      const rows = decodeAggregateRows(bytes);
+      assert(
+        rows === CHECKPOINT_EXPECTED_ROWS,
+        `checkpoint replay produced ${rows}; expected ${CHECKPOINT_EXPECTED_ROWS}`,
+      );
+      assert(result.executedOn === "browser_wasm", "unexpected execution target");
+      const transport = await stats("normal");
+      const gets = transport.requests.filter(({ method }) => method === "GET");
+      const fetched = (suffix) =>
+        gets.some(({ pathname }) => pathname.endsWith(suffix));
+      assert(
+        fetched("/_delta_log/_last_checkpoint"),
+        "checkpoint discovery never requested _last_checkpoint",
+      );
+      assert(
+        fetched("/_delta_log/00000000000000000002.checkpoint.parquet"),
+        "checkpoint discovery never fetched the checkpoint parquet",
+      );
+      assert(
+        fetched("/_delta_log/00000000000000000003.json"),
+        "checkpoint discovery never fetched the post-checkpoint commit",
+      );
+      const output = {
+        canonical_rows: rows,
+        ipc_sha256: await sha256(bytes),
+        row_count: result.rowCount,
+        snapshot_version: Number(result.snapshotVersion),
+        transport,
+      };
+      updateMemoryHighWater();
+      return output;
+    } finally {
+      result.free();
+    }
+  } finally {
+    table.free();
+  }
+}
+
 async function runProtocolSuite() {
   const directCors = await directCorsRangeProbe();
 
@@ -330,6 +391,7 @@ async function runInteractive() {
   const output = {
     protocol: await runProtocolSuite(),
     snappy: await runSnappy(),
+    checkpointed: await runCheckpointed(),
     zstd: await runZstdFailure(),
   };
   resultElement.textContent = JSON.stringify(output, null, 2);
@@ -346,6 +408,7 @@ window.pocReady = (async () => {
     runInteractive,
     runProtocolSuite,
     runSnappy,
+    runCheckpointed,
     runZstdFailure,
   };
   statusElement.textContent = "Ready";
