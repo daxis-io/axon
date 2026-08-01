@@ -56,6 +56,38 @@ describe('private Arrow IPC query staging', () => {
     ).toThrow('private stream datafusion_memory.peak_bytes must be an unsigned decimal string');
   });
 
+  it('validates sanitized external-memory counters on failed terminals', () => {
+    const terminal = {
+      metadata_version: 1,
+      status: 'failed',
+      arrow_ipc_byte_length: '0',
+      row_count: '0',
+      external_memory: {
+        backend: 'opfs',
+        storage_limit_bytes: '603979776',
+        bytes_written: '4096',
+        bytes_read: '1024',
+        files_created: '2',
+        peak_active_bytes: '4096',
+        active_files: '0',
+        merge_passes: '1',
+        cleanup_count: '1',
+        abandoned_cleanup_count: '0',
+        working_set_limit_bytes: '67108864',
+        peak_reservation_bytes: '62914560',
+        error_reason: 'quota_exceeded',
+      },
+    };
+
+    expect(() => requireTerminalMetadata(terminal)).not.toThrow();
+    expect(() =>
+      requireTerminalMetadata({
+        ...terminal,
+        external_memory: { ...terminal.external_memory, active_files: '-1' },
+      }),
+    ).toThrow('private stream external_memory.active_files must be an unsigned decimal string');
+  });
+
   it('keeps chunks private until a validated success terminal commits them', () => {
     const stage = new QueryStage('query-1');
     const schema = chunk();

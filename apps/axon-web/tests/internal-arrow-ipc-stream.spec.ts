@@ -1473,6 +1473,106 @@ test('coordinator deadline owns the terminal and replaces a hung child', async (
   expect(result.recoveredRows).toBe(0);
 });
 
+test('coordinator publishes post-cleanup external-memory metrics for failed, cancelled, and deadline terminals', async ({
+  page,
+}) => {
+  await page.goto('/');
+
+  const results = await page.evaluate(async () => {
+    type TerminalMode = 'failed' | 'cancelled' | 'deadline_exceeded';
+    type PublicMessage = {
+      coordinator_test_ready?: boolean;
+      error?: { request_id?: string };
+      owned_memory_metrics?: {
+        context?: { request_id?: string };
+        external_memory?: {
+          backend?: string;
+          active_files?: number;
+          files_created?: number;
+          cleanup_count?: number;
+          error_reason?: string;
+        };
+      };
+    };
+    const run = async (mode: TerminalMode) => {
+      const requestId = `terminal-metrics-${mode}`;
+      const deadline = mode === 'deadline_exceeded' ? '&deadline_ms=40' : '';
+      const worker = new Worker(
+        new URL(
+          `/src/sandbox-query-worker-test-harness.ts?first_child=terminal-metrics&terminal_mode=${mode}${deadline}&watchdog_ms=1000`,
+          location.href,
+        ),
+        { type: 'module' },
+      );
+      const inbox: PublicMessage[] = [];
+      worker.addEventListener('message', (event: MessageEvent<PublicMessage>) => {
+        inbox.push(event.data);
+      });
+      const waitFor = async (predicate: (message: PublicMessage) => boolean) => {
+        for (let attempt = 0; attempt < 500; attempt += 1) {
+          const message = inbox.find(predicate);
+          if (message) return message;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        throw new Error(`timed out waiting for ${mode}: ${JSON.stringify(inbox)}`);
+      };
+      try {
+        await waitFor((message) => message.coordinator_test_ready === true);
+        worker.postMessage({
+          sql: {
+            request_id: requestId,
+            name: 'terminal_metrics',
+            query: {
+              table_uri: new URL('/fixtures/browser-datafusion-runtime/terminal', location.href)
+                .href,
+              snapshot_version: 0,
+              sql: 'SELECT * FROM terminal_metrics',
+              preferred_target: 'browser_wasm',
+              options: {},
+            },
+            output: 'arrow_ipc_stream',
+            delivery: 'single_buffer',
+            browser_safe_defaults: true,
+          },
+        });
+        if (mode === 'cancelled') {
+          worker.postMessage({
+            cancel: {
+              request_id: `cancel-${requestId}`,
+              query_id: requestId,
+            },
+          });
+        }
+        await waitFor((message) => message.error?.request_id === requestId);
+        const metrics = await waitFor(
+          (message) => message.owned_memory_metrics?.context?.request_id === requestId,
+        );
+        return metrics.owned_memory_metrics?.external_memory;
+      } finally {
+        worker.terminate();
+      }
+    };
+
+    return {
+      failed: await run('failed'),
+      cancelled: await run('cancelled'),
+      deadline: await run('deadline_exceeded'),
+    };
+  });
+
+  for (const metrics of Object.values(results)) {
+    expect(metrics).toMatchObject({
+      backend: 'opfs',
+      active_files: 0,
+      files_created: 2,
+      cleanup_count: 1,
+    });
+  }
+  expect(results.failed?.error_reason).toBe('io_failure');
+  expect(results.cancelled?.error_reason).toBeUndefined();
+  expect(results.deadline?.error_reason).toBeUndefined();
+});
+
 test('one-child coordinator bounds queued SQL and recycles a non-settling child', async ({
   page,
   browserName,

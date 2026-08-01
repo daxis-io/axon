@@ -1062,10 +1062,27 @@ export type BrowserWorkerDataFusionMemoryMetrics = {
   peak_bytes: number;
 };
 
+export type BrowserWorkerExternalMemoryMetrics = {
+  backend: 'opfs';
+  storage_limit_bytes: number;
+  bytes_written: number;
+  bytes_read: number;
+  files_created: number;
+  peak_active_bytes: number;
+  active_files: number;
+  merge_passes: number;
+  cleanup_count: number;
+  abandoned_cleanup_count: number;
+  working_set_limit_bytes?: number;
+  peak_reservation_bytes?: number;
+  error_reason?: 'unavailable' | 'quota_exceeded' | 'io_failure';
+};
+
 export type BrowserWorkerOwnedMemoryMetricsEvent = {
   context: BrowserWorkerEventContext;
   coordinator: BrowserWorkerCoordinatorMemoryMetrics;
   datafusion?: BrowserWorkerDataFusionMemoryMetrics;
+  external_memory?: BrowserWorkerExternalMemoryMetrics;
 };
 
 export type BrowserWorkerFallbackEvent = {
@@ -4915,6 +4932,10 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
         payload.datafusion === undefined
           ? undefined
           : requiredObject(payload.datafusion, 'owned_memory_metrics.datafusion');
+      const externalMemory =
+        payload.external_memory === undefined
+          ? undefined
+          : requiredObject(payload.external_memory, 'owned_memory_metrics.external_memory');
       return {
         owned_memory_metrics: {
           context: normalizeWorkerEventContext(payload.context, 'owned_memory_metrics.context'),
@@ -4956,6 +4977,14 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
                     'owned_memory_metrics.datafusion.peak_bytes',
                   ),
                 },
+              }
+            : {}),
+          ...(externalMemory
+            ? {
+                external_memory: normalizeExternalMemoryMetrics(
+                  externalMemory,
+                  'owned_memory_metrics.external_memory',
+                ),
               }
             : {}),
         },
@@ -5000,6 +5029,63 @@ function normalizeWorkerEvent(tag: WorkerEventTag, payload: unknown): BrowserWor
         },
       };
   }
+}
+
+const EXTERNAL_MEMORY_ERROR_REASONS = ['unavailable', 'quota_exceeded', 'io_failure'] as const;
+
+function normalizeExternalMemoryMetrics(
+  value: Record<string, unknown>,
+  path: string,
+): BrowserWorkerExternalMemoryMetrics {
+  if (value.backend !== 'opfs') {
+    throw new AxonProtocolError(`${path}.backend must be opfs`);
+  }
+  return {
+    backend: 'opfs',
+    storage_limit_bytes: requiredNonNegativeInteger(
+      value.storage_limit_bytes,
+      `${path}.storage_limit_bytes`,
+    ),
+    bytes_written: requiredNonNegativeInteger(value.bytes_written, `${path}.bytes_written`),
+    bytes_read: requiredNonNegativeInteger(value.bytes_read, `${path}.bytes_read`),
+    files_created: requiredNonNegativeInteger(value.files_created, `${path}.files_created`),
+    peak_active_bytes: requiredNonNegativeInteger(
+      value.peak_active_bytes,
+      `${path}.peak_active_bytes`,
+    ),
+    active_files: requiredNonNegativeInteger(value.active_files, `${path}.active_files`),
+    merge_passes: requiredNonNegativeInteger(value.merge_passes, `${path}.merge_passes`),
+    cleanup_count: requiredNonNegativeInteger(value.cleanup_count, `${path}.cleanup_count`),
+    abandoned_cleanup_count: requiredNonNegativeInteger(
+      value.abandoned_cleanup_count,
+      `${path}.abandoned_cleanup_count`,
+    ),
+    ...(value.working_set_limit_bytes === undefined
+      ? {}
+      : {
+          working_set_limit_bytes: requiredNonNegativeInteger(
+            value.working_set_limit_bytes,
+            `${path}.working_set_limit_bytes`,
+          ),
+        }),
+    ...(value.peak_reservation_bytes === undefined
+      ? {}
+      : {
+          peak_reservation_bytes: requiredNonNegativeInteger(
+            value.peak_reservation_bytes,
+            `${path}.peak_reservation_bytes`,
+          ),
+        }),
+    ...(value.error_reason === undefined
+      ? {}
+      : {
+          error_reason: requiredEnum(
+            value.error_reason,
+            `${path}.error_reason`,
+            EXTERNAL_MEMORY_ERROR_REASONS,
+          ),
+        }),
+  };
 }
 
 function normalizeWorkerEventContext(value: unknown, path: string): BrowserWorkerEventContext {

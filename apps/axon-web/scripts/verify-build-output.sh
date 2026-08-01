@@ -10,6 +10,7 @@
 set -euo pipefail
 
 dist_root="${1:-}"
+expected_runtime_tier="${2:-${AXON_BROWSER_RUNTIME_BUILD_TIER:-standard}}"
 if [[ -z "${dist_root}" ]]; then
   echo "usage: verify-build-output.sh <dist-directory>" >&2
   exit 2
@@ -65,6 +66,13 @@ if [[ -n "${wasm}" ]]; then
   pass "wasm bundle is present ($(basename "${wasm}"))"
 else
   fail "no .wasm bundle in the build output"
+fi
+
+# 5. The artifact must declare the same runtime tier that was selected for this build.
+if node --experimental-strip-types "$(dirname "$0")/browser-runtime-build.ts" verify "${dist_root}" "${expected_runtime_tier}"; then
+  pass "browser runtime artifact matches expected '${expected_runtime_tier}' tier"
+else
+  fail "browser runtime artifact does not match expected '${expected_runtime_tier}' tier"
 fi
 
 if [[ "${failures}" -ne 0 ]]; then

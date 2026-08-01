@@ -74,6 +74,10 @@ function isIgnorableConsoleError(message: ConsoleMessage): boolean {
 const LOCAL_DELTA_ACTIVE_ID_KEY = 'axon-local-delta-active-id';
 
 const SHA256_PATTERN = /^(?:sha256:)?[0-9a-f]{64}$/i;
+const STRESS_AGGREGATE_SQL = readFileSync(
+  new URL('./fixtures/browser-external-memory/stress-aggregate.sql', import.meta.url),
+  'utf8',
+).trim();
 
 type StressEvidenceProvenance = {
   axonRevision: string;
@@ -1515,11 +1519,7 @@ test.describe('editor (Phase 1 smoke)', () => {
         pagePath: `/?axon_datafusion_memory_profile_mib=${memoryProfileMiB}&axon_datafusion_spill_cap_mib=${encodeURIComponent(spillCapMiB)}`,
       });
 
-      await page.locator('.code-input').fill(
-        `SELECT event_id, SUM(quantity) AS quantity_sum, SUM(score) AS score_sum
-FROM query_engine_stress_delta
-GROUP BY event_id`,
-      );
+      await page.locator('.code-input').fill(STRESS_AGGREGATE_SQL);
       await page.locator('.btn.primary', { hasText: 'Run' }).click();
 
       await expect

@@ -24,11 +24,27 @@ async function run(): Promise<unknown> {
   const probe = await probeBrowserExternalMemory(storage);
   if (!probe.available) return probe;
 
+  const parameters = new URL(worker.location.href).searchParams;
+  const mode = parameters.get('mode') ?? 'lifecycle';
+  if (mode === 'sweep') {
+    const host = await OpfsSpillHost.open(storage, {
+      productionCapBytes: 64 * 1024 * 1024,
+      nowMs: Date.now() + 2 * 60 * 60 * 1000,
+    });
+    return { available: true, mode, afterSweep: host.metrics() };
+  }
+
   const host = await OpfsSpillHost.open(storage, {
     productionCapBytes: 64 * 1024 * 1024,
   });
   const scope = await host.createScope();
   const { file, writerId } = await host.createFile(scope);
+  if (mode === 'abandon') {
+    await host.append(writerId, Uint8Array.from([0x41, 0x78, 0x6f, 0x6e]));
+    await host.finalizeWriter(writerId);
+    return { available: true, mode, beforeTermination: host.metrics() };
+  }
+  if (mode !== 'lifecycle') throw new Error(`unknown OPFS worker test mode: ${mode}`);
   let expectedChecksum = 0;
   for (let offset = 0; offset < FOUR_MIB; offset += CHUNK_BYTES) {
     const chunk = new Uint8Array(CHUNK_BYTES);

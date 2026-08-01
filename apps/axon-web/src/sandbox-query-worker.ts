@@ -3,6 +3,7 @@ import {
   type BrowserWorkerCancelCommand,
   type BrowserWorkerCommand,
   type BrowserWorkerDataFusionMemoryMetrics,
+  type BrowserWorkerExternalMemoryMetrics,
   type BrowserWorkerEventContext,
   type BrowserWorkerEventEnvelope,
   type BrowserWorkerLogLevel,
@@ -34,6 +35,7 @@ import {
   type PrivateChildMessage,
   type PrivateCoordinatorMessage,
   type PrivateDataFusionMemoryMetrics,
+  type PrivateExternalMemoryMetrics,
   type PrivateTerminalMetadata,
   type PrivateTerminalStatus,
 } from './sandbox-query-stream-protocol';
@@ -505,9 +507,14 @@ function handleChildMessage(message: PrivateChildMessage): void {
         finishActiveQuery(
           message.query_id,
           normalizePrivateDataFusionMemoryMetrics(message.metadata.datafusion_memory),
+          normalizePrivateExternalMemoryMetrics(message.metadata.external_memory),
         );
       } else if (message.kind !== 'stream_chunk') {
-        finishActiveQuery(message.query_id);
+        finishActiveQuery(
+          message.query_id,
+          undefined,
+          normalizePrivateExternalMemoryMetrics(message.external_memory),
+        );
       }
       return;
     }
@@ -531,9 +538,10 @@ function handleChildMessage(message: PrivateChildMessage): void {
     }
     if (!active.lifecycle.beginDrain('failed')) return;
     active.stage.discard();
-    releaseActiveMemory(active);
+    const externalMemory = normalizePrivateExternalMemoryMetrics(message.external_memory);
+    releaseActiveMemory(active, undefined, externalMemory);
     postQueryError(message.query_id, active.context, message.error);
-    finishActiveQuery(message.query_id);
+    finishActiveQuery(message.query_id, undefined, externalMemory);
   } catch (error) {
     const queryId = 'query_id' in message ? message.query_id : undefined;
     if (!queryId) return;
@@ -560,6 +568,7 @@ function finishFromTerminal(
   requireTerminalMetadata(metadataValue);
   const metadata = metadataValue as SandboxTerminalMetadata;
   const datafusionMemory = normalizePrivateDataFusionMemoryMetrics(metadata.datafusion_memory);
+  const externalMemory = normalizePrivateExternalMemoryMetrics(metadata.external_memory);
   if (metadata.status !== 'succeeded') {
     if (!active.lifecycle.beginDrain(metadata.status)) return;
     active.stage.discard();
@@ -573,9 +582,9 @@ function finishFromTerminal(
             ? 'experimental browser DataFusion query cancelled during Arrow IPC cursor pull'
             : 'browser DataFusion query failed without structured error metadata',
       );
-    releaseActiveMemory(active, datafusionMemory);
+    releaseActiveMemory(active, datafusionMemory, externalMemory);
     postQueryError(active.command.request_id, active.context, error, metadata.status);
-    finishActiveQuery(active.command.request_id, datafusionMemory);
+    finishActiveQuery(active.command.request_id, datafusionMemory, externalMemory);
     return;
   }
 
@@ -585,14 +594,14 @@ function finishFromTerminal(
     if (!active.lifecycle.beginDrain('succeeded')) return;
     // The child completed a query, so any earlier crash streak is not a persistent fault.
     consecutiveRuntimeCrashes = 0;
-    commitSuccessfulQuery(active, metadata, chunks, datafusionMemory);
+    commitSuccessfulQuery(active, metadata, chunks, datafusionMemory, externalMemory);
   } catch (error) {
     active.lifecycle.beginDrain('failed');
     active.stage.discard();
-    releaseActiveMemory(active, datafusionMemory);
+    releaseActiveMemory(active, datafusionMemory, externalMemory);
     postQueryError(active.command.request_id, active.context, normalizeQueryError(error));
   } finally {
-    finishActiveQuery(active.command.request_id, datafusionMemory);
+    finishActiveQuery(active.command.request_id, datafusionMemory, externalMemory);
   }
 }
 
@@ -601,6 +610,7 @@ function commitSuccessfulQuery(
   metadata: SandboxTerminalMetadata,
   chunks: Uint8Array[],
   datafusionMemory: BrowserWorkerDataFusionMemoryMetrics | undefined,
+  externalMemory: BrowserWorkerExternalMemoryMetrics | undefined,
 ): void {
   if (
     !metadata.response ||
@@ -643,7 +653,7 @@ function commitSuccessfulQuery(
 
   if (active.delivery === 'chunked_buffers') {
     postCommittedChunks(active.context, active.command.request_id, chunks);
-    releaseActiveMemory(active, datafusionMemory);
+    releaseActiveMemory(active, datafusionMemory, externalMemory);
     emitProgress(active.context, 'finished');
     postResponse({
       success: {
@@ -664,7 +674,7 @@ function commitSuccessfulQuery(
 
   const bytes = checkedSingleBuffer(chunks, arrowIpcByteLength);
   chunks.length = 0;
-  releaseActiveMemory(active, datafusionMemory);
+  releaseActiveMemory(active, datafusionMemory, externalMemory);
   emitProgress(active.context, 'finished');
   postResponse(
     {
@@ -768,13 +778,14 @@ function beginAuthoritativeDrain(
 function finishActiveQuery(
   queryId: string,
   datafusionMemory?: BrowserWorkerDataFusionMemoryMetrics,
+  externalMemory?: BrowserWorkerExternalMemoryMetrics,
 ): void {
   const active = activeQueries.get(queryId);
   if (!active) return;
   clearTimeout(active.deadline);
   if (active.watchdog) clearTimeout(active.watchdog);
   if (active.lifecycle.state === 'draining') active.lifecycle.finishDrain();
-  releaseActiveMemory(active, datafusionMemory);
+  releaseActiveMemory(active, datafusionMemory, externalMemory);
   activeQueries.delete(queryId);
 }
 
@@ -934,6 +945,7 @@ function coordinatorRuntimeConfig(scope: CoordinatorConfiguredScope): Coordinato
 function releaseActiveMemory(
   active: ActiveCoordinatorQuery,
   datafusionMemory?: BrowserWorkerDataFusionMemoryMetrics,
+  externalMemory?: BrowserWorkerExternalMemoryMetrics,
 ): void {
   if (active.memoryReleased) return;
   memoryBudget.release(active.command.request_id);
@@ -950,6 +962,7 @@ function releaseActiveMemory(
         peak_staged_bytes: coordinator.peakStagedBytes,
       },
       ...(datafusionMemory ? { datafusion: datafusionMemory } : {}),
+      ...(externalMemory ? { external_memory: externalMemory } : {}),
     },
   });
 }
@@ -962,6 +975,31 @@ function normalizePrivateDataFusionMemoryMetrics(
     limit_bytes: decimalNumber(metrics.limit_bytes),
     reserved_bytes: decimalNumber(metrics.reserved_bytes),
     peak_bytes: decimalNumber(metrics.peak_bytes),
+  };
+}
+
+function normalizePrivateExternalMemoryMetrics(
+  metrics: PrivateExternalMemoryMetrics | undefined,
+): BrowserWorkerExternalMemoryMetrics | undefined {
+  if (!metrics) return undefined;
+  return {
+    backend: 'opfs',
+    storage_limit_bytes: decimalNumber(metrics.storage_limit_bytes),
+    bytes_written: decimalNumber(metrics.bytes_written),
+    bytes_read: decimalNumber(metrics.bytes_read),
+    files_created: decimalNumber(metrics.files_created),
+    peak_active_bytes: decimalNumber(metrics.peak_active_bytes),
+    active_files: decimalNumber(metrics.active_files),
+    merge_passes: decimalNumber(metrics.merge_passes),
+    cleanup_count: decimalNumber(metrics.cleanup_count),
+    abandoned_cleanup_count: decimalNumber(metrics.abandoned_cleanup_count),
+    ...(metrics.working_set_limit_bytes === undefined
+      ? {}
+      : { working_set_limit_bytes: decimalNumber(metrics.working_set_limit_bytes) }),
+    ...(metrics.peak_reservation_bytes === undefined
+      ? {}
+      : { peak_reservation_bytes: decimalNumber(metrics.peak_reservation_bytes) }),
+    ...(metrics.error_reason === undefined ? {} : { error_reason: metrics.error_reason }),
   };
 }
 

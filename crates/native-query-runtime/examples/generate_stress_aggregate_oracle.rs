@@ -3,17 +3,14 @@ use std::fs;
 use std::path::PathBuf;
 
 use deltalake::arrow::util::display::array_value_to_string;
-use native_query_runtime::execute_query;
+use native_query_runtime::{execute_query, DEFAULT_TABLE_NAME};
 use query_contract::{ExecutionTarget, QueryExecutionOptions, QueryRequest, QueryResultPage};
 use serde::Serialize;
 
 const PAGE_ROWS: u64 = 500;
-const SQL: &str = "SELECT event_id, \
-    SUM(quantity) AS quantity_sum, \
-    SUM(score) AS score_sum \
-    FROM axon_table \
-    GROUP BY event_id \
-    ORDER BY event_id";
+const SQL_TEMPLATE: &str = include_str!(
+    "../../../apps/axon-web/tests/fixtures/browser-external-memory/stress-aggregate.sql"
+);
 
 #[derive(Serialize)]
 struct StressAggregateOracle {
@@ -36,9 +33,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // The native reference runtime intentionally exposes its one registered table under a fixed
+    // name. Keep the query body and ordering canonical while adapting only that binding.
+    let sql = SQL_TEMPLATE.replace("query_engine_stress_delta", DEFAULT_TABLE_NAME);
+
     let request = QueryRequest::new(
         PathBuf::from(table_uri).to_string_lossy(),
-        SQL,
+        sql,
         ExecutionTarget::Native,
     )
     .with_options(QueryExecutionOptions {

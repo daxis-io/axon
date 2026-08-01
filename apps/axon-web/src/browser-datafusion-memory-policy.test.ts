@@ -5,28 +5,9 @@ import {
   PREVIOUS_BROWSER_DATAFUSION_MEMORY_PROFILE_MIB,
   browserDataFusionMemoryOverrideBytes,
   browserExternalMemoryCanaryCapBytes,
-  selectBrowserDataFusionMemoryProfile,
-  type BrowserDataFusionMemoryProfileObservation,
 } from './browser-datafusion-memory-policy.ts';
 
 const MIB = 1024 * 1024;
-const BROWSERS = ['chromium', 'firefox', 'webkit'] as const;
-
-function observation(
-  browser: (typeof BROWSERS)[number],
-  profileMiB: number,
-  peakMiB: number,
-  overrides: Partial<BrowserDataFusionMemoryProfileObservation> = {},
-): BrowserDataFusionMemoryProfileObservation {
-  return {
-    browser,
-    profileMiB,
-    completedRuns: 10,
-    peakRegisteredBytes: peakMiB * MIB,
-    physicalMemoryPlateaued: true,
-    ...overrides,
-  };
-}
 
 describe('browser DataFusion interim memory policy', () => {
   it('uses only the approved measured candidates and keeps 64 MiB as the kill switch', () => {
@@ -37,33 +18,6 @@ describe('browser DataFusion interim memory policy', () => {
     expect(() => browserDataFusionMemoryOverrideBytes('512')).toThrow(
       'unsupported browser DataFusion memory profile',
     );
-  });
-
-  it('selects the lowest all-browser profile with ten runs, a plateau, and 20 percent headroom', () => {
-    const observations = [
-      ...BROWSERS.map((browser) =>
-        observation(browser, 96, 70, {
-          completedRuns: browser === 'firefox' ? 9 : 10,
-        }),
-      ),
-      ...BROWSERS.map((browser) => observation(browser, 128, 104)),
-      ...BROWSERS.map((browser) => observation(browser, 160, 120)),
-      ...BROWSERS.map((browser) => observation(browser, 192, 120)),
-    ];
-
-    expect(selectBrowserDataFusionMemoryProfile(observations, BROWSERS)).toBe(160);
-  });
-
-  it('refuses to select through 256 MiB when any browser fails or does not plateau', () => {
-    const observations = BROWSER_DATAFUSION_MEMORY_CANDIDATE_MIB.flatMap((profileMiB) =>
-      BROWSERS.map((browser) =>
-        observation(browser, profileMiB, profileMiB * 0.75, {
-          physicalMemoryPlateaued: browser !== 'webkit',
-        }),
-      ),
-    );
-
-    expect(selectBrowserDataFusionMemoryProfile(observations, BROWSERS)).toBeUndefined();
   });
 });
 
@@ -76,8 +30,18 @@ describe('browser external-memory canary spill cap', () => {
     expect(browserExternalMemoryCanaryCapBytes('576')).toBe(576 * MIB);
     expect(browserExternalMemoryCanaryCapBytes('640')).toBe(576 * MIB);
     expect(browserExternalMemoryCanaryCapBytes('4096')).toBe(576 * MIB);
-    expect(browserExternalMemoryCanaryCapBytes('65')).toBeUndefined();
-    expect(browserExternalMemoryCanaryCapBytes('0')).toBeUndefined();
-    expect(browserExternalMemoryCanaryCapBytes('4097')).toBeUndefined();
+  });
+
+  it.each(['', 'garbage', '65', '0', '4097'])(
+    'rejects an explicitly configured invalid cap %j instead of disabling spill',
+    (value) => {
+      expect(() => browserExternalMemoryCanaryCapBytes(value)).toThrow(
+        /browser external-memory spill cap/i,
+      );
+    },
+  );
+
+  it('distinguishes an absent canary override from an explicit invalid value', () => {
+    expect(browserExternalMemoryCanaryCapBytes(null)).toBeUndefined();
   });
 });

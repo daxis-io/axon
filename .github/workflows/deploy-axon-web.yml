@@ -25,6 +25,13 @@ on:
           - preview
           - production
         default: preview
+      browser_runtime_tier:
+        description: Browser runtime artifact
+        type: choice
+        options:
+          - standard
+          - external-memory
+        default: standard
 
 concurrency:
   group: deploy-axon-web-${{ github.ref }}
@@ -33,6 +40,7 @@ concurrency:
 env:
   VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
   VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+  AXON_BROWSER_RUNTIME_BUILD_TIER: ${{ inputs.browser_runtime_tier || 'standard' }}
 
 jobs:
   deploy:
@@ -91,6 +99,10 @@ jobs:
           # Production requires an explicit workflow_dispatch. A push to main publishes a preview
           # so a bad commit cannot reach users on its own; nothing here gates on the test suites.
           if [ "${{ inputs.environment }}" = "production" ]; then
+            if [ "${AXON_BROWSER_RUNTIME_BUILD_TIER}" != "standard" ]; then
+              echo "External-memory artifacts are preview-canary only until browser promotion gates pass." >&2
+              exit 1
+            fi
             echo "environment=production" >> "$GITHUB_OUTPUT"
             echo "prod_flag=--prod" >> "$GITHUB_OUTPUT"
             # Verify the public alias, not the per-deployment URL. Vercel protects the generated

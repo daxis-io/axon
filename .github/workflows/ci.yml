@@ -237,6 +237,67 @@ jobs:
           AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION }}
         run: cargo test -p native-query-runtime --locked execute_query_supports_env_gated_partitioned_gcs_snapshot_version_smoke -- --exact --nocapture
 
+  browser-external-memory-artifact:
+    name: Browser external-memory artifact
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-bindgen CLI
+        run: cargo install wasm-bindgen-cli --version 0.2.114 --locked
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/axon-web/package-lock.json
+
+      - name: Install browser dependencies
+        working-directory: apps/axon-web
+        run: npm ci
+
+      - name: Run browser unit tests
+        working-directory: apps/axon-web
+        run: npm test
+
+      - name: Build and verify the external-memory browser artifact
+        working-directory: apps/axon-web
+        run: npm run build:external-memory
+
+      - name: Install Chromium for external-memory qualification
+        working-directory: apps/axon-web
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the ten-spill memory qualification
+        working-directory: apps/axon-web
+        run: npm run test:browser:external-memory:qualification
+
+      - name: Upload the verified runtime manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-external-memory-runtime-manifest
+          path: apps/axon-web/dist/axon-runtime-build.json
+          if-no-files-found: error
+
+      - name: Upload external-memory browser evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-external-memory-playwright-evidence
+          path: apps/axon-web/test-results
+          if-no-files-found: warn
+
   browser-datafusion-wasm-size:
     name: Browser DataFusion WASM size budget
     runs-on: ubuntu-latest

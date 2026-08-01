@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "cd apps/axon-web && npm ci",
-  "buildCommand": "cd apps/axon-web && npm run build",
+  "buildCommand": "cd apps/axon-web && npm run build:vercel",
   "outputDirectory": "apps/axon-web/dist",
   "rewrites": [
     { "source": "/connect", "destination": "/index.html" },

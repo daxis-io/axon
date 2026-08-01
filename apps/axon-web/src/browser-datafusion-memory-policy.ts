@@ -12,14 +12,6 @@ const ALLOWED_OVERRIDE_MIB = new Set<number>([
   ...BROWSER_DATAFUSION_MEMORY_CANDIDATE_MIB,
 ]);
 
-export type BrowserDataFusionMemoryProfileObservation = {
-  browser: string;
-  profileMiB: number;
-  completedRuns: number;
-  peakRegisteredBytes: number;
-  physicalMemoryPlateaued: boolean;
-};
-
 export function browserDataFusionMemoryOverrideBytes(
   profileMiB: string | null | undefined,
 ): number | undefined {
@@ -42,7 +34,10 @@ export function browserDataFusionMemoryOverrideBytes(
  * The canary may lower the corpus-derived product cap but can never raise it.
  */
 export function browserExternalMemoryCanaryCapBytes(value: string | null): number | undefined {
-  if (value === null || !/^[1-9]\d*$/.test(value)) return undefined;
+  if (value === null) return undefined;
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new TypeError('browser external-memory spill cap must be a positive integer MiB value');
+  }
   const mebibytes = Number(value);
   if (
     !Number.isSafeInteger(mebibytes) ||
@@ -50,40 +45,9 @@ export function browserExternalMemoryCanaryCapBytes(value: string | null): numbe
     mebibytes > 4096 ||
     mebibytes % BROWSER_EXTERNAL_MEMORY_SPILL_CAP_GRANULARITY_MIB !== 0
   ) {
-    return undefined;
+    throw new RangeError(
+      'browser external-memory spill cap must be a 64 MiB multiple between 64 and 4096 MiB',
+    );
   }
   return Math.min(mebibytes, BROWSER_EXTERNAL_MEMORY_PRODUCTION_CAP_MIB) * MIB;
-}
-
-export function selectBrowserDataFusionMemoryProfile(
-  observations: readonly BrowserDataFusionMemoryProfileObservation[],
-  qualifyingBrowsers: readonly string[],
-): number | undefined {
-  if (
-    qualifyingBrowsers.length === 0 ||
-    new Set(qualifyingBrowsers).size !== qualifyingBrowsers.length
-  ) {
-    throw new TypeError('qualifying browsers must be a non-empty unique list');
-  }
-
-  for (const profileMiB of BROWSER_DATAFUSION_MEMORY_CANDIDATE_MIB) {
-    const limitBytes = profileMiB * MIB;
-    const qualifies = qualifyingBrowsers.every((browser) => {
-      const observation = observations.find(
-        (candidate) => candidate.browser === browser && candidate.profileMiB === profileMiB,
-      );
-      return (
-        observation !== undefined &&
-        Number.isSafeInteger(observation.completedRuns) &&
-        observation.completedRuns >= 10 &&
-        Number.isSafeInteger(observation.peakRegisteredBytes) &&
-        observation.peakRegisteredBytes >= 0 &&
-        observation.peakRegisteredBytes * 5 <= limitBytes * 4 &&
-        observation.physicalMemoryPlateaued
-      );
-    });
-    if (qualifies) return profileMiB;
-  }
-
-  return undefined;
 }

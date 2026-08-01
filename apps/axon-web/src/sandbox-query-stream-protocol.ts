@@ -19,6 +19,22 @@ export type PrivateDataFusionMemoryMetrics = {
   peak_bytes: string;
 };
 
+export type PrivateExternalMemoryMetrics = {
+  backend: 'opfs';
+  storage_limit_bytes: string;
+  bytes_written: string;
+  bytes_read: string;
+  files_created: string;
+  peak_active_bytes: string;
+  active_files: string;
+  merge_passes: string;
+  cleanup_count: string;
+  abandoned_cleanup_count: string;
+  working_set_limit_bytes?: string;
+  peak_reservation_bytes?: string;
+  error_reason?: 'unavailable' | 'quota_exceeded' | 'io_failure';
+};
+
 export type PrivateStreamChunk = {
   version: typeof PRIVATE_STREAM_PROTOCOL_VERSION;
   query_id: string;
@@ -47,6 +63,7 @@ export type PrivateTerminalMetadata = {
     peak_transport_chunk_bytes: string;
   };
   datafusion_memory?: PrivateDataFusionMemoryMetrics;
+  external_memory?: PrivateExternalMemoryMetrics;
   [key: string]: unknown;
 };
 
@@ -93,6 +110,7 @@ export type PrivateChildMessage =
       version: typeof PRIVATE_STREAM_PROTOCOL_VERSION;
       query_id: string;
       error: QueryError;
+      external_memory?: PrivateExternalMemoryMetrics;
     }
   // Reported when the child fails outside any single query, so it carries no query_id.
   | {
@@ -457,6 +475,42 @@ export function requireTerminalMetadata(value: unknown): asserts value is Privat
     decimalBigInt(metadata.datafusion_memory.limit_bytes, 'datafusion_memory.limit_bytes');
     decimalBigInt(metadata.datafusion_memory.reserved_bytes, 'datafusion_memory.reserved_bytes');
     decimalBigInt(metadata.datafusion_memory.peak_bytes, 'datafusion_memory.peak_bytes');
+  }
+  if (metadata.external_memory !== undefined) {
+    const metrics = metadata.external_memory;
+    if (!metrics || typeof metrics !== 'object') {
+      throw new Error('private stream external_memory must be an object');
+    }
+    if (metrics.backend !== 'opfs') {
+      throw new Error('private stream external_memory.backend must be opfs');
+    }
+    for (const field of [
+      'storage_limit_bytes',
+      'bytes_written',
+      'bytes_read',
+      'files_created',
+      'peak_active_bytes',
+      'active_files',
+      'merge_passes',
+      'cleanup_count',
+      'abandoned_cleanup_count',
+    ] as const) {
+      decimalBigInt(metrics[field], `external_memory.${field}`);
+    }
+    if (metrics.working_set_limit_bytes !== undefined) {
+      decimalBigInt(metrics.working_set_limit_bytes, 'external_memory.working_set_limit_bytes');
+    }
+    if (metrics.peak_reservation_bytes !== undefined) {
+      decimalBigInt(metrics.peak_reservation_bytes, 'external_memory.peak_reservation_bytes');
+    }
+    if (
+      metrics.error_reason !== undefined &&
+      metrics.error_reason !== 'unavailable' &&
+      metrics.error_reason !== 'quota_exceeded' &&
+      metrics.error_reason !== 'io_failure'
+    ) {
+      throw new Error('private stream external_memory.error_reason was invalid');
+    }
   }
 }
 

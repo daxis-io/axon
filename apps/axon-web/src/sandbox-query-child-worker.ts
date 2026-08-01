@@ -42,6 +42,7 @@ import {
   type PrivateChildMessage,
   type PrivateCoordinatorMessage,
   type PrivateCreditClass,
+  type PrivateExternalMemoryMetrics,
   type PrivateStreamChunk,
   type PrivateStreamPhase,
   type PrivateTerminalMetadata,
@@ -77,6 +78,10 @@ type ActiveQuery = {
   stream?: SandboxSqlStream;
   spillMetricsStart?: OpfsSpillQuerySnapshot;
 };
+
+type SqlStreamOutcome =
+  | { kind: 'terminal'; metadata: PrivateTerminalMetadata }
+  | { kind: 'stream_start_failed' | 'stream_fault'; error: QueryError };
 
 type PageIndexSession = SandboxQuerySession & {
   set_page_index_mode?: (mode: string, calibrationErrorMarginUs?: number) => void;
@@ -246,6 +251,7 @@ async function handleSql(
   const pendingCancellation = pendingCancellations.get(command.request_id);
   if (pendingCancellation) cancelActiveQuery(active, pendingCancellation);
 
+  let outcome: SqlStreamOutcome;
   try {
     emitProgress(context, 'started');
     emitLog(context, 'info', 'sandbox child executing SQL query');
@@ -260,32 +266,61 @@ async function handleSql(
         QUERY_PREVIEW_LIMIT,
       );
     } catch (error) {
-      postStreamStartFailed(command.request_id, normalizeQueryError(error));
-      return;
+      outcome = { kind: 'stream_start_failed', error: normalizeQueryError(error) };
+      return await finishSql(active, outcome);
     }
     active.stream = stream;
     if (active.gate.cancelReason === 'deadline_exceeded') stream.cancel_for_deadline();
     if (active.gate.cancelReason === 'cancelled') stream.cancel();
     emitProgress(context, 'executing');
-    await pumpStream(active, stream);
+    outcome = { kind: 'terminal', metadata: await pumpStream(active, stream) };
   } catch (error) {
-    postStreamFault(command.request_id, normalizeQueryError(error));
-  } finally {
-    try {
-      if (active.stream) await active.stream.close();
-    } finally {
-      try {
-        if (active.spillMetricsStart && opfsSpillHost) {
-          await opfsSpillHost.releaseQueryScopes(active.spillMetricsStart);
-        }
-      } finally {
-        if (activeQuery === active) activeQuery = undefined;
-      }
+    outcome = { kind: 'stream_fault', error: normalizeQueryError(error) };
+  }
+  await finishSql(active, outcome);
+}
+
+async function finishSql(active: ActiveQuery, initialOutcome: SqlStreamOutcome): Promise<void> {
+  let outcome = initialOutcome;
+  try {
+    if (active.stream) await active.stream.close();
+  } catch (error) {
+    outcome = { kind: 'stream_fault', error: normalizeQueryError(error) };
+  }
+  try {
+    if (active.spillMetricsStart && opfsSpillHost) {
+      await opfsSpillHost.releaseQueryScopes(active.spillMetricsStart);
     }
+  } catch (error) {
+    outcome = { kind: 'stream_fault', error: normalizeQueryError(error) };
+  } finally {
+    if (activeQuery === active) activeQuery = undefined;
+  }
+
+  if (outcome.kind === 'terminal') {
+    applyBrowserExternalMemoryCapability(outcome.metadata);
+    applyBrowserExternalMemoryMetrics(outcome.metadata, active.spillMetricsStart);
+    postPrivate({
+      kind: 'stream_terminal',
+      version: PRIVATE_STREAM_PROTOCOL_VERSION,
+      query_id: active.queryId,
+      metadata: outcome.metadata,
+    });
+    return;
+  }
+
+  const externalMemory = browserExternalMemoryMetrics(active.spillMetricsStart, outcome.error);
+  if (outcome.kind === 'stream_start_failed') {
+    postStreamStartFailed(active.queryId, outcome.error, externalMemory);
+  } else {
+    postStreamFault(active.queryId, outcome.error, externalMemory);
   }
 }
 
-async function pumpStream(active: ActiveQuery, stream: SandboxSqlStream): Promise<void> {
+async function pumpStream(
+  active: ActiveQuery,
+  stream: SandboxSqlStream,
+): Promise<PrivateTerminalMetadata> {
   let creditCandidates: readonly PrivateCreditClass[] = ['control'];
   for (;;) {
     const reservations = await active.gate.reserveAll(creditCandidates);
@@ -299,18 +334,7 @@ async function pumpStream(active: ActiveQuery, stream: SandboxSqlStream): Promis
       refundReservations(active.gate, reservations);
       const metadata = JSON.parse(item.terminal.metadata_json) as unknown;
       requireTerminalMetadata(metadata);
-      applyBrowserExternalMemoryCapability(metadata);
-      if (active.spillMetricsStart && opfsSpillHost) {
-        await opfsSpillHost.releaseQueryScopes(active.spillMetricsStart);
-      }
-      applyBrowserExternalMemoryMetrics(metadata, active.spillMetricsStart);
-      postPrivate({
-        kind: 'stream_terminal',
-        version: PRIVATE_STREAM_PROTOCOL_VERSION,
-        query_id: active.queryId,
-        metadata,
-      });
-      return;
+      return metadata;
     }
 
     const chunk = requireWasmChunk(item.chunk, active.queryId);
@@ -355,30 +379,66 @@ function applyBrowserExternalMemoryMetrics(
   metadata: PrivateTerminalMetadata,
   start: OpfsSpillQuerySnapshot | undefined,
 ): void {
-  if (!start || !opfsSpillHost || !metadata.response || typeof metadata.response !== 'object') {
-    return;
+  const externalMemory = browserExternalMemoryMetrics(start, metadata.error);
+  if (!externalMemory) return;
+  if (metadata.datafusion_memory) {
+    externalMemory.working_set_limit_bytes = metadata.datafusion_memory.limit_bytes;
+    externalMemory.peak_reservation_bytes = metadata.datafusion_memory.peak_bytes;
   }
-  const spill = opfsSpillHost.queryMetricsSince(start);
-  if (spill.filesCreated === 0) return;
+  metadata.external_memory = externalMemory;
+  if (!metadata.response || typeof metadata.response !== 'object') return;
   const response = metadata.response as {
     metrics?: Record<string, unknown>;
   };
   if (!response.metrics) return;
-  const memory = metadata.datafusion_memory;
   response.metrics.spill_backend = 'opfs';
-  response.metrics.spill_storage_limit_bytes = spill.storageLimitBytes;
-  response.metrics.spill_bytes_written = spill.bytesWritten;
-  response.metrics.spill_bytes_read = spill.bytesRead;
-  response.metrics.spill_files_created = spill.filesCreated;
-  response.metrics.spill_peak_active_bytes = spill.peakActiveBytes;
-  response.metrics.spill_active_files = spill.activeFiles;
-  response.metrics.spill_merge_passes = spill.mergePasses;
-  response.metrics.spill_cleanup_count = spill.scopesDeleted;
-  response.metrics.spill_abandoned_cleanup_count = spill.abandonedScopesDeleted;
-  if (memory) {
-    response.metrics.spill_working_set_limit_bytes = decimalNumber(memory.limit_bytes);
-    response.metrics.spill_peak_reservation_bytes = decimalNumber(memory.peak_bytes);
+  response.metrics.spill_storage_limit_bytes = decimalNumber(externalMemory.storage_limit_bytes);
+  response.metrics.spill_bytes_written = decimalNumber(externalMemory.bytes_written);
+  response.metrics.spill_bytes_read = decimalNumber(externalMemory.bytes_read);
+  response.metrics.spill_files_created = decimalNumber(externalMemory.files_created);
+  response.metrics.spill_peak_active_bytes = decimalNumber(externalMemory.peak_active_bytes);
+  response.metrics.spill_active_files = decimalNumber(externalMemory.active_files);
+  response.metrics.spill_merge_passes = decimalNumber(externalMemory.merge_passes);
+  response.metrics.spill_cleanup_count = decimalNumber(externalMemory.cleanup_count);
+  response.metrics.spill_abandoned_cleanup_count = decimalNumber(
+    externalMemory.abandoned_cleanup_count,
+  );
+  if (externalMemory.working_set_limit_bytes !== undefined) {
+    response.metrics.spill_working_set_limit_bytes = decimalNumber(
+      externalMemory.working_set_limit_bytes,
+    );
   }
+  if (externalMemory.peak_reservation_bytes !== undefined) {
+    response.metrics.spill_peak_reservation_bytes = decimalNumber(
+      externalMemory.peak_reservation_bytes,
+    );
+  }
+}
+
+function browserExternalMemoryMetrics(
+  start: OpfsSpillQuerySnapshot | undefined,
+  error: QueryError | undefined,
+): PrivateExternalMemoryMetrics | undefined {
+  if (!start || !opfsSpillHost) return undefined;
+  const spill = opfsSpillHost.queryMetricsSince(start);
+  const errorReason =
+    error?.resource_details?.resource === 'spill_storage'
+      ? error.resource_details.reason
+      : undefined;
+  if (spill.filesCreated === 0 && errorReason === undefined) return undefined;
+  return {
+    backend: 'opfs',
+    storage_limit_bytes: String(spill.storageLimitBytes),
+    bytes_written: String(spill.bytesWritten),
+    bytes_read: String(spill.bytesRead),
+    files_created: String(spill.filesCreated),
+    peak_active_bytes: String(spill.peakActiveBytes),
+    active_files: String(spill.activeFiles),
+    merge_passes: String(spill.mergePasses),
+    cleanup_count: String(spill.scopesDeleted),
+    abandoned_cleanup_count: String(spill.abandonedScopesDeleted),
+    ...(errorReason ? { error_reason: errorReason } : {}),
+  };
 }
 
 function nextCreditCandidates(chunk: PrivateStreamChunk): readonly PrivateCreditClass[] {
@@ -658,21 +718,31 @@ function postPublic(
   });
 }
 
-function postStreamStartFailed(queryId: string, error: QueryError): void {
+function postStreamStartFailed(
+  queryId: string,
+  error: QueryError,
+  externalMemory?: PrivateExternalMemoryMetrics,
+): void {
   postPrivate({
     kind: 'stream_start_failed',
     version: PRIVATE_STREAM_PROTOCOL_VERSION,
     query_id: queryId,
     error,
+    ...(externalMemory ? { external_memory: externalMemory } : {}),
   });
 }
 
-function postStreamFault(queryId: string, error: QueryError): void {
+function postStreamFault(
+  queryId: string,
+  error: QueryError,
+  externalMemory?: PrivateExternalMemoryMetrics,
+): void {
   postPrivate({
     kind: 'stream_fault',
     version: PRIVATE_STREAM_PROTOCOL_VERSION,
     query_id: queryId,
     error,
+    ...(externalMemory ? { external_memory: externalMemory } : {}),
   });
 }
 
