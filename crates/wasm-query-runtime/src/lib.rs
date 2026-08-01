@@ -2691,6 +2691,7 @@ fn execution_metrics(
         cursor_peak_pending_encoded_bytes: None,
         cursor_peak_transport_chunk_bytes: None,
         page_index_decision: None,
+        ..QueryMetricsSummary::default()
     })
 }
 

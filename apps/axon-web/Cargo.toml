@@ -9,6 +9,9 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [features]
+browser-external-memory = [
+  "wasm-datafusion-session/browser-external-memory",
+]
 fixture-generator = [
   "dep:bytes",
   "dep:deltalake",

@@ -376,11 +376,18 @@ pub struct SandboxQuerySession {
 #[wasm_bindgen]
 impl SandboxQuerySession {
     #[wasm_bindgen(constructor)]
-    pub fn new() -> Result<SandboxQuerySession, JsValue> {
-        let session = BrowserDataFusionSession::new(
-            default_sandbox_runtime_config(),
-            DEFAULT_QUERY_SESSION_CACHE_BYTES,
-        )
+    pub fn new(memory_limit_bytes: Option<usize>) -> Result<SandboxQuerySession, JsValue> {
+        let runtime_config = default_sandbox_runtime_config();
+        let session = match memory_limit_bytes {
+            Some(memory_limit_bytes) => BrowserDataFusionSession::new_with_memory_limit(
+                runtime_config,
+                DEFAULT_QUERY_SESSION_CACHE_BYTES,
+                memory_limit_bytes,
+            ),
+            None => {
+                BrowserDataFusionSession::new(runtime_config, DEFAULT_QUERY_SESSION_CACHE_BYTES)
+            }
+        }
         .map_err(query_error_to_js_value)?;
         let cancellation = session.cancellation_handle();
 
@@ -394,6 +401,13 @@ impl SandboxQuerySession {
         SandboxQueryCancellation {
             cancellation: self.cancellation.clone(),
         }
+    }
+
+    pub fn browser_external_memory_enabled(&self) -> bool {
+        cfg!(all(
+            target_arch = "wasm32",
+            feature = "browser-external-memory"
+        ))
     }
 
     pub fn set_page_index_mode(

@@ -870,7 +870,14 @@ test('withholds Arrow publication when actual output exceeds the admitted byte l
   );
 
   expect(result.failure).toMatchObject({
-    queryError: { code: 'execution_failed', target: 'browser_wasm' },
+    queryError: {
+      code: 'resource_exhausted',
+      resource_details: {
+        resource: 'result_output',
+        reason: 'unavailable',
+      },
+      target: 'browser_wasm',
+    },
   });
   expect(result.failure?.message).toContain('max_arrow_ipc_bytes');
   const queryEvents = result.workerEvents.filter((event) =>

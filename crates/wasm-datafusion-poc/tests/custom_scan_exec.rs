@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use arrow_array::{cast::AsArray, Int32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use query_contract::{FallbackReason, QueryErrorCode};
+use query_contract::{QueryErrorCode, QueryResource, QueryResourceDetails, QueryResourceReason};
 use wasm_datafusion_poc::{
     BrowserQueryBudget, DeltaActiveFile, DeltaTableDescriptor, WasmDataFusionEngine,
 };
@@ -69,7 +69,7 @@ async fn datafusion_executes_aggregate_above_custom_scan() {
 }
 
 #[tokio::test]
-async fn datafusion_operator_memory_exhaustion_requires_structured_fallback() {
+async fn datafusion_operator_memory_exhaustion_is_authority_neutral_resource_failure() {
     let invalid =
         WasmDataFusionEngine::with_budget_and_memory_limit(BrowserQueryBudget::default(), 0)
             .expect_err("a zero-byte DataFusion memory pool must be rejected");
@@ -98,10 +98,14 @@ async fn datafusion_operator_memory_exhaustion_requires_structured_fallback() {
         .await
         .expect_err("a one-byte DataFusion memory pool must reject the aggregate");
 
-    assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+    assert_eq!(error.code, QueryErrorCode::ResourceExhausted);
+    assert_eq!(error.fallback_reason, None);
     assert_eq!(
-        error.fallback_reason,
-        Some(FallbackReason::BrowserRuntimeConstraint)
+        error.resource_details,
+        Some(QueryResourceDetails {
+            resource: QueryResource::OperatorMemory,
+            reason: QueryResourceReason::Unavailable,
+        })
     );
     assert!(
         error

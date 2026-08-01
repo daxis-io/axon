@@ -28,6 +28,7 @@ pub enum ExecutionTarget {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityKey {
+    BrowserExternalMemory,
     ChangeDataFeed,
     ColumnMapping,
     DeletionVectors,
@@ -98,8 +99,31 @@ pub enum QueryErrorCode {
     InvalidRequest,
     ObjectNotFound,
     ObjectStoreProtocol,
+    ResourceExhausted,
     SecurityPolicyViolation,
     UnsupportedFeature,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryResource {
+    OperatorMemory,
+    ResultOutput,
+    SpillStorage,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryResourceReason {
+    IoFailure,
+    QuotaExceeded,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct QueryResourceDetails {
+    pub resource: QueryResource,
+    pub reason: QueryResourceReason,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -109,6 +133,8 @@ pub struct QueryError {
     pub target: ExecutionTarget,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_reason: Option<FallbackReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_details: Option<QueryResourceDetails>,
 }
 
 impl QueryError {
@@ -118,11 +144,17 @@ impl QueryError {
             message: message.into(),
             target,
             fallback_reason: None,
+            resource_details: None,
         }
     }
 
     pub fn with_fallback_reason(mut self, fallback_reason: FallbackReason) -> Self {
         self.fallback_reason = Some(fallback_reason);
+        self
+    }
+
+    pub fn with_resource_details(mut self, resource_details: QueryResourceDetails) -> Self {
+        self.resource_details = Some(resource_details);
         self
     }
 
@@ -1469,6 +1501,14 @@ pub enum BrowserAccessMode {
     CloudObjectStore,
 }
 
+/// Storage backend used for bounded external-memory execution.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpillBackend {
+    Opfs,
+    NativeTempFile,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PageIndexMode {
@@ -1709,6 +1749,42 @@ pub struct QueryMetricsSummary {
     /// Redacted page-index plan decision and physical-shape summary when page-index planning ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_index_decision: Option<PageIndexDecisionSummary>,
+    /// Storage backend used when this execution spilled intermediate state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_backend: Option<SpillBackend>,
+    /// DataFusion operator working-set limit for a spilling execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_working_set_limit_bytes: Option<u64>,
+    /// Peak DataFusion reservation observed for a spilling execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_peak_reservation_bytes: Option<u64>,
+    /// Authoritative per-origin spill byte limit applied to this execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_storage_limit_bytes: Option<u64>,
+    /// Intermediate bytes written to spill storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_bytes_written: Option<u64>,
+    /// Intermediate bytes read back from spill storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_bytes_read: Option<u64>,
+    /// Spill files created by this execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_files_created: Option<u64>,
+    /// Peak active spill bytes for this execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_peak_active_bytes: Option<u64>,
+    /// Spill files still active at terminal publication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_active_files: Option<u64>,
+    /// External merge passes performed by this execution when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_merge_passes: Option<u64>,
+    /// Query-scoped spill namespaces removed by normal cleanup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_cleanup_count: Option<u64>,
+    /// Abandoned spill namespaces removed by recovery cleanup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_abandoned_cleanup_count: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

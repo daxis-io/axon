@@ -581,6 +581,90 @@ test('one-child coordinator discards staged data after a late failure', async ({
   });
 });
 
+test('coordinator result staging exhaustion is resource_exhausted without changing authority', async ({
+  page,
+}) => {
+  await routeCursorParquet(page);
+  await page.goto('/');
+
+  const result = await page.evaluate(
+    async ({ fixtureBytes }: { fixtureBytes: number }) => {
+      const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
+      const worker = new Worker(
+        new URL('/src/sandbox-query-worker-test-harness.ts?max_staged_bytes=1', location.href),
+        { type: 'module' },
+      );
+      const ready = new Promise<void>((resolve) => {
+        worker.addEventListener(
+          'message',
+          (event: MessageEvent<{ coordinator_test_ready?: true }>) => {
+            if (event.data.coordinator_test_ready) resolve();
+          },
+        );
+      });
+      const tableUri = new URL('/fixtures/browser-datafusion-runtime/table', location.href).href;
+      await ready;
+      const client = sdk.createAxonBrowserClient({ worker });
+      try {
+        await client.openDeltaTable(
+          'events',
+          {
+            table_uri: tableUri,
+            snapshot_version: 0,
+            partition_column_types: { category: 'string' },
+            browser_compatibility: { capabilities: {} },
+            required_capabilities: { capabilities: {} },
+            active_files: [
+              {
+                path: 'category=good/part-000.parquet',
+                url: new URL(
+                  '/fixtures/browser-datafusion-runtime/internal-cursor.parquet',
+                  location.href,
+                ).href,
+                size_bytes: fixtureBytes,
+                partition_values: { category: 'good' },
+              },
+            ],
+          },
+          { requestId: 'open-result-staging-limit' },
+        );
+        try {
+          await client.query('events', 'SELECT id FROM events', {
+            requestId: 'query-result-staging-limit',
+          });
+          return { completed: true };
+        } catch (error) {
+          const captured = error as {
+            queryError?: {
+              code?: string;
+              fallback_reason?: string;
+              resource_details?: { resource?: string; reason?: string };
+              target?: string;
+            };
+          };
+          return { completed: false, queryError: captured.queryError };
+        }
+      } finally {
+        client.terminate();
+      }
+    },
+    { fixtureBytes: BINARY_STRING_INT_PARQUET_BYTES.byteLength },
+  );
+
+  expect(result).toMatchObject({
+    completed: false,
+    queryError: {
+      code: 'resource_exhausted',
+      resource_details: {
+        resource: 'result_output',
+        reason: 'unavailable',
+      },
+      target: 'browser_wasm',
+    },
+  });
+  expect(result.queryError?.fallback_reason).toBeUndefined();
+});
+
 test('one-child coordinator publishes no partial result after an output-budget failure', async ({
   page,
 }) => {
@@ -681,7 +765,11 @@ test('one-child coordinator publishes no partial result after an output-budget f
     error: {
       name: 'AxonWorkerError',
       queryError: {
-        code: 'execution_failed',
+        code: 'resource_exhausted',
+        resource_details: {
+          resource: 'result_output',
+          reason: 'unavailable',
+        },
         target: 'browser_wasm',
       },
     },
@@ -1115,8 +1203,11 @@ test('coordinator rejects declared output beyond aggregate staging before child 
   });
 
   expect(result).toMatchObject({
-    code: 'fallback_required',
-    fallback_reason: 'browser_runtime_constraint',
+    code: 'resource_exhausted',
+    resource_details: {
+      resource: 'result_output',
+      reason: 'unavailable',
+    },
     target: 'browser_wasm',
   });
   expect(result?.message).toContain('aggregate staging capacity');

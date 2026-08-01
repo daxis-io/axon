@@ -10,6 +10,7 @@
     "verify:page-index-v2-fixture": "bash scripts/verify-page-index-v2-fixture.sh",
     "build:page-index-adaptive-plan": "node --experimental-strip-types scripts/write-page-index-adaptive-plan.ts",
     "build:wasm": "cargo build -p axon-web-wasm --target wasm32-unknown-unknown --release --locked && wasm-bindgen ../../target/wasm32-unknown-unknown/release/axon_web_wasm.wasm --target web --out-dir src/wasm --typescript",
+    "build:wasm:external-memory": "cargo build -p axon-web-wasm --target wasm32-unknown-unknown --release --locked --features browser-external-memory && wasm-bindgen ../../target/wasm32-unknown-unknown/release/axon_web_wasm.wasm --target web --out-dir src/wasm --typescript",
     "dev:server": "vite --host 127.0.0.1",
     "dev": "npm run build:fixture && npm run build:wasm && vite --host 127.0.0.1",
     "build": "npm run build:fixture && npm run build:wasm && tsc --noEmit && vite build",

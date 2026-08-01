@@ -48,6 +48,10 @@ pub use self::__buffa::view::QueryRequestView;
 #[doc(inline)]
 pub use self::__buffa::view::QueryRequestOwnedView;
 #[doc(inline)]
+pub use self::__buffa::view::QueryResourceDetailsView;
+#[doc(inline)]
+pub use self::__buffa::view::QueryResourceDetailsOwnedView;
+#[doc(inline)]
 pub use self::__buffa::view::QueryErrorView;
 #[doc(inline)]
 pub use self::__buffa::view::QueryErrorOwnedView;

@@ -55,6 +55,23 @@ enum QueryErrorCode {
   QUERY_ERROR_CODE_OBJECT_STORE_PROTOCOL = 6;
   QUERY_ERROR_CODE_SECURITY_POLICY_VIOLATION = 7;
   QUERY_ERROR_CODE_UNSUPPORTED_FEATURE = 8;
+  QUERY_ERROR_CODE_RESOURCE_EXHAUSTED = 9;
+}
+
+// Identifies the bounded resource that prevented local query execution.
+enum QueryResource {
+  QUERY_RESOURCE_UNSPECIFIED = 0;
+  QUERY_RESOURCE_OPERATOR_MEMORY = 1;
+  QUERY_RESOURCE_SPILL_STORAGE = 2;
+  QUERY_RESOURCE_RESULT_OUTPUT = 3;
+}
+
+// Classifies why the selected bounded resource could not serve the query.
+enum QueryResourceReason {
+  QUERY_RESOURCE_REASON_UNSPECIFIED = 0;
+  QUERY_RESOURCE_REASON_UNAVAILABLE = 1;
+  QUERY_RESOURCE_REASON_QUOTA_EXCEEDED = 2;
+  QUERY_RESOURCE_REASON_IO_FAILURE = 3;
 }
 
 // Identifies how the browser fetched table objects.
@@ -62,6 +79,13 @@ enum BrowserAccessMode {
   BROWSER_ACCESS_MODE_UNSPECIFIED = 0;
   BROWSER_ACCESS_MODE_BROWSER_SAFE_HTTP = 1;
   BROWSER_ACCESS_MODE_CLOUD_OBJECT_STORE = 2;
+}
+
+// Identifies the storage backend used for external-memory execution.
+enum SpillBackend {
+  SPILL_BACKEND_UNSPECIFIED = 0;
+  SPILL_BACKEND_OPFS = 1;
+  SPILL_BACKEND_NATIVE_TEMP_FILE = 2;
 }
 
 enum PageIndexMode {
@@ -176,6 +200,12 @@ message QueryRequest {
   QueryExecutionOptions options = 5;
 }
 
+// Carries safe, authority-neutral details for a bounded resource failure.
+message QueryResourceDetails {
+  QueryResource resource = 1;
+  QueryResourceReason reason = 2;
+}
+
 // Returns a structured query failure.
 message QueryError {
   reserved 4;
@@ -184,6 +214,7 @@ message QueryError {
   QueryErrorCode code = 1;
   string message = 2;
   ExecutionTarget target = 3;
+  QueryResourceDetails resource_details = 5 [json_name = "resource_details"];
 }
 
 message PageIndexDecisionSummary {
@@ -267,6 +298,18 @@ message QueryMetricsSummary {
   optional uint64 cursor_peak_pending_encoded_bytes = 57 [json_name = "cursor_peak_pending_encoded_bytes"];
   optional uint64 cursor_peak_transport_chunk_bytes = 58 [json_name = "cursor_peak_transport_chunk_bytes"];
   PageIndexDecisionSummary page_index_decision = 59 [json_name = "page_index_decision"];
+  SpillBackend spill_backend = 60 [json_name = "spill_backend"];
+  optional uint64 spill_working_set_limit_bytes = 61 [json_name = "spill_working_set_limit_bytes"];
+  optional uint64 spill_peak_reservation_bytes = 62 [json_name = "spill_peak_reservation_bytes"];
+  optional uint64 spill_storage_limit_bytes = 63 [json_name = "spill_storage_limit_bytes"];
+  optional uint64 spill_bytes_written = 64 [json_name = "spill_bytes_written"];
+  optional uint64 spill_bytes_read = 65 [json_name = "spill_bytes_read"];
+  optional uint64 spill_files_created = 66 [json_name = "spill_files_created"];
+  optional uint64 spill_peak_active_bytes = 67 [json_name = "spill_peak_active_bytes"];
+  optional uint64 spill_active_files = 68 [json_name = "spill_active_files"];
+  optional uint64 spill_merge_passes = 69 [json_name = "spill_merge_passes"];
+  optional uint64 spill_cleanup_count = 70 [json_name = "spill_cleanup_count"];
+  optional uint64 spill_abandoned_cleanup_count = 71 [json_name = "spill_abandoned_cleanup_count"];
 }
 
 // Carries execution metadata shared by full results and previews.

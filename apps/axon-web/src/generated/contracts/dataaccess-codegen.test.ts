@@ -146,6 +146,7 @@ describe('dataaccess contract codegen', () => {
   });
 
   it('uses one directly openable descriptor and typed unique capability entries', () => {
+    expect(CapabilityKey.BROWSER_EXTERNAL_MEMORY).toBeGreaterThan(CapabilityKey.UNSPECIFIED);
     expect(BrowserReadDescriptorSchema.oneofs[0]?.fields.map((field) => field.name)).toEqual([
       'snapshot',
       'parquet_dataset',

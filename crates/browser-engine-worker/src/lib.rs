@@ -892,6 +892,7 @@ fn emit_open_bootstrap_metrics<F>(
             coordinator_staging_limit_bytes: None,
             cursor_peak_pending_encoded_bytes: None,
             cursor_peak_transport_chunk_bytes: None,
+            ..QueryMetricsSummary::default()
         },
     ));
 }

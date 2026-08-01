@@ -16,10 +16,11 @@ use query_contract::{
     ExecutionTarget, FallbackReason, ObjectGrantBatchSignRequest, ObjectGrantHeadRequest,
     ObjectGrantListRequest, PageIndexDecisionReason, PageIndexDecisionSummary, PageIndexMode,
     PageIndexModelVersion, PageIndexPlan, PartitionColumnType, PolicyAuthorityKind, QueryError,
-    QueryErrorCode, QueryExecutionOptions, QueryMetricsSummary, QueryRequest, QueryResponse,
-    QueryResultPage, ReadAccessPlan, ReadAccessPlanReason, ResolvedFileDescriptor,
-    ResolvedSnapshotDescriptor, ResolverActualAccessMode, ResolverRequestedAccessMode,
-    SnapshotResolutionRequest, SqlFallbackRequiredPlan,
+    QueryErrorCode, QueryExecutionOptions, QueryMetricsSummary, QueryRequest, QueryResource,
+    QueryResourceDetails, QueryResourceReason, QueryResponse, QueryResultPage, ReadAccessPlan,
+    ReadAccessPlanReason, ResolvedFileDescriptor, ResolvedSnapshotDescriptor,
+    ResolverActualAccessMode, ResolverRequestedAccessMode, SnapshotResolutionRequest, SpillBackend,
+    SqlFallbackRequiredPlan,
 };
 use schemars::schema_for;
 use serde_json::{json, Value};
@@ -123,6 +124,10 @@ fn delta_protocol_feature_catalog_reserves_unknown_for_unrecognized_features() {
 #[test]
 fn capability_report_serializes_with_snake_case_keys_and_states() {
     let report = CapabilityReport::from_pairs([
+        (
+            CapabilityKey::BrowserExternalMemory,
+            CapabilityState::Experimental,
+        ),
         (CapabilityKey::DeletionVectors, CapabilityState::NativeOnly),
         (CapabilityKey::RangeReads, CapabilityState::Supported),
     ]);
@@ -133,6 +138,7 @@ fn capability_report_serializes_with_snake_case_keys_and_states() {
         json,
         serde_json::json!({
             "capabilities": {
+                "browser_external_memory": "experimental",
                 "deletion_vectors": "native_only",
                 "range_reads": "supported"
             }
@@ -173,6 +179,34 @@ fn query_error_serializes_without_absent_fallback_reason() {
             "code": "invalid_request",
             "message": "sql must not be empty",
             "target": "browser_wasm"
+        })
+    );
+}
+
+#[test]
+fn resource_exhaustion_serializes_structured_details_without_fallback_authority() {
+    let error = QueryError::new(
+        QueryErrorCode::ResourceExhausted,
+        "browser DataFusion operator memory pool exhausted",
+        ExecutionTarget::BrowserWasm,
+    )
+    .with_resource_details(QueryResourceDetails {
+        resource: QueryResource::OperatorMemory,
+        reason: QueryResourceReason::Unavailable,
+    });
+
+    assert!(!error.requires_fallback());
+    assert_eq!(error.fallback_reason, None);
+    assert_eq!(
+        serde_json::to_value(&error).expect("resource exhaustion should serialize"),
+        serde_json::json!({
+            "code": "resource_exhausted",
+            "message": "browser DataFusion operator memory pool exhausted",
+            "target": "browser_wasm",
+            "resource_details": {
+                "resource": "operator_memory",
+                "reason": "unavailable"
+            }
         })
     );
 }
@@ -276,6 +310,18 @@ fn query_response_serializes_without_absent_fallback_reason() {
             cursor_peak_pending_encoded_bytes: None,
             cursor_peak_transport_chunk_bytes: None,
             page_index_decision: None,
+            spill_backend: None,
+            spill_working_set_limit_bytes: None,
+            spill_peak_reservation_bytes: None,
+            spill_storage_limit_bytes: None,
+            spill_bytes_written: None,
+            spill_bytes_read: None,
+            spill_files_created: None,
+            spill_peak_active_bytes: None,
+            spill_active_files: None,
+            spill_merge_passes: None,
+            spill_cleanup_count: None,
+            spill_abandoned_cleanup_count: None,
         },
         explain: None,
     };
@@ -434,6 +480,18 @@ fn query_response_serializes_browser_telemetry_when_present() {
             cursor_peak_pending_encoded_bytes: None,
             cursor_peak_transport_chunk_bytes: None,
             page_index_decision: None,
+            spill_backend: None,
+            spill_working_set_limit_bytes: None,
+            spill_peak_reservation_bytes: None,
+            spill_storage_limit_bytes: None,
+            spill_bytes_written: None,
+            spill_bytes_read: None,
+            spill_files_created: None,
+            spill_peak_active_bytes: None,
+            spill_active_files: None,
+            spill_merge_passes: None,
+            spill_cleanup_count: None,
+            spill_abandoned_cleanup_count: None,
         },
         explain: None,
     };
@@ -1256,6 +1314,41 @@ fn query_metrics_serialize_cursor_and_coordinator_memory_bounds() {
 }
 
 #[test]
+fn spill_metrics_are_bounded_numeric_telemetry_without_storage_identifiers() {
+    let metrics = QueryMetricsSummary {
+        spill_backend: Some(SpillBackend::Opfs),
+        spill_working_set_limit_bytes: Some(64 * 1024 * 1024),
+        spill_peak_reservation_bytes: Some(48 * 1024 * 1024),
+        spill_storage_limit_bytes: Some(512 * 1024 * 1024),
+        spill_bytes_written: Some(96 * 1024 * 1024),
+        spill_bytes_read: Some(96 * 1024 * 1024),
+        spill_files_created: Some(3),
+        spill_peak_active_bytes: Some(80 * 1024 * 1024),
+        spill_active_files: Some(0),
+        spill_merge_passes: Some(1),
+        spill_cleanup_count: Some(1),
+        spill_abandoned_cleanup_count: Some(0),
+        ..QueryMetricsSummary::default()
+    };
+
+    let json = serde_json::to_value(metrics).expect("spill metrics should serialize");
+    assert_eq!(json["spill_backend"], "opfs");
+    assert_eq!(json["spill_files_created"], 3);
+    assert_eq!(json["spill_active_files"], 0);
+    let serialized = json.to_string();
+    for forbidden in [
+        "sql",
+        "group_key",
+        "file_name",
+        "spill_scope",
+        "signed_url",
+        "credential",
+    ] {
+        assert!(!serialized.contains(forbidden), "{serialized}");
+    }
+}
+
+#[test]
 fn query_response_serializes_arrow_ipc_preview_and_phase_metrics() {
     let response = QueryResponse {
         executed_on: ExecutionTarget::BrowserWasm,
@@ -1321,6 +1414,18 @@ fn query_response_serializes_arrow_ipc_preview_and_phase_metrics() {
             cursor_peak_pending_encoded_bytes: None,
             cursor_peak_transport_chunk_bytes: None,
             page_index_decision: None,
+            spill_backend: None,
+            spill_working_set_limit_bytes: None,
+            spill_peak_reservation_bytes: None,
+            spill_storage_limit_bytes: None,
+            spill_bytes_written: None,
+            spill_bytes_read: None,
+            spill_files_created: None,
+            spill_peak_active_bytes: None,
+            spill_active_files: None,
+            spill_merge_passes: None,
+            spill_cleanup_count: None,
+            spill_abandoned_cleanup_count: None,
         },
         explain: None,
     };

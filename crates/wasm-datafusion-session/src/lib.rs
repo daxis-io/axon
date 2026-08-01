@@ -295,22 +295,75 @@ impl BrowserDataFusionSession {
         Self::new_with_query_budget(config, max_cached_bytes, query_budget)
     }
 
+    pub fn new_with_memory_limit(
+        config: BrowserRuntimeConfig,
+        max_cached_bytes: u64,
+        memory_limit_bytes: usize,
+    ) -> Result<Self, QueryError> {
+        let query_budget = datafusion_query_budget_from_runtime_config(&config);
+        Self::new_with_query_budget_and_memory_limit(
+            config,
+            max_cached_bytes,
+            query_budget,
+            memory_limit_bytes,
+        )
+    }
+
     pub fn new_with_query_budget(
         config: BrowserRuntimeConfig,
         max_cached_bytes: u64,
         query_budget: BrowserDataFusionQueryBudget,
+    ) -> Result<Self, QueryError> {
+        Self::new_with_query_budget_and_optional_memory_limit(
+            config,
+            max_cached_bytes,
+            query_budget,
+            None,
+        )
+    }
+
+    pub fn new_with_query_budget_and_memory_limit(
+        config: BrowserRuntimeConfig,
+        max_cached_bytes: u64,
+        query_budget: BrowserDataFusionQueryBudget,
+        memory_limit_bytes: usize,
+    ) -> Result<Self, QueryError> {
+        Self::new_with_query_budget_and_optional_memory_limit(
+            config,
+            max_cached_bytes,
+            query_budget,
+            Some(memory_limit_bytes),
+        )
+    }
+
+    fn new_with_query_budget_and_optional_memory_limit(
+        config: BrowserRuntimeConfig,
+        max_cached_bytes: u64,
+        query_budget: BrowserDataFusionQueryBudget,
+        memory_limit_bytes: Option<usize>,
     ) -> Result<Self, QueryError> {
         let page_index_mode = config.page_index_mode;
         let adaptive_page_index_error_margin_us = config.adaptive_page_index_error_margin_us;
         let runtime = BrowserRuntimeSession::new(config)?;
         let metadata_cache = runtime.metadata_cache().clone();
         let range_cache = runtime.range_cache().clone();
-        let mut datafusion = WasmDataFusionEngine::with_budget_cancellation_and_caches(
-            query_budget.into(),
-            BrowserQueryCancellation::default(),
-            metadata_cache,
-            range_cache,
-        );
+        let mut datafusion = match memory_limit_bytes {
+            Some(memory_limit_bytes) => {
+                WasmDataFusionEngine::try_with_budget_cancellation_caches_and_memory_limit(
+                    query_budget.into(),
+                    BrowserQueryCancellation::default(),
+                    metadata_cache,
+                    range_cache,
+                    memory_limit_bytes,
+                )?
+            }
+            None => WasmDataFusionEngine::with_budget_cancellation_and_caches(
+                query_budget.into(),
+                BrowserQueryCancellation::default(),
+                metadata_cache,
+                range_cache,
+            ),
+        };
         datafusion.set_page_index_mode(page_index_mode, adaptive_page_index_error_margin_us)?;
         Ok(Self {
             runtime,
@@ -328,6 +381,10 @@ impl BrowserDataFusionSession {
 
     pub fn datafusion_query_budget(&self) -> BrowserDataFusionQueryBudget {
         self.query_budget
+    }
+
+    pub fn datafusion_memory_metrics(&self) -> BrowserDataFusionMemoryMetrics {
+        self.datafusion.memory_metrics()
     }
 
     pub fn set_page_index_mode(
@@ -1403,6 +1460,7 @@ fn datafusion_query_metrics(
         cursor_peak_pending_encoded_bytes: None,
         cursor_peak_transport_chunk_bytes: None,
         page_index_decision: scan_metrics.page_index_decision,
+        ..QueryMetricsSummary::default()
     }
 }
 
@@ -1890,6 +1948,22 @@ mod tests {
     use super::*;
 
     use query_contract::{BrowserHttpFileDescriptor, CapabilityReport};
+
+    #[test]
+    fn session_applies_an_explicit_measured_memory_profile() {
+        let session = BrowserDataFusionSession::new_with_memory_limit(
+            BrowserRuntimeConfig::default(),
+            u64::MAX,
+            128 * 1024 * 1024,
+        )
+        .expect("an approved non-zero memory profile should construct");
+
+        assert_eq!(
+            session.datafusion_memory_metrics().limit_bytes,
+            128 * 1024 * 1024
+        );
+    }
+
     #[test]
     fn open_delta_table_registers_descriptor_and_sql_returns_arrow_ipc() {
         let mut session = BrowserDataFusionSession::new(BrowserRuntimeConfig::default(), u64::MAX)
@@ -2047,7 +2121,15 @@ mod tests {
             })
             .expect_err("per-request Arrow IPC budget should be enforced");
 
-        assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+        assert_eq!(error.code, QueryErrorCode::ResourceExhausted);
+        assert_eq!(error.fallback_reason, None);
+        assert_eq!(
+            error.resource_details,
+            Some(query_contract::QueryResourceDetails {
+                resource: query_contract::QueryResource::ResultOutput,
+                reason: query_contract::QueryResourceReason::Unavailable,
+            })
+        );
         assert!(
             error.message.contains("max_output_ipc_bytes"),
             "error should describe the request runtime budget: {}",

@@ -21,7 +21,9 @@ use datafusion::physical_plan::{execute_stream, ExecutionPlan, SendableRecordBat
 use futures_util::future::{select, Either};
 use futures_util::task::AtomicWaker;
 use futures_util::{pin_mut, StreamExt};
-use query_contract::{FallbackReason, QueryError, QueryErrorCode};
+use query_contract::{
+    QueryError, QueryErrorCode, QueryResource, QueryResourceDetails, QueryResourceReason,
+};
 use serde_json::{json, Value};
 use wasm_parquet_engine::merge_parquet_range_read_metrics;
 
@@ -827,6 +829,7 @@ impl WasmDataFusionEngine {
         mut limits: IpcStreamLimits,
         include_physical_plan: bool,
     ) -> Result<DataFusionIpcCursor, QueryError> {
+        self.memory_pool.begin_query_metrics();
         validate_stream_limits(limits)?;
         limits.max_total_encoded_bytes = min_optional_u64(
             limits.max_total_encoded_bytes,
@@ -1038,13 +1041,16 @@ impl PreviewBuilder {
             if let Some(max_allowed) = self.max_string_bytes {
                 if next_string_bytes > max_allowed {
                     return Err(QueryError::new(
-                        QueryErrorCode::FallbackRequired,
+                        QueryErrorCode::ResourceExhausted,
                         format!(
                             "browser execution exceeded the configured max_preview_string_bytes budget ({next_string_bytes} > {max_allowed})"
                         ),
                         super::runtime_target(),
                     )
-                    .with_fallback_reason(FallbackReason::BrowserRuntimeConstraint));
+                    .with_resource_details(QueryResourceDetails {
+                        resource: QueryResource::ResultOutput,
+                        reason: QueryResourceReason::Unavailable,
+                    }));
                 }
             }
             self.string_bytes = next_string_bytes;

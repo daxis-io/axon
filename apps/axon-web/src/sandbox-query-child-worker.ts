@@ -1,5 +1,18 @@
 import init, { SandboxQuerySession, SandboxSqlStream } from './wasm/axon_web_wasm';
 import {
+  browserDataFusionMemoryOverrideBytes,
+  browserExternalMemoryCanaryCapBytes,
+} from './browser-datafusion-memory-policy.ts';
+import { installOpfsSpillBridge } from './opfs-spill-bridge.ts';
+import {
+  OpfsSpillError,
+  OpfsSpillHost,
+  browserOpfsStorage,
+  initializeBrowserExternalMemory,
+  probeBrowserExternalMemory,
+  type OpfsSpillQuerySnapshot,
+} from './opfs-spill-host.ts';
+import {
   BROWSER_SAFE_ARROW_IPC_BYTES,
   BROWSER_SAFE_PREVIEW_STRING_BYTES,
   BROWSER_SAFE_RESULT_ROW_LIMIT,
@@ -31,6 +44,7 @@ import {
   type PrivateCreditClass,
   type PrivateStreamChunk,
   type PrivateStreamPhase,
+  type PrivateTerminalMetadata,
 } from './sandbox-query-stream-protocol';
 
 type DecimalString = string;
@@ -61,16 +75,21 @@ type ActiveQuery = {
   queryId: string;
   gate: QueryCreditGate;
   stream?: SandboxSqlStream;
+  spillMetricsStart?: OpfsSpillQuerySnapshot;
 };
 
 type PageIndexSession = SandboxQuerySession & {
   set_page_index_mode?: (mode: string, calibrationErrorMarginUs?: number) => void;
+  browser_external_memory_enabled?: () => boolean;
 };
 
 const QUERY_PREVIEW_LIMIT = QUERY_RESULT_PAGE_SIZE + 1;
 const childScope = self as unknown as PrivateChildScope;
 
 let sessionPromise: Promise<SandboxQuerySession> | undefined;
+let opfsSpillHost: OpfsSpillHost | undefined;
+let browserExternalMemoryAvailable = false;
+let browserExternalMemoryRuntimeEnabled = false;
 let activeQuery: ActiveQuery | undefined;
 let commandQueue = Promise.resolve();
 const queuedQueryIds = new Set<string>();
@@ -232,6 +251,7 @@ async function handleSql(
     emitLog(context, 'info', 'sandbox child executing SQL query');
     emitProgress(context, 'planning');
     const session = await ensureSession(context);
+    active.spillMetricsStart = opfsSpillHost?.beginQueryMetrics();
     let stream: SandboxSqlStream;
     try {
       stream = await session.start_sql_stream(
@@ -251,8 +271,17 @@ async function handleSql(
   } catch (error) {
     postStreamFault(command.request_id, normalizeQueryError(error));
   } finally {
-    if (active.stream) await active.stream.close();
-    if (activeQuery === active) activeQuery = undefined;
+    try {
+      if (active.stream) await active.stream.close();
+    } finally {
+      try {
+        if (active.spillMetricsStart && opfsSpillHost) {
+          await opfsSpillHost.releaseQueryScopes(active.spillMetricsStart);
+        }
+      } finally {
+        if (activeQuery === active) activeQuery = undefined;
+      }
+    }
   }
 }
 
@@ -270,6 +299,11 @@ async function pumpStream(active: ActiveQuery, stream: SandboxSqlStream): Promis
       refundReservations(active.gate, reservations);
       const metadata = JSON.parse(item.terminal.metadata_json) as unknown;
       requireTerminalMetadata(metadata);
+      applyBrowserExternalMemoryCapability(metadata);
+      if (active.spillMetricsStart && opfsSpillHost) {
+        await opfsSpillHost.releaseQueryScopes(active.spillMetricsStart);
+      }
+      applyBrowserExternalMemoryMetrics(metadata, active.spillMetricsStart);
       postPrivate({
         kind: 'stream_terminal',
         version: PRIVATE_STREAM_PROTOCOL_VERSION,
@@ -299,6 +333,51 @@ async function pumpStream(active: ActiveQuery, stream: SandboxSqlStream): Promis
     );
     creditCandidates = nextCreditCandidates(chunk);
     postPrivate({ kind: 'stream_chunk', ...chunk }, [chunk.bytes.buffer]);
+  }
+}
+
+function applyBrowserExternalMemoryCapability(metadata: PrivateTerminalMetadata): void {
+  if (!metadata.response || typeof metadata.response !== 'object') return;
+  const response = metadata.response as {
+    capabilities?: { capabilities?: Partial<Record<string, string>> };
+  };
+  const capabilities = response.capabilities?.capabilities;
+  if (!capabilities) return;
+  capabilities.browser_external_memory =
+    browserExternalMemoryAvailable && browserExternalMemoryRuntimeEnabled
+      ? 'supported'
+      : browserExternalMemoryAvailable
+        ? 'experimental'
+        : 'unsupported';
+}
+
+function applyBrowserExternalMemoryMetrics(
+  metadata: PrivateTerminalMetadata,
+  start: OpfsSpillQuerySnapshot | undefined,
+): void {
+  if (!start || !opfsSpillHost || !metadata.response || typeof metadata.response !== 'object') {
+    return;
+  }
+  const spill = opfsSpillHost.queryMetricsSince(start);
+  if (spill.filesCreated === 0) return;
+  const response = metadata.response as {
+    metrics?: Record<string, unknown>;
+  };
+  if (!response.metrics) return;
+  const memory = metadata.datafusion_memory;
+  response.metrics.spill_backend = 'opfs';
+  response.metrics.spill_storage_limit_bytes = spill.storageLimitBytes;
+  response.metrics.spill_bytes_written = spill.bytesWritten;
+  response.metrics.spill_bytes_read = spill.bytesRead;
+  response.metrics.spill_files_created = spill.filesCreated;
+  response.metrics.spill_peak_active_bytes = spill.peakActiveBytes;
+  response.metrics.spill_active_files = spill.activeFiles;
+  response.metrics.spill_merge_passes = spill.mergePasses;
+  response.metrics.spill_cleanup_count = spill.scopesDeleted;
+  response.metrics.spill_abandoned_cleanup_count = spill.abandonedScopesDeleted;
+  if (memory) {
+    response.metrics.spill_working_set_limit_bytes = decimalNumber(memory.limit_bytes);
+    response.metrics.spill_peak_reservation_bytes = decimalNumber(memory.peak_bytes);
   }
 }
 
@@ -373,10 +452,33 @@ function ensureSession(context: BrowserWorkerEventContext): Promise<SandboxQuery
   const instantiateContext = { ...context, phase: 'instantiate' as const };
   emitProgress(instantiateContext, 'started');
   emitLog(instantiateContext, 'info', 'sandbox child instantiating query bridge');
-  const pending = init().then(
-    () => {
-      const session = new SandboxQuerySession();
+  const pending = init()
+    .then(async () => {
       const workerConfig = new URLSearchParams(childScope.name.split('?', 2)[1] ?? '');
+      const memoryLimitBytes = browserDataFusionMemoryOverrideBytes(
+        workerConfig.get('datafusion_memory_profile_mib'),
+      );
+      const spillCapBytes = browserExternalMemoryCanaryCapBytes(
+        workerConfig.get('datafusion_spill_cap_mib'),
+      );
+      if (spillCapBytes !== undefined) {
+        const initialized = await initializeBrowserExternalMemory(browserOpfsStorage(), {
+          productionCapBytes: spillCapBytes,
+        });
+        browserExternalMemoryAvailable = initialized.available;
+        if (initialized.available) {
+          opfsSpillHost = initialized.host;
+          installOpfsSpillBridge(opfsSpillHost);
+        }
+      } else {
+        const externalMemoryProbe = await probeBrowserExternalMemory();
+        browserExternalMemoryAvailable = externalMemoryProbe.available;
+      }
+      const session = new SandboxQuerySession(memoryLimitBytes);
+      const externalMemorySession = session as PageIndexSession;
+      browserExternalMemoryRuntimeEnabled =
+        opfsSpillHost !== undefined &&
+        externalMemorySession.browser_external_memory_enabled?.() === true;
       const pageIndexMode = workerConfig.get('page_index_mode');
       if (pageIndexMode !== null) {
         if (!['skip', 'predicate', 'adaptive'].includes(pageIndexMode)) {
@@ -398,8 +500,8 @@ function ensureSession(context: BrowserWorkerEventContext): Promise<SandboxQuery
       }
       emitProgress(instantiateContext, 'finished');
       return session;
-    },
-    (error: unknown) => {
+    })
+    .catch((error: unknown) => {
       // Do not leave a rejected promise memoized: every later command would replay this same
       // rejection with no chance to retry and no fresh diagnosis.
       if (sessionPromise === pending) sessionPromise = undefined;
@@ -411,8 +513,7 @@ function ensureSession(context: BrowserWorkerEventContext): Promise<SandboxQuery
         error: failure,
       });
       throw failure;
-    },
-  );
+    });
   sessionPromise = pending;
   return pending;
 }
@@ -642,6 +743,12 @@ function requestId(command: BrowserWorkerCommand): string {
 
 function normalizeQueryError(error: unknown): QueryError {
   if (isQueryError(error)) return redactQueryError(error);
+  if (error instanceof OpfsSpillError) {
+    return queryError('resource_exhausted', error.message, {
+      resource: 'spill_storage',
+      reason: error.reason,
+    });
+  }
   if (typeof error === 'string') {
     const parsed = parseQueryErrorJson(error);
     return parsed ? redactQueryError(parsed) : queryError('execution_failed', error);
@@ -676,8 +783,17 @@ function redactQueryError(error: QueryError): QueryError {
   return { ...error, message: redactUrlSecrets(error.message) };
 }
 
-function queryError(code: QueryError['code'], message: string): QueryError {
-  return { code, message: redactUrlSecrets(message), target: 'browser_wasm' };
+function queryError(
+  code: QueryError['code'],
+  message: string,
+  resourceDetails?: QueryError['resource_details'],
+): QueryError {
+  return {
+    code,
+    message: redactUrlSecrets(message),
+    target: 'browser_wasm',
+    ...(resourceDetails ? { resource_details: resourceDetails } : {}),
+  };
 }
 
 function decimalNumber(value: DecimalString | number): number {

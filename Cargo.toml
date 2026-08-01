@@ -36,6 +36,56 @@ schemars = { version = "0.8", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+[patch.crates-io]
+# Browser external-memory execution is implemented in this immutable Daxis
+# DataFusion revision. Keep its Arrow and object-store substrate on the exact
+# revisions used to build and qualify the fork so the workspace has one type
+# universe across Axon, DataFusion, Parquet, and the WASM bridge.
+arrow = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+arrow-arith = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+arrow-array = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+arrow-buffer = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+arrow-cast = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+arrow-csv = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+arrow-data = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+arrow-ipc = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+arrow-json = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+arrow-ord = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+arrow-row = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+arrow-schema = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+arrow-select = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+arrow-string = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+datafusion = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-catalog = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-catalog-listing = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-common = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-common-runtime = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-datasource = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-datasource-arrow = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-datasource-csv = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-datasource-json = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-datasource-parquet = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-doc = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-execution = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-expr = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-expr-common = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-functions = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-functions-aggregate-common = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-functions-table = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-macros = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-optimizer = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-physical-expr = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-physical-expr-adapter = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-physical-expr-common = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-physical-plan = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-proto = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-proto-common = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-pruning = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-session = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+datafusion-sql = { git = "https://github.com/daxis-io/datafusion", rev = "8b3b26543cd8dd0f9a7dbe9c048dca90ec53dddf" }
+object_store = { git = "https://github.com/daxis-io/arrow-rs-object-store", rev = "ab9fda65805487edf5487e63082cab8111f0a178" }
+parquet = { git = "https://github.com/daxis-io/arrow-rs", rev = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99" }
+
 [profile.release]
 # The shipped browser worker is transfer- and instantiation-sensitive. The
 # default speed profile exceeded its 6 MiB Brotli release budget, while the

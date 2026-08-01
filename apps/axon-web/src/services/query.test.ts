@@ -281,6 +281,33 @@ describe('query failure classification', () => {
     expectTypeOf<'deadline'>().not.toMatchTypeOf<QueryErrorCode>();
   });
 
+  it('preserves resource exhaustion details without manufacturing fallback authority', () => {
+    const exhaustion = new AxonWorkerError({
+      request_id: 'execution-1',
+      error: {
+        code: 'resource_exhausted',
+        message: 'browser DataFusion operator memory pool exhausted',
+        target: 'browser_wasm',
+        resource_details: {
+          resource: 'operator_memory',
+          reason: 'unavailable',
+        },
+      },
+    });
+
+    expect(queryFailureOutcome(exhaustion, 14, 'browser_wasm')).toEqual({
+      status: 'error',
+      message: 'browser DataFusion operator memory pool exhausted',
+      code: 'resource_exhausted',
+      target: 'browser_wasm',
+      resource_details: {
+        resource: 'operator_memory',
+        reason: 'unavailable',
+      },
+      elapsed_ms: 14,
+    });
+  });
+
   it('treats only local pre-SQL aborts and worker cancellation errors as cancelled', () => {
     expect(
       queryFailureOutcome(new DOMException('cancelled', 'AbortError'), 12, 'browser_wasm'),

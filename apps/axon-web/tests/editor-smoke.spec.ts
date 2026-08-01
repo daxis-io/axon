@@ -2,14 +2,18 @@ import { create, toJson } from '@bufbuild/protobuf';
 import {
   expect,
   test,
+  webkit,
+  type Browser,
   type ConsoleMessage,
   type Locator,
   type Page,
   type Request,
   type Route,
 } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ColumnNodeSchema,
@@ -68,6 +72,104 @@ function isIgnorableConsoleError(message: ConsoleMessage): boolean {
   return IGNORABLE_CONSOLE_ERRORS.some((pattern) => pattern.test(text) || pattern.test(url));
 }
 const LOCAL_DELTA_ACTIVE_ID_KEY = 'axon-local-delta-active-id';
+
+const SHA256_PATTERN = /^(?:sha256:)?[0-9a-f]{64}$/i;
+
+type StressEvidenceProvenance = {
+  axonRevision: string;
+  axonSourceTreeSha256: string;
+  browserName: string;
+  browserVersion: string;
+  datafusionRevision: string | null;
+  datafusionSourceTreeSha256: string | null;
+  fixtureSha256: string | null;
+  oracleSha256: string;
+  qualification: 'local-unqualified' | 'release-qualified';
+};
+
+function gitSourceTreeProvenance(repoRoot: string): {
+  revision: string;
+  sourceTreeSha256: string;
+} {
+  const revision = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  }).trim();
+  const trackedDiff = execFileSync('git', ['diff', '--binary', 'HEAD'], {
+    cwd: repoRoot,
+  });
+  const untrackedPaths = execFileSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
+    cwd: repoRoot,
+  })
+    .toString('utf8')
+    .split('\0')
+    .filter(Boolean)
+    .sort();
+  const digest = createHash('sha256');
+  digest.update(`revision\0${revision}\0tracked-diff\0`);
+  digest.update(trackedDiff);
+  for (const relativePath of untrackedPaths) {
+    digest.update(`\0untracked\0${relativePath}\0`);
+    digest.update(readFileSync(resolve(repoRoot, relativePath)));
+  }
+  return { revision, sourceTreeSha256: digest.digest('hex') };
+}
+
+function stressEvidenceProvenance(
+  browserName: string,
+  browser: Browser,
+  oracleSha256: string,
+  env: NodeJS.ProcessEnv = process.env,
+): StressEvidenceProvenance {
+  const qualificationRequested = env.AXON_BROWSER_EXTERNAL_MEMORY_QUALIFICATION === '1';
+  const datafusionRevision = env.AXON_DATAFUSION_SOURCE_REVISION?.trim() || null;
+  const datafusionSourceTreeSha256 = env.AXON_DATAFUSION_SOURCE_TREE_SHA256?.trim() || null;
+  const fixtureSha256 = env.AXON_STRESS_DELTA_DIGEST?.trim() || null;
+
+  if (qualificationRequested) {
+    expect(datafusionRevision, 'qualification requires AXON_DATAFUSION_SOURCE_REVISION').toMatch(
+      /^[0-9a-f]{40}$/i,
+    );
+    expect(
+      datafusionSourceTreeSha256,
+      'qualification requires AXON_DATAFUSION_SOURCE_TREE_SHA256',
+    ).toMatch(SHA256_PATTERN);
+    expect(fixtureSha256, 'qualification requires AXON_STRESS_DELTA_DIGEST').toMatch(
+      SHA256_PATTERN,
+    );
+  }
+
+  const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
+  const axon = gitSourceTreeProvenance(repoRoot);
+  return {
+    axonRevision: axon.revision,
+    axonSourceTreeSha256: axon.sourceTreeSha256,
+    browserName,
+    browserVersion: browser.version(),
+    datafusionRevision,
+    datafusionSourceTreeSha256,
+    fixtureSha256,
+    oracleSha256,
+    qualification: qualificationRequested ? 'release-qualified' : 'local-unqualified',
+  };
+}
+
+type StressAggregateOracle = {
+  columns: string[];
+  rows: string[][];
+};
+
+function loadStressAggregateOracle(path: string): {
+  digest: string;
+  expected: StressAggregateOracle;
+} {
+  const bytes = readFileSync(path);
+  const expected = JSON.parse(bytes.toString('utf8')) as StressAggregateOracle;
+  expect(expected.columns).toEqual(expect.arrayContaining(['event_id']));
+  expect(expected.rows).toHaveLength(QUERY_RESULT_PAGE_SIZE);
+  expect(expected.rows.every((row) => row.length === expected.columns.length)).toBe(true);
+  return { digest: createHash('sha256').update(bytes).digest('hex'), expected };
+}
 
 type LocalDeltaFixtureFile = {
   relativePath: string;
@@ -1350,6 +1452,145 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.locator('table.grid')).toContainText('event_ts');
   });
 
+  test('spills the original high-cardinality aggregate in browser WASM instead of requiring fallback', async ({
+    browser,
+    browserName,
+    page: fixturePage,
+  }, testInfo) => {
+    test.setTimeout(15 * 60_000);
+    const tableDir = process.env.AXON_STRESS_DELTA_PATH;
+    const oraclePath = process.env.AXON_STRESS_AGGREGATE_ORACLE_PATH;
+    const spillCapMiB = process.env.AXON_BROWSER_EXTERNAL_MEMORY_SPILL_CAP_MIB;
+    const memoryProfileMiB = process.env.AXON_BROWSER_EXTERNAL_MEMORY_PROFILE_MIB ?? '64';
+    if (
+      process.env.AXON_BROWSER_EXTERNAL_MEMORY_STRESS !== '1' ||
+      !tableDir ||
+      !oraclePath ||
+      !spillCapMiB
+    ) {
+      test.skip(
+        true,
+        'Set AXON_BROWSER_EXTERNAL_MEMORY_STRESS=1, AXON_STRESS_DELTA_PATH, AXON_STRESS_AGGREGATE_ORACLE_PATH, and AXON_BROWSER_EXTERNAL_MEMORY_SPILL_CAP_MIB after building the external-memory Wasm tier. AXON_BROWSER_EXTERNAL_MEMORY_PROFILE_MIB selects the 64 or 128 MiB conformance profile.',
+      );
+      return;
+    }
+    expect(['64', '128']).toContain(memoryProfileMiB);
+    const oracle = loadStressAggregateOracle(oraclePath);
+    const declaredOracleDigest = process.env.AXON_STRESS_AGGREGATE_ORACLE_DIGEST?.replace(
+      /^sha256:/i,
+      '',
+    ).toLowerCase();
+    if (process.env.AXON_BROWSER_EXTERNAL_MEMORY_QUALIFICATION === '1') {
+      expect(
+        declaredOracleDigest,
+        'qualification requires AXON_STRESS_AGGREGATE_ORACLE_DIGEST',
+      ).toBe(oracle.digest);
+    }
+    const persistentWebKitContext =
+      browserName === 'webkit'
+        ? await webkit.launchPersistentContext(testInfo.outputPath('webkit-profile'), {
+            ignoreHTTPSErrors: true,
+          })
+        : null;
+    const page =
+      persistentWebKitContext?.pages()[0] ??
+      (persistentWebKitContext ? await persistentWebKitContext.newPage() : fixturePage);
+    await page.addInitScript(() => {
+      let copiedText = '';
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: {
+          readText: async () => copiedText,
+          writeText: async (value: string) => {
+            copiedText = value;
+          },
+        },
+      });
+    });
+
+    try {
+      await connectLocalDeltaFolder(page, tableDir, 'stress-spill', {
+        expectedTable: 'query_engine_stress_delta',
+        parseTimeoutMs: 120_000,
+        pagePath: `/?axon_datafusion_memory_profile_mib=${memoryProfileMiB}&axon_datafusion_spill_cap_mib=${encodeURIComponent(spillCapMiB)}`,
+      });
+
+      await page.locator('.code-input').fill(
+        `SELECT event_id, SUM(quantity) AS quantity_sum, SUM(score) AS score_sum
+FROM query_engine_stress_delta
+GROUP BY event_id`,
+      );
+      await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+      await expect
+        .poll(
+          async () => {
+            const text = await page.locator('.res-meta').innerText();
+            return /browser · wasm/i.test(text) || /failed/i.test(text) ? text : 'pending';
+          },
+          { timeout: 12 * 60_000 },
+        )
+        .not.toBe('pending');
+      const terminalResult = await page.locator('.res-meta').innerText();
+      expect(terminalResult).toMatch(/browser · wasm/i);
+      await expect(page.getByTestId('spill-summary')).toContainText(/OPFS spill/i);
+      await expect(page.getByTestId('spill-summary')).not.toContainText('0 B written');
+      await expect(page.locator('.res-tab.active')).toContainText(/Results\s+500/);
+      await page.locator('button[title="Copy results as CSV"]').click();
+      await expect
+        .poll(async () => page.evaluate(() => navigator.clipboard.readText()))
+        .toContain('event_id,quantity_sum,score_sum');
+      const [header, ...dataRows] = (
+        await page.evaluate(() => navigator.clipboard.readText())
+      ).split('\n');
+      const actualPage: StressAggregateOracle = {
+        columns: header.split(','),
+        rows: dataRows.map((row) => row.split(',')),
+      };
+      expect(actualPage).toEqual(oracle.expected);
+      await page.locator('.res-tab', { hasText: 'Plan' }).click();
+      const externalMemory = page.getByTestId('external-memory-metrics');
+      await expect(externalMemory).toContainText(/0\s*active files/);
+      const exactMetrics = {
+        activeFiles: Number(await externalMemory.getAttribute('data-spill-active-files')),
+        bytesRead: Number(await externalMemory.getAttribute('data-spill-bytes-read')),
+        bytesWritten: Number(await externalMemory.getAttribute('data-spill-bytes-written')),
+        cleanupCount: Number(await externalMemory.getAttribute('data-spill-cleanup-count')),
+        filesCreated: Number(await externalMemory.getAttribute('data-spill-files-created')),
+        memoryProfileMiB: Number(memoryProfileMiB),
+        mergePasses: Number(await externalMemory.getAttribute('data-spill-merge-passes')),
+        peakActiveBytes: Number(await externalMemory.getAttribute('data-spill-peak-active-bytes')),
+        peakReservationBytes: Number(
+          await externalMemory.getAttribute('data-spill-peak-reservation-bytes'),
+        ),
+        storageLimitBytes: Number(
+          await externalMemory.getAttribute('data-spill-storage-limit-bytes'),
+        ),
+        workingSetLimitBytes: Number(
+          await externalMemory.getAttribute('data-spill-working-set-limit-bytes'),
+        ),
+      };
+      expect(exactMetrics).toMatchObject({
+        activeFiles: 0,
+        memoryProfileMiB: Number(memoryProfileMiB),
+        workingSetLimitBytes: Number(memoryProfileMiB) * 1024 * 1024,
+      });
+      expect(exactMetrics.bytesWritten).toBeGreaterThan(0);
+      expect(exactMetrics.filesCreated).toBeGreaterThan(0);
+      expect(exactMetrics.cleanupCount).toBeGreaterThan(0);
+      expect(exactMetrics.peakReservationBytes).toBeLessThanOrEqual(
+        exactMetrics.workingSetLimitBytes,
+      );
+      const provenance = stressEvidenceProvenance(browserName, browser, oracle.digest);
+      await test.info().attach(`external-memory-${memoryProfileMiB}mib.json`, {
+        body: JSON.stringify({ metrics: exactMetrics, provenance }, null, 2),
+        contentType: 'application/json',
+      });
+    } finally {
+      await persistentWebKitContext?.close();
+    }
+  });
+
   test('queries the complex Delta feature stress table in browser WASM', async ({ page }) => {
     const tableDir = process.env.AXON_COMPLEX_DELTA_PATH;
     if (!tableDir) {
@@ -2060,11 +2301,12 @@ async function connectLocalDeltaFolder(
   options: {
     expectPersisted?: boolean;
     expectedTable?: string | RegExp;
+    pagePath?: string;
     parseTimeoutMs?: number;
   } = {},
 ): Promise<string> {
   await installUnavailableDirectoryPicker(page);
-  await page.goto('/');
+  await page.goto(options.pagePath ?? '/');
   await page.getByRole('button', { name: /^Connect$/ }).click();
 
   const sourceDialog = page.getByRole('dialog', { name: 'Connect a Delta source' });

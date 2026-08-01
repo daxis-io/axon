@@ -10,7 +10,7 @@ const browserWorkerPort = new URL(browserWorkerBaseURL).port || '443';
 
 const browserWorkerMatrixConfig = defineConfig({
   testDir: './tests',
-  testMatch: /(?:browser-worker-matrix|internal-arrow-ipc-stream)\.spec\.ts/,
+  testMatch: /(?:browser-worker-matrix|internal-arrow-ipc-stream|opfs-external-memory)\.spec\.ts/,
   workers: 1,
   timeout: 60_000,
   use: {

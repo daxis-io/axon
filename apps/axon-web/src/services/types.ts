@@ -5,6 +5,7 @@ import type {
   ExecutionTarget,
   FallbackReason,
   QueryMetricsSummary,
+  QueryResourceDetails,
 } from '../axon-browser-sdk.ts';
 
 export type {
@@ -14,6 +15,7 @@ export type {
   ExecutionTarget,
   FallbackReason,
   QueryMetricsSummary,
+  QueryResourceDetails,
 };
 
 // ─── Catalog ────────────────────────────────────────────────────────────────
@@ -154,6 +156,7 @@ export type QueryRunError = {
   code?: string;
   target?: ExecutionTarget;
   fallback_reason?: FallbackReason;
+  resource_details?: QueryResourceDetails;
   elapsed_ms: number;
 };
 

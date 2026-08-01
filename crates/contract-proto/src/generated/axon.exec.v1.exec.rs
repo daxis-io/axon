@@ -439,6 +439,7 @@ pub enum QueryErrorCode {
     QUERY_ERROR_CODE_OBJECT_STORE_PROTOCOL = 6i32,
     QUERY_ERROR_CODE_SECURITY_POLICY_VIOLATION = 7i32,
     QUERY_ERROR_CODE_UNSUPPORTED_FEATURE = 8i32,
+    QUERY_ERROR_CODE_RESOURCE_EXHAUSTED = 9i32,
 }
 impl QueryErrorCode {
     ///Idiomatic alias for [`Self::QUERY_ERROR_CODE_UNSPECIFIED`]; `Debug` prints the variant name.
@@ -465,6 +466,9 @@ impl QueryErrorCode {
     ///Idiomatic alias for [`Self::QUERY_ERROR_CODE_UNSUPPORTED_FEATURE`]; `Debug` prints the variant name.
     #[allow(non_upper_case_globals)]
     pub const UnsupportedFeature: Self = Self::QUERY_ERROR_CODE_UNSUPPORTED_FEATURE;
+    ///Idiomatic alias for [`Self::QUERY_ERROR_CODE_RESOURCE_EXHAUSTED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const ResourceExhausted: Self = Self::QUERY_ERROR_CODE_RESOURCE_EXHAUSTED;
 }
 impl ::core::default::Default for QueryErrorCode {
     fn default() -> Self {
@@ -492,6 +496,9 @@ impl ::buffa::Enumeration for QueryErrorCode {
             8i32 => {
                 ::core::option::Option::Some(Self::QUERY_ERROR_CODE_UNSUPPORTED_FEATURE)
             }
+            9i32 => {
+                ::core::option::Option::Some(Self::QUERY_ERROR_CODE_RESOURCE_EXHAUSTED)
+            }
             _ => ::core::option::Option::None,
         }
     }
@@ -517,6 +524,9 @@ impl ::buffa::Enumeration for QueryErrorCode {
             }
             Self::QUERY_ERROR_CODE_UNSUPPORTED_FEATURE => {
                 "QUERY_ERROR_CODE_UNSUPPORTED_FEATURE"
+            }
+            Self::QUERY_ERROR_CODE_RESOURCE_EXHAUSTED => {
+                "QUERY_ERROR_CODE_RESOURCE_EXHAUSTED"
             }
         }
     }
@@ -550,6 +560,9 @@ impl ::buffa::Enumeration for QueryErrorCode {
             "QUERY_ERROR_CODE_UNSUPPORTED_FEATURE" => {
                 ::core::option::Option::Some(Self::QUERY_ERROR_CODE_UNSUPPORTED_FEATURE)
             }
+            "QUERY_ERROR_CODE_RESOURCE_EXHAUSTED" => {
+                ::core::option::Option::Some(Self::QUERY_ERROR_CODE_RESOURCE_EXHAUSTED)
+            }
             _ => ::core::option::Option::None,
         }
     }
@@ -563,6 +576,165 @@ impl ::buffa::Enumeration for QueryErrorCode {
             Self::QUERY_ERROR_CODE_OBJECT_STORE_PROTOCOL,
             Self::QUERY_ERROR_CODE_SECURITY_POLICY_VIOLATION,
             Self::QUERY_ERROR_CODE_UNSUPPORTED_FEATURE,
+            Self::QUERY_ERROR_CODE_RESOURCE_EXHAUSTED,
+        ]
+    }
+}
+/// Identifies the bounded resource that prevented local query execution.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(i32)]
+pub enum QueryResource {
+    QUERY_RESOURCE_UNSPECIFIED = 0i32,
+    QUERY_RESOURCE_OPERATOR_MEMORY = 1i32,
+    QUERY_RESOURCE_SPILL_STORAGE = 2i32,
+    QUERY_RESOURCE_RESULT_OUTPUT = 3i32,
+}
+impl QueryResource {
+    ///Idiomatic alias for [`Self::QUERY_RESOURCE_UNSPECIFIED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Unspecified: Self = Self::QUERY_RESOURCE_UNSPECIFIED;
+    ///Idiomatic alias for [`Self::QUERY_RESOURCE_OPERATOR_MEMORY`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const OperatorMemory: Self = Self::QUERY_RESOURCE_OPERATOR_MEMORY;
+    ///Idiomatic alias for [`Self::QUERY_RESOURCE_SPILL_STORAGE`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const SpillStorage: Self = Self::QUERY_RESOURCE_SPILL_STORAGE;
+    ///Idiomatic alias for [`Self::QUERY_RESOURCE_RESULT_OUTPUT`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const ResultOutput: Self = Self::QUERY_RESOURCE_RESULT_OUTPUT;
+}
+impl ::core::default::Default for QueryResource {
+    fn default() -> Self {
+        Self::QUERY_RESOURCE_UNSPECIFIED
+    }
+}
+impl ::buffa::Enumeration for QueryResource {
+    fn from_i32(value: i32) -> ::core::option::Option<Self> {
+        match value {
+            0i32 => ::core::option::Option::Some(Self::QUERY_RESOURCE_UNSPECIFIED),
+            1i32 => ::core::option::Option::Some(Self::QUERY_RESOURCE_OPERATOR_MEMORY),
+            2i32 => ::core::option::Option::Some(Self::QUERY_RESOURCE_SPILL_STORAGE),
+            3i32 => ::core::option::Option::Some(Self::QUERY_RESOURCE_RESULT_OUTPUT),
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn to_i32(&self) -> i32 {
+        *self as i32
+    }
+    fn proto_name(&self) -> &'static str {
+        match self {
+            Self::QUERY_RESOURCE_UNSPECIFIED => "QUERY_RESOURCE_UNSPECIFIED",
+            Self::QUERY_RESOURCE_OPERATOR_MEMORY => "QUERY_RESOURCE_OPERATOR_MEMORY",
+            Self::QUERY_RESOURCE_SPILL_STORAGE => "QUERY_RESOURCE_SPILL_STORAGE",
+            Self::QUERY_RESOURCE_RESULT_OUTPUT => "QUERY_RESOURCE_RESULT_OUTPUT",
+        }
+    }
+    fn from_proto_name(name: &str) -> ::core::option::Option<Self> {
+        match name {
+            "QUERY_RESOURCE_UNSPECIFIED" => {
+                ::core::option::Option::Some(Self::QUERY_RESOURCE_UNSPECIFIED)
+            }
+            "QUERY_RESOURCE_OPERATOR_MEMORY" => {
+                ::core::option::Option::Some(Self::QUERY_RESOURCE_OPERATOR_MEMORY)
+            }
+            "QUERY_RESOURCE_SPILL_STORAGE" => {
+                ::core::option::Option::Some(Self::QUERY_RESOURCE_SPILL_STORAGE)
+            }
+            "QUERY_RESOURCE_RESULT_OUTPUT" => {
+                ::core::option::Option::Some(Self::QUERY_RESOURCE_RESULT_OUTPUT)
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn values() -> &'static [Self] {
+        &[
+            Self::QUERY_RESOURCE_UNSPECIFIED,
+            Self::QUERY_RESOURCE_OPERATOR_MEMORY,
+            Self::QUERY_RESOURCE_SPILL_STORAGE,
+            Self::QUERY_RESOURCE_RESULT_OUTPUT,
+        ]
+    }
+}
+/// Classifies why the selected bounded resource could not serve the query.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(i32)]
+pub enum QueryResourceReason {
+    QUERY_RESOURCE_REASON_UNSPECIFIED = 0i32,
+    QUERY_RESOURCE_REASON_UNAVAILABLE = 1i32,
+    QUERY_RESOURCE_REASON_QUOTA_EXCEEDED = 2i32,
+    QUERY_RESOURCE_REASON_IO_FAILURE = 3i32,
+}
+impl QueryResourceReason {
+    ///Idiomatic alias for [`Self::QUERY_RESOURCE_REASON_UNSPECIFIED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Unspecified: Self = Self::QUERY_RESOURCE_REASON_UNSPECIFIED;
+    ///Idiomatic alias for [`Self::QUERY_RESOURCE_REASON_UNAVAILABLE`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Unavailable: Self = Self::QUERY_RESOURCE_REASON_UNAVAILABLE;
+    ///Idiomatic alias for [`Self::QUERY_RESOURCE_REASON_QUOTA_EXCEEDED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const QuotaExceeded: Self = Self::QUERY_RESOURCE_REASON_QUOTA_EXCEEDED;
+    ///Idiomatic alias for [`Self::QUERY_RESOURCE_REASON_IO_FAILURE`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const IoFailure: Self = Self::QUERY_RESOURCE_REASON_IO_FAILURE;
+}
+impl ::core::default::Default for QueryResourceReason {
+    fn default() -> Self {
+        Self::QUERY_RESOURCE_REASON_UNSPECIFIED
+    }
+}
+impl ::buffa::Enumeration for QueryResourceReason {
+    fn from_i32(value: i32) -> ::core::option::Option<Self> {
+        match value {
+            0i32 => ::core::option::Option::Some(Self::QUERY_RESOURCE_REASON_UNSPECIFIED),
+            1i32 => ::core::option::Option::Some(Self::QUERY_RESOURCE_REASON_UNAVAILABLE),
+            2i32 => {
+                ::core::option::Option::Some(Self::QUERY_RESOURCE_REASON_QUOTA_EXCEEDED)
+            }
+            3i32 => ::core::option::Option::Some(Self::QUERY_RESOURCE_REASON_IO_FAILURE),
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn to_i32(&self) -> i32 {
+        *self as i32
+    }
+    fn proto_name(&self) -> &'static str {
+        match self {
+            Self::QUERY_RESOURCE_REASON_UNSPECIFIED => {
+                "QUERY_RESOURCE_REASON_UNSPECIFIED"
+            }
+            Self::QUERY_RESOURCE_REASON_UNAVAILABLE => {
+                "QUERY_RESOURCE_REASON_UNAVAILABLE"
+            }
+            Self::QUERY_RESOURCE_REASON_QUOTA_EXCEEDED => {
+                "QUERY_RESOURCE_REASON_QUOTA_EXCEEDED"
+            }
+            Self::QUERY_RESOURCE_REASON_IO_FAILURE => "QUERY_RESOURCE_REASON_IO_FAILURE",
+        }
+    }
+    fn from_proto_name(name: &str) -> ::core::option::Option<Self> {
+        match name {
+            "QUERY_RESOURCE_REASON_UNSPECIFIED" => {
+                ::core::option::Option::Some(Self::QUERY_RESOURCE_REASON_UNSPECIFIED)
+            }
+            "QUERY_RESOURCE_REASON_UNAVAILABLE" => {
+                ::core::option::Option::Some(Self::QUERY_RESOURCE_REASON_UNAVAILABLE)
+            }
+            "QUERY_RESOURCE_REASON_QUOTA_EXCEEDED" => {
+                ::core::option::Option::Some(Self::QUERY_RESOURCE_REASON_QUOTA_EXCEEDED)
+            }
+            "QUERY_RESOURCE_REASON_IO_FAILURE" => {
+                ::core::option::Option::Some(Self::QUERY_RESOURCE_REASON_IO_FAILURE)
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn values() -> &'static [Self] {
+        &[
+            Self::QUERY_RESOURCE_REASON_UNSPECIFIED,
+            Self::QUERY_RESOURCE_REASON_UNAVAILABLE,
+            Self::QUERY_RESOURCE_REASON_QUOTA_EXCEEDED,
+            Self::QUERY_RESOURCE_REASON_IO_FAILURE,
         ]
     }
 }
@@ -640,6 +812,71 @@ impl ::buffa::Enumeration for BrowserAccessMode {
             Self::BROWSER_ACCESS_MODE_UNSPECIFIED,
             Self::BROWSER_ACCESS_MODE_BROWSER_SAFE_HTTP,
             Self::BROWSER_ACCESS_MODE_CLOUD_OBJECT_STORE,
+        ]
+    }
+}
+/// Identifies the storage backend used for external-memory execution.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(i32)]
+pub enum SpillBackend {
+    SPILL_BACKEND_UNSPECIFIED = 0i32,
+    SPILL_BACKEND_OPFS = 1i32,
+    SPILL_BACKEND_NATIVE_TEMP_FILE = 2i32,
+}
+impl SpillBackend {
+    ///Idiomatic alias for [`Self::SPILL_BACKEND_UNSPECIFIED`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Unspecified: Self = Self::SPILL_BACKEND_UNSPECIFIED;
+    ///Idiomatic alias for [`Self::SPILL_BACKEND_OPFS`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const Opfs: Self = Self::SPILL_BACKEND_OPFS;
+    ///Idiomatic alias for [`Self::SPILL_BACKEND_NATIVE_TEMP_FILE`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const NativeTempFile: Self = Self::SPILL_BACKEND_NATIVE_TEMP_FILE;
+}
+impl ::core::default::Default for SpillBackend {
+    fn default() -> Self {
+        Self::SPILL_BACKEND_UNSPECIFIED
+    }
+}
+impl ::buffa::Enumeration for SpillBackend {
+    fn from_i32(value: i32) -> ::core::option::Option<Self> {
+        match value {
+            0i32 => ::core::option::Option::Some(Self::SPILL_BACKEND_UNSPECIFIED),
+            1i32 => ::core::option::Option::Some(Self::SPILL_BACKEND_OPFS),
+            2i32 => ::core::option::Option::Some(Self::SPILL_BACKEND_NATIVE_TEMP_FILE),
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn to_i32(&self) -> i32 {
+        *self as i32
+    }
+    fn proto_name(&self) -> &'static str {
+        match self {
+            Self::SPILL_BACKEND_UNSPECIFIED => "SPILL_BACKEND_UNSPECIFIED",
+            Self::SPILL_BACKEND_OPFS => "SPILL_BACKEND_OPFS",
+            Self::SPILL_BACKEND_NATIVE_TEMP_FILE => "SPILL_BACKEND_NATIVE_TEMP_FILE",
+        }
+    }
+    fn from_proto_name(name: &str) -> ::core::option::Option<Self> {
+        match name {
+            "SPILL_BACKEND_UNSPECIFIED" => {
+                ::core::option::Option::Some(Self::SPILL_BACKEND_UNSPECIFIED)
+            }
+            "SPILL_BACKEND_OPFS" => {
+                ::core::option::Option::Some(Self::SPILL_BACKEND_OPFS)
+            }
+            "SPILL_BACKEND_NATIVE_TEMP_FILE" => {
+                ::core::option::Option::Some(Self::SPILL_BACKEND_NATIVE_TEMP_FILE)
+            }
+            _ => ::core::option::Option::None,
+        }
+    }
+    fn values() -> &'static [Self] {
+        &[
+            Self::SPILL_BACKEND_UNSPECIFIED,
+            Self::SPILL_BACKEND_OPFS,
+            Self::SPILL_BACKEND_NATIVE_TEMP_FILE,
         ]
     }
 }
@@ -2327,6 +2564,136 @@ impl ::buffa::ExtensionSet for QueryRequest {
         &mut self.__buffa_unknown_fields
     }
 }
+/// Carries safe, authority-neutral details for a bounded resource failure.
+#[derive(Clone, PartialEq, Default)]
+pub struct QueryResourceDetails {
+    /// Field 1: `resource`
+    pub resource: ::buffa::EnumValue<QueryResource>,
+    /// Field 2: `reason`
+    pub reason: ::buffa::EnumValue<QueryResourceReason>,
+    #[doc(hidden)]
+    pub __buffa_unknown_fields: ::buffa::UnknownFields,
+}
+impl ::core::fmt::Debug for QueryResourceDetails {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        f.debug_struct("QueryResourceDetails")
+            .field("resource", &self.resource)
+            .field("reason", &self.reason)
+            .finish()
+    }
+}
+impl QueryResourceDetails {
+    /// Protobuf type URL for this message, for use with `Any::pack` and
+    /// `Any::unpack_if`.
+    ///
+    /// Format: `type.googleapis.com/<fully.qualified.TypeName>`
+    pub const TYPE_URL: &'static str = "type.googleapis.com/axon.exec.v1.QueryResourceDetails";
+}
+::buffa::impl_default_instance!(QueryResourceDetails);
+impl ::buffa::MessageName for QueryResourceDetails {
+    const PACKAGE: &'static str = "axon.exec.v1";
+    const NAME: &'static str = "QueryResourceDetails";
+    const FULL_NAME: &'static str = "axon.exec.v1.QueryResourceDetails";
+    const TYPE_URL: &'static str = "type.googleapis.com/axon.exec.v1.QueryResourceDetails";
+}
+impl ::buffa::Message for QueryResourceDetails {
+    /// Returns the total encoded size in bytes.
+    ///
+    /// The result is a `u32`; the protobuf specification requires all
+    /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
+    /// compliant message will never overflow this type.
+    #[allow(clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        {
+            let val = self.resource.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        {
+            let val = self.reason.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        size
+    }
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        {
+            let val = self.resource.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(1u32, val, buf);
+            }
+        }
+        {
+            let val = self.reason.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(2u32, val, buf);
+            }
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+    fn merge_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        buf: &mut impl ::buffa::bytes::Buf,
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<(), ::buffa::DecodeError> {
+        #[allow(unused_imports)]
+        use ::buffa::bytes::Buf as _;
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.resource = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.reason = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            _ => {
+                self.__buffa_unknown_fields
+                    .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
+            }
+        }
+        ::core::result::Result::Ok(())
+    }
+    fn clear(&mut self) {
+        self.resource = ::buffa::EnumValue::from(0);
+        self.reason = ::buffa::EnumValue::from(0);
+        self.__buffa_unknown_fields.clear();
+    }
+}
+impl ::buffa::ExtensionSet for QueryResourceDetails {
+    const PROTO_FQN: &'static str = "axon.exec.v1.QueryResourceDetails";
+    fn unknown_fields(&self) -> &::buffa::UnknownFields {
+        &self.__buffa_unknown_fields
+    }
+    fn unknown_fields_mut(&mut self) -> &mut ::buffa::UnknownFields {
+        &mut self.__buffa_unknown_fields
+    }
+}
 /// Returns a structured query failure.
 #[derive(Clone, PartialEq, Default)]
 pub struct QueryError {
@@ -2336,6 +2703,8 @@ pub struct QueryError {
     pub message: ::buffa::alloc::string::String,
     /// Field 3: `target`
     pub target: ::buffa::EnumValue<ExecutionTarget>,
+    /// Field 5: `resource_details`
+    pub resource_details: ::buffa::MessageField<QueryResourceDetails>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
@@ -2345,6 +2714,7 @@ impl ::core::fmt::Debug for QueryError {
             .field("code", &self.code)
             .field("message", &self.message)
             .field("target", &self.target)
+            .field("resource_details", &self.resource_details)
             .finish()
     }
 }
@@ -2369,7 +2739,7 @@ impl ::buffa::Message for QueryError {
     /// messages to fit within 2 GiB (2,147,483,647 bytes), so a
     /// compliant message will never overflow this type.
     #[allow(clippy::let_and_return)]
-    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
         let mut size = 0u32;
@@ -2388,12 +2758,20 @@ impl ::buffa::Message for QueryError {
                 size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
             }
         }
+        if self.resource_details.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.resource_details.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
     fn write_to(
         &self,
-        _cache: &mut ::buffa::SizeCache,
+        __cache: &mut ::buffa::SizeCache,
         buf: &mut impl ::buffa::bytes::BufMut,
     ) {
         #[allow(unused_imports)]
@@ -2412,6 +2790,10 @@ impl ::buffa::Message for QueryError {
             if val != 0 {
                 ::buffa::types::put_int32_field(3u32, val, buf);
             }
+        }
+        if self.resource_details.is_set() {
+            ::buffa::types::put_len_delimited_header(5u32, __cache.consume_next(), buf);
+            self.resource_details.write_to(__cache, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -2449,6 +2831,17 @@ impl ::buffa::Message for QueryError {
                     ::buffa::types::decode_int32(buf)?,
                 );
             }
+            5u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                ::buffa::Message::merge_length_delimited(
+                    self.resource_details.get_or_insert_default(),
+                    buf,
+                    ctx,
+                )?;
+            }
             _ => {
                 self.__buffa_unknown_fields
                     .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
@@ -2460,6 +2853,7 @@ impl ::buffa::Message for QueryError {
         self.code = ::buffa::EnumValue::from(0);
         self.message.clear();
         self.target = ::buffa::EnumValue::from(0);
+        self.resource_details = ::buffa::MessageField::none();
         self.__buffa_unknown_fields.clear();
     }
 }
@@ -2987,6 +3381,30 @@ pub struct QueryMetricsSummary {
     pub cursor_peak_transport_chunk_bytes: ::core::option::Option<u64>,
     /// Field 59: `page_index_decision`
     pub page_index_decision: ::buffa::MessageField<PageIndexDecisionSummary>,
+    /// Field 60: `spill_backend`
+    pub spill_backend: ::buffa::EnumValue<SpillBackend>,
+    /// Field 61: `spill_working_set_limit_bytes`
+    pub spill_working_set_limit_bytes: ::core::option::Option<u64>,
+    /// Field 62: `spill_peak_reservation_bytes`
+    pub spill_peak_reservation_bytes: ::core::option::Option<u64>,
+    /// Field 63: `spill_storage_limit_bytes`
+    pub spill_storage_limit_bytes: ::core::option::Option<u64>,
+    /// Field 64: `spill_bytes_written`
+    pub spill_bytes_written: ::core::option::Option<u64>,
+    /// Field 65: `spill_bytes_read`
+    pub spill_bytes_read: ::core::option::Option<u64>,
+    /// Field 66: `spill_files_created`
+    pub spill_files_created: ::core::option::Option<u64>,
+    /// Field 67: `spill_peak_active_bytes`
+    pub spill_peak_active_bytes: ::core::option::Option<u64>,
+    /// Field 68: `spill_active_files`
+    pub spill_active_files: ::core::option::Option<u64>,
+    /// Field 69: `spill_merge_passes`
+    pub spill_merge_passes: ::core::option::Option<u64>,
+    /// Field 70: `spill_cleanup_count`
+    pub spill_cleanup_count: ::core::option::Option<u64>,
+    /// Field 71: `spill_abandoned_cleanup_count`
+    pub spill_abandoned_cleanup_count: ::core::option::Option<u64>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
@@ -3072,6 +3490,18 @@ impl ::core::fmt::Debug for QueryMetricsSummary {
                 &self.cursor_peak_transport_chunk_bytes,
             )
             .field("page_index_decision", &self.page_index_decision)
+            .field("spill_backend", &self.spill_backend)
+            .field("spill_working_set_limit_bytes", &self.spill_working_set_limit_bytes)
+            .field("spill_peak_reservation_bytes", &self.spill_peak_reservation_bytes)
+            .field("spill_storage_limit_bytes", &self.spill_storage_limit_bytes)
+            .field("spill_bytes_written", &self.spill_bytes_written)
+            .field("spill_bytes_read", &self.spill_bytes_read)
+            .field("spill_files_created", &self.spill_files_created)
+            .field("spill_peak_active_bytes", &self.spill_peak_active_bytes)
+            .field("spill_active_files", &self.spill_active_files)
+            .field("spill_merge_passes", &self.spill_merge_passes)
+            .field("spill_cleanup_count", &self.spill_cleanup_count)
+            .field("spill_abandoned_cleanup_count", &self.spill_abandoned_cleanup_count)
             .finish()
     }
 }
@@ -3485,6 +3915,83 @@ impl QueryMetricsSummary {
         self.cursor_peak_transport_chunk_bytes = Some(value);
         self
     }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::spill_working_set_limit_bytes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_spill_working_set_limit_bytes(mut self, value: u64) -> Self {
+        self.spill_working_set_limit_bytes = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::spill_peak_reservation_bytes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_spill_peak_reservation_bytes(mut self, value: u64) -> Self {
+        self.spill_peak_reservation_bytes = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::spill_storage_limit_bytes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_spill_storage_limit_bytes(mut self, value: u64) -> Self {
+        self.spill_storage_limit_bytes = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::spill_bytes_written`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_spill_bytes_written(mut self, value: u64) -> Self {
+        self.spill_bytes_written = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::spill_bytes_read`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_spill_bytes_read(mut self, value: u64) -> Self {
+        self.spill_bytes_read = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::spill_files_created`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_spill_files_created(mut self, value: u64) -> Self {
+        self.spill_files_created = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::spill_peak_active_bytes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_spill_peak_active_bytes(mut self, value: u64) -> Self {
+        self.spill_peak_active_bytes = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::spill_active_files`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_spill_active_files(mut self, value: u64) -> Self {
+        self.spill_active_files = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::spill_merge_passes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_spill_merge_passes(mut self, value: u64) -> Self {
+        self.spill_merge_passes = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::spill_cleanup_count`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_spill_cleanup_count(mut self, value: u64) -> Self {
+        self.spill_cleanup_count = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::spill_abandoned_cleanup_count`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_spill_abandoned_cleanup_count(mut self, value: u64) -> Self {
+        self.spill_abandoned_cleanup_count = Some(value);
+        self
+    }
 }
 ::buffa::impl_default_instance!(QueryMetricsSummary);
 impl ::buffa::MessageName for QueryMetricsSummary {
@@ -3683,6 +4190,45 @@ impl ::buffa::Message for QueryMetricsSummary {
                 += 2u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
                     + inner_size;
         }
+        {
+            let val = self.spill_backend.to_i32();
+            if val != 0 {
+                size += 2u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        if let Some(v) = self.spill_working_set_limit_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_peak_reservation_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_storage_limit_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_bytes_written {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_bytes_read {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_files_created {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_peak_active_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_active_files {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_merge_passes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_cleanup_count {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_abandoned_cleanup_count {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
@@ -3867,6 +4413,45 @@ impl ::buffa::Message for QueryMetricsSummary {
         if self.page_index_decision.is_set() {
             ::buffa::types::put_len_delimited_header(59u32, __cache.consume_next(), buf);
             self.page_index_decision.write_to(__cache, buf);
+        }
+        {
+            let val = self.spill_backend.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(60u32, val, buf);
+            }
+        }
+        if let Some(v) = self.spill_working_set_limit_bytes {
+            ::buffa::types::put_uint64_field(61u32, v, buf);
+        }
+        if let Some(v) = self.spill_peak_reservation_bytes {
+            ::buffa::types::put_uint64_field(62u32, v, buf);
+        }
+        if let Some(v) = self.spill_storage_limit_bytes {
+            ::buffa::types::put_uint64_field(63u32, v, buf);
+        }
+        if let Some(v) = self.spill_bytes_written {
+            ::buffa::types::put_uint64_field(64u32, v, buf);
+        }
+        if let Some(v) = self.spill_bytes_read {
+            ::buffa::types::put_uint64_field(65u32, v, buf);
+        }
+        if let Some(v) = self.spill_files_created {
+            ::buffa::types::put_uint64_field(66u32, v, buf);
+        }
+        if let Some(v) = self.spill_peak_active_bytes {
+            ::buffa::types::put_uint64_field(67u32, v, buf);
+        }
+        if let Some(v) = self.spill_active_files {
+            ::buffa::types::put_uint64_field(68u32, v, buf);
+        }
+        if let Some(v) = self.spill_merge_passes {
+            ::buffa::types::put_uint64_field(69u32, v, buf);
+        }
+        if let Some(v) = self.spill_cleanup_count {
+            ::buffa::types::put_uint64_field(70u32, v, buf);
+        }
+        if let Some(v) = self.spill_abandoned_cleanup_count {
+            ::buffa::types::put_uint64_field(71u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -4405,6 +4990,114 @@ impl ::buffa::Message for QueryMetricsSummary {
                     ctx,
                 )?;
             }
+            60u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.spill_backend = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(buf)?,
+                );
+            }
+            61u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.spill_working_set_limit_bytes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            62u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.spill_peak_reservation_bytes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            63u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.spill_storage_limit_bytes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            64u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.spill_bytes_written = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            65u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.spill_bytes_read = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            66u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.spill_files_created = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            67u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.spill_peak_active_bytes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            68u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.spill_active_files = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            69u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.spill_merge_passes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            70u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.spill_cleanup_count = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            71u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.spill_abandoned_cleanup_count = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
             _ => {
                 self.__buffa_unknown_fields
                     .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
@@ -4471,6 +5164,18 @@ impl ::buffa::Message for QueryMetricsSummary {
         self.cursor_peak_pending_encoded_bytes = ::core::option::Option::None;
         self.cursor_peak_transport_chunk_bytes = ::core::option::Option::None;
         self.page_index_decision = ::buffa::MessageField::none();
+        self.spill_backend = ::buffa::EnumValue::from(0);
+        self.spill_working_set_limit_bytes = ::core::option::Option::None;
+        self.spill_peak_reservation_bytes = ::core::option::Option::None;
+        self.spill_storage_limit_bytes = ::core::option::Option::None;
+        self.spill_bytes_written = ::core::option::Option::None;
+        self.spill_bytes_read = ::core::option::Option::None;
+        self.spill_files_created = ::core::option::Option::None;
+        self.spill_peak_active_bytes = ::core::option::Option::None;
+        self.spill_active_files = ::core::option::Option::None;
+        self.spill_merge_passes = ::core::option::Option::None;
+        self.spill_cleanup_count = ::core::option::Option::None;
+        self.spill_abandoned_cleanup_count = ::core::option::Option::None;
         self.__buffa_unknown_fields.clear();
     }
 }

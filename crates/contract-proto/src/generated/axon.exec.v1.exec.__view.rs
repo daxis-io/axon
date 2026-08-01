@@ -1179,6 +1179,265 @@ impl ::buffa::HasMessageView for super::super::QueryRequest {
     type View<'a> = QueryRequestView<'a>;
     type ViewHandle = QueryRequestOwnedView;
 }
+/// Carries safe, authority-neutral details for a bounded resource failure.
+#[derive(Clone, Debug, Default)]
+pub struct QueryResourceDetailsView<'a> {
+    /// Field 1: `resource`
+    pub resource: ::buffa::EnumValue<super::super::QueryResource>,
+    /// Field 2: `reason`
+    pub reason: ::buffa::EnumValue<super::super::QueryResourceReason>,
+    pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
+}
+impl<'a> ::buffa::MessageView<'a> for QueryResourceDetailsView<'a> {
+    type Owned = super::super::QueryResourceDetails;
+    fn decode_view(buf: &'a [u8]) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        let __limit = ::core::cell::Cell::new(::buffa::DEFAULT_UNKNOWN_FIELD_LIMIT);
+        <Self as ::buffa::MessageView>::decode_view_ctx(
+            buf,
+            ::buffa::DecodeContext::new(::buffa::RECURSION_LIMIT, &__limit),
+        )
+    }
+    fn decode_view_with_ctx(
+        buf: &'a [u8],
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        <Self as ::buffa::MessageView>::decode_view_ctx(buf, ctx)
+    }
+    fn merge_view_field(
+        &mut self,
+        tag: ::buffa::encoding::Tag,
+        cur: &'a [u8],
+        before_tag: &'a [u8],
+        ctx: ::buffa::DecodeContext<'_>,
+    ) -> ::core::result::Result<&'a [u8], ::buffa::DecodeError> {
+        let _ = ctx;
+        #[allow(unused_variables)]
+        let view = self;
+        let mut cur = cur;
+        match tag.field_number() {
+            1u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.resource = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(&mut cur)?,
+                );
+            }
+            2u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.reason = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(&mut cur)?,
+                );
+            }
+            _ => {
+                ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
+                let span_len = before_tag.len() - cur.len();
+                view.__buffa_unknown_fields.push_record(before_tag, span_len, ctx)?;
+            }
+        }
+        ::core::result::Result::Ok(cur)
+    }
+    fn to_owned_message(
+        &self,
+    ) -> ::core::result::Result<
+        super::super::QueryResourceDetails,
+        ::buffa::DecodeError,
+    > {
+        self.to_owned_from_source(None)
+    }
+    #[allow(clippy::useless_conversion, clippy::needless_update)]
+    fn to_owned_from_source(
+        &self,
+        __buffa_src: ::core::option::Option<&::buffa::bytes::Bytes>,
+    ) -> ::core::result::Result<
+        super::super::QueryResourceDetails,
+        ::buffa::DecodeError,
+    > {
+        #[allow(unused_imports)]
+        use ::buffa::alloc::string::ToString as _;
+        let _ = __buffa_src;
+        ::core::result::Result::Ok(super::super::QueryResourceDetails {
+            resource: self.resource,
+            reason: self.reason,
+            __buffa_unknown_fields: self.__buffa_unknown_fields.to_owned()?.into(),
+            ..::core::default::Default::default()
+        })
+    }
+}
+impl<'a> ::buffa::ViewEncode<'a> for QueryResourceDetailsView<'a> {
+    #[allow(clippy::needless_borrow, clippy::let_and_return)]
+    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        let mut size = 0u32;
+        {
+            let val = self.resource.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        {
+            let val = self.reason.to_i32();
+            if val != 0 {
+                size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        size += self.__buffa_unknown_fields.encoded_len() as u32;
+        size
+    }
+    #[allow(clippy::needless_borrow)]
+    fn write_to(
+        &self,
+        _cache: &mut ::buffa::SizeCache,
+        buf: &mut impl ::buffa::bytes::BufMut,
+    ) {
+        #[allow(unused_imports)]
+        use ::buffa::Enumeration as _;
+        {
+            let val = self.resource.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(1u32, val, buf);
+            }
+        }
+        {
+            let val = self.reason.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(2u32, val, buf);
+            }
+        }
+        self.__buffa_unknown_fields.write_to(buf);
+    }
+}
+impl<'a> ::buffa::MessageName for QueryResourceDetailsView<'a> {
+    const PACKAGE: &'static str = "axon.exec.v1";
+    const NAME: &'static str = "QueryResourceDetails";
+    const FULL_NAME: &'static str = "axon.exec.v1.QueryResourceDetails";
+    const TYPE_URL: &'static str = "type.googleapis.com/axon.exec.v1.QueryResourceDetails";
+}
+::buffa::impl_default_view_instance!(QueryResourceDetailsView);
+::buffa::impl_view_reborrow!(QueryResourceDetailsView);
+/** Self-contained, `'static` owned view of a `QueryResourceDetails` message.
+
+ Wraps [`::buffa::OwnedView`]`<`[`QueryResourceDetailsView`]`<'static>>`: the decoded view and the [`::buffa::bytes::Bytes`] buffer it borrows from travel together, so the handle is `'static` and `Send + Sync` — suitable for async handlers, spawned tasks, and anywhere a `'static` bound is required.
+
+ Field accessors return borrows tied to `&self`. Use [`Self::view`] to get the full [`QueryResourceDetailsView`] when you need struct patterns, iteration helpers, or to pass the view to lifetime-parameterised code.*/
+#[derive(Clone, Debug)]
+pub struct QueryResourceDetailsOwnedView(
+    ::buffa::OwnedView<QueryResourceDetailsView<'static>>,
+);
+impl QueryResourceDetailsOwnedView {
+    /// Decode an owned view from a [`::buffa::bytes::Bytes`] buffer.
+    ///
+    /// The view borrows directly from the buffer's data; the buffer is
+    /// retained inside the returned handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`::buffa::DecodeError`] if the buffer contains invalid
+    /// protobuf data.
+    pub fn decode(
+        bytes: ::buffa::bytes::Bytes,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        ::core::result::Result::Ok(
+            QueryResourceDetailsOwnedView(::buffa::OwnedView::decode(bytes)?),
+        )
+    }
+    /// Decode with custom [`::buffa::DecodeOptions`] (recursion limit,
+    /// max message size).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`::buffa::DecodeError`] if the buffer is invalid or
+    /// exceeds the configured limits.
+    pub fn decode_with_options(
+        bytes: ::buffa::bytes::Bytes,
+        opts: &::buffa::DecodeOptions,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        ::core::result::Result::Ok(
+            QueryResourceDetailsOwnedView(
+                ::buffa::OwnedView::decode_with_options(bytes, opts)?,
+            ),
+        )
+    }
+    /// Build from an owned message via an encode → decode round-trip.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`::buffa::DecodeError`] if the re-encoded bytes are
+    /// somehow invalid (should not happen for well-formed messages).
+    pub fn from_owned(
+        msg: &super::super::QueryResourceDetails,
+    ) -> ::core::result::Result<Self, ::buffa::DecodeError> {
+        ::core::result::Result::Ok(
+            QueryResourceDetailsOwnedView(::buffa::OwnedView::from_owned(msg)?),
+        )
+    }
+    /// Borrow the full [`QueryResourceDetailsView`] with its lifetime tied to `&self`.
+    #[must_use]
+    pub fn view(&self) -> &QueryResourceDetailsView<'_> {
+        self.0.reborrow()
+    }
+    /// Convert to the owned message type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if re-materializing preserved unknown fields
+    /// fails (e.g. the unknown-field limit is exceeded).
+    pub fn to_owned_message(
+        &self,
+    ) -> ::core::result::Result<
+        super::super::QueryResourceDetails,
+        ::buffa::DecodeError,
+    > {
+        self.0.to_owned_message()
+    }
+    /// The underlying bytes buffer.
+    #[must_use]
+    pub fn bytes(&self) -> &::buffa::bytes::Bytes {
+        self.0.bytes()
+    }
+    /// Consume the handle, returning the underlying bytes buffer.
+    #[must_use]
+    pub fn into_bytes(self) -> ::buffa::bytes::Bytes {
+        self.0.into_bytes()
+    }
+    /// Field 1: `resource`
+    #[must_use]
+    pub fn resource(&self) -> ::buffa::EnumValue<super::super::QueryResource> {
+        self.0.reborrow().resource
+    }
+    /// Field 2: `reason`
+    #[must_use]
+    pub fn reason(&self) -> ::buffa::EnumValue<super::super::QueryResourceReason> {
+        self.0.reborrow().reason
+    }
+}
+impl ::core::convert::From<::buffa::OwnedView<QueryResourceDetailsView<'static>>>
+for QueryResourceDetailsOwnedView {
+    fn from(inner: ::buffa::OwnedView<QueryResourceDetailsView<'static>>) -> Self {
+        QueryResourceDetailsOwnedView(inner)
+    }
+}
+impl ::core::convert::From<QueryResourceDetailsOwnedView>
+for ::buffa::OwnedView<QueryResourceDetailsView<'static>> {
+    fn from(wrapper: QueryResourceDetailsOwnedView) -> Self {
+        wrapper.0
+    }
+}
+impl ::core::convert::AsRef<::buffa::OwnedView<QueryResourceDetailsView<'static>>>
+for QueryResourceDetailsOwnedView {
+    fn as_ref(&self) -> &::buffa::OwnedView<QueryResourceDetailsView<'static>> {
+        &self.0
+    }
+}
+impl ::buffa::HasMessageView for super::super::QueryResourceDetails {
+    type View<'a> = QueryResourceDetailsView<'a>;
+    type ViewHandle = QueryResourceDetailsOwnedView;
+}
 /// Returns a structured query failure.
 #[derive(Clone, Debug, Default)]
 pub struct QueryErrorView<'a> {
@@ -1188,6 +1447,10 @@ pub struct QueryErrorView<'a> {
     pub message: &'a str,
     /// Field 3: `target`
     pub target: ::buffa::EnumValue<super::super::ExecutionTarget>,
+    /// Field 5: `resource_details`
+    pub resource_details: ::buffa::MessageFieldView<
+        super::super::__buffa::view::QueryResourceDetailsView<'a>,
+    >,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ::buffa::MessageView<'a> for QueryErrorView<'a> {
@@ -1242,6 +1505,27 @@ impl<'a> ::buffa::MessageView<'a> for QueryErrorView<'a> {
                     ::buffa::types::decode_int32(&mut cur)?,
                 );
             }
+            5u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::LengthDelimited,
+                )?;
+                let __sub_ctx = ctx.descend()?;
+                let sub = ::buffa::types::borrow_bytes(&mut cur)?;
+                match view.resource_details.as_mut() {
+                    Some(existing) => {
+                        ::buffa::MessageView::merge_into_view(existing, sub, __sub_ctx)?
+                    }
+                    None => {
+                        view.resource_details = ::buffa::MessageFieldView::set(
+                            <super::super::__buffa::view::QueryResourceDetailsView as ::buffa::MessageView>::decode_view_ctx(
+                                sub,
+                                __sub_ctx,
+                            )?,
+                        );
+                    }
+                }
+            }
             _ => {
                 ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
                 let span_len = before_tag.len() - cur.len();
@@ -1267,6 +1551,14 @@ impl<'a> ::buffa::MessageView<'a> for QueryErrorView<'a> {
             code: self.code,
             message: self.message.to_string(),
             target: self.target,
+            resource_details: match self.resource_details.as_option() {
+                Some(v) => {
+                    ::buffa::MessageField::<
+                        super::super::QueryResourceDetails,
+                    >::some(v.to_owned_from_source(__buffa_src)?)
+                }
+                None => ::buffa::MessageField::none(),
+            },
             __buffa_unknown_fields: self.__buffa_unknown_fields.to_owned()?.into(),
             ..::core::default::Default::default()
         })
@@ -1274,7 +1566,7 @@ impl<'a> ::buffa::MessageView<'a> for QueryErrorView<'a> {
 }
 impl<'a> ::buffa::ViewEncode<'a> for QueryErrorView<'a> {
     #[allow(clippy::needless_borrow, clippy::let_and_return)]
-    fn compute_size(&self, _cache: &mut ::buffa::SizeCache) -> u32 {
+    fn compute_size(&self, __cache: &mut ::buffa::SizeCache) -> u32 {
         #[allow(unused_imports)]
         use ::buffa::Enumeration as _;
         let mut size = 0u32;
@@ -1293,13 +1585,21 @@ impl<'a> ::buffa::ViewEncode<'a> for QueryErrorView<'a> {
                 size += 1u32 + ::buffa::types::int32_encoded_len(val) as u32;
             }
         }
+        if self.resource_details.is_set() {
+            let __slot = __cache.reserve();
+            let inner_size = self.resource_details.compute_size(__cache);
+            __cache.set(__slot, inner_size);
+            size
+                += 1u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
+                    + inner_size;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
     #[allow(clippy::needless_borrow)]
     fn write_to(
         &self,
-        _cache: &mut ::buffa::SizeCache,
+        __cache: &mut ::buffa::SizeCache,
         buf: &mut impl ::buffa::bytes::BufMut,
     ) {
         #[allow(unused_imports)]
@@ -1318,6 +1618,10 @@ impl<'a> ::buffa::ViewEncode<'a> for QueryErrorView<'a> {
             if val != 0 {
                 ::buffa::types::put_int32_field(3u32, val, buf);
             }
+        }
+        if self.resource_details.is_set() {
+            ::buffa::types::put_len_delimited_header(5u32, __cache.consume_next(), buf);
+            self.resource_details.write_to(__cache, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -1422,6 +1726,15 @@ impl QueryErrorOwnedView {
     #[must_use]
     pub fn target(&self) -> ::buffa::EnumValue<super::super::ExecutionTarget> {
         self.0.reborrow().target
+    }
+    /// Field 5: `resource_details`
+    #[must_use]
+    pub fn resource_details(
+        &self,
+    ) -> &::buffa::MessageFieldView<
+        super::super::__buffa::view::QueryResourceDetailsView<'_>,
+    > {
+        &self.0.reborrow().resource_details
     }
 }
 impl ::core::convert::From<::buffa::OwnedView<QueryErrorView<'static>>>
@@ -2134,6 +2447,30 @@ pub struct QueryMetricsSummaryView<'a> {
     pub page_index_decision: ::buffa::MessageFieldView<
         super::super::__buffa::view::PageIndexDecisionSummaryView<'a>,
     >,
+    /// Field 60: `spill_backend`
+    pub spill_backend: ::buffa::EnumValue<super::super::SpillBackend>,
+    /// Field 61: `spill_working_set_limit_bytes`
+    pub spill_working_set_limit_bytes: ::core::option::Option<u64>,
+    /// Field 62: `spill_peak_reservation_bytes`
+    pub spill_peak_reservation_bytes: ::core::option::Option<u64>,
+    /// Field 63: `spill_storage_limit_bytes`
+    pub spill_storage_limit_bytes: ::core::option::Option<u64>,
+    /// Field 64: `spill_bytes_written`
+    pub spill_bytes_written: ::core::option::Option<u64>,
+    /// Field 65: `spill_bytes_read`
+    pub spill_bytes_read: ::core::option::Option<u64>,
+    /// Field 66: `spill_files_created`
+    pub spill_files_created: ::core::option::Option<u64>,
+    /// Field 67: `spill_peak_active_bytes`
+    pub spill_peak_active_bytes: ::core::option::Option<u64>,
+    /// Field 68: `spill_active_files`
+    pub spill_active_files: ::core::option::Option<u64>,
+    /// Field 69: `spill_merge_passes`
+    pub spill_merge_passes: ::core::option::Option<u64>,
+    /// Field 70: `spill_cleanup_count`
+    pub spill_cleanup_count: ::core::option::Option<u64>,
+    /// Field 71: `spill_abandoned_cleanup_count`
+    pub spill_abandoned_cleanup_count: ::core::option::Option<u64>,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
@@ -2671,6 +3008,108 @@ impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
                     }
                 }
             }
+            60u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.spill_backend = ::buffa::EnumValue::from(
+                    ::buffa::types::decode_int32(&mut cur)?,
+                );
+            }
+            61u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.spill_working_set_limit_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            62u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.spill_peak_reservation_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            63u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.spill_storage_limit_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            64u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.spill_bytes_written = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            65u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.spill_bytes_read = Some(::buffa::types::decode_uint64(&mut cur)?);
+            }
+            66u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.spill_files_created = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            67u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.spill_peak_active_bytes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            68u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.spill_active_files = Some(::buffa::types::decode_uint64(&mut cur)?);
+            }
+            69u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.spill_merge_passes = Some(::buffa::types::decode_uint64(&mut cur)?);
+            }
+            70u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.spill_cleanup_count = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            71u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.spill_abandoned_cleanup_count = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
             _ => {
                 ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
                 let span_len = before_tag.len() - cur.len();
@@ -2767,6 +3206,18 @@ impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
                 }
                 None => ::buffa::MessageField::none(),
             },
+            spill_backend: self.spill_backend,
+            spill_working_set_limit_bytes: self.spill_working_set_limit_bytes,
+            spill_peak_reservation_bytes: self.spill_peak_reservation_bytes,
+            spill_storage_limit_bytes: self.spill_storage_limit_bytes,
+            spill_bytes_written: self.spill_bytes_written,
+            spill_bytes_read: self.spill_bytes_read,
+            spill_files_created: self.spill_files_created,
+            spill_peak_active_bytes: self.spill_peak_active_bytes,
+            spill_active_files: self.spill_active_files,
+            spill_merge_passes: self.spill_merge_passes,
+            spill_cleanup_count: self.spill_cleanup_count,
+            spill_abandoned_cleanup_count: self.spill_abandoned_cleanup_count,
             __buffa_unknown_fields: self.__buffa_unknown_fields.to_owned()?.into(),
             ..::core::default::Default::default()
         })
@@ -2957,6 +3408,45 @@ impl<'a> ::buffa::ViewEncode<'a> for QueryMetricsSummaryView<'a> {
                 += 2u32 + ::buffa::encoding::varint_len(inner_size as u64) as u32
                     + inner_size;
         }
+        {
+            let val = self.spill_backend.to_i32();
+            if val != 0 {
+                size += 2u32 + ::buffa::types::int32_encoded_len(val) as u32;
+            }
+        }
+        if let Some(v) = self.spill_working_set_limit_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_peak_reservation_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_storage_limit_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_bytes_written {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_bytes_read {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_files_created {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_peak_active_bytes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_active_files {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_merge_passes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_cleanup_count {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_abandoned_cleanup_count {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
@@ -3142,6 +3632,45 @@ impl<'a> ::buffa::ViewEncode<'a> for QueryMetricsSummaryView<'a> {
         if self.page_index_decision.is_set() {
             ::buffa::types::put_len_delimited_header(59u32, __cache.consume_next(), buf);
             self.page_index_decision.write_to(__cache, buf);
+        }
+        {
+            let val = self.spill_backend.to_i32();
+            if val != 0 {
+                ::buffa::types::put_int32_field(60u32, val, buf);
+            }
+        }
+        if let Some(v) = self.spill_working_set_limit_bytes {
+            ::buffa::types::put_uint64_field(61u32, v, buf);
+        }
+        if let Some(v) = self.spill_peak_reservation_bytes {
+            ::buffa::types::put_uint64_field(62u32, v, buf);
+        }
+        if let Some(v) = self.spill_storage_limit_bytes {
+            ::buffa::types::put_uint64_field(63u32, v, buf);
+        }
+        if let Some(v) = self.spill_bytes_written {
+            ::buffa::types::put_uint64_field(64u32, v, buf);
+        }
+        if let Some(v) = self.spill_bytes_read {
+            ::buffa::types::put_uint64_field(65u32, v, buf);
+        }
+        if let Some(v) = self.spill_files_created {
+            ::buffa::types::put_uint64_field(66u32, v, buf);
+        }
+        if let Some(v) = self.spill_peak_active_bytes {
+            ::buffa::types::put_uint64_field(67u32, v, buf);
+        }
+        if let Some(v) = self.spill_active_files {
+            ::buffa::types::put_uint64_field(68u32, v, buf);
+        }
+        if let Some(v) = self.spill_merge_passes {
+            ::buffa::types::put_uint64_field(69u32, v, buf);
+        }
+        if let Some(v) = self.spill_cleanup_count {
+            ::buffa::types::put_uint64_field(70u32, v, buf);
+        }
+        if let Some(v) = self.spill_abandoned_cleanup_count {
+            ::buffa::types::put_uint64_field(71u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -3534,6 +4063,66 @@ impl QueryMetricsSummaryOwnedView {
         super::super::__buffa::view::PageIndexDecisionSummaryView<'_>,
     > {
         &self.0.reborrow().page_index_decision
+    }
+    /// Field 60: `spill_backend`
+    #[must_use]
+    pub fn spill_backend(&self) -> ::buffa::EnumValue<super::super::SpillBackend> {
+        self.0.reborrow().spill_backend
+    }
+    /// Field 61: `spill_working_set_limit_bytes`
+    #[must_use]
+    pub fn spill_working_set_limit_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().spill_working_set_limit_bytes
+    }
+    /// Field 62: `spill_peak_reservation_bytes`
+    #[must_use]
+    pub fn spill_peak_reservation_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().spill_peak_reservation_bytes
+    }
+    /// Field 63: `spill_storage_limit_bytes`
+    #[must_use]
+    pub fn spill_storage_limit_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().spill_storage_limit_bytes
+    }
+    /// Field 64: `spill_bytes_written`
+    #[must_use]
+    pub fn spill_bytes_written(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().spill_bytes_written
+    }
+    /// Field 65: `spill_bytes_read`
+    #[must_use]
+    pub fn spill_bytes_read(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().spill_bytes_read
+    }
+    /// Field 66: `spill_files_created`
+    #[must_use]
+    pub fn spill_files_created(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().spill_files_created
+    }
+    /// Field 67: `spill_peak_active_bytes`
+    #[must_use]
+    pub fn spill_peak_active_bytes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().spill_peak_active_bytes
+    }
+    /// Field 68: `spill_active_files`
+    #[must_use]
+    pub fn spill_active_files(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().spill_active_files
+    }
+    /// Field 69: `spill_merge_passes`
+    #[must_use]
+    pub fn spill_merge_passes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().spill_merge_passes
+    }
+    /// Field 70: `spill_cleanup_count`
+    #[must_use]
+    pub fn spill_cleanup_count(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().spill_cleanup_count
+    }
+    /// Field 71: `spill_abandoned_cleanup_count`
+    #[must_use]
+    pub fn spill_abandoned_cleanup_count(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().spill_abandoned_cleanup_count
     }
 }
 impl ::core::convert::From<::buffa::OwnedView<QueryMetricsSummaryView<'static>>>

@@ -1104,6 +1104,34 @@ describe('execution contract codegen', () => {
       'arrow_ipc_chunk_count',
     );
   });
+
+  it('models resource exhaustion without restoring fallback authority', () => {
+    expect(contractEnumValues('QueryErrorCode')).toContain(
+      'QUERY_ERROR_CODE_RESOURCE_EXHAUSTED',
+    );
+    expect(contractEnumValues('QueryResource')).toEqual([
+      'QUERY_RESOURCE_UNSPECIFIED',
+      'QUERY_RESOURCE_OPERATOR_MEMORY',
+      'QUERY_RESOURCE_SPILL_STORAGE',
+      'QUERY_RESOURCE_RESULT_OUTPUT',
+    ]);
+    expect(contractEnumValues('QueryResourceReason')).toEqual([
+      'QUERY_RESOURCE_REASON_UNSPECIFIED',
+      'QUERY_RESOURCE_REASON_UNAVAILABLE',
+      'QUERY_RESOURCE_REASON_QUOTA_EXCEEDED',
+      'QUERY_RESOURCE_REASON_IO_FAILURE',
+    ]);
+    expect(contractMessage('QueryError').fields.map((field) => field.name)).toContain(
+      'resource_details',
+    );
+    expect(contractMessage('QueryResourceDetails').fields.map((field) => field.name)).toEqual([
+      'resource',
+      'reason',
+    ]);
+    expect(contractMessage('QueryError').fields.map((field) => field.name)).not.toContain(
+      'fallback_reason',
+    );
+  });
 });
 
 function contractMessage(name: string): DescMessage {

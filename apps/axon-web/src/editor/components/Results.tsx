@@ -315,6 +315,15 @@ export function Results({
                   <span className="mono">{formatBytes(metrics.bytes_fetched)} fetched</span>
                 </>
               )}
+              {metrics?.spill_backend && (
+                <>
+                  <span className="sep" />
+                  <span className="mono" data-testid="spill-summary">
+                    {metrics.spill_backend.toUpperCase()} spill ·{' '}
+                    {formatBytes(metrics.spill_bytes_written ?? 0)} written
+                  </span>
+                </>
+              )}
             </>
           )}
           {(runState.status === 'failed' ||
@@ -540,6 +549,50 @@ export function Results({
               />
             </div>
           </div>
+
+          {metrics?.spill_backend && (
+            <div
+              className="plan-section"
+              data-testid="external-memory-metrics"
+              data-spill-active-files={metrics.spill_active_files ?? 0}
+              data-spill-bytes-read={metrics.spill_bytes_read ?? 0}
+              data-spill-bytes-written={metrics.spill_bytes_written ?? 0}
+              data-spill-cleanup-count={metrics.spill_cleanup_count ?? 0}
+              data-spill-files-created={metrics.spill_files_created ?? 0}
+              data-spill-merge-passes={metrics.spill_merge_passes ?? 0}
+              data-spill-peak-active-bytes={metrics.spill_peak_active_bytes ?? 0}
+              data-spill-peak-reservation-bytes={metrics.spill_peak_reservation_bytes ?? 0}
+              data-spill-storage-limit-bytes={metrics.spill_storage_limit_bytes ?? 0}
+              data-spill-working-set-limit-bytes={metrics.spill_working_set_limit_bytes ?? 0}
+            >
+              <h4>External memory</h4>
+              <div className="grid-3">
+                <KpiTile
+                  accent
+                  label="Spill backend"
+                  value={metrics.spill_backend.toUpperCase()}
+                  sub={`${metrics.spill_files_created ?? 0} files created`}
+                />
+                <KpiTile
+                  label="Spill I/O"
+                  value={formatBytes(metrics.spill_bytes_written ?? 0)}
+                  sub={`${formatBytes(metrics.spill_bytes_read ?? 0)} read back`}
+                />
+                <KpiTile
+                  label="Peak spill bytes"
+                  value={formatBytes(metrics.spill_peak_active_bytes ?? 0)}
+                  sub={`${formatBytes(metrics.spill_storage_limit_bytes ?? 0)} storage limit`}
+                />
+                <KpiTile
+                  success={(metrics.spill_active_files ?? 0) === 0}
+                  label="Cleanup"
+                  value={`${metrics.spill_active_files ?? 0}`}
+                  unit="active files"
+                  sub={`${metrics.spill_cleanup_count ?? 0} scopes removed`}
+                />
+              </div>
+            </div>
+          )}
 
           <div className="plan-section">
             <h4>Pruning</h4>

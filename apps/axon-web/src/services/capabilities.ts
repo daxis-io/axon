@@ -5,6 +5,7 @@ import type { CapabilityKey, CapabilityMatrixRow, CapabilityState } from './type
 // the currently-loaded snapshot — see overlayCapabilityReport().
 
 const BROWSER: Partial<Record<CapabilityKey, CapabilityState>> = {
+  browser_external_memory: 'unsupported',
   change_data_feed: 'native_only',
   column_mapping: 'supported',
   deletion_vectors: 'native_only',
@@ -18,6 +19,7 @@ const BROWSER: Partial<Record<CapabilityKey, CapabilityState>> = {
 };
 
 const NATIVE: Partial<Record<CapabilityKey, CapabilityState>> = {
+  browser_external_memory: 'unsupported',
   change_data_feed: 'supported',
   column_mapping: 'supported',
   deletion_vectors: 'supported',
@@ -31,6 +33,10 @@ const NATIVE: Partial<Record<CapabilityKey, CapabilityState>> = {
 };
 
 const META: Record<CapabilityKey, { label: string; desc: string }> = {
+  browser_external_memory: {
+    label: 'Browser External Memory',
+    desc: 'Bounded query execution with browser-native spill storage',
+  },
   range_reads: { label: 'HTTP Range Reads', desc: 'Validated byte-range object reads' },
   signed_url_access: { label: 'Signed URL Access', desc: 'Read via pre-signed object URLs' },
   time_travel: { label: 'Time Travel', desc: 'Pin snapshot_version or timestamp' },
@@ -50,6 +56,7 @@ const META: Record<CapabilityKey, { label: string; desc: string }> = {
 };
 
 export const CAPABILITY_ORDER: CapabilityKey[] = [
+  'browser_external_memory',
   'range_reads',
   'signed_url_access',
   'time_travel',

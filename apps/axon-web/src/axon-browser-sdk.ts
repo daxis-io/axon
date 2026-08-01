@@ -25,6 +25,7 @@ export function redactUrlSecrets(message: string): string {
 export type ExecutionTarget = 'browser_wasm' | 'native';
 
 export type CapabilityKey =
+  | 'browser_external_memory'
   | 'change_data_feed'
   | 'column_mapping'
   | 'deletion_vectors'
@@ -64,14 +65,25 @@ export type QueryErrorCode =
   | 'invalid_request'
   | 'object_not_found'
   | 'object_store_protocol'
+  | 'resource_exhausted'
   | 'security_policy_violation'
   | 'unsupported_feature';
+
+export type QueryResource = 'operator_memory' | 'spill_storage' | 'result_output';
+
+export type QueryResourceReason = 'unavailable' | 'quota_exceeded' | 'io_failure';
+
+export type QueryResourceDetails = {
+  resource: QueryResource;
+  reason: QueryResourceReason;
+};
 
 export type QueryError = {
   code: QueryErrorCode;
   message: string;
   target: ExecutionTarget;
   fallback_reason?: FallbackReason;
+  resource_details?: QueryResourceDetails;
 };
 
 export type QueryResultPageRequest = {
@@ -617,6 +629,7 @@ export type UnityCatalogOpenResult =
   | UnityCatalogBlockedResult;
 
 export type BrowserAccessMode = 'browser_safe_http' | 'cloud_object_store';
+export type SpillBackend = 'opfs' | 'native_temp_file';
 
 export type PageIndexMode = 'skip' | 'predicate' | 'adaptive';
 export type PageIndexPlan = 'skip' | 'predicate' | 'mixed';
@@ -716,6 +729,18 @@ export type QueryMetricsSummary = {
   cursor_peak_pending_encoded_bytes?: number;
   cursor_peak_transport_chunk_bytes?: number;
   page_index_decision?: PageIndexDecisionSummary;
+  spill_backend?: SpillBackend;
+  spill_working_set_limit_bytes?: number;
+  spill_peak_reservation_bytes?: number;
+  spill_storage_limit_bytes?: number;
+  spill_bytes_written?: number;
+  spill_bytes_read?: number;
+  spill_files_created?: number;
+  spill_peak_active_bytes?: number;
+  spill_active_files?: number;
+  spill_merge_passes?: number;
+  spill_cleanup_count?: number;
+  spill_abandoned_cleanup_count?: number;
 };
 
 export type QueryResponse = {
@@ -5079,6 +5104,20 @@ function normalizeQueryError(value: unknown, path: string): QueryError {
       value.fallback_reason === undefined
         ? undefined
         : normalizeFallbackReason(value.fallback_reason, `${path}.fallback_reason`),
+    resource_details:
+      value.resource_details === undefined
+        ? undefined
+        : normalizeQueryResourceDetails(value.resource_details, `${path}.resource_details`),
+  };
+}
+
+function normalizeQueryResourceDetails(value: unknown, path: string): QueryResourceDetails {
+  if (!isObject(value)) {
+    throw new AxonProtocolError(`${path} must be an object`);
+  }
+  return {
+    resource: requiredEnum(value.resource, `${path}.resource`, QUERY_RESOURCES),
+    reason: requiredEnum(value.reason, `${path}.reason`, QUERY_RESOURCE_REASONS),
   };
 }
 
@@ -5606,6 +5645,7 @@ const PARTITION_COLUMN_TYPES = [
   'unsupported',
 ] as const satisfies readonly PartitionColumnType[];
 const CAPABILITY_KEYS = [
+  'browser_external_memory',
   'change_data_feed',
   'column_mapping',
   'deletion_vectors',
@@ -5678,9 +5718,20 @@ const QUERY_ERROR_CODES = [
   'invalid_request',
   'object_not_found',
   'object_store_protocol',
+  'resource_exhausted',
   'security_policy_violation',
   'unsupported_feature',
 ] as const satisfies readonly QueryErrorCode[];
+const QUERY_RESOURCES = [
+  'operator_memory',
+  'spill_storage',
+  'result_output',
+] as const satisfies readonly QueryResource[];
+const QUERY_RESOURCE_REASONS = [
+  'unavailable',
+  'quota_exceeded',
+  'io_failure',
+] as const satisfies readonly QueryResourceReason[];
 const BROWSER_WORKER_EVENT_PHASES = [
   'instantiate',
   'open',

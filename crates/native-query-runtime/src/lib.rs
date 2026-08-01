@@ -790,6 +790,7 @@ fn collect_query_metrics(
         coordinator_staging_limit_bytes: None,
         cursor_peak_pending_encoded_bytes: None,
         cursor_peak_transport_chunk_bytes: None,
+        ..QueryMetricsSummary::default()
     })
 }
 

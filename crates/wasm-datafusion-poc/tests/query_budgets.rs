@@ -9,7 +9,10 @@ use parquet::data_type::Int64Type;
 use parquet::file::properties::WriterProperties;
 use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
-use query_contract::{ExecutionTarget, FallbackReason, QueryError, QueryErrorCode};
+use query_contract::{
+    ExecutionTarget, FallbackReason, QueryError, QueryErrorCode, QueryResource,
+    QueryResourceDetails, QueryResourceReason,
+};
 use wasm_datafusion_poc::{
     ArrowIpcPhase, BrowserQueryBudget, DeltaActiveFile, DeltaTableDescriptor, IpcCursorItem,
     IpcStreamLimits, QueryTerminalStatus, WasmDataFusionEngine,
@@ -65,10 +68,14 @@ async fn query_budget_rejects_output_ipc_over_limit() {
         .await
         .expect_err("output over budget should fail");
 
-    assert_eq!(error.code, QueryErrorCode::FallbackRequired, "{error:?}");
+    assert_eq!(error.code, QueryErrorCode::ResourceExhausted, "{error:?}");
+    assert_eq!(error.fallback_reason, None);
     assert_eq!(
-        error.fallback_reason,
-        Some(FallbackReason::BrowserRuntimeConstraint)
+        error.resource_details,
+        Some(QueryResourceDetails {
+            resource: QueryResource::ResultOutput,
+            reason: QueryResourceReason::Unavailable,
+        })
     );
     assert_eq!(error.target, ExecutionTarget::BrowserWasm);
     assert!(error.message.contains("max_output_ipc_bytes"));
@@ -96,7 +103,7 @@ async fn query_budget_rejects_output_ipc_over_limit_for_aggregate_result() {
         .await
         .expect_err("aggregate output over IPC budget should fail");
 
-    assert_browser_runtime_budget_error(&error, "max_output_ipc_bytes", "Arrow IPC output");
+    assert_result_output_resource_error(&error, "max_output_ipc_bytes", "Arrow IPC output");
 }
 
 #[tokio::test]
@@ -118,7 +125,7 @@ async fn query_budget_rejects_output_ipc_over_limit_for_wide_binary_string_proje
         .await
         .expect_err("wide binary/string output over IPC budget should fail");
 
-    assert_browser_runtime_budget_error(&error, "max_output_ipc_bytes", "Arrow IPC output");
+    assert_result_output_resource_error(&error, "max_output_ipc_bytes", "Arrow IPC output");
 }
 
 #[tokio::test]
@@ -175,7 +182,7 @@ async fn query_budget_rejects_row_budget_after_filter() {
         .await
         .expect_err("filtered rows over row budget should fail");
 
-    assert_browser_runtime_budget_error(&error, "max_rows_returned", "Arrow IPC output");
+    assert_result_output_resource_error(&error, "max_rows_returned", "Arrow IPC output");
 }
 
 #[tokio::test]
@@ -223,10 +230,14 @@ async fn query_budget_rejects_zero_batch_budget_before_scanning() {
         .await
         .expect_err("zero output batch budget should fail before object I/O");
 
-    assert_eq!(error.code, QueryErrorCode::FallbackRequired);
+    assert_eq!(error.code, QueryErrorCode::ResourceExhausted);
+    assert_eq!(error.fallback_reason, None);
     assert_eq!(
-        error.fallback_reason,
-        Some(FallbackReason::BrowserRuntimeConstraint)
+        error.resource_details,
+        Some(QueryResourceDetails {
+            resource: QueryResource::ResultOutput,
+            reason: QueryResourceReason::Unavailable,
+        })
     );
     assert!(error.message.contains("max_batches_in_flight"));
 }
@@ -280,12 +291,7 @@ async fn query_budget_rejects_row_budget_before_scanning_later_files() {
         .await
         .expect_err("row budget should fail before scanning the unreachable second file");
 
-    assert_eq!(error.code, QueryErrorCode::FallbackRequired);
-    assert_eq!(
-        error.fallback_reason,
-        Some(FallbackReason::BrowserRuntimeConstraint)
-    );
-    assert!(error.message.contains("max_rows_returned"));
+    assert_result_output_resource_error(&error, "max_rows_returned", "Arrow IPC output");
     assert!(
         !first_server.recorded_requests().is_empty(),
         "first file should be scanned before the row budget is exceeded"
@@ -347,6 +353,29 @@ fn assert_browser_runtime_budget_error(error: &QueryError, budget_name: &str, po
     assert_eq!(
         error.fallback_reason,
         Some(FallbackReason::BrowserRuntimeConstraint)
+    );
+    assert_eq!(error.target, ExecutionTarget::BrowserWasm);
+    assert!(
+        error.message.contains(budget_name),
+        "expected budget name {budget_name} in error: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains(point),
+        "expected budget point {point} in error: {}",
+        error.message
+    );
+}
+
+fn assert_result_output_resource_error(error: &QueryError, budget_name: &str, point: &str) {
+    assert_eq!(error.code, QueryErrorCode::ResourceExhausted, "{error:?}");
+    assert_eq!(error.fallback_reason, None);
+    assert_eq!(
+        error.resource_details,
+        Some(QueryResourceDetails {
+            resource: QueryResource::ResultOutput,
+            reason: QueryResourceReason::Unavailable,
+        })
     );
     assert_eq!(error.target, ExecutionTarget::BrowserWasm);
     assert!(

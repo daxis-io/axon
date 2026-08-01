@@ -15,6 +15,7 @@ pub enum CapabilityKey {
     CAPABILITY_KEY_TIME_TRAVEL = 8i32,
     CAPABILITY_KEY_TIMESTAMP_NTZ = 9i32,
     CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES = 10i32,
+    CAPABILITY_KEY_BROWSER_EXTERNAL_MEMORY = 11i32,
 }
 impl CapabilityKey {
     ///Idiomatic alias for [`Self::CAPABILITY_KEY_UNSPECIFIED`]; `Debug` prints the variant name.
@@ -50,6 +51,9 @@ impl CapabilityKey {
     ///Idiomatic alias for [`Self::CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES`]; `Debug` prints the variant name.
     #[allow(non_upper_case_globals)]
     pub const UnknownProtocolFeatures: Self = Self::CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES;
+    ///Idiomatic alias for [`Self::CAPABILITY_KEY_BROWSER_EXTERNAL_MEMORY`]; `Debug` prints the variant name.
+    #[allow(non_upper_case_globals)]
+    pub const BrowserExternalMemory: Self = Self::CAPABILITY_KEY_BROWSER_EXTERNAL_MEMORY;
 }
 impl ::core::default::Default for CapabilityKey {
     fn default() -> Self {
@@ -78,6 +82,11 @@ impl ::buffa::Enumeration for CapabilityKey {
                     Self::CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES,
                 )
             }
+            11i32 => {
+                ::core::option::Option::Some(
+                    Self::CAPABILITY_KEY_BROWSER_EXTERNAL_MEMORY,
+                )
+            }
             _ => ::core::option::Option::None,
         }
     }
@@ -100,6 +109,9 @@ impl ::buffa::Enumeration for CapabilityKey {
             Self::CAPABILITY_KEY_TIMESTAMP_NTZ => "CAPABILITY_KEY_TIMESTAMP_NTZ",
             Self::CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES => {
                 "CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES"
+            }
+            Self::CAPABILITY_KEY_BROWSER_EXTERNAL_MEMORY => {
+                "CAPABILITY_KEY_BROWSER_EXTERNAL_MEMORY"
             }
         }
     }
@@ -142,6 +154,11 @@ impl ::buffa::Enumeration for CapabilityKey {
                     Self::CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES,
                 )
             }
+            "CAPABILITY_KEY_BROWSER_EXTERNAL_MEMORY" => {
+                ::core::option::Option::Some(
+                    Self::CAPABILITY_KEY_BROWSER_EXTERNAL_MEMORY,
+                )
+            }
             _ => ::core::option::Option::None,
         }
     }
@@ -158,6 +175,7 @@ impl ::buffa::Enumeration for CapabilityKey {
             Self::CAPABILITY_KEY_TIME_TRAVEL,
             Self::CAPABILITY_KEY_TIMESTAMP_NTZ,
             Self::CAPABILITY_KEY_UNKNOWN_PROTOCOL_FEATURES,
+            Self::CAPABILITY_KEY_BROWSER_EXTERNAL_MEMORY,
         ]
     }
 }

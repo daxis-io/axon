@@ -67,6 +67,7 @@ type SandboxTerminalMetadata = PrivateTerminalMetadata & {
 };
 
 type PublicWorkerScope = {
+  readonly name: string;
   location: { href: string };
   addEventListener(
     type: 'message',
@@ -211,12 +212,25 @@ function createChild(): Worker {
   childHealth = 'booting';
   clearBootTimer();
   const workerSearchParams = new URL(globalThis.location.href).searchParams;
+  const workerNameParams = new URLSearchParams(workerScope.name.split('?', 2)[1] ?? '');
   const childConfig = new URLSearchParams();
   const pageIndexMode = workerSearchParams.get('page_index_mode');
   if (pageIndexMode !== null) childConfig.set('page_index_mode', pageIndexMode);
   const pageIndexErrorMarginUs = workerSearchParams.get('page_index_error_margin_us');
   if (pageIndexErrorMarginUs !== null) {
     childConfig.set('page_index_error_margin_us', pageIndexErrorMarginUs);
+  }
+  const datafusionMemoryProfileMiB =
+    workerNameParams.get('datafusion_memory_profile_mib') ??
+    workerSearchParams.get('datafusion_memory_profile_mib');
+  if (datafusionMemoryProfileMiB !== null) {
+    childConfig.set('datafusion_memory_profile_mib', datafusionMemoryProfileMiB);
+  }
+  const datafusionSpillCapMiB =
+    workerNameParams.get('datafusion_spill_cap_mib') ??
+    workerSearchParams.get('datafusion_spill_cap_mib');
+  if (datafusionSpillCapMiB !== null) {
+    childConfig.set('datafusion_spill_cap_mib', datafusionSpillCapMiB);
   }
   const serializedChildConfig = childConfig.toString();
   const childName =
@@ -402,9 +416,13 @@ function startCoordinatedQuery(command: BrowserWorkerSqlCommand): void {
       queryId,
       context,
       queryError(
-        'fallback_required',
+        'resource_exhausted',
         `browser coordinator aggregate staging capacity (${memory.currentReservedBytes} of ${memory.limitBytes} bytes reserved) cannot admit ${maxBytes} bytes`,
-        'browser_runtime_constraint',
+        undefined,
+        {
+          resource: 'result_output',
+          reason: 'unavailable',
+        },
       ),
     );
     return;
@@ -525,7 +543,10 @@ function handleChildMessage(message: PrivateChildMessage): void {
       active,
       'failed',
       error instanceof QueryStageLimitError
-        ? queryError('fallback_required', error.message, 'browser_runtime_constraint')
+        ? queryError('resource_exhausted', error.message, undefined, {
+            resource: 'result_output',
+            reason: 'unavailable',
+          })
         : normalizeQueryError(error),
       'cancelled',
     );
@@ -1173,13 +1194,15 @@ function normalizeQueryError(error: unknown): QueryError {
 
 function normalizeArrowOutputBudgetError(error: QueryError): QueryError {
   if (!error.message.includes('max_output_ipc_bytes')) return error;
-  return queryError(
-    'execution_failed',
-    `resource limit runtime_limits.max_arrow_ipc_bytes exceeded: ${error.message.replaceAll(
-      'max_output_ipc_bytes',
-      'max_arrow_ipc_bytes',
-    )}`,
-  );
+  return {
+    ...error,
+    message: redactUrlSecrets(
+      `resource limit runtime_limits.max_arrow_ipc_bytes exceeded: ${error.message.replaceAll(
+        'max_output_ipc_bytes',
+        'max_arrow_ipc_bytes',
+      )}`,
+    ),
+  };
 }
 
 function isQueryError(value: unknown): value is QueryError {
@@ -1200,12 +1223,14 @@ function queryError(
   code: QueryError['code'],
   message: string,
   fallbackReason?: FallbackReason,
+  resourceDetails?: QueryError['resource_details'],
 ): QueryError {
   return {
     code,
     message: redactUrlSecrets(message),
     target: 'browser_wasm',
     ...(fallbackReason ? { fallback_reason: fallbackReason } : {}),
+    ...(resourceDetails ? { resource_details: resourceDetails } : {}),
   };
 }
 

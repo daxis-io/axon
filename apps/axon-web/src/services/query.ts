@@ -6,6 +6,10 @@ import { clone, create, equals } from '@bufbuild/protobuf';
 import { timestampMs } from '@bufbuild/protobuf/wkt';
 import init, { resolve_delta_snapshot_from_manifest } from '../wasm/axon_web_wasm.js';
 import {
+  browserDataFusionMemoryOverrideBytes,
+  browserExternalMemoryCanaryCapBytes,
+} from '../browser-datafusion-memory-policy.ts';
+import {
   AxonWorkerError,
   createAxonBrowserClient,
   redactUrlSecrets,
@@ -75,9 +79,13 @@ import {
   QueryErrorSchema as ContractQueryErrorSchema,
   QueryMetricsSummarySchema as ContractQueryMetricsSummarySchema,
   QueryResponseSchema as ContractQueryResponseSchema,
+  QueryResource as ContractQueryResource,
+  QueryResourceDetailsSchema as ContractQueryResourceDetailsSchema,
+  QueryResourceReason as ContractQueryResourceReason,
   QueryRequestSchema,
   ResultPreviewRowSchema,
   ResultPreviewSchema,
+  SpillBackend as ContractSpillBackend,
   type BrowserWorkerEventEnvelope as ContractBrowserWorkerEventEnvelope,
   type BrowserWorkerRangeReadMetricsEvent as ContractBrowserWorkerRangeReadMetricsEvent,
   type CancelRequest,
@@ -345,11 +353,30 @@ async function buildSession(
 }
 
 function createQueryClient(): AxonBrowserClient {
+  const search = new URLSearchParams(window.location.search);
+  const memoryProfileMiB = search.get('axon_datafusion_memory_profile_mib');
+  const spillCapMiB = search.get('axon_datafusion_spill_cap_mib');
+  // Validate before spawning the coordinator. The profile is carried in the worker name so the
+  // bundler-critical inline worker URL remains static.
+  browserDataFusionMemoryOverrideBytes(memoryProfileMiB);
+  const spillCapBytes = browserExternalMemoryCanaryCapBytes(spillCapMiB);
+  const workerConfig = new URLSearchParams();
+  if (memoryProfileMiB) {
+    workerConfig.set('datafusion_memory_profile_mib', memoryProfileMiB);
+  }
+  if (spillCapBytes !== undefined) {
+    workerConfig.set('datafusion_spill_cap_mib', String(spillCapBytes / (1024 * 1024)));
+  }
+  const serializedWorkerConfig = workerConfig.toString();
+  const workerName =
+    serializedWorkerConfig.length === 0
+      ? 'axon-editor-query-worker'
+      : `axon-editor-query-worker?${serializedWorkerConfig}`;
   return createAxonBrowserClient({
     worker: () =>
       new Worker(new URL('../sandbox-query-worker.ts', import.meta.url), {
         type: 'module',
-        name: 'axon-editor-query-worker',
+        name: workerName,
       }),
     requestId: () => {
       throw new Error('editor worker commands require an execution-scoped request ID');
@@ -457,6 +484,8 @@ function sdkCapabilityReport(report: ContractCapabilityReport | undefined): {
 
 function sdkCapabilityKey(value: ContractCapabilityKey): CapabilityKey | undefined {
   switch (value) {
+    case ContractCapabilityKey.BROWSER_EXTERNAL_MEMORY:
+      return 'browser_external_memory';
     case ContractCapabilityKey.CHANGE_DATA_FEED:
       return 'change_data_feed';
     case ContractCapabilityKey.COLUMN_MAPPING:
@@ -1213,6 +1242,17 @@ const QUERY_METRIC_FIELDS: readonly QueryMetricField[] = [
   ['coordinator_staging_limit_bytes', 'coordinatorStagingLimitBytes'],
   ['cursor_peak_pending_encoded_bytes', 'cursorPeakPendingEncodedBytes'],
   ['cursor_peak_transport_chunk_bytes', 'cursorPeakTransportChunkBytes'],
+  ['spill_working_set_limit_bytes', 'spillWorkingSetLimitBytes'],
+  ['spill_peak_reservation_bytes', 'spillPeakReservationBytes'],
+  ['spill_storage_limit_bytes', 'spillStorageLimitBytes'],
+  ['spill_bytes_written', 'spillBytesWritten'],
+  ['spill_bytes_read', 'spillBytesRead'],
+  ['spill_files_created', 'spillFilesCreated'],
+  ['spill_peak_active_bytes', 'spillPeakActiveBytes'],
+  ['spill_active_files', 'spillActiveFiles'],
+  ['spill_merge_passes', 'spillMergePasses'],
+  ['spill_cleanup_count', 'spillCleanupCount'],
+  ['spill_abandoned_cleanup_count', 'spillAbandonedCleanupCount'],
 ];
 
 function executeResponseForWorkerEvent(
@@ -1299,8 +1339,8 @@ function contractRangeReadMetricsEvent(
   const generatedMetrics = contractQueryMetrics(metrics);
   const target = event as unknown as Record<string, unknown>;
   const source = generatedMetrics as unknown as Record<string, unknown>;
-  for (const [, contractName] of QUERY_METRIC_FIELDS) {
-    if (contractName === 'durationMs') continue;
+  for (const [sdkName, contractName] of QUERY_METRIC_FIELDS) {
+    if (contractName === 'durationMs' || sdkName.startsWith('spill_')) continue;
     const value = source[contractName];
     if (value !== undefined) target[contractName] = value;
   }
@@ -1497,6 +1537,12 @@ function failedExecuteResponse(
           outcome.target === 'native'
             ? ContractExecutionTarget.NATIVE
             : ContractExecutionTarget.BROWSER_WASM,
+        resourceDetails: outcome.resource_details
+          ? create(ContractQueryResourceDetailsSchema, {
+              resource: contractQueryResource(outcome.resource_details.resource),
+              reason: contractQueryResourceReason(outcome.resource_details.reason),
+            })
+          : undefined,
       }),
     }),
   });
@@ -1583,6 +1629,8 @@ function contractCapabilityReport(report: {
 
 function contractCapabilityKey(value: CapabilityKey): ContractCapabilityKey | undefined {
   switch (value) {
+    case 'browser_external_memory':
+      return ContractCapabilityKey.BROWSER_EXTERNAL_MEMORY;
     case 'change_data_feed':
       return ContractCapabilityKey.CHANGE_DATA_FEED;
     case 'column_mapping':
@@ -1711,6 +1759,12 @@ function contractQueryMetrics(metrics: QueryMetricsSummary): ContractQueryMetric
   }
   if (metrics.page_index_decision) {
     result.pageIndexDecision = contractPageIndexDecision(metrics.page_index_decision);
+  }
+  if (metrics.spill_backend) {
+    result.spillBackend =
+      metrics.spill_backend === 'opfs'
+        ? ContractSpillBackend.OPFS
+        : ContractSpillBackend.NATIVE_TEMP_FILE;
   }
   return result;
 }
@@ -1858,6 +1912,13 @@ function sdkQueryMetrics(
   if (metrics.pageIndexDecision) {
     result.page_index_decision = sdkPageIndexDecision(metrics.pageIndexDecision);
   }
+  if ('spillBackend' in metrics) {
+    if (metrics.spillBackend === ContractSpillBackend.OPFS) {
+      result.spill_backend = 'opfs';
+    } else if (metrics.spillBackend === ContractSpillBackend.NATIVE_TEMP_FILE) {
+      result.spill_backend = 'native_temp_file';
+    }
+  }
   return result;
 }
 
@@ -1871,6 +1932,8 @@ function contractQueryErrorCode(code: QueryRunError['code']): ContractQueryError
       return ContractQueryErrorCode.OBJECT_NOT_FOUND;
     case 'object_store_protocol':
       return ContractQueryErrorCode.OBJECT_STORE_PROTOCOL;
+    case 'resource_exhausted':
+      return ContractQueryErrorCode.RESOURCE_EXHAUSTED;
     case 'security_policy_violation':
       return ContractQueryErrorCode.SECURITY_POLICY_VIOLATION;
     case 'unsupported_feature':
@@ -1882,6 +1945,32 @@ function contractQueryErrorCode(code: QueryRunError['code']): ContractQueryError
       return ContractQueryErrorCode.EXECUTION_FAILED;
     default:
       return ContractQueryErrorCode.EXECUTION_FAILED;
+  }
+}
+
+function contractQueryResource(
+  resource: NonNullable<QueryRunError['resource_details']>['resource'],
+): ContractQueryResource {
+  switch (resource) {
+    case 'operator_memory':
+      return ContractQueryResource.OPERATOR_MEMORY;
+    case 'spill_storage':
+      return ContractQueryResource.SPILL_STORAGE;
+    case 'result_output':
+      return ContractQueryResource.RESULT_OUTPUT;
+  }
+}
+
+function contractQueryResourceReason(
+  reason: NonNullable<QueryRunError['resource_details']>['reason'],
+): ContractQueryResourceReason {
+  switch (reason) {
+    case 'unavailable':
+      return ContractQueryResourceReason.UNAVAILABLE;
+    case 'quota_exceeded':
+      return ContractQueryResourceReason.QUOTA_EXCEEDED;
+    case 'io_failure':
+      return ContractQueryResourceReason.IO_FAILURE;
   }
 }
 
@@ -2164,7 +2253,8 @@ export function queryFailureOutcome(
       message: queryError.message,
       code: queryError.code,
       target: queryError.target,
-      fallback_reason: queryError.fallback_reason,
+      ...(queryError.fallback_reason ? { fallback_reason: queryError.fallback_reason } : {}),
+      ...(queryError.resource_details ? { resource_details: queryError.resource_details } : {}),
       elapsed_ms: elapsedMs,
     };
   }

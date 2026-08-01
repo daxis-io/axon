@@ -7,7 +7,7 @@ use arrow_array::{ArrayRef, Int32Array, RecordBatch, StringArray};
 use arrow_ipc::reader::StreamReader;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{Field, Schema};
-use query_contract::QueryErrorCode;
+use query_contract::{QueryErrorCode, QueryResource, QueryResourceDetails, QueryResourceReason};
 use wasm_datafusion_poc::{
     ArrowIpcPhase, IpcCursorItem, IpcStreamLimits, QueryTerminalStatus, WasmDataFusionEngine,
     DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES,
@@ -228,6 +228,38 @@ async fn cursor_total_budget_counts_end_of_stream_and_terminates_once() {
 
     assert_eq!(terminal_count, 1);
     assert_eq!(terminal_status, Some(QueryTerminalStatus::Failed));
+}
+
+#[tokio::test]
+async fn cursor_preview_budget_is_authority_neutral_result_output_exhaustion() {
+    let engine = engine_with_string_rows(vec!["preview payload".to_string()]).await;
+    let mut stream_limits = limits(1024 * 1024);
+    stream_limits.max_preview_string_bytes = Some(1);
+    let mut cursor = engine
+        .start_arrow_ipc_cursor("SELECT value FROM events", stream_limits, false)
+        .await
+        .unwrap();
+    let mut terminal = None;
+
+    while let Some(item) = cursor.next().await.unwrap() {
+        if let IpcCursorItem::Terminal(value) = item {
+            terminal = Some(value);
+        }
+    }
+
+    let error = terminal
+        .expect("preview exhaustion must terminate")
+        .error
+        .expect("preview exhaustion must carry a query error");
+    assert_eq!(error.code, QueryErrorCode::ResourceExhausted);
+    assert_eq!(error.fallback_reason, None);
+    assert_eq!(
+        error.resource_details,
+        Some(QueryResourceDetails {
+            resource: QueryResource::ResultOutput,
+            reason: QueryResourceReason::Unavailable,
+        })
+    );
 }
 
 #[tokio::test]
@@ -479,6 +511,26 @@ async fn cursor_peak_memory_metrics_do_not_grow_with_total_batch_count() {
     );
 }
 
+#[tokio::test]
+async fn cursor_memory_peak_is_query_local_across_sequential_queries() {
+    let values = (0..8_192)
+        .rev()
+        .map(|value| format!("{value:08}-{}", "payload".repeat(16)))
+        .collect();
+    let engine = engine_with_string_rows(values).await;
+
+    let first = terminal_for_query(&engine, "SELECT value FROM events ORDER BY value").await;
+    assert!(first.memory_metrics.peak_bytes > 0);
+
+    let second = terminal_for_query(&engine, "SELECT 1 AS value").await;
+    assert!(
+        second.memory_metrics.peak_bytes < first.memory_metrics.peak_bytes,
+        "second query peak {} must not inherit first query peak {}",
+        second.memory_metrics.peak_bytes,
+        first.memory_metrics.peak_bytes,
+    );
+}
+
 fn limits(max_transport_chunk_bytes: usize) -> IpcStreamLimits {
     IpcStreamLimits {
         max_transport_chunk_bytes,
@@ -506,6 +558,22 @@ async fn engine_with_string_rows(values: Vec<String>) -> WasmDataFusionEngine {
         .await
         .unwrap();
     engine
+}
+
+async fn terminal_for_query(
+    engine: &WasmDataFusionEngine,
+    sql: &str,
+) -> wasm_datafusion_poc::QueryTerminal {
+    let mut cursor = engine
+        .start_arrow_ipc_cursor(sql, limits(1024 * 1024), false)
+        .await
+        .unwrap();
+    while let Some(item) = cursor.next().await.unwrap() {
+        if let IpcCursorItem::Terminal(terminal) = item {
+            return terminal;
+        }
+    }
+    panic!("query cursor closed without a terminal");
 }
 
 fn dictionary_batch(values: Vec<&str>) -> RecordBatch {
