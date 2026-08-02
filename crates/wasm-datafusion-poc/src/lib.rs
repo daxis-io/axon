@@ -123,7 +123,6 @@ pub struct DataFusionCompileMarker {
 }
 
 pub fn datafusion_compile_marker() -> DataFusionCompileMarker {
-    let _context = SessionContext::new();
     DataFusionCompileMarker {
         table_name: DEFAULT_TABLE_NAME,
         datafusion_version: datafusion::DATAFUSION_VERSION,
