@@ -78,7 +78,7 @@ fi
 cd "${web_root}"
 npm run build:spill-conformance-fixture
 verify_metadata
-npm run build:wasm
+npm run build:external-memory
 
 server_port="${AXON_BROWSER_EXTERNAL_MEMORY_PORT:-5174}"
 base_url="https://127.0.0.1:${server_port}"

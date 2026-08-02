@@ -15,6 +15,8 @@ use datafusion::execution::spill_storage::{
 };
 use wasm_bindgen::{prelude::*, JsCast};
 
+use crate::spill_io::write_all_at;
+
 const OPERATION_PENDING: u32 = 0;
 const OPERATION_SUCCEEDED: u32 = 1;
 const OPERATION_FAILED: u32 = 2;
@@ -373,8 +375,9 @@ impl OpfsWriter {
         if self.buffer.is_empty() {
             return Ok(());
         }
-        let written = host_write(self.execution_id, self.handle_id, &self.buffer, self.offset)
-            .map_err(js_io_error)?;
+        let written = write_all_at(&self.buffer, self.offset, |bytes, at| {
+            host_write(self.execution_id, self.handle_id, bytes, at).map_err(js_io_error)
+        })?;
         self.offset = self
             .offset
             .checked_add(written)

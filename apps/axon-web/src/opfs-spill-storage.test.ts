@@ -8,6 +8,7 @@ import {
   deriveProductionSpillCap,
   deriveRuntimeSpillLimit,
   probeBrowserExternalMemory,
+  privateOpfsSpillMetrics,
   spillErrorName,
   SPILL_ERROR_UNAVAILABLE,
   sweepStaleOpfsSpillNamespaces,
@@ -467,6 +468,51 @@ describe('browser OPFS spill storage', () => {
     expect(version?.removed).toContain('failed-setup');
   });
 
+  it('keeps cleanup accounting truthful when namespace deletion fails and scavenges once', async () => {
+    const root = new FakeDirectory();
+    const execution = await beginOpfsSpillExecution({
+      getRoot: async () => root,
+      maxBytes: 64,
+      randomId: () => 'abandoned-cleanup',
+      nowMs: () => 0,
+      wakeOperation: () => undefined,
+    });
+    const [scopeId] = await completedOperation(execution, execution.startCreateScope());
+    const [, writerId] = await completedOperation(execution, execution.startCreateWriter(scopeId));
+    execution.write(writerId, new Uint8Array([1, 2, 3, 4]), 0);
+
+    const version = root.directories.get('axon-spill')?.directories.get('v1');
+    if (!version) throw new Error('version directory missing');
+    version.removeError = new DOMException('injected cleanup failure', 'UnknownError');
+
+    await expect(execution.finish()).rejects.toThrow('spill_storage/io_failure/delete_scope');
+    expect(execution.accounting()).toMatchObject({
+      active_bytes: 4,
+      active_files: 1,
+      active_handles: 0,
+      files_deleted: 0,
+      scopes_deleted: 0,
+      abandoned_scopes: 1,
+      error_operation: 'delete_scope',
+      error_name: 'UnknownError',
+    });
+    expect(version.directories.has('abandoned-cleanup')).toBe(true);
+
+    version.removeError = undefined;
+    await expect(
+      sweepStaleOpfsSpillNamespaces({
+        getRoot: async () => root,
+        nowMs: () => 60 * 60 * 1000 + 1,
+      }),
+    ).resolves.toBe(1);
+    await expect(
+      sweepStaleOpfsSpillNamespaces({
+        getRoot: async () => root,
+        nowMs: () => 60 * 60 * 1000 + 1,
+      }),
+    ).resolves.toBe(0);
+  });
+
   it('derives the production and runtime caps without trusting quota estimates', () => {
     const mib = 1024 * 1024;
     expect(deriveProductionSpillCap(100 * mib)).toBe(128 * mib);
@@ -503,6 +549,7 @@ describe('browser OPFS spill storage', () => {
         active_handles: 1,
         files_deleted: 2,
         scopes_deleted: 1,
+        abandoned_scopes: 0,
         merge_passes: 3,
       },
       128,
@@ -530,6 +577,46 @@ describe('browser OPFS spill storage', () => {
       },
     });
     expect(JSON.stringify(metadata)).not.toContain('opaque');
+  });
+
+  it('serializes post-cleanup accounting on failed private terminals', () => {
+    expect(
+      privateOpfsSpillMetrics(
+        {
+          storage_limit_bytes: 576,
+          bytes_written: 64,
+          bytes_read: 0,
+          files_created: 1,
+          active_bytes: 64,
+          peak_active_bytes: 64,
+          active_files: 1,
+          active_handles: 0,
+          files_deleted: 0,
+          scopes_deleted: 0,
+          abandoned_scopes: 1,
+          merge_passes: 0,
+          error_operation: 'delete_scope',
+          error_name: 'UnknownError',
+        },
+        128,
+        96,
+        'io_failure',
+      ),
+    ).toEqual({
+      backend: 'opfs',
+      storage_limit_bytes: '576',
+      bytes_written: '64',
+      bytes_read: '0',
+      files_created: '1',
+      peak_active_bytes: '64',
+      active_files: '1',
+      merge_passes: '0',
+      cleanup_count: '0',
+      abandoned_cleanup_count: '1',
+      working_set_limit_bytes: '128',
+      peak_reservation_bytes: '96',
+      error_reason: 'io_failure',
+    });
   });
 
   it('sweeps only stale namespaces whose exclusive lease is no longer held', async () => {

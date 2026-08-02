@@ -9,7 +9,11 @@ const ALLOWED_BROWSER_MEMORY_PROFILES_MIB = new Set<number>([
 
 export function parseBrowserMemoryProfileMib(searchParams: URLSearchParams): number {
   const raw = searchParams.get(BROWSER_MEMORY_PROFILE_QUERY_PARAM);
-  if (raw === null) return EXTERNAL_MEMORY_WORKING_SET_MIB;
+  if (raw === null) {
+    return searchParams.get('browser_external_memory') === 'enabled'
+      ? EXTERNAL_MEMORY_WORKING_SET_MIB
+      : PREVIOUS_BROWSER_MEMORY_PROFILE_MIB;
+  }
   const profile = Number(raw);
   if (!Number.isSafeInteger(profile) || !ALLOWED_BROWSER_MEMORY_PROFILES_MIB.has(profile)) {
     throw new Error(`unsupported browser memory profile '${raw}'`);

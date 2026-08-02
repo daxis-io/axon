@@ -5,6 +5,8 @@
 #[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
 mod browser_spill;
 mod ipc_cursor;
+#[cfg(any(test, all(target_arch = "wasm32", feature = "browser-external-memory")))]
+mod spill_io;
 
 pub use ipc_cursor::{
     ArrowIpcPhase, CursorFault, DataFusionIpcCursor, IpcCursorItem, IpcCursorMetrics, IpcPreview,
@@ -37,8 +39,12 @@ use datafusion::common::ScalarValue;
 use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
+#[cfg(feature = "browser-external-memory")]
+use datafusion::execution::memory_pool::FairSpillPool;
+#[cfg(not(feature = "browser-external-memory"))]
+use datafusion::execution::memory_pool::GreedyMemoryPool;
 use datafusion::execution::memory_pool::{
-    FairSpillPool, MemoryLimit, MemoryPool, MemoryReservation, TrackConsumersPool,
+    MemoryLimit, MemoryPool, MemoryReservation, TrackConsumersPool,
 };
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 #[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
@@ -97,7 +103,10 @@ pub const RESPONSIBILITY: &str =
 pub const DEFAULT_TABLE_NAME: &str = "t";
 pub const SMOKE_SQL: &str =
     "SELECT id, value FROM t WHERE category = 'B' AND value > 10 ORDER BY id";
+#[cfg(feature = "browser-external-memory")]
 pub const DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES: usize = 128 * 1024 * 1024;
+#[cfg(not(feature = "browser-external-memory"))]
+pub const DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn runtime_target() -> ExecutionTarget {
     ExecutionTarget::BrowserWasm
@@ -154,18 +163,30 @@ pub struct BrowserDataFusionMemoryMetrics {
 
 #[derive(Debug)]
 struct BrowserDataFusionMemoryPool {
-    inner: TrackConsumersPool<FairSpillPool>,
+    inner: BrowserDataFusionInnerPool,
     limit_bytes: usize,
     peak_bytes: AtomicUsize,
 }
 
+#[cfg(feature = "browser-external-memory")]
+type BrowserDataFusionInnerPool = TrackConsumersPool<FairSpillPool>;
+#[cfg(not(feature = "browser-external-memory"))]
+type BrowserDataFusionInnerPool = TrackConsumersPool<GreedyMemoryPool>;
+
 impl BrowserDataFusionMemoryPool {
     fn new(limit_bytes: NonZeroUsize) -> Self {
+        #[cfg(feature = "browser-external-memory")]
+        let inner = TrackConsumersPool::new(
+            FairSpillPool::new(limit_bytes.get()),
+            NonZeroUsize::new(5).expect("tracked consumer count is non-zero"),
+        );
+        #[cfg(not(feature = "browser-external-memory"))]
+        let inner = TrackConsumersPool::new(
+            GreedyMemoryPool::new(limit_bytes.get()),
+            NonZeroUsize::new(5).expect("tracked consumer count is non-zero"),
+        );
         Self {
-            inner: TrackConsumersPool::new(
-                FairSpillPool::new(limit_bytes.get()),
-                NonZeroUsize::new(5).expect("tracked consumer count is non-zero"),
-            ),
+            inner,
             limit_bytes: limit_bytes.get(),
             peak_bytes: AtomicUsize::new(0),
         }
@@ -182,6 +203,11 @@ impl BrowserDataFusionMemoryPool {
     fn record_peak(&self) {
         self.peak_bytes
             .fetch_max(self.inner.reserved(), Ordering::Relaxed);
+    }
+
+    fn reset_peak_for_query(&self) {
+        self.peak_bytes
+            .store(self.inner.reserved(), Ordering::Relaxed);
     }
 }
 
@@ -3191,6 +3217,44 @@ mod tests {
         drop(reservation);
         assert_eq!(pool.metrics().reserved_bytes, 0);
         assert_eq!(pool.metrics().peak_bytes, 60);
+    }
+
+    #[test]
+    fn browser_datafusion_memory_pool_peak_is_query_local() {
+        let pool = Arc::new(BrowserDataFusionMemoryPool::new(
+            NonZeroUsize::new(100).unwrap(),
+        ));
+        let runtime_pool: Arc<dyn MemoryPool> = pool.clone();
+
+        let first = datafusion::execution::memory_pool::MemoryConsumer::new("first-query")
+            .register(&runtime_pool);
+        first.try_grow(80).unwrap();
+        drop(first);
+        assert_eq!(pool.metrics().peak_bytes, 80);
+
+        pool.reset_peak_for_query();
+        let second = datafusion::execution::memory_pool::MemoryConsumer::new("second-query")
+            .register(&runtime_pool);
+        second.try_grow(12).unwrap();
+        assert_eq!(pool.metrics().peak_bytes, 12);
+    }
+
+    #[test]
+    fn browser_datafusion_memory_pool_matches_the_compiled_runtime_tier() {
+        let pool = BrowserDataFusionMemoryPool::new(NonZeroUsize::new(100).unwrap());
+        let inner_type = std::any::type_name_of_val(&pool.inner);
+
+        #[cfg(feature = "browser-external-memory")]
+        assert!(
+            inner_type.contains("FairSpillPool"),
+            "unexpected pool: {inner_type}"
+        );
+
+        #[cfg(not(feature = "browser-external-memory"))]
+        assert!(
+            inner_type.contains("GreedyMemoryPool"),
+            "unexpected pool: {inner_type}"
+        );
     }
     use parquet::file::writer::SerializedFileWriter;
     use parquet::schema::parser::parse_message_type;

@@ -30,17 +30,24 @@ import {
   type PrivateChildMessage,
   type PrivateCoordinatorMessage,
   type PrivateCreditClass,
+  type PrivateExternalMemoryMetrics,
   type PrivateStreamChunk,
   type PrivateStreamPhase,
 } from './sandbox-query-stream-protocol';
 import { parseBrowserMemoryProfileMib } from './browser-memory-profile.ts';
 import { browserExternalMemoryCanaryCapBytes } from './browser-datafusion-memory-policy.ts';
 import {
+  finalizeQueryOutcome,
+  type DeferredQueryOutcome,
+  type QueryCleanupResult,
+} from './sandbox-query-terminal-finalizer.ts';
+import {
   BROWSER_SPILL_PRODUCTION_CAP_BYTES,
   applyBrowserExternalMemoryTelemetry,
   beginOpfsSpillExecution,
   deriveRuntimeSpillLimit,
   installOpfsSpillBridge,
+  privateOpfsSpillMetrics,
   probeBrowserExternalMemory,
   spillErrorName,
   sweepStaleOpfsSpillNamespaces,
@@ -80,6 +87,8 @@ type ActiveQuery = {
   session?: SandboxQuerySession;
   spill?: OpfsSpillExecution;
 };
+
+type SqlOutcome = DeferredQueryOutcome<unknown, QueryError>;
 
 type PageIndexSession = SandboxQuerySession & {
   set_page_index_mode?: (mode: string, calibrationErrorMarginUs?: number) => void;
@@ -255,6 +264,7 @@ async function handleSql(
   const pendingCancellation = pendingCancellations.get(command.request_id);
   if (pendingCancellation) cancelActiveQuery(active, pendingCancellation);
 
+  let outcome: SqlOutcome | undefined;
   try {
     emitProgress(context, 'started');
     emitLog(context, 'info', 'sandbox child executing SQL query');
@@ -262,37 +272,105 @@ async function handleSql(
     const session = await ensureSession(context);
     active.session = session;
     await configureExternalMemory(active, session);
-    let stream: SandboxSqlStream;
-    try {
-      stream = await session.start_sql_stream(
-        command.name,
-        JSON.stringify(query),
-        QUERY_PREVIEW_LIMIT,
-      );
-    } catch (error) {
-      postStreamStartFailed(
-        command.request_id,
-        normalizeQueryErrorWithSpillAccounting(active, error),
-      );
-      return;
-    }
+    const stream = await session.start_sql_stream(
+      command.name,
+      JSON.stringify(query),
+      QUERY_PREVIEW_LIMIT,
+    );
     active.stream = stream;
     if (active.gate.cancelReason === 'deadline_exceeded') stream.cancel_for_deadline();
     if (active.gate.cancelReason === 'cancelled') stream.cancel();
     emitProgress(context, 'executing');
-    await pumpStream(active, stream);
+    outcome = {
+      kind: 'stream_terminal',
+      metadata: await pumpStream(active, stream),
+    };
   } catch (error) {
-    postStreamFault(command.request_id, normalizeQueryErrorWithSpillAccounting(active, error));
+    outcome = {
+      kind: active.stream ? 'stream_fault' : 'stream_start_failed',
+      error: normalizeQueryError(error),
+    };
   } finally {
-    if (active.stream) await active.stream.close();
-    await cleanupExternalMemory(active, false);
-    if (activeQuery === active) activeQuery = undefined;
+    const pendingOutcome =
+      outcome ??
+      ({
+        kind: 'stream_fault',
+        error: queryError('execution_failed', 'query ended without a terminal outcome'),
+      } satisfies SqlOutcome);
+    try {
+      await finalizeQueryOutcome({
+        outcome: pendingOutcome,
+        failureKind: active.stream ? 'stream_fault' : 'stream_start_failed',
+        closeStream: async () => {
+          await active.stream?.close();
+        },
+        cleanup: () => cleanupExternalMemory(active),
+        normalizeCloseError: (error) => normalizeQueryError(error),
+        publish: (finalOutcome, accounting) => {
+          if (finalOutcome.kind === 'stream_terminal') {
+            const metadata = finalOutcome.metadata;
+            const datafusionMemory = terminalDataFusionMemory(metadata);
+            const externalMemory = accounting
+              ? privateOpfsSpillMetrics(
+                  accounting,
+                  datafusionMemory?.limitBytes,
+                  datafusionMemory?.peakBytes,
+                  spillStorageErrorReason((metadata as { error?: QueryError } | undefined)?.error),
+                )
+              : undefined;
+            applySpillAccountingToTerminalError(metadata, accounting);
+            applyBrowserExternalMemoryTelemetry(
+              metadata,
+              browserExternalMemoryCapability,
+              accounting,
+              datafusionMemory?.limitBytes,
+              datafusionMemory?.peakBytes,
+            );
+            applyWasmLinearMemoryTelemetry(metadata);
+            if (externalMemory && metadata && typeof metadata === 'object') {
+              (metadata as { external_memory?: PrivateExternalMemoryMetrics }).external_memory =
+                externalMemory;
+            }
+            requireTerminalMetadata(metadata);
+            postPrivate({
+              kind: 'stream_terminal',
+              version: PRIVATE_STREAM_PROTOCOL_VERSION,
+              query_id: active.queryId,
+              metadata,
+            });
+            return;
+          }
+          const error = normalizeQueryErrorWithSpillAccounting(finalOutcome.error, accounting);
+          const originalMemory =
+            pendingOutcome.kind === 'stream_terminal'
+              ? terminalDataFusionMemory(pendingOutcome.metadata)
+              : undefined;
+          const externalMemory = accounting
+            ? privateOpfsSpillMetrics(
+                accounting,
+                originalMemory?.limitBytes,
+                originalMemory?.peakBytes,
+                spillStorageErrorReason(error),
+              )
+            : undefined;
+          if (finalOutcome.kind === 'stream_start_failed') {
+            postStreamStartFailed(active.queryId, error, externalMemory);
+          } else {
+            postStreamFault(active.queryId, error, externalMemory);
+          }
+        },
+      });
+    } finally {
+      if (activeQuery === active) activeQuery = undefined;
+    }
   }
 }
 
-function normalizeQueryErrorWithSpillAccounting(active: ActiveQuery, error: unknown): QueryError {
+function normalizeQueryErrorWithSpillAccounting(
+  error: unknown,
+  accounting: ReturnType<OpfsSpillExecution['accounting']> | undefined,
+): QueryError {
   const queryError = normalizeQueryError(error);
-  const accounting = active.spill?.accounting();
   if (
     queryError.code === 'resource_exhausted' &&
     queryError.resource_details?.resource === 'spill_storage' &&
@@ -326,7 +404,15 @@ function applySpillAccountingToTerminalError(
   }
 }
 
-async function pumpStream(active: ActiveQuery, stream: SandboxSqlStream): Promise<void> {
+function spillStorageErrorReason(
+  error: QueryError | undefined,
+): 'unavailable' | 'quota_exceeded' | 'io_failure' | undefined {
+  if (error?.code !== 'resource_exhausted') return undefined;
+  if (error.resource_details?.resource !== 'spill_storage') return undefined;
+  return error.resource_details.reason;
+}
+
+async function pumpStream(active: ActiveQuery, stream: SandboxSqlStream): Promise<unknown> {
   let creditCandidates: readonly PrivateCreditClass[] = ['control'];
   for (;;) {
     const reservations = await active.gate.reserveAll(creditCandidates);
@@ -338,26 +424,7 @@ async function pumpStream(active: ActiveQuery, stream: SandboxSqlStream): Promis
     }
     if ('terminal' in item) {
       refundReservations(active.gate, reservations);
-      const metadata = JSON.parse(item.terminal.metadata_json) as unknown;
-      const accounting = await cleanupExternalMemory(active, true);
-      const datafusionMemory = terminalDataFusionMemory(metadata);
-      applySpillAccountingToTerminalError(metadata, accounting);
-      applyBrowserExternalMemoryTelemetry(
-        metadata,
-        browserExternalMemoryCapability,
-        accounting,
-        datafusionMemory?.limitBytes,
-        datafusionMemory?.peakBytes,
-      );
-      applyWasmLinearMemoryTelemetry(metadata);
-      requireTerminalMetadata(metadata);
-      postPrivate({
-        kind: 'stream_terminal',
-        version: PRIVATE_STREAM_PROTOCOL_VERSION,
-        query_id: active.queryId,
-        metadata,
-      });
-      return;
+      return JSON.parse(item.terminal.metadata_json) as unknown;
     }
 
     const chunk = requireWasmChunk(item.chunk, active.queryId);
@@ -546,11 +613,9 @@ async function configureExternalMemory(
   }
 
   let executionId = 0;
-  const spillWake = (
-    axonWasm as unknown as {
-      axon_spill_wake?: (executionId: number, operationId: number) => void;
-    }
-  ).axon_spill_wake;
+  const spillWake = Reflect.get(axonWasm, 'axon_spill_wake') as
+    | ((executionId: number, operationId: number) => void)
+    | undefined;
   if (!spillWake) {
     throw queryError('resource_exhausted', 'browser spill bridge is unavailable', {
       resource: 'spill_storage',
@@ -568,29 +633,40 @@ async function configureExternalMemory(
 
 async function cleanupExternalMemory(
   active: ActiveQuery,
-  strict: boolean,
-): Promise<ReturnType<OpfsSpillExecution['accounting']> | undefined> {
-  active.session?.clear_external_memory_execution();
+): Promise<QueryCleanupResult<ReturnType<OpfsSpillExecution['accounting']>, QueryError>> {
+  let clearError: QueryError | undefined;
+  try {
+    active.session?.clear_external_memory_execution();
+  } catch (error) {
+    console.warn('[axon] browser spill session cleanup failed', {
+      error_name: spillErrorName(error),
+    });
+    clearError = spillCleanupQueryError();
+  }
   const spill = active.spill;
-  if (!spill) return undefined;
+  if (!spill) return { error: clearError };
   active.spill = undefined;
   try {
     await spill.finish();
-    return spill.accounting();
+    return { accounting: spill.accounting(), error: clearError };
   } catch (error) {
-    if (strict) {
-      throw queryError('resource_exhausted', 'browser aggregate spill cleanup failed', {
-        resource: 'spill_storage',
-        reason: 'io_failure',
-      });
-    }
     console.warn('[axon] browser spill cleanup failed', {
       error_name: spillErrorName(error),
     });
-    return spill.accounting();
+    return {
+      accounting: spill.accounting(),
+      error: spillCleanupQueryError(),
+    };
   } finally {
     unregisterOpfsSpillExecution(spill.id);
   }
+}
+
+function spillCleanupQueryError(): QueryError {
+  return queryError('resource_exhausted', 'browser aggregate spill cleanup failed', {
+    resource: 'spill_storage',
+    reason: 'io_failure',
+  });
 }
 
 function terminalDataFusionMemory(
@@ -749,21 +825,31 @@ function postPublic(
   });
 }
 
-function postStreamStartFailed(queryId: string, error: QueryError): void {
+function postStreamStartFailed(
+  queryId: string,
+  error: QueryError,
+  externalMemory?: PrivateExternalMemoryMetrics,
+): void {
   postPrivate({
     kind: 'stream_start_failed',
     version: PRIVATE_STREAM_PROTOCOL_VERSION,
     query_id: queryId,
     error,
+    ...(externalMemory ? { external_memory: externalMemory } : {}),
   });
 }
 
-function postStreamFault(queryId: string, error: QueryError): void {
+function postStreamFault(
+  queryId: string,
+  error: QueryError,
+  externalMemory?: PrivateExternalMemoryMetrics,
+): void {
   postPrivate({
     kind: 'stream_fault',
     version: PRIVATE_STREAM_PROTOCOL_VERSION,
     query_id: queryId,
     error,
+    ...(externalMemory ? { external_memory: externalMemory } : {}),
   });
 }
 

@@ -225,21 +225,24 @@ function createChild(): Worker {
     workerSearchParams.get(BROWSER_MEMORY_PROFILE_QUERY_PARAM) ??
     workerNameParams.get('datafusion_memory_profile_mib') ??
     workerSearchParams.get('datafusion_memory_profile_mib');
+  const externalMemory =
+    workerNameParams.get('browser_external_memory') ??
+    workerSearchParams.get('browser_external_memory');
+  if (externalMemory !== null && externalMemory !== 'enabled' && externalMemory !== 'disabled') {
+    throw new Error(`unsupported browser external-memory mode '${externalMemory}'`);
+  }
   const memoryProfileParams = new URLSearchParams();
   if (requestedMemoryProfileMiB !== null) {
     memoryProfileParams.set(BROWSER_MEMORY_PROFILE_QUERY_PARAM, requestedMemoryProfileMiB);
+  }
+  if (externalMemory !== null) {
+    memoryProfileParams.set('browser_external_memory', externalMemory);
   }
   childConfig.set(
     BROWSER_MEMORY_PROFILE_QUERY_PARAM,
     String(parseBrowserMemoryProfileMib(memoryProfileParams)),
   );
-  const externalMemory =
-    workerNameParams.get('browser_external_memory') ??
-    workerSearchParams.get('browser_external_memory');
   if (externalMemory !== null) {
-    if (externalMemory !== 'enabled' && externalMemory !== 'disabled') {
-      throw new Error(`unsupported browser external-memory mode '${externalMemory}'`);
-    }
     childConfig.set('browser_external_memory', externalMemory);
   }
   const pageIndexMode = workerSearchParams.get('page_index_mode');

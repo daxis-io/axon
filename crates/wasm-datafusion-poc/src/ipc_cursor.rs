@@ -858,6 +858,7 @@ impl WasmDataFusionEngine {
 
         let query_cancellation = self.cancellation_token().snapshot();
         query_cancellation.check_cancelled_at("SQL planning")?;
+        self.memory_pool.reset_peak_for_query();
         let (query_ctx, query_context) = self.begin_query_session(&query_cancellation);
         let frame = query_ctx.sql(sql).await.map_err(map_datafusion_error)?;
         query_cancellation.check_cancelled_at("SQL planning")?;

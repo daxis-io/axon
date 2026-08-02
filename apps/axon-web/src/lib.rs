@@ -35,6 +35,18 @@ const DEFAULT_IPC_TRANSPORT_CHUNK_BYTES: usize = 1024 * 1024;
 const DEFAULT_MAX_PENDING_ENCODED_BATCH_BYTES: usize = 8 * 1024 * 1024;
 const JAVASCRIPT_MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
+fn effective_browser_memory_limit_mib(requested: Option<u32>) -> Option<u32> {
+    #[cfg(feature = "browser-external-memory")]
+    {
+        requested
+    }
+    #[cfg(not(feature = "browser-external-memory"))]
+    {
+        let _ = requested;
+        Some(64)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ManifestInput {
@@ -387,7 +399,7 @@ impl SandboxQuerySession {
     #[wasm_bindgen(constructor)]
     pub fn new(memory_limit_mib: Option<u32>) -> Result<SandboxQuerySession, JsValue> {
         let config = default_sandbox_runtime_config();
-        let session = match memory_limit_mib {
+        let session = match effective_browser_memory_limit_mib(memory_limit_mib) {
             Some(memory_limit_mib) => {
                 let memory_limit_bytes = u64::from(memory_limit_mib)
                     .checked_mul(1024 * 1024)
@@ -1105,6 +1117,21 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::path::PathBuf;
+
+    #[cfg(not(feature = "browser-external-memory"))]
+    #[test]
+    fn standard_wasm_artifact_clamps_session_memory_to_64_mib() {
+        assert_eq!(effective_browser_memory_limit_mib(None), Some(64));
+        assert_eq!(effective_browser_memory_limit_mib(Some(128)), Some(64));
+    }
+
+    #[cfg(feature = "browser-external-memory")]
+    #[test]
+    fn external_memory_wasm_artifact_accepts_bounded_profile_selection() {
+        assert_eq!(effective_browser_memory_limit_mib(None), None);
+        assert_eq!(effective_browser_memory_limit_mib(Some(64)), Some(64));
+        assert_eq!(effective_browser_memory_limit_mib(Some(128)), Some(128));
+    }
 
     #[test]
     fn validates_optional_javascript_snapshot_versions() {

@@ -73,7 +73,8 @@ fn daxis_browser_datafusion_budget_profile_is_release_gate_ready() {
     assert!(unsigned(memory, "sessionStructBytes") > 0);
     assert_eq!(
         unsigned(memory, "datafusionOperatorPoolBytes"),
-        u64::try_from(DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES).unwrap()
+        128 * 1024 * 1024,
+        "the external-memory release profile uses its 128 MiB spill threshold"
     );
     assert_eq!(
         unsigned(memory, "coordinatorAggregateStagingBytes"),
@@ -140,11 +141,21 @@ fn string_array<'a>(value: &'a Value, field: &str) -> Vec<&'a str> {
         .collect()
 }
 
+#[cfg(feature = "browser-external-memory")]
 #[test]
 fn browser_external_memory_uses_a_128_mib_working_set() {
     assert_eq!(
         DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES,
         128 * 1024 * 1024
+    );
+}
+
+#[cfg(not(feature = "browser-external-memory"))]
+#[test]
+fn standard_browser_runtime_preserves_the_64_mib_working_set() {
+    assert_eq!(
+        DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES,
+        64 * 1024 * 1024
     );
 }
 

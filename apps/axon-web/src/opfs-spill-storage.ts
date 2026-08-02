@@ -1,3 +1,5 @@
+import type { PrivateExternalMemoryMetrics } from './sandbox-query-stream-protocol.ts';
+
 export type BrowserExternalMemoryCapability =
   | { state: 'supported' }
   | { state: 'unsupported'; reason: 'unavailable' };
@@ -52,6 +54,7 @@ export type OpfsSpillAccounting = {
   active_handles: number;
   files_deleted: number;
   scopes_deleted: number;
+  abandoned_scopes: number;
   merge_passes: number;
   error_operation?: string;
   error_name?: string;
@@ -124,6 +127,7 @@ export class OpfsSpillExecution {
   #peakActiveBytes = 0;
   #filesDeleted = 0;
   #scopesDeleted = 0;
+  #abandonedScopes = 0;
   #mergePasses = 0;
   #errorOperation: string | undefined;
   #errorName: string | undefined;
@@ -338,6 +342,7 @@ export class OpfsSpillExecution {
       active_handles: this.#handles.size,
       files_deleted: this.#filesDeleted,
       scopes_deleted: this.#scopesDeleted,
+      abandoned_scopes: this.#abandonedScopes,
       merge_passes: this.#mergePasses,
       error_operation: this.#errorOperation,
       error_name: this.#errorName,
@@ -364,11 +369,17 @@ export class OpfsSpillExecution {
     await Promise.allSettled([...this.#pendingOperationTasks]);
     await this.#closeDataHandles();
     if (this.#handles.has(this.#leaseHandleId)) this.close(this.#leaseHandleId);
+    try {
+      await this.#versionDirectory.removeEntry(this.#namespace, { recursive: true });
+    } catch (error) {
+      this.#recordIoError('delete_scope', error);
+      this.#abandonedScopes = 1;
+      throw normalizeSyncIoError(error, 'delete_scope');
+    }
     this.#filesDeleted += this.#files.size;
-    if (this.#scopesDeleted === 0) this.#scopesDeleted = 1;
+    this.#scopesDeleted = 1;
     this.#files.clear();
     this.#activeBytes = 0;
-    await this.#versionDirectory.removeEntry(this.#namespace, { recursive: true });
   }
 
   #startOperation(
@@ -777,10 +788,37 @@ export function applyBrowserExternalMemoryTelemetry(
     spill_active_files: accounting.active_files,
     spill_merge_passes: accounting.merge_passes,
     spill_cleanup_count: accounting.scopes_deleted,
-    spill_abandoned_cleanup_count: 0,
+    spill_abandoned_cleanup_count: accounting.abandoned_scopes,
     spill_cleanup_files: accounting.files_deleted,
     spill_cleanup_scopes: accounting.scopes_deleted,
   });
+}
+
+export function privateOpfsSpillMetrics(
+  accounting: OpfsSpillAccounting,
+  workingSetLimitBytes?: number,
+  peakReservationBytes?: number,
+  errorReason?: 'unavailable' | 'quota_exceeded' | 'io_failure',
+): PrivateExternalMemoryMetrics {
+  return {
+    backend: 'opfs',
+    storage_limit_bytes: String(accounting.storage_limit_bytes),
+    bytes_written: String(accounting.bytes_written),
+    bytes_read: String(accounting.bytes_read),
+    files_created: String(accounting.files_created),
+    peak_active_bytes: String(accounting.peak_active_bytes),
+    active_files: String(accounting.active_files),
+    merge_passes: String(accounting.merge_passes),
+    cleanup_count: String(accounting.scopes_deleted),
+    abandoned_cleanup_count: String(accounting.abandoned_scopes),
+    ...(workingSetLimitBytes === undefined
+      ? {}
+      : { working_set_limit_bytes: String(workingSetLimitBytes) }),
+    ...(peakReservationBytes === undefined
+      ? {}
+      : { peak_reservation_bytes: String(peakReservationBytes) }),
+    ...(errorReason === undefined ? {} : { error_reason: errorReason }),
+  };
 }
 
 async function browserOpfsRoot(): Promise<OpfsDirectory> {
