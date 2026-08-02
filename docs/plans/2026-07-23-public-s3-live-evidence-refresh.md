@@ -1,7 +1,7 @@
 # Public S3 Current-Main Browser Evidence Refresh
 
 > **Execution boundary:** work only in
-> `/Users/ethanurbanski/axon/.worktrees/public-s3-evidence-refresh` on
+> `.worktrees/public-s3-evidence-refresh` on
 > `perf/public-s3-evidence-refresh`. Keep the root checkout read-only. Create
 > exactly two local commits; do not push, merge, tune runtime policy, or mutate
 > cloud state.
@@ -331,7 +331,7 @@ From `apps/axon-web`:
 | `npm run verify:s3-perf-fixture`                                                                                                                      | Passed; 21 required objects                                              |
 | `npm run test:s3-perf-fixture`                                                                                                                        | Passed; the tamper regression printed its expected manifest mismatch     |
 | `bash scripts/verify-s3-perf-fixture.sh --stage ../../target/fixtures/s3-perf-pinned/table`                                                           | Rejected before network access because the safety check rejects `..`     |
-| `bash scripts/verify-s3-perf-fixture.sh --stage /Users/ethanurbanski/axon/.worktrees/public-s3-evidence-refresh/target/fixtures/s3-perf-pinned/table` | Passed after one approved anonymous-network retry; staged all 21 objects |
+| `bash scripts/verify-s3-perf-fixture.sh --stage .worktrees/public-s3-evidence-refresh/target/fixtures/s3-perf-pinned/table`                                           | Passed after one approved anonymous-network retry; staged all 21 objects |
 | `npm run build:fixture`                                                                                                                               | Passed                                                                   |
 | `npm run build:wasm`                                                                                                                                  | Passed                                                                   |
 | `AXON_LIVE_PUBLIC_S3_TABLE_URI= AXON_LIVE_PUBLIC_S3_REGION= npm run test:browser:public-s3-live -- --reporter=line`                                   | 13 passed, 3 skipped                                                     |

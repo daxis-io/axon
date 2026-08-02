@@ -227,7 +227,7 @@ Fixture and build checks:
 
   ```bash
   bash scripts/verify-s3-perf-fixture.sh \
-    --stage /Users/ethanurbanski/axon/.worktrees/public-s3-evidence-refresh/target/fixtures/s3-perf-pinned/table
+    --stage .worktrees/public-s3-evidence-refresh/target/fixtures/s3-perf-pinned/table
   ```
 
 - `npm run build:fixture` and `npm run build:wasm` passed.

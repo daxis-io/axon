@@ -191,7 +191,7 @@ git diff --check
 Environment notes:
 
 - Direct `buf` codegen commands that use remote plugins need network access outside the restricted sandbox. The same commands passed when rerun with network access.
-- The machine hit `ENOSPC` while creating a temp directory for codegen. Root cause was the Data volume being full; removing generated Rust build artifacts at `/Users/ethanurbanski/axon/target` freed enough space to continue.
+- The machine hit `ENOSPC` while creating a temp directory for codegen. Root cause was the Data volume being full; removing generated Rust build artifacts under the repository's `target/` directory freed enough space to continue.
 - Because `target/` was removed, later Rust/browser checks rebuild from scratch.
 
 ## Next Slices

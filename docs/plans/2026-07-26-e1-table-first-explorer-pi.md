@@ -35,7 +35,7 @@ tokens.
 - The sole application-layer SDK table open remains
   `apps/axon-web/src/services/query.ts:788`.
 - The isolated branch is `feat/e1-table-first-explorer-pi` at
-  `/Users/ethanurbanski/axon/.worktrees/e1-table-first-explorer-pi`.
+  `.worktrees/e1-table-first-explorer-pi`.
 - Bootstrap completed with `npm ci`, `npm run build:fixture`,
   `npm run build:wasm`, and the release worker-WASM build.
 - The current 15-file inherited baseline passes 176 tests. This is baseline

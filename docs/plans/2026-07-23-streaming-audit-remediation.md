@@ -178,7 +178,7 @@
 ### Boundary And Refs
 
 - Worktree:
-  `/Users/ethanurbanski/axon/.worktrees/perf-audit-resolution`
+  `.worktrees/perf-audit-resolution`
 - Branch: `perf/resolve-performance-audit`
 - Remote base:
   `6cca364465fc4fa714ff7403b6df7e3f229c6e8f`

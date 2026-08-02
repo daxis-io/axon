@@ -15,9 +15,9 @@
 - Execution date: 2026-07-26.
 - Audited and fetched `origin/main`: `d1a31ec22479bb7d2fb380bfd61e00fd2f7881e8`.
 - Branch: `feat/e1-local-public-catalog-provider-pi`.
-- Worktree: `/Users/ethanurbanski/axon/.worktrees/e1-local-public-catalog-provider-pi`.
+- Worktree: `.worktrees/e1-local-public-catalog-provider-pi`.
 - Root checkout at start: `3e5aceda0c1eb2c0dea983c0e5849200447a363f`, dirty and 24 commits behind `origin/main`.
-- Preserved worktree: `/Users/ethanurbanski/axon/.worktrees/live-connection-session-foundation` at `ba7c1eb5f6d0fc38ea8ae87cd95be477c48c43ba`, dirty.
+- Preserved worktree: `.worktrees/live-connection-session-foundation` at `ba7c1eb5f6d0fc38ea8ae87cd95be477c48c43ba`, dirty.
 - One sequential writer only. Do not delegate or edit files concurrently.
 - Local commits only. Do not push, open or modify a PR, create a remote branch, deploy, publish, or modify `origin/main`.
 - Do not modify protobufs, generated contract output, Rust source, dependencies, the root checkout, or any pre-existing worktree.
@@ -503,10 +503,10 @@ git status --short
 git diff --check
 git log --oneline --decorate origin/main..HEAD
 git diff --stat origin/main...HEAD
-git -C /Users/ethanurbanski/axon rev-parse HEAD
-git -C /Users/ethanurbanski/axon status --short --branch
-git -C /Users/ethanurbanski/axon/.worktrees/live-connection-session-foundation rev-parse HEAD
-git -C /Users/ethanurbanski/axon/.worktrees/live-connection-session-foundation status --short --branch
+git -C . rev-parse HEAD
+git -C . status --short --branch
+git -C .worktrees/live-connection-session-foundation rev-parse HEAD
+git -C .worktrees/live-connection-session-foundation status --short --branch
 ```
 
 Audit the full diff for duplicate canonicalizers, handwritten transport mirrors, unused adapters, UI/session/access/execution dependencies below discovery, extra SDK opens, capability-bearing persistence, alias/descriptor cache identity, fallback behavior, UC/Delta Sharing/ABFSS/R2 scope, generated/protobuf/Rust/dependency changes, unrelated cleanup, and root/worktree changes.

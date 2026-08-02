@@ -314,7 +314,7 @@ From the Axon root:
 
 ```bash
 git check-ignore -q .worktrees
-export WASM_POC_ROOT="/Users/ethanurbanski/axon/.worktrees/upstream-wasm-fork-poc"
+export WASM_POC_ROOT="$PWD/.worktrees/upstream-wasm-fork-poc"
 mkdir -p "$WASM_POC_ROOT"
 
 git clone https://github.com/daxis-io/arrow-rs.git "$WASM_POC_ROOT/arrow-rs"

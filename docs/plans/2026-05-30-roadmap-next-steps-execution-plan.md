@@ -155,7 +155,7 @@ Expected: docs either remain unchanged because evidence matches, or changes are 
 
 ## Execution Results
 
-- Worktree: `/Users/ethanurbanski/axon` on branch `main`.
+- Worktree: repository root on branch `main`.
 - GitHub triage: `gh issue list --state open` and `gh pr list --state open` both returned `[]`.
 - Dependency setup: `npm install` required network approval after sandbox DNS failed, then installed 178 packages with 0 vulnerabilities.
 - Generated setup: `npm run build:wasm` completed and produced the ignored `apps/axon-web/src/wasm` bridge; `npm run build:fixture` generated the prod-like fixture needed by editor smoke tests.
@@ -165,7 +165,7 @@ Expected: docs either remain unchanged because evidence matches, or changes are 
 - Live public GCS smoke: the initial skip-safe run skipped 2 tests because `AXON_LIVE_PUBLIC_GCS_TABLE_URI` was not set. Follow-up validation with `AXON_LIVE_PUBLIC_GCS_TABLE_URI=gs://axon-public-delta-fixture-20260522-6cf5c6/axon-smoke-delta` and `PLAYWRIGHT_BASE_URL=https://127.0.0.1:5173` passed 2 tests against the repo-documented public fixture.
 - CI automation handoff: `gh variable list --repo daxis-io/axon` and `gh secret list --repo daxis-io/axon` returned no repository-level Actions configuration, and `gh api repos/daxis-io/axon/environments` returned `total_count: 0`. Org-level Actions variables/secrets could not be inspected because `gh variable list --org daxis-io` and `gh secret list --org daxis-io` returned HTTP 403 with the current token. No browser public GCS workflow gate was added because configured live fixture env could not be proven.
 - Rust DataFusion gate: `cargo test -p wasm-datafusion-poc` passed.
-- Rust session gate: fresh worktree target builds were killed silently during `datafusion-catalog`; rerunning with `CARGO_TARGET_DIR=/Users/ethanurbanski/axon/target` passed 24 tests.
+- Rust session gate: fresh worktree target builds were killed silently during `datafusion-catalog`; rerunning from the repository root with `CARGO_TARGET_DIR=target` passed 24 tests.
 - Delta control-plane preflight: sandboxed run failed because loopback listener bind was denied; unsandboxed run with the shared target cache passed 16 tests.
 - Conformance and hygiene: `bash tests/conformance/verify_axon_web_datafusion_runtime.sh`, `cargo fmt --check`, and `git diff --check` passed.
 

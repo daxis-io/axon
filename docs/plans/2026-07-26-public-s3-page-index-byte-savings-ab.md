@@ -16,7 +16,7 @@
 - Handoff SHA: `59dcc8b07e1ed96d29b160e78c55c4aca4d832bb`
 - Fetched base: `d1a31ec22479bb7d2fb380bfd61e00fd2f7881e8`
 - Ancestry proof: `git merge-base --is-ancestor 59dcc8b07e1ed96d29b160e78c55c4aca4d832bb origin/main` exited zero.
-- Worktree: `/Users/ethanurbanski/axon/.worktrees/public-s3-page-index-ab`
+- Worktree: `.worktrees/public-s3-page-index-ab`
 - Branch: `perf/public-s3-page-index-ab`
 - Root-checkout changes were observed but not touched.
 

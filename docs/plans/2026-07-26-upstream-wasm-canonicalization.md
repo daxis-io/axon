@@ -59,7 +59,7 @@ coding.
 Use:
 
 ```text
-/Users/ethanurbanski/axon/.worktrees/upstream-wasm-canonicalization/
+.worktrees/upstream-wasm-canonicalization/
   axon/
   arrow-parquet/
   arrow-ipc/
