@@ -9,7 +9,7 @@ This is the repo-owned handoff bundle for the browser lakehouse release seam. It
 
 - The March 31 browser-engine release baseline for this bundle is git commit `0e19f1d`.
 - There's still no `services/query-api` directory or equivalent trusted-service implementation in this repository.
-- Delta snapshot reconstruction already lives in `crates/wasm-delta-snapshot`.
+- Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`.
 - The Daxis-facing app worker reports `browser_datafusion` as the default runtime SKU for descriptor-backed browser reads.
 - The legacy narrow worker remains compatibility-only, with its own artifact report to prove it does not claim the DataFusion execution target.
 - The shipped session shell is in-memory only.

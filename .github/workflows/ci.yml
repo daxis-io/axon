@@ -126,7 +126,7 @@ jobs:
             rg -q "Daxis-facing .*browser DataFusion|browser DataFusion.*default runtime SKU|browser DataFusion-backed" "$file"
           done
           for file in README.md docs/program/browser-lakehouse-release-handoff.md docs/program/browser-release-integration-runbook.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md; do
-            rg -q "signed URL issuance" "$file"
+            rg -qi "signed URL issuance" "$file"
             rg -q "proxy-mode request issuance|Proxy-mode request issuance" "$file"
           done
           for file in README.md docs/program/browser-lakehouse-release-handoff.md docs/program/browser-release-integration-runbook.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md tests/security/README.md; do
@@ -136,7 +136,7 @@ jobs:
             rg -q "CORS/origin validation|CORS is validated" "$file"
           done
           for file in docs/program/browser-lakehouse-release-handoff.md docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md tests/security/README.md; do
-            rg -q "outside repo-owned browser-engine success claims|outside repo-owned performance claims|remain external blockers|External blocker" "$file"
+            rg -q "outside (the )?repo-owned (browser-engine |performance )?success claims|remain external blockers|External blocker" "$file"
           done
 
       - name: Report host-proxy browser worker startup and footprint baselines

@@ -5,7 +5,7 @@
 
 This runbook covers what's in the repository today. It doesn't cover production control-plane deployment, signed URL issuance, live dashboards, or oncall for an external service.
 
-The Daxis-facing app worker is browser DataFusion-backed. The legacy narrow runtime plus streaming scan plus an in-memory session shell remains compatibility-only for repo-owned regression evidence. Delta snapshot reconstruction already lives in `crates/wasm-delta-snapshot`. Signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation are external blockers, not repo-owned regressions.
+The Daxis-facing app worker is browser DataFusion-backed. The legacy narrow runtime plus streaming scan plus an in-memory session shell remains compatibility-only for repo-owned regression evidence. Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`. Signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation are external blockers, not repo-owned regressions.
 
 ## 1. Legacy Session Shell Regression
 

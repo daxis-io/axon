@@ -36,7 +36,7 @@ The target browser SKU:
 - Delta protocol semantics come from `delta-kernel-rs` core with its default engine disabled
 - `crates/wasm-delta-kernel-engine` implements `AxonBrowserKernelEngine` over Axon's browser
   cache, JSON, Parquet, and expression handlers
-- Delta snapshot reconstruction already lives in `crates/wasm-delta-snapshot`
+- Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`
 - streamed Parquet scan primitives inside `crates/wasm-parquet-engine`
 - DataFusion physical execution in a browser Worker
 - `AxonDeltaTableProvider` and `AxonParquetScanExec` connect Axon's Delta/Parquet stack to DataFusion
