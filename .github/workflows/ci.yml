@@ -280,6 +280,10 @@ jobs:
         working-directory: apps/axon-web
         run: npm test
 
+      - name: Run page-index v2 fixture source gate
+        working-directory: apps/axon-web
+        run: npm run test:page-index-v2-fixture
+
       - name: Install Chromium for external-memory qualification
         working-directory: apps/axon-web
         run: npx playwright install --with-deps chromium

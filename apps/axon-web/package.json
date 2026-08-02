@@ -7,6 +7,7 @@
     "build:fixture": "cargo run --locked -p axon-web-wasm --features fixture-generator --bin generate-prod-fixture -- public/fixtures/prod-like",
     "build:s3-perf-fixture": "cargo run --locked -p axon-web-wasm --features fixture-generator --bin generate-s3-perf-fixture -- ../../target/fixtures/s3-perf-generated",
     "build:page-index-v2-fixture": "cargo run --locked -p axon-web-wasm --features fixture-generator --bin generate-page-index-v2-fixture -- ../../target/fixtures/s3-browser-perf-page-index-v2",
+    "test:page-index-v2-fixture": "bash scripts/verify-page-index-v2-fixture.test.sh",
     "build:spill-conformance-fixture": "cargo run --locked -p axon-web-wasm --features fixture-generator --bin generate-spill-conformance-fixture -- ../../target/fixtures/browser-external-memory-v1",
     "verify:page-index-v2-fixture": "bash scripts/verify-page-index-v2-fixture.sh",
     "build:page-index-adaptive-plan": "node --experimental-strip-types scripts/write-page-index-adaptive-plan.ts",

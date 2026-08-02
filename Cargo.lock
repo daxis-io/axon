@@ -386,6 +386,7 @@ dependencies = [
  "deltalake",
  "futures-util",
  "js-sys",
+ "libc",
  "query-contract",
  "serde",
  "serde_json",
