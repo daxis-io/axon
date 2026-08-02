@@ -12,7 +12,7 @@ use query_contract::{
     BrowserHttpSnapshotDescriptor, CapabilityKey, CapabilityReport, CapabilityState,
     ExecutionTarget, FallbackReason, ParquetCompressionSummary, ParquetInspectionColumn,
     ParquetInspectionColumnChunk, ParquetInspectionRowGroup, ParquetInspectionSummary, QueryError,
-    QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse,
+    QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse, SpillBackend,
 };
 
 #[test]
@@ -566,6 +566,19 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
                 coordinator_staging_limit_bytes: Some(8_388_608),
                 cursor_peak_pending_encoded_bytes: Some(2),
                 cursor_peak_transport_chunk_bytes: Some(1_048_576),
+                spill_backend: Some(SpillBackend::Opfs),
+                spill_working_set_limit_bytes: Some(67_108_864),
+                spill_peak_reservation_bytes: Some(62_914_560),
+                spill_storage_limit_bytes: Some(603_979_776),
+                spill_bytes_written: Some(134_217_728),
+                spill_bytes_read: Some(100_663_296),
+                spill_files_created: Some(8),
+                spill_peak_active_bytes: Some(134_217_728),
+                spill_active_files: Some(0),
+                spill_merge_passes: Some(2),
+                spill_cleanup_count: Some(1),
+                spill_abandoned_cleanup_count: Some(0),
+                ..QueryMetricsSummary::default()
             },
             explain: None,
         },
@@ -606,6 +619,18 @@ fn browser_sdk_round_trips_browser_telemetry_fields() {
     assert_eq!(metrics.coordinator_staging_limit_bytes, Some(8_388_608));
     assert_eq!(metrics.cursor_peak_pending_encoded_bytes, Some(2));
     assert_eq!(metrics.cursor_peak_transport_chunk_bytes, Some(1_048_576));
+    assert_eq!(metrics.spill_backend, Some(SpillBackend::Opfs));
+    assert_eq!(metrics.spill_working_set_limit_bytes, Some(67_108_864));
+    assert_eq!(metrics.spill_peak_reservation_bytes, Some(62_914_560));
+    assert_eq!(metrics.spill_storage_limit_bytes, Some(603_979_776));
+    assert_eq!(metrics.spill_bytes_written, Some(134_217_728));
+    assert_eq!(metrics.spill_bytes_read, Some(100_663_296));
+    assert_eq!(metrics.spill_files_created, Some(8));
+    assert_eq!(metrics.spill_peak_active_bytes, Some(134_217_728));
+    assert_eq!(metrics.spill_active_files, Some(0));
+    assert_eq!(metrics.spill_merge_passes, Some(2));
+    assert_eq!(metrics.spill_cleanup_count, Some(1));
+    assert_eq!(metrics.spill_abandoned_cleanup_count, Some(0));
     assert_eq!(
         metrics.access_mode,
         Some(BrowserAccessMode::BrowserSafeHttp)
@@ -683,6 +708,7 @@ fn browser_sdk_round_trips_typed_worker_runtime_events() {
             coordinator_staging_limit_bytes: Some(8_388_608),
             cursor_peak_pending_encoded_bytes: Some(512),
             cursor_peak_transport_chunk_bytes: Some(256),
+            ..QueryMetricsSummary::default()
         },
     );
 
@@ -1072,6 +1098,7 @@ fn sample_query_response(
             coordinator_staging_limit_bytes: None,
             cursor_peak_pending_encoded_bytes: None,
             cursor_peak_transport_chunk_bytes: None,
+            ..QueryMetricsSummary::default()
         },
         explain: None,
     }
