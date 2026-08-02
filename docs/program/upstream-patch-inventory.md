@@ -1,10 +1,17 @@
 # Upstream Patch Inventory
 
-Axon's shipping workspace contains no private downstream patch, Daxis fork revision, vendored
-source, or dependency-level `[patch]` table. The excluded upstream-WASM POC workspace uses public
-forks and immutable revisions until compatible canonical releases are available.
+Axon's shipping workspace uses revision-pinned public Daxis forks through the root
+`[patch.crates-io]` table. No private or vendored source is checked into the repository. The
+excluded upstream-WASM POC workspace also uses public forks and immutable revisions until
+compatible canonical releases are available.
 
-Current state: no private downstream patches are checked into this repository.
+## Active Shipping Workspace Patches
+
+| Patch | Local Path | Owner | Upstream Disposition | Removal Condition | Tracking Issue |
+| --- | --- | --- | --- | --- | --- |
+| Arrow and Parquet browser-safe codec backends at `52c8fb2e9c28b9d89d08c313e1bc938a35c29c99` | Root [`Cargo.toml`](../../Cargo.toml) `[patch.crates-io]` | Runtime / engine team | `proposed` | Adopt an upstream Arrow release containing the required browser codec backends, pass the locked browser rehearsal, and remove the fork patch. | [daxis-io/axon#2](https://github.com/daxis-io/axon/issues/2) |
+| `object_store` browser HTTP, retry, and range protocol at `ab9fda65805487edf5487e63082cab8111f0a178` | Root [`Cargo.toml`](../../Cargo.toml) `[patch.crates-io]` | Runtime / engine team | `proposed` | Adopt an upstream `object_store` release containing the browser transport slices, pass the locked browser rehearsal, and remove the fork patch. | [daxis-io/axon#2](https://github.com/daxis-io/axon/issues/2) |
+| DataFusion browser runtime and path-free external-memory spill at `8c5b4526a6b31ebec56f32c173f14be74240da49` | Root [`Cargo.toml`](../../Cargo.toml) `[patch.crates-io]` | Runtime / engine team | `proposed` | Adopt upstream DataFusion releases containing the browser runtime and spill-storage boundary after the Arrow and `object_store` prerequisites, pass the locked browser rehearsal, and remove the fork patch. | [daxis-io/axon#2](https://github.com/daxis-io/axon/issues/2) |
 
 The complete proof and CI classification are recorded in
 [`docs/release-gates/upstream-wasm-fork-poc-evidence.md`](../release-gates/upstream-wasm-fork-poc-evidence.md).
