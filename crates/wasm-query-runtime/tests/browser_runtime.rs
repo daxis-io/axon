@@ -8,7 +8,7 @@ use std::io::Cursor;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -3745,22 +3745,9 @@ struct TestResponse {
 
 fn spawn_test_server<F>(handler: F) -> (String, Receiver<CapturedRequest>, JoinHandle<()>)
 where
-    F: FnOnce(&CapturedRequest) -> TestResponse + Send + 'static,
+    F: Fn(&CapturedRequest) -> TestResponse + Send + Sync + 'static,
 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
-    let address = listener.local_addr().expect("listener addr should resolve");
-    let url = format!("http://{address}/object");
-    let (request_tx, request_rx) = mpsc::channel();
-
-    let server = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("test client should connect");
-        let request = read_request(&mut stream);
-        let response = handler(&request);
-        write_response(&mut stream, response);
-        let _ = request_tx.send(request);
-    });
-
-    (url, request_rx, server)
+    spawn_multi_request_server(1, move |request, _| handler(request))
 }
 
 fn spawn_stalling_server(delay: Duration) -> (String, JoinHandle<()>) {
@@ -3938,6 +3925,7 @@ fn try_write_response(
     response: TestResponse,
 ) -> std::io::Result<()> {
     write!(stream, "HTTP/1.1 {}\r\n", response.status_line)?;
+    write!(stream, "Connection: close\r\n")?;
     for (header, value) in response.headers {
         write!(stream, "{header}: {value}\r\n")?;
     }
@@ -3962,20 +3950,105 @@ fn spawn_multi_request_server<F>(
     handler: F,
 ) -> (String, Receiver<CapturedRequest>, JoinHandle<()>)
 where
-    F: Fn(&CapturedRequest, usize) -> TestResponse + Send + 'static,
+    F: Fn(&CapturedRequest, usize) -> TestResponse + Send + Sync + 'static,
 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+    listener
+        .set_nonblocking(true)
+        .expect("listener should allow concurrent request accepts");
     let address = listener.local_addr().expect("listener addr should resolve");
     let url = format!("http://{address}/object");
     let (request_tx, request_rx) = mpsc::channel();
 
     let server = thread::spawn(move || {
-        for index in 0..request_count {
-            let (mut stream, _) = listener.accept().expect("test client should connect");
-            let request = read_request(&mut stream);
-            let response = handler(&request, index);
-            write_response(&mut stream, response);
-            let _ = request_tx.send(request);
+        let handler = Arc::new(handler);
+        let next_request_index = Arc::new(AtomicUsize::new(0));
+        let (connection_tx, connection_rx) = mpsc::channel();
+        let connection_streams = Arc::new(Mutex::new(Vec::new()));
+        let mut connection_threads = Vec::new();
+        let mut completed_requests = 0;
+        let mut connection_panic = None;
+
+        while completed_requests < request_count && connection_panic.is_none() {
+            while let Ok(connection_result) = connection_rx.try_recv() {
+                match connection_result {
+                    Ok(true) => completed_requests += 1,
+                    Ok(false) => {}
+                    Err(panic) => {
+                        connection_panic = Some(panic);
+                        break;
+                    }
+                }
+            }
+            if completed_requests == request_count || connection_panic.is_some() {
+                break;
+            }
+
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream
+                        .set_nonblocking(false)
+                        .expect("accepted streams should allow blocking reads");
+                    let control_stream = stream
+                        .try_clone()
+                        .expect("accepted streams should support teardown control");
+                    let connection_index = {
+                        let mut streams = connection_streams
+                            .lock()
+                            .expect("connection stream registry should be writable");
+                        let index = streams.len();
+                        streams.push(Some(control_stream));
+                        index
+                    };
+                    let connection_tx = connection_tx.clone();
+                    let connection_streams = Arc::clone(&connection_streams);
+                    let handler = Arc::clone(&handler);
+                    let next_request_index = Arc::clone(&next_request_index);
+                    let request_tx = request_tx.clone();
+                    connection_threads.push(thread::spawn(move || {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let Some(request) = try_read_request(&mut stream) else {
+                                return false;
+                            };
+                            let index = next_request_index.fetch_add(1, Ordering::SeqCst);
+                            if index >= request_count {
+                                return false;
+                            }
+                            let response = handler(&request, index);
+                            write_response(&mut stream, response);
+                            let _ = request_tx.send(request);
+                            true
+                        }));
+                        connection_streams
+                            .lock()
+                            .expect("connection stream registry should be writable")
+                            [connection_index] = None;
+                        let _ = connection_tx.send(result);
+                    }));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("test server should accept client connections: {error}"),
+            }
+        }
+
+        let live_streams = connection_streams
+            .lock()
+            .expect("connection stream registry should be readable")
+            .iter_mut()
+            .filter_map(Option::take)
+            .collect::<Vec<_>>();
+        for stream in live_streams {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        for connection_thread in connection_threads {
+            connection_thread
+                .join()
+                .expect("test server connection should shut down cleanly");
+        }
+        if let Some(panic) = connection_panic {
+            std::panic::resume_unwind(panic);
         }
     });
 
@@ -4599,8 +4672,9 @@ fn request_capturing_object_server_serves_requests_while_an_idle_connection_is_o
     let mut request = TcpStream::connect(server.address)
         .expect("the real client request should connect while the idle connection remains open");
     request
-        .set_read_timeout(Some(Duration::from_millis(500)))
+        .set_read_timeout(Some(Duration::from_millis(1_500)))
         .expect("the real client should have a bounded read");
+    thread::sleep(Duration::from_millis(600));
     request
         .write_all(b"GET /object HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .expect("the real client request should be writable");
@@ -4616,8 +4690,47 @@ fn request_capturing_object_server_serves_requests_while_an_idle_connection_is_o
     );
 }
 
+#[test]
+fn multi_request_server_serves_expected_requests_while_an_idle_connection_is_open() {
+    let (url, requests, server) = spawn_multi_request_server(2, |request, _| {
+        full_or_ranged_response(request, b"fixture-body")
+    });
+    let address = url
+        .strip_prefix("http://")
+        .and_then(|value| value.strip_suffix("/object"))
+        .expect("the test server URL should contain its socket address");
+    let idle_connection =
+        TcpStream::connect(address).expect("an idle speculative client connection should connect");
+    thread::sleep(Duration::from_millis(25));
+
+    for _ in 0..2 {
+        let mut request = TcpStream::connect(address)
+            .expect("a real client request should connect while the idle connection remains open");
+        request
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .expect("the real client should have a bounded read");
+        thread::sleep(Duration::from_millis(50));
+        request
+            .write_all(b"GET /object HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .expect("the real client request should be writable");
+        let mut response = Vec::new();
+        request.read_to_end(&mut response).expect(
+            "the real client should receive a response without waiting for the idle connection",
+        );
+        assert!(
+            response.ends_with(b"fixture-body"),
+            "the real client should receive the requested object"
+        );
+    }
+
+    drop(idle_connection);
+    assert_eq!(finish_requests(server, requests, 2).len(), 2);
+}
+
 struct RequestCapturingObjectServer {
     address: std::net::SocketAddr,
+    connection_streams: Arc<Mutex<Vec<Option<TcpStream>>>>,
+    connection_threads: Arc<Mutex<Vec<JoinHandle<()>>>>,
     stop: Arc<AtomicBool>,
     requests: Arc<Mutex<Vec<String>>>,
     thread: Option<JoinHandle<()>>,
@@ -4759,10 +4872,13 @@ impl RequestCapturingObjectServer {
         let stop_for_thread = Arc::clone(&stop);
         let requests = Arc::new(Mutex::new(Vec::new()));
         let requests_for_thread = Arc::clone(&requests);
+        let connection_streams = Arc::new(Mutex::new(Vec::new()));
+        let connection_streams_for_thread = Arc::clone(&connection_streams);
+        let connection_threads = Arc::new(Mutex::new(Vec::new()));
+        let connection_threads_for_thread = Arc::clone(&connection_threads);
 
         let thread = thread::spawn(move || {
             let objects_by_path = Arc::new(objects_by_path);
-            let mut connection_threads = Vec::new();
             while !stop_for_thread.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
@@ -4772,18 +4888,35 @@ impl RequestCapturingObjectServer {
                         stream
                             .set_nonblocking(false)
                             .expect("accepted streams should allow blocking reads");
-                        stream
-                            .set_read_timeout(Some(Duration::from_millis(500)))
-                            .expect("accepted streams should have bounded reads");
+                        let control_stream = stream
+                            .try_clone()
+                            .expect("accepted streams should support teardown control");
+                        let connection_index = {
+                            let mut streams = connection_streams_for_thread
+                                .lock()
+                                .expect("connection stream registry should be writable");
+                            let index = streams.len();
+                            streams.push(Some(control_stream));
+                            index
+                        };
                         let objects_for_connection = Arc::clone(&objects_by_path);
                         let requests_for_connection = Arc::clone(&requests_for_thread);
-                        connection_threads.push(thread::spawn(move || {
+                        let streams_for_connection = Arc::clone(&connection_streams_for_thread);
+                        let connection_thread = thread::spawn(move || {
                             handle_request_capturing_connection(
                                 &mut stream,
                                 &objects_for_connection,
                                 &requests_for_connection,
                             );
-                        }));
+                            streams_for_connection
+                                .lock()
+                                .expect("connection stream registry should be writable")
+                                [connection_index] = None;
+                        });
+                        connection_threads_for_thread
+                            .lock()
+                            .expect("connection thread registry should be writable")
+                            .push(connection_thread);
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(5));
@@ -4793,15 +4926,12 @@ impl RequestCapturingObjectServer {
                     }
                 }
             }
-            for connection_thread in connection_threads {
-                connection_thread
-                    .join()
-                    .expect("request-capturing connection should shut down cleanly");
-            }
         });
 
         Self {
             address,
+            connection_streams,
+            connection_threads,
             stop,
             requests,
             thread: Some(thread),
@@ -4828,6 +4958,25 @@ impl Drop for RequestCapturingObjectServer {
             thread
                 .join()
                 .expect("request-capturing object server should shut down cleanly");
+        }
+        for stream in self
+            .connection_streams
+            .lock()
+            .expect("connection stream registry should be readable")
+            .iter_mut()
+            .filter_map(Option::take)
+        {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        for connection_thread in self
+            .connection_threads
+            .lock()
+            .expect("connection thread registry should be writable")
+            .drain(..)
+        {
+            connection_thread
+                .join()
+                .expect("request-capturing connection should shut down cleanly");
         }
     }
 }
