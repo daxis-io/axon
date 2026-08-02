@@ -203,6 +203,11 @@ if ! rg -n 'Validate browser DataFusion and legacy compatibility docs' "$ci_work
   exit 1
 fi
 
+if ! rg -U -n 'Install verifier dependencies\n[[:space:]]+run: .*apt-get.*install.*ripgrep' "$ci_workflow"; then
+  echo "CI must install ripgrep before running repository verifier scripts" >&2
+  exit 1
+fi
+
 if rg -F -n 'rg -q "narrow runtime \+ streaming scan \+ in-memory session shell"' "$ci_workflow"; then
   echo "CI doc validation must not only check the old narrow runtime component phrase" >&2
   exit 1

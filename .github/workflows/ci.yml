@@ -23,6 +23,9 @@ jobs:
           components: rustfmt
           targets: wasm32-unknown-unknown
 
+      - name: Install verifier dependencies
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ripgrep
+
       - name: Restore cargo cache
         uses: Swatinem/rust-cache@v2
 
