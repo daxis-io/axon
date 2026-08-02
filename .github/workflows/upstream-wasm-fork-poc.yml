@@ -12,19 +12,31 @@ name: Upstream WASM fork POC
 on:
   pull_request:
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - apps/**/Cargo.toml
+      - crates/**/Cargo.toml
       - poc/**
       - tests/conformance/verify_upstream_wasm_fork_stack*.sh
+      - tests/conformance/verify_shipping_fork_pins*.sh
       - crates/browser-sdk/**
       - crates/query-contract/**
+      - .github/shipping-fork-pins.toml
       - .github/workflows/upstream-wasm-fork-poc.yml
   push:
     branches:
       - main
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - apps/**/Cargo.toml
+      - crates/**/Cargo.toml
       - poc/**
       - tests/conformance/verify_upstream_wasm_fork_stack*.sh
+      - tests/conformance/verify_shipping_fork_pins*.sh
       - crates/browser-sdk/**
       - crates/query-contract/**
+      - .github/shipping-fork-pins.toml
       - .github/workflows/upstream-wasm-fork-poc.yml
   workflow_dispatch:
 
@@ -112,12 +124,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Install verifier dependencies
         run: sudo apt-get update && sudo apt-get install --yes ripgrep
-      - name: Reject fork pins in shipping workspaces
+      - name: Verify approved shipping fork pins
         run: |
-          if git grep -n 'daxis-io' -- Cargo.toml Cargo.lock crates apps; then
-            echo "Daxis fork wiring escaped the excluded POC workspace" >&2
-            exit 1
-          fi
+          bash tests/conformance/verify_shipping_fork_pins_test.sh
+          bash tests/conformance/verify_shipping_fork_pins.sh
       - name: Test the Axon result boundary
         run: |
           cargo test \
@@ -132,6 +142,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare browser evidence directory
+        if: always()
+        env:
+          POC_EVIDENCE_DIR: ${{ runner.temp }}/upstream-wasm-fork-poc-evidence
+        run: |
+          mkdir -p "$POC_EVIDENCE_DIR"
+          echo "POC_EVIDENCE_DIR=$POC_EVIDENCE_DIR" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
@@ -145,10 +162,9 @@ jobs:
           npx --prefix poc/upstream-wasm-fork-stack/browser \
             playwright install --with-deps chrome firefox
       - name: Build and run the deterministic two-origin proof
-        env:
-          POC_EVIDENCE_DIR: ${{ runner.temp }}/upstream-wasm-fork-poc-evidence
         run: |
-          bash tests/conformance/verify_upstream_wasm_fork_stack.sh --final
+          bash tests/conformance/verify_upstream_wasm_fork_stack.sh --final \
+            2>&1 | tee "$POC_EVIDENCE_DIR/stack-verifier.txt"
           npm --prefix poc/upstream-wasm-fork-stack/browser test
           npm --prefix poc/upstream-wasm-fork-stack/browser run build
           npm --prefix poc/upstream-wasm-fork-stack/browser run verify
@@ -167,4 +183,4 @@ jobs:
         with:
           name: upstream-wasm-fork-poc-browser-${{ github.sha }}
           path: ${{ runner.temp }}/upstream-wasm-fork-poc-evidence
-          if-no-files-found: error
+          if-no-files-found: warn

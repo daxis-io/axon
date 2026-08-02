@@ -19,7 +19,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --bootstrap|--allow-unset)
+    --bootstrap | --allow-unset)
       mode="bootstrap"
       shift
       ;;
@@ -43,7 +43,7 @@ while [[ $# -gt 0 ]]; do
       metadata_file="$2"
       shift 2
       ;;
-    --help|-h)
+    --help | -h)
       usage
       exit 0
       ;;
@@ -63,11 +63,13 @@ python3 - "$repo_root" "$mode" "$metadata_file" <<'PY'
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
 from collections import defaultdict, deque
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit, urlunsplit
 
 try:
@@ -80,6 +82,17 @@ except ModuleNotFoundError as error:
 
 def fail(message: str) -> None:
     raise SystemExit(f"stack verifier failed: {message}")
+
+
+def positive_timeout_seconds(name: str, default: int) -> int:
+    raw_value = os.environ.get(name, str(default))
+    try:
+        value = int(raw_value)
+    except ValueError:
+        fail(f"{name} must be an integer number of seconds")
+    if not 1 <= value <= 120:
+        fail(f"{name} must be between 1 and 120 seconds")
+    return value
 
 
 def load_toml(path: Path) -> dict:
@@ -129,6 +142,39 @@ required_repositories = (
     "delta_rs",
 )
 revision_pattern = re.compile(r"^[0-9a-f]{40}$")
+git_environment = os.environ.copy()
+git_environment["GIT_TERMINAL_PROMPT"] = "0"
+git_remote_timeout_seconds = positive_timeout_seconds(
+    "AXON_UPSTREAM_WASM_GIT_TIMEOUT_SECONDS",
+    30,
+)
+
+
+def run_remote_git(arguments: list[str], operation: str) -> subprocess.CompletedProcess[str]:
+    last_diagnostic = "remote Git operation failed"
+    for attempt in range(2):
+        try:
+            process = subprocess.run(
+                ["git", *arguments],
+                check=False,
+                env=git_environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=git_remote_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            last_diagnostic = f"timed out after {git_remote_timeout_seconds} seconds"
+        else:
+            if process.returncode == 0:
+                return process
+            last_diagnostic = process.stderr.strip() or (
+                f"git exited with status {process.returncode}"
+            )
+        if attempt == 0:
+            continue
+        fail(f"{operation}: {last_diagnostic}")
+    raise AssertionError("bounded Git retry loop did not terminate")
 
 if stack.get("schema") != 1:
     fail("stack.lock.toml schema must be 1")
@@ -171,26 +217,77 @@ for name in required_repositories:
 remote_refs: dict[str, set[str]] = {}
 for name, fork, revisions in validated:
     if fork not in remote_refs:
-        process = subprocess.run(
-            ["git", "ls-remote", fork],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+        process = run_remote_git(
+            ["ls-remote", fork],
+            f"cannot inspect fork for {name}",
         )
-        if process.returncode != 0:
-            diagnostic = process.stderr.strip() or "git ls-remote failed"
-            fail(f"cannot inspect fork for {name}: {diagnostic}")
         remote_refs[fork] = {
             line.split()[0]
             for line in process.stdout.splitlines()
             if line.split()
         }
-    for field, revision in revisions.items():
-        if revision == "UNSET":
-            continue
-        if revision not in remote_refs[fork]:
-            fail(f"{name}.{field} is not reachable from its fork: {revision}")
+
+    published_revision = revisions["stack_rev"]
+    if published_revision != "UNSET" and published_revision not in remote_refs[fork]:
+        fail(f"{name}.stack_rev is not reachable from its fork: {published_revision}")
+
+    ancestor_candidates = [
+        (field, revision)
+        for field, revision in revisions.items()
+        if revision != "UNSET" and revision not in remote_refs[fork]
+    ]
+    if not ancestor_candidates:
+        continue
+    if published_revision == "UNSET":
+        field, revision = ancestor_candidates[0]
+        fail(f"{name}.{field} is not reachable from its fork: {revision}")
+
+    with TemporaryDirectory(prefix="axon-upstream-wasm-reachability-") as directory:
+        repository = Path(directory) / "repository.git"
+        initialized = subprocess.run(
+            ["git", "init", "--bare", str(repository)],
+            check=False,
+            env=git_environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if initialized.returncode != 0:
+            fail(
+                f"cannot initialize reachability check for {name}: "
+                + (initialized.stderr.strip() or "git init failed")
+            )
+        run_remote_git(
+            [
+                "-C",
+                str(repository),
+                "fetch",
+                "--no-tags",
+                "--filter=blob:none",
+                fork,
+                f"{published_revision}:refs/axon/published-stack",
+            ],
+            f"cannot inspect published stack ancestry for {name}",
+        )
+        for field, revision in ancestor_candidates:
+            reachable = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repository),
+                    "merge-base",
+                    "--is-ancestor",
+                    revision,
+                    "refs/axon/published-stack",
+                ],
+                check=False,
+                env=git_environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if reachable.returncode != 0:
+                fail(f"{name}.{field} is not reachable from its fork: {revision}")
 
 if poc_root.exists():
     for manifest in sorted(poc_root.rglob("Cargo.toml")):

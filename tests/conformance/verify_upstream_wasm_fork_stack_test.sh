@@ -21,6 +21,10 @@ git -C "$seed" config user.email "stack-verifier@example.invalid"
 printf '%s\n' "reachable revision" >"$seed/README.md"
 git -C "$seed" add README.md
 git -C "$seed" commit -q -m "test: seed reachable revision"
+ancestor_rev="$(git -C "$seed" rev-parse HEAD)"
+printf '%s\n' "published stack revision" >>"$seed/README.md"
+git -C "$seed" add README.md
+git -C "$seed" commit -q -m "test: publish stack revision"
 reachable_rev="$(git -C "$seed" rev-parse HEAD)"
 
 for repository in arrow object_store datafusion delta_kernel delta_rs; do
@@ -223,6 +227,72 @@ base="$tmpdir/base"
 write_fixture "$base"
 run_final "$base" >/dev/null
 
+noninteractive_git_bin="$tmpdir/noninteractive-git-bin"
+mkdir -p "$noninteractive_git_bin"
+real_git="$(command -v git)"
+cat >"$noninteractive_git_bin/git" <<'EOF_NONINTERACTIVE_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "ls-remote" && "${GIT_TERMINAL_PROMPT:-}" != "0" ]]; then
+  echo "GIT_TERMINAL_PROMPT must be disabled" >&2
+  exit 91
+fi
+exec "$REAL_GIT" "$@"
+EOF_NONINTERACTIVE_GIT
+chmod +x "$noninteractive_git_bin/git"
+PATH="$noninteractive_git_bin:$PATH" \
+  REAL_GIT="$real_git" \
+  run_final "$base" >/dev/null
+
+timeout_git_bin="$tmpdir/timeout-git-bin"
+mkdir -p "$timeout_git_bin"
+cat >"$timeout_git_bin/git" <<'EOF_TIMEOUT_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "ls-remote" ]]; then
+  sleep 2
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+EOF_TIMEOUT_GIT
+chmod +x "$timeout_git_bin/git"
+timeout_output="$tmpdir/remote-timeout.output"
+if PATH="$timeout_git_bin:$PATH" \
+  REAL_GIT="$real_git" \
+  AXON_UPSTREAM_WASM_GIT_TIMEOUT_SECONDS=1 \
+  run_final "$base" >"$timeout_output" 2>&1; then
+  echo "expected upstream remote timeout to fail" >&2
+  exit 1
+fi
+if ! rg -F "timed out" "$timeout_output" >/dev/null; then
+  echo "upstream remote timeout failed without timeout diagnostic" >&2
+  cat "$timeout_output" >&2
+  exit 1
+fi
+
+retry_git_bin="$tmpdir/retry-git-bin"
+mkdir -p "$retry_git_bin"
+cat >"$retry_git_bin/git" <<'EOF_RETRY_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "ls-remote" && ! -f "$GIT_RETRY_MARKER" ]]; then
+  : >"$GIT_RETRY_MARKER"
+  echo "transient transport failure" >&2
+  exit 75
+fi
+exec "$REAL_GIT" "$@"
+EOF_RETRY_GIT
+chmod +x "$retry_git_bin/git"
+retry_marker="$tmpdir/retry-marker"
+PATH="$retry_git_bin:$PATH" \
+  REAL_GIT="$real_git" \
+  GIT_RETRY_MARKER="$retry_marker" \
+  run_final "$base" >/dev/null
+if [[ ! -f "$retry_marker" ]]; then
+  echo "expected the upstream remote retry fixture to inject a failure" >&2
+  exit 1
+fi
+
 missing_repository="$tmpdir/missing-repository"
 cp -R "$base" "$missing_repository"
 python3 - "$missing_repository/poc/upstream-wasm-fork-stack/stack.lock.toml" <<'PY'
@@ -303,6 +373,28 @@ expect_failure \
   "unreachable-revision" \
   "arrow_rs.candidate_rev is not reachable from its fork" \
   "$unreachable_revision"
+
+reachable_ancestor="$tmpdir/reachable-ancestor"
+cp -R "$base" "$reachable_ancestor"
+python3 - \
+  "$reachable_ancestor/poc/upstream-wasm-fork-stack/stack.lock.toml" \
+  "$reachable_rev" \
+  "$ancestor_rev" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+tip = sys.argv[2]
+ancestor = sys.argv[3]
+prefix, delta_rs = path.read_text().split("[repositories.delta_rs]", 1)
+delta_rs = delta_rs.replace(
+    f'candidate_rev = "{tip}"',
+    f'candidate_rev = "{ancestor}"',
+    1,
+)
+path.write_text(prefix + "[repositories.delta_rs]" + delta_rs)
+PY
+run_final "$reachable_ancestor" >/dev/null
 
 mutable_branch="$tmpdir/mutable-branch"
 cp -R "$base" "$mutable_branch"
@@ -403,5 +495,39 @@ expect_failure \
   "duplicate-datafusion" \
   "duplicate browser package source for datafusion" \
   "$duplicate_datafusion"
+
+workflow="$script_dir/../../.github/workflows/upstream-wasm-fork-poc.yml"
+python3 - "$workflow" <<'PY'
+from pathlib import Path
+import sys
+
+workflow = Path(sys.argv[1]).read_text()
+required_fragments = (
+    "- name: Prepare browser evidence directory",
+    '2>&1 | tee "$POC_EVIDENCE_DIR/stack-verifier.txt"',
+)
+for fragment in required_fragments:
+    if fragment not in workflow:
+        raise SystemExit(f"upstream workflow evidence contract missing: {fragment}")
+
+artifact_name = "name: upstream-wasm-fork-poc-browser-${{ github.sha }}"
+artifact_index = workflow.find(artifact_name)
+if artifact_index < 0:
+    raise SystemExit("upstream workflow browser artifact step is missing")
+artifact_block = workflow[artifact_index : artifact_index + 400]
+if "if-no-files-found: warn" not in artifact_block:
+    raise SystemExit("upstream workflow browser artifact must tolerate earlier setup failure")
+PY
+
+capture_artifact="$tmpdir/stack-verifier.txt"
+if bash -c 'echo "deliberate verifier diagnostic" >&2; exit 7' \
+  2>&1 | tee "$capture_artifact" >/dev/null; then
+  echo "expected diagnostic capture pipeline to preserve verifier failure" >&2
+  exit 1
+fi
+if ! rg -F "deliberate verifier diagnostic" "$capture_artifact" >/dev/null; then
+  echo "diagnostic capture pipeline omitted verifier stderr" >&2
+  exit 1
+fi
 
 echo "upstream WASM fork stack verifier regression coverage passed"

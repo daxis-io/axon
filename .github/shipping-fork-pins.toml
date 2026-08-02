@@ -1,0 +1,16 @@
+schema = 1
+
+[[pins]]
+repository = "https://github.com/daxis-io/arrow-rs"
+revision = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99"
+publication_ref = "refs/heads/poc/wasm32-browser-stack"
+
+[[pins]]
+repository = "https://github.com/daxis-io/arrow-rs-object-store"
+revision = "ab9fda65805487edf5487e63082cab8111f0a178"
+publication_ref = "refs/heads/poc/wasm32-browser-stack"
+
+[[pins]]
+repository = "https://github.com/daxis-io/datafusion"
+revision = "f194c451c3b89c3d5eb1966e5bee596acaed90cb"
+publication_ref = "refs/heads/feat/path-free-spill-storage"

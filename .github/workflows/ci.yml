@@ -10,6 +10,8 @@ on:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    env:
+      AXON_GCP_CREDENTIALS_AVAILABLE: ${{ secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
 
     steps:
       - name: Check out repository
@@ -182,56 +184,56 @@ jobs:
           fi
 
       - name: Authenticate for env-gated native GCS smoke
-        if: ${{ (vars.AXON_GCS_TEST_TABLE_URI != '' || vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI != '' || vars.AXON_GCS_TEST_FORBIDDEN_TABLE_URI != '' || vars.AXON_GCS_TEST_NOT_FOUND_TABLE_URI != '' || vars.AXON_GCS_TEST_STALE_HISTORY_TABLE_URI != '' || vars.AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI != '') && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
+        if: ${{ (vars.AXON_GCS_TEST_TABLE_URI != '' || vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI != '' || vars.AXON_GCS_TEST_FORBIDDEN_TABLE_URI != '' || vars.AXON_GCS_TEST_NOT_FOUND_TABLE_URI != '' || vars.AXON_GCS_TEST_STALE_HISTORY_TABLE_URI != '' || vars.AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI != '') && env.AXON_GCP_CREDENTIALS_AVAILABLE == 'true' }}
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.AXON_GCP_CREDENTIALS_JSON }}
 
       - name: Run env-gated native GCS smoke
-        if: ${{ vars.AXON_GCS_TEST_TABLE_URI != '' && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
+        if: ${{ vars.AXON_GCS_TEST_TABLE_URI != '' && env.AXON_GCP_CREDENTIALS_AVAILABLE == 'true' }}
         env:
           AXON_GCS_TEST_TABLE_URI: ${{ vars.AXON_GCS_TEST_TABLE_URI }}
         run: cargo test -p native-query-runtime --locked bootstrap_table_supports_env_gated_gcs_smoke -- --exact --nocapture
 
       - name: Run env-gated native GCS query smoke
-        if: ${{ vars.AXON_GCS_TEST_TABLE_URI != '' && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
+        if: ${{ vars.AXON_GCS_TEST_TABLE_URI != '' && env.AXON_GCP_CREDENTIALS_AVAILABLE == 'true' }}
         env:
           AXON_GCS_TEST_TABLE_URI: ${{ vars.AXON_GCS_TEST_TABLE_URI }}
         run: cargo test -p native-query-runtime --locked execute_query_supports_env_gated_gcs_smoke -- --exact --nocapture
 
       - name: Run env-gated forbidden native GCS smoke
-        if: ${{ vars.AXON_GCS_TEST_FORBIDDEN_TABLE_URI != '' && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
+        if: ${{ vars.AXON_GCS_TEST_FORBIDDEN_TABLE_URI != '' && env.AXON_GCP_CREDENTIALS_AVAILABLE == 'true' }}
         env:
           AXON_GCS_TEST_FORBIDDEN_TABLE_URI: ${{ vars.AXON_GCS_TEST_FORBIDDEN_TABLE_URI }}
         run: cargo test -p native-query-runtime --locked bootstrap_table_rejects_env_gated_forbidden_gcs_smoke -- --exact --nocapture
 
       - name: Run env-gated not-found native GCS smoke
-        if: ${{ vars.AXON_GCS_TEST_NOT_FOUND_TABLE_URI != '' && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
+        if: ${{ vars.AXON_GCS_TEST_NOT_FOUND_TABLE_URI != '' && env.AXON_GCP_CREDENTIALS_AVAILABLE == 'true' }}
         env:
           AXON_GCS_TEST_NOT_FOUND_TABLE_URI: ${{ vars.AXON_GCS_TEST_NOT_FOUND_TABLE_URI }}
         run: cargo test -p native-query-runtime --locked bootstrap_table_rejects_env_gated_not_found_gcs_smoke -- --exact --nocapture
 
       - name: Run env-gated stale-history native GCS smoke
-        if: ${{ vars.AXON_GCS_TEST_STALE_HISTORY_TABLE_URI != '' && vars.AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION != '' && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
+        if: ${{ vars.AXON_GCS_TEST_STALE_HISTORY_TABLE_URI != '' && vars.AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION != '' && env.AXON_GCP_CREDENTIALS_AVAILABLE == 'true' }}
         env:
           AXON_GCS_TEST_STALE_HISTORY_TABLE_URI: ${{ vars.AXON_GCS_TEST_STALE_HISTORY_TABLE_URI }}
           AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION: ${{ vars.AXON_GCS_TEST_STALE_HISTORY_SNAPSHOT_VERSION }}
         run: cargo test -p native-query-runtime --locked execute_query_rejects_env_gated_stale_history_gcs_smoke -- --exact --nocapture
 
       - name: Run env-gated missing-object native GCS smoke
-        if: ${{ vars.AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI != '' && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
+        if: ${{ vars.AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI != '' && env.AXON_GCP_CREDENTIALS_AVAILABLE == 'true' }}
         env:
           AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI: ${{ vars.AXON_GCS_TEST_MISSING_OBJECT_TABLE_URI }}
         run: cargo test -p native-query-runtime --locked execute_query_rejects_env_gated_missing_object_gcs_smoke -- --exact --nocapture
 
       - name: Run env-gated partitioned native GCS pruning smoke
-        if: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI != '' && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
+        if: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI != '' && env.AXON_GCP_CREDENTIALS_AVAILABLE == 'true' }}
         env:
           AXON_GCS_TEST_PARTITIONED_TABLE_URI: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI }}
         run: cargo test -p native-query-runtime --locked execute_query_supports_env_gated_partitioned_gcs_pruning_smoke -- --exact --nocapture
 
       - name: Run env-gated partitioned native GCS snapshot-version smoke
-        if: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI != '' && vars.AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION != '' && secrets.AXON_GCP_CREDENTIALS_JSON != '' }}
+        if: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI != '' && vars.AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION != '' && env.AXON_GCP_CREDENTIALS_AVAILABLE == 'true' }}
         env:
           AXON_GCS_TEST_PARTITIONED_TABLE_URI: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_URI }}
           AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION: ${{ vars.AXON_GCS_TEST_PARTITIONED_TABLE_SNAPSHOT_VERSION }}

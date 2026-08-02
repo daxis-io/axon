@@ -103,16 +103,20 @@ jobs:
               echo "External-memory artifacts are preview-canary only until browser promotion gates pass." >&2
               exit 1
             fi
-            echo "environment=production" >> "$GITHUB_OUTPUT"
-            echo "prod_flag=--prod" >> "$GITHUB_OUTPUT"
             # Verify the public alias, not the per-deployment URL. Vercel protects the generated
             # *.vercel.app URL even for production, so checking it would skip every real assertion
             # on the one deployment users actually reach.
-            echo "verify_url=${PRODUCTION_URL}" >> "$GITHUB_OUTPUT"
+            {
+              echo "environment=production"
+              echo "prod_flag=--prod"
+              echo "verify_url=${PRODUCTION_URL}"
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "environment=preview" >> "$GITHUB_OUTPUT"
-            echo "prod_flag=" >> "$GITHUB_OUTPUT"
-            echo "verify_url=" >> "$GITHUB_OUTPUT"
+            {
+              echo "environment=preview"
+              echo "prod_flag="
+              echo "verify_url="
+            } >> "$GITHUB_OUTPUT"
           fi
 
       - name: Pull Vercel environment
