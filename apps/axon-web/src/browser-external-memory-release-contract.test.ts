@@ -15,8 +15,27 @@ const nativeOracleSource = readFileSync(
   ),
   'utf8',
 );
+const ciWorkflowSource = readFileSync(
+  fileURLToPath(new URL('../../../.github/workflows/ci.yml', import.meta.url)),
+  'utf8',
+);
 
 describe('browser external-memory release contract', () => {
+  it('builds the external-memory artifact before browser unit tests', () => {
+    const artifactJob = ciWorkflowSource.slice(
+      ciWorkflowSource.indexOf('  browser-external-memory-artifact:'),
+      ciWorkflowSource.indexOf('  browser-datafusion-wasm-size:'),
+    );
+    const buildIndex = artifactJob.indexOf(
+      '- name: Build and verify the external-memory browser artifact',
+    );
+    const testIndex = artifactJob.indexOf('- name: Run browser unit tests');
+
+    expect(buildIndex).toBeGreaterThanOrEqual(0);
+    expect(testIndex).toBeGreaterThan(buildIndex);
+    expect(artifactJob.match(/npm run build:wasm(?::external-memory)?/g)).toBeNull();
+  });
+
   it('uses the same ordered SQL source for browser execution and the native oracle', () => {
     expect(editorSmokeSource).toContain('STRESS_AGGREGATE_SQL');
     expect(nativeOracleSource).toContain('stress-aggregate.sql');

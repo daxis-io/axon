@@ -25,7 +25,7 @@ use wasm_query_runtime::{
 struct SupportedBrowserSqlParityCase {
     name: &'static str,
     sql: String,
-    assert_scan_metrics: bool,
+    expected_scan_metrics: Option<ExpectedScanMetrics>,
     expected_required_columns: Vec<&'static str>,
     expected_filter: Option<ExpectedFilterExpr>,
     expected_outputs: Vec<ExpectedExecutionOutput>,
@@ -33,6 +33,14 @@ struct SupportedBrowserSqlParityCase {
     expected_measures: Vec<ExpectedAggregateMeasure>,
     expected_order_by: Vec<ExpectedSortKey>,
     expected_limit: Option<u64>,
+}
+
+#[derive(Clone, Copy)]
+struct ExpectedScanMetrics {
+    browser_files_touched: u64,
+    browser_files_skipped: u64,
+    native_files_touched: u64,
+    native_files_skipped: u64,
 }
 
 struct IntentionalBrowserNativeDivergenceCase {
@@ -214,7 +222,7 @@ fn supported_resolved_snapshot_executes_and_round_trips_through_browser_worker_e
     assert_eq!(success.request_id, "req-supported-seam");
     assert_eq!(success.response.executed_on, ExecutionTarget::BrowserWasm);
     assert_eq!(success.result.format, ArrowIpcFormat::Stream);
-    assert!(success.response.metrics.bytes_fetched > 0);
+    assert_eq!(&success.response.metrics, result.metrics());
     assert!(success.response.metrics.files_touched > 0);
     assert_eq!(round_tripped.fallback_reason(), None);
 }
@@ -386,26 +394,42 @@ fn browser_preflight_stats_and_planning_match_native_partitioned_metrics() {
     assert_eq!(first_file_stats["value"].max_i64, Some(30));
     assert_eq!(first_file_stats["value"].null_count, Some(0));
 
-    for (sql, expected_files_touched, expected_files_skipped) in [
+    for (sql, expected) in [
         (
             format!("SELECT id FROM {DEFAULT_TABLE_NAME} ORDER BY id"),
-            3_u64,
-            0_u64,
+            ExpectedScanMetrics {
+                browser_files_touched: 3,
+                browser_files_skipped: 0,
+                native_files_touched: 3,
+                native_files_skipped: 0,
+            },
         ),
         (
             format!("SELECT id, value FROM {DEFAULT_TABLE_NAME} WHERE category = 'C' ORDER BY id"),
-            1_u64,
-            2_u64,
+            ExpectedScanMetrics {
+                browser_files_touched: 1,
+                browser_files_skipped: 2,
+                native_files_touched: 1,
+                native_files_skipped: 2,
+            },
         ),
         (
             format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'Z' ORDER BY id"),
-            0_u64,
-            3_u64,
+            ExpectedScanMetrics {
+                browser_files_touched: 3,
+                browser_files_skipped: 0,
+                native_files_touched: 0,
+                native_files_skipped: 3,
+            },
         ),
         (
             format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE value >= 40 ORDER BY id"),
-            2_u64,
-            1_u64,
+            ExpectedScanMetrics {
+                browser_files_touched: 2,
+                browser_files_skipped: 1,
+                native_files_touched: 2,
+                native_files_skipped: 1,
+            },
         ),
     ] {
         let browser_plan = session
@@ -427,10 +451,22 @@ fn browser_preflight_stats_and_planning_match_native_partitioned_metrics() {
         })
         .expect("native query should execute");
 
-        assert_eq!(browser_plan.candidate_file_count, expected_files_touched);
-        assert_eq!(browser_plan.pruning.files_pruned, expected_files_skipped);
-        assert_eq!(native_result.metrics.files_touched, expected_files_touched);
-        assert_eq!(native_result.metrics.files_skipped, expected_files_skipped);
+        assert_eq!(
+            browser_plan.candidate_file_count,
+            expected.browser_files_touched
+        );
+        assert_eq!(
+            browser_plan.pruning.files_pruned,
+            expected.browser_files_skipped
+        );
+        assert_eq!(
+            native_result.metrics.files_touched,
+            expected.native_files_touched
+        );
+        assert_eq!(
+            native_result.metrics.files_skipped,
+            expected.native_files_skipped
+        );
     }
 }
 
@@ -479,15 +515,25 @@ fn supported_browser_sql_queries_have_native_parity_on_partitioned_fixture() {
 
         assert_execution_plan_shape(&execution_plan, &browser_plan, &case);
 
-        if case.assert_scan_metrics {
+        if let Some(expected) = case.expected_scan_metrics {
             assert_eq!(
-                browser_plan.candidate_file_count, native_result.metrics.files_touched,
-                "case '{}': browser/native touched-file parity should hold",
+                browser_plan.candidate_file_count, expected.browser_files_touched,
+                "case '{}': browser touched-file metrics should match its execution policy",
                 case.name
             );
             assert_eq!(
-                browser_plan.pruning.files_pruned, native_result.metrics.files_skipped,
-                "case '{}': browser/native skipped-file parity should hold",
+                browser_plan.pruning.files_pruned, expected.browser_files_skipped,
+                "case '{}': browser skipped-file metrics should match its execution policy",
+                case.name
+            );
+            assert_eq!(
+                native_result.metrics.files_touched, expected.native_files_touched,
+                "case '{}': native touched-file metrics should match its execution policy",
+                case.name
+            );
+            assert_eq!(
+                native_result.metrics.files_skipped, expected.native_files_skipped,
+                "case '{}': native skipped-file metrics should match its execution policy",
                 case.name
             );
         }
@@ -691,9 +737,25 @@ fn browser_execution_reports_metrics_for_pruned_and_empty_scans() {
         .block_on(session.bootstrap_snapshot_metadata(&materialized))
         .expect("browser snapshot metadata bootstrap should succeed");
 
-    for sql in [
-        format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'C' ORDER BY id"),
-        format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'Z' ORDER BY id"),
+    for (sql, expected) in [
+        (
+            format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'C' ORDER BY id"),
+            ExpectedScanMetrics {
+                browser_files_touched: 1,
+                browser_files_skipped: 2,
+                native_files_touched: 1,
+                native_files_skipped: 2,
+            },
+        ),
+        (
+            format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'Z' ORDER BY id"),
+            ExpectedScanMetrics {
+                browser_files_touched: 3,
+                browser_files_skipped: 0,
+                native_files_touched: 0,
+                native_files_skipped: 3,
+            },
+        ),
     ] {
         let execution_plan = execution_plan_for_case(
             &session,
@@ -711,35 +773,40 @@ fn browser_execution_reports_metrics_for_pruned_and_empty_scans() {
             &sql,
         );
 
-        if execution_plan.scan().candidate_file_count() == 0 {
-            assert_eq!(
-                browser_result.metrics().bytes_fetched,
-                0,
-                "sql '{}': empty scans should not fetch object bytes",
-                sql
-            );
-        } else {
-            assert!(
-                browser_result.metrics().bytes_fetched > 0,
-                "sql '{}': non-empty scans should fetch range bytes",
-                sql
-            );
-            assert!(
-                browser_result.metrics().bytes_fetched <= execution_plan.scan().candidate_bytes(),
-                "sql '{}': fetched range bytes should not exceed candidate object bytes",
-                sql
-            );
-        }
+        assert!(
+            browser_result.metrics().bytes_fetched <= execution_plan.scan().candidate_bytes(),
+            "sql '{}': physical fetched bytes should not exceed candidate object bytes",
+            sql
+        );
+        assert!(
+            browser_result.metrics().bytes_fetched > 0
+                || browser_result
+                    .metrics()
+                    .range_cache_bytes_reused
+                    .is_some_and(|bytes| bytes > 0),
+            "sql '{}': execution should fetch or reuse object bytes",
+            sql
+        );
         assert_eq!(
             browser_result.metrics().files_touched,
-            native_result.metrics.files_touched,
-            "sql '{}': touched files should match native metrics",
+            expected.browser_files_touched,
+            "sql '{}': browser touched-file metrics should match its execution policy",
             sql
         );
         assert_eq!(
             browser_result.metrics().files_skipped,
-            native_result.metrics.files_skipped,
-            "sql '{}': skipped files should match native metrics",
+            expected.browser_files_skipped,
+            "sql '{}': browser skipped-file metrics should match its execution policy",
+            sql
+        );
+        assert_eq!(
+            native_result.metrics.files_touched, expected.native_files_touched,
+            "sql '{}': native touched-file metrics should match its execution policy",
+            sql
+        );
+        assert_eq!(
+            native_result.metrics.files_skipped, expected.native_files_skipped,
+            "sql '{}': native skipped-file metrics should match its execution policy",
             sql
         );
     }
@@ -1152,7 +1219,7 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
         SupportedBrowserSqlParityCase {
             name: "limit_order_by",
             sql: format!("SELECT id FROM {DEFAULT_TABLE_NAME} ORDER BY id LIMIT 1"),
-            assert_scan_metrics: false,
+            expected_scan_metrics: None,
             expected_required_columns: vec!["id"],
             expected_filter: None,
             expected_outputs: vec![ExpectedExecutionOutput {
@@ -1171,7 +1238,7 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
         SupportedBrowserSqlParityCase {
             name: "count_star",
             sql: format!("SELECT COUNT(*) AS row_count FROM {DEFAULT_TABLE_NAME}"),
-            assert_scan_metrics: false,
+            expected_scan_metrics: None,
             expected_required_columns: vec![],
             expected_filter: None,
             expected_outputs: vec![ExpectedExecutionOutput {
@@ -1191,7 +1258,7 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
         SupportedBrowserSqlParityCase {
             name: "avg_value",
             sql: format!("SELECT AVG(value) AS avg_value FROM {DEFAULT_TABLE_NAME}"),
-            assert_scan_metrics: false,
+            expected_scan_metrics: None,
             expected_required_columns: vec!["value"],
             expected_filter: None,
             expected_outputs: vec![ExpectedExecutionOutput {
@@ -1217,7 +1284,7 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
                  ORDER BY category \
                  LIMIT 2"
             ),
-            assert_scan_metrics: false,
+            expected_scan_metrics: None,
             expected_required_columns: vec!["category", "value"],
             expected_filter: None,
             expected_outputs: vec![
@@ -1250,7 +1317,7 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
                 "WITH filtered AS (SELECT value AS total FROM {DEFAULT_TABLE_NAME}) \
                  SELECT total FROM filtered ORDER BY total"
             ),
-            assert_scan_metrics: false,
+            expected_scan_metrics: None,
             expected_required_columns: vec!["value"],
             expected_filter: None,
             expected_outputs: vec![ExpectedExecutionOutput {
@@ -1269,7 +1336,12 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
         SupportedBrowserSqlParityCase {
             name: "partition_pruned_equality",
             sql: format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'C' ORDER BY id"),
-            assert_scan_metrics: true,
+            expected_scan_metrics: Some(ExpectedScanMetrics {
+                browser_files_touched: 1,
+                browser_files_skipped: 2,
+                native_files_touched: 1,
+                native_files_skipped: 2,
+            }),
             expected_required_columns: vec!["category", "id"],
             expected_filter: Some(ExpectedFilterExpr::Compare {
                 source_column: "category",
@@ -1292,7 +1364,12 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
         SupportedBrowserSqlParityCase {
             name: "partition_pruned_no_match",
             sql: format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE category = 'Z' ORDER BY id"),
-            assert_scan_metrics: true,
+            expected_scan_metrics: Some(ExpectedScanMetrics {
+                browser_files_touched: 3,
+                browser_files_skipped: 0,
+                native_files_touched: 0,
+                native_files_skipped: 3,
+            }),
             expected_required_columns: vec!["category", "id"],
             expected_filter: Some(ExpectedFilterExpr::Compare {
                 source_column: "category",
@@ -1315,7 +1392,12 @@ fn supported_browser_sql_parity_cases() -> Vec<SupportedBrowserSqlParityCase> {
         SupportedBrowserSqlParityCase {
             name: "stats_pruned_range",
             sql: format!("SELECT id FROM {DEFAULT_TABLE_NAME} WHERE value >= 40 ORDER BY id"),
-            assert_scan_metrics: true,
+            expected_scan_metrics: Some(ExpectedScanMetrics {
+                browser_files_touched: 2,
+                browser_files_skipped: 1,
+                native_files_touched: 2,
+                native_files_skipped: 1,
+            }),
             expected_required_columns: vec!["id", "value"],
             expected_filter: Some(ExpectedFilterExpr::Compare {
                 source_column: "value",

@@ -15,7 +15,7 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 seed="$tmpdir/seed"
 mkdir -p "$seed"
-git -C "$seed" init -q
+git -C "$seed" init -q --initial-branch=main
 git -C "$seed" config user.name "Axon shipping pin verifier test"
 git -C "$seed" config user.email "shipping-pin-verifier@example.invalid"
 printf '%s\n' "approved fork revision" >"$seed/README.md"

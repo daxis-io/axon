@@ -9,10 +9,15 @@ This is the list of metrics and routing signals the repo emits today. There are 
 
 `QueryMetricsSummary`
 
-- `bytes_fetched`: bytes read for the executed query path
+- `bytes_fetched`: runtime-reported execution bytes; browser execution reports physical backing-
+  source bytes and excludes range-cache reuse, while native execution maps the engine's scanned-
+  byte counter, so a fully cached browser scan can report zero
 - `duration_ms`: wall-clock query duration
-- `files_touched`: files opened for execution
-- `files_skipped`: files skipped by pruning
+- `files_touched`: runtime-reported scan files; browser execution reports retained candidate files
+  and native execution maps the engine's scanned-file counter, so conservative browser zero-
+  candidate fail-open retains every active file even when later filtering emits no rows
+- `files_skipped`: files skipped by pruning; zero-candidate fail-open reports zero because it
+  deliberately abandons the unsafe pruning decision
 - `prebootstrap_fail_open_count`: conservative fail-open events observed before Parquet footer reads when zero-candidate prebootstrap pruning cannot safely provide a schema
 - `prebootstrap_files_pruned`: data files pruned before Parquet footer reads when tracked; zero when prebootstrap pruning fails open
 - `footer_reads_avoided`: Parquet footer reads avoided by prebootstrap file pruning when tracked; this is distinct from footer-cache range-read avoidance
@@ -77,7 +82,8 @@ Fallback, rejection, failure, and cancellation envelopes keep `metrics` as an ob
 
 `BrowserTransportMetrics`
 
-- `bytes_fetched`: bytes read from the backing object source by the browser object-store seam
+- `bytes_fetched`: physical bytes read from the backing object source by the browser object-store
+  seam during the query call; range-cache reuse is excluded
 - `bytes_reused`: bytes served from in-memory or persistent extent cache
 - `validation_misses`: stale in-memory extents rejected after object identity changed
 - `persistent_cache_errors`: persistent-cache load or store failures treated as cache misses

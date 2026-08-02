@@ -1576,11 +1576,18 @@ pub struct PageIndexDecisionSummary {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct QueryMetricsSummary {
-    /// Bytes scanned by the executed query plan when the runtime can report them; otherwise `0`.
+    /// Bytes read or scanned during execution when the runtime can report them; otherwise `0`.
+    ///
+    /// Browser execution reports physical backing-source bytes and accounts for range-cache reuse
+    /// separately, so a cached browser scan can report `0`. Native execution maps its engine's
+    /// scanned-byte counter.
     pub bytes_fetched: u64,
     /// Wall-clock execution time for the query call.
     pub duration_ms: u64,
-    /// Data files scanned by the executed query plan when the runtime can report them; otherwise `0`.
+    /// Data files scanned or retained by the executed plan when the runtime can report them;
+    /// otherwise `0`. Browser execution reports its candidate-file count, so conservative fail-open
+    /// planning counts retained files even when later filtering emits no rows. Native execution
+    /// maps its engine's scanned-file counter.
     pub files_touched: u64,
     /// Data files skipped by partition or file pruning when the runtime can report them; otherwise `0`.
     pub files_skipped: u64,

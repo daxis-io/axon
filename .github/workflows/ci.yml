@@ -269,13 +269,13 @@ jobs:
         working-directory: apps/axon-web
         run: npm ci
 
-      - name: Run browser unit tests
-        working-directory: apps/axon-web
-        run: npm test
-
       - name: Build and verify the external-memory browser artifact
         working-directory: apps/axon-web
         run: npm run build:external-memory
+
+      - name: Run browser unit tests
+        working-directory: apps/axon-web
+        run: npm test
 
       - name: Install Chromium for external-memory qualification
         working-directory: apps/axon-web

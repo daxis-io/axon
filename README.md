@@ -118,7 +118,7 @@ udf-abi, udf-host-wasi      Placeholders for hosted UDF execution
 - Native SQL over Delta tables, with snapshot pinning, partition pruning, and execution-derived metrics.
 - Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`.
 - A browser runtime that bootstraps a snapshot, plans a candidate file set, prunes partitions and integer footer stats, and runs a known SQL subset (filter, project, group, common aggregates, aligned `ORDER BY` / `LIMIT`).
-- Browser-side DataFusion through `wasm-datafusion-session` for the sandbox UI runtime and the `axon-web-wasm` browser DataFusion app worker.
+- Browser-side DataFusion through `wasm-datafusion-session`; the Daxis-facing `axon-web-wasm` browser DataFusion app is the default worker.
 - Standard Parquet datasets through browser-safe file descriptors, using the same Parquet range-read and DataFusion query path without requiring Delta log metadata.
 - An OPFS persistent extent cache in `wasm-http-object-store`, bounded per object identity. If persistence fails, it's a cache miss, not an error.
 - A TypeScript SDK with a manifest-based bundle selector. The default bundle is single-threaded; SIMD and threaded tiers exist but aren't assumed.
