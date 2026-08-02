@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 default = []
 optimizer = ["dep:datafusion-optimizer"]
 physical-expr-floor = ["dep:datafusion-physical-expr"]
-physical-plan-floor = ["dep:datafusion-physical-plan", "dep:uuid"]
+physical-plan-floor = ["dep:datafusion-physical-plan"]
 
 [dependencies]
 arrow-schema = "=58.3.0"
@@ -25,7 +25,10 @@ datafusion-sql = { version = "=53.1.0", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "=0.3.4", features = ["wasm_js"] }
-uuid = { version = "=1.23.0", default-features = false, features = ["js"], optional = true }
+# DataFusion's default scalar-function set enables UUID v4 generation. Keep the
+# wasm randomness backend active even when this crate's optional physical-plan
+# feature is disabled, as it is in the planner-only wasm smoke test.
+uuid = { version = "=1.23.0", default-features = false, features = ["js"] }
 wasm-bindgen = "=0.2.114"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
