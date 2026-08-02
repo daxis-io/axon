@@ -4586,6 +4586,36 @@ fn stats_bootstrapped_snapshot() -> BootstrappedBrowserSnapshot {
     .expect("stats bootstrapped snapshots should construct")
 }
 
+#[test]
+fn request_capturing_object_server_serves_requests_while_an_idle_connection_is_open() {
+    let server = RequestCapturingObjectServer::from_objects(BTreeMap::from([(
+        "/object".to_string(),
+        b"fixture-body".to_vec(),
+    )]));
+    let idle_connection = TcpStream::connect(server.address)
+        .expect("an idle speculative client connection should connect");
+    thread::sleep(Duration::from_millis(25));
+
+    let mut request = TcpStream::connect(server.address)
+        .expect("the real client request should connect while the idle connection remains open");
+    request
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .expect("the real client should have a bounded read");
+    request
+        .write_all(b"GET /object HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .expect("the real client request should be writable");
+    let mut response = Vec::new();
+    request.read_to_end(&mut response).expect(
+        "the real client should receive a response without waiting for the idle connection",
+    );
+
+    drop(idle_connection);
+    assert!(
+        response.ends_with(b"fixture-body"),
+        "the real client should receive the requested object"
+    );
+}
+
 struct RequestCapturingObjectServer {
     address: std::net::SocketAddr,
     stop: Arc<AtomicBool>,
@@ -4731,6 +4761,8 @@ impl RequestCapturingObjectServer {
         let requests_for_thread = Arc::clone(&requests);
 
         let thread = thread::spawn(move || {
+            let objects_by_path = Arc::new(objects_by_path);
+            let mut connection_threads = Vec::new();
             while !stop_for_thread.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
@@ -4740,11 +4772,18 @@ impl RequestCapturingObjectServer {
                         stream
                             .set_nonblocking(false)
                             .expect("accepted streams should allow blocking reads");
-                        handle_request_capturing_connection(
-                            &mut stream,
-                            &objects_by_path,
-                            &requests_for_thread,
-                        );
+                        stream
+                            .set_read_timeout(Some(Duration::from_millis(500)))
+                            .expect("accepted streams should have bounded reads");
+                        let objects_for_connection = Arc::clone(&objects_by_path);
+                        let requests_for_connection = Arc::clone(&requests_for_thread);
+                        connection_threads.push(thread::spawn(move || {
+                            handle_request_capturing_connection(
+                                &mut stream,
+                                &objects_for_connection,
+                                &requests_for_connection,
+                            );
+                        }));
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(5));
@@ -4753,6 +4792,11 @@ impl RequestCapturingObjectServer {
                         panic!("loopback object server accept should succeed: {error}")
                     }
                 }
+            }
+            for connection_thread in connection_threads {
+                connection_thread
+                    .join()
+                    .expect("request-capturing connection should shut down cleanly");
             }
         });
 
