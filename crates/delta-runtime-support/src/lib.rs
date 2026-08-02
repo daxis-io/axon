@@ -241,10 +241,7 @@ pub fn query_error_from_object_store_error(
             QueryError::new(QueryErrorCode::AccessDenied, error.to_string(), target)
         }
         ObjectStoreError::NotFound { source, .. }
-            if error_chain_contains_io_kind(
-                source.as_ref(),
-                std::io::ErrorKind::PermissionDenied,
-            ) =>
+            if error_chain_indicates_access_denied(source.as_ref()) =>
         {
             QueryError::new(QueryErrorCode::AccessDenied, error.to_string(), target)
         }
@@ -271,21 +268,37 @@ pub fn map_object_store_error(error: ObjectStoreError, target: ExecutionTarget) 
     query_error_from_object_store_error(&error, target)
 }
 
-fn error_chain_contains_io_kind(
-    error: &(dyn StdError + 'static),
-    kind: std::io::ErrorKind,
-) -> bool {
+fn error_chain_indicates_access_denied(error: &(dyn StdError + 'static)) -> bool {
     let mut current = Some(error);
     while let Some(candidate) = current {
         if candidate
             .downcast_ref::<std::io::Error>()
-            .is_some_and(|io_error| io_error.kind() == kind)
+            .is_some_and(|io_error| io_error.kind() == std::io::ErrorKind::PermissionDenied)
+            || message_indicates_filesystem_access_denied(&candidate.to_string())
         {
             return true;
         }
         current = candidate.source();
     }
     false
+}
+
+fn message_indicates_filesystem_access_denied(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("permission denied")
+        || normalized.contains("access denied")
+        || normalized.contains("operation not permitted")
+        || normalized.contains("(os error 1)")
+        || normalized.contains("(os error 13)")
+}
+
+fn message_indicates_access_denied(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    message_indicates_filesystem_access_denied(message)
+        || normalized.contains("unauthenticated")
+        || normalized.contains("unauthorized")
+        || normalized.contains("401")
+        || normalized.contains("403")
 }
 
 #[cfg(feature = "datafusion")]
@@ -647,16 +660,7 @@ fn query_error_from_execution_message(
         ));
     }
 
-    if normalized.contains("permission denied")
-        || normalized.contains("access denied")
-        || normalized.contains("unauthenticated")
-        || normalized.contains("unauthorized")
-        || normalized.contains("operation not permitted")
-        || normalized.contains("os error 1")
-        || normalized.contains("os error 13")
-        || normalized.contains("401")
-        || normalized.contains("403")
-    {
+    if message_indicates_access_denied(message) {
         return Some(QueryError::new(
             QueryErrorCode::AccessDenied,
             message.to_string(),
@@ -882,6 +886,39 @@ mod tests {
         assert_eq!(error.target, ExecutionTarget::Native);
     }
 
+    #[test]
+    fn object_store_not_found_with_lossy_permission_message_maps_to_access_denied() {
+        let error = map_object_store_error(
+            ObjectStoreError::NotFound {
+                path: "part-00000.parquet".to_string(),
+                source: Box::new(std::io::Error::other(
+                    "Unable to open file: Permission denied (os error 13)",
+                )),
+            },
+            ExecutionTarget::Native,
+        );
+
+        assert_eq!(error.code, QueryErrorCode::AccessDenied);
+        assert_eq!(error.target, ExecutionTarget::Native);
+    }
+
+    #[test]
+    fn object_store_not_found_paths_with_status_like_text_stay_protocol_errors() {
+        let error = map_object_store_error(
+            ObjectStoreError::NotFound {
+                path: "401.parquet".to_string(),
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "object 401.parquet was not found",
+                )),
+            },
+            ExecutionTarget::Native,
+        );
+
+        assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+        assert_eq!(error.target, ExecutionTarget::Native);
+    }
+
     #[cfg(feature = "datafusion")]
     #[test]
     fn datafusion_execution_errors_with_os_error_13_map_to_access_denied() {
@@ -905,6 +942,20 @@ mod tests {
         );
 
         assert_eq!(error.code, QueryErrorCode::AccessDenied);
+        assert_eq!(error.target, ExecutionTarget::Native);
+    }
+
+    #[cfg(feature = "datafusion")]
+    #[test]
+    fn datafusion_execution_errors_with_other_os_error_codes_stay_execution_failures() {
+        let error = map_datafusion_error(
+            DataFusionError::Execution(
+                "read failed: Resource deadlock avoided (os error 11)".into(),
+            ),
+            ExecutionTarget::Native,
+        );
+
+        assert_eq!(error.code, QueryErrorCode::ExecutionFailed);
         assert_eq!(error.target, ExecutionTarget::Native);
     }
 
