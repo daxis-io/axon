@@ -2,7 +2,7 @@
 
 - Status: Working architecture
 - Date: 2026-06-20
-- Revised: 2026-07-27
+- Revised: 2026-08-02
 - Scope: Axon's source-profile composition, provider boundaries, authority, and host integration boundary
 - Related:
   - [Axon workbench architecture](./axon-workbench-architecture.md)
@@ -81,12 +81,18 @@ grants never participate in identity.
 An execution request carries one resource binding:
 
 - `BrowserWasm` receives an execution-local resolved access envelope containing
-  one openable descriptor, access class, correlation/provenance identifiers, and
-  mandatory earliest expiry for capability-bearing access. Rejection or terminal
-  execution disposes it; a new execution resolves a new envelope.
+  one openable descriptor union, access class, correlation/provenance
+  identifiers, and mandatory earliest expiry for capability-bearing access.
+  Target Delta access is root-scoped or per-file; the per-file variant preserves
+  the current `BrowserHttpSnapshotDescriptor`. Rejection or terminal execution
+  disposes it; a new execution resolves a new envelope.
 - Native or remote execution receives a logical object reference and resolves access inside its own trust boundary.
 
-An executor must not accept both a logical reference and a resolved browser descriptor. This prevents accidental re-resolution under a different principal, session, snapshot, or policy decision.
+An executor must not accept both a logical reference and resolved browser
+access. This prevents accidental re-resolution under a different principal,
+session, snapshot, or policy decision. `DataAccessResolver` remains the only
+resolver seam; no root-scoped engine adapter may become a parallel catalog or
+`BrowserTableResolver`.
 
 ## Supported And Planned Profiles
 

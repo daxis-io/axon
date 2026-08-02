@@ -138,6 +138,15 @@ jobs:
           for file in docs/program/browser-lakehouse-release-handoff.md docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md tests/security/README.md; do
             rg -q "outside (the )?repo-owned (browser-engine |performance )?success claims|remain external blockers|External blocker" "$file"
           done
+          rg -q "Canonical design — implementation in progress" docs/program/browser-lakehouse-engine-strategy.md
+          rg -q "standard DataFusion Parquet over Axon ObjectStore" docs/program/browser-lakehouse-engine-strategy.md
+          rg -q "accepted browser failure never transparently becomes native execution" docs/program/browser-lakehouse-engine-strategy.md
+          rg -q 'Existing `sql()` and its `single_buffer` / `chunked_buffers` delivery modes remain atomic' docs/program/browser-lakehouse-engine-strategy.md
+          rg -q '`sqlProgressive()` is a separate API' docs/program/browser-lakehouse-engine-strategy.md
+          for file in docs/program/browser-owned-descriptor-materialization.md docs/program/browser-uc-brokered-runtime-contract.md docs/program/browser-embedding-deployment.md docs/program/provider-model.md; do
+            rg -q "root-scoped" "$file"
+            rg -q "per-file" "$file"
+          done
 
       - name: Report host-proxy browser worker startup and footprint baselines
         run: cargo test -p browser-engine-worker --locked report_worker_artifact_baseline -- --exact --nocapture

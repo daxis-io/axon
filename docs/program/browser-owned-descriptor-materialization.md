@@ -2,11 +2,13 @@
 
 - Status: Current repo contract
 - Date: 2026-05-19
-- Audit revision: 2026-07-15
-- Scope: browser-safe Delta descriptor production in `apps/axon-web`,
-  `query-contract`, `wasm-delta-snapshot`, and broker/runtime contracts
+- Audit revision: 2026-08-02
+- Scope: current per-file Delta descriptor production and target root-scoped or
+  per-file access materialization in `apps/axon-web`, `query-contract`,
+  `wasm-delta-snapshot`, and broker/runtime contracts
 - Related:
   - [Browser Delta Compatibility Matrix](./browser-delta-compatibility-matrix.md)
+  - [Canonical Browser Lakehouse Engine Strategy](./browser-lakehouse-engine-strategy.md)
   - [Browser Unity Catalog Brokered Runtime Contract](./browser-uc-brokered-runtime-contract.md)
   - [Browser Embedding Deployment Guide](./browser-embedding-deployment.md)
 
@@ -22,46 +24,50 @@ browser-safe access material
   -> local query execution
 ```
 
-That diagram describes the current SDK. It passes a bare descriptor to the
-worker and returns expiry, correlation, and resolution metadata through
-source-specific envelopes. The target path preserves the current worker command
-but gives its caller one checked input:
+That diagram describes the current compatibility SDK. It passes a bare
+per-file descriptor to the worker and returns expiry, correlation, and
+resolution metadata through source-specific envelopes. The target path keeps
+the existing `DataAccessResolver` and gives execution one checked input:
 
 ```text
 browser-safe access material
-  -> browser reconstructs or materializes the snapshot/descriptor
+  -> DataAccessResolver
   -> ResolvedBrowserRead binding
   -> validate selected source and not-after time
-  -> openDeltaTable(binding.descriptor)
+  -> BrowserDeltaAccessDescriptor
+       RootScopedDelta | PerFileSnapshot
+  -> open root-scoped or per-file table access
   -> local query execution
 ```
 
-When the source exposes table-root object access:
+When the source exposes table-root object access, the target keeps that access
+root-scoped rather than requiring a complete active-file descriptor before the
+worker:
 
 ```text
-browser reads/lists _delta_log
-  -> wasm-delta-snapshot reconstructs snapshot
-  -> BrowserHttpSnapshotDescriptor
+browser-safe list/head/range access
+  -> RootScopedDelta
+  -> bounded Delta Kernel SnapshotTask / ScanTask
 ```
 
 When the source exposes file actions, manifests, or descriptors:
 
 ```text
 browser-safe manifest / Delta Sharing file actions / provider file list
-  -> browser materializes BrowserHttpSnapshotDescriptor directly
+  -> PerFileSnapshot(BrowserHttpSnapshotDescriptor)
 ```
 
 Core invariants:
 
 - BFF/access broker does not query by default.
 - BFF/access broker does not reconstruct snapshots by default.
-- Browser/runtime owns local descriptor production when it has safe material.
+- Browser/runtime owns local access-envelope production when it has safe material.
 - Server snapshot mode is an explicit enterprise server snapshot resolver mode.
 - Server query mode is only explicit fallback, such as `sql_fallback_required`.
 - Raw long-lived cloud credentials and provider secrets do not enter browser packages.
-- `openDeltaTable(name, descriptor)` remains the current worker handoff; the
-  target execution call validates a `ResolvedBrowserRead` binding before making
-  it.
+- `openDeltaTable(name, descriptor)` remains the current compatibility handoff;
+  target execution validates `ResolvedBrowserRead` and opens either root-scoped
+  or per-file access through the same execution provider.
 - Grants, signed URLs, descriptors, and resolved bindings remain memory-only and
   never enter browser persistence.
 
@@ -73,34 +79,37 @@ Use these terms consistently:
 - Descriptor materializer: browser-owned conversion from manifests, Delta
   Sharing file actions, file lists, or explicit server snapshot resolver
   descriptors into `BrowserHttpSnapshotDescriptor`.
+- Root-scoped access materializer: browser-owned conversion from a validated
+  table root plus grant/store-factory reference into `RootScopedDelta`; it does
+  not reconstruct the active-file list at the resolver seam.
 - Server snapshot resolver: optional enterprise mode that returns a descriptor.
 - Server fallback: server-side SQL execution for governed assets.
 
 ## Resolved Browser Read Binding
 
 The target runtime represents a successful resolution as one
-`ResolvedBrowserRead` binding. This is the existing descriptor plus the authority and lifetime
-facts that callers already have to carry separately:
+`ResolvedBrowserRead` binding: the existing openable descriptor union plus the
+authority and lifetime facts that callers already have to carry separately.
 
-| Field             | Meaning                                                                                                                                                                                                    |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `descriptor`      | The `BrowserHttpSnapshotDescriptor` passed to the current worker handoff.                                                                                                                                  |
-| `access_class`    | `local`, `public`, `signed`, or `proxy`; selects the cache and retention policy.                                                                                                                           |
-| `not_after`       | Required earliest expiry of the session, plan, grant, descriptor response, or signed files for signed, proxy, grant-backed, and other expiring access; optional only for non-expiring local/public access. |
-| resource          | The one canonical connection/source and table reference selected by the user. The binding contains no alternate source.                                                                                    |
-| resolved snapshot | Provider table identity and snapshot version represented by the descriptor; these must match the canonical resource and snapshot intent.                                                                   |
-| provenance        | Resolution mode, provider, and policy authority when a remote authority participated. It contains no bearer URL or secret.                                                                                 |
-| `correlation_id`  | Optional service correlation used for broker audit lookup and diagnostics.                                                                                                                                 |
+| Field             | Meaning                                                                                                                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `descriptor`      | An openable descriptor. The current Delta arm is `BrowserHttpSnapshotDescriptor`; the target Delta arm is `BrowserDeltaAccessDescriptor::{RootScopedDelta, PerFileSnapshot}`. Plain Parquet keeps its existing arm. |
+| `access_class`    | `local`, `public`, `signed`, or `proxy`; selects the cache and retention policy.                                                                                                                                    |
+| `not_after`       | Required earliest expiry of the session, plan, grant, descriptor response, or signed files for signed, proxy, grant-backed, and other expiring access; optional only for non-expiring local/public access.          |
+| resource          | The one canonical connection/source and table reference selected by the user. The binding contains no alternate source.                                                                                             |
+| resolved snapshot | Provider table identity and snapshot version represented by the descriptor; these must match the canonical resource and snapshot intent.                                                                            |
+| provenance        | Resolution mode, provider, and policy authority when a remote authority participated. It contains no bearer URL or secret.                                                                                          |
+| `correlation_id`  | Optional service correlation used for broker audit lookup and diagnostics.                                                                                                                                          |
 
 The snapshot resolver or descriptor materializer constructs the binding. It does
 not return a capability-bearing binding if it cannot establish a finite
 `not_after`. The execution path verifies that resource and descriptor identities
 still match, checks the required bound immediately before admission and table
-open, and passes only
-`binding.descriptor` to the current worker command. If the binding has expired,
-the caller discards it and resolves the same source again. It does not refresh a
-descriptor in place, advance an explicitly pinned snapshot, or choose another
-connected source.
+open, and passes only the validated openable access to execution. The current
+compatibility command receives the per-file descriptor. If the binding has
+expired, the caller discards it and resolves the same source again. It does not
+refresh a descriptor in place, advance an explicitly pinned snapshot, or choose
+another connected source.
 
 Expiry during an accepted execution produces one typed terminal error. The
 runtime does not replay a query after refreshing access because it may already
@@ -126,11 +135,13 @@ binding.
 
 ## Reconstruction Versus Materialization
 
-Table-root reconstruction applies only when the browser has browser-safe access
+Table-root access applies only when the browser has browser-safe access
 to list/head/read the Delta table root and `_delta_log`. Examples include public
 HTTP Delta tables with CORS and range support, local file handles, and brokered
-object grants with list/head/range capabilities. This path reads Delta log
-objects in the browser and uses `wasm-delta-snapshot` to produce the descriptor.
+object grants with list/head/range capabilities. The current compatibility path
+uses `wasm-delta-snapshot` to produce a per-file descriptor. The target carries
+the validated root into the worker and lets bounded Delta Kernel tasks resolve
+snapshot and scan state.
 
 Descriptor materialization applies when another protocol or provider already
 supplies the active file set, metadata, or a complete descriptor. Examples
@@ -138,12 +149,11 @@ include HTTP manifests, brokered manifests, provider file lists, Delta Sharing
 URL-mode file actions, and trusted descriptors returned by an explicit server
 snapshot resolver. These inputs are not forced back through `_delta_log` listing.
 
-Both paths converge on `BrowserHttpSnapshotDescriptor -> openDeltaTable()`.
-
-In the target contract, both paths first attach access class, lifetime, selected
-resource, and provenance to form the `ResolvedBrowserRead` binding. This avoids
-changing the current worker message while preventing the call site from losing
-security-relevant metadata.
+Both paths produce one `ResolvedBrowserRead` while preserving the physical
+descriptor shape. Root-scoped access remains root-scoped; file-action and
+manifest access remains per-file. Both attach access class, lifetime, selected
+resource, and provenance before execution, preventing the call site from losing
+security-relevant metadata while preserving deployments that cannot grant root listing.
 
 ## Source Selection Is Authoritative
 

@@ -1,372 +1,523 @@
 # Browser Lakehouse Engine Strategy
 
-- Status: Draft
-- Date: 2026-03-28
-- Scope: make browser DataFusion the default Axon browser execution engine while keeping legacy narrow execution isolated for compatibility
+- Status: **Canonical design — implementation in progress**
+- Revision date: 2026-08-02
+- Decision owner: Runtime / engine team
+- Authored against Axon `origin/main`: [`9ad43ce72fc8235128c5fa604eecd95aabf1bc29`](https://github.com/daxis-io/axon/commit/9ad43ce72fc8235128c5fa604eecd95aabf1bc29)
+- Scope: normative browser-engine architecture, compatibility policy, migration, and promotion gates
 - Related:
-  - [WASM + Delta Lake on GCS Program Bundle](./wasm-delta-gcs-program.md)
-  - [EPIC-04: Browser DataFusion WASM Runtime And HTTP Object-Store Hardening](../epics/EPIC-04-browser-datafusion-wasm-runtime-and-http-object-store-hardening.md)
-  - [Browser Lakehouse Engine Implementation Plan](../plans/2026-03-28-browser-lakehouse-engine-implementation-plan.md)
-  - [Browser DataFusion Size Audit](./browser-datafusion-size-audit.md)
-  - [Browser Delta Compatibility Matrix](./browser-delta-compatibility-matrix.md)
-  - [Browser Unity Catalog Brokered Runtime Contract](./browser-uc-brokered-runtime-contract.md)
+  - [Axon workbench and query-engine architecture](./axon-workbench-architecture.md)
+  - [Provider and host integration model](./provider-model.md)
+  - [Browser-owned descriptor materialization](./browser-owned-descriptor-materialization.md)
+  - [Browser Unity Catalog brokered runtime contract](./browser-uc-brokered-runtime-contract.md)
+  - [Browser DataFusion runtime parity](./browser-datafusion-runtime-parity.md)
+  - [Upstream WebAssembly support strategy](./upstream-wasm-support-strategy.md)
+  - [Upstream WASM fork POC evidence](../release-gates/upstream-wasm-fork-poc-evidence.md)
+  - [Browser WASM Delta/GCS release evidence](../release-gates/browser-wasm-delta-gcs-release-evidence.md)
 
-## Decision Summary
+## Authority, Language, And Precedence
 
-The next browser-engine phase stays inside Axon as new workspace crates. Not a new repository, and not more logic crammed into the current crates.
-The Axon app worker is browser DataFusion-backed.
-Legacy narrow runtime and session shell remain compatibility-only.
+This document is Axon's single normative browser-engine design. It preserves the program's
+read-only product outcomes, authority boundaries, native correctness oracle, and release-proof
+standards while replacing the superseded mechanics listed below.
 
-The shape:
+The terms **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are normative. Lowercase
+terms and descriptions of current code or evidence are informative unless a sentence explicitly
+says otherwise. A target interface in this document is a design contract, not proof that the
+interface has landed.
 
-- keep `crates/delta-control-plane` native and trusted
-- keep `crates/wasm-http-object-store` as the browser-safe byte-range transport seam
-- keep `crates/wasm-parquet-engine` for browser-side Parquet planning and streamed scan primitives
-- add `crates/wasm-delta-kernel-engine` as the browser-safe Delta Kernel integration layer
-- keep `crates/wasm-delta-snapshot` as the existing compatibility scaffold while Delta snapshot
-  reconstruction moves behind Delta Kernel semantics
-- promote the DataFusion POC into a first-class `wasm-datafusion-engine` that owns SQL planning,
-  optimization, physical planning, execution, and Arrow `RecordBatch` output in a browser Worker
-- keep `crates/wasm-query-runtime` as a legacy fallback, correctness scaffold, and migration bridge
-- use `crates/wasm-datafusion-session` as the DataFusion-backed browser session shell above opened descriptors and below the UI runtime contract
-- keep `crates/wasm-query-session` as the legacy narrow in-memory session shell isolated for removal
+When documents disagree, apply this precedence:
 
-The target browser SKU:
+1. Existing security, authority, and native-oracle ADRs remain binding, especially
+   [ADR-0002](../adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md),
+   [ADR-0004](../adr/ADR-0004-native-runtime-is-correctness-oracle-and-mandatory-fallback.md),
+   [ADR-0005](../adr/ADR-0005-read-only-mvp-and-delta-compatibility-policy.md), and
+   [ADR-0008](../adr/ADR-0008-daxis-browser-read-compute-contract.md).
+2. This strategy governs browser-engine architecture and migration.
+3. Upstream plans govern dependency-publication mechanics and ordering, not Axon product
+   architecture.
+4. Historical implementation plans remain evidence of intent and prior work, but lose authority
+   wherever the [supersession ledger](#compatibility-and-supersession-ledger) says so.
+5. Release-evidence documents determine what has been proven. Authors MUST NOT use this design to
+   promote local, POC, or design-review evidence into a remotely reproducible release, shipping
+   adoption, or production-default claim.
 
-- Delta protocol semantics come from `delta-kernel-rs` core with its default engine disabled
-- `crates/wasm-delta-kernel-engine` implements `AxonBrowserKernelEngine` over Axon's browser
-  cache, JSON, Parquet, and expression handlers
-- Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`
-- streamed Parquet scan primitives inside `crates/wasm-parquet-engine`
-- DataFusion physical execution in a browser Worker
-- `AxonDeltaTableProvider` and `AxonParquetScanExec` connect Axon's Delta/Parquet stack to DataFusion
-- Arrow IPC output from the DataFusion engine wrapper
-- a DataFusion-owned in-memory session shell in `crates/wasm-datafusion-session`
+## Maturity Ledger: 2026-08-02
 
-The DataFusion and legacy narrow session shells are in-memory only. The object-store seam now has a narrow OPFS extent-cache backend; OPFS / IndexedDB session-level persistent caches are still deferred. Signed URL issuance, proxy-mode request issuance, audit logging, and production CORS/origin validation stay outside repo-owned browser-engine success claims.
+Maturity is recorded by evidence class rather than by a single "done" label.
 
-Broad browser DataFusion is no longer a deferred direction. The browser query engine target is DataFusion-backed Delta/Parquet execution. The 30-day gate, recorded in the browser DataFusion size audit, came back: keep going toward a DataFusion physical execution engine with custom Axon table and scan integration. Bundle size is a release budget, not a reason to replace DataFusion execution with an Axon IR.
+| Maturity                             | Exact state                                                                                                                                                                                                                                                                                                                                                                                                                                                              | What it permits                                                                                                                             |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Landed on current Axon main          | `9ad43ce72fc8235128c5fa604eecd95aabf1bc29` contains the compatibility DataFusion provider and custom scan, persistent worker/session path, pull-driven private Arrow IPC cursor with atomic public `sql()`, typed budgets and cancellation, identity-aware HTTP range handling, and bounded path-free OPFS aggregate spill with structured `resource_exhausted` and cleanup metrics. Delta snapshot reconstruction is already repo-owned through the compatibility path. | Maintain and use the qualified compatibility provider. It does not prove the target Kernel-native provider or progressive API.              |
+| Locally verified but unpublished     | The exact Axon and upstream heads in the immutable-head ledger below passed their stated local verifier scope.                                                                                                                                                                                                                                                                                                                                                           | Review and publication preparation only. They are not remotely reproducible releases or valid shipping dependency pins.                     |
+| Accepted only for Axon design review | `BrowserDeltaAccessDescriptor`, `AxonTableAccess`, `KernelTaskDriver`, `AxonKernelTableProvider`, `BrowserScanPredicates`, `BrowserDataFusionProfile`, the prefix router, and `sqlProgressive()` are the selected target seams.                                                                                                                                                                                                                                          | Axon preparation may implement the independent pieces called out in the roadmap. Kernel-dependent work still waits for upstream acceptance. |
+| Experimental / non-authoritative     | `poc/upstream-wasm-fork-stack`, the historical prefetch/cached-callback integration, the permanent-custom-scan POC shape, and the [Mangrove comparison source at `601be3c`](https://github.com/open-lakehouse/mangrove/commit/601be3cddbe68a676c7740d75cbce26190ad4279).                                                                                                                                                                                                 | Comparison, fixture, and risk evidence only. None defines Axon's production architecture.                                                   |
+| Planned                              | Publication, isolated shipping workspace, standard ObjectStore adapter, Kernel K1-K5, parallel provider, access convergence, progressive delivery, and promotion.                                                                                                                                                                                                                                                                                                        | Execution only in the dependency order and behind the gates below.                                                                          |
 
-`parquet-viewer` is useful here as a reference for the scan path only. It shows that browser-side storage adapters, byte-range reads, Parquet access, and optional Arrow/DataFusion execution all work in WebAssembly. It isn't the Delta layer, and it's not a reason to collapse Delta protocol work into the same crate or split Axon into a separate repository. For Delta protocol semantics, Axon's browser dependency is Delta Kernel core, not high-level `deltalake`.
+### Immutable local-head ledger
 
-## Why This Fits Axon
+These are supplied local evidence heads. Record them exactly; do not cite them as remotely
+reproducible releases:
 
-Axon already has the seam this work needs.
+| Evidence                       | Exact local head                           | Local GO                                                   | Remotely reproducible release | Maintainer acceptance                                                                  | Shipping adoption | Production default |
+| ------------------------------ | ------------------------------------------ | ---------------------------------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------- | ----------------- | ------------------ |
+| Axon verifier                  | `7df911beb0e4f77a8280be212ee4d6d50400fcf5` | Yes, for its recorded verifier scope                       | No; local/unpublished head    | Not applicable                                                                         | No                | No                 |
+| `object_store`                 | `bd5c4ed1789602ce90f2e2dd718e545be8ab5197` | Yes, for the local browser contract                        | No                            | No upstream acceptance recorded here                                                   | No                | No                 |
+| Arrow / Parquet                | `ee2cfeb8ef353683e8c49bcd48b2ce13afe1de60` | Yes, for the local browser contract                        | No                            | No upstream acceptance recorded here                                                   | No                | No                 |
+| DataFusion                     | `eb00a115c9caf4abc66c9ca9209ad83b3b1fcc83` | Yes, for the local browser contract                        | No                            | No upstream acceptance recorded here                                                   | No                | No                 |
+| Kernel operation-task contract | `4223fa43039d418238f6c4a1304d23e9f3764aa6` | Design packet reviewed locally; implementation GO is gated | No                            | Pending on [Kernel issue #252](https://github.com/delta-io/delta-kernel-rs/issues/252) | No                | No                 |
 
-- `crates/delta-control-plane` resolves trusted Delta snapshots and emits browser HTTP descriptors.
-- `crates/wasm-http-object-store` already owns exact HTTP byte-range reads and response validation.
-- `crates/wasm-query-runtime` already materializes browser descriptors, bootstraps Parquet metadata, prunes, and executes a constrained browser subset over local loopback-served fixtures.
-- Cross-crate tests already prove the handoff from native Delta snapshot resolution into browser-owned runtime state.
-- `crates/wasm-delta-snapshot` has already shown the browser can replay constrained Delta log
-  descriptors, which makes it a useful migration scaffold for a Delta Kernel-backed engine.
+The current compatibility provider is shipping code and is the Daxis-facing browser DataFusion
+default runtime SKU where its release gates are satisfied. The Kernel-native provider described
+here has neither shipping adoption nor production-default status. A local GO on an upstream head
+does not change either fact.
 
-So the valuable next step is to deepen those seams, not rebuild them across repositories.
+## Canonical Decision
 
-Keeping this work in Axon keeps:
+Axon will converge on Delta Kernel for Delta protocol and scan semantics, DataFusion for standard
+SQL and Parquet execution, and Axon-owned browser access and runtime policy. The engine MUST use
+one access-resolution seam, one persistent worker/session, bounded asynchronous Kernel tasks, a
+standard DataFusion Parquet source over an Axon `ObjectStore`, and the existing pull-driven Arrow
+IPC cursor.
 
-- one conformance story across native oracle, control-plane descriptor generation, and browser execution
-- one CI surface for `wasm32-unknown-unknown` compatibility
-- one place to enforce browser security rules and native fallback behavior
-- one set of shared contracts for file descriptors, partition types, and metrics
-
-Splitting repositories now would add versioning, release, and CI coordination cost before the browser Delta and Parquet interfaces are stable.
-
-## Why Not Put This Inside The Existing Crates
-
-The current crates already signal the right boundary.
-
-- `crates/delta-control-plane` depends on native `deltalake` and is shaped like trusted-side snapshot resolution. It should stay on policy, native correctness, and later signed-URL or proxy issuance.
-- `crates/wasm-query-runtime` is already the browser orchestration layer. It shouldn't also become the home for raw `_delta_log` reconstruction, remote extent caching, and low-level Parquet scan internals.
-- `crates/wasm-http-object-store` is transport-sized. It should stay on range reads, metadata validation, and cache-friendly browser I/O primitives, not Delta or SQL semantics.
-- `crates/wasm-delta-snapshot` shouldn't grow into a long-term home-grown Delta protocol
-  implementation now that `delta-kernel-rs` exposes the protocol/runtime split Axon needs.
-
-The next phase needs new sibling crates because the work is real, but the current crate boundaries are still the right ones.
-
-## parquet-viewer Positioning
-
-`parquet-viewer` is the right reference for the layer after snapshot resolution:
-
-`storage adapter -> range reads -> Parquet scan -> Arrow/DataFusion execution`
-
-Ideas worth carrying forward:
-
-- an object-store-like abstraction that turns a remote URL or browser-local file into efficient Parquet reads
-- a byte-range cache that sits directly under the Parquet reader
-- local browser file access via `Blob` / `File.slice(...).arrayBuffer()`
-- size-conscious WASM packaging and browser test hygiene
-
-The limit: none of this reconstructs Delta table state. A browser Delta reader still has to:
-
-- inspect `_delta_log`
-- choose the newest complete checkpoint
-- handle classic and V2 checkpoints
-- resolve sidecars when present
-- replay JSON commits after the chosen checkpoint
-- reconstruct the active `add` file set before any Parquet scan begins
-
-That's why the Delta layer should be its own crate, built around Delta Kernel's handler split rather than bolted onto the Parquet scan layer.
-
-## Target Architecture
+The end-to-end target is:
 
 ```text
-browser-sdk / embedding host
-            |
-            v
-        worker host
-            |
-            v
-    crates/wasm-datafusion-session
-            |
-            v
-    crates/wasm-datafusion-engine
-      |                 |
-      |                 +--> Arrow IPC result boundary
-      |
-      +--> DataFusion SessionContext
-      |      - SQL planning
-      |      - logical optimization
-      |      - physical planning
-      |      - physical execution
-      |
-      +--> AxonDeltaTableProvider
-      |      - DataFusion table registration
-      |      - projection / filter / limit pushdown contract
-      |      - Delta active-file descriptors
-      |
-      +--> AxonParquetScanExec
-      |      - DataFusion ExecutionPlan
-      |      - RecordBatch stream
-      |      - cancellation / memory / scan metrics
-      |
-      +--> crates/wasm-delta-kernel-engine
-      |      - delta-kernel-rs core with default engine disabled
-      |      - AxonBrowserKernelEngine
-      |      - async prefetch into sync DeltaLogCache
-      |      - StorageHandler / JsonHandler / ParquetHandler / EvaluationHandler
-      |      - Delta snapshot and scan descriptor conversion
-      |
-      +--> crates/wasm-delta-snapshot
-      |      - current compatibility scaffold
-      |      - descriptor conversion tests and native parity fixtures during migration
-      |
-      +--> crates/wasm-parquet-engine
-      |      - footer reads
-      |      - metadata decode
-      |      - row-group / page planning
-      |      - Arrow batch scan
-      |
-      +--> crates/wasm-http-object-store
-             - HTTP metadata probe
-             - range reads
-             - extent cache
-             - browser-local file adapters
-
-native side:
-  crates/delta-control-plane   -> trusted policy, native snapshot resolution, signed URL / proxy issuance later
-  crates/native-query-runtime  -> correctness oracle and mandatory fallback path
+CanonicalResourceRef
+  → existing DataAccessResolver
+  → one execution-local BrowserDeltaAccess
+  → persistent Axon worker/session
+  → capability and expiry validation
+  → root-scoped or per-file object access
+  → async bounded Delta Kernel SnapshotTask / ScanTask
+  → Kernel DataFusionPlanCompiler
+  → DataFusion logical and physical planning
+  → standard DataFusion Parquet over Axon ObjectStore
+  → existing pull-driven continuous Arrow IPC cursor
+  → atomic sql() or consumer-credited sqlProgressive()
 ```
 
-The key handoff is explicit:
+Product APIs MAY compose resolve, open, and query into one call. Internally, resolution remains a
+separate pre-admission operation: the engine MUST NOT call a catalog, choose another source, or
+mint credentials. When metadata is sufficient to reject a table capability before vending a
+credential or object grant, the resolver MUST reject first.
 
-- `wasm-delta-kernel-engine` uses Delta Kernel to produce active file and scan descriptors with path,
-  size, partition values, optional stats, protocol metadata, and any Kernel-required transforms
-- `AxonDeltaTableProvider` exposes those descriptors to DataFusion as a registered table
-- `AxonParquetScanExec` consumes DataFusion projection, filter, and limit pushdown inputs
-- `wasm-parquet-engine` and `wasm-http-object-store` produce Arrow `RecordBatch` streams from browser-safe range reads
-- DataFusion owns SQL planning, optimization, physical planning, physical execution, and result batches
+## Ownership
 
-## Proposed Crate Map
+### Delta Kernel owns Delta semantics
 
-| Crate                             | Responsibility                                                                                                 | Allowed Dependencies                                                                                                                                  | Must Not Do                                                                                                               |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `crates/wasm-http-object-store`   | Browser-safe remote and local byte-range I/O                                                                   | `reqwest`, `bytes`, browser bindings, cache helpers                                                                                                   | Parse Delta logs, decode Parquet schema, own SQL semantics                                                                |
-| `crates/wasm-parquet-engine`      | Footer reads, metadata decode, Parquet planning, Arrow batch scans                                             | `parquet`, Arrow-facing helpers, `wasm-http-object-store`                                                                                             | Parse `_delta_log`, own query routing, own browser SDK bindings                                                           |
-| `crates/wasm-delta-kernel-engine` | Delta Kernel wrapper, `AxonBrowserKernelEngine`, cached snapshot resolution, Kernel scan descriptor conversion | `delta_kernel` core with default engine disabled, `bytes`, `serde`, `serde_json`, `url`, `thiserror`, `wasm-parquet-engine`, `wasm-http-object-store` | Enable Delta Kernel default engine, perform browser fetch from synchronous Kernel callbacks, depend on native `deltalake` |
-| `crates/wasm-delta-snapshot`      | Existing browser snapshot scaffold and migration compatibility layer                                           | `wasm-http-object-store`, JSON decode, Parquet checkpoint readers, shared contracts                                                                   | Become the long-term protocol authority, own SQL planning, own UI bindings, depend on native `deltalake`                  |
-| `crates/wasm-datafusion-engine`   | DataFusion `SessionContext`, table registration, SQL execution, Arrow IPC streaming                            | DataFusion, Arrow, `wasm-delta-kernel-engine`, `wasm-parquet-engine`, `wasm-http-object-store`                                                        | Own raw Delta protocol parsing or browser HTTP range internals                                                            |
-| `crates/wasm-datafusion-session`  | Dedicated browser DataFusion table/session shell for UI/runtime builds                                         | `query-contract`, `wasm-datafusion-engine`, browser runtime descriptor/materialization helpers                                                        | Depend on the legacy narrow session or own raw Delta/Parquet internals                                                    |
-| `crates/wasm-query-runtime`       | Legacy narrow runtime, fallback, correctness scaffold during migration                                         | `query-contract`, `wasm-delta-kernel-engine`, `wasm-delta-snapshot`, `wasm-parquet-engine`                                                            | Be the destination SQL execution engine once DataFusion scan integration is viable                                        |
-| `crates/wasm-query-session`       | Legacy narrow in-memory table/session shell over opened browser tables                                         | `query-contract`, `wasm-query-runtime`                                                                                                                | Depend on DataFusion, add persistence, or own SQL/Delta/Parquet internals                                                 |
-| `crates/delta-control-plane`      | Trusted-side snapshot resolution, policy enforcement, future signed URL / proxy issuance                       | native `deltalake`, `query-contract`                                                                                                                  | Become the browser Delta engine                                                                                           |
-| `crates/browser-sdk`              | Worker command and IPC boundary, browser embedding API                                                         | `query-contract`, Arrow IPC surface                                                                                                                   | Own Delta, Parquet, or runtime/session internals                                                                          |
+Delta Kernel owns protocol validation, snapshot discovery and replay, scan construction,
+transforms, deletion-vector and file-constant semantics, partition interpretation, and Delta
+file-skipping semantics. Axon MUST NOT create a second private Delta protocol or reinterpret a
+Kernel scan plan.
 
-`wasm-delta-kernel-engine` is the working name because the long-term boundary is the Delta Kernel `Engine` implementation, not another Axon-owned protocol parser. `wasm-delta-snapshot` can keep existing while tests, descriptors, and existing runtime callers migrate.
+### DataFusion owns query and Parquet semantics
 
-## Design Rules
+DataFusion owns SQL parsing, logical and physical planning, optimization, Parquet decode,
+row-group and page pruning, operators, expression evaluation, memory accounting, and execution.
+The target provider MUST use standard DataFusion Parquet execution. `AxonParquetScanExec` and the
+`wasm-parquet-engine` compatibility scanner are not the permanent physical scan engine.
 
-### 1. Delta Snapshot And Parquet Scan Stay Separate
+### Axon owns browser policy and isolation
 
-The Delta layer resolves table state. The Parquet layer scans files. Don't merge them.
+Axon owns access authority, capability and identity validation, browser object I/O, strong
+ETag/range/`If-Range` policy, request coalescing and caches, metadata/data concurrency budgets,
+deadlines, cancellation, output and memory budgets, path-free bounded OPFS spill, worker
+isolation, Arrow IPC delivery, explicit fallback contracts, and observability.
 
-This is the main correction to a naive "just add Delta to parquet-viewer" plan. `parquet-viewer` proves the scan path. It doesn't solve `_delta_log` semantics.
+`CatalogProvider` remains discovery-only. `DataAccessResolver` remains the only resolver seam.
+There MUST NOT be a parallel `BrowserTableResolver`. Native execution remains the correctness
+oracle and mandatory supported route, but an accepted browser failure never transparently becomes
+native execution.
 
-### 1a. Delta Kernel Is The Protocol Authority
+## Access And Deep Module Seams
 
-Axon uses `delta-kernel-rs` core for Delta protocol semantics and implements its own browser Engine. Don't enable Delta Kernel's default engine in the browser package: that path is built around Arrow/Tokio/HTTP runtime choices Axon wants to keep outside the protocol core.
+The names below are conceptual target interfaces. Exact Rust, TypeScript, and protobuf spelling is
+settled when each vertical slice lands, without changing the responsibilities.
 
-High-level `deltalake` is still valuable as a native reference implementation, correctness oracle, and source of DataFusion integration ideas. It shouldn't become the browser runtime dependency unless a feature audit proves the native object-store, async, TLS, catalog, and cloud surfaces can be excluded.
+`BrowserDeltaAccess` is the execution-local internal binding that joins one validated
+`ResolvedBrowserRead` Delta arm to one `AxonTableAccess`, plus its deadline, cancellation, and
+correlation state. The worker creates it after admission validation and disposes it after rejection
+or terminal execution. Sessions may retain non-secret table identity and eligible cached bytes,
+but never reuse this capability-bearing binding for another execution.
 
-### 2. The Delta Layer Hands Known File Size Into The Scan Layer
+### `BrowserDeltaAccessDescriptor`
 
-Delta `add` actions already carry the data file path and size. The browser Delta layer should pass those values straight into the Parquet layer so metadata bootstrap can skip extra discovery requests.
+`ResolvedBrowserRead` already contains an openable descriptor union. The target extends that
+existing union with a Delta-specific `BrowserDeltaAccessDescriptor`; it does not replace
+`ResolvedBrowserRead` or add a provider seam.
 
-That handoff is the default path for remote reads.
+```text
+BrowserDeltaAccessDescriptor
+  RootScopedDelta
+    table root
+    requested latest/exact or pinned snapshot selection
+    access capabilities
+    opaque grant or store-factory reference
+    earliest expiry and non-secret provenance
 
-### 3. Worker-First Execution
+  PerFileSnapshot
+    existing BrowserHttpSnapshotDescriptor
+```
 
-The browser engine runs in a worker and keeps the main thread out of the hot path. The worker boundary moves Arrow IPC, not row-oriented JSON, so large scans don't pay serialization cost they don't need to.
+`RootScopedDelta` supports browser-safe list/head/range access to a table root. Its grant or
+factory reference carries an execution-local capability handle. It contains neither a cloud
+credential nor an `ObjectStore` instance. `PerFileSnapshot` preserves the existing active-file
+descriptor for signed-file, manifest, Delta Sharing URL-mode, and compatibility paths.
 
-### 4. Single-Threaded WASM Is The Baseline
+Plain Parquet remains its existing openable descriptor arm. The Delta union is an extension, not a
+reason to make every source look like Delta or to encode internal objects on the wire.
 
-The default architecture assumes `wasm32-unknown-unknown` with single-threaded worker execution. Shared-memory and threaded execution can come later for cross-origin-isolated deployments, but they don't sit on the critical path.
+### `AxonTableAccess`
 
-### 4a. Adaptive Bundle Selection Is Capability-Gated
+`AxonTableAccess` is the internal deep module that consumes a validated Delta access descriptor
+and produces exactly one of:
 
-Browser hosts pick worker and WASM assets through a manifest plus platform feature probe, not user-agent strings. The browser-facing SDK exposes `getPlatformFeatures()` for `crossOriginIsolated`, WASM SIMD, WASM threads, and `BigInt64Array`, plus `selectBundle()` to choose the highest available manifest entry whose declared requirements match those features.
+- a root-scoped `Arc<dyn ObjectStore>` plus normalized table prefix; or
+- the per-file compatibility representation used by the current provider and, later, by a
+  manifest-backed standard DataFusion Parquet source.
 
-The shipped baseline is single-threaded and has to work without cross-origin isolation, SIMD, or shared memory. SIMD, threaded, and SIMD-threaded entries are deployment tiers. They stay marked `future` until the matching artifacts are built, hosted, size-gated, and covered by browser smoke tests. Threaded variants need COOP/COEP deployment headers that make `crossOriginIsolated` true and expose `SharedArrayBuffer`; deployments without those headers fall back to the baseline or another single-threaded bundle.
+Object-store instances, callbacks, JavaScript objects, tokens, and secrets MUST NOT cross
+protobuf or JSON boundaries. Only opaque, bounded, validated references cross the boundary; the
+worker constructs the store inside its execution authority and disposes it no later than the
+binding lifetime.
 
-Bundle selection doesn't change the security boundary. Worker URLs and WASM URLs are static application assets, and table data still arrives through browser-safe descriptors minted by the trusted control plane. Browser code can't mint cloud credentials or embed cloud secrets.
+### Path-segment-aware prefix router
 
-### 5. I/O-Free Core, Async Browser Adapters At The Edge
+One worker/session MAY open multiple authorized tables. A router selects stores by normalized
+authority and the longest matching path-segment prefix, not raw string prefix. It MUST reject
+ambiguous duplicate roots, traversal, encoded-separator confusion, authority mismatch, and a path
+that matches no registered root. A store registered for `bucket/a/table` MUST NOT authorize
+`bucket/a/table-two` or another table in the same bucket. Credentials and cache namespaces remain
+isolated per routed root.
 
-Protocol logic and scan planning stay trait-based and testable without browser globals. Browser-specific fetch, `Blob`, and cache implementations sit at the adapter boundary.
+### `KernelTaskDriver`
 
-Delta Kernel handler calls are synchronous from the Kernel's point of view, while browser fetch is promise-based. So the browser engine prefetches `_delta_log`, checkpoint, and sidecar bytes asynchronously into a `DeltaLogCache`, then calls Delta Kernel over cached bytes. If a complete prefetch isn't possible, use an explicit cache-miss retry loop that fetches the missing files outside the Kernel call and retries snapshot resolution. Don't call browser `fetch()` from inside a synchronous Kernel handler.
+`KernelTaskDriver` asynchronously drives the proposed Kernel `OperationTask` protocol. It owns
+browser awaits, request correlation, cancellation, deadlines, driver cursor progress, and the
+per-page and cumulative budgets accepted by the task.
 
-### 6. Extent Cache, Not Exact-Range Cache
+It MUST:
 
-The browser I/O layer should move from exact requested ranges toward coalesced extents with stable keys like `(url_or_path, identity, start, end)`, plus eviction, readahead, and validation. That's the right long-term substrate for both Delta logs and Parquet reads.
+- accept at most one outstanding `OperationRequest` and return the matching owned result;
+- validate monotonically issued request IDs and the exact result variant before resumption;
+- bound pages, entries, input slices, output chunks, descriptor bytes, payload bytes, plan nodes,
+  batches, rows, parsed footer structure, continuation length, retained log state, and total work;
+- preserve the task's typed protocol, cancellation, malformed-response, and
+  `ResourceExhausted` failures;
+- abort or drop driver-owned I/O on cancellation and reject late results without reviving a task;
+- await browser Fetch and storage promises without blocking the worker.
 
-The first OPFS-backed adapter stores validated extents behind a hashed per-object index with a bounded per-identity entry cap. It's enough to prove durable browser-local reuse and failure isolation. Readahead, quota tuning, and query/session-level cache policy are later hardening work.
+There is no `block_on`, `Atomics.wait`, thread parking, hidden Fetch inside synchronous Kernel
+callbacks, unbounded iterator result, mandatory full-log prefetch, or browser-only replacement
+protocol.
 
-The remote HTTP path assumes single-range `Range` requests, `206 Partial Content` responses for partial fetches, and explicit exposure of the response headers needed for object identity and range validation when browser code has to inspect them.
+The upstream seam is still a proposal at local head
+`4223fa43039d418238f6c4a1304d23e9f3764aa6`. K1-K5 MUST NOT start until maintainers explicitly
+accept or revise it. If the seam is rejected or materially revised, stop K1-K5 and revise this
+design; do not create an Axon-private substitute by default.
 
-### 7. Browser DataFusion Is The Query Engine Target
+### `AxonKernelTableProvider`
 
-The browser SKU is a DataFusion-powered Delta/Parquet query engine. SQL breadth is still gated by browser size, memory, and latency budgets, but DataFusion physical execution is the destination architecture, not an optional planner feeding a custom Axon IR.
+`AxonKernelTableProvider` is the one-table root-scoped bridge into the caller's DataFusion
+session. It:
 
-The browser DataFusion size audit stays canonical for DataFusion details: measured WASM artifact sizes, retained dependency surface, feature-splitting candidates, startup/runtime budgets, and the 30-day decision. The boundary is explicit. Axon owns table access, Delta snapshot facts, browser HTTP range reads, Parquet scan integration, query budgets, fallback, and Arrow IPC delivery. DataFusion owns SQL planning, logical optimization, physical planning, expression evaluation, physical execution, and Arrow `RecordBatch` output.
+1. validates the registered access and `BrowserDataFusionProfile`;
+2. lowers supported DataFusion filters conservatively into Kernel expressions;
+3. awaits `ScanTask` through the worker-safe async bridge;
+4. compiles the accepted Kernel plan with `DataFusionPlanCompiler`; and
+5. asks the caller's DataFusion session to create the physical plan.
 
-The first production-oriented DataFusion integration is a custom `AxonDeltaTableProvider` plus custom `AxonParquetScanExec` over Axon's existing browser-safe Parquet/range stack. A DataFusion-native Parquet reader with a browser `object_store` adapter is a later evaluation path, not the first production dependency.
+The provider does not own a second DataFusion session, object access, a native executor, or a
+fallback decision. Unsupported predicate lowering is an optimization miss, not a fallback or a
+correctness error.
 
-### 8. Bounded Streaming Over Unbounded Materialization
+### `BrowserScanPredicates`
 
-Execution streams results and enforces query budgets. Operators with large memory footprints need explicit guardrails and native fallback rules, not implicit "collect everything in the browser" behavior.
+`BrowserScanPredicates` carries two related but distinct forms:
 
-## Phased Build Path
+- the conservatively lowered Kernel predicate used for Delta file skipping; and
+- the complete DataFusion predicate retained for Parquet pruning and residual evaluation.
 
-### Phase 1: Industrialize Browser I/O And Parquet Scan
+Initial pushdown MUST report `Inexact`. DataFusion retains the full residual filter even when
+Kernel accepted a lowering. Kernel may omit files only under its semantics; DataFusion remains
+responsible for row-level correctness. Null, partition, cast, collation, timestamp, decimal, or
+other unsupported lowering returns "not lowered" and continues through DataFusion.
 
-Deliverables:
+### `BrowserDataFusionProfile`
 
-- extend `crates/wasm-http-object-store` with metadata probes, coalescing hooks, and extent-cache primitives
-- add a narrow OPFS persistent extent adapter whose failures are treated as cache misses
-- extract a new `crates/wasm-parquet-engine` from the current Parquet bootstrap logic in `crates/wasm-query-runtime`
-- keep local browser file access as a first-class adapter path alongside remote HTTP reads
+One authoritative `BrowserDataFusionProfile` centrally owns:
 
-Exit criteria:
+- supported view/table-type policy;
+- target partitions and repartition rules;
+- required optimizer settings and extensions;
+- bounded memory pool and structured `resource_exhausted` policy;
+- path-free spill selection, storage cap, cleanup, and terminal metrics;
+- metadata HTTP concurrency and data HTTP concurrency as separate budgets; and
+- bundle capabilities needed by the selected worker SKU.
 
-- Parquet metadata and scan paths no longer live directly in `wasm-query-runtime`
-- remote and local file reads share one browser-safe scan abstraction
-- known-size metadata bootstrap is covered by tests
+Provider registration MUST validate this profile and reject incompatible state. It MUST NOT
+silently repair session settings. I/O concurrency MUST NOT be derived from CPU target partitions;
+metadata and data requests have different latency, fanout, and authority costs.
 
-### Phase 2: Add Delta Kernel Browser Snapshot Reconstruction
+## Worker, Result, And Fallback Contracts
 
-Deliverables:
+### Persistent execution
 
-- new `crates/wasm-delta-kernel-engine`
-- `delta_kernel` core dependency with default engine disabled
-- cargo-tree gates proving `tokio`, `reqwest`, native TLS, cloud SDKs, and native `deltalake` are
-  absent from the Delta Kernel browser crate
-- async browser prefetch into a `DeltaLogCache`
-- cached `StorageHandler` over trusted descriptors, known versions, or manifest-backed listings
-- `JsonHandler`, `ParquetHandler`, and `EvaluationHandler` implementations sized for read-only
-  snapshot and scan metadata resolution
-- conversion from Kernel snapshot and scan metadata into Axon table descriptors
-- compatibility tests against the existing `wasm-delta-snapshot` fixtures and native `deltalake`
-  oracle
+The default remains one persistent Axon worker/session with explicit table registration and cache
+reuse. A worker-per-query model is not the default. Worker isolation, deadlines, cancellation,
+memory/output budgets, and typed terminal metrics continue across both providers.
 
-Exit criteria:
+### Atomic delivery remains atomic
 
-- Delta Kernel core compiles for `wasm32-unknown-unknown` without its default engine
-- browser snapshot reconstruction matches native control-plane descriptors on local fixtures
-- snapshot tests cover checkpoint and replay edge cases
-- `wasm-query-runtime` can receive file descriptors from either trusted native control-plane output or browser-local snapshot reconstruction
+Existing `sql()` and its `single_buffer` / `chunked_buffers` delivery modes remain atomic. The
+private pull-driven cursor may transfer multiple exact-sized buffers, but the SDK does not expose
+them until the terminal success is known. `chunked_buffers` is a transport and reassembly choice,
+not user-visible progressive streaming.
 
-### Phase 3: Rewire The Runtime Around The New Crates
+Atomic execution MUST stage within its output and coordinator budgets. Failure or cancellation
+before terminal success discards the staged public result. This is atomic rollback, not an
+implicit retry.
 
-Deliverables:
+### `sqlProgressive()` is a separate API
 
-- `wasm-query-runtime` becomes an orchestrator over snapshot + scan crates
-- pruning uses Delta add-file facts before opening Parquet whenever possible
-- browser SDK and worker host use Arrow IPC for result transport
-- `wasm-datafusion-session` provides the DataFusion-backed in-memory table/session shell for repeated UI/runtime queries
-- `wasm-query-session` remains a removable legacy narrow shell
-- `wasm-datafusion-engine` can register Delta-derived tables in a DataFusion `SessionContext`
-- DataFusion SQL executes over `AxonParquetScanExec` and returns Arrow IPC from the worker
+Progressive delivery is a new `sqlProgressive()` async iterator or `ReadableStream` contract. It
+MUST carry consumer credit across every boundary:
 
-Exit criteria:
+```text
+SDK consumer
+  → public worker
+  → coordinator
+  → child worker
+  → Rust Arrow IPC cursor
+```
 
-- runtime logic consumes the new crates rather than owning their internals
-- browser/native parity still holds for the supported corpus
-- fallback stays observable and carries its reason
+No layer may pull, encode, transfer, or retain bytes beyond its granted window. The first public
+chunk is irrevocable: after it is emitted, a late failure produces a typed terminal stream error
+and MUST NOT be represented as an atomic rollback, a successful partial result, or an automatic
+native retry. Slow-consumer, cancellation, deadline, and expiry behavior must remain bounded and
+observable.
 
-### Phase 4: Hardening And Launch Readiness
+### Explicit native retry only
 
-Deliverables:
+Before browser admission, resolution or capability policy may return `remote_required` and admit a
+native/server execution instead. After browser acceptance, that execution has exactly one
+terminal result. Any later native attempt is an explicit new admission with a new execution ID,
+separately identified execution target, and correlation to the failed browser attempt. The engine
+MUST NOT switch targets invisibly.
 
-- wasm-target CI for all browser crates
-- browser tests for the new crates
-- size budgets and benchmark reporting
-- `SECURITY.md`, compatibility matrix, and browser support matrix
-- metrics and dashboards for bytes fetched, files touched, skipped files, cache behavior, and fallback reason
+This rule satisfies the mandatory native fallback ADR by keeping native execution available and
+deterministic without converting an accepted failure into two executions under one identity.
 
-Exit criteria:
+## Compatibility And Supersession Ledger
 
-- browser build size is budgeted and tracked
-- perf claims are backed by repeatable benchmarks
-- unsafe code is audited and minimized
-- launch checklist reflects the new crate topology
+### Retained architectural assets
 
-## Success Criteria
+The target retains:
 
-This strategy is done when Axon can do all of the following without changing its security boundary:
+- persistent worker/session lifetime and cache reuse;
+- the pull-driven continuous Arrow IPC cursor and exact-sized transferable buffers;
+- cancellation, deadlines, memory/output budgets, typed errors, and terminal metrics;
+- strong ETag, exact-range, `Content-Range`, and `If-Range` validation;
+- bounded path-free OPFS spill with cleanup before terminal metrics;
+- discovery-only `CatalogProvider`, the sole `DataAccessResolver` seam, and provider-neutral
+  access envelopes; and
+- the native runtime as correctness oracle and explicit supported route.
 
-- reconstruct supported Delta snapshots through Delta Kernel-backed browser-safe code when the
-  deployment model needs it
-- scan Delta and plain Parquet datasets through the same browser Parquet engine
-- keep `delta-control-plane` as the trusted native boundary for policy and future access issuance
-- preserve native parity and deterministic fallback over the supported browser envelope
-- keep the architecture modular enough that scan or snapshot crates can be published independently later if they mature into stable standalone assets
+### Superseded mechanics
 
-## Non-Goals
+This strategy supersedes:
 
-- browser write-path support
-- IndexedDB persistent-cache backends
-- session-level persistent table caches
-- direct browser cloud credentials
-- forcing the native `deltalake` crate into the browser
-- enabling Delta Kernel's default engine in the browser runtime without a measured dependency audit
-- making multithreaded WASM a launch prerequisite
-- splitting Axon into a separate repository before the new crate boundaries are proven
+| Historical mechanic                                                           | Canonical replacement                                                                                         |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Async prefetch followed by synchronous cached Kernel callbacks                | Bounded `SnapshotTask` / `ScanTask` driven asynchronously through `KernelTaskDriver`                          |
+| `BrowserHttpSnapshotDescriptor.active_files` as the universal execution input | `BrowserDeltaAccessDescriptor` with root-scoped and per-file variants inside the existing resolved-read union |
+| `AxonParquetScanExec` and `wasm-parquet-engine` as the permanent scan engine  | Standard DataFusion Parquet over an Axon `ObjectStore`; compatibility scan remains during migration           |
+| Renaming the historical POC into the production engine                        | A fresh independently locked `engines/kernel-datafusion/` shipping workspace and optional bundle              |
+| Treating `chunked_buffers` as progressive delivery                            | Atomic reassembly remains; `sqlProgressive()` is a separate credited API                                      |
 
-## Open Questions To Resolve During Execution
+Historical documents may still describe those mechanics accurately for their implementation
+date. They MUST carry a supersession notice when readers could mistake them for the target.
 
-- Whether the first remote-store iteration should stay HTTP-first or immediately adopt an OpenDAL bridge behind a feature flag
-- How to package, cache, and budget the DataFusion browser engine while excluding unneeded
-  datasource/function/codecs
-- Whether browser-local Delta directories should target OPFS first, drag-and-drop file trees first, or both
-- Whether `wasm-delta-kernel-engine` should start with trusted descriptors only, known-version open
-  only, or manifest-backed listing for hosted deployments that don't allow arbitrary browser prefix
-  listing
-- Which Delta Kernel Arrow feature, if any, should be enabled so its Arrow version stays aligned with
-  DataFusion's Arrow version
+### Compatibility crate roles
+
+`wasm-parquet-engine` converges on browser I/O policy, object identity, validated extents,
+coalescing, cache behavior, request/byte metrics, and a temporary compatibility scanner. The
+per-file path remains supported: it first uses the current descriptor provider, then migrates to
+a manifest-backed standard DataFusion Parquet source without forcing root access.
+
+`wasm-delta-snapshot` is frozen as a compatibility oracle. It receives correctness and security
+maintenance needed by the active compatibility provider, but no new long-term protocol
+ownership. Remove it only after Kernel snapshot/scan parity, shipping adoption, and rollback
+requirements are satisfied.
+
+### Mangrove comparison boundary
+
+The exact [Mangrove source at
+`601be3cddbe68a676c7740d75cbce26190ad4279`](https://github.com/open-lakehouse/mangrove/commit/601be3cddbe68a676c7740d75cbce26190ad4279)
+is comparison evidence for async browser object-store execution, standard
+DataFusion integration, and path-segment-aware routing of multiple table stores
+under one authority. Axon adopts those bounded lessons, not Mangrove's whole
+runtime. Its worker-per-run lifecycle, unconstrained batch callback, independent
+self-contained IPC stream per batch, transparent fallback classification, and
+manifest-specific snapshot assumptions do not override Axon's persistent
+session, continuous credited cursor, explicit admission, or dual root/per-file
+access contract.
+
+### Non-goals
+
+- worker-per-query as the default;
+- unconstrained push callbacks or independent Arrow IPC streams per batch by default;
+- string-classified errors;
+- synchronous Kernel driving, hidden browser Fetch, or unbounded prefetch;
+- I/O concurrency derived from CPU partitions;
+- automatic post-admission native fallback;
+- browser writes or Delta commit/checkpoint creation;
+- raw or long-lived browser cloud secrets;
+- an Axon-private clone of a rejected Kernel operation protocol;
+- treating local GO evidence as a published release or production promotion.
+
+OPFS / IndexedDB may be used only under the explicit cache and spill authority policies. This
+design does not make capability-bearing descriptors or grants persistable.
+
+## Shipping Topology
+
+The historical `poc/upstream-wasm-fork-stack` workspace and its evidence remain unchanged. It is
+immutable compatibility evidence, not the directory to rename or evolve into production.
+
+Create `engines/kernel-datafusion/` afresh as the shipping engine workspace. It has:
+
+- an independent `Cargo.lock` and reproducible dependency report;
+- a separate optional WASM bundle selected by the existing capability/asset policy;
+- permission to reuse Axon source crates through deliberate workspace interfaces; and
+- exact external dependency revisions that are remotely reachable, with no tracked local path
+  overlays.
+
+The supplied local fork heads cannot enter that lock until their commits are published at stable,
+reviewable remote refs. Keep the current compatibility bundle, provider, and worker protocol
+active until promotion; do not make the isolated shell itself evidence of adoption.
+
+## Productization And Migration Roadmap
+
+### 1. Publication and review gates
+
+Publish in dependency order: `object_store`, Arrow/Parquet, then DataFusion. Publish and tag the
+Axon verifier evidence. Circulate Kernel contract head
+`4223fa43039d418238f6c4a1304d23e9f3764aa6` on
+[issue #252](https://github.com/delta-io/delta-kernel-rs/issues/252). Publication requires its own
+authorization and upstream review; this document grants neither.
+
+### 2. Independent Axon preparation
+
+Axon may proceed before Kernel acceptance with:
+
+- the standard brokered `ObjectStore` adapter;
+- the isolated `engines/kernel-datafusion/` shell and optional bundle;
+- authoritative `BrowserDataFusionProfile` validation;
+- the path-segment-aware prefix router; and
+- a host parity harness that can run compatibility-provider, target-provider, and native-oracle
+  lanes over the same fixture/query identity.
+
+These changes MUST NOT invent the Kernel protocol or claim target-provider parity.
+
+### 3. Kernel and delta-rs
+
+After explicit Kernel maintainer acceptance, implement these slices in order:
+
+1. **K1, exact browser target policy:** select the target-safe randomness and
+   feature closure without weakening native defaults.
+2. **K2, bounded operation protocol and native adapter:** land the paged
+   `Operation` / `PlanResult` forms, accounting contracts, misuse semantics,
+   cancellation input, and synchronous reference driver without changing
+   snapshot behavior.
+3. **K3, `SnapshotTask`:** port snapshot discovery/replay one I/O edge at a
+   time and prove checkpoint, tail, CRC, catalog, and time-travel parity under
+   finite limits.
+4. **K4, `ScanTask`:** resume checkpoint-shape probes and return the accepted
+   scan-owned plan without a browser-only operator.
+5. **K5, `DataFusionPlanCompiler`:** split target-neutral logical lowering
+   from execution so native and browser runners reuse the same compiler.
+
+K4 also waits for the accepted successors of the still-open declarative-plan
+work:
+
+- [#3015: scan metadata output options](https://github.com/delta-io/delta-kernel-rs/pull/3015)
+- [#3024: `Load` to `DynamicScan`](https://github.com/delta-io/delta-kernel-rs/pull/3024)
+- [#3039: scan-owned plan construction](https://github.com/delta-io/delta-kernel-rs/pull/3039)
+
+Issue [#252](https://github.com/delta-io/delta-kernel-rs/issues/252) and all three
+PRs were open when this revision was authored.
+
+Only after K1-K5 are complete may delta-rs add the production browser/WASM facade. If maintainers
+reject or materially revise the operation-task seam, stop and revise this strategy before doing
+Kernel or delta-rs implementation.
+
+### 4. Parallel Axon provider
+
+Add one-table root-scoped Kernel execution over standard DataFusion Parquet. Keep the descriptor
+provider active as compatibility. Every supported query and fixture runs differential snapshot,
+plan, result, error, and metric checks across the compatibility provider, Kernel provider, and
+native oracle where applicable.
+
+### 5. Access and delivery convergence
+
+Extend `ResolvedBrowserRead` with the root-scoped/per-file Delta access union, then enable multiple
+routed roots. Move per-file grants to the manifest-backed standard Parquet source. Add
+`sqlProgressive()` only after the full credit path and irreversible-first-chunk semantics pass
+their own browser tests.
+
+### 6. Promotion and retirement
+
+Make the Kernel-native provider the default only for qualified root-scoped access after parity,
+memory, request-byte, cancellation, spill-cleanup, artifact-size, and browser gates pass. Per-file
+access remains a supported route. After a rollback window and release-evidence review, freeze and
+eventually remove the bespoke replay and physical-scan layers.
+
+Promotion is per access class and browser. A Chrome pass cannot promote Firefox, and a root-scoped
+pass cannot promote per-file access. Local, public-object, canary, and production-default evidence
+remain separate.
+
+## Implementation Acceptance Matrix
+
+| Area                          | Required evidence before promotion                                                                                                                                                                                                                                                                                      |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kernel task protocol          | Start/resume state machine; monotonically matched IDs; wrong IDs and result variants; empty/final pages; pagination at sizes 1, 2, and configured maximum; malformed, reordered, overlapping, or oversized responses; every per-page and cumulative counter; typed resource exhaustion; exact one-shot error ownership. |
+| Cancellation and deadlines    | Before first I/O, between pages, during pending Fetch, after completion, and late-result rejection; driver-owned I/O is released and no request occurs after terminal state.                                                                                                                                            |
+| Snapshot and scan parity      | Commit-only, V1 single/multipart checkpoints, inline V2 and manifest/sidecars, checkpoint plus tail, exact/latest/time travel, catalog tails, CRC policy, no-match scans, and unsupported protocol features across compatibility provider, Kernel provider, and native oracle.                                          |
+| Predicate correctness         | Projection; null and partition semantics; supported/unsupported lowering; Kernel file skipping; Parquet row-group and page pruning; casts and transforms; full residual retention; no false exclusion.                                                                                                                  |
+| Access and identity           | Root-scoped and per-file access; local/public/signed/proxy classes; earliest expiry; capability mismatch; ETag drift; exact ranges; `If-Range`; normalized longest-prefix routing; same-bucket multi-table isolation; no credential or cache leakage.                                                                   |
+| DataFusion profile and memory | View-type policy; partition/repartition configuration; optimizer requirements; independent metadata/data concurrency; bounded memory pool; path-free OPFS spill; storage exhaustion; cancellation; cleanup; zero active spill files/scopes at terminal metrics; structured `resource_exhausted`.                        |
+| Atomic results                | `single_buffer` and `chunked_buffers`; coordinator and output budgets; exact-sized transfers; rollback on cancellation, expiry, output exhaustion, and late execution failure; no public bytes before terminal success.                                                                                                 |
+| Progressive results           | End-to-end consumer credit; slow and stopped consumers; bounded buffering at every hop; cancel/deadline/expiry; first public chunk irrevocability; typed late failure; no automatic native replay.                                                                                                                      |
+| Dependency and artifact       | Independent lock; every exact revision remotely reachable; no tracked local path overlays; denied dependency graph; reproducible source report; raw, gzip, and Brotli bundle size.                                                                                                                                      |
+| Browser and efficiency        | Real worker I/O in Chrome and Firefox; exact request count, requested bytes, response bytes, overfetch, cache provenance, peak operator/process memory as separately named measures, startup and steady-state latency, cancellation request cutoff, and spill cleanup.                                                  |
+
+Every matrix result records provider, access class, browser/version, Axon commit, engine bundle hash,
+dependency lock hash, fixture provenance, query corpus hash, budget profile, and whether the proof is
+local, remotely reproducible, canary, or production-default evidence.
+
+## Decision Stop Conditions
+
+Stop promotion or implementation at the applicable boundary when:
+
+- Kernel maintainers have not accepted the operation-task seam;
+- K4's declarative-plan dependencies have not landed in accepted form;
+- an exact external revision is not remotely reachable;
+- the shipping workspace requires a tracked local path overlay;
+- result, error, request-byte, or snapshot parity diverges without a classified cause;
+- a budget can truncate correctness rather than return a typed terminal error;
+- spill cleanup, cancellation, identity validation, or route isolation is unproven;
+- progressive credit can be bypassed at any hop; or
+- release evidence cannot distinguish local GO, remote reproducibility, maintainer acceptance,
+  shipping adoption, and production default.
 
 ## Primary References
 
-- Delta Kernel Rust API docs: <https://docs.rs/delta_kernel/latest/delta_kernel/>
-- Delta Kernel Rust README: <https://github.com/delta-io/delta-kernel-rs>
-- Delta Kernel scan APIs: <https://docs.rs/delta_kernel/latest/delta_kernel/scan/index.html>
-- delta-rs Rust crate docs: <https://docs.rs/deltalake/latest/deltalake/>
+- [Delta Kernel issue #252](https://github.com/delta-io/delta-kernel-rs/issues/252)
+- [Delta Kernel PR #3015](https://github.com/delta-io/delta-kernel-rs/pull/3015)
+- [Delta Kernel PR #3024](https://github.com/delta-io/delta-kernel-rs/pull/3024)
+- [Delta Kernel PR #3039](https://github.com/delta-io/delta-kernel-rs/pull/3039)
+- [Mangrove comparison source at `601be3cddbe68a676c7740d75cbce26190ad4279`](https://github.com/open-lakehouse/mangrove/commit/601be3cddbe68a676c7740d75cbce26190ad4279)
+- [May 2026 Kernel/DataFusion execution plan](../plans/2026-05-07-browser-delta-kernel-datafusion-engine-execution-plan.md)
+- [Upstream WASM support implementation plan](../plans/2026-07-23-upstream-wasm-support-implementation-plan.md)
+- [Upstream WASM fork POC evidence](../release-gates/upstream-wasm-fork-poc-evidence.md)

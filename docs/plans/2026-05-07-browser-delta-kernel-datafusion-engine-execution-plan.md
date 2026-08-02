@@ -1,5 +1,15 @@
 # Browser Delta Kernel DataFusion Engine Implementation Plan
 
+> **Superseded target mechanics (2026-08-02):** This plan remains authoritative history for its
+> product goals, security boundaries, native parity requirement, typed budgets, cancellation, and
+> proof standards. The canonical
+> [Browser Lakehouse Engine Strategy](../program/browser-lakehouse-engine-strategy.md) replaces
+> this plan's async-prefetch/synchronous-Kernel-callback design, universal active-file descriptor,
+> permanent `AxonParquetScanExec` / `wasm-parquet-engine` physical scan, in-place POC promotion,
+> and any interpretation of `chunked_buffers` as progressive delivery. Do not execute the
+> superseded tasks as a current implementation plan; follow the canonical migration roadmap and
+> its Kernel maintainer gates.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Use superpowers:test-driven-development for each code task. Use superpowers:verification-before-completion before any completion claim.
 
 **Goal:** Add the Delta Kernel protocol layer on top of the completed browser DataFusion table/scan/session work, so Delta Kernel owns Delta semantics while the existing Axon DataFusion engine owns SQL execution.
@@ -92,6 +102,7 @@ Expected: clean worktree before the first code change. If the worktree is not cl
 ### Task 1: Create The Browser Delta Kernel Crate Shell
 
 **Files:**
+
 - Modify: `Cargo.toml`
 - Create: `crates/wasm-delta-kernel-engine/Cargo.toml`
 - Create: `crates/wasm-delta-kernel-engine/src/lib.rs`
@@ -192,6 +203,7 @@ git commit -m "feat: add browser delta kernel engine crate"
 ### Task 2: Add Delta Log Cache And Trusted Manifest Model
 
 **Files:**
+
 - Modify: `crates/wasm-delta-kernel-engine/src/lib.rs`
 - Create: `crates/wasm-delta-kernel-engine/tests/log_cache.rs`
 
@@ -287,6 +299,7 @@ git commit -m "feat: add delta log cache for browser kernel engine"
 ### Task 3: Implement Async Prefetch Outside Kernel Callbacks
 
 **Files:**
+
 - Modify: `crates/wasm-delta-kernel-engine/src/lib.rs`
 - Create: `crates/wasm-delta-kernel-engine/tests/prefetch_manifest.rs`
 
@@ -377,6 +390,7 @@ git commit -m "feat: prefetch delta log manifests into cache"
 ### Task 4: Add Cached Storage Handler
 
 **Files:**
+
 - Modify: `crates/wasm-delta-kernel-engine/src/lib.rs`
 - Create: `crates/wasm-delta-kernel-engine/tests/storage_handler.rs`
 
@@ -458,6 +472,7 @@ git commit -m "feat: add cached delta kernel storage handler"
 ### Task 5: Add JSON And Evaluation Handler Minimums
 
 **Files:**
+
 - Modify: `crates/wasm-delta-kernel-engine/src/lib.rs`
 - Create: `crates/wasm-delta-kernel-engine/tests/kernel_json_eval.rs`
 
@@ -527,6 +542,7 @@ git commit -m "feat: add browser delta kernel json and evaluation handlers"
 ### Task 6: Add Parquet Handler For Checkpoint Reads
 
 **Files:**
+
 - Modify: `crates/wasm-delta-kernel-engine/src/lib.rs`
 - Modify: `crates/wasm-parquet-engine/src/lib.rs`
 - Create: `crates/wasm-delta-kernel-engine/tests/kernel_checkpoint_parquet.rs`
@@ -601,6 +617,7 @@ git commit -m "feat: add read-only delta kernel parquet handler"
 ### Task 7: Resolve Snapshot And Convert To Axon Descriptor
 
 **Files:**
+
 - Modify: `crates/wasm-delta-kernel-engine/src/lib.rs`
 - Modify: `crates/query-contract/src/lib.rs`
 - Create: `crates/wasm-delta-kernel-engine/tests/snapshot_descriptor.rs`
@@ -691,6 +708,7 @@ git commit -m "feat: resolve kernel snapshots into browser descriptors"
 ### Task 8: Add Native Oracle Differential Tests
 
 **Files:**
+
 - Create: `crates/wasm-delta-kernel-engine/tests/native_oracle.rs`
 - Modify: `crates/delta-control-plane/tests/support/mod.rs`
 
@@ -754,6 +772,7 @@ git commit -m "test: compare browser kernel snapshots with native oracle"
 ### Task 9: Validate Existing DataFusion Engine Facade
 
 **Files:**
+
 - Reference: `crates/wasm-datafusion-poc/src/lib.rs`
 - Reference: `crates/wasm-datafusion-poc/tests/memtable_query.rs`
 - Reference: `crates/wasm-datafusion-poc/tests/arrow_ipc_export.rs`
@@ -824,6 +843,7 @@ git commit -m "test: validate datafusion facade for kernel descriptors"
 ### Task 10: Add Kernel Descriptor Adapter To Existing DataFusion Tables
 
 **Files:**
+
 - Modify: `crates/wasm-datafusion-poc/src/lib.rs`
 - Modify: `crates/wasm-datafusion-poc/Cargo.toml`
 - Modify: `crates/wasm-datafusion-poc/tests/delta_table_provider.rs`
@@ -883,6 +903,7 @@ git commit -m "feat: adapt kernel descriptors to datafusion tables"
 ### Task 11: Validate Existing Axon Parquet Scan ExecutionPlan
 
 **Files:**
+
 - Reference: `crates/wasm-datafusion-poc/src/lib.rs`
 - Reference: `crates/wasm-datafusion-poc/tests/custom_scan_exec.rs`
 - Modify only if needed: `crates/wasm-datafusion-poc/src/lib.rs`
@@ -941,6 +962,7 @@ git commit -m "test: validate custom datafusion scan for kernel descriptors"
 ### Task 12: Validate Browser Parquet Streaming With Kernel Descriptors
 
 **Files:**
+
 - Reference: `crates/wasm-datafusion-poc/Cargo.toml`
 - Modify: `crates/wasm-datafusion-poc/src/lib.rs`
 - Modify: `crates/wasm-datafusion-poc/tests/parquet_scan_exec.rs`
@@ -1002,6 +1024,7 @@ git commit -m "test: validate parquet streaming for kernel descriptors"
 ### Task 13: Validate Pushdown And Residual Correctness With Kernel Descriptors
 
 **Files:**
+
 - Modify: `crates/wasm-datafusion-poc/src/lib.rs`
 - Modify: `crates/wasm-parquet-engine/src/lib.rs`
 - Create: `crates/wasm-datafusion-poc/tests/scan_pushdown.rs`
@@ -1070,6 +1093,7 @@ git commit -m "test: validate pushdown correctness for kernel descriptors"
 ### Task 14: Add Kernel-Aware Session And Worker Open Path
 
 **Files:**
+
 - Modify: `crates/wasm-query-session/src/lib.rs`
 - Modify: `crates/browser-engine-worker/src/lib.rs`
 - Modify: `crates/browser-sdk/src/lib.rs`
@@ -1149,6 +1173,7 @@ git commit -m "feat: add kernel descriptor browser open path"
 ### Task 15: Validate Budgets, Cancellation, Metrics, And Observability
 
 **Files:**
+
 - Modify: `crates/wasm-datafusion-poc/src/lib.rs`
 - Modify: `crates/wasm-query-session/src/lib.rs`
 - Modify: `crates/browser-engine-worker/src/lib.rs`
@@ -1243,6 +1268,7 @@ git commit -m "feat: connect kernel metrics to browser query observability"
 ### Task 16: Add End-To-End Differential SQL Corpus
 
 **Files:**
+
 - Create: `tests/conformance/browser-delta-kernel-datafusion-corpus.json`
 - Create: `crates/wasm-datafusion-poc/tests/delta_sql_corpus.rs`
 - Modify: `crates/native-query-runtime/tests/native_runtime.rs`
@@ -1254,9 +1280,18 @@ Include:
 ```json
 [
   { "name": "limit", "sql": "SELECT * FROM events LIMIT 10" },
-  { "name": "projection_filter", "sql": "SELECT event_type, amount FROM events WHERE event_date = DATE '2026-01-01' LIMIT 100" },
-  { "name": "count_partition", "sql": "SELECT COUNT(*) FROM events WHERE event_date = DATE '2026-01-01'" },
-  { "name": "grouped_count", "sql": "SELECT event_type, COUNT(*) FROM events GROUP BY event_type ORDER BY COUNT(*) DESC LIMIT 20" },
+  {
+    "name": "projection_filter",
+    "sql": "SELECT event_type, amount FROM events WHERE event_date = DATE '2026-01-01' LIMIT 100"
+  },
+  {
+    "name": "count_partition",
+    "sql": "SELECT COUNT(*) FROM events WHERE event_date = DATE '2026-01-01'"
+  },
+  {
+    "name": "grouped_count",
+    "sql": "SELECT event_type, COUNT(*) FROM events GROUP BY event_type ORDER BY COUNT(*) DESC LIMIT 20"
+  },
   { "name": "min_max_count", "sql": "SELECT MIN(ts), MAX(ts), COUNT(*) FROM events" }
 ]
 ```
@@ -1292,6 +1327,7 @@ git commit -m "test: add delta kernel datafusion differential corpus"
 ### Task 17: Add Size, Dependency, And Browser Smoke Gates
 
 **Files:**
+
 - Modify: `tests/perf/report_datafusion_wasm_size.sh`
 - Modify: `tests/perf/report_datafusion_wasm_size_test.sh`
 - Create: `tests/perf/report_delta_kernel_wasm_size.sh`
@@ -1347,6 +1383,7 @@ git commit -m "chore: add browser delta kernel datafusion gates"
 ### Task 18: Final Hardening And Release Candidate Review
 
 **Files:**
+
 - Modify: `docs/program/browser-lakehouse-engine-strategy.md`
 - Modify: `docs/program/browser-datafusion-size-audit.md`
 - Modify: `docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md`

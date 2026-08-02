@@ -1,10 +1,19 @@
 # Browser DataFusion Runtime Parity
 
+- Status: Compatibility-provider release evidence
 - Date: 2026-05-22
-- Scope: `apps/axon-web` browser-owned DataFusion runtime over browser-safe Delta descriptors and HTTPS object URLs.
+- Evidence revision: 2026-08-02
+- Scope: `apps/axon-web` compatibility DataFusion provider over browser-safe Delta descriptors and HTTPS object URLs.
 - Owner: Runtime / engine team
 
-This document records what the browser DataFusion runtime proves in-repo and what it still rejects explicitly. It is release evidence, not a claim that every DataFusion, Arrow, Parquet, or Delta feature works in the browser.
+This document records what the current descriptor-backed compatibility provider
+proves in-repo and what it rejects. Treat it as compatibility release evidence.
+It makes no target-architecture or universal DataFusion, Arrow, Parquet, or
+Delta support claim. The
+[canonical browser-engine strategy](./browser-lakehouse-engine-strategy.md)
+governs migration to bounded Kernel tasks and standard DataFusion Parquet over
+an Axon `ObjectStore`; every `AxonParquetScanExec` statement below is scoped to
+the compatibility provider.
 
 ## Supported SQL Classes
 

@@ -2,7 +2,7 @@
 
 - Status: Working architecture
 - Date: 2026-06-20
-- Revised: 2026-07-15
+- Revised: 2026-08-02
 - Scope: Axon's query-engine, runtime, and workbench architecture
 - Related:
   - [Provider model](./provider-model.md)
@@ -14,7 +14,14 @@
 
 Axon is an embeddable lakehouse workbench and query engine. It discovers a selected resource, obtains one authority-preserving resource binding, runs supported reads where the deployment permits, and returns Arrow data or a deterministic outcome. The browser runtime is useful on its own for local Delta and public object storage. Authenticated catalog access and remote execution are deployment profiles built by composing the same narrow seams.
 
-Axon owns browser-safe descriptor validation, byte-range reads, Delta/Parquet planning, DataFusion execution, Arrow IPC result transport, budgets, cancellation, metrics, and structured terminal outcomes. The enforcement point serving a protected catalog, object, or compute resource owns authorization and audit for that resource. Host products may also own identity, tenants, rollout, billing, and server fallback policy.
+Axon owns browser access validation, byte-range I/O policy, identity-aware
+caches, budgets, cancellation, path-free spill, worker isolation, Arrow IPC
+delivery, and structured terminal outcomes. In the canonical target, Delta
+Kernel owns Delta protocol/snapshot/scan semantics and DataFusion owns SQL,
+Parquet decode/pruning, operators, memory accounting, and execution. The
+enforcement point serving a protected catalog, object, or compute resource owns
+authorization and audit for that resource. Host products may also own identity,
+tenants, rollout, billing, and server fallback policy.
 
 ## Current Implementation And Proposed Architecture
 
@@ -73,7 +80,7 @@ canonical-locator arm. Equality is exact after provider canonicalization;
 display names and access capabilities are not identity.
 
 Browser resolution produces one execution-local envelope containing that
-identity, an openable descriptor, access class, conditional expiry, and
+identity, an openable descriptor union, access class, conditional expiry, and
 correlation/provenance identifiers. Capability-bearing access requires an expiry
 bounded by the earliest session, grant, descriptor, or object-URL limit. The
 envelope is discarded after one rejection or terminal execution. Remote/native
@@ -114,9 +121,11 @@ SourceProfile
 bounded Arrow IPC result or flow-controlled stream, progress, metrics, outcome
 ```
 
-The browser target owns browser-safe range reads, descriptor materialization,
-DataFusion-backed SQL execution, and Arrow IPC delivery. The initial worker path
-returns one byte-budgeted Arrow IPC buffer; chunking waits for explicit credits.
+The browser target owns browser-safe access materialization, range-read policy,
+worker isolation, and Arrow IPC delivery. Delta Kernel and DataFusion retain the
+semantic ownership defined by the canonical browser strategy. The current
+worker path returns one atomic byte-budgeted Arrow IPC result assembled through
+credited private chunks; those chunks are not a public progressive stream.
 Known unsupported work routes before admission. A failure discovered after
 acceptance terminates that execution; any native/server attempt is a new,
 correlated admission. The native target remains the correctness oracle and

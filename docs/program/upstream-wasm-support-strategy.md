@@ -11,6 +11,7 @@
   - [Upstream WASM Support Design Pack](../research/upstream-wasm-support-design-pack/README.md)
   - [Upstream WASM Support Implementation Plan](../plans/2026-07-23-upstream-wasm-support-implementation-plan.md)
   - [Daxis Upstream WASM Fork POC Plan](../plans/2026-07-23-daxis-upstream-wasm-fork-poc.md)
+  - [Canonical Browser Lakehouse Engine Strategy](./browser-lakehouse-engine-strategy.md)
 
 ## Decision
 
@@ -34,13 +35,21 @@ The upstream work follows these rules:
 
 ## Axon Boundary
 
-This strategy does not replace Axon's browser access authority. Axon continues to own
-`BrowserHttpSnapshotDescriptor`, signed or brokered HTTPS access, identity-aware range caching, query
-budgets, and native fallback.
+This strategy does not replace Axon's browser access authority. The
+[canonical browser-engine strategy](./browser-lakehouse-engine-strategy.md)
+governs Axon product architecture. Axon continues to own root-scoped and
+per-file browser access envelopes, including compatibility
+`BrowserHttpSnapshotDescriptor` inputs, signed or brokered HTTPS access,
+identity-aware range caching, query budgets, and explicit native routing.
 
 The upstream changes make the shared dependency graph safe. They do not add Axon descriptors,
 credential rules, cache policy, or product-specific execution assumptions to Arrow, Parquet,
 `object_store`, DataFusion, delta-kernel, or delta-rs.
+
+The upstream implementation plan is authoritative only for dependency
+publication sequencing. It does not authorize replacing Axon's resolver seam,
+promoting local fork heads, or continuing superseded prefetch/custom-scan
+mechanics.
 
 ## Deliverables
 

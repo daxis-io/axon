@@ -2,7 +2,7 @@
 
 - Status: Draft
 - Date: 2026-05-17
-- Audit revision: 2026-07-15
+- Audit revision: 2026-08-02
 - Scope: document Axon's browser-owned Unity Catalog access-plan contract and the first shipped brokered Delta read path
 - Related:
   - [Browser Lakehouse Engine Strategy](./browser-lakehouse-engine-strategy.md)
@@ -29,7 +29,8 @@ providers with byte-access authority. Neither should block shipment of the
 brokered Delta path when that path satisfies the runtime contract.
 
 The target resolver does not expose nested plan states to execution. It
-materializes a complete `ResolvedBrowserRead`, returns `remote_required`, returns
+materializes one complete `ResolvedBrowserRead` with either root-scoped or
+per-file openable access, returns `remote_required`, returns
 `denied`, or raises a typed operational error. `sql_fallback_required` and
 `blocked` remain compatibility inputs that map to `remote_required` and `denied`
 before execution acceptance.
@@ -44,10 +45,13 @@ shapes. The current worker handoff therefore cannot enforce those facts from one
 input.
 
 The target contract makes every successful browser read resolution produce one
-`ResolvedBrowserRead` binding. It groups existing contract facts; it does not
-add another provider seam. The binding contains:
+`ResolvedBrowserRead` binding. It groups existing contract facts and extends
+the existing descriptor union; it does not add another provider seam. The
+binding contains:
 
-- the `BrowserHttpSnapshotDescriptor`
+- an openable descriptor: target Delta access is
+  `BrowserDeltaAccessDescriptor::{RootScopedDelta, PerFileSnapshot}`, where the
+  per-file variant carries the existing `BrowserHttpSnapshotDescriptor`
 - an access class: `local`, `public`, `signed`, or `proxy`
 - mandatory `not_after` for signed, proxy, grant-backed, or otherwise expiring
   access, set to the earliest session, grant, descriptor, or object-URL expiry
@@ -72,7 +76,7 @@ execution-local value and apply the same checks before `openDeltaTable()`.
 
 ## First Shipped Path
 
-The first shipped repo path is:
+The first shipped compatibility path is:
 
 ```text
 BrokeredDeltaReadPlan
@@ -82,15 +86,16 @@ BrokeredDeltaReadPlan
   -> browser DataFusion query
 ```
 
-The target keeps `openDeltaTable()` as the worker handoff but tightens the call
-site:
+The target keeps the same resolver/executor seam but no longer requires every
+successful plan to become an active-file descriptor:
 
 ```text
 ReadAccessPlan
-  -> browser snapshot resolver or descriptor materializer
+  -> DataAccessResolver
   -> ResolvedBrowserRead binding
   -> source/expiry validation
-  -> openDeltaTable(binding.descriptor)
+  -> RootScopedDelta | PerFileSnapshot
+  -> persistent browser engine session
   -> browser DataFusion query
 ```
 
@@ -104,7 +109,14 @@ The service-owned broker emits a `ReadAccessPlan::BrokeredDelta` / `BrokeredDelt
 
 The browser runtime consumes this plan by using the grant to obtain the existing Axon descriptors/session inputs, then registers the resulting table through the existing browser DataFusion execution path. Snapshot opening and table registration are runtime/session responsibilities after the resolver has received and materialized the plan, not catalog-provider responsibilities.
 
-If the plan contains object-grant reconstruction capability, the browser snapshot resolver reads Delta log state and active data through the grant. If the plan contains descriptor material, the descriptor materializer converts the supplied material directly to `BrowserHttpSnapshotDescriptor`; it must not list `_delta_log` just because the table is Delta. If the plan is `sql_fallback_required` or `blocked`, the browser must not call `openDeltaTable()`.
+If the plan contains object-grant reconstruction capability, the target resolver
+retains a root-scoped grant/store-factory reference and the browser engine reads
+Delta log state and active data through that grant. The current compatibility
+path may still reconstruct and materialize `BrowserHttpSnapshotDescriptor`. If
+the plan contains descriptor material, the descriptor materializer converts it
+directly to the per-file variant; it must not list `_delta_log` just because the
+table is Delta. If the plan is `sql_fallback_required` or `blocked`, the browser
+must not admit browser execution.
 
 ## Production Service Responsibilities
 
