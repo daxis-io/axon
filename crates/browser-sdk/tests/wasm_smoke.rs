@@ -107,6 +107,7 @@ fn browser_sdk_round_trips_worker_responses_in_wasm() {
                 rows_emitted: 1,
                 snapshot_bootstrap_duration_ms: None,
                 access_mode: None,
+                ..QueryMetricsSummary::default()
             },
             explain: None,
         },
@@ -273,6 +274,7 @@ fn browser_sdk_round_trips_browser_telemetry_fields_in_wasm() {
                 rows_emitted: 3,
                 snapshot_bootstrap_duration_ms: Some(6),
                 access_mode: Some(BrowserAccessMode::BrowserSafeHttp),
+                ..QueryMetricsSummary::default()
             },
             explain: None,
         },

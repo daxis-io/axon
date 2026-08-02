@@ -504,6 +504,10 @@ fn analyze_table_capabilities(snapshot: &DeltaTableState) -> CapabilityAnalysis 
     let unknown_protocol_features_present = table_uses_unknown_protocol_features(snapshot);
 
     let mut report = CapabilityReport::from_pairs([
+        (
+            CapabilityKey::BrowserExternalMemory,
+            CapabilityState::Unsupported,
+        ),
         (CapabilityKey::ChangeDataFeed, CapabilityState::Unsupported),
         (CapabilityKey::ColumnMapping, CapabilityState::Unsupported),
         (CapabilityKey::DeletionVectors, CapabilityState::Unsupported),

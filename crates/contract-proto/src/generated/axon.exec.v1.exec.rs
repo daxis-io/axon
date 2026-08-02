@@ -3405,6 +3405,10 @@ pub struct QueryMetricsSummary {
     pub spill_cleanup_count: ::core::option::Option<u64>,
     /// Field 71: `spill_abandoned_cleanup_count`
     pub spill_abandoned_cleanup_count: ::core::option::Option<u64>,
+    /// Field 72: `spill_cleanup_files`
+    pub spill_cleanup_files: ::core::option::Option<u64>,
+    /// Field 73: `spill_cleanup_scopes`
+    pub spill_cleanup_scopes: ::core::option::Option<u64>,
     #[doc(hidden)]
     pub __buffa_unknown_fields: ::buffa::UnknownFields,
 }
@@ -3502,6 +3506,8 @@ impl ::core::fmt::Debug for QueryMetricsSummary {
             .field("spill_merge_passes", &self.spill_merge_passes)
             .field("spill_cleanup_count", &self.spill_cleanup_count)
             .field("spill_abandoned_cleanup_count", &self.spill_abandoned_cleanup_count)
+            .field("spill_cleanup_files", &self.spill_cleanup_files)
+            .field("spill_cleanup_scopes", &self.spill_cleanup_scopes)
             .finish()
     }
 }
@@ -3992,6 +3998,20 @@ impl QueryMetricsSummary {
         self.spill_abandoned_cleanup_count = Some(value);
         self
     }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::spill_cleanup_files`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_spill_cleanup_files(mut self, value: u64) -> Self {
+        self.spill_cleanup_files = Some(value);
+        self
+    }
+    #[must_use = "with_* setters return `self` by value; assign or chain the result"]
+    #[inline]
+    ///Sets [`Self::spill_cleanup_scopes`] to `Some(value)`, consuming and returning `self`.
+    pub fn with_spill_cleanup_scopes(mut self, value: u64) -> Self {
+        self.spill_cleanup_scopes = Some(value);
+        self
+    }
 }
 ::buffa::impl_default_instance!(QueryMetricsSummary);
 impl ::buffa::MessageName for QueryMetricsSummary {
@@ -4229,6 +4249,12 @@ impl ::buffa::Message for QueryMetricsSummary {
         if let Some(v) = self.spill_abandoned_cleanup_count {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
+        if let Some(v) = self.spill_cleanup_files {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_cleanup_scopes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
@@ -4452,6 +4478,12 @@ impl ::buffa::Message for QueryMetricsSummary {
         }
         if let Some(v) = self.spill_abandoned_cleanup_count {
             ::buffa::types::put_uint64_field(71u32, v, buf);
+        }
+        if let Some(v) = self.spill_cleanup_files {
+            ::buffa::types::put_uint64_field(72u32, v, buf);
+        }
+        if let Some(v) = self.spill_cleanup_scopes {
+            ::buffa::types::put_uint64_field(73u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -5098,6 +5130,24 @@ impl ::buffa::Message for QueryMetricsSummary {
                     ::buffa::types::decode_uint64(buf)?,
                 );
             }
+            72u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.spill_cleanup_files = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
+            73u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                self.spill_cleanup_scopes = ::core::option::Option::Some(
+                    ::buffa::types::decode_uint64(buf)?,
+                );
+            }
             _ => {
                 self.__buffa_unknown_fields
                     .push(::buffa::encoding::decode_unknown_field(tag, buf, ctx)?);
@@ -5176,6 +5226,8 @@ impl ::buffa::Message for QueryMetricsSummary {
         self.spill_merge_passes = ::core::option::Option::None;
         self.spill_cleanup_count = ::core::option::Option::None;
         self.spill_abandoned_cleanup_count = ::core::option::Option::None;
+        self.spill_cleanup_files = ::core::option::Option::None;
+        self.spill_cleanup_scopes = ::core::option::Option::None;
         self.__buffa_unknown_fields.clear();
     }
 }

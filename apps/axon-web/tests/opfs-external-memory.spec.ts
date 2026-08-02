@@ -307,19 +307,14 @@ test('spill-forcing aggregate returns every expected row and leaves no active OP
         type MemoryMeasurement = { bytes: number };
         const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
         const workerUrl = new URL('/src/sandbox-query-worker.ts', location.href);
+        workerUrl.searchParams.set('browser_external_memory', 'enabled');
         workerUrl.searchParams.set('datafusion_memory_profile_mib', memoryProfile);
         workerUrl.searchParams.set('datafusion_spill_cap_mib', '576');
-        let externalMemory: ExternalMemory | undefined;
         const client = sdk.createAxonBrowserClient({
           worker: new Worker(workerUrl, {
             type: 'module',
             name: 'external-memory-full-parity',
           }),
-          onEvent: (event: unknown) => {
-            const owned = (event as { owned_memory_metrics?: { external_memory?: ExternalMemory } })
-              .owned_memory_metrics;
-            if (owned?.external_memory) externalMemory = owned.external_memory;
-          },
         });
         try {
           await client.openParquetDataset(
@@ -368,7 +363,6 @@ test('spill-forcing aggregate returns every expected row and leaves no active OP
           const runs = [];
           let afterWarmupBytes: number | undefined;
           for (let index = 0; index < repeat; index += 1) {
-            externalMemory = undefined;
             const query = await client.query('spill_forcing_events', sql, {
               requestId: `query-spill-forcing-full-parity-${index + 1}`,
               preferredTarget: 'browser_wasm',
@@ -378,14 +372,22 @@ test('spill-forcing aggregate returns every expected row and leaves no active OP
                 result_page: { limit: 501, offset: 0 },
               },
             });
+            const metrics = query.response.metrics;
             runs.push({
               columns: query.preview?.columns ?? [],
               rows: (query.preview?.rows ?? []).map((row: unknown[]) =>
                 row.map((cell: unknown) => String(cell)),
               ),
               previewRowCount: query.preview?.row_count,
-              responseMetrics: query.response.metrics,
-              externalMemory: externalMemory as ExternalMemory | undefined,
+              responseMetrics: metrics,
+              externalMemory: {
+                active_files: metrics.spill_active_files,
+                bytes_written: metrics.spill_bytes_written,
+                cleanup_count: metrics.spill_cleanup_count,
+                files_created: metrics.spill_files_created,
+                peak_reservation_bytes: metrics.spill_peak_reservation_bytes,
+                working_set_limit_bytes: metrics.spill_working_set_limit_bytes,
+              } as ExternalMemory,
             });
             if (measureUserAgentMemory && index === 0) {
               afterWarmupBytes = (await measure!.call(performance)).bytes;

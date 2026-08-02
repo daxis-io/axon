@@ -33,8 +33,8 @@
     "query_session_bytes": 248,
     "runtime_config_bytes": 88,
     "command_struct_bytes": 240,
-    "response_envelope_struct_bytes": 1304,
-    "query_metrics_struct_bytes": 1144,
+    "response_envelope_struct_bytes": 1336,
+    "query_metrics_struct_bytes": 1176,
     "command_envelope_json_bytes": 303,
     "error_envelope_json_bytes": 231
   }

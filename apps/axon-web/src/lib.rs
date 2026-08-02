@@ -12,6 +12,8 @@ use query_contract::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
 use wasm_datafusion_session::{
     ArrowIpcPhase, BrowserDataFusionCancellation, BrowserDataFusionCursorCancellation,
     BrowserDataFusionIpcCursor, BrowserDataFusionIpcCursorItem, BrowserDataFusionMemoryMetrics,
@@ -154,6 +156,7 @@ struct SandboxSqlTerminalMetadata {
     cache_metrics: SandboxCacheMetrics,
     cursor_metrics: SandboxCursorMetrics,
     datafusion_memory: SandboxDataFusionMemoryMetrics,
+    wasm_memory: SandboxWasmMemoryMetrics,
 }
 
 #[derive(Debug, Serialize)]
@@ -176,6 +179,12 @@ struct SandboxDataFusionMemoryMetrics {
     reserved_bytes: u64,
     #[serde(serialize_with = "serialize_decimal_string")]
     peak_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct SandboxWasmMemoryMetrics {
+    #[serde(serialize_with = "serialize_decimal_string")]
+    linear_memory_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -376,17 +385,21 @@ pub struct SandboxQuerySession {
 #[wasm_bindgen]
 impl SandboxQuerySession {
     #[wasm_bindgen(constructor)]
-    pub fn new(memory_limit_bytes: Option<usize>) -> Result<SandboxQuerySession, JsValue> {
-        let runtime_config = default_sandbox_runtime_config();
-        let session = match memory_limit_bytes {
-            Some(memory_limit_bytes) => BrowserDataFusionSession::new_with_memory_limit(
-                runtime_config,
-                DEFAULT_QUERY_SESSION_CACHE_BYTES,
-                memory_limit_bytes,
-            ),
-            None => {
-                BrowserDataFusionSession::new(runtime_config, DEFAULT_QUERY_SESSION_CACHE_BYTES)
+    pub fn new(memory_limit_mib: Option<u32>) -> Result<SandboxQuerySession, JsValue> {
+        let config = default_sandbox_runtime_config();
+        let session = match memory_limit_mib {
+            Some(memory_limit_mib) => {
+                let memory_limit_bytes = u64::from(memory_limit_mib)
+                    .checked_mul(1024 * 1024)
+                    .and_then(|bytes| usize::try_from(bytes).ok())
+                    .ok_or_else(|| JsValue::from_str("browser memory profile exceeds usize"))?;
+                BrowserDataFusionSession::new_with_memory_limit(
+                    config,
+                    DEFAULT_QUERY_SESSION_CACHE_BYTES,
+                    memory_limit_bytes,
+                )
             }
+            None => BrowserDataFusionSession::new(config, DEFAULT_QUERY_SESSION_CACHE_BYTES),
         }
         .map_err(query_error_to_js_value)?;
         let cancellation = session.cancellation_handle();
@@ -397,17 +410,17 @@ impl SandboxQuerySession {
         })
     }
 
-    pub fn cancellation(&self) -> SandboxQueryCancellation {
-        SandboxQueryCancellation {
-            cancellation: self.cancellation.clone(),
-        }
-    }
-
     pub fn browser_external_memory_enabled(&self) -> bool {
         cfg!(all(
             target_arch = "wasm32",
             feature = "browser-external-memory"
         ))
+    }
+
+    pub fn cancellation(&self) -> SandboxQueryCancellation {
+        SandboxQueryCancellation {
+            cancellation: self.cancellation.clone(),
+        }
     }
 
     pub fn set_page_index_mode(
@@ -441,6 +454,15 @@ impl SandboxQuerySession {
             .set_page_index_mode(mode, calibration_error_margin_us)
             .map(|_| ())
             .map_err(query_error_to_js_value)
+    }
+
+    pub fn set_external_memory_execution(&mut self, execution_id: u32) {
+        self.session
+            .set_external_memory_execution(Some(execution_id));
+    }
+
+    pub fn clear_external_memory_execution(&mut self) {
+        self.session.set_external_memory_execution(None);
     }
 
     pub async fn open_delta_table(
@@ -946,6 +968,7 @@ fn ipc_terminal_js_value(
     let preview = query_preview_output(terminal.preview);
     let cursor_metrics = sandbox_cursor_metrics(&terminal.cursor_metrics);
     let datafusion_memory = sandbox_datafusion_memory_metrics(&terminal.memory_metrics);
+    let wasm_memory = sandbox_wasm_memory_metrics(current_wasm_linear_memory_bytes());
     let mut response = terminal.response;
     if let Some(response) = response.as_mut() {
         response.metrics.arrow_ipc_bytes = Some(terminal.encoded_bytes);
@@ -966,6 +989,7 @@ fn ipc_terminal_js_value(
         cache_metrics,
         cursor_metrics,
         datafusion_memory,
+        wasm_memory,
     };
     let metadata_json = serde_json::to_string(&metadata).map_err(|error| {
         JsValue::from_str(&format!(
@@ -1010,6 +1034,24 @@ fn sandbox_datafusion_memory_metrics(
         reserved_bytes: metrics.reserved_bytes,
         peak_bytes: metrics.peak_bytes,
     }
+}
+
+fn sandbox_wasm_memory_metrics(linear_memory_bytes: u64) -> SandboxWasmMemoryMetrics {
+    SandboxWasmMemoryMetrics {
+        linear_memory_bytes,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn current_wasm_linear_memory_bytes() -> u64 {
+    let memory = wasm_bindgen::memory().unchecked_into::<js_sys::WebAssembly::Memory>();
+    let buffer = memory.buffer().unchecked_into::<js_sys::ArrayBuffer>();
+    u64::from(buffer.byte_length())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn current_wasm_linear_memory_bytes() -> u64 {
+    0
 }
 
 fn terminal_status_name(status: QueryTerminalStatus) -> &'static str {
@@ -1098,6 +1140,19 @@ mod tests {
                 "limit_bytes": "9007199254740993",
                 "reserved_bytes": "9007199254740994",
                 "peak_bytes": "9007199254740995"
+            })
+        );
+    }
+
+    #[test]
+    fn sandbox_wasm_memory_metrics_serialize_as_decimal_strings() {
+        let serialized = serde_json::to_value(sandbox_wasm_memory_metrics(9_007_199_254_740_996))
+            .expect("sandbox Wasm memory metrics should serialize");
+
+        assert_eq!(
+            serialized,
+            json!({
+                "linear_memory_bytes": "9007199254740996"
             })
         );
     }

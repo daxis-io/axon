@@ -34,8 +34,8 @@ const NATIVE: Partial<Record<CapabilityKey, CapabilityState>> = {
 
 const META: Record<CapabilityKey, { label: string; desc: string }> = {
   browser_external_memory: {
-    label: 'Browser External Memory',
-    desc: 'Bounded query execution with browser-native spill storage',
+    label: 'External Memory',
+    desc: 'Spill bounded operator state to browser-private storage',
   },
   range_reads: { label: 'HTTP Range Reads', desc: 'Validated byte-range object reads' },
   signed_url_access: { label: 'Signed URL Access', desc: 'Read via pre-signed object URLs' },

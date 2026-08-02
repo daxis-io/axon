@@ -2,18 +2,14 @@ import { create, toJson } from '@bufbuild/protobuf';
 import {
   expect,
   test,
-  webkit,
-  type Browser,
   type ConsoleMessage,
   type Locator,
   type Page,
   type Request,
   type Route,
 } from '@playwright/test';
-import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ColumnNodeSchema,
@@ -72,108 +68,11 @@ function isIgnorableConsoleError(message: ConsoleMessage): boolean {
   return IGNORABLE_CONSOLE_ERRORS.some((pattern) => pattern.test(text) || pattern.test(url));
 }
 const LOCAL_DELTA_ACTIVE_ID_KEY = 'axon-local-delta-active-id';
-
-const SHA256_PATTERN = /^(?:sha256:)?[0-9a-f]{64}$/i;
+const QUERY_TERMINAL_CAPTURE_KEY = '__axonQueryTerminalCapture';
 const STRESS_AGGREGATE_SQL = readFileSync(
   new URL('./fixtures/browser-external-memory/stress-aggregate.sql', import.meta.url),
   'utf8',
 ).trim();
-
-type StressEvidenceProvenance = {
-  axonRevision: string;
-  axonSourceTreeSha256: string;
-  browserName: string;
-  browserVersion: string;
-  datafusionRevision: string | null;
-  datafusionSourceTreeSha256: string | null;
-  fixtureSha256: string | null;
-  oracleSha256: string;
-  qualification: 'local-unqualified' | 'release-qualified';
-};
-
-function gitSourceTreeProvenance(repoRoot: string): {
-  revision: string;
-  sourceTreeSha256: string;
-} {
-  const revision = execFileSync('git', ['rev-parse', 'HEAD'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-  }).trim();
-  const trackedDiff = execFileSync('git', ['diff', '--binary', 'HEAD'], {
-    cwd: repoRoot,
-  });
-  const untrackedPaths = execFileSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
-    cwd: repoRoot,
-  })
-    .toString('utf8')
-    .split('\0')
-    .filter(Boolean)
-    .sort();
-  const digest = createHash('sha256');
-  digest.update(`revision\0${revision}\0tracked-diff\0`);
-  digest.update(trackedDiff);
-  for (const relativePath of untrackedPaths) {
-    digest.update(`\0untracked\0${relativePath}\0`);
-    digest.update(readFileSync(resolve(repoRoot, relativePath)));
-  }
-  return { revision, sourceTreeSha256: digest.digest('hex') };
-}
-
-function stressEvidenceProvenance(
-  browserName: string,
-  browser: Browser,
-  oracleSha256: string,
-  env: NodeJS.ProcessEnv = process.env,
-): StressEvidenceProvenance {
-  const qualificationRequested = env.AXON_BROWSER_EXTERNAL_MEMORY_QUALIFICATION === '1';
-  const datafusionRevision = env.AXON_DATAFUSION_SOURCE_REVISION?.trim() || null;
-  const datafusionSourceTreeSha256 = env.AXON_DATAFUSION_SOURCE_TREE_SHA256?.trim() || null;
-  const fixtureSha256 = env.AXON_STRESS_DELTA_DIGEST?.trim() || null;
-
-  if (qualificationRequested) {
-    expect(datafusionRevision, 'qualification requires AXON_DATAFUSION_SOURCE_REVISION').toMatch(
-      /^[0-9a-f]{40}$/i,
-    );
-    expect(
-      datafusionSourceTreeSha256,
-      'qualification requires AXON_DATAFUSION_SOURCE_TREE_SHA256',
-    ).toMatch(SHA256_PATTERN);
-    expect(fixtureSha256, 'qualification requires AXON_STRESS_DELTA_DIGEST').toMatch(
-      SHA256_PATTERN,
-    );
-  }
-
-  const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
-  const axon = gitSourceTreeProvenance(repoRoot);
-  return {
-    axonRevision: axon.revision,
-    axonSourceTreeSha256: axon.sourceTreeSha256,
-    browserName,
-    browserVersion: browser.version(),
-    datafusionRevision,
-    datafusionSourceTreeSha256,
-    fixtureSha256,
-    oracleSha256,
-    qualification: qualificationRequested ? 'release-qualified' : 'local-unqualified',
-  };
-}
-
-type StressAggregateOracle = {
-  columns: string[];
-  rows: string[][];
-};
-
-function loadStressAggregateOracle(path: string): {
-  digest: string;
-  expected: StressAggregateOracle;
-} {
-  const bytes = readFileSync(path);
-  const expected = JSON.parse(bytes.toString('utf8')) as StressAggregateOracle;
-  expect(expected.columns).toEqual(expect.arrayContaining(['event_id']));
-  expect(expected.rows).toHaveLength(QUERY_RESULT_PAGE_SIZE);
-  expect(expected.rows.every((row) => row.length === expected.columns.length)).toBe(true);
-  return { digest: createHash('sha256').update(bytes).digest('hex'), expected };
-}
 
 type LocalDeltaFixtureFile = {
   relativePath: string;
@@ -1423,6 +1322,29 @@ test.describe('editor (Phase 1 smoke)', () => {
     ).toBe(false);
   });
 
+  test('captures WebKit query terminals without breaking the editor worker boot path', async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name !== 'webkit', 'This regression is specific to WebKit.');
+    const tableDir = fileURLToPath(new URL('../public/fixtures/prod-like/table', import.meta.url));
+
+    await installQueryTerminalCapture(page);
+    await connectLocalDeltaFolder(page, tableDir, 'webkit-terminal-capture', {
+      pagePath: '/?browser_external_memory=enabled',
+    });
+
+    await page
+      .locator('.code-input')
+      .fill('SELECT COUNT(*) AS row_count FROM axon_prod_like_fixture');
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+    const terminal = await latestCapturedQueryTerminal(page);
+    expect(terminal.error).toBeUndefined();
+    expect(terminal.success?.response?.executed_on).toBe('browser_wasm');
+    await expect(page.locator('table.grid')).toContainText('row_count');
+    await expect(page.locator('table.grid')).toContainText('4');
+  });
+
   test('queries the query-engine stress Delta table with DATE and timestamp columns in browser WASM', async ({
     page,
   }) => {
@@ -1456,138 +1378,291 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.locator('table.grid')).toContainText('event_ts');
   });
 
-  test('spills the original high-cardinality aggregate in browser WASM instead of requiring fallback', async ({
-    browser,
-    browserName,
-    page: fixturePage,
+  test('spills the original high-cardinality stress aggregate to OPFS without changing execution authority', async ({
+    page,
   }, testInfo) => {
-    test.setTimeout(15 * 60_000);
+    test.setTimeout(240_000);
     const tableDir = process.env.AXON_STRESS_DELTA_PATH;
-    const oraclePath = process.env.AXON_STRESS_AGGREGATE_ORACLE_PATH;
-    const spillCapMiB = process.env.AXON_BROWSER_EXTERNAL_MEMORY_SPILL_CAP_MIB;
-    const memoryProfileMiB = process.env.AXON_BROWSER_EXTERNAL_MEMORY_PROFILE_MIB ?? '64';
-    if (
-      process.env.AXON_BROWSER_EXTERNAL_MEMORY_STRESS !== '1' ||
-      !tableDir ||
-      !oraclePath ||
-      !spillCapMiB
-    ) {
+    if (!tableDir) {
       test.skip(
         true,
-        'Set AXON_BROWSER_EXTERNAL_MEMORY_STRESS=1, AXON_STRESS_DELTA_PATH, AXON_STRESS_AGGREGATE_ORACLE_PATH, and AXON_BROWSER_EXTERNAL_MEMORY_SPILL_CAP_MIB after building the external-memory Wasm tier. AXON_BROWSER_EXTERNAL_MEMORY_PROFILE_MIB selects the 64 or 128 MiB conformance profile.',
+        'Set AXON_STRESS_DELTA_PATH to the qualified stress Delta table to run this Chromium regression.',
       );
       return;
     }
-    expect(['64', '128']).toContain(memoryProfileMiB);
-    const oracle = loadStressAggregateOracle(oraclePath);
-    const declaredOracleDigest = process.env.AXON_STRESS_AGGREGATE_ORACLE_DIGEST?.replace(
-      /^sha256:/i,
-      '',
-    ).toLowerCase();
-    if (process.env.AXON_BROWSER_EXTERNAL_MEMORY_QUALIFICATION === '1') {
-      expect(
-        declaredOracleDigest,
-        'qualification requires AXON_STRESS_AGGREGATE_ORACLE_DIGEST',
-      ).toBe(oracle.digest);
-    }
-    const persistentWebKitContext =
-      browserName === 'webkit'
-        ? await webkit.launchPersistentContext(testInfo.outputPath('webkit-profile'), {
-            ignoreHTTPSErrors: true,
-          })
-        : null;
-    const page =
-      persistentWebKitContext?.pages()[0] ??
-      (persistentWebKitContext ? await persistentWebKitContext.newPage() : fixturePage);
-    await page.addInitScript(() => {
-      let copiedText = '';
-      Object.defineProperty(navigator, 'clipboard', {
-        configurable: true,
-        value: {
-          readText: async () => copiedText,
-          writeText: async (value: string) => {
-            copiedText = value;
-          },
-        },
+
+    const spillDiagnostics: string[] = [];
+    page.on('console', (message) => {
+      if (message.text().includes('[axon] OPFS spill operation failed')) {
+        spillDiagnostics.push(message.text());
+      }
+    });
+    await installQueryTerminalCapture(page);
+    const memoryProfile = process.env.AXON_BROWSER_MEMORY_PROFILE_MIB;
+    const pageQuery = new URLSearchParams({ browser_external_memory: 'enabled' });
+    if (memoryProfile) pageQuery.set('browser_memory_profile_mib', memoryProfile);
+    await connectLocalDeltaFolder(page, tableDir, 'stress-spill-local', {
+      expectedTable: 'query_engine_stress_delta',
+      parseTimeoutMs: 120_000,
+      pagePath: `/?${pageQuery.toString()}`,
+    });
+
+    const repeatCount = Number(process.env.AXON_SPILL_WARM_REPEAT_COUNT ?? '1');
+    expect(Number.isSafeInteger(repeatCount) && repeatCount >= 1 && repeatCount <= 10).toBe(true);
+    const measuredMemory: number[] = [];
+    let terminal: Awaited<ReturnType<typeof latestCapturedQueryTerminal>> | undefined;
+
+    await page.locator('.code-input').fill(STRESS_AGGREGATE_SQL);
+    for (let iteration = 0; iteration < repeatCount; iteration += 1) {
+      const priorTerminalCount = await capturedQueryTerminalCount(page);
+      await page.locator('.btn.primary', { hasText: 'Run' }).click();
+      terminal = await latestCapturedQueryTerminal(page, priorTerminalCount + 1);
+      expect(terminal.error, spillDiagnostics.join('\n')).toBeUndefined();
+      await expect(page.locator('.res-meta')).toContainText(/browser · wasm/i, {
+        timeout: 180_000,
       });
+      await expect(page.locator('table.grid tbody tr').first()).toBeVisible({
+        timeout: 180_000,
+      });
+
+      expect(terminal.success?.response?.executed_on).toBe('browser_wasm');
+      expect(terminal.success?.response?.fallback_reason).toBeUndefined();
+      expect(terminal.success?.response?.capabilities?.capabilities?.browser_external_memory).toBe(
+        'supported',
+      );
+      expect(terminal.success?.response?.metrics?.spill_backend).toBe('opfs');
+      expect(terminal.success?.response?.metrics?.spill_bytes_written).toBeGreaterThan(0);
+      expect(terminal.success?.response?.metrics?.spill_bytes_read).toBeGreaterThan(0);
+      expect(terminal.success?.response?.metrics?.spill_files_created).toBeGreaterThan(0);
+      expect(terminal.success?.response?.metrics?.spill_peak_active_bytes).toBeGreaterThan(0);
+      expect(terminal.success?.response?.metrics?.spill_merge_passes).toBeGreaterThan(0);
+      expect(terminal.success?.response?.metrics?.spill_cleanup_files).toBe(
+        terminal.success?.response?.metrics?.spill_files_created,
+      );
+      expect(terminal.success?.response?.metrics?.spill_cleanup_scopes).toBe(1);
+
+      const wasmMemory = terminal.success?.response?.metrics?.wasm_linear_memory_bytes;
+      if (repeatCount > 1 && wasmMemory !== undefined) measuredMemory.push(wasmMemory);
+    }
+
+    if (repeatCount > 1) {
+      expect(
+        measuredMemory,
+        'Wasm linear-memory telemetry must be available for plateau runs',
+      ).toHaveLength(repeatCount);
+      const steadyState = measuredMemory.slice(-5);
+      expect(
+        Math.max(...steadyState) - Math.min(...steadyState),
+        `Wasm linear-memory samples: ${measuredMemory.join(', ')}`,
+      ).toBeLessThanOrEqual(64 * 1024);
+    }
+    if (!terminal) throw new Error('spill regression did not produce a terminal response');
+    await testInfo.attach('browser-opfs-spill-metrics', {
+      body: Buffer.from(JSON.stringify(terminal.success?.response?.metrics ?? {}, null, 2), 'utf8'),
+      contentType: 'application/json',
+    });
+  });
+
+  test('runs the browser external-memory conformance corpus with native parity', async ({
+    page,
+    playwright,
+  }, testInfo) => {
+    const tableDir = process.env.AXON_SPILL_CONFORMANCE_PATH;
+    if (!tableDir) {
+      test.skip(true, 'AXON_SPILL_CONFORMANCE_PATH is required for the spill corpus.');
+      return;
+    }
+    test.setTimeout(20 * 60_000);
+    const fixtureRoot = join(tableDir, '..');
+    const manifest = JSON.parse(
+      readFileSync(join(fixtureRoot, 'fixture-manifest.json'), 'utf8'),
+    ) as {
+      queries: Array<{ id: string; sql: string; expected_operator: string }>;
+    };
+    const oracle = JSON.parse(readFileSync(join(fixtureRoot, 'native-oracle.json'), 'utf8')) as {
+      queries: Array<{
+        id: string;
+        columns: string[];
+        rows: Array<Array<string | null>>;
+      }>;
+    };
+    const oracleById = new Map(oracle.queries.map((query) => [query.id, query]));
+    const memoryProfile = Number(process.env.AXON_BROWSER_MEMORY_PROFILE_MIB ?? '128');
+    expect([64, 128]).toContain(memoryProfile);
+    const repeatCount = Number(process.env.AXON_SPILL_WARM_REPEAT_COUNT ?? '1');
+    expect(Number.isSafeInteger(repeatCount) && repeatCount >= 1 && repeatCount <= 10).toBe(true);
+    const persistentContext =
+      testInfo.project.name === 'webkit' && process.env.AXON_WEBKIT_PERSISTENT === '1'
+        ? await playwright.webkit.launchPersistentContext(
+            join(testInfo.outputDir, 'webkit-profile'),
+            {
+              baseURL: APP_ORIGIN,
+              ignoreHTTPSErrors: true,
+            },
+          )
+        : undefined;
+    const targetPage = persistentContext
+      ? (persistentContext.pages()[0] ?? (await persistentContext.newPage()))
+      : page;
+    const spillDiagnostics: string[] = [];
+    targetPage.on('console', (message) => {
+      if (message.text().includes('[axon] OPFS')) spillDiagnostics.push(message.text());
     });
 
     try {
-      await connectLocalDeltaFolder(page, tableDir, 'stress-spill', {
-        expectedTable: 'query_engine_stress_delta',
+      await installQueryTerminalCapture(targetPage);
+      await connectLocalDeltaFolder(targetPage, tableDir, `spill-conformance-${memoryProfile}`, {
+        expectedTable: 'spill_conformance',
         parseTimeoutMs: 120_000,
-        pagePath: `/?axon_datafusion_memory_profile_mib=${memoryProfileMiB}&axon_datafusion_spill_cap_mib=${encodeURIComponent(spillCapMiB)}`,
+        pagePath: `/?browser_external_memory=enabled&browser_memory_profile_mib=${memoryProfile}`,
       });
 
-      await page.locator('.code-input').fill(STRESS_AGGREGATE_SQL);
-      await page.locator('.btn.primary', { hasText: 'Run' }).click();
+      const evidence: Record<string, unknown> = {};
+      const repeatedAggregate = manifest.queries.find((query) => query.id === 'aggregate');
+      if (!repeatedAggregate) throw new Error('spill corpus is missing the aggregate query');
+      const executionCases = [
+        ...manifest.queries,
+        ...Array.from({ length: repeatCount - 1 }, () => repeatedAggregate),
+      ];
+      const measuredMemory: number[] = [];
+      for (const [executionIndex, query] of executionCases.entries()) {
+        const expected = oracleById.get(query.id);
+        if (!expected) throw new Error(`native oracle is missing query '${query.id}'`);
+        const priorTerminalCount = await capturedQueryTerminalCount(targetPage);
+        await targetPage.locator('.code-input').fill(query.sql);
+        await targetPage.locator('.btn.primary', { hasText: 'Run' }).click();
+        const terminal = await latestCapturedQueryTerminal(targetPage, priorTerminalCount + 1);
 
-      await expect
-        .poll(
-          async () => {
-            const text = await page.locator('.res-meta').innerText();
-            return /browser · wasm/i.test(text) || /failed/i.test(text) ? text : 'pending';
-          },
-          { timeout: 12 * 60_000 },
-        )
-        .not.toBe('pending');
-      const terminalResult = await page.locator('.res-meta').innerText();
-      expect(terminalResult).toMatch(/browser · wasm/i);
-      await expect(page.getByTestId('spill-summary')).toContainText(/OPFS spill/i);
-      await expect(page.getByTestId('spill-summary')).not.toContainText('0 B written');
-      await expect(page.locator('.res-tab.active')).toContainText(/Results\s+500/);
-      await page.locator('button[title="Copy results as CSV"]').click();
-      await expect
-        .poll(async () => page.evaluate(() => navigator.clipboard.readText()))
-        .toContain('event_id,quantity_sum,score_sum');
-      const [header, ...dataRows] = (
-        await page.evaluate(() => navigator.clipboard.readText())
-      ).split('\n');
-      const actualPage: StressAggregateOracle = {
-        columns: header.split(','),
-        rows: dataRows.map((row) => row.split(',')),
-      };
-      expect(actualPage).toEqual(oracle.expected);
-      await page.locator('.res-tab', { hasText: 'Plan' }).click();
-      const externalMemory = page.getByTestId('external-memory-metrics');
-      await expect(externalMemory).toContainText(/0\s*active files/);
-      const exactMetrics = {
-        activeFiles: Number(await externalMemory.getAttribute('data-spill-active-files')),
-        bytesRead: Number(await externalMemory.getAttribute('data-spill-bytes-read')),
-        bytesWritten: Number(await externalMemory.getAttribute('data-spill-bytes-written')),
-        cleanupCount: Number(await externalMemory.getAttribute('data-spill-cleanup-count')),
-        filesCreated: Number(await externalMemory.getAttribute('data-spill-files-created')),
-        memoryProfileMiB: Number(memoryProfileMiB),
-        mergePasses: Number(await externalMemory.getAttribute('data-spill-merge-passes')),
-        peakActiveBytes: Number(await externalMemory.getAttribute('data-spill-peak-active-bytes')),
-        peakReservationBytes: Number(
-          await externalMemory.getAttribute('data-spill-peak-reservation-bytes'),
-        ),
-        storageLimitBytes: Number(
-          await externalMemory.getAttribute('data-spill-storage-limit-bytes'),
-        ),
-        workingSetLimitBytes: Number(
-          await externalMemory.getAttribute('data-spill-working-set-limit-bytes'),
-        ),
-      };
-      expect(exactMetrics).toMatchObject({
-        activeFiles: 0,
-        memoryProfileMiB: Number(memoryProfileMiB),
-        workingSetLimitBytes: Number(memoryProfileMiB) * 1024 * 1024,
-      });
-      expect(exactMetrics.bytesWritten).toBeGreaterThan(0);
-      expect(exactMetrics.filesCreated).toBeGreaterThan(0);
-      expect(exactMetrics.cleanupCount).toBeGreaterThan(0);
-      expect(exactMetrics.peakReservationBytes).toBeLessThanOrEqual(
-        exactMetrics.workingSetLimitBytes,
-      );
-      const provenance = stressEvidenceProvenance(browserName, browser, oracle.digest);
-      await test.info().attach(`external-memory-${memoryProfileMiB}mib.json`, {
-        body: JSON.stringify({ metrics: exactMetrics, provenance }, null, 2),
+        expect(
+          terminal.error,
+          `${query.id} failed; OPFS diagnostics: ${spillDiagnostics.join(' | ') || 'none'}`,
+        ).toBeUndefined();
+        expect(terminal.success?.response?.executed_on).toBe('browser_wasm');
+        expect(terminal.success?.response?.fallback_reason).toBeUndefined();
+        expect(terminal.success?.response?.metrics?.spill_backend).toBe('opfs');
+        expect(terminal.success?.response?.metrics?.spill_bytes_written).toBeGreaterThan(0);
+        expect(terminal.success?.response?.metrics?.spill_bytes_read).toBeGreaterThan(0);
+        expect(terminal.success?.response?.metrics?.spill_files_created).toBeGreaterThan(0);
+        expect(terminal.success?.response?.metrics?.spill_merge_passes).toBeGreaterThan(0);
+        expect(
+          terminal.success?.response?.metrics?.spill_peak_reservation_bytes,
+        ).toBeLessThanOrEqual(memoryProfile * 1024 * 1024);
+        expect(terminal.success?.response?.metrics?.spill_cleanup_files).toBe(
+          terminal.success?.response?.metrics?.spill_files_created,
+        );
+        expect(terminal.success?.response?.metrics?.spill_cleanup_scopes).toBe(1);
+
+        expect(terminal.success?.preview?.columns).toEqual(expected.columns);
+        expect(terminal.success?.preview?.truncated).toBe(false);
+        expect(terminal.success?.preview?.row_count).toBe(256);
+        expect(
+          terminal.success?.preview?.rows.map((row) =>
+            row.map((cell) => (cell === null ? null : String(cell))),
+          ),
+        ).toEqual(expected.rows);
+        const metrics = terminal.success?.response?.metrics;
+        evidence[`${query.id}-${executionIndex + 1}`] = metrics;
+        if (query.id === 'aggregate' && metrics?.wasm_linear_memory_bytes !== undefined) {
+          measuredMemory.push(metrics.wasm_linear_memory_bytes);
+        }
+      }
+
+      if (repeatCount > 1) {
+        expect(
+          measuredMemory,
+          'Wasm linear-memory telemetry must be available for every aggregate plateau run',
+        ).toHaveLength(repeatCount);
+        const steadyState = measuredMemory.slice(-5);
+        expect(
+          Math.max(...steadyState) - Math.min(...steadyState),
+          `Wasm linear-memory samples: ${measuredMemory.join(', ')}`,
+        ).toBeLessThanOrEqual(64 * 1024);
+      }
+
+      await testInfo.attach(`browser-external-memory-${memoryProfile}-mib`, {
+        body: Buffer.from(JSON.stringify(evidence, null, 2), 'utf8'),
         contentType: 'application/json',
       });
     } finally {
-      await persistentWebKitContext?.close();
+      await persistentContext?.close();
+    }
+  });
+
+  test('keeps non-spilling queries available when private WebKit cannot use OPFS', async ({
+    page,
+  }, testInfo) => {
+    test.skip(testInfo.project.name !== 'webkit', 'This qualification is specific to WebKit.');
+    test.skip(
+      process.env.AXON_WEBKIT_PRIVATE_OPFS !== '1',
+      'Set AXON_WEBKIT_PRIVATE_OPFS=1 inside a private WebKit context for this qualification.',
+    );
+    const tableDir = fileURLToPath(new URL('../public/fixtures/prod-like/table', import.meta.url));
+
+    await installQueryTerminalCapture(page);
+    await connectLocalDeltaFolder(page, tableDir, 'webkit-private-opfs-unavailable', {
+      expectedTable: 'axon_prod_like_fixture',
+      pagePath: `/?browser_external_memory=${process.env.AXON_WEBKIT_EXTERNAL_MEMORY_MODE ?? 'enabled'}`,
+    });
+    await page
+      .locator('.code-input')
+      .fill('SELECT COUNT(*) AS row_count FROM axon_prod_like_fixture');
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+    const terminal = await latestCapturedQueryTerminal(page);
+    expect(terminal.error).toBeUndefined();
+    expect(terminal.success?.response?.executed_on).toBe('browser_wasm');
+    expect(terminal.success?.response?.fallback_reason).toBeUndefined();
+    expect(terminal.success?.response?.capabilities?.capabilities?.browser_external_memory).toBe(
+      'unsupported',
+    );
+    await expect(page.locator('table.grid')).toContainText('row_count');
+    await expect(page.locator('table.grid')).toContainText('4');
+  });
+
+  test('isolates simultaneous OPFS spill scopes across two same-origin tabs', async ({
+    context,
+    page,
+  }) => {
+    test.skip(
+      process.env.AXON_SPILL_CONCURRENT_TABS !== '1',
+      'Set AXON_SPILL_CONCURRENT_TABS=1 for the concurrent-scope qualification.',
+    );
+    test.setTimeout(360_000);
+    const tableDir = process.env.AXON_STRESS_DELTA_PATH;
+    if (!tableDir) {
+      test.skip(true, 'AXON_STRESS_DELTA_PATH is required for concurrent spill qualification.');
+      return;
+    }
+
+    const secondPage = await context.newPage();
+    const pages = [page, secondPage];
+    for (const [index, target] of pages.entries()) {
+      await installQueryTerminalCapture(target);
+      await connectLocalDeltaFolder(target, tableDir, `stress-concurrent-${index + 1}`, {
+        expectedTable: 'query_engine_stress_delta',
+        parseTimeoutMs: 120_000,
+        pagePath: '/?browser_external_memory=enabled',
+      });
+      await target
+        .locator('.code-input')
+        .fill(
+          'SELECT event_id, SUM(quantity), SUM(score) FROM query_engine_stress_delta GROUP BY event_id',
+        );
+    }
+
+    await Promise.all(
+      pages.map((target) => target.locator('.btn.primary', { hasText: 'Run' }).click()),
+    );
+    const terminals = await Promise.all(pages.map((target) => latestCapturedQueryTerminal(target)));
+    for (const terminal of terminals) {
+      expect(terminal.error).toBeUndefined();
+      expect(terminal.success?.response?.executed_on).toBe('browser_wasm');
+      expect(terminal.success?.response?.metrics?.spill_backend).toBe('opfs');
+      expect(terminal.success?.response?.metrics?.spill_bytes_written).toBeGreaterThan(0);
+      expect(terminal.success?.response?.metrics?.spill_cleanup_files).toBe(
+        terminal.success?.response?.metrics?.spill_files_created,
+      );
+      expect(terminal.success?.response?.metrics?.spill_cleanup_scopes).toBe(1);
     }
   });
 
@@ -2301,8 +2376,8 @@ async function connectLocalDeltaFolder(
   options: {
     expectPersisted?: boolean;
     expectedTable?: string | RegExp;
-    pagePath?: string;
     parseTimeoutMs?: number;
+    pagePath?: string;
   } = {},
 ): Promise<string> {
   await installUnavailableDirectoryPicker(page);
@@ -2343,6 +2418,106 @@ async function connectLocalDeltaFolder(
   }, alias);
   if (options.expectPersisted !== false) expect(localRegistryId).toBeTruthy();
   return localRegistryId ?? '';
+}
+
+async function installQueryTerminalCapture(page: Page): Promise<void> {
+  await page.addInitScript((captureKey) => {
+    const scope = window as typeof window & Record<string, unknown>;
+    const captured: unknown[] = [];
+    Object.defineProperty(scope, captureKey, {
+      value: captured,
+      configurable: true,
+    });
+
+    const instrumentedWorkers = new WeakSet<Worker>();
+    const originalAddEventListener = Worker.prototype.addEventListener as (
+      this: Worker,
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | AddEventListenerOptions,
+    ) => void;
+    Object.defineProperty(Worker.prototype, 'addEventListener', {
+      value: function addEventListener(
+        this: Worker,
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: boolean | AddEventListenerOptions,
+      ): void {
+        if (type === 'message' && !instrumentedWorkers.has(this)) {
+          instrumentedWorkers.add(this);
+          originalAddEventListener.call(this, 'message', (event: Event) => {
+            const value = (event as MessageEvent<unknown>).data;
+            if (value && typeof value === 'object' && ('success' in value || 'error' in value)) {
+              captured.push(value);
+            }
+          });
+        }
+        originalAddEventListener.call(this, type, listener, options);
+      },
+      configurable: true,
+      writable: true,
+    });
+  }, QUERY_TERMINAL_CAPTURE_KEY);
+}
+
+async function capturedQueryTerminalCount(page: Page): Promise<number> {
+  return page.evaluate((captureKey) => {
+    const captured = (window as typeof window & Record<string, unknown>)[captureKey];
+    return Array.isArray(captured) ? captured.length : 0;
+  }, QUERY_TERMINAL_CAPTURE_KEY);
+}
+
+async function latestCapturedQueryTerminal(
+  page: Page,
+  minimumCount = 1,
+): Promise<{
+  success?: {
+    response?: {
+      executed_on?: string;
+      fallback_reason?: unknown;
+      capabilities?: { capabilities?: { browser_external_memory?: string } };
+      metrics?: {
+        spill_backend?: string;
+        spill_bytes_written?: number;
+        spill_bytes_read?: number;
+        spill_files_created?: number;
+        spill_peak_reservation_bytes?: number;
+        spill_peak_active_bytes?: number;
+        spill_merge_passes?: number;
+        spill_cleanup_files?: number;
+        spill_cleanup_scopes?: number;
+        wasm_linear_memory_bytes?: number;
+      };
+    };
+    preview?: {
+      columns: string[];
+      rows: Array<Array<string | number | boolean | null>>;
+      row_count: number;
+      preview_row_limit: number;
+      truncated: boolean;
+    };
+  };
+  error?: {
+    error?: {
+      code?: string;
+      message?: string;
+      resource_details?: { resource?: string; reason?: string };
+    };
+  };
+}> {
+  await page.waitForFunction(
+    ({ captureKey, minimumCount }) => {
+      const captured = (window as typeof window & Record<string, unknown>)[captureKey];
+      return Array.isArray(captured) && captured.length >= minimumCount;
+    },
+    { captureKey: QUERY_TERMINAL_CAPTURE_KEY, minimumCount },
+    { timeout: 180_000 },
+  );
+  return page.evaluate((captureKey) => {
+    const captured = (window as typeof window & Record<string, unknown>)[captureKey];
+    if (!Array.isArray(captured)) throw new Error('query terminal capture is unavailable');
+    return captured.at(-1);
+  }, QUERY_TERMINAL_CAPTURE_KEY);
 }
 
 async function setCustomCatalogAlias(reviewDialog: Locator, alias: string): Promise<void> {

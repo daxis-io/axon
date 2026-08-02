@@ -34,6 +34,11 @@ name = "generate-page-index-v2-fixture"
 path = "src/bin/generate_page_index_v2_fixture.rs"
 required-features = ["fixture-generator"]
 
+[[bin]]
+name = "generate-spill-conformance-fixture"
+path = "src/bin/generate_spill_conformance_fixture.rs"
+required-features = ["fixture-generator"]
+
 [dependencies]
 arrow-array = "=58.3.0"
 arrow-ipc = "=58.3.0"

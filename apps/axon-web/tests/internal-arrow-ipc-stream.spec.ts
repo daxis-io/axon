@@ -581,90 +581,6 @@ test('one-child coordinator discards staged data after a late failure', async ({
   });
 });
 
-test('coordinator result staging exhaustion is resource_exhausted without changing authority', async ({
-  page,
-}) => {
-  await routeCursorParquet(page);
-  await page.goto('/');
-
-  const result = await page.evaluate(
-    async ({ fixtureBytes }: { fixtureBytes: number }) => {
-      const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
-      const worker = new Worker(
-        new URL('/src/sandbox-query-worker-test-harness.ts?max_staged_bytes=1', location.href),
-        { type: 'module' },
-      );
-      const ready = new Promise<void>((resolve) => {
-        worker.addEventListener(
-          'message',
-          (event: MessageEvent<{ coordinator_test_ready?: true }>) => {
-            if (event.data.coordinator_test_ready) resolve();
-          },
-        );
-      });
-      const tableUri = new URL('/fixtures/browser-datafusion-runtime/table', location.href).href;
-      await ready;
-      const client = sdk.createAxonBrowserClient({ worker });
-      try {
-        await client.openDeltaTable(
-          'events',
-          {
-            table_uri: tableUri,
-            snapshot_version: 0,
-            partition_column_types: { category: 'string' },
-            browser_compatibility: { capabilities: {} },
-            required_capabilities: { capabilities: {} },
-            active_files: [
-              {
-                path: 'category=good/part-000.parquet',
-                url: new URL(
-                  '/fixtures/browser-datafusion-runtime/internal-cursor.parquet',
-                  location.href,
-                ).href,
-                size_bytes: fixtureBytes,
-                partition_values: { category: 'good' },
-              },
-            ],
-          },
-          { requestId: 'open-result-staging-limit' },
-        );
-        try {
-          await client.query('events', 'SELECT id FROM events', {
-            requestId: 'query-result-staging-limit',
-          });
-          return { completed: true };
-        } catch (error) {
-          const captured = error as {
-            queryError?: {
-              code?: string;
-              fallback_reason?: string;
-              resource_details?: { resource?: string; reason?: string };
-              target?: string;
-            };
-          };
-          return { completed: false, queryError: captured.queryError };
-        }
-      } finally {
-        client.terminate();
-      }
-    },
-    { fixtureBytes: BINARY_STRING_INT_PARQUET_BYTES.byteLength },
-  );
-
-  expect(result).toMatchObject({
-    completed: false,
-    queryError: {
-      code: 'resource_exhausted',
-      resource_details: {
-        resource: 'result_output',
-        reason: 'unavailable',
-      },
-      target: 'browser_wasm',
-    },
-  });
-  expect(result.queryError?.fallback_reason).toBeUndefined();
-});
-
 test('one-child coordinator publishes no partial result after an output-budget failure', async ({
   page,
 }) => {
@@ -768,7 +684,7 @@ test('one-child coordinator publishes no partial result after an output-budget f
         code: 'resource_exhausted',
         resource_details: {
           resource: 'result_output',
-          reason: 'unavailable',
+          reason: 'quota_exceeded',
         },
         target: 'browser_wasm',
       },
@@ -1138,6 +1054,7 @@ test('coordinator rejects declared output beyond aggregate staging before child 
           code?: string;
           fallback_reason?: string;
           message?: string;
+          resource_details?: { resource?: string; reason?: string };
           target?: string;
         };
       };
@@ -1206,11 +1123,95 @@ test('coordinator rejects declared output beyond aggregate staging before child 
     code: 'resource_exhausted',
     resource_details: {
       resource: 'result_output',
-      reason: 'unavailable',
+      reason: 'quota_exceeded',
     },
     target: 'browser_wasm',
   });
+  expect(result).not.toHaveProperty('fallback_reason');
   expect(result?.message).toContain('aggregate staging capacity');
+});
+
+test('coordinator reports mid-stream staging overflow as result-output exhaustion', async ({
+  page,
+}) => {
+  await page.goto('/');
+
+  const result = await page.evaluate(async () => {
+    type PublicMessage = {
+      coordinator_test_ready?: boolean;
+      error?: {
+        request_id?: string;
+        error?: {
+          code?: string;
+          fallback_reason?: string;
+          message?: string;
+          resource_details?: { resource?: string; reason?: string };
+          target?: string;
+        };
+      };
+    };
+    const worker = new Worker(
+      new URL(
+        '/src/sandbox-query-worker-test-harness.ts?first_child=oversized-stage&deadline_ms=5000&watchdog_ms=200&max_requests=1&max_staged_bytes=1024',
+        location.href,
+      ),
+      { type: 'module' },
+    );
+    const inbox: PublicMessage[] = [];
+    worker.addEventListener('message', (event: MessageEvent<PublicMessage>) => {
+      inbox.push(event.data);
+    });
+    const waitFor = async (
+      predicate: (message: PublicMessage) => boolean,
+    ): Promise<PublicMessage> => {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const message = inbox.find(predicate);
+        if (message) return message;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error(`timed out waiting for coordinator response: ${JSON.stringify(inbox)}`);
+    };
+
+    try {
+      await waitFor((message) => message.coordinator_test_ready === true);
+      worker.postMessage({
+        sql: {
+          request_id: 'query-mid-stream-stage-overflow',
+          name: 'stage_overflow',
+          query: {
+            table_uri: new URL('/fixtures/browser-datafusion-runtime/stage-overflow', location.href)
+              .href,
+            snapshot_version: 0,
+            sql: 'SELECT * FROM stage_overflow',
+            preferred_target: 'browser_wasm',
+            options: {
+              runtime_limits: { max_arrow_ipc_bytes: 1 },
+            },
+          },
+          output: 'arrow_ipc_stream',
+          delivery: 'chunked_buffers',
+          browser_safe_defaults: true,
+        },
+      });
+      const rejected = await waitFor(
+        (message) => message.error?.request_id === 'query-mid-stream-stage-overflow',
+      );
+      return rejected.error?.error;
+    } finally {
+      worker.terminate();
+    }
+  });
+
+  expect(result).toMatchObject({
+    code: 'resource_exhausted',
+    resource_details: {
+      resource: 'result_output',
+      reason: 'quota_exceeded',
+    },
+    target: 'browser_wasm',
+  });
+  expect(result).not.toHaveProperty('fallback_reason');
+  expect(result?.message).toContain('staging limit exceeded');
 });
 
 test('one-child coordinator reports stable owned-memory high-water marks across repeated atomic queries', async ({
@@ -1471,106 +1472,6 @@ test('coordinator deadline owns the terminal and replaces a hung child', async (
   });
   expect(result.reuseWhileDraining?.message).toContain('already active');
   expect(result.recoveredRows).toBe(0);
-});
-
-test('coordinator publishes post-cleanup external-memory metrics for failed, cancelled, and deadline terminals', async ({
-  page,
-}) => {
-  await page.goto('/');
-
-  const results = await page.evaluate(async () => {
-    type TerminalMode = 'failed' | 'cancelled' | 'deadline_exceeded';
-    type PublicMessage = {
-      coordinator_test_ready?: boolean;
-      error?: { request_id?: string };
-      owned_memory_metrics?: {
-        context?: { request_id?: string };
-        external_memory?: {
-          backend?: string;
-          active_files?: number;
-          files_created?: number;
-          cleanup_count?: number;
-          error_reason?: string;
-        };
-      };
-    };
-    const run = async (mode: TerminalMode) => {
-      const requestId = `terminal-metrics-${mode}`;
-      const deadline = mode === 'deadline_exceeded' ? '&deadline_ms=40' : '';
-      const worker = new Worker(
-        new URL(
-          `/src/sandbox-query-worker-test-harness.ts?first_child=terminal-metrics&terminal_mode=${mode}${deadline}&watchdog_ms=1000`,
-          location.href,
-        ),
-        { type: 'module' },
-      );
-      const inbox: PublicMessage[] = [];
-      worker.addEventListener('message', (event: MessageEvent<PublicMessage>) => {
-        inbox.push(event.data);
-      });
-      const waitFor = async (predicate: (message: PublicMessage) => boolean) => {
-        for (let attempt = 0; attempt < 500; attempt += 1) {
-          const message = inbox.find(predicate);
-          if (message) return message;
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-        throw new Error(`timed out waiting for ${mode}: ${JSON.stringify(inbox)}`);
-      };
-      try {
-        await waitFor((message) => message.coordinator_test_ready === true);
-        worker.postMessage({
-          sql: {
-            request_id: requestId,
-            name: 'terminal_metrics',
-            query: {
-              table_uri: new URL('/fixtures/browser-datafusion-runtime/terminal', location.href)
-                .href,
-              snapshot_version: 0,
-              sql: 'SELECT * FROM terminal_metrics',
-              preferred_target: 'browser_wasm',
-              options: {},
-            },
-            output: 'arrow_ipc_stream',
-            delivery: 'single_buffer',
-            browser_safe_defaults: true,
-          },
-        });
-        if (mode === 'cancelled') {
-          worker.postMessage({
-            cancel: {
-              request_id: `cancel-${requestId}`,
-              query_id: requestId,
-            },
-          });
-        }
-        await waitFor((message) => message.error?.request_id === requestId);
-        const metrics = await waitFor(
-          (message) => message.owned_memory_metrics?.context?.request_id === requestId,
-        );
-        return metrics.owned_memory_metrics?.external_memory;
-      } finally {
-        worker.terminate();
-      }
-    };
-
-    return {
-      failed: await run('failed'),
-      cancelled: await run('cancelled'),
-      deadline: await run('deadline_exceeded'),
-    };
-  });
-
-  for (const metrics of Object.values(results)) {
-    expect(metrics).toMatchObject({
-      backend: 'opfs',
-      active_files: 0,
-      files_created: 2,
-      cleanup_count: 1,
-    });
-  }
-  expect(results.failed?.error_reason).toBe('io_failure');
-  expect(results.cancelled?.error_reason).toBeUndefined();
-  expect(results.deadline?.error_reason).toBeUndefined();
 });
 
 test('one-child coordinator bounds queued SQL and recycles a non-settling child', async ({

@@ -2,9 +2,9 @@
 //!
 //! This crate is intentionally isolated from Axon's default browser runtime and worker artifact.
 
-mod ipc_cursor;
 #[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
-mod opfs_spill_storage;
+mod browser_spill;
+mod ipc_cursor;
 
 pub use ipc_cursor::{
     ArrowIpcPhase, CursorFault, DataFusionIpcCursor, IpcCursorItem, IpcCursorMetrics, IpcPreview,
@@ -37,14 +37,12 @@ use datafusion::common::ScalarValue;
 use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
-#[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
-use datafusion::execution::memory_pool::FairSpillPool;
-#[cfg(not(all(target_arch = "wasm32", feature = "browser-external-memory")))]
-use datafusion::execution::memory_pool::GreedyMemoryPool;
 use datafusion::execution::memory_pool::{
-    MemoryLimit, MemoryPool, MemoryReservation, TrackConsumersPool,
+    FairSpillPool, MemoryLimit, MemoryPool, MemoryReservation, TrackConsumersPool,
 };
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+#[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
+use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Expr, Operator, TableProviderFilterPushDown, TableType};
 use datafusion::physical_expr::EquivalenceProperties;
@@ -55,8 +53,6 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream,
 };
 use datafusion::prelude::{SessionConfig, SessionContext};
-#[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
-use datafusion_execution::spill_storage::{SpillStorage, SpillStorageConfig};
 use futures_util::{
     stream::{self, BoxStream},
     StreamExt, TryStreamExt,
@@ -101,10 +97,7 @@ pub const RESPONSIBILITY: &str =
 pub const DEFAULT_TABLE_NAME: &str = "t";
 pub const SMOKE_SQL: &str =
     "SELECT id, value FROM t WHERE category = 'B' AND value > 10 ORDER BY id";
-#[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
 pub const DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES: usize = 128 * 1024 * 1024;
-#[cfg(not(all(target_arch = "wasm32", feature = "browser-external-memory")))]
-pub const DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn runtime_target() -> ExecutionTarget {
     ExecutionTarget::BrowserWasm
@@ -161,20 +154,16 @@ pub struct BrowserDataFusionMemoryMetrics {
 
 #[derive(Debug)]
 struct BrowserDataFusionMemoryPool {
-    inner: BrowserDataFusionPoolInner,
+    inner: TrackConsumersPool<FairSpillPool>,
     limit_bytes: usize,
     peak_bytes: AtomicUsize,
 }
 
 impl BrowserDataFusionMemoryPool {
     fn new(limit_bytes: NonZeroUsize) -> Self {
-        #[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
-        let pool = FairSpillPool::new(limit_bytes.get());
-        #[cfg(not(all(target_arch = "wasm32", feature = "browser-external-memory")))]
-        let pool = GreedyMemoryPool::new(limit_bytes.get());
         Self {
             inner: TrackConsumersPool::new(
-                pool,
+                FairSpillPool::new(limit_bytes.get()),
                 NonZeroUsize::new(5).expect("tracked consumer count is non-zero"),
             ),
             limit_bytes: limit_bytes.get(),
@@ -190,21 +179,11 @@ impl BrowserDataFusionMemoryPool {
         }
     }
 
-    fn begin_query_metrics(&self) {
-        self.peak_bytes
-            .store(self.inner.reserved(), Ordering::Relaxed);
-    }
-
     fn record_peak(&self) {
         self.peak_bytes
             .fetch_max(self.inner.reserved(), Ordering::Relaxed);
     }
 }
-
-#[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
-type BrowserDataFusionPoolInner = TrackConsumersPool<FairSpillPool>;
-#[cfg(not(all(target_arch = "wasm32", feature = "browser-external-memory")))]
-type BrowserDataFusionPoolInner = TrackConsumersPool<GreedyMemoryPool>;
 
 impl MemoryPool for BrowserDataFusionMemoryPool {
     fn register(&self, consumer: &datafusion::execution::memory_pool::MemoryConsumer) {
@@ -2115,18 +2094,19 @@ fn query_budget_exceeded_error_at(
     let message = format!(
         "experimental browser DataFusion query exceeded {budget_name} budget during {point} ({observed} > {max_allowed})"
     );
-    if matches!(
-        budget_name,
-        "max_batches_in_flight" | "max_output_ipc_bytes" | "max_rows_returned"
-    ) {
-        QueryError::new(QueryErrorCode::ResourceExhausted, message, runtime_target())
-            .with_resource_details(QueryResourceDetails {
-                resource: QueryResource::ResultOutput,
-                reason: QueryResourceReason::Unavailable,
-            })
-    } else {
-        QueryError::new(QueryErrorCode::FallbackRequired, message, runtime_target())
-            .with_fallback_reason(FallbackReason::BrowserRuntimeConstraint)
+    match budget_name {
+        "max_output_ipc_bytes"
+        | "max_pending_encoded_batch_bytes"
+        | "max_batches_in_flight"
+        | "max_rows_returned" => {
+            QueryError::new(QueryErrorCode::ResourceExhausted, message, runtime_target())
+                .with_resource_details(QueryResourceDetails {
+                    resource: QueryResource::ResultOutput,
+                    reason: QueryResourceReason::QuotaExceeded,
+                })
+        }
+        _ => QueryError::new(QueryErrorCode::FallbackRequired, message, runtime_target())
+            .with_fallback_reason(FallbackReason::BrowserRuntimeConstraint),
     }
 }
 
@@ -2296,6 +2276,7 @@ pub struct WasmDataFusionEngine {
     range_cache: ParquetRangeCache,
     page_index_mode: PageIndexMode,
     adaptive_page_index_state: AdaptivePageIndexState,
+    spill_execution_id: Option<u32>,
 }
 
 impl fmt::Debug for WasmDataFusionEngine {
@@ -2318,7 +2299,7 @@ impl WasmDataFusionEngine {
         query_budget: BrowserQueryBudget,
         memory_limit_bytes: usize,
     ) -> Result<Self, QueryError> {
-        Self::try_with_budget_cancellation_caches_and_memory_limit(
+        Self::with_budget_cancellation_and_caches_and_memory_limit(
             query_budget,
             BrowserQueryCancellation::default(),
             ParquetMetadataCache::default(),
@@ -2327,7 +2308,7 @@ impl WasmDataFusionEngine {
         )
     }
 
-    pub fn try_with_budget_cancellation_caches_and_memory_limit(
+    pub fn with_budget_cancellation_and_caches_and_memory_limit(
         query_budget: BrowserQueryBudget,
         cancellation: BrowserQueryCancellation,
         metadata_cache: ParquetMetadataCache,
@@ -2399,7 +2380,7 @@ impl WasmDataFusionEngine {
     ) -> Self {
         let memory_pool = Arc::new(BrowserDataFusionMemoryPool::new(memory_limit_bytes));
         let runtime_memory_pool: Arc<dyn MemoryPool> = memory_pool.clone();
-        let runtime_builder = RuntimeEnvBuilder::new()
+        let runtime = RuntimeEnvBuilder::new()
             .with_memory_pool(runtime_memory_pool)
             // The browser has no filesystem. Left at its default the disk manager resolves a
             // spill directory through std::env::temp_dir(), which panics on wasm32 with "no
@@ -2407,23 +2388,16 @@ impl WasmDataFusionEngine {
             // would spill returns a resources-exhausted error the query path can report.
             .with_disk_manager_builder(
                 DiskManagerBuilder::default().with_mode(DiskManagerMode::Disabled),
-            );
-        let runtime = runtime_builder
+            )
             .build()
             .expect("browser DataFusion runtime with an in-memory pool should construct");
-        #[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
-        let session_config = {
-            let spill_storage: Arc<dyn SpillStorage> =
-                Arc::new(opfs_spill_storage::OpfsSpillStorage);
-            SessionConfig::new()
-                .with_batch_size(4_096)
-                .with_target_partitions(1)
-                .with_extension(Arc::new(SpillStorageConfig::new(spill_storage)))
-        };
-        #[cfg(not(all(target_arch = "wasm32", feature = "browser-external-memory")))]
-        let session_config = SessionConfig::new();
         Self {
-            ctx: SessionContext::new_with_config_rt(session_config, Arc::new(runtime)),
+            ctx: SessionContext::new_with_config_rt(
+                SessionConfig::new()
+                    .with_target_partitions(1)
+                    .with_batch_size(4_096),
+                Arc::new(runtime),
+            ),
             memory_pool,
             query_budget,
             cancellation,
@@ -2431,11 +2405,19 @@ impl WasmDataFusionEngine {
             range_cache,
             page_index_mode: PageIndexMode::Skip,
             adaptive_page_index_state: AdaptivePageIndexState::default(),
+            spill_execution_id: None,
         }
     }
 
     pub fn query_budget(&self) -> BrowserQueryBudget {
         self.query_budget
+    }
+
+    /// Selects the worker-local spill execution used for the next query.
+    /// Execution id zero installs an unavailable backend so small queries can
+    /// proceed while a real spill reports `spill_storage/unavailable`.
+    pub fn set_external_memory_execution(&mut self, execution_id: Option<u32>) -> Option<u32> {
+        std::mem::replace(&mut self.spill_execution_id, execution_id)
     }
 
     pub fn memory_metrics(&self) -> BrowserDataFusionMemoryMetrics {
@@ -2755,6 +2737,19 @@ impl WasmDataFusionEngine {
         state
             .config_mut()
             .set_extension(Arc::new(PageIndexMemoryPressure(memory_pressure)));
+        #[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
+        if let Some(execution_id) = self.spill_execution_id {
+            let memory_pool: Arc<dyn MemoryPool> = self.memory_pool.clone();
+            let spill_storage: Arc<dyn datafusion::execution::spill_storage::SpillStorage> =
+                browser_spill::BrowserOpfsSpillStorage::new(execution_id, memory_pool);
+            let runtime = RuntimeEnvBuilder::from_runtime_env(state.runtime_env())
+                .with_spill_storage(spill_storage)
+                .build()
+                .expect("execution-scoped browser spill runtime should construct");
+            state = SessionStateBuilder::new_from_existing(state)
+                .with_runtime_env(Arc::new(runtime))
+                .build();
+        }
         (SessionContext::new_with_state(state), query_context)
     }
 }
@@ -3044,55 +3039,86 @@ fn map_datafusion_error(error: datafusion::error::DataFusionError) -> QueryError
     if let Some(query_error) = query_error_from_datafusion_error(&error) {
         return query_error;
     }
-
-    #[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
-    if let DataFusionError::External(source) = error.find_root() {
-        if let Some(spill_error) =
-            source.downcast_ref::<datafusion_execution::spill_storage::SpillStorageError>()
-        {
-            use datafusion_execution::spill_storage::SpillStorageErrorReason;
-            let reason = match spill_error.reason() {
-                SpillStorageErrorReason::Unavailable => QueryResourceReason::Unavailable,
-                SpillStorageErrorReason::QuotaExceeded => QueryResourceReason::QuotaExceeded,
-                SpillStorageErrorReason::IoFailure => QueryResourceReason::IoFailure,
-            };
-            return QueryError::new(
-                QueryErrorCode::ResourceExhausted,
-                spill_error.to_string(),
-                runtime_target(),
-            )
+    let error_text = error.to_string();
+    if error_text.contains("spill_storage/io_failure") {
+        let operation = [
+            "create_scope",
+            "create_writer",
+            "open_reader",
+            "delete_file",
+            "delete_scope",
+            "write",
+            "read",
+            "flush",
+        ]
+        .into_iter()
+        .find(|operation| error_text.contains(operation));
+        let message = operation.map_or_else(
+            || "browser aggregate spill storage I/O failed".to_owned(),
+            |operation| format!("browser aggregate spill storage I/O failed during {operation}"),
+        );
+        return QueryError::new(QueryErrorCode::ResourceExhausted, message, runtime_target())
             .with_resource_details(QueryResourceDetails {
                 resource: QueryResource::SpillStorage,
-                reason,
+                reason: QueryResourceReason::IoFailure,
             });
-        }
+    }
+    if error_text.contains("spill_storage/quota_exceeded") {
+        return resource_exhausted_from_datafusion_message("spill_storage/quota_exceeded");
+    }
+    if error_text.contains("spill_storage/unavailable") {
+        return resource_exhausted_from_datafusion_message("spill_storage/unavailable");
+    }
+    if error_text.contains("operator_memory/quota_exceeded") {
+        return resource_exhausted_from_datafusion_message("operator_memory/quota_exceeded");
     }
 
     // Classify on the root error. DataFusion wraps failures raised deep in an operator with
-    // context, and a wrapped ResourcesExhausted still means the browser hit its bounded
-    // operator-memory policy rather than an opaque execution failure. It must not silently change
-    // execution authority.
+    // context, and a wrapped ResourcesExhausted still means the browser hit a
+    // bounded resource limit rather than an opaque execution failure.
     match error.find_root() {
         DataFusionError::NotImplemented(message) => QueryError::new(
             QueryErrorCode::UnsupportedFeature,
             message.clone(),
             runtime_target(),
         ),
-        DataFusionError::ResourcesExhausted(message) => QueryError::new(
-            QueryErrorCode::ResourceExhausted,
-            format!("browser DataFusion operator memory pool exhausted: {message}"),
-            runtime_target(),
-        )
-        .with_resource_details(QueryResourceDetails {
-            resource: QueryResource::OperatorMemory,
-            reason: QueryResourceReason::Unavailable,
-        }),
+        DataFusionError::ResourcesExhausted(message) => {
+            resource_exhausted_from_datafusion_message(message)
+        }
         _ => QueryError::new(
             QueryErrorCode::ExecutionFailed,
             format!("experimental browser DataFusion query failed: {error}"),
             runtime_target(),
         ),
     }
+}
+
+fn resource_exhausted_from_datafusion_message(message: &str) -> QueryError {
+    let (resource, reason, public_message) = if message.contains("spill_storage/unavailable") {
+        (
+            QueryResource::SpillStorage,
+            QueryResourceReason::Unavailable,
+            "browser aggregate spill storage is unavailable".to_owned(),
+        )
+    } else if message.contains("spill_storage/quota_exceeded") {
+        (
+            QueryResource::SpillStorage,
+            QueryResourceReason::QuotaExceeded,
+            "browser aggregate spill storage quota was exceeded".to_owned(),
+        )
+    } else {
+        (
+            QueryResource::OperatorMemory,
+            QueryResourceReason::QuotaExceeded,
+            format!("browser DataFusion operator memory pool exhausted: {message}"),
+        )
+    };
+    QueryError::new(
+        QueryErrorCode::ResourceExhausted,
+        public_message,
+        runtime_target(),
+    )
+    .with_resource_details(QueryResourceDetails { resource, reason })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3166,27 +3192,6 @@ mod tests {
         assert_eq!(pool.metrics().reserved_bytes, 0);
         assert_eq!(pool.metrics().peak_bytes, 60);
     }
-
-    #[test]
-    fn operator_memory_exhaustion_is_resource_exhausted_without_fallback_authority() {
-        let error = map_datafusion_error(DataFusionError::ResourcesExhausted(
-            "additional allocation failed for GroupedHashAggregateStream".to_string(),
-        ));
-
-        assert_eq!(error.code, QueryErrorCode::ResourceExhausted);
-        assert_eq!(error.fallback_reason, None);
-        assert_eq!(
-            error.resource_details,
-            Some(query_contract::QueryResourceDetails {
-                resource: query_contract::QueryResource::OperatorMemory,
-                reason: query_contract::QueryResourceReason::Unavailable,
-            })
-        );
-        assert!(error
-            .message
-            .contains("browser DataFusion operator memory pool exhausted"));
-    }
-
     use parquet::file::writer::SerializedFileWriter;
     use parquet::schema::parser::parse_message_type;
 

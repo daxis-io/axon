@@ -41,6 +41,10 @@ import {
 } from './sandbox-query-stream-protocol';
 import { isBrowserDataFusionCancellation } from './services/query-cancellation.ts';
 import { querySessionInvalidationMessage } from './services/query-session-invalidation.ts';
+import {
+  BROWSER_MEMORY_PROFILE_QUERY_PARAM,
+  parseBrowserMemoryProfileMib,
+} from './browser-memory-profile.ts';
 
 type DecimalString = string;
 
@@ -216,17 +220,33 @@ function createChild(): Worker {
   const workerSearchParams = new URL(globalThis.location.href).searchParams;
   const workerNameParams = new URLSearchParams(workerScope.name.split('?', 2)[1] ?? '');
   const childConfig = new URLSearchParams();
+  const requestedMemoryProfileMiB =
+    workerNameParams.get(BROWSER_MEMORY_PROFILE_QUERY_PARAM) ??
+    workerSearchParams.get(BROWSER_MEMORY_PROFILE_QUERY_PARAM) ??
+    workerNameParams.get('datafusion_memory_profile_mib') ??
+    workerSearchParams.get('datafusion_memory_profile_mib');
+  const memoryProfileParams = new URLSearchParams();
+  if (requestedMemoryProfileMiB !== null) {
+    memoryProfileParams.set(BROWSER_MEMORY_PROFILE_QUERY_PARAM, requestedMemoryProfileMiB);
+  }
+  childConfig.set(
+    BROWSER_MEMORY_PROFILE_QUERY_PARAM,
+    String(parseBrowserMemoryProfileMib(memoryProfileParams)),
+  );
+  const externalMemory =
+    workerNameParams.get('browser_external_memory') ??
+    workerSearchParams.get('browser_external_memory');
+  if (externalMemory !== null) {
+    if (externalMemory !== 'enabled' && externalMemory !== 'disabled') {
+      throw new Error(`unsupported browser external-memory mode '${externalMemory}'`);
+    }
+    childConfig.set('browser_external_memory', externalMemory);
+  }
   const pageIndexMode = workerSearchParams.get('page_index_mode');
   if (pageIndexMode !== null) childConfig.set('page_index_mode', pageIndexMode);
   const pageIndexErrorMarginUs = workerSearchParams.get('page_index_error_margin_us');
   if (pageIndexErrorMarginUs !== null) {
     childConfig.set('page_index_error_margin_us', pageIndexErrorMarginUs);
-  }
-  const datafusionMemoryProfileMiB =
-    workerNameParams.get('datafusion_memory_profile_mib') ??
-    workerSearchParams.get('datafusion_memory_profile_mib');
-  if (datafusionMemoryProfileMiB !== null) {
-    childConfig.set('datafusion_memory_profile_mib', datafusionMemoryProfileMiB);
   }
   const datafusionSpillCapMiB =
     workerNameParams.get('datafusion_spill_cap_mib') ??

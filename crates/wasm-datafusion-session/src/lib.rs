@@ -290,23 +290,13 @@ struct DataFusionSessionReuseMetrics {
 }
 
 impl BrowserDataFusionSession {
+    pub fn set_external_memory_execution(&mut self, execution_id: Option<u32>) -> Option<u32> {
+        self.datafusion.set_external_memory_execution(execution_id)
+    }
+
     pub fn new(config: BrowserRuntimeConfig, max_cached_bytes: u64) -> Result<Self, QueryError> {
         let query_budget = datafusion_query_budget_from_runtime_config(&config);
         Self::new_with_query_budget(config, max_cached_bytes, query_budget)
-    }
-
-    pub fn new_with_memory_limit(
-        config: BrowserRuntimeConfig,
-        max_cached_bytes: u64,
-        memory_limit_bytes: usize,
-    ) -> Result<Self, QueryError> {
-        let query_budget = datafusion_query_budget_from_runtime_config(&config);
-        Self::new_with_query_budget_and_memory_limit(
-            config,
-            max_cached_bytes,
-            query_budget,
-            memory_limit_bytes,
-        )
     }
 
     pub fn new_with_query_budget(
@@ -322,12 +312,12 @@ impl BrowserDataFusionSession {
         )
     }
 
-    pub fn new_with_query_budget_and_memory_limit(
+    pub fn new_with_memory_limit(
         config: BrowserRuntimeConfig,
         max_cached_bytes: u64,
-        query_budget: BrowserDataFusionQueryBudget,
         memory_limit_bytes: usize,
     ) -> Result<Self, QueryError> {
+        let query_budget = datafusion_query_budget_from_runtime_config(&config);
         Self::new_with_query_budget_and_optional_memory_limit(
             config,
             max_cached_bytes,
@@ -349,7 +339,7 @@ impl BrowserDataFusionSession {
         let range_cache = runtime.range_cache().clone();
         let mut datafusion = match memory_limit_bytes {
             Some(memory_limit_bytes) => {
-                WasmDataFusionEngine::try_with_budget_cancellation_caches_and_memory_limit(
+                WasmDataFusionEngine::with_budget_cancellation_and_caches_and_memory_limit(
                     query_budget.into(),
                     BrowserQueryCancellation::default(),
                     metadata_cache,
@@ -381,10 +371,6 @@ impl BrowserDataFusionSession {
 
     pub fn datafusion_query_budget(&self) -> BrowserDataFusionQueryBudget {
         self.query_budget
-    }
-
-    pub fn datafusion_memory_metrics(&self) -> BrowserDataFusionMemoryMetrics {
-        self.datafusion.memory_metrics()
     }
 
     pub fn set_page_index_mode(
@@ -1948,22 +1934,6 @@ mod tests {
     use super::*;
 
     use query_contract::{BrowserHttpFileDescriptor, CapabilityReport};
-
-    #[test]
-    fn session_applies_an_explicit_measured_memory_profile() {
-        let session = BrowserDataFusionSession::new_with_memory_limit(
-            BrowserRuntimeConfig::default(),
-            u64::MAX,
-            128 * 1024 * 1024,
-        )
-        .expect("an approved non-zero memory profile should construct");
-
-        assert_eq!(
-            session.datafusion_memory_metrics().limit_bytes,
-            128 * 1024 * 1024
-        );
-    }
-
     #[test]
     fn open_delta_table_registers_descriptor_and_sql_returns_arrow_ipc() {
         let mut session = BrowserDataFusionSession::new(BrowserRuntimeConfig::default(), u64::MAX)
@@ -2127,7 +2097,7 @@ mod tests {
             error.resource_details,
             Some(query_contract::QueryResourceDetails {
                 resource: query_contract::QueryResource::ResultOutput,
-                reason: query_contract::QueryResourceReason::Unavailable,
+                reason: query_contract::QueryResourceReason::QuotaExceeded,
             })
         );
         assert!(

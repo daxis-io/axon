@@ -6,6 +6,8 @@ use wasm_datafusion_poc::{BrowserQueryBudget, DEFAULT_BROWSER_DATAFUSION_MEMORY_
 const DAXIS_DEFAULT_WORKER_BROTLI_BUDGET_BYTES: u64 = 6 * 1024 * 1024;
 const DAXIS_COORDINATOR_AGGREGATE_STAGING_BYTES: u64 = 32 * 1024 * 1024;
 const DAXIS_DEFAULT_WORKER_SIZE_COMMAND: &str = "AXON_DF_SIZE_PACKAGE=axon-web-wasm AXON_DF_SIZE_WASM_STEM=axon_web_wasm AXON_DF_BROTLI_BUDGET_BYTES=6291456 bash tests/perf/report_datafusion_wasm_size.sh";
+const BROWSER_EXTERNAL_MEMORY_COMMAND: &str =
+    "bash apps/axon-web/scripts/verify-browser-external-memory.sh";
 
 #[test]
 fn daxis_browser_datafusion_budget_profile_is_release_gate_ready() {
@@ -77,6 +79,28 @@ fn daxis_browser_datafusion_budget_profile_is_release_gate_ready() {
         unsigned(memory, "coordinatorAggregateStagingBytes"),
         DAXIS_COORDINATOR_AGGREGATE_STAGING_BYTES
     );
+    let external_memory = &profile["externalMemory"];
+    assert_eq!(external_memory["backend"], "opfs");
+    assert_eq!(
+        unsigned(external_memory, "workingSetDefaultBytes"),
+        128 * 1024 * 1024
+    );
+    assert_eq!(
+        unsigned(external_memory, "conformanceProfileBytes"),
+        64 * 1024 * 1024
+    );
+    assert_eq!(unsigned(external_memory, "executionPartitions"), 1);
+    assert_eq!(unsigned(external_memory, "batchRows"), 4_096);
+    assert_eq!(unsigned(external_memory, "mergeFanIn"), 8);
+    assert_eq!(external_memory["ipcCompression"], "none");
+    assert_eq!(
+        string_array(external_memory, "enabledOperators"),
+        ["grouped_hash_aggregate", "external_sort"]
+    );
+    assert_eq!(
+        string_array(external_memory, "pendingOperators"),
+        ["spill_pool_repartition", "sort_merge_join"]
+    );
 
     let commands = profile["verificationCommands"]
         .as_array()
@@ -92,6 +116,7 @@ fn daxis_browser_datafusion_budget_profile_is_release_gate_ready() {
     for expected in [
         "cargo test -p wasm-datafusion-poc --test query_budgets",
         "cargo test -p wasm-datafusion-poc --test daxis_query_corpus",
+        BROWSER_EXTERNAL_MEMORY_COMMAND,
         DAXIS_DEFAULT_WORKER_SIZE_COMMAND,
         "bash tests/perf/browser_datafusion_engine_smoke.sh",
     ] {
@@ -100,6 +125,27 @@ fn daxis_browser_datafusion_budget_profile_is_release_gate_ready() {
             "Daxis DataFusion budget profile should name verification command: {expected}"
         );
     }
+}
+
+fn string_array<'a>(value: &'a Value, field: &str) -> Vec<&'a str> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{field} should be an array"))
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .unwrap_or_else(|| panic!("{field} should contain strings"))
+        })
+        .collect()
+}
+
+#[test]
+fn browser_external_memory_uses_a_128_mib_working_set() {
+    assert_eq!(
+        DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES,
+        128 * 1024 * 1024
+    );
 }
 
 fn unsigned(value: &Value, field: &str) -> u64 {

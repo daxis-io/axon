@@ -829,7 +829,6 @@ impl WasmDataFusionEngine {
         mut limits: IpcStreamLimits,
         include_physical_plan: bool,
     ) -> Result<DataFusionIpcCursor, QueryError> {
-        self.memory_pool.begin_query_metrics();
         validate_stream_limits(limits)?;
         limits.max_total_encoded_bytes = min_optional_u64(
             limits.max_total_encoded_bytes,

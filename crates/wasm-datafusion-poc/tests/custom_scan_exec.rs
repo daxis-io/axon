@@ -69,7 +69,7 @@ async fn datafusion_executes_aggregate_above_custom_scan() {
 }
 
 #[tokio::test]
-async fn datafusion_operator_memory_exhaustion_is_authority_neutral_resource_failure() {
+async fn datafusion_operator_memory_exhaustion_preserves_browser_authority() {
     let invalid =
         WasmDataFusionEngine::with_budget_and_memory_limit(BrowserQueryBudget::default(), 0)
             .expect_err("a zero-byte DataFusion memory pool must be rejected");
@@ -104,7 +104,7 @@ async fn datafusion_operator_memory_exhaustion_is_authority_neutral_resource_fai
         error.resource_details,
         Some(QueryResourceDetails {
             resource: QueryResource::OperatorMemory,
-            reason: QueryResourceReason::Unavailable,
+            reason: QueryResourceReason::QuotaExceeded,
         })
     );
     assert!(

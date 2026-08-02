@@ -1792,6 +1792,12 @@ pub struct QueryMetricsSummary {
     /// Abandoned spill namespaces removed by recovery cleanup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spill_abandoned_cleanup_count: Option<u64>,
+    /// Files removed during deterministic spill cleanup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_cleanup_files: Option<u64>,
+    /// Query scopes removed during deterministic spill cleanup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_cleanup_scopes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

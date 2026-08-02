@@ -874,7 +874,7 @@ test('withholds Arrow publication when actual output exceeds the admitted byte l
       code: 'resource_exhausted',
       resource_details: {
         resource: 'result_output',
-        reason: 'unavailable',
+        reason: 'quota_exceeded',
       },
       target: 'browser_wasm',
     },

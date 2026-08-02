@@ -35,14 +35,33 @@
     "cursorPendingEncodedBytes": 8388608,
     "transportChunkBytes": 1048576,
     "postGcRetainedHeapDeltaBytes": 16777216,
-    "datafusionOperatorPoolBytes": 67108864,
+    "datafusionOperatorPoolBytes": 134217728,
     "profileScope": "Bounds per-query and aggregate coordinator Arrow IPC staging, DataFusion-registered operator reservations, cursor buffers, and the Chromium post-GC user-agent memory delta. It does not bound every Rust, Arrow, Wasm, JavaScript, cache, or browser allocation; full browser-process RSS and production fleet dashboards remain M4 Daxis operations work.",
     "reportCommand": "bash tests/perf/browser_query_performance.sh"
+  },
+  "externalMemory": {
+    "backend": "opfs",
+    "workingSetDefaultBytes": 134217728,
+    "conformanceProfileBytes": 67108864,
+    "executionPartitions": 1,
+    "batchRows": 4096,
+    "mergeFanIn": 8,
+    "ipcCompression": "none",
+    "enabledOperators": [
+      "grouped_hash_aggregate",
+      "external_sort"
+    ],
+    "pendingOperators": [
+      "spill_pool_repartition",
+      "sort_merge_join"
+    ],
+    "profileScope": "Operator support is an explicit allowlist. Browser external memory does not imply that every DataFusion spilling operator is storage-neutral."
   },
   "verificationCommands": [
     "cargo test -p wasm-datafusion-poc --test query_budgets",
     "cargo test -p wasm-datafusion-poc --test daxis_query_corpus",
     "cargo test -p wasm-datafusion-poc --test daxis_budget_profile",
+    "bash apps/axon-web/scripts/verify-browser-external-memory.sh",
     "AXON_DF_SIZE_PACKAGE=axon-web-wasm AXON_DF_SIZE_WASM_STEM=axon_web_wasm AXON_DF_BROTLI_BUDGET_BYTES=6291456 bash tests/perf/report_datafusion_wasm_size.sh",
     "bash tests/perf/browser_query_performance.sh",
     "bash tests/perf/browser_datafusion_engine_smoke.sh"

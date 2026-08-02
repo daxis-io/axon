@@ -17,6 +17,12 @@ if (requestedBrowser && !(requestedBrowser in browserDevices)) {
 }
 const browserName = (requestedBrowser ?? 'chromium') as keyof typeof browserDevices;
 const desktopDevice = browserDevices[browserName];
+const browserProjects =
+  process.env.AXON_EDITOR_BROWSER_MATRIX === '1'
+    ? (Object.entries(browserDevices) as [keyof typeof browserDevices, typeof desktopDevice][]).map(
+        ([name, device]) => ({ name, use: { ...device } }),
+      )
+    : [{ name: browserName, use: { ...desktopDevice } }];
 
 export default defineConfig({
   testDir: './tests',
@@ -27,5 +33,5 @@ export default defineConfig({
     baseURL,
     ignoreHTTPSErrors: true,
   },
-  projects: [{ name: browserName, use: { ...desktopDevice } }],
+  projects: browserProjects,
 });

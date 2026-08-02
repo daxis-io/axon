@@ -10,6 +10,10 @@ import {
   browserExternalMemoryCanaryCapBytes,
 } from '../browser-datafusion-memory-policy.ts';
 import {
+  BROWSER_MEMORY_PROFILE_QUERY_PARAM,
+  browserQueryWorkerName,
+} from '../browser-memory-profile.ts';
+import {
   AxonWorkerError,
   createAxonBrowserClient,
   redactUrlSecrets,
@@ -360,18 +364,14 @@ function createQueryClient(): AxonBrowserClient {
   // bundler-critical inline worker URL remains static.
   browserDataFusionMemoryOverrideBytes(memoryProfileMiB);
   const spillCapBytes = browserExternalMemoryCanaryCapBytes(spillCapMiB);
-  const workerConfig = new URLSearchParams();
+  const workerConfig = new URLSearchParams(search);
   if (memoryProfileMiB) {
-    workerConfig.set('datafusion_memory_profile_mib', memoryProfileMiB);
+    workerConfig.set(BROWSER_MEMORY_PROFILE_QUERY_PARAM, memoryProfileMiB);
   }
+  let workerName = browserQueryWorkerName(workerConfig);
   if (spillCapBytes !== undefined) {
-    workerConfig.set('datafusion_spill_cap_mib', String(spillCapBytes / (1024 * 1024)));
+    workerName += `&datafusion_spill_cap_mib=${spillCapBytes / (1024 * 1024)}`;
   }
-  const serializedWorkerConfig = workerConfig.toString();
-  const workerName =
-    serializedWorkerConfig.length === 0
-      ? 'axon-editor-query-worker'
-      : `axon-editor-query-worker?${serializedWorkerConfig}`;
   return createAxonBrowserClient({
     worker: () =>
       new Worker(new URL('../sandbox-query-worker.ts', import.meta.url), {
@@ -1253,6 +1253,8 @@ const QUERY_METRIC_FIELDS: readonly QueryMetricField[] = [
   ['spill_merge_passes', 'spillMergePasses'],
   ['spill_cleanup_count', 'spillCleanupCount'],
   ['spill_abandoned_cleanup_count', 'spillAbandonedCleanupCount'],
+  ['spill_cleanup_files', 'spillCleanupFiles'],
+  ['spill_cleanup_scopes', 'spillCleanupScopes'],
 ];
 
 function executeResponseForWorkerEvent(

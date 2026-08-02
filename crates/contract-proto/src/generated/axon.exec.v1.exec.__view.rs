@@ -2471,6 +2471,10 @@ pub struct QueryMetricsSummaryView<'a> {
     pub spill_cleanup_count: ::core::option::Option<u64>,
     /// Field 71: `spill_abandoned_cleanup_count`
     pub spill_abandoned_cleanup_count: ::core::option::Option<u64>,
+    /// Field 72: `spill_cleanup_files`
+    pub spill_cleanup_files: ::core::option::Option<u64>,
+    /// Field 73: `spill_cleanup_scopes`
+    pub spill_cleanup_scopes: ::core::option::Option<u64>,
     pub __buffa_unknown_fields: ::buffa::UnknownFieldsView<'a>,
 }
 impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
@@ -3110,6 +3114,24 @@ impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
                     ::buffa::types::decode_uint64(&mut cur)?,
                 );
             }
+            72u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.spill_cleanup_files = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
+            73u32 => {
+                ::buffa::encoding::check_wire_type(
+                    tag,
+                    ::buffa::encoding::WireType::Varint,
+                )?;
+                view.spill_cleanup_scopes = Some(
+                    ::buffa::types::decode_uint64(&mut cur)?,
+                );
+            }
             _ => {
                 ::buffa::encoding::skip_field_depth(tag, &mut cur, ctx.depth())?;
                 let span_len = before_tag.len() - cur.len();
@@ -3218,6 +3240,8 @@ impl<'a> ::buffa::MessageView<'a> for QueryMetricsSummaryView<'a> {
             spill_merge_passes: self.spill_merge_passes,
             spill_cleanup_count: self.spill_cleanup_count,
             spill_abandoned_cleanup_count: self.spill_abandoned_cleanup_count,
+            spill_cleanup_files: self.spill_cleanup_files,
+            spill_cleanup_scopes: self.spill_cleanup_scopes,
             __buffa_unknown_fields: self.__buffa_unknown_fields.to_owned()?.into(),
             ..::core::default::Default::default()
         })
@@ -3447,6 +3471,12 @@ impl<'a> ::buffa::ViewEncode<'a> for QueryMetricsSummaryView<'a> {
         if let Some(v) = self.spill_abandoned_cleanup_count {
             size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
         }
+        if let Some(v) = self.spill_cleanup_files {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
+        if let Some(v) = self.spill_cleanup_scopes {
+            size += 2u32 + ::buffa::types::uint64_encoded_len(v) as u32;
+        }
         size += self.__buffa_unknown_fields.encoded_len() as u32;
         size
     }
@@ -3671,6 +3701,12 @@ impl<'a> ::buffa::ViewEncode<'a> for QueryMetricsSummaryView<'a> {
         }
         if let Some(v) = self.spill_abandoned_cleanup_count {
             ::buffa::types::put_uint64_field(71u32, v, buf);
+        }
+        if let Some(v) = self.spill_cleanup_files {
+            ::buffa::types::put_uint64_field(72u32, v, buf);
+        }
+        if let Some(v) = self.spill_cleanup_scopes {
+            ::buffa::types::put_uint64_field(73u32, v, buf);
         }
         self.__buffa_unknown_fields.write_to(buf);
     }
@@ -4123,6 +4159,16 @@ impl QueryMetricsSummaryOwnedView {
     #[must_use]
     pub fn spill_abandoned_cleanup_count(&self) -> ::core::option::Option<u64> {
         self.0.reborrow().spill_abandoned_cleanup_count
+    }
+    /// Field 72: `spill_cleanup_files`
+    #[must_use]
+    pub fn spill_cleanup_files(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().spill_cleanup_files
+    }
+    /// Field 73: `spill_cleanup_scopes`
+    #[must_use]
+    pub fn spill_cleanup_scopes(&self) -> ::core::option::Option<u64> {
+        self.0.reborrow().spill_cleanup_scopes
     }
 }
 impl ::core::convert::From<::buffa::OwnedView<QueryMetricsSummaryView<'static>>>

@@ -741,6 +741,8 @@ export type QueryMetricsSummary = {
   spill_merge_passes?: number;
   spill_cleanup_count?: number;
   spill_abandoned_cleanup_count?: number;
+  spill_cleanup_files?: number;
+  spill_cleanup_scopes?: number;
 };
 
 export type QueryResponse = {
@@ -1314,6 +1316,7 @@ export class AxonWorkerError extends Error {
   readonly requestId: string;
   readonly queryError: QueryError;
   readonly fallbackReason?: FallbackReason;
+  readonly resourceDetails?: QueryResourceDetails;
   readonly envelope: BrowserWorkerErrorEnvelope;
 
   constructor(envelope: BrowserWorkerErrorEnvelope) {
@@ -1321,6 +1324,7 @@ export class AxonWorkerError extends Error {
     this.requestId = envelope.request_id;
     this.queryError = envelope.error;
     this.fallbackReason = envelope.error.fallback_reason;
+    this.resourceDetails = envelope.error.resource_details;
     this.envelope = envelope;
   }
 }
@@ -5182,7 +5186,7 @@ function normalizeQueryError(value: unknown, path: string): QueryError {
     throw new AxonProtocolError(`${path} must be an object`);
   }
 
-  return {
+  const normalized: QueryError = {
     code: requiredEnum(value.code, `${path}.code`, QUERY_ERROR_CODES),
     message: requiredString(value.message, `${path}.message`),
     target: requiredEnum(value.target, `${path}.target`, EXECUTION_TARGETS),
@@ -5195,12 +5199,24 @@ function normalizeQueryError(value: unknown, path: string): QueryError {
         ? undefined
         : normalizeQueryResourceDetails(value.resource_details, `${path}.resource_details`),
   };
+  if (normalized.code === 'resource_exhausted') {
+    if (!normalized.resource_details) {
+      throw new AxonProtocolError(`${path}.resource_details is required for resource_exhausted`);
+    }
+    if (normalized.fallback_reason !== undefined) {
+      throw new AxonProtocolError(`${path}.fallback_reason is forbidden for resource_exhausted`);
+    }
+  } else if (normalized.resource_details !== undefined) {
+    throw new AxonProtocolError(`${path}.resource_details is only valid for resource_exhausted`);
+  }
+  return normalized;
 }
 
 function normalizeQueryResourceDetails(value: unknown, path: string): QueryResourceDetails {
   if (!isObject(value)) {
     throw new AxonProtocolError(`${path} must be an object`);
   }
+  assertOnlyKeys(value, path, ['resource', 'reason']);
   return {
     resource: requiredEnum(value.resource, `${path}.resource`, QUERY_RESOURCES),
     reason: requiredEnum(value.reason, `${path}.reason`, QUERY_RESOURCE_REASONS),

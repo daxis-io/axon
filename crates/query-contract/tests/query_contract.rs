@@ -322,6 +322,8 @@ fn query_response_serializes_without_absent_fallback_reason() {
             spill_merge_passes: None,
             spill_cleanup_count: None,
             spill_abandoned_cleanup_count: None,
+            spill_cleanup_files: None,
+            spill_cleanup_scopes: None,
         },
         explain: None,
     };
@@ -492,6 +494,8 @@ fn query_response_serializes_browser_telemetry_when_present() {
             spill_merge_passes: None,
             spill_cleanup_count: None,
             spill_abandoned_cleanup_count: None,
+            spill_cleanup_files: None,
+            spill_cleanup_scopes: None,
         },
         explain: None,
     };
@@ -1328,6 +1332,8 @@ fn spill_metrics_are_bounded_numeric_telemetry_without_storage_identifiers() {
         spill_merge_passes: Some(1),
         spill_cleanup_count: Some(1),
         spill_abandoned_cleanup_count: Some(0),
+        spill_cleanup_files: Some(3),
+        spill_cleanup_scopes: Some(1),
         ..QueryMetricsSummary::default()
     };
 
@@ -1335,6 +1341,8 @@ fn spill_metrics_are_bounded_numeric_telemetry_without_storage_identifiers() {
     assert_eq!(json["spill_backend"], "opfs");
     assert_eq!(json["spill_files_created"], 3);
     assert_eq!(json["spill_active_files"], 0);
+    assert_eq!(json["spill_cleanup_files"], 3);
+    assert_eq!(json["spill_cleanup_scopes"], 1);
     let serialized = json.to_string();
     for forbidden in [
         "sql",
@@ -1426,6 +1434,8 @@ fn query_response_serializes_arrow_ipc_preview_and_phase_metrics() {
             spill_merge_passes: None,
             spill_cleanup_count: None,
             spill_abandoned_cleanup_count: None,
+            spill_cleanup_files: None,
+            spill_cleanup_scopes: None,
         },
         explain: None,
     };

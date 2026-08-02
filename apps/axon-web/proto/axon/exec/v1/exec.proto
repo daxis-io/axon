@@ -310,6 +310,8 @@ message QueryMetricsSummary {
   optional uint64 spill_merge_passes = 69 [json_name = "spill_merge_passes"];
   optional uint64 spill_cleanup_count = 70 [json_name = "spill_cleanup_count"];
   optional uint64 spill_abandoned_cleanup_count = 71 [json_name = "spill_abandoned_cleanup_count"];
+  optional uint64 spill_cleanup_files = 72 [json_name = "spill_cleanup_files"];
+  optional uint64 spill_cleanup_scopes = 73 [json_name = "spill_cleanup_scopes"];
 }
 
 // Carries execution metadata shared by full results and previews.

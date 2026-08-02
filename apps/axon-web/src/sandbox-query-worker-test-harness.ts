@@ -26,7 +26,9 @@ const firstChildUrl =
       ? new URL('./sandbox-query-child-boot-crash-test-worker.ts', import.meta.url).href
       : firstChild === 'terminal-metrics'
         ? new URL('./sandbox-query-child-terminal-metrics-test-worker.ts', import.meta.url).href
-        : undefined;
+        : firstChild === 'oversized-stage'
+          ? new URL('./sandbox-query-child-oversized-stage-test-worker.ts', import.meta.url).href
+          : undefined;
 
 scope.__AXON_SANDBOX_QUERY_COORDINATOR_TEST_CONFIG__ = {
   ...positiveIntegerParameter(parameters, 'deadline_ms', 'deadlineMs'),

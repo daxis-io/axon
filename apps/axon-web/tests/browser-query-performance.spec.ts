@@ -253,7 +253,11 @@ test('records real browser query timing, atomicity, and component memory bounds'
     error: {
       name: 'AxonWorkerError',
       queryError: {
-        code: 'execution_failed',
+        code: 'resource_exhausted',
+        resource_details: {
+          resource: 'result_output',
+          reason: 'quota_exceeded',
+        },
         target: 'browser_wasm',
       },
     },

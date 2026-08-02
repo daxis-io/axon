@@ -454,7 +454,8 @@ fn expected_scan_metrics(
     }
 }
 
-const ALL_CAPABILITY_KEYS: [CapabilityKey; 10] = [
+const ALL_CAPABILITY_KEYS: [CapabilityKey; 11] = [
+    CapabilityKey::BrowserExternalMemory,
     CapabilityKey::ChangeDataFeed,
     CapabilityKey::ColumnMapping,
     CapabilityKey::DeletionVectors,

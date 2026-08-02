@@ -12,5 +12,5 @@ publication_ref = "refs/heads/poc/wasm32-browser-stack"
 
 [[pins]]
 repository = "https://github.com/daxis-io/datafusion"
-revision = "f194c451c3b89c3d5eb1966e5bee596acaed90cb"
-publication_ref = "refs/heads/feat/path-free-spill-storage"
+revision = "8c5b4526a6b31ebec56f32c173f14be74240da49"
+publication_ref = "refs/heads/feat/opfs-aggregate-spill"
