@@ -4508,8 +4508,12 @@ dependencies = [
 name = "wasm-http-object-store"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
+ "chrono",
+ "futures",
  "js-sys",
+ "object_store",
  "query-contract",
  "reqwest 0.12.28",
  "sha2",

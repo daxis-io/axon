@@ -5,12 +5,18 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use bytes::Bytes;
+#[cfg(feature = "object-store-adapter")]
+use futures::StreamExt;
+#[cfg(feature = "object-store-adapter")]
+use object_store::{path::Path, ObjectStore, ObjectStoreExt};
 use query_contract::{
     BrokeredObjectAccess, FallbackReason, ObjectGrantBatchSignRequest,
     ObjectGrantBatchSignResponse, ObjectGrantHeadRequest, ObjectGrantListRequest,
     ObjectGrantListResponse, ObjectGrantObject, ObjectGrantRangeRequest, ObjectGrantSignedUrl,
     QueryError, QueryErrorCode,
 };
+#[cfg(feature = "object-store-adapter")]
+use wasm_http_object_store::BrokeredObjectStoreAdapter;
 use wasm_http_object_store::{
     BrokerFuture, BrokeredObjectStore, HttpRangeReader, ObjectGrantBrokerClient,
 };
@@ -149,6 +155,141 @@ impl ObjectGrantBrokerClient for FakeBrokerClient {
                 })
         })
     }
+}
+
+#[cfg(feature = "object-store-adapter")]
+#[tokio::test]
+async fn object_store_adapter_enforces_identity_and_bounded_reads() {
+    let (url, requests, server) = spawn_test_server(|request| {
+        assert_eq!(request.path.split('?').next(), Some("/part-000.parquet"));
+        assert_eq!(request.headers.get("range"), Some(&"bytes=2-5".to_string()));
+        assert_eq!(
+            request.headers.get("if-range"),
+            Some(&"\"part\"".to_string())
+        );
+        TestResponse {
+            status_line: "206 Partial Content",
+            headers: vec![
+                ("Content-Length".to_string(), "4".to_string()),
+                ("Content-Range".to_string(), "bytes 2-5/10".to_string()),
+                ("ETag".to_string(), "\"part\"".to_string()),
+            ],
+            body: b"cdef".to_vec(),
+        }
+    });
+    let client = FakeBrokerClient::with_state(FakeBrokerState {
+        objects: BTreeMap::from([
+            (
+                "part-000.parquet".to_string(),
+                ObjectGrantObject {
+                    path: "part-000.parquet".to_string(),
+                    size_bytes: 10,
+                    etag: Some("\"part\"".to_string()),
+                },
+            ),
+            (
+                "weak.parquet".to_string(),
+                ObjectGrantObject {
+                    path: "weak.parquet".to_string(),
+                    size_bytes: 10,
+                    etag: Some("W/\"weak\"".to_string()),
+                },
+            ),
+        ]),
+        signed_urls: BTreeMap::from([
+            (
+                "part-000.parquet".to_string(),
+                format!("{url}?sig=super-secret#fragment"),
+            ),
+            (
+                "weak.parquet".to_string(),
+                "http://127.0.0.1:9/weak.parquet?sig=must-not-be-used".to_string(),
+            ),
+        ]),
+        ..FakeBrokerState::default()
+    });
+    let adapter =
+        BrokeredObjectStoreAdapter::from_authorized_store(BrokeredObjectStore::with_http_reader(
+            "grant-1",
+            all_capabilities(),
+            client.clone(),
+            HttpRangeReader::new(),
+        ));
+    let location = Path::from("part-000.parquet");
+
+    let metadata = adapter.head(&location).await.expect("head should succeed");
+    assert_eq!(metadata.location, location);
+    assert_eq!(metadata.size, 10);
+    assert_eq!(metadata.e_tag.as_deref(), Some("\"part\""));
+
+    let bytes = adapter
+        .get_range(&location, 2..6)
+        .await
+        .expect("a bounded read with strong identity should succeed");
+    assert_eq!(bytes.as_ref(), b"cdef");
+    let request = finish_request(server, requests);
+    assert_eq!(request.headers.get("range"), Some(&"bytes=2-5".to_string()));
+    assert_eq!(
+        request.headers.get("if-range"),
+        Some(&"\"part\"".to_string())
+    );
+
+    let broker_calls_after_read = {
+        let state = client.state();
+        assert_eq!(
+            state.head_calls,
+            vec![
+                ("grant-1".to_string(), "part-000.parquet".to_string()),
+                ("grant-1".to_string(), "part-000.parquet".to_string()),
+            ]
+        );
+        assert_eq!(
+            state.batch_sign_calls,
+            vec![("grant-1".to_string(), vec!["part-000.parquet".to_string()])]
+        );
+        assert!(state.list_calls.is_empty());
+        assert!(state.proxy_range_calls.is_empty());
+        (
+            state.head_calls.len(),
+            state.batch_sign_calls.len(),
+            state.list_calls.len(),
+            state.proxy_range_calls.len(),
+        )
+    };
+
+    adapter
+        .get(&location)
+        .await
+        .expect_err("full-object GET must be rejected");
+    adapter
+        .list(None)
+        .next()
+        .await
+        .expect("unsupported list must yield one terminal error")
+        .expect_err("list must be rejected instead of appearing empty");
+
+    let weak_location = Path::from("weak.parquet");
+    adapter
+        .get_range(&weak_location, 0..4)
+        .await
+        .expect_err("range reads require a strong quoted ETag");
+
+    let state = client.state();
+    assert_eq!(
+        (
+            state.head_calls.len(),
+            state.batch_sign_calls.len(),
+            state.list_calls.len(),
+            state.proxy_range_calls.len(),
+        ),
+        (
+            broker_calls_after_read.0 + 1,
+            broker_calls_after_read.1,
+            broker_calls_after_read.2,
+            broker_calls_after_read.3,
+        ),
+        "unsupported operations and weak identity must not trigger fallback, retry, listing, proxy access, or unbounded I/O"
+    );
 }
 
 #[tokio::test]

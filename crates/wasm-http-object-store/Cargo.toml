@@ -4,8 +4,21 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
+[features]
+default = []
+object-store-adapter = [
+  "dep:async-trait",
+  "dep:chrono",
+  "dep:futures",
+  "dep:object_store",
+]
+
 [dependencies]
+async-trait = { version = "=0.1.89", optional = true }
 bytes = "=1.11.1"
+chrono = { version = "=0.4.44", default-features = false, features = ["std"], optional = true }
+futures = { version = "=0.3.32", optional = true }
+object_store = { version = "=0.13.2", default-features = false, optional = true }
 query-contract = { path = "../query-contract" }
 reqwest = { version = "=0.12.28", default-features = false }
 sha2 = "=0.10.9"

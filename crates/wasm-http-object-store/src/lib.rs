@@ -1,5 +1,58 @@
 //! HTTP range-read adapter for browser-safe object access over exact HTTP byte ranges.
 
+#[cfg(all(
+    feature = "object-store-adapter",
+    target_arch = "wasm32",
+    target_feature = "atomics"
+))]
+compile_error!(
+    "the object-store-adapter feature requires single-worker wasm32-unknown-unknown without atomics"
+);
+
+#[cfg(all(feature = "object-store-adapter", target_arch = "wasm32"))]
+const _: () = {
+    const fn contains(haystack: &str, needle: &str) -> bool {
+        let haystack = haystack.as_bytes();
+        let needle = needle.as_bytes();
+        let mut start = 0;
+        while start + needle.len() <= haystack.len() {
+            let mut offset = 0;
+            while offset < needle.len() && haystack[start + offset] == needle[offset] {
+                offset += 1;
+            }
+            if offset == needle.len() {
+                return true;
+            }
+            start += 1;
+        }
+        false
+    }
+
+    const fn cargo_flags_enable_atomics() -> bool {
+        let encoded = match option_env!("CARGO_ENCODED_RUSTFLAGS") {
+            Some(flags) => flags,
+            None => "",
+        };
+        let plain = match option_env!("RUSTFLAGS") {
+            Some(flags) => flags,
+            None => "",
+        };
+        contains(encoded, "+atomics") || contains(plain, "+atomics")
+    }
+
+    if cargo_flags_enable_atomics() {
+        panic!(
+            "the object-store-adapter feature requires single-worker wasm32-unknown-unknown without atomics"
+        );
+    }
+};
+
+#[cfg(feature = "object-store-adapter")]
+mod object_store_adapter;
+
+#[cfg(feature = "object-store-adapter")]
+pub use object_store_adapter::BrokeredObjectStoreAdapter;
+
 use std::fmt::Write;
 use std::future::Future;
 use std::pin::Pin;
@@ -1043,6 +1096,9 @@ impl BrowserObject {
     }
 }
 
+#[cfg(all(feature = "object-store-adapter", not(target_arch = "wasm32")))]
+pub type BrokerFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, QueryError>> + Send + 'a>>;
+#[cfg(any(not(feature = "object-store-adapter"), target_arch = "wasm32"))]
 pub type BrokerFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, QueryError>> + 'a>>;
 
 pub trait ObjectGrantBrokerClient {
@@ -1206,6 +1262,70 @@ where
             .checked_sub(start)
             .ok_or_else(|| invalid_request("brokered range underflowed u64"))?;
         validate_proxy_range_length(bytes, expected_len)
+    }
+
+    #[cfg(feature = "object-store-adapter")]
+    pub(crate) async fn get_range_with_identity(
+        &self,
+        path: &str,
+        start: u64,
+        end: u64,
+        expected_size: u64,
+        expected_etag: &str,
+    ) -> Result<Bytes, QueryError> {
+        self.require_capability(
+            self.access.range_get,
+            "brokered object grant does not advertise range read capability",
+            FallbackReason::RangeReadUnavailable,
+        )?;
+        self.require_capability(
+            self.access.batch_sign,
+            "identity-validated range reads require broker batch signing",
+            FallbackReason::RangeReadUnavailable,
+        )?;
+        if end <= start {
+            return Err(invalid_request(
+                "brokered range end must be greater than range start",
+            ));
+        }
+        if RangeCacheIdentity::strong(path, expected_etag, expected_size).is_none() {
+            return Err(protocol_error(
+                "identity-validated range reads require a strong quoted ETag",
+            ));
+        }
+
+        let signed_url = self.sign_one(path).await?;
+        validate_signed_url_not_expired(&signed_url)?;
+        let parsed = validate_browser_object_url(
+            &signed_url.url,
+            supported_target(),
+            BrowserObjectUrlPolicy::HttpsOrLoopbackHttpForHostTests,
+            "brokered signed object URL",
+        )?;
+        let length = end
+            .checked_sub(start)
+            .ok_or_else(|| invalid_request("brokered range underflowed u64"))?;
+        let result = self
+            .http
+            .read_range_with_validation(
+                parsed.as_str(),
+                HttpByteRange::Bounded {
+                    offset: start,
+                    length,
+                },
+                Some(HttpRangeValidation::if_range_etag(
+                    expected_etag.to_string(),
+                )),
+                self.request_timeout,
+            )
+            .await?;
+        if result.metadata.size_bytes != Some(expected_size) {
+            return Err(protocol_error(format!(
+                "identity-validated range response reported size {:?}, but broker metadata reported {expected_size}",
+                result.metadata.size_bytes
+            )));
+        }
+        Ok(result.bytes)
     }
 
     async fn read_signed_url(&self, path: &str, range: HttpByteRange) -> Result<Bytes, QueryError> {
