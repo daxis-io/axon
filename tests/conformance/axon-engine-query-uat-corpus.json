@@ -1,0 +1,191 @@
+[
+  {
+    "name": "recent_open_orders",
+    "sql": "SELECT order_id, customer_tier, amount_cents FROM orders WHERE order_date = '2026-05-30' AND status <> 'cancelled' ORDER BY amount_cents DESC LIMIT 2",
+    "covered_sql_classes": ["projection", "filtering", "boolean_logic", "ordering", "limit", "descriptor_backed_scan"],
+    "performance_tier": "interactive_preview",
+    "expected_columns": ["order_id", "customer_tier", "amount_cents"],
+    "expected_rows": [
+      [1001, "gold", 12500],
+      [1002, "silver", 8750]
+    ]
+  },
+  {
+    "name": "open_orders_offset",
+    "sql": "SELECT order_id FROM orders WHERE status <> 'cancelled' ORDER BY amount_cents DESC LIMIT 2 OFFSET 1",
+    "covered_sql_classes": ["projection", "filtering", "ordering", "limit", "offset", "descriptor_backed_scan"],
+    "performance_tier": "interactive_preview",
+    "expected_columns": ["order_id"],
+    "expected_rows": [[1005], [1001]]
+  },
+  {
+    "name": "net_amount_case_cast",
+    "sql": "SELECT order_id, CAST(amount_cents - COALESCE(discount_cents, 0) AS BIGINT) AS net_cents, CASE WHEN is_priority THEN 'priority' WHEN is_priority IS NULL THEN 'unknown' ELSE 'standard' END AS priority_bucket FROM orders ORDER BY order_id",
+    "covered_sql_classes": ["projection", "arithmetic", "cast", "case_expression", "null_semantics", "ordering", "descriptor_backed_scan"],
+    "performance_tier": "expression_correctness",
+    "expected_columns": ["order_id", "net_cents", "priority_bucket"],
+    "expected_rows": [
+      [1001, 12000, "priority"],
+      [1002, 8750, "standard"],
+      [1003, 21000, "priority"],
+      [1004, 4000, "unknown"],
+      [1005, 14250, "standard"],
+      [1006, 6100, "priority"]
+    ]
+  },
+  {
+    "name": "string_function_tiers",
+    "sql": "SELECT order_id, lower(customer_tier) AS tier_lower, length(status) AS status_len FROM orders WHERE customer_tier IN ('gold', 'silver') ORDER BY order_id LIMIT 3",
+    "covered_sql_classes": ["projection", "filtering", "string_function", "ordering", "limit", "descriptor_backed_scan"],
+    "performance_tier": "expression_correctness",
+    "expected_columns": ["order_id", "tier_lower", "status_len"],
+    "expected_rows": [
+      [1001, "gold", 7],
+      [1002, "silver", 7],
+      [1003, "gold", 7]
+    ]
+  },
+  {
+    "name": "tier_revenue_summary",
+    "sql": "SELECT customer_tier, COUNT(*) AS order_count, SUM(amount_cents) AS gross_cents, MIN(amount_cents) AS min_cents, MAX(amount_cents) AS max_cents, AVG(amount_cents) AS avg_cents FROM orders WHERE status <> 'cancelled' GROUP BY customer_tier ORDER BY customer_tier",
+    "covered_sql_classes": ["projection", "filtering", "aggregate_count", "aggregate_sum", "aggregate_min_max", "aggregate_avg", "grouped_aggregate", "ordering", "descriptor_backed_scan"],
+    "performance_tier": "aggregate",
+    "expected_columns": ["customer_tier", "order_count", "gross_cents", "min_cents", "max_cents", "avg_cents"],
+    "expected_rows": [
+      ["gold", 3, 49500, 12500, 22000, 16500.0],
+      ["silver", 2, 14850, 6100, 8750, 7425.0]
+    ]
+  },
+  {
+    "name": "having_grouped_sum",
+    "sql": "SELECT customer_tier, SUM(amount_cents) AS gross_cents FROM orders GROUP BY customer_tier HAVING SUM(amount_cents) >= 14000 ORDER BY customer_tier",
+    "covered_sql_classes": ["projection", "aggregate_sum", "grouped_aggregate", "having", "ordering", "descriptor_backed_scan"],
+    "performance_tier": "aggregate",
+    "expected_columns": ["customer_tier", "gross_cents"],
+    "expected_rows": [
+      ["gold", 49500],
+      ["silver", 14850]
+    ]
+  },
+  {
+    "name": "distinct_statuses",
+    "sql": "SELECT DISTINCT status FROM orders ORDER BY status",
+    "covered_sql_classes": ["projection", "distinct", "ordering", "descriptor_backed_scan"],
+    "performance_tier": "interactive_preview",
+    "expected_columns": ["status"],
+    "expected_rows": [["cancelled"], ["pending"], ["shipped"]]
+  },
+  {
+    "name": "cte_pending_orders",
+    "sql": "WITH open_orders AS (SELECT order_id, amount_cents FROM orders WHERE status <> 'cancelled') SELECT order_id FROM open_orders WHERE amount_cents >= 15000 ORDER BY order_id",
+    "covered_sql_classes": ["projection", "filtering", "cte", "ordering", "descriptor_backed_scan"],
+    "performance_tier": "planner_correctness",
+    "expected_columns": ["order_id"],
+    "expected_rows": [[1003], [1005]]
+  },
+  {
+    "name": "derived_table_high_value_count",
+    "sql": "SELECT COUNT(*) AS high_value_orders FROM (SELECT order_id FROM orders WHERE amount_cents >= 10000) filtered",
+    "covered_sql_classes": ["projection", "filtering", "aggregate_count", "derived_table", "descriptor_backed_scan"],
+    "performance_tier": "planner_correctness",
+    "expected_columns": ["high_value_orders"],
+    "expected_rows": [[3]]
+  },
+  {
+    "name": "scalar_subquery_above_average",
+    "sql": "SELECT order_id FROM orders WHERE amount_cents > (SELECT AVG(amount_cents) FROM orders) ORDER BY order_id",
+    "covered_sql_classes": ["projection", "filtering", "aggregate_avg", "subquery", "ordering", "descriptor_backed_scan"],
+    "performance_tier": "planner_correctness",
+    "expected_columns": ["order_id"],
+    "expected_rows": [[1001], [1003], [1005]]
+  },
+  {
+    "name": "inner_join_customer_segments",
+    "sql": "SELECT o.order_id, c.segment FROM orders o JOIN customers c ON o.customer_id = c.customer_id WHERE o.status <> 'cancelled' ORDER BY o.order_id",
+    "covered_sql_classes": ["projection", "filtering", "inner_join", "ordering", "descriptor_backed_scan"],
+    "performance_tier": "join_correctness",
+    "expected_columns": ["order_id", "segment"],
+    "expected_rows": [
+      [1001, "enterprise"],
+      [1002, "self_serve"],
+      [1003, "enterprise"],
+      [1005, "enterprise"]
+    ]
+  },
+  {
+    "name": "left_join_missing_customer",
+    "sql": "SELECT o.order_id, c.customer_name FROM orders o LEFT JOIN customers c ON o.customer_id = c.customer_id WHERE c.customer_name IS NULL ORDER BY o.order_id",
+    "covered_sql_classes": ["projection", "filtering", "null_semantics", "left_join", "ordering", "descriptor_backed_scan"],
+    "performance_tier": "join_correctness",
+    "expected_columns": ["order_id", "customer_name"],
+    "expected_rows": [[1006, null]]
+  },
+  {
+    "name": "union_all_priority_and_pending",
+    "sql": "SELECT order_id, 'priority' AS source FROM orders WHERE is_priority = true UNION ALL SELECT order_id, 'pending' AS source FROM orders WHERE status = 'pending' ORDER BY order_id, source",
+    "covered_sql_classes": ["projection", "filtering", "boolean_logic", "union_all", "ordering", "descriptor_backed_scan"],
+    "performance_tier": "planner_correctness",
+    "expected_columns": ["order_id", "source"],
+    "expected_rows": [
+      [1001, "priority"],
+      [1002, "pending"],
+      [1003, "priority"],
+      [1005, "pending"],
+      [1006, "priority"]
+    ]
+  },
+  {
+    "name": "window_rank_by_tier",
+    "sql": "SELECT order_id, customer_tier, ROW_NUMBER() OVER (PARTITION BY customer_tier ORDER BY amount_cents DESC) AS tier_rank FROM orders WHERE status <> 'cancelled' ORDER BY customer_tier, tier_rank",
+    "covered_sql_classes": ["projection", "filtering", "window_function", "ordering", "descriptor_backed_scan"],
+    "performance_tier": "planner_correctness",
+    "expected_columns": ["order_id", "customer_tier", "tier_rank"],
+    "expected_rows": [
+      [1003, "gold", 1],
+      [1005, "gold", 2],
+      [1001, "gold", 3],
+      [1002, "silver", 1],
+      [1006, "silver", 2]
+    ]
+  },
+  {
+    "name": "left_join_shipments_null_carrier",
+    "sql": "SELECT o.order_id, COALESCE(s.carrier, 'not_shipped') AS carrier FROM orders o LEFT JOIN shipments s ON o.order_id = s.order_id WHERE o.order_id IN (1001, 1002, 1006) ORDER BY o.order_id",
+    "covered_sql_classes": ["projection", "filtering", "null_semantics", "left_join", "ordering", "descriptor_backed_scan"],
+    "performance_tier": "join_correctness",
+    "expected_columns": ["order_id", "carrier"],
+    "expected_rows": [
+      [1001, "UPS"],
+      [1002, "not_shipped"],
+      [1006, "not_shipped"]
+    ]
+  },
+  {
+    "name": "boolean_logic_open_priority_or_west",
+    "sql": "SELECT order_id FROM orders WHERE (is_priority = true OR region = 'west') AND NOT status = 'cancelled' ORDER BY order_id",
+    "covered_sql_classes": ["projection", "filtering", "boolean_logic", "ordering", "descriptor_backed_scan"],
+    "performance_tier": "interactive_preview",
+    "expected_columns": ["order_id"],
+    "expected_rows": [[1001], [1002], [1003], [1005], [1006]]
+  },
+  {
+    "name": "customer_target_variance",
+    "sql": "SELECT c.customer_name, SUM(o.amount_cents) - c.target_cents AS variance_cents FROM orders o JOIN customers c ON o.customer_id = c.customer_id WHERE o.status <> 'cancelled' GROUP BY c.customer_name, c.target_cents ORDER BY c.customer_name",
+    "covered_sql_classes": ["projection", "filtering", "arithmetic", "aggregate_sum", "grouped_aggregate", "inner_join", "ordering", "descriptor_backed_scan"],
+    "performance_tier": "join_aggregate",
+    "expected_columns": ["customer_name", "variance_cents"],
+    "expected_rows": [
+      ["Meridian", -1250],
+      ["Northstar", 4500],
+      ["Summit", -5000]
+    ]
+  },
+  {
+    "name": "empty_result_shape",
+    "sql": "SELECT order_id FROM orders WHERE amount_cents < 0 ORDER BY order_id",
+    "covered_sql_classes": ["projection", "filtering", "ordering", "descriptor_backed_scan"],
+    "performance_tier": "edge_case",
+    "expected_columns": ["order_id"],
+    "expected_rows": []
+  }
+]

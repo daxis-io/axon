@@ -1,0 +1,7 @@
+interface:
+  display_name: "Momentum"
+  short_description: "Sol-plan, bounded build, two reviews, one repair"
+  default_prompt: "Use the Momentum workflow to implement this change without overengineering."
+
+policy:
+  allow_implicit_invocation: false

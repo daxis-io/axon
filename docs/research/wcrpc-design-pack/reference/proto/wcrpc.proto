@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package axon.wcrpc.v1;
+
+// This is an optional control-plane schema sketch. Analytical payloads must not
+// be encoded as protobuf rows. Data frames reference Arrow/DataFusion buffers.
+
+service WasmColumnarExecutor {
+  rpc OpenTable(OpenTableRequest) returns (OpenTableResponse);
+  rpc ExecuteShard(ExecuteShardRequest) returns (stream WcrpcFrame);
+  rpc Cancel(CancelRequest) returns (CancelAck);
+  rpc GetMetrics(GetMetricsRequest) returns (WorkerMetrics);
+}
+
+message OpenTableRequest {
+  string query_id = 1;
+  string table_name = 2;
+  bytes descriptor_json = 3;
+}
+
+message OpenTableResponse {
+  string table_name = 1;
+  WcrpcStatus status = 2;
+}
+
+message ExecuteShardRequest {
+  string query_id = 1;
+  uint32 stage_id = 2;
+  uint32 stream_id = 3;
+  string table_name = 4;
+  string original_sql = 5;
+  string shard_sql = 6;
+  string plan_id = 7;
+  string merge_plan_id = 8;
+  string payload_codec = 9;
+  StreamBudget budget = 10;
+}
+
+message WcrpcFrame {
+  uint32 version = 1;
+  string query_id = 2;
+  uint32 stage_id = 3;
+  uint32 stream_id = 4;
+  uint64 seq = 5;
+  string kind = 6;
+  bytes control_payload = 7;
+  repeated BufferRef buffers = 8;
+}
+
+message BufferRef {
+  enum Kind {
+    TRANSFERABLE = 0;
+    SHARED_SLAB = 1;
+  }
+  Kind kind = 1;
+  uint32 buffer_index = 2;
+  uint64 byte_offset = 3;
+  uint64 byte_length = 4;
+  uint32 slab_id = 5;
+  uint64 generation = 6;
+}
+
+message StreamBudget {
+  uint64 max_scan_bytes = 1;
+  uint64 max_output_bytes = 2;
+  uint64 max_output_rows = 3;
+  uint64 max_intermediate_bytes = 4;
+  uint64 max_intermediate_rows = 5;
+  uint64 max_batches_in_flight = 6;
+  uint64 max_bytes_in_flight = 7;
+}
+
+message CancelRequest {
+  string query_id = 1;
+  string reason = 2;
+}
+
+message CancelAck {
+  string query_id = 1;
+  bool accepted = 2;
+}
+
+message GetMetricsRequest {
+  string worker_id = 1;
+}
+
+message WorkerMetrics {
+  string worker_id = 1;
+  uint64 streams_completed = 2;
+  uint64 bytes_sent = 3;
+  uint64 rows_sent = 4;
+}
+
+message WcrpcStatus {
+  string code = 1;
+  string message = 2;
+}

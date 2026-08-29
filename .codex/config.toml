@@ -1,0 +1,15 @@
+#:schema https://developers.openai.com/codex/config-schema.json
+
+[agents]
+enabled = true
+
+# Planner and builder are sequential. The two reviewers run concurrently.
+# Four slots also leave room to keep the builder thread open for one repair.
+max_concurrent_threads_per_session = 10
+
+default_subagent_model = "gpt-5.6-luna"
+default_subagent_reasoning_effort = "max"
+interrupt_message = true
+
+
+

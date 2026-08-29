@@ -52,6 +52,7 @@ Current contents:
 - `native-runtime-partitioned-sql-corpus.json`: 10-case partitioned latest-snapshot SQL corpus with golden results and an explicit `assert_scan_metrics` contract for pruning-visible metric assertions.
 - `native-runtime-snapshot-version-sql-corpus.json`: 4-case historical snapshot-version SQL corpus for the local multi-version fixture.
 - `browser-execution-plan-corpus.json`: browser execution-plan lowering corpus over synthetic bootstrapped snapshots, covering typed lowered filters, required scan columns, passthrough output columns, grouped output, output-aligned `ORDER BY` / `LIMIT`, and the currently supported aliased browser aggregate measures: `AVG`, `ARRAY_AGG`, `BOOL_AND`, `BOOL_OR`, `COUNT`, `SUM`, `MIN`, and `MAX`.
+- `axon-engine-query-uat-corpus.json`: operator-facing Axon engine UAT SQL corpus, executed through both in-memory DataFusion tables and the descriptor-backed `AxonParquetScanExec` path by `crates/wasm-datafusion-poc/tests/axon_engine_uat_corpus.rs`. It covers projection, filtering, boolean logic, null semantics, arithmetic, casts, case expressions, string functions, aggregate count/sum/min/max/avg, grouped aggregation, `HAVING`, `DISTINCT`, ordering, limit/offset, CTEs, derived tables, subqueries, inner and left joins, `UNION ALL`, window functions, and descriptor-backed scans. `crates/wasm-datafusion-poc/tests/axon_engine_wasm_uat_corpus.rs` adds the actual `wasm32-unknown-unknown` UAT slice for representative SQL execution and single-partition descriptor-backed physical-plan proof.
 
 Deterministic offline negative-path coverage for invalid table locations, unavailable snapshots, missing local data files, and Unix permission-denied local data files lives in `crates/native-query-runtime/tests/native_runtime.rs`.
 Env-gated real-GCS smokes, including the Sprint 4 negative cases for `403`, `404`, stale history, and missing objects, live in the same file.
@@ -110,3 +111,6 @@ Useful local commands:
 - `cargo test -p wasm-datafusion-poc --test daxis_query_corpus`
 - `cargo test -p wasm-datafusion-poc --test daxis_budget_profile`
 - `cargo test -p wasm-datafusion-poc --test daxis_runtime_isolation_plan`
+- `cargo test -p wasm-datafusion-poc --locked --test axon_engine_uat_corpus`
+- `cargo test -p wasm-datafusion-poc --target wasm32-unknown-unknown --locked --test axon_engine_wasm_uat_corpus -- --nocapture`
+- `bash tests/uat/run_axon_engine_uat.sh`

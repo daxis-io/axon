@@ -1,0 +1,7 @@
+interface:
+  display_name: "Momentum Plan"
+  short_description: "Sol Max Plan-mode Execution Contract"
+  default_prompt: "Deeply inspect this task and return one bounded Momentum Execution Contract."
+
+policy:
+  allow_implicit_invocation: false

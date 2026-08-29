@@ -80,6 +80,9 @@ validate_out_dir
 require_tool cargo
 require_tool ruby
 
+export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
+export CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-0}"
+
 if [[ ! "$repeated_tiny_query_runs" =~ ^[1-9][0-9]*$ ]]; then
   echo "AXON_DF_REPEATED_TINY_QUERY_RUNS must be a positive integer: ${repeated_tiny_query_runs}" >&2
   exit 1
@@ -130,6 +133,6 @@ run_timed_step \
 run_timed_step \
   "scan-metrics" \
   "scan metrics" \
-  cargo test -p wasm-datafusion-poc --locked arrow_ipc_result_reports_axon_scan_metrics -- --exact
+  cargo test -p wasm-datafusion-poc --locked --lib arrow_ipc_result_reports_axon_scan_metrics -- --exact
 
 cat "$summary"
