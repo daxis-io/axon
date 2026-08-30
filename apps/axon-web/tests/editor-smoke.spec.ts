@@ -69,8 +69,13 @@ function isIgnorableConsoleError(message: ConsoleMessage): boolean {
 }
 const LOCAL_DELTA_ACTIVE_ID_KEY = 'axon-local-delta-active-id';
 const QUERY_TERMINAL_CAPTURE_KEY = '__axonQueryTerminalCapture';
+const PAGINATION_EXECUTIONS_CAPTURE_KEY = '__axonPaginationExecutions';
 const STRESS_AGGREGATE_SQL = readFileSync(
   new URL('./fixtures/browser-external-memory/stress-aggregate.sql', import.meta.url),
+  'utf8',
+).trim();
+const STRESS_AGGREGATE_FINGERPRINT_SQL = readFileSync(
+  new URL('./fixtures/browser-external-memory/stress-aggregate-fingerprint.sql', import.meta.url),
   'utf8',
 ).trim();
 
@@ -446,7 +451,7 @@ test.describe('editor (Phase 1 smoke)', () => {
     await page.locator('.code-input').fill('SELECT id FROM axon_prod_like_fixture ORDER BY id');
     await page.locator('.btn.primary', { hasText: 'Run' }).click();
 
-    const loadNext = page.locator('button[title="Load next result batch"]');
+    const loadNext = page.getByRole('button', { name: 'Load more' });
     await expect(loadNext).toBeEnabled({ timeout: 15_000 });
 
     await page.locator('.code-input').fill('SELECT id FROM axon_prod_like_fixture WHERE id = 1');
@@ -454,7 +459,7 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(loadNext).toBeDisabled();
   });
 
-  test('scrolling near the loaded result bottom automatically loads the next batch', async ({
+  test('pagination waits for one explicit load-more action and explains recomputation', async ({
     page,
   }) => {
     await installFakePaginationWorker(page);
@@ -462,14 +467,62 @@ test.describe('editor (Phase 1 smoke)', () => {
 
     await page.locator('.code-input').fill('SELECT id FROM axon_prod_like_fixture ORDER BY id');
     await page.locator('.btn.primary', { hasText: 'Run' }).click();
+    await expect(
+      page.getByText('Final results are computing and may spill to browser storage.'),
+    ).toBeVisible();
+    await expect(page.locator('.table-wrap')).toHaveCount(0);
     await expect(page.locator('.res-meta')).toContainText('500 rows+', { timeout: 15_000 });
+    await expect(page.getByTestId('result-pagination-notice')).toContainText(
+      'Loading more recomputes the original query until streaming results are available.',
+    );
+    await expect(page.getByTestId('result-pagination-notice')).toContainText(
+      'Use an explicit ORDER BY for stable results across pages.',
+    );
 
     await page.locator('.table-wrap').evaluate((node) => {
       node.scrollTop = node.scrollHeight;
       node.dispatchEvent(new Event('scroll', { bubbles: true }));
     });
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (captureKey) =>
+            ((window as typeof window & Record<string, unknown>)[captureKey] as unknown[])
+              ?.length ?? 0,
+          PAGINATION_EXECUTIONS_CAPTURE_KEY,
+        ),
+      )
+      .toBe(1);
+
+    await page.getByRole('button', { name: 'Load more' }).click();
+
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (captureKey) =>
+            (window as typeof window & Record<string, unknown>)[captureKey] as Array<{
+              limit: number;
+              offset: number;
+              sql: string;
+            }>,
+          PAGINATION_EXECUTIONS_CAPTURE_KEY,
+        ),
+      )
+      .toEqual([
+        {
+          limit: QUERY_RESULT_PAGE_SIZE + 1,
+          offset: 0,
+          sql: 'SELECT id FROM axon_prod_like_fixture ORDER BY id',
+        },
+        {
+          limit: QUERY_RESULT_PAGE_SIZE + 1,
+          offset: QUERY_RESULT_PAGE_SIZE,
+          sql: 'SELECT id FROM axon_prod_like_fixture ORDER BY id',
+        },
+      ]);
 
     await expect(page.locator('.res-meta')).toContainText('1,000 rows+', { timeout: 15_000 });
+    await expect(page.getByTestId('result-pagination-notice')).toBeVisible();
   });
 
   test('routes between the workspace and connect page', async ({ page }) => {
@@ -1330,7 +1383,7 @@ test.describe('editor (Phase 1 smoke)', () => {
 
     await installQueryTerminalCapture(page);
     await connectLocalDeltaFolder(page, tableDir, 'webkit-terminal-capture', {
-      pagePath: '/?browser_external_memory=enabled',
+      pagePath: '/',
     });
 
     await page
@@ -1356,7 +1409,6 @@ test.describe('editor (Phase 1 smoke)', () => {
       );
       return;
     }
-
     await connectLocalDeltaFolder(page, tableDir, 'stress-local', {
       expectedTable: 'query_engine_stress_delta',
       parseTimeoutMs: 120_000,
@@ -1390,6 +1442,20 @@ test.describe('editor (Phase 1 smoke)', () => {
       );
       return;
     }
+    const oraclePath = process.env.AXON_STRESS_AGGREGATE_ORACLE_PATH;
+    if (!oraclePath) {
+      throw new Error('AXON_STRESS_AGGREGATE_ORACLE_PATH is required with AXON_STRESS_DELTA_PATH');
+    }
+    const oracle = JSON.parse(readFileSync(oraclePath, 'utf8')) as {
+      columns: string[];
+      rows: Array<Array<string | null>>;
+      full_result_fingerprint: {
+        columns: string[];
+        rows: Array<Array<string | null>>;
+      };
+    };
+    expect(oracle.rows).toHaveLength(QUERY_RESULT_PAGE_SIZE);
+    expect(oracle.full_result_fingerprint.rows).toHaveLength(1);
 
     const spillDiagnostics: string[] = [];
     page.on('console', (message) => {
@@ -1399,12 +1465,13 @@ test.describe('editor (Phase 1 smoke)', () => {
     });
     await installQueryTerminalCapture(page);
     const memoryProfile = process.env.AXON_BROWSER_MEMORY_PROFILE_MIB;
-    const pageQuery = new URLSearchParams({ browser_external_memory: 'enabled' });
+    const pageQuery = new URLSearchParams();
     if (memoryProfile) pageQuery.set('browser_memory_profile_mib', memoryProfile);
+    const queryString = pageQuery.toString();
     await connectLocalDeltaFolder(page, tableDir, 'stress-spill-local', {
       expectedTable: 'query_engine_stress_delta',
       parseTimeoutMs: 120_000,
-      pagePath: `/?${pageQuery.toString()}`,
+      pagePath: queryString ? `/?${queryString}` : '/',
     });
 
     const repeatCount = Number(process.env.AXON_SPILL_WARM_REPEAT_COUNT ?? '1');
@@ -1424,6 +1491,12 @@ test.describe('editor (Phase 1 smoke)', () => {
       await expect(page.locator('table.grid tbody tr').first()).toBeVisible({
         timeout: 180_000,
       });
+      await expect(page.locator('.res-tab', { hasText: 'Results' }).locator('.count')).toHaveText(
+        String(QUERY_RESULT_PAGE_SIZE),
+      );
+      await expect(page.locator('.res-meta')).toContainText(
+        `${QUERY_RESULT_PAGE_SIZE.toLocaleString()} rows+`,
+      );
 
       expect(terminal.success?.response?.executed_on).toBe('browser_wasm');
       expect(terminal.success?.response?.fallback_reason).toBeUndefined();
@@ -1436,10 +1509,26 @@ test.describe('editor (Phase 1 smoke)', () => {
       expect(terminal.success?.response?.metrics?.spill_files_created).toBeGreaterThan(0);
       expect(terminal.success?.response?.metrics?.spill_peak_active_bytes).toBeGreaterThan(0);
       expect(terminal.success?.response?.metrics?.spill_merge_passes).toBeGreaterThan(0);
+      expect(terminal.success?.response?.metrics?.spill_active_files).toBe(0);
       expect(terminal.success?.response?.metrics?.spill_cleanup_files).toBe(
         terminal.success?.response?.metrics?.spill_files_created,
       );
       expect(terminal.success?.response?.metrics?.spill_cleanup_scopes).toBe(1);
+      expect(terminal.success?.response?.metrics?.duration_ms).toBeGreaterThan(0);
+      expect(terminal.success?.preview?.columns).toEqual(oracle.columns);
+      expect(terminal.success?.preview?.rows).toHaveLength(QUERY_RESULT_PAGE_SIZE + 1);
+      expect(terminal.success?.preview?.row_count).toBe(QUERY_RESULT_PAGE_SIZE + 1);
+      expect(terminal.success?.preview?.truncated).toBe(false);
+      expect(
+        terminal.success?.preview?.rows
+          .slice(0, QUERY_RESULT_PAGE_SIZE)
+          .map((row) => row.map((cell) => (cell === null ? null : String(cell)))),
+      ).toEqual(oracle.rows);
+      await page.locator('.res-tab', { hasText: 'Plan' }).click();
+      await expect(page.getByTestId('external-memory-metrics')).toContainText('Registered memory');
+      await expect(page.getByTestId('external-memory-metrics')).toContainText('Merge passes');
+      await expect(page.getByTestId('external-memory-metrics')).toContainText('Cleanup');
+      await page.locator('.res-tab', { hasText: 'Results' }).click();
 
       const wasmMemory = terminal.success?.response?.metrics?.wasm_linear_memory_bytes;
       if (repeatCount > 1 && wasmMemory !== undefined) measuredMemory.push(wasmMemory);
@@ -1461,6 +1550,29 @@ test.describe('editor (Phase 1 smoke)', () => {
       body: Buffer.from(JSON.stringify(terminal.success?.response?.metrics ?? {}, null, 2), 'utf8'),
       contentType: 'application/json',
     });
+
+    const priorFingerprintTerminalCount = await capturedQueryTerminalCount(page);
+    await page.locator('.code-input').fill(STRESS_AGGREGATE_FINGERPRINT_SQL);
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+    const fingerprintTerminal = await latestCapturedQueryTerminal(
+      page,
+      priorFingerprintTerminalCount + 1,
+    );
+    expect(fingerprintTerminal.error, spillDiagnostics.join('\n')).toBeUndefined();
+    expect(fingerprintTerminal.success?.response?.executed_on).toBe('browser_wasm');
+    expect(fingerprintTerminal.success?.response?.fallback_reason).toBeUndefined();
+    expect(fingerprintTerminal.success?.response?.metrics?.spill_backend).toBe('opfs');
+    expect(fingerprintTerminal.success?.response?.metrics?.spill_bytes_written).toBeGreaterThan(0);
+    expect(fingerprintTerminal.success?.response?.metrics?.spill_active_files).toBe(0);
+    expect(fingerprintTerminal.success?.response?.metrics?.spill_cleanup_scopes).toBe(1);
+    expect(fingerprintTerminal.success?.preview?.columns).toEqual(
+      oracle.full_result_fingerprint.columns,
+    );
+    expect(
+      fingerprintTerminal.success?.preview?.rows.map((row) =>
+        row.map((cell) => (cell === null ? null : String(cell))),
+      ),
+    ).toEqual(oracle.full_result_fingerprint.rows);
   });
 
   test('runs the browser external-memory conformance corpus with native parity', async ({
@@ -1514,12 +1626,13 @@ test.describe('editor (Phase 1 smoke)', () => {
       await connectLocalDeltaFolder(targetPage, tableDir, `spill-conformance-${memoryProfile}`, {
         expectedTable: 'spill_conformance',
         parseTimeoutMs: 120_000,
-        pagePath: `/?browser_external_memory=enabled&browser_memory_profile_mib=${memoryProfile}`,
+        pagePath: `/?browser_memory_profile_mib=${memoryProfile}`,
       });
 
       const evidence: Record<string, unknown> = {};
       const repeatedAggregate = manifest.queries.find((query) => query.id === 'aggregate');
       if (!repeatedAggregate) throw new Error('spill corpus is missing the aggregate query');
+      expect(repeatedAggregate.expected_operator).toBe('GROUPED_AGGREGATE');
       const executionCases = [
         ...manifest.queries,
         ...Array.from({ length: repeatCount - 1 }, () => repeatedAggregate),
@@ -1588,7 +1701,7 @@ test.describe('editor (Phase 1 smoke)', () => {
     }
   });
 
-  test('keeps non-spilling queries available when private WebKit cannot use OPFS', async ({
+  test('returns a reusable typed spill-storage error when private WebKit cannot use OPFS', async ({
     page,
   }, testInfo) => {
     test.skip(testInfo.project.name !== 'webkit', 'This qualification is specific to WebKit.');
@@ -1597,26 +1710,47 @@ test.describe('editor (Phase 1 smoke)', () => {
       'Set AXON_WEBKIT_PRIVATE_OPFS=1 inside a private WebKit context for this qualification.',
     );
     const tableDir = fileURLToPath(new URL('../public/fixtures/prod-like/table', import.meta.url));
+    const spillDiagnostics: string[] = [];
+    page.on('console', async (message) => {
+      if (!message.text().includes('[axon] OPFS')) return;
+      const values = await Promise.all(
+        message.args().map(async (argument) => {
+          try {
+            return await argument.jsonValue();
+          } catch {
+            return argument.toString();
+          }
+        }),
+      );
+      spillDiagnostics.push(JSON.stringify(values));
+    });
 
     await installQueryTerminalCapture(page);
     await connectLocalDeltaFolder(page, tableDir, 'webkit-private-opfs-unavailable', {
       expectedTable: 'axon_prod_like_fixture',
-      pagePath: `/?browser_external_memory=${process.env.AXON_WEBKIT_EXTERNAL_MEMORY_MODE ?? 'enabled'}`,
+      pagePath: '/',
     });
-    await page
-      .locator('.code-input')
-      .fill('SELECT COUNT(*) AS row_count FROM axon_prod_like_fixture');
-    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+    await page.locator('.code-input').fill('SELECT COUNT(*) FROM axon_prod_like_fixture');
+    const observedReasons: string[] = [];
 
-    const terminal = await latestCapturedQueryTerminal(page);
-    expect(terminal.error).toBeUndefined();
-    expect(terminal.success?.response?.executed_on).toBe('browser_wasm');
-    expect(terminal.success?.response?.fallback_reason).toBeUndefined();
-    expect(terminal.success?.response?.capabilities?.capabilities?.browser_external_memory).toBe(
-      'unsupported',
-    );
-    await expect(page.locator('table.grid')).toContainText('row_count');
-    await expect(page.locator('table.grid')).toContainText('4');
+    for (let execution = 1; execution <= 2; execution += 1) {
+      const priorTerminalCount = await capturedQueryTerminalCount(page);
+      await page.locator('.btn.primary', { hasText: 'Run' }).click();
+      const terminal = await latestCapturedQueryTerminal(page, priorTerminalCount + 1);
+      expect(terminal.success).toBeUndefined();
+      expect(terminal.error?.error, spillDiagnostics.join('\n')).toMatchObject({
+        code: 'resource_exhausted',
+        resource_details: {
+          resource: 'spill_storage',
+        },
+      });
+      const reason = terminal.error?.error?.resource_details?.reason;
+      expect(['unavailable', 'io_failure']).toContain(reason);
+      if (reason) observedReasons.push(reason);
+      await expect(page.locator('table.grid')).toHaveCount(0);
+    }
+    expect(observedReasons).toHaveLength(2);
+    expect(new Set(observedReasons).size).toBe(1);
   });
 
   test('isolates simultaneous OPFS spill scopes across two same-origin tabs', async ({
@@ -1641,7 +1775,7 @@ test.describe('editor (Phase 1 smoke)', () => {
       await connectLocalDeltaFolder(target, tableDir, `stress-concurrent-${index + 1}`, {
         expectedTable: 'query_engine_stress_delta',
         parseTimeoutMs: 120_000,
-        pagePath: '/?browser_external_memory=enabled',
+        pagePath: '/',
       });
       await target
         .locator('.code-input')
@@ -2483,10 +2617,12 @@ async function latestCapturedQueryTerminal(
         spill_files_created?: number;
         spill_peak_reservation_bytes?: number;
         spill_peak_active_bytes?: number;
+        spill_active_files?: number;
         spill_merge_passes?: number;
         spill_cleanup_files?: number;
         spill_cleanup_scopes?: number;
         wasm_linear_memory_bytes?: number;
+        duration_ms?: number;
       };
     };
     preview?: {
@@ -2536,110 +2672,125 @@ async function installUnavailableDirectoryPicker(page: Page): Promise<void> {
 }
 
 async function installFakePaginationWorker(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    type Listener = EventListenerOrEventListenerObject;
-    class FakeQueryWorker {
-      private listeners = new Map<string, Set<Listener>>();
+  await page.addInitScript(
+    ({ captureKey }) => {
+      type Listener = EventListenerOrEventListenerObject;
+      const captureWindow = window as typeof window & Record<string, unknown>;
+      captureWindow[captureKey] = [];
+      class FakeQueryWorker {
+        private listeners = new Map<string, Set<Listener>>();
 
-      addEventListener(type: string, listener: Listener): void {
-        const listeners = this.listeners.get(type) ?? new Set<Listener>();
-        listeners.add(listener);
-        this.listeners.set(type, listeners);
-      }
+        addEventListener(type: string, listener: Listener): void {
+          const listeners = this.listeners.get(type) ?? new Set<Listener>();
+          listeners.add(listener);
+          this.listeners.set(type, listeners);
+        }
 
-      removeEventListener(type: string, listener: Listener): void {
-        this.listeners.get(type)?.delete(listener);
-      }
+        removeEventListener(type: string, listener: Listener): void {
+          this.listeners.get(type)?.delete(listener);
+        }
 
-      postMessage(command: unknown): void {
-        const payload = command as {
-          open_delta_table?: { request_id: string; name: string };
-          sql?: {
-            request_id: string;
-            name: string;
-            query?: { options?: { result_page?: { limit?: number; offset?: number } } };
+        postMessage(command: unknown): void {
+          const payload = command as {
+            open_delta_table?: { request_id: string; name: string };
+            sql?: {
+              request_id: string;
+              name: string;
+              query?: {
+                sql?: string;
+                options?: { result_page?: { limit?: number; offset?: number } };
+              };
+            };
+            dispose?: { request_id: string; name: string };
           };
-          dispose?: { request_id: string; name: string };
-        };
-        if (payload.open_delta_table) {
-          this.emit({
-            opened: {
-              request_id: payload.open_delta_table.request_id,
-              name: payload.open_delta_table.name,
-            },
-          });
-          return;
-        }
-        if (payload.dispose) {
-          this.emit({
-            disposed: {
-              request_id: payload.dispose.request_id,
-              name: payload.dispose.name,
-            },
-          });
-          return;
-        }
-        if (payload.sql) {
-          const resultPage = payload.sql.query?.options?.result_page;
-          const limit = resultPage?.limit ?? 501;
-          const offset = resultPage?.offset ?? 0;
-          const rows = Array.from({ length: limit }, (_, index) => [offset + index + 1]);
-          this.emit({
-            success: {
-              request_id: payload.sql.request_id,
-              response: {
-                executed_on: 'browser_wasm',
-                capabilities: { capabilities: {} },
-                metrics: {
-                  bytes_fetched: 0,
-                  duration_ms: 0,
-                  files_touched: 0,
-                  files_skipped: 0,
-                  rows_emitted: rows.length,
-                },
-                explain: 'fake editor pagination plan',
+          if (payload.open_delta_table) {
+            this.emit({
+              opened: {
+                request_id: payload.open_delta_table.request_id,
+                name: payload.open_delta_table.name,
               },
-              result: {
-                format: 'stream',
-                content_type: 'application/vnd.apache.arrow.stream',
-                bytes: [],
-              },
-              preview: {
-                columns: ['id'],
-                rows,
-                row_count: rows.length,
-                preview_row_limit: limit,
-                truncated: false,
-              },
-            },
-          });
-        }
-      }
-
-      terminate(): void {
-        this.listeners.clear();
-      }
-
-      private emit(data: unknown): void {
-        const event = new MessageEvent('message', { data });
-        queueMicrotask(() => {
-          const listeners = this.listeners.get('message') ?? new Set<Listener>();
-          for (const listener of listeners) {
-            if (typeof listener === 'function') {
-              listener.call(this, event);
-            } else {
-              listener.handleEvent(event);
-            }
+            });
+            return;
           }
-        });
-      }
-    }
+          if (payload.dispose) {
+            this.emit({
+              disposed: {
+                request_id: payload.dispose.request_id,
+                name: payload.dispose.name,
+              },
+            });
+            return;
+          }
+          if (payload.sql) {
+            const resultPage = payload.sql.query?.options?.result_page;
+            const limit = resultPage?.limit ?? 501;
+            const offset = resultPage?.offset ?? 0;
+            (
+              captureWindow[captureKey] as Array<{
+                limit: number;
+                offset: number;
+                sql: string;
+              }>
+            ).push({ limit, offset, sql: payload.sql.query?.sql ?? '' });
+            const rows = Array.from({ length: limit }, (_, index) => [offset + index + 1]);
+            this.emit({
+              success: {
+                request_id: payload.sql.request_id,
+                response: {
+                  executed_on: 'browser_wasm',
+                  capabilities: { capabilities: {} },
+                  metrics: {
+                    bytes_fetched: 0,
+                    duration_ms: 0,
+                    files_touched: 0,
+                    files_skipped: 0,
+                    rows_emitted: rows.length,
+                  },
+                  explain: 'fake editor pagination plan',
+                },
+                result: {
+                  format: 'stream',
+                  content_type: 'application/vnd.apache.arrow.stream',
+                  bytes: [],
+                },
+                preview: {
+                  columns: ['id'],
+                  rows,
+                  row_count: rows.length,
+                  preview_row_limit: limit,
+                  truncated: false,
+                },
+              },
+            });
+          }
+        }
 
-    Object.defineProperty(window, 'Worker', {
-      configurable: true,
-      value: FakeQueryWorker,
-    });
-  });
+        terminate(): void {
+          this.listeners.clear();
+        }
+
+        private emit(data: unknown): void {
+          const event = new MessageEvent('message', { data });
+          queueMicrotask(() => {
+            const listeners = this.listeners.get('message') ?? new Set<Listener>();
+            for (const listener of listeners) {
+              if (typeof listener === 'function') {
+                listener.call(this, event);
+              } else {
+                listener.handleEvent(event);
+              }
+            }
+          });
+        }
+      }
+
+      Object.defineProperty(window, 'Worker', {
+        configurable: true,
+        value: FakeQueryWorker,
+      });
+    },
+    { captureKey: PAGINATION_EXECUTIONS_CAPTURE_KEY },
+  );
 }
 
 async function connectLocalDeltaDirectoryHandle(

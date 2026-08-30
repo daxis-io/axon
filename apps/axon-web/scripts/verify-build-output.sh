@@ -9,12 +9,11 @@
 
 set -euo pipefail
 
-dist_root="${1:-}"
-expected_runtime_tier="${2:-${AXON_BROWSER_RUNTIME_BUILD_TIER:-standard}}"
-if [[ -z "${dist_root}" ]]; then
+if [[ $# -ne 1 ]]; then
   echo "usage: verify-build-output.sh <dist-directory>" >&2
   exit 2
 fi
+dist_root="$1"
 if [[ ! -d "${dist_root}/assets" ]]; then
   echo "FAIL: '${dist_root}/assets' is not a directory" >&2
   exit 1
@@ -68,11 +67,11 @@ else
   fail "no .wasm bundle in the build output"
 fi
 
-# 5. The artifact must declare the same runtime tier that was selected for this build.
-if node --experimental-strip-types "$(dirname "$0")/browser-runtime-build.ts" verify "${dist_root}" "${expected_runtime_tier}"; then
-  pass "browser runtime artifact matches expected '${expected_runtime_tier}' tier"
+# 5. The artifact must declare the one supported spill-capable runtime.
+if node --experimental-strip-types "$(dirname "$0")/browser-runtime-build.ts" verify "${dist_root}"; then
+  pass "browser runtime artifact matches the spill-capable runtime"
 else
-  fail "browser runtime artifact does not match expected '${expected_runtime_tier}' tier"
+  fail "browser runtime artifact does not match the spill-capable runtime"
 fi
 
 if [[ "${failures}" -ne 0 ]]; then

@@ -112,7 +112,7 @@ test('records real browser query timing, atomicity, and component memory bounds'
     ),
     datafusionOperatorPoolBytes: environmentBudget(
       'AXON_BROWSER_QUERY_DATAFUSION_OPERATOR_POOL_BUDGET_BYTES',
-      64 * MIB,
+      128 * MIB,
     ),
     transportChunkBytes: environmentBudget('AXON_BROWSER_QUERY_TRANSPORT_CHUNK_BUDGET_BYTES', MIB),
     postGcRetainedHeapDeltaBytes: environmentBudget(

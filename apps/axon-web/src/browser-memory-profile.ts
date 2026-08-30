@@ -10,9 +10,7 @@ const ALLOWED_BROWSER_MEMORY_PROFILES_MIB = new Set<number>([
 export function parseBrowserMemoryProfileMib(searchParams: URLSearchParams): number {
   const raw = searchParams.get(BROWSER_MEMORY_PROFILE_QUERY_PARAM);
   if (raw === null) {
-    return searchParams.get('browser_external_memory') === 'enabled'
-      ? EXTERNAL_MEMORY_WORKING_SET_MIB
-      : PREVIOUS_BROWSER_MEMORY_PROFILE_MIB;
+    return EXTERNAL_MEMORY_WORKING_SET_MIB;
   }
   const profile = Number(raw);
   if (!Number.isSafeInteger(profile) || !ALLOWED_BROWSER_MEMORY_PROFILES_MIB.has(profile)) {
@@ -32,12 +30,5 @@ export function browserQueryWorkerName(searchParams: URLSearchParams): string {
     BROWSER_MEMORY_PROFILE_QUERY_PARAM,
     String(parseBrowserMemoryProfileMib(searchParams)),
   );
-  const externalMemory = searchParams.get('browser_external_memory');
-  if (externalMemory !== null) {
-    if (externalMemory !== 'enabled' && externalMemory !== 'disabled') {
-      throw new Error(`unsupported browser external-memory mode '${externalMemory}'`);
-    }
-    config.set('browser_external_memory', externalMemory);
-  }
   return `axon-editor-query-worker?${config.toString()}`;
 }

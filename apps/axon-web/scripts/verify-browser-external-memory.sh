@@ -74,11 +74,16 @@ if [[ -z "${stress_table}" || ! -d "${stress_table}" ]]; then
   echo "AXON_STRESS_DELTA_PATH is required for the complete browser external-memory gate" >&2
   exit 1
 fi
+stress_oracle="${AXON_STRESS_AGGREGATE_ORACLE_PATH:-${repo_root}/target/fixtures/browser-external-memory-stress-oracle.json}"
+mkdir -p "$(dirname "${stress_oracle}")"
+cargo run --locked --manifest-path "${repo_root}/Cargo.toml" -p native-query-runtime \
+  --example generate_stress_aggregate_oracle -- \
+  "${stress_table}" "${stress_oracle}"
 
 cd "${web_root}"
 npm run build:spill-conformance-fixture
 verify_metadata
-npm run build:external-memory
+npm run build
 
 server_port="${AXON_BROWSER_EXTERNAL_MEMORY_PORT:-5174}"
 base_url="https://127.0.0.1:${server_port}"
@@ -145,16 +150,19 @@ if [[ ",${projects}," == *,webkit,* ]]; then
   PLAYWRIGHT_BASE_URL="${base_url}" \
     npm run test:browser:editor-smoke -- \
       --project=webkit \
-      --grep "keeps non-spilling queries available when private WebKit cannot use OPFS"
+      --grep "returns a reusable typed spill-storage error when private WebKit cannot use OPFS"
 fi
 
-AXON_EDITOR_BROWSER_MATRIX=1 \
-AXON_STRESS_DELTA_PATH="${stress_table}" \
-AXON_BROWSER_MEMORY_PROFILE_MIB=64 \
-PLAYWRIGHT_BASE_URL="${base_url}" \
-  npm run test:browser:editor-smoke -- \
-    --project=chromium \
-    --grep "spills the original high-cardinality stress aggregate"
+for stress_profile in 64 128; do
+  AXON_EDITOR_BROWSER_MATRIX=1 \
+  AXON_STRESS_DELTA_PATH="${stress_table}" \
+  AXON_STRESS_AGGREGATE_ORACLE_PATH="${stress_oracle}" \
+  AXON_BROWSER_MEMORY_PROFILE_MIB="${stress_profile}" \
+  PLAYWRIGHT_BASE_URL="${base_url}" \
+    npm run test:browser:editor-smoke -- \
+      --project=chromium \
+      --grep "spills the original high-cardinality stress aggregate"
+done
 
 AXON_EDITOR_BROWSER_MATRIX=1 \
 AXON_SPILL_CONCURRENT_TABS=1 \

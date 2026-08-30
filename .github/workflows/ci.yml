@@ -281,9 +281,9 @@ jobs:
         working-directory: apps/axon-web
         run: npm ci
 
-      - name: Build and verify the external-memory browser artifact
+      - name: Build and verify the spill-capable browser artifact
         working-directory: apps/axon-web
-        run: npm run build:external-memory
+        run: npm run build
 
       - name: Run browser unit tests
         working-directory: apps/axon-web

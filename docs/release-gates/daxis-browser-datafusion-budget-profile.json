@@ -36,7 +36,7 @@
     "transportChunkBytes": 1048576,
     "postGcRetainedHeapDeltaBytes": 16777216,
     "datafusionOperatorPoolBytes": 134217728,
-    "profileScope": "Bounds per-query and aggregate coordinator Arrow IPC staging, DataFusion-registered operator reservations, cursor buffers, and the Chromium post-GC user-agent memory delta. It does not bound every Rust, Arrow, Wasm, JavaScript, cache, or browser allocation; full browser-process RSS and production fleet dashboards remain M4 Daxis operations work.",
+    "profileScope": "Bounds per-query and aggregate coordinator Arrow IPC staging, DataFusion-registered operator reservations, cursor buffers, and the Chromium post-GC user-agent memory delta. The operator-pool values are resident registered-memory spill watermarks, not limits on total input, aggregate state, spill bytes, or result size. This profile does not bound every Rust, Arrow, Wasm, JavaScript, cache, or browser allocation; full browser-process RSS and production fleet dashboards remain M4 Daxis operations work.",
     "reportCommand": "bash tests/perf/browser_query_performance.sh"
   },
   "externalMemory": {
@@ -47,15 +47,9 @@
     "batchRows": 4096,
     "mergeFanIn": 8,
     "ipcCompression": "none",
-    "enabledOperators": [
-      "grouped_hash_aggregate",
-      "external_sort"
-    ],
-    "pendingOperators": [
-      "spill_pool_repartition",
-      "sort_merge_join"
-    ],
-    "profileScope": "Operator support is an explicit allowlist. Browser external memory does not imply that every DataFusion spilling operator is storage-neutral."
+    "enabledOperators": ["grouped_hash_aggregate", "external_sort"],
+    "pendingOperators": ["spill_pool_repartition", "sort_merge_join"],
+    "profileScope": "External memory is always enabled in the single browser worker artifact. The 128 MiB default and 64 MiB conformance values are resident working-set spill watermarks. Operator support is an explicit allowlist: grouped hash aggregate and external sort are spill-capable; repartition and sort-merge join are not yet claimed. OPFS failure returns a typed spill_storage error and keeps the worker reusable; the runtime does not fall back to another engine or remote execution."
   },
   "verificationCommands": [
     "cargo test -p wasm-datafusion-poc --test query_budgets",
@@ -68,6 +62,8 @@
   ],
   "notes": [
     "This is the M3 Daxis browser DataFusion worker profile for the Axon Daxis-facing default runtime SKU.",
+    "The default worker is the single spill-capable browser artifact; there is no standard-versus-external-memory runtime selector.",
+    "The 128 MiB default and 64 MiB conformance values are resident registered-memory spill watermarks, not limits on total input, aggregate state, or result size.",
     "The artifact command targets the axon-web-wasm Daxis-facing default worker and requires wasm-bindgen, wasm-opt, brotli, and twiggy.",
     "The browser performance artifact is the release timing and component-memory evidence. The host smoke is diagnostic-only and must not be labeled as browser performance.",
     "M4 production dashboards, alerts, oncall, tenant rollout controls, and compatibility dashboards remain outside this repo-owned profile."

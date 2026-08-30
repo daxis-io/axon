@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type {
   CommitEntry,
   HistoryEntry,
@@ -41,8 +41,6 @@ type ResultsProps = {
 };
 
 type ResultsTab = 'results' | 'plan' | 'snapshot' | 'messages' | 'history';
-const AUTO_LOAD_RESULT_ROW_LIMIT = 10_000;
-const AUTO_LOAD_THRESHOLD_VIEWPORTS = 2;
 
 export function Results({
   runState,
@@ -75,7 +73,6 @@ export function Results({
     value: ResultCell;
   } | null>(null);
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
-  const autoLoadRequestedAtRowsRef = useRef<number | null>(null);
 
   const cols: ResultColumn[] = resultData?.columns ?? [];
   const allRows: ResultCell[][] = resultData?.rows ?? [];
@@ -115,31 +112,7 @@ export function Results({
   const pageEnd = Math.min(sorted.length, endIndex);
   const hasMoreRows = resultData?.page?.has_more === true;
   const loadedRows = resultData?.page?.loaded_rows ?? sorted.length;
-
-  useEffect(() => {
-    autoLoadRequestedAtRowsRef.current = null;
-  }, [loadedRows]);
-
-  function updateResultScroll(element: HTMLDivElement) {
-    setScrollTop(element.scrollTop);
-    if (
-      !hasMoreRows ||
-      !onLoadMoreRows ||
-      loadingMoreRows ||
-      loadedRows >= AUTO_LOAD_RESULT_ROW_LIMIT
-    ) {
-      return;
-    }
-
-    const distanceFromBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
-    const threshold = element.clientHeight * AUTO_LOAD_THRESHOLD_VIEWPORTS;
-    if (distanceFromBottom > threshold || autoLoadRequestedAtRowsRef.current === loadedRows) {
-      return;
-    }
-
-    autoLoadRequestedAtRowsRef.current = loadedRows;
-    onLoadMoreRows();
-  }
+  const hasMultipleResultPages = hasMoreRows || loadedRows > (resultData?.page?.size ?? loadedRows);
 
   function clickHeader(c: ResultColumn) {
     setSort((s) => {
@@ -238,7 +211,11 @@ export function Results({
           }}
         >
           <div style={{ textAlign: 'center' }}>
-            <div>Bootstrapping snapshot · pruning partitions · streaming row groups…</div>
+            <div>
+              {runState.target === 'browser_wasm'
+                ? 'Final results are computing and may spill to browser storage.'
+                : 'Final results are computing.'}
+            </div>
             <div style={{ marginTop: 6, fontSize: 11, color: 'var(--ink-4)' }}>
               {snapshotPin != null ? `pinned snapshot v${snapshotPin}` : 'latest snapshot'}
             </div>
@@ -377,14 +354,20 @@ export function Results({
             <button className="miniicon" title="Previous page">
               <IconChevR size={12} style={{ transform: 'rotate(180deg)' }} />
             </button>
-            <button
-              className="miniicon"
-              title={hasMoreRows ? 'Load next result batch' : 'Next page'}
-              onClick={hasMoreRows ? onLoadMoreRows : undefined}
-              disabled={loadingMoreRows || !hasMoreRows || !onLoadMoreRows}
-            >
-              {loadingMoreRows ? <IconRefresh size={12} /> : <IconChevR size={12} />}
-            </button>
+            {hasMoreRows ? (
+              <button
+                className="btn ghost"
+                onClick={onLoadMoreRows}
+                disabled={loadingMoreRows || !onLoadMoreRows}
+              >
+                {loadingMoreRows ? <IconRefresh size={12} /> : <IconChevR size={12} />}
+                Load more
+              </button>
+            ) : (
+              <button className="miniicon" title="Next page" disabled>
+                <IconChevR size={12} />
+              </button>
+            )}
             <span className="vsep" />
             <button className="miniicon" title="Refresh">
               <IconRefresh size={12} />
@@ -408,10 +391,17 @@ export function Results({
             {copyState === 'copied' && <span className="copy-state">copied</span>}
           </div>
 
+          {hasMultipleResultPages && (
+            <div className="result-pagination-notice" data-testid="result-pagination-notice">
+              Loading more recomputes the original query until streaming results are available. Use
+              an explicit ORDER BY for stable results across pages.
+            </div>
+          )}
+
           <div
             className="table-wrap"
             ref={tableWrapRef}
-            onScroll={(event) => updateResultScroll(event.currentTarget)}
+            onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
           >
             <table className="grid">
               <thead>
@@ -582,6 +572,16 @@ export function Results({
                   label="Peak spill bytes"
                   value={formatBytes(metrics.spill_peak_active_bytes ?? 0)}
                   sub={`${formatBytes(metrics.spill_storage_limit_bytes ?? 0)} storage limit`}
+                />
+                <KpiTile
+                  label="Registered memory"
+                  value={formatBytes(metrics.spill_peak_reservation_bytes ?? 0)}
+                  sub={`${formatBytes(metrics.spill_working_set_limit_bytes ?? 0)} spill watermark`}
+                />
+                <KpiTile
+                  label="Merge passes"
+                  value={`${metrics.spill_merge_passes ?? 0}`}
+                  sub={`${metrics.spill_files_created ?? 0} spill files`}
                 />
                 <KpiTile
                   success={(metrics.spill_active_files ?? 0) === 0}

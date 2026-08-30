@@ -2,15 +2,9 @@ import { resolve } from 'node:path';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
-import {
-  browserRuntimeBuildManifest,
-  resolveBrowserRuntimeBuildTier,
-} from './scripts/browser-runtime-build.ts';
+import { browserRuntimeBuildManifest } from './scripts/browser-runtime-build.ts';
 
 const browserMemoryEvidence = process.env.AXON_BROWSER_MEMORY_EVIDENCE === '1';
-const browserRuntimeBuildTier = resolveBrowserRuntimeBuildTier(
-  process.env.AXON_BROWSER_RUNTIME_BUILD_TIER,
-);
 
 export default defineConfig({
   plugins: [emitBrowserRuntimeBuildManifest(), blockLegacySandboxRoute(), basicSsl(), react()],
@@ -46,7 +40,7 @@ function emitBrowserRuntimeBuildManifest(): Plugin {
       this.emitFile({
         type: 'asset',
         fileName: 'axon-runtime-build.json',
-        source: `${JSON.stringify(browserRuntimeBuildManifest(browserRuntimeBuildTier), null, 2)}\n`,
+        source: `${JSON.stringify(browserRuntimeBuildManifest(), null, 2)}\n`,
       });
     },
   };

@@ -35,7 +35,6 @@ import {
   type PrivateStreamPhase,
 } from './sandbox-query-stream-protocol';
 import { parseBrowserMemoryProfileMib } from './browser-memory-profile.ts';
-import { browserExternalMemoryCanaryCapBytes } from './browser-datafusion-memory-policy.ts';
 import {
   finalizeQueryOutcome,
   type DeferredQueryOutcome,
@@ -43,16 +42,13 @@ import {
 } from './sandbox-query-terminal-finalizer.ts';
 import {
   BROWSER_SPILL_PRODUCTION_CAP_BYTES,
+  acquireQueryScopedOpfsSpill,
   applyBrowserExternalMemoryTelemetry,
-  beginOpfsSpillExecution,
-  deriveRuntimeSpillLimit,
   installOpfsSpillBridge,
   privateOpfsSpillMetrics,
-  probeBrowserExternalMemory,
   spillErrorName,
   sweepStaleOpfsSpillNamespaces,
   unregisterOpfsSpillExecution,
-  type BrowserExternalMemoryCapability,
   type OpfsSpillExecution,
 } from './opfs-spill-storage.ts';
 
@@ -94,18 +90,10 @@ type PageIndexSession = SandboxQuerySession & {
   set_page_index_mode?: (mode: string, calibrationErrorMarginUs?: number) => void;
 };
 
-type ExternalMemorySession = SandboxQuerySession & {
-  browser_external_memory_enabled: () => boolean;
-};
-
 const QUERY_PREVIEW_LIMIT = QUERY_RESULT_PAGE_SIZE + 1;
 const childScope = self as unknown as PrivateChildScope;
 
 let sessionPromise: Promise<SandboxQuerySession> | undefined;
-let browserExternalMemoryCapability: BrowserExternalMemoryCapability = {
-  state: 'unsupported',
-  reason: 'unavailable',
-};
 let activeQuery: ActiveQuery | undefined;
 let commandQueue = Promise.resolve();
 const queuedQueryIds = new Set<string>();
@@ -321,7 +309,7 @@ async function handleSql(
             applySpillAccountingToTerminalError(metadata, accounting);
             applyBrowserExternalMemoryTelemetry(
               metadata,
-              browserExternalMemoryCapability,
+              { state: 'supported' },
               accounting,
               datafusionMemory?.limitBytes,
               datafusionMemory?.peakBytes,
@@ -539,12 +527,7 @@ function ensureSession(context: BrowserWorkerEventContext): Promise<SandboxQuery
     async () => {
       const workerConfig = new URLSearchParams(childScope.name.split('?', 2)[1] ?? '');
       const session = new SandboxQuerySession(parseBrowserMemoryProfileMib(workerConfig));
-      if ((session as ExternalMemorySession).browser_external_memory_enabled()) {
-        await sweepStaleOpfsSpillNamespaces();
-        browserExternalMemoryCapability = await probeBrowserExternalMemory();
-      } else {
-        browserExternalMemoryCapability = { state: 'unsupported', reason: 'unavailable' };
-      }
+      await sweepStaleOpfsSpillNamespaces();
       const pageIndexMode = workerConfig.get('page_index_mode');
       if (pageIndexMode !== null) {
         if (!['skip', 'predicate', 'adaptive'].includes(pageIndexMode)) {
@@ -589,46 +572,34 @@ async function configureExternalMemory(
   active: ActiveQuery,
   session: SandboxQuerySession,
 ): Promise<void> {
-  const workerConfig = new URLSearchParams(childScope.name.split('?', 2)[1] ?? '');
-  if (
-    workerConfig.get('browser_external_memory') !== 'enabled' ||
-    !(session as ExternalMemorySession).browser_external_memory_enabled() ||
-    browserExternalMemoryCapability.state !== 'supported'
-  ) {
-    session.set_external_memory_execution(0);
-    return;
-  }
-
-  const estimate = await navigator.storage.estimate().catch(() => ({}));
-  const configuredCap = browserExternalMemoryCanaryCapBytes(
-    workerConfig.get('datafusion_spill_cap_mib'),
-  );
-  const maxBytes = deriveRuntimeSpillLimit(
-    configuredCap ?? BROWSER_SPILL_PRODUCTION_CAP_BYTES,
-    estimate,
-  );
-  if (maxBytes === 0) {
-    session.set_external_memory_execution(0);
-    return;
-  }
-
-  let executionId = 0;
   const spillWake = Reflect.get(axonWasm, 'axon_spill_wake') as
     | ((executionId: number, operationId: number) => void)
     | undefined;
-  if (!spillWake) {
-    throw queryError('resource_exhausted', 'browser spill bridge is unavailable', {
-      resource: 'spill_storage',
-      reason: 'unavailable',
-    });
-  }
-  const spill = await beginOpfsSpillExecution({
-    maxBytes,
-    wakeOperation: (operationId) => spillWake(executionId, operationId),
+  const acquired = await acquireQueryScopedOpfsSpill({
+    productionCapBytes: BROWSER_SPILL_PRODUCTION_CAP_BYTES,
+    wakeOperation: spillWake,
   });
-  executionId = spill.id;
-  active.spill = spill;
-  session.set_external_memory_execution(spill.id);
+  if (acquired.state === 'failed') throw spillSetupQueryError(acquired.reason);
+
+  active.spill = acquired.execution;
+  try {
+    session.set_external_memory_execution(acquired.execution.id);
+  } catch {
+    throw spillSetupQueryError('io_failure');
+  }
+}
+
+function spillSetupQueryError(reason: 'unavailable' | 'quota_exceeded' | 'io_failure'): QueryError {
+  const message =
+    reason === 'unavailable'
+      ? 'browser spill storage is unavailable'
+      : reason === 'quota_exceeded'
+        ? 'browser spill storage quota is exhausted'
+        : 'browser spill storage setup failed';
+  return queryError('resource_exhausted', message, {
+    resource: 'spill_storage',
+    reason,
+  });
 }
 
 async function cleanupExternalMemory(

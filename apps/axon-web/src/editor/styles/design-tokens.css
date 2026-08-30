@@ -1679,6 +1679,14 @@ textarea {
   padding: 0 2px;
 }
 
+.result-pagination-notice {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+  color: var(--ink-3);
+  font: 11px/1.4 var(--ui);
+}
+
 .table-wrap {
   flex: 1;
   overflow: auto;

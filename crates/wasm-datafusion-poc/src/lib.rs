@@ -1,11 +1,9 @@
-//! Experimental browser DataFusion proof-of-concept.
-//!
-//! This crate is intentionally isolated from Axon's default browser runtime and worker artifact.
+//! Browser DataFusion runtime.
 
-#[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
+#[cfg(target_arch = "wasm32")]
 mod browser_spill;
 mod ipc_cursor;
-#[cfg(any(test, all(target_arch = "wasm32", feature = "browser-external-memory")))]
+#[cfg(any(test, target_arch = "wasm32"))]
 mod spill_io;
 
 pub use ipc_cursor::{
@@ -39,15 +37,12 @@ use datafusion::common::ScalarValue;
 use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
-#[cfg(feature = "browser-external-memory")]
 use datafusion::execution::memory_pool::FairSpillPool;
-#[cfg(not(feature = "browser-external-memory"))]
-use datafusion::execution::memory_pool::GreedyMemoryPool;
 use datafusion::execution::memory_pool::{
     MemoryLimit, MemoryPool, MemoryReservation, TrackConsumersPool,
 };
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-#[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
+#[cfg(target_arch = "wasm32")]
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Expr, Operator, TableProviderFilterPushDown, TableType};
@@ -103,10 +98,7 @@ pub const RESPONSIBILITY: &str =
 pub const DEFAULT_TABLE_NAME: &str = "t";
 pub const SMOKE_SQL: &str =
     "SELECT id, value FROM t WHERE category = 'B' AND value > 10 ORDER BY id";
-#[cfg(feature = "browser-external-memory")]
 pub const DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES: usize = 128 * 1024 * 1024;
-#[cfg(not(feature = "browser-external-memory"))]
-pub const DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn runtime_target() -> ExecutionTarget {
     ExecutionTarget::BrowserWasm
@@ -167,21 +159,12 @@ struct BrowserDataFusionMemoryPool {
     peak_bytes: AtomicUsize,
 }
 
-#[cfg(feature = "browser-external-memory")]
 type BrowserDataFusionInnerPool = TrackConsumersPool<FairSpillPool>;
-#[cfg(not(feature = "browser-external-memory"))]
-type BrowserDataFusionInnerPool = TrackConsumersPool<GreedyMemoryPool>;
 
 impl BrowserDataFusionMemoryPool {
     fn new(limit_bytes: NonZeroUsize) -> Self {
-        #[cfg(feature = "browser-external-memory")]
         let inner = TrackConsumersPool::new(
             FairSpillPool::new(limit_bytes.get()),
-            NonZeroUsize::new(5).expect("tracked consumer count is non-zero"),
-        );
-        #[cfg(not(feature = "browser-external-memory"))]
-        let inner = TrackConsumersPool::new(
-            GreedyMemoryPool::new(limit_bytes.get()),
             NonZeroUsize::new(5).expect("tracked consumer count is non-zero"),
         );
         Self {
@@ -2762,7 +2745,7 @@ impl WasmDataFusionEngine {
         state
             .config_mut()
             .set_extension(Arc::new(PageIndexMemoryPressure(memory_pressure)));
-        #[cfg(all(target_arch = "wasm32", feature = "browser-external-memory"))]
+        #[cfg(target_arch = "wasm32")]
         if let Some(execution_id) = self.spill_execution_id {
             let memory_pool: Arc<dyn MemoryPool> = self.memory_pool.clone();
             let spill_storage: Arc<dyn datafusion::execution::spill_storage::SpillStorage> =
@@ -3239,19 +3222,12 @@ mod tests {
     }
 
     #[test]
-    fn browser_datafusion_memory_pool_matches_the_compiled_runtime_tier() {
+    fn browser_datafusion_memory_pool_uses_fair_spill_pool() {
         let pool = BrowserDataFusionMemoryPool::new(NonZeroUsize::new(100).unwrap());
         let inner_type = std::any::type_name_of_val(&pool.inner);
 
-        #[cfg(feature = "browser-external-memory")]
         assert!(
             inner_type.contains("FairSpillPool"),
-            "unexpected pool: {inner_type}"
-        );
-
-        #[cfg(not(feature = "browser-external-memory"))]
-        assert!(
-            inner_type.contains("GreedyMemoryPool"),
             "unexpected pool: {inner_type}"
         );
     }

@@ -193,7 +193,7 @@ test('persistent WebKit context supports the real OPFS lifecycle', async ({
   }
 });
 
-test('private WebKit reports OPFS unavailable while a non-spilling query still succeeds', async ({
+test('private WebKit returns typed storage errors and keeps the query worker reusable', async ({
   browserName,
   page,
 }) => {
@@ -211,7 +211,6 @@ test('private WebKit reports OPFS unavailable while a non-spilling query still s
   const result = await page.evaluate(async (fixture) => {
     const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
     const workerUrl = new URL('/src/sandbox-query-worker.ts', location.href);
-    workerUrl.searchParams.set('datafusion_spill_cap_mib', '576');
     const client = sdk.createAxonBrowserClient({
       worker: new Worker(workerUrl, { type: 'module', name: 'opfs-unavailable-small-query' }),
     });
@@ -234,26 +233,60 @@ test('private WebKit reports OPFS unavailable while a non-spilling query still s
         },
         { requestId: 'open-opfs-unavailable-small-query' },
       );
-      const query = await client.query(
-        'small_events',
-        'SELECT MIN(event_id) AS min_event_id FROM small_events',
-        {
-          requestId: 'query-opfs-unavailable-small-query',
-          preferredTarget: 'browser_wasm',
-          delivery: 'chunked_buffers',
-        },
-      );
-      return {
-        externalMemory: query.response.capabilities.capabilities.browser_external_memory,
-        rows: query.preview?.rows,
-      };
+      const failures = [];
+      for (let execution = 1; execution <= 2; execution += 1) {
+        try {
+          await client.query(
+            'small_events',
+            'SELECT MIN(event_id) AS min_event_id FROM small_events',
+            {
+              requestId: `query-opfs-unavailable-small-query-${execution}`,
+              preferredTarget: 'browser_wasm',
+              delivery: 'chunked_buffers',
+            },
+          );
+          failures.push({ unexpectedlySucceeded: true });
+        } catch (error) {
+          if (!(error instanceof sdk.AxonWorkerError)) throw error;
+          const workerError = error as {
+            name: string;
+            queryError: {
+              code: string;
+              target: string;
+              resource_details?: { resource?: string; reason?: string };
+            };
+          };
+          failures.push({
+            name: workerError.name,
+            code: workerError.queryError.code,
+            target: workerError.queryError.target,
+            resourceDetails: workerError.queryError.resource_details,
+          });
+        }
+      }
+      return failures;
     } finally {
       client.terminate();
     }
   }, manifest);
 
-  expect(result.externalMemory).toBe('unsupported');
-  expect(result.rows).toEqual([['0']]);
+  expect(result).toMatchObject([
+    {
+      name: 'AxonWorkerError',
+      code: 'resource_exhausted',
+      target: 'browser_wasm',
+      resourceDetails: { resource: 'spill_storage' },
+    },
+    {
+      name: 'AxonWorkerError',
+      code: 'resource_exhausted',
+      target: 'browser_wasm',
+      resourceDetails: { resource: 'spill_storage' },
+    },
+  ]);
+  const reasons = result.map((failure) => failure.resourceDetails?.reason);
+  expect(reasons.every((reason) => reason === 'unavailable' || reason === 'io_failure')).toBe(true);
+  expect(new Set(reasons).size).toBe(1);
 });
 
 test('spill-forcing aggregate returns every expected row and leaves no active OPFS files', async ({
@@ -263,7 +296,7 @@ test('spill-forcing aggregate returns every expected row and leaves no active OP
   test.setTimeout(10 * 60_000);
   test.skip(
     process.env.AXON_BROWSER_EXTERNAL_MEMORY_FULL_PARITY !== '1',
-    'Set AXON_BROWSER_EXTERNAL_MEMORY_FULL_PARITY=1 after building the external-memory Wasm tier.',
+    'Set AXON_BROWSER_EXTERNAL_MEMORY_FULL_PARITY=1 after building the browser Wasm artifact.',
   );
   const baseURL = testInfo.project.use.baseURL;
   if (typeof baseURL !== 'string') throw new Error('Playwright baseURL is required');
@@ -307,9 +340,7 @@ test('spill-forcing aggregate returns every expected row and leaves no active OP
         type MemoryMeasurement = { bytes: number };
         const sdk = await import(new URL('/src/axon-browser-sdk.ts', location.href).href);
         const workerUrl = new URL('/src/sandbox-query-worker.ts', location.href);
-        workerUrl.searchParams.set('browser_external_memory', 'enabled');
         workerUrl.searchParams.set('datafusion_memory_profile_mib', memoryProfile);
-        workerUrl.searchParams.set('datafusion_spill_cap_mib', '576');
         const client = sdk.createAxonBrowserClient({
           worker: new Worker(workerUrl, {
             type: 'module',

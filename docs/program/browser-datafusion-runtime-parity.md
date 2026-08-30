@@ -2,7 +2,7 @@
 
 - Status: Compatibility-provider release evidence
 - Date: 2026-05-22
-- Evidence revision: 2026-08-02
+- Evidence revision: 2026-08-29
 - Scope: `apps/axon-web` compatibility DataFusion provider over browser-safe Delta descriptors and HTTPS object URLs.
 - Owner: Runtime / engine team
 
@@ -70,13 +70,23 @@ Current scan parity covers:
 
 The Daxis M3 browser DataFusion budget profile is checked in at [`../release-gates/daxis-browser-datafusion-budget-profile.json`](../release-gates/daxis-browser-datafusion-budget-profile.json). It records the current interactive query envelope for the Axon Daxis-facing default worker SKU:
 
-- scan bytes: 64 MiB
+- planned and actual scan-admission bytes: 64 MiB (separate from the operator spill watermark and not a claim that spill-capable queries process only 64 MiB of total input)
 - Arrow IPC output bytes: 16 MiB
 - output batches in flight: 1
 - returned rows: 100,000
 - Brotli artifact budget: 6.0 MiB
 
 `cargo test -p wasm-datafusion-poc --test daxis_budget_profile` keeps the profile parseable, bounded, and tied to the budget, size, smoke, and Daxis corpus verification commands. The full artifact-size command remains a release evidence command because it requires `wasm-bindgen`, `wasm-opt`, `brotli`, and `twiggy`. For the Daxis-facing default worker, run `AXON_DF_SIZE_PACKAGE=axon-web-wasm AXON_DF_SIZE_WASM_STEM=axon_web_wasm AXON_DF_BROTLI_BUDGET_BYTES=6291456 bash tests/perf/report_datafusion_wasm_size.sh`.
+
+## Browser External Memory
+
+`axon-web-wasm` is one spill-capable browser artifact. There is no standard-versus-external-memory build selector or query-parameter mode gate. Every SQL execution freshly probes OPFS, creates an opaque query-scoped spill namespace, and installs `TrackConsumersPool<FairSpillPool>` with a 128 MiB default working-set watermark. The 64 MiB profile remains only as a bounded conformance setting. These values trigger spill; they do not limit total input bytes, aggregate cardinality, or result size.
+
+The supported spill allowlist is grouped hash aggregate and external sort. Repartition and sort-merge join spill are not claimed, and unsupported operators must continue to fail with a structured operator-memory error rather than changing engines or executing remotely. OPFS setup, quota, I/O, and cleanup failures use `resource_exhausted` with `resource_details.resource = spill_storage`; the worker remains reusable after a terminal storage error.
+
+The public SDK remains atomic during this bridge. The editor requests 501 rows, displays at most 500 final rows, and uses the extra row only as a more-results sentinel. Loading more is an explicit action that reruns the original SQL with the next offset. It does not retain an execution cursor, and output paging does not reduce aggregate working memory. Stable rerun pages require an explicit deterministic `ORDER BY` over an immutable or pinned snapshot.
+
+Spill files contain unencrypted intermediate values in same-origin persistent storage. Opaque namespaces keep paths and values out of public errors and telemetry, terminal cleanup deletes the query scope before publishing success, and later workers scavenge stale unlocked Axon-owned scopes. A same-origin script compromise or shared browser profile remains inside this trust boundary; deployments must treat origin integrity and session teardown as security controls.
 
 ## Arrow IPC Cursor Constraints
 

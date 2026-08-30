@@ -5,10 +5,7 @@
 import { clone, create, equals } from '@bufbuild/protobuf';
 import { timestampMs } from '@bufbuild/protobuf/wkt';
 import init, { resolve_delta_snapshot_from_manifest } from '../wasm/axon_web_wasm.js';
-import {
-  browserDataFusionMemoryOverrideBytes,
-  browserExternalMemoryCanaryCapBytes,
-} from '../browser-datafusion-memory-policy.ts';
+import { browserDataFusionMemoryOverrideBytes } from '../browser-datafusion-memory-policy.ts';
 import {
   BROWSER_MEMORY_PROFILE_QUERY_PARAM,
   browserQueryWorkerName,
@@ -359,24 +356,18 @@ async function buildSession(
 function createQueryClient(): AxonBrowserClient {
   const search = new URLSearchParams(window.location.search);
   const memoryProfileMiB = search.get('axon_datafusion_memory_profile_mib');
-  const spillCapMiB = search.get('axon_datafusion_spill_cap_mib');
   // Validate before spawning the coordinator. The profile is carried in the worker name so the
   // bundler-critical inline worker URL remains static.
   browserDataFusionMemoryOverrideBytes(memoryProfileMiB);
-  const spillCapBytes = browserExternalMemoryCanaryCapBytes(spillCapMiB);
   const workerConfig = new URLSearchParams(search);
   if (memoryProfileMiB) {
     workerConfig.set(BROWSER_MEMORY_PROFILE_QUERY_PARAM, memoryProfileMiB);
-  }
-  let workerName = browserQueryWorkerName(workerConfig);
-  if (spillCapBytes !== undefined) {
-    workerName += `&datafusion_spill_cap_mib=${spillCapBytes / (1024 * 1024)}`;
   }
   return createAxonBrowserClient({
     worker: () =>
       new Worker(new URL('../sandbox-query-worker.ts', import.meta.url), {
         type: 'module',
-        name: workerName,
+        name: browserQueryWorkerName(workerConfig),
       }),
     requestId: () => {
       throw new Error('editor worker commands require an execution-scoped request ID');

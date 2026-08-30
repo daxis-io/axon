@@ -7,12 +7,15 @@ script="scripts/verify-browser-external-memory.sh"
 bash -n "$script"
 grep -F 'AXON_STRESS_DELTA_PATH is required for the complete browser external-memory gate' "$script" >/dev/null
 grep -F 'spills the original high-cardinality stress aggregate' "$script" >/dev/null
+grep -F 'stress_profile in 64 128' "$script" >/dev/null
+grep -F 'AXON_STRESS_AGGREGATE_ORACLE_PATH' "$script" >/dev/null
+grep -F 'generate_stress_aggregate_oracle' "$script" >/dev/null
 grep -F 'isolates simultaneous OPFS spill scopes across two same-origin tabs' "$script" >/dev/null
-grep -F 'npm run build:external-memory' "$script" >/dev/null
+grep -F 'npm run build' "$script" >/dev/null
 
-external_build=$(jq -r '.scripts["build:external-memory"]' package.json)
-if [[ "$external_build" != 'node --experimental-strip-types scripts/browser-runtime-build.ts build external-memory' ]]; then
-  echo "external-memory gate does not select the manifest-verified external artifact tier" >&2
+runtime_build=$(jq -r '.scripts.build' package.json)
+if [[ "$runtime_build" != 'node --experimental-strip-types scripts/browser-runtime-build.ts build' ]]; then
+  echo "external-memory gate does not select the manifest-verified spill-capable artifact" >&2
   exit 1
 fi
 

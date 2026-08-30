@@ -10,7 +10,7 @@ import {
 } from './browser-memory-profile.ts';
 
 describe('browser external-memory working-set profile', () => {
-  it('accepts the 128 MiB spill profile and 64 MiB conformance/kill-switch profile', () => {
+  it('accepts the 128 MiB default and explicit 64 MiB conformance profile', () => {
     for (const profile of [PREVIOUS_BROWSER_MEMORY_PROFILE_MIB, EXTERNAL_MEMORY_WORKING_SET_MIB]) {
       expect(
         parseBrowserMemoryProfileMib(new URLSearchParams(`browser_memory_profile_mib=${profile}`)),
@@ -18,14 +18,11 @@ describe('browser external-memory working-set profile', () => {
     }
 
     expect(parseBrowserMemoryProfileMib(new URLSearchParams())).toBe(
-      PREVIOUS_BROWSER_MEMORY_PROFILE_MIB,
+      EXTERNAL_MEMORY_WORKING_SET_MIB,
     );
     expect(
-      parseBrowserMemoryProfileMib(new URLSearchParams('browser_external_memory=enabled')),
-    ).toBe(EXTERNAL_MEMORY_WORKING_SET_MIB);
-    expect(
       parseBrowserMemoryProfileMib(new URLSearchParams('browser_external_memory=disabled')),
-    ).toBe(PREVIOUS_BROWSER_MEMORY_PROFILE_MIB);
+    ).toBe(EXTERNAL_MEMORY_WORKING_SET_MIB);
   });
 
   it.each(['0', '96', '160', '256', 'unbounded', '128.5'])(
@@ -48,24 +45,22 @@ describe('browser external-memory working-set profile', () => {
     expect(workerUrl.searchParams.has('ignored')).toBe(false);
   });
 
-  it('encodes the opt-in external-memory canary without forwarding unrelated page state', () => {
+  it('encodes only the bounded working-set profile without a runtime mode parameter', () => {
     expect(
       browserQueryWorkerName(
         new URLSearchParams(
           'browser_external_memory=enabled&browser_memory_profile_mib=128&token=secret',
         ),
       ),
-    ).toBe(
-      'axon-editor-query-worker?browser_memory_profile_mib=128&browser_external_memory=enabled',
-    );
+    ).toBe('axon-editor-query-worker?browser_memory_profile_mib=128');
   });
 
-  it('selects the 128 MiB default only for an enabled external-memory worker', () => {
+  it('selects the 128 MiB default for every worker', () => {
     expect(browserQueryWorkerName(new URLSearchParams('browser_external_memory=enabled'))).toBe(
-      'axon-editor-query-worker?browser_memory_profile_mib=128&browser_external_memory=enabled',
+      'axon-editor-query-worker?browser_memory_profile_mib=128',
     );
     expect(browserQueryWorkerName(new URLSearchParams())).toBe(
-      'axon-editor-query-worker?browser_memory_profile_mib=64',
+      'axon-editor-query-worker?browser_memory_profile_mib=128',
     );
   });
 });

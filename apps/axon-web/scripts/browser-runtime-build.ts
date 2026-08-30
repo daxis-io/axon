@@ -3,37 +3,24 @@ import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export type BrowserRuntimeBuildTier = 'standard' | 'external-memory';
-
 export type BrowserRuntimeBuildManifest = {
   schema_version: 1;
-  tier: BrowserRuntimeBuildTier;
-  browser_external_memory: boolean;
+  tier: 'external-memory';
+  browser_external_memory: true;
 };
 
-export function resolveBrowserRuntimeBuildTier(value: string | undefined): BrowserRuntimeBuildTier {
-  if (value === undefined || value === 'standard') return 'standard';
-  if (value === 'external-memory') return 'external-memory';
-  throw new TypeError(
-    `unsupported browser runtime build tier '${value}'; expected standard or external-memory`,
-  );
-}
-
-export function browserRuntimeBuildManifest(
-  tier: BrowserRuntimeBuildTier,
-): BrowserRuntimeBuildManifest {
+export function browserRuntimeBuildManifest(): BrowserRuntimeBuildManifest {
   return {
     schema_version: 1,
-    tier,
-    browser_external_memory: tier === 'external-memory',
+    tier: 'external-memory',
+    browser_external_memory: true,
   };
 }
 
 export function verifyBrowserRuntimeBuildManifest(
   value: unknown,
-  expectedTier: BrowserRuntimeBuildTier,
 ): asserts value is BrowserRuntimeBuildManifest {
-  const expected = browserRuntimeBuildManifest(expectedTier);
+  const expected = browserRuntimeBuildManifest();
   if (
     typeof value !== 'object' ||
     value === null ||
@@ -44,29 +31,20 @@ export function verifyBrowserRuntimeBuildManifest(
     !('browser_external_memory' in value) ||
     value.browser_external_memory !== expected.browser_external_memory
   ) {
-    throw new Error(
-      `browser runtime build manifest did not match expected ${expectedTier} artifact`,
-    );
+    throw new Error('browser runtime build manifest did not match the spill-capable artifact');
   }
 }
 
-function runBuild(tier: BrowserRuntimeBuildTier): void {
-  const environment = {
-    ...process.env,
-    AXON_BROWSER_RUNTIME_BUILD_TIER: tier,
-  };
+function runBuild(): void {
+  const environment = process.env;
   run('npm', ['run', 'build:fixture'], environment);
-  run(
-    'npm',
-    ['run', tier === 'external-memory' ? 'build:wasm:external-memory' : 'build:wasm'],
-    environment,
-  );
+  run('npm', ['run', 'build:wasm'], environment);
   run('npm', ['exec', '--', 'tsc', '--noEmit'], environment);
   run('npm', ['exec', '--', 'vite', 'build'], environment);
-  run('bash', ['scripts/verify-build-output.sh', 'dist', tier], environment);
+  run('bash', ['scripts/verify-build-output.sh', 'dist'], environment);
 }
 
-function verifyBuildOutput(directory: string, tier: BrowserRuntimeBuildTier): void {
+function verifyBuildOutput(directory: string): void {
   let value: unknown;
   try {
     value = JSON.parse(readFileSync(resolve(directory, 'axon-runtime-build.json'), 'utf8'));
@@ -75,7 +53,7 @@ function verifyBuildOutput(directory: string, tier: BrowserRuntimeBuildTier): vo
       cause: error,
     });
   }
-  verifyBrowserRuntimeBuildManifest(value, tier);
+  verifyBrowserRuntimeBuildManifest(value);
 }
 
 function run(command: string, args: string[], environment: NodeJS.ProcessEnv): void {
@@ -89,22 +67,21 @@ function run(command: string, args: string[], environment: NodeJS.ProcessEnv): v
 function main(): void {
   const action = process.argv[2];
   if (action === 'build') {
-    const tier = resolveBrowserRuntimeBuildTier(
-      process.argv[3] ?? process.env.AXON_BROWSER_RUNTIME_BUILD_TIER,
-    );
-    runBuild(tier);
+    if (process.argv.length !== 3) {
+      throw new TypeError('usage: browser-runtime-build.ts build');
+    }
+    runBuild();
     return;
   }
   if (action === 'verify') {
     const directory = process.argv[3];
-    if (!directory) throw new TypeError('browser runtime build verification requires a directory');
-    const tier = resolveBrowserRuntimeBuildTier(
-      process.argv[4] ?? process.env.AXON_BROWSER_RUNTIME_BUILD_TIER,
-    );
-    verifyBuildOutput(directory, tier);
+    if (!directory || process.argv.length !== 4) {
+      throw new TypeError('usage: browser-runtime-build.ts verify <directory>');
+    }
+    verifyBuildOutput(directory);
     return;
   }
-  throw new TypeError('usage: browser-runtime-build.ts <build|verify> [directory] [tier]');
+  throw new TypeError('usage: browser-runtime-build.ts <build|verify> [directory]');
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

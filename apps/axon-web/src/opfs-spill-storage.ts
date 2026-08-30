@@ -2,7 +2,10 @@ import type { PrivateExternalMemoryMetrics } from './sandbox-query-stream-protoc
 
 export type BrowserExternalMemoryCapability =
   | { state: 'supported' }
-  | { state: 'unsupported'; reason: 'unavailable' };
+  | {
+      state: 'unsupported';
+      reason: 'unavailable' | 'quota_exceeded' | 'io_failure';
+    };
 
 export interface OpfsSyncAccessHandle {
   write(source: Uint8Array<ArrayBuffer>, options?: { at?: number }): number;
@@ -42,6 +45,24 @@ type SweepOptions = {
   nowMs?: () => number;
   staleAfterMs?: number;
 };
+
+type QueryScopedSpillOptions = {
+  productionCapBytes: number;
+  wakeOperation?: (executionId: number, operationId: number) => void;
+  probe?: () => Promise<BrowserExternalMemoryCapability>;
+  estimateStorage?: () => Promise<StorageEstimate>;
+  beginExecution?: (options: BeginOptions) => Promise<OpfsSpillExecution>;
+};
+
+export type QueryScopedOpfsSpillResult =
+  | {
+      state: 'ready';
+      execution: OpfsSpillExecution;
+    }
+  | {
+      state: 'failed';
+      reason: 'unavailable' | 'quota_exceeded' | 'io_failure';
+    };
 
 export type OpfsSpillAccounting = {
   storage_limit_bytes: number;
@@ -89,7 +110,7 @@ type RegisteredHandle = {
   readonly fileId?: number;
 };
 
-const DEFAULT_PROBE_BYTES = 4 * 1024 * 1024;
+const DEFAULT_PROBE_BYTES = 4;
 const DEFAULT_STALE_SCOPE_AGE_MS = 60 * 60 * 1000;
 const OPERATION_PENDING = 0;
 const OPERATION_SUCCEEDED = 1;
@@ -534,6 +555,57 @@ export async function beginOpfsSpillExecution(options: BeginOptions): Promise<Op
   }
 }
 
+/**
+ * Acquires the storage scope installed for one SQL query. Every invocation
+ * performs a fresh capability probe so a transient setup failure cannot poison
+ * later commands in the long-lived child worker.
+ */
+export async function acquireQueryScopedOpfsSpill(
+  options: QueryScopedSpillOptions,
+): Promise<QueryScopedOpfsSpillResult> {
+  const probe = options.probe ?? probeBrowserExternalMemory;
+  const capability = await probe().catch(() => ({
+    state: 'unsupported' as const,
+    reason: 'unavailable' as const,
+  }));
+  if (capability.state !== 'supported') {
+    return { state: 'failed', reason: capability.reason };
+  }
+
+  const estimateStorage =
+    options.estimateStorage ?? (() => navigator.storage.estimate() as Promise<StorageEstimate>);
+  let estimate: StorageEstimate;
+  try {
+    estimate = await estimateStorage();
+  } catch (error) {
+    console.warn('[axon] OPFS spill setup failed', {
+      operation: 'estimate_storage',
+      error_name: spillErrorName(error),
+    });
+    return { state: 'failed', reason: spillSetupFailureReason(error) };
+  }
+  const maxBytes = deriveRuntimeSpillLimit(options.productionCapBytes, estimate);
+  if (maxBytes === 0) return { state: 'failed', reason: 'quota_exceeded' };
+  if (!options.wakeOperation) return { state: 'failed', reason: 'unavailable' };
+
+  const beginExecution = options.beginExecution ?? beginOpfsSpillExecution;
+  let executionId = 0;
+  try {
+    const execution = await beginExecution({
+      maxBytes,
+      wakeOperation: (operationId) => options.wakeOperation?.(executionId, operationId),
+    });
+    executionId = execution.id;
+    return { state: 'ready', execution };
+  } catch (error) {
+    console.warn('[axon] OPFS spill setup failed', {
+      operation: 'begin_execution',
+      error_name: spillErrorName(error),
+    });
+    return { state: 'failed', reason: spillSetupFailureReason(error) };
+  }
+}
+
 export async function sweepStaleOpfsSpillNamespaces(options: SweepOptions = {}): Promise<number> {
   const getRoot = options.getRoot ?? browserOpfsRoot;
   const nowMs = options.nowMs ?? Date.now;
@@ -707,7 +779,14 @@ export async function probeBrowserExternalMemory(
         // Best effort after a failed capability probe.
       }
     }
-    return { state: 'unsupported', reason: 'unavailable' };
+    const classifiedReason = spillSetupFailureReason(error);
+    return {
+      state: 'unsupported',
+      reason:
+        operation === 'create_access_handle' && classifiedReason !== 'quota_exceeded'
+          ? 'unavailable'
+          : classifiedReason,
+    };
   }
 }
 
@@ -822,11 +901,13 @@ export function privateOpfsSpillMetrics(
 }
 
 async function browserOpfsRoot(): Promise<OpfsDirectory> {
-  const storage = navigator.storage as StorageManager & {
-    getDirectory?: () => Promise<FileSystemDirectoryHandle>;
-  };
-  if (typeof storage.getDirectory !== 'function') {
-    throw new Error('OPFS getDirectory is unavailable');
+  const storage = navigator.storage as
+    | (StorageManager & {
+        getDirectory?: () => Promise<FileSystemDirectoryHandle>;
+      })
+    | undefined;
+  if (!storage || typeof storage.getDirectory !== 'function') {
+    throw new DOMException('OPFS getDirectory is unavailable', 'NotSupportedError');
   }
   return (await storage.getDirectory()) as unknown as OpfsDirectory;
 }
@@ -835,6 +916,14 @@ function classifySpillError(error: unknown): number {
   if (error instanceof DOMException && error.name === 'QuotaExceededError') {
     return SPILL_ERROR_QUOTA_EXCEEDED;
   }
+  if (
+    error instanceof DOMException &&
+    ['NotSupportedError', 'NotAllowedError', 'SecurityError', 'InvalidStateError'].includes(
+      error.name,
+    )
+  ) {
+    return SPILL_ERROR_UNAVAILABLE;
+  }
   if (error instanceof Error && /quota exceeded/i.test(error.message)) {
     return SPILL_ERROR_QUOTA_EXCEEDED;
   }
@@ -842,6 +931,13 @@ function classifySpillError(error: unknown): number {
     return SPILL_ERROR_UNAVAILABLE;
   }
   return SPILL_ERROR_IO_FAILURE;
+}
+
+function spillSetupFailureReason(error: unknown): 'unavailable' | 'quota_exceeded' | 'io_failure' {
+  const classified = classifySpillError(error);
+  if (classified === SPILL_ERROR_QUOTA_EXCEEDED) return 'quota_exceeded';
+  if (classified === SPILL_ERROR_UNAVAILABLE) return 'unavailable';
+  return 'io_failure';
 }
 
 function requireExecution(executionId: number): OpfsSpillExecution {

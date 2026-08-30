@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BROWSER_SPILL_CORPUS_MAX_OBSERVED_BYTES,
   BROWSER_SPILL_PRODUCTION_CAP_BYTES,
+  acquireQueryScopedOpfsSpill,
   applyBrowserExternalMemoryTelemetry,
   beginOpfsSpillExecution,
   deriveProductionSpillCap,
@@ -15,6 +16,7 @@ import {
   unregisterOpfsSpillExecution,
   type OpfsDirectory,
   type OpfsFile,
+  type OpfsSpillExecution,
   type OpfsSyncAccessHandle,
 } from './opfs-spill-storage.ts';
 
@@ -24,7 +26,9 @@ class FakeAccessHandle implements OpfsSyncAccessHandle {
   constructor(readonly file: FakeFile) {}
 
   write(source: Uint8Array<ArrayBuffer>, options?: { at?: number }): number {
+    this.file.writeLengths.push(source.length);
     if (this.file.writeError) throw this.file.writeError;
+    if (this.file.shortWriteBytes !== undefined) return this.file.shortWriteBytes;
     const at = options?.at ?? 0;
     const next = new Uint8Array(Math.max(this.file.bytes.length, at + source.length));
     next.set(this.file.bytes);
@@ -58,12 +62,15 @@ class FakeAccessHandle implements OpfsSyncAccessHandle {
 
 class FakeFile implements OpfsFile {
   bytes = new Uint8Array();
+  readonly writeLengths: number[] = [];
   readonly handles: FakeAccessHandle[] = [];
   flushError: Error | undefined;
   writeError: Error | undefined;
+  shortWriteBytes: number | undefined;
   readError: Error | undefined;
   truncateError: Error | undefined;
   closeError: Error | undefined;
+  accessHandleError: Error | undefined;
   deferredAccessHandle:
     | {
         promise: Promise<OpfsSyncAccessHandle>;
@@ -80,6 +87,7 @@ class FakeFile implements OpfsFile {
   }
 
   async createSyncAccessHandle(): Promise<OpfsSyncAccessHandle> {
+    if (this.accessHandleError) throw this.accessHandleError;
     if (this.deferredAccessHandle) {
       return this.deferredAccessHandle.promise;
     }
@@ -169,6 +177,122 @@ describe('browser OPFS spill storage', () => {
     vi.restoreAllMocks();
   });
 
+  it('freshly probes and creates exactly one spill execution for each query acquisition', async () => {
+    const probe = vi.fn(async () => ({ state: 'supported' as const }));
+    let nextId = 1;
+    const beginExecution = vi.fn(async () => ({ id: nextId++ }) as unknown as OpfsSpillExecution);
+    const estimateStorage = vi.fn(async () => ({ quota: 1024, usage: 0 }));
+    const wakeOperation = vi.fn();
+
+    const first = await acquireQueryScopedOpfsSpill({
+      productionCapBytes: 128,
+      probe,
+      beginExecution,
+      estimateStorage,
+      wakeOperation,
+    });
+    const second = await acquireQueryScopedOpfsSpill({
+      productionCapBytes: 128,
+      probe,
+      beginExecution,
+      estimateStorage,
+      wakeOperation,
+    });
+
+    expect(first).toMatchObject({ state: 'ready', execution: { id: 1 } });
+    expect(second).toMatchObject({ state: 'ready', execution: { id: 2 } });
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(beginExecution).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a query with typed unavailable storage when its fresh probe is unsupported', async () => {
+    const beginExecution = vi.fn();
+
+    await expect(
+      acquireQueryScopedOpfsSpill({
+        productionCapBytes: 128,
+        probe: async () => ({ state: 'unsupported', reason: 'unavailable' }),
+        beginExecution,
+        wakeOperation: () => undefined,
+      }),
+    ).resolves.toEqual({ state: 'failed', reason: 'unavailable' });
+    expect(beginExecution).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes an unexpected probe failure as unavailable storage', async () => {
+    const result = await acquireQueryScopedOpfsSpill({
+      productionCapBytes: 128,
+      probe: async () => {
+        throw new Error('secret probe detail');
+      },
+      wakeOperation: () => undefined,
+    });
+
+    expect(result).toEqual({ state: 'failed', reason: 'unavailable' });
+    expect(JSON.stringify(result)).not.toContain('secret');
+  });
+
+  it('classifies zero derived storage capacity as quota exhaustion', async () => {
+    const beginExecution = vi.fn();
+
+    await expect(
+      acquireQueryScopedOpfsSpill({
+        productionCapBytes: 128,
+        probe: async () => ({ state: 'supported' }),
+        estimateStorage: async () => ({ quota: 100, usage: 100 }),
+        beginExecution,
+        wakeOperation: () => undefined,
+      }),
+    ).resolves.toEqual({ state: 'failed', reason: 'quota_exceeded' });
+    expect(beginExecution).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes a synchronous storage-estimate failure without killing the query worker', async () => {
+    await expect(
+      acquireQueryScopedOpfsSpill({
+        productionCapBytes: 128,
+        probe: async () => ({ state: 'supported' }),
+        estimateStorage: () => {
+          throw new DOMException('private estimate detail', 'UnknownError');
+        },
+        wakeOperation: () => undefined,
+      }),
+    ).resolves.toEqual({ state: 'failed', reason: 'io_failure' });
+  });
+
+  it.each([
+    [new DOMException('secret private detail', 'NotSupportedError'), 'unavailable'],
+    [new DOMException('secret quota detail', 'QuotaExceededError'), 'quota_exceeded'],
+    [new DOMException('secret I/O detail', 'UnknownError'), 'io_failure'],
+  ] as const)('sanitizes query scope setup failure as %s -> %s', async (error, reason) => {
+    const result = await acquireQueryScopedOpfsSpill({
+      productionCapBytes: 128,
+      probe: async () => ({ state: 'supported' }),
+      estimateStorage: async () => ({}),
+      beginExecution: async () => {
+        throw error;
+      },
+      wakeOperation: () => undefined,
+    });
+
+    expect(result).toEqual({ state: 'failed', reason });
+    expect(JSON.stringify(result)).not.toContain('secret');
+  });
+
+  it('classifies an absent Wasm wake bridge as unavailable before scope creation', async () => {
+    const beginExecution = vi.fn();
+
+    await expect(
+      acquireQueryScopedOpfsSpill({
+        productionCapBytes: 128,
+        probe: async () => ({ state: 'supported' }),
+        estimateStorage: async () => ({}),
+        beginExecution,
+      }),
+    ).resolves.toEqual({ state: 'failed', reason: 'unavailable' });
+    expect(beginExecution).not.toHaveBeenCalled();
+  });
+
   it('reduces cleanup failures to a non-sensitive error class', () => {
     const error = new Error('signed_url=https://example.test/?token=secret');
     expect(spillErrorName(error)).toBe('Error');
@@ -189,6 +313,24 @@ describe('browser OPFS spill storage', () => {
     );
   });
 
+  it('uses a minimal liveness payload for the per-query capability probe', async () => {
+    let scratchFile: FakeFile | undefined;
+    const root = new FakeDirectory((name) => {
+      const file = new FakeFile();
+      if (name === 'probe') scratchFile = file;
+      return file;
+    });
+
+    await expect(
+      probeBrowserExternalMemory({
+        getRoot: async () => root,
+        randomId: () => 'minimal-probe',
+      }),
+    ).resolves.toEqual({ state: 'supported' });
+
+    expect(scratchFile?.writeLengths).toEqual([4]);
+  });
+
   it('reports a sanitized operation and error name when the real probe is unavailable', async () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
@@ -207,6 +349,67 @@ describe('browser OPFS spill storage', () => {
     });
     expect(JSON.stringify(warning.mock.calls)).not.toContain('private details');
     expect(JSON.stringify(warning.mock.calls)).not.toContain('sensitive-probe-id');
+  });
+
+  it('classifies WebKit synchronous-access-handle unavailability as unavailable storage', async () => {
+    const root = new FakeDirectory((name) => {
+      const file = new FakeFile();
+      if (name === 'probe') {
+        file.accessHandleError = new DOMException('private WebKit detail', 'UnknownError');
+      }
+      return file;
+    });
+
+    await expect(
+      probeBrowserExternalMemory({
+        getRoot: async () => root,
+        randomId: () => 'webkit-private-probe',
+      }),
+    ).resolves.toEqual({ state: 'unsupported', reason: 'unavailable' });
+  });
+
+  it('preserves quota exhaustion detected by the per-query capability probe', async () => {
+    const root = new FakeDirectory((name) => {
+      const file = new FakeFile();
+      if (name === 'probe') {
+        file.writeError = new DOMException('private quota detail', 'QuotaExceededError');
+      }
+      return file;
+    });
+
+    await expect(
+      acquireQueryScopedOpfsSpill({
+        productionCapBytes: 128,
+        probe: () =>
+          probeBrowserExternalMemory({
+            getRoot: async () => root,
+            probeBytes: 64,
+            randomId: () => 'opaque-probe',
+          }),
+        wakeOperation: () => undefined,
+      }),
+    ).resolves.toEqual({ state: 'failed', reason: 'quota_exceeded' });
+  });
+
+  it('preserves short-write I/O failure detected by the per-query capability probe', async () => {
+    const root = new FakeDirectory((name) => {
+      const file = new FakeFile();
+      if (name === 'probe') file.shortWriteBytes = 1;
+      return file;
+    });
+
+    await expect(
+      acquireQueryScopedOpfsSpill({
+        productionCapBytes: 128,
+        probe: () =>
+          probeBrowserExternalMemory({
+            getRoot: async () => root,
+            probeBytes: 64,
+            randomId: () => 'opaque-probe',
+          }),
+        wakeOperation: () => undefined,
+      }),
+    ).resolves.toEqual({ state: 'failed', reason: 'io_failure' });
   });
 
   it('externalizes a file behind numeric ids and cleans the complete execution namespace', async () => {

@@ -28,6 +28,11 @@ This is the list of metrics and routing signals the repo emits today. There are 
 - `rows_emitted`: rows emitted by the scan layer before projection, filtering, aggregation, ordering, or limit are applied
 - `snapshot_bootstrap_duration_ms`: browser snapshot-bootstrap wall-clock duration when tracked
 - `access_mode`: browser object access mode when tracked
+- `spill_backend`: `opfs` when the browser execution actually used query-scoped spill storage
+- `spill_working_set_limit_bytes` and `spill_peak_reservation_bytes`: the registered operator-memory watermark and observed peak reservation; neither is total process memory
+- `spill_storage_limit_bytes`, `spill_peak_active_bytes`, and `spill_active_files`: the query storage allowance, peak live spill bytes, and live files after terminal cleanup
+- `spill_bytes_written`, `spill_bytes_read`, `spill_files_created`, and `spill_merge_passes`: aggregate spill activity without paths, SQL, URLs, or values
+- `spill_cleanup_count`, `spill_abandoned_cleanup_count`, `spill_cleanup_files`, and `spill_cleanup_scopes`: terminal and stale-scope cleanup accounting
 
 `QueryResponse`
 
@@ -125,6 +130,7 @@ These inputs are ready for an external dashboard pipeline once the trusted servi
 - footer reads
 - rows emitted
 - snapshot bootstrap duration
+- spill count, bytes written/read, merge passes, peak registered memory, duration, and cleanup status
 - arrow IPC bytes
 - access mode
 - fallback reason
@@ -152,6 +158,7 @@ Repo-owned thresholds or trends an external dashboard might watch:
 - loss of pruning effectiveness shown by `files_skipped`
 - loss of row-group pruning effectiveness shown by `row_groups_skipped`
 - browser startup or memory baseline drift
+- spill-storage setup, quota, I/O, abandoned-scope, or terminal-cleanup failures
 - dependency guardrail failures
 
 ## Explicit Non-Claims

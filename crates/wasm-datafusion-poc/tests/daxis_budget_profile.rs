@@ -102,7 +102,6 @@ fn daxis_browser_datafusion_budget_profile_is_release_gate_ready() {
         string_array(external_memory, "pendingOperators"),
         ["spill_pool_repartition", "sort_merge_join"]
     );
-
     let commands = profile["verificationCommands"]
         .as_array()
         .expect("verificationCommands should be an array")
@@ -141,21 +140,11 @@ fn string_array<'a>(value: &'a Value, field: &str) -> Vec<&'a str> {
         .collect()
 }
 
-#[cfg(feature = "browser-external-memory")]
 #[test]
-fn browser_external_memory_uses_a_128_mib_working_set() {
+fn browser_runtime_uses_a_128_mib_default_working_set() {
     assert_eq!(
         DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES,
         128 * 1024 * 1024
-    );
-}
-
-#[cfg(not(feature = "browser-external-memory"))]
-#[test]
-fn standard_browser_runtime_preserves_the_64_mib_working_set() {
-    assert_eq!(
-        DEFAULT_BROWSER_DATAFUSION_MEMORY_POOL_BYTES,
-        64 * 1024 * 1024
     );
 }
 
