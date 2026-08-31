@@ -30,6 +30,10 @@ const deployWorkflowSource = readFileSync(
   fileURLToPath(new URL('../../../.github/workflows/deploy-axon-web.yml', import.meta.url)),
   'utf8',
 );
+const deploymentVerifierSource = readFileSync(
+  fileURLToPath(new URL('../scripts/verify-deployment.sh', import.meta.url)),
+  'utf8',
+);
 const webCargoSource = readFileSync(
   fileURLToPath(new URL('../Cargo.toml', import.meta.url)),
   'utf8',
@@ -105,6 +109,12 @@ describe('browser external-memory release contract', () => {
     expect(deployWorkflowSource).not.toContain('browser_runtime_tier');
     expect(deployWorkflowSource).not.toContain('AXON_BROWSER_RUNTIME_BUILD_TIER');
     expect(deployWorkflowSource).not.toContain('preview-canary only');
+  });
+
+  it('allows the production alias time to publish newly hashed assets', () => {
+    expect(deploymentVerifierSource).toContain('VERIFY_DEPLOYMENT_ATTEMPTS');
+    expect(deploymentVerifierSource).toContain('VERIFY_DEPLOYMENT_RETRY_DELAY_SECONDS');
+    expect(deploymentVerifierSource).toContain('retrying');
   });
 
   it('has no legacy OPFS canary cap override in live runtime source', () => {

@@ -17,6 +17,11 @@ if [[ -z "${deploy_url}" || -z "${dist_root}" ]]; then
 fi
 deploy_url="${deploy_url%/}"
 
+# A production alias can briefly serve the previous deployment after Vercel reports the new one
+# Ready. Retry expected assets so newly hashed worker and WASM URLs have time to reach every edge.
+verify_attempts="${VERIFY_DEPLOYMENT_ATTEMPTS:-6}"
+retry_delay_seconds="${VERIFY_DEPLOYMENT_RETRY_DELAY_SECONDS:-2}"
+
 failures=0
 
 fail() {
@@ -47,19 +52,29 @@ if [[ "${redirect_target}" == *"vercel.com/sso"* ]]; then
 fi
 
 expect_asset() {
-  local path="$1" expected_type="$2" result status content_type
-  result=$(probe "${deploy_url}${path}")
-  status="${result%% *}"
-  content_type="${result#* }"
-  if [[ "${status}" != "200" ]]; then
-    fail "${path} returned ${status}, expected 200"
-    return
-  fi
-  if [[ "${content_type}" != *"${expected_type}"* ]]; then
-    fail "${path} served as '${content_type}', expected '${expected_type}'"
-    return
-  fi
-  echo "ok: ${path} -> ${status} ${content_type}"
+  local path="$1" expected_type="$2" result status content_type failure_reason attempt
+  for ((attempt = 1; attempt <= verify_attempts; attempt++)); do
+    result=$(probe "${deploy_url}${path}")
+    status="${result%% *}"
+    content_type="${result#* }"
+    if [[ "${status}" == "200" && "${content_type}" == *"${expected_type}"* ]]; then
+      echo "ok: ${path} -> ${status} ${content_type}"
+      return
+    fi
+
+    if [[ "${status}" != "200" ]]; then
+      failure_reason="${path} returned ${status}, expected 200"
+    else
+      failure_reason="${path} served as '${content_type}', expected '${expected_type}'"
+    fi
+
+    if ((attempt < verify_attempts)); then
+      echo "${failure_reason}; retrying (${attempt}/${verify_attempts})" >&2
+      sleep "${retry_delay_seconds}"
+    fi
+  done
+
+  fail "${failure_reason} after ${verify_attempts} attempts"
 }
 
 asset_path() {
