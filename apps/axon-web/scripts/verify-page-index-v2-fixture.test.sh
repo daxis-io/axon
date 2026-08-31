@@ -40,7 +40,7 @@ else
     echo "verifier unexpectedly accepted dirty generator provenance" >&2
     exit 1
   fi
-  rg -q "generator worktree was not clean" "${temporary_root}/dirty.out"
+  grep -Fq "generator worktree was not clean" "${temporary_root}/dirty.out"
 fi
 
 # The Rust verifier must run before checksum acceptance and reject physical/manifest drift.
@@ -54,7 +54,7 @@ if (cd "${repo_root}" && cargo run --quiet --locked -p axon-web-wasm --features 
   echo "verifier unexpectedly accepted a malformed recorded page location" >&2
   exit 1
 fi
-rg -q "page metadata differed from manifest" "${temporary_root}/tampered.out"
+grep -Fq "page metadata differed from manifest" "${temporary_root}/tampered.out"
 
 expect_rejected() {
   local name="$1"
@@ -69,7 +69,7 @@ expect_rejected() {
     echo "verifier unexpectedly accepted ${name}" >&2
     exit 1
   fi
-  rg -q "${expected}" "${temporary_root}/${name}.out"
+  grep -Fq "${expected}" "${temporary_root}/${name}.out"
 }
 
 sha256_file() {

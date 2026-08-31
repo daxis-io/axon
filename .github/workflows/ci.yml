@@ -140,9 +140,9 @@ jobs:
           done
           rg -q "Canonical design — implementation in progress" docs/program/browser-lakehouse-engine-strategy.md
           rg -q "standard DataFusion Parquet over Axon ObjectStore" docs/program/browser-lakehouse-engine-strategy.md
-          rg -q "accepted browser failure never transparently becomes native execution" docs/program/browser-lakehouse-engine-strategy.md
-          rg -q 'Existing `sql()` and its `single_buffer` / `chunked_buffers` delivery modes remain atomic' docs/program/browser-lakehouse-engine-strategy.md
-          rg -q '`sqlProgressive()` is a separate API' docs/program/browser-lakehouse-engine-strategy.md
+          rg -Uq 'accepted browser failure never transparently becomes[[:space:]]+native execution' docs/program/browser-lakehouse-engine-strategy.md
+          rg -Fq 'Existing `sql()` and its `single_buffer` / `chunked_buffers` delivery modes remain atomic' docs/program/browser-lakehouse-engine-strategy.md
+          rg -Fq '`sqlProgressive()` is a separate API' docs/program/browser-lakehouse-engine-strategy.md
           for file in docs/program/browser-owned-descriptor-materialization.md docs/program/browser-uc-brokered-runtime-contract.md docs/program/browser-embedding-deployment.md docs/program/provider-model.md; do
             rg -q "root-scoped" "$file"
             rg -q "per-file" "$file"

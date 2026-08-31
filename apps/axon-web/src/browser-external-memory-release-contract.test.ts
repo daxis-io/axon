@@ -19,6 +19,10 @@ const ciWorkflowSource = readFileSync(
   fileURLToPath(new URL('../../../.github/workflows/ci.yml', import.meta.url)),
   'utf8',
 );
+const pageIndexFixtureTestSource = readFileSync(
+  fileURLToPath(new URL('../scripts/verify-page-index-v2-fixture.test.sh', import.meta.url)),
+  'utf8',
+);
 const packageJson = JSON.parse(
   readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
 ) as { scripts: Record<string, string> };
@@ -70,6 +74,21 @@ describe('browser external-memory release contract', () => {
     expect(testIndex).toBeGreaterThan(buildIndex);
     expect(artifactJob.match(/npm run build:wasm(?::external-memory)?/g)).toBeNull();
     expect(artifactJob).toContain('run: npm run build');
+  });
+
+  it('keeps the page-index fixture gate independent of uninstalled ripgrep', () => {
+    expect(pageIndexFixtureTestSource).not.toMatch(/\brg\b/);
+    expect(pageIndexFixtureTestSource).toContain('grep -Fq');
+  });
+
+  it('matches literal atomic API names in the documentation gate', () => {
+    expect(ciWorkflowSource).toContain(
+      "rg -Uq 'accepted browser failure never transparently becomes[[:space:]]+native execution'",
+    );
+    expect(ciWorkflowSource).toContain(
+      "rg -Fq 'Existing `sql()` and its `single_buffer` / `chunked_buffers` delivery modes remain atomic'",
+    );
+    expect(ciWorkflowSource).toContain("rg -Fq '`sqlProgressive()` is a separate API'");
   });
 
   it('exposes only the normal build commands for the fixed runtime', () => {
