@@ -2,7 +2,7 @@
 
 Started: 2026-07-15
 
-Source: `/Users/ethanurbanski/Downloads/wcrpc_design_pack`
+Source: locally supplied `wcrpc_design_pack` corpus
 
 Imported copy: `docs/research/wcrpc-design-pack/`
 
