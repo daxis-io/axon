@@ -2789,25 +2789,6 @@ table.grid tr:hover td.gutter-cell {
   color: var(--ink-3);
 }
 
-/* cache meter in status bar */
-.cache-meter {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.cache-meter .bar {
-  width: 56px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--line);
-  overflow: hidden;
-}
-.cache-meter .bar .fill {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 2px;
-}
-
 /* tiny pill for execution target in tables */
 .tgt {
   display: inline-flex;

@@ -135,6 +135,10 @@ export function clearOwnedRunTimer(
   if (timerRef.current === ownedTimer) timerRef.current = null;
 }
 
+export function sessionTableCountLabel(tableCount: number): string {
+  return `${tableCount.toLocaleString()} ${tableCount === 1 ? 'table' : 'tables'}`;
+}
+
 function targetTitle(id: SqlTab['preferred']): string {
   if (!SERVER_QUERY_FALLBACK_ENABLED) {
     return 'Run in Browser (WASM)';
@@ -1270,22 +1274,9 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
         {engine && engine.cache.opfs_budget_mb > 0 && (
           <>
             <span className="sep" />
-            <span
-              className="grp cache-meter"
-              title={`Session cache · ${engine.cache.extents.toLocaleString()} extents`}
-            >
-              <span>Cache</span>
-              <span className="bar">
-                <span
-                  className="fill"
-                  style={{
-                    width: `${(engine.cache.opfs_used_mb / engine.cache.opfs_budget_mb) * 100}%`,
-                  }}
-                />
-              </span>
-              <span className="mono">
-                {engine.cache.opfs_used_mb.toFixed(1)}/{engine.cache.opfs_budget_mb} MB
-              </span>
+            <span className="grp" title="Retained browser query session tables">
+              <span>Session</span>
+              <span className="mono">{sessionTableCountLabel(engine.cache.extents)}</span>
             </span>
           </>
         )}

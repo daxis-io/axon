@@ -42,6 +42,19 @@ type ResultsProps = {
 
 type ResultsTab = 'results' | 'plan' | 'snapshot' | 'messages' | 'history';
 
+export function externalMemoryReservationPresentation(
+  peakReservationBytes: number,
+  workingSetLimitBytes: number,
+) {
+  return {
+    label: 'Peak operator reservations',
+    value: formatBytes(peakReservationBytes),
+    sub: `${formatBytes(workingSetLimitBytes)} spill watermark · includes spill headroom`,
+    title:
+      'DataFusion-accounted operator reservations. Includes aggregate spill-sort headroom and does not represent total browser memory.',
+  };
+}
+
 export function Results({
   runState,
   resultData,
@@ -234,6 +247,10 @@ export function Results({
   const visibleEvents = serverFallbackEnabled
     ? events
     : events.filter((event) => event.kind !== 'fallback');
+  const reservationPresentation = externalMemoryReservationPresentation(
+    metrics?.spill_peak_reservation_bytes ?? 0,
+    metrics?.spill_working_set_limit_bytes ?? 0,
+  );
 
   return (
     <div className="results">
@@ -574,9 +591,11 @@ export function Results({
                   sub={`${formatBytes(metrics.spill_storage_limit_bytes ?? 0)} storage limit`}
                 />
                 <KpiTile
-                  label="Registered memory"
-                  value={formatBytes(metrics.spill_peak_reservation_bytes ?? 0)}
-                  sub={`${formatBytes(metrics.spill_working_set_limit_bytes ?? 0)} spill watermark`}
+                  testId="operator-reservation-metrics"
+                  title={reservationPresentation.title}
+                  label={reservationPresentation.label}
+                  value={reservationPresentation.value}
+                  sub={reservationPresentation.sub}
                 />
                 <KpiTile
                   label="Merge passes"
@@ -810,6 +829,8 @@ function KpiTile({
   accent,
   success,
   warn,
+  title,
+  testId,
 }: {
   label: string;
   value: string;
@@ -818,12 +839,14 @@ function KpiTile({
   accent?: boolean;
   success?: boolean;
   warn?: boolean;
+  title?: string;
+  testId?: string;
 }) {
   const cls = ['kpi', accent && 'accent', success && 'success', warn && 'warn']
     .filter(Boolean)
     .join(' ');
   return (
-    <div className={cls}>
+    <div className={cls} title={title} data-testid={testId}>
       <div className="l">{label}</div>
       <div className="v">
         {value}

@@ -1525,7 +1525,13 @@ test.describe('editor (Phase 1 smoke)', () => {
           .map((row) => row.map((cell) => (cell === null ? null : String(cell)))),
       ).toEqual(oracle.rows);
       await page.locator('.res-tab', { hasText: 'Plan' }).click();
-      await expect(page.getByTestId('external-memory-metrics')).toContainText('Registered memory');
+      await expect(page.getByTestId('external-memory-metrics')).toContainText(
+        'Peak operator reservations',
+      );
+      await expect(page.getByTestId('operator-reservation-metrics')).toHaveAttribute(
+        'title',
+        /does not represent total browser memory/,
+      );
       await expect(page.getByTestId('external-memory-metrics')).toContainText('Merge passes');
       await expect(page.getByTestId('external-memory-metrics')).toContainText('Cleanup');
       await page.locator('.res-tab', { hasText: 'Results' }).click();

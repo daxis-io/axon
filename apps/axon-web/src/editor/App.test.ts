@@ -14,6 +14,10 @@ type AppEngineStatusModule = {
   ) => () => void;
 };
 
+type AppSessionStatusModule = {
+  sessionTableCountLabel?: (tableCount: number) => string;
+};
+
 type AppExecutionGuardModule = {
   executionMayUpdateUi?: (runState: RunUiState, executionId: string) => boolean;
   browserProviderRejectionReason?: (error: unknown) => ExecutionRejectionReason;
@@ -65,6 +69,19 @@ describe('App engine status subscription', () => {
     expect(selectEngineStatus(store.getState())).toEqual(status);
     expect(cleanup).toBe(unsubscribe);
     expect(subscribe).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('App session status', () => {
+  it('summarizes retained tables without presenting logical table weight as cache usage', () => {
+    const sessionTableCountLabel = (AppModule as AppSessionStatusModule).sessionTableCountLabel;
+
+    expect(sessionTableCountLabel).toEqual(expect.any(Function));
+    if (!sessionTableCountLabel) return;
+
+    expect(sessionTableCountLabel(0)).toBe('0 tables');
+    expect(sessionTableCountLabel(1)).toBe('1 table');
+    expect(sessionTableCountLabel(2)).toBe('2 tables');
   });
 });
 
