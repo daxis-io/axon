@@ -1,0 +1,68 @@
+schema = 2
+target_triple = "wasm32-unknown-unknown"
+wasm_roots = ["axon-web-wasm"]
+
+[release]
+branch = "axon-wasm/v1"
+candidate_tag = "axon-wasm-v1.0.0-rc.1"
+final_tag = "axon-wasm-v1.0.0"
+
+[components.arrow_rs]
+canonical_url = "https://github.com/apache/arrow-rs"
+daxis_url = "https://github.com/daxis-io/arrow-rs"
+release_version = "59.3.0"
+base_tag = "59.3.0"
+base_sha = "f90e061326bd821a7af09281d9e92de6f3b603d9"
+candidate_sha = "UNSET"
+stack_sha = "UNSET"
+target_triple = "wasm32-unknown-unknown"
+expected_package_source = "https://github.com/daxis-io/arrow-rs"
+package_patterns = ["arrow", "arrow-*", "parquet"]
+
+[components.object_store]
+canonical_url = "https://github.com/apache/arrow-rs-object-store"
+daxis_url = "https://github.com/daxis-io/arrow-rs-object-store"
+release_version = "0.14.1"
+base_tag = "v0.14.1"
+base_sha = "c7316d29face118e7409eead0cda098f38589428"
+candidate_sha = "UNSET"
+stack_sha = "UNSET"
+target_triple = "wasm32-unknown-unknown"
+expected_package_source = "https://github.com/daxis-io/arrow-rs-object-store"
+package_patterns = ["object_store"]
+
+[components.datafusion]
+canonical_url = "https://github.com/apache/datafusion"
+daxis_url = "https://github.com/daxis-io/datafusion"
+release_version = "55.0.0"
+base_tag = "55.0.0"
+base_sha = "d5552342012888b7d1a3ab88d92e3d292fc0cde0"
+candidate_sha = "UNSET"
+stack_sha = "UNSET"
+target_triple = "wasm32-unknown-unknown"
+expected_package_source = "https://github.com/daxis-io/datafusion"
+package_patterns = ["datafusion", "datafusion-*"]
+
+[components.delta_kernel]
+canonical_url = "https://github.com/delta-io/delta-kernel-rs"
+daxis_url = "https://github.com/daxis-io/delta-kernel-rs"
+release_version = "0.28.0"
+base_tag = "v0.28.0"
+base_sha = "b77d6518b2ae76bcb8796256666ad0de3f7f654b"
+candidate_sha = "UNSET"
+stack_sha = "UNSET"
+target_triple = "wasm32-unknown-unknown"
+expected_package_source = "https://github.com/daxis-io/delta-kernel-rs"
+package_patterns = ["delta_kernel"]
+
+[components.delta_rs]
+canonical_url = "https://github.com/delta-io/delta-rs"
+daxis_url = "https://github.com/daxis-io/delta-rs"
+release_version = "0.32.4"
+base_tag = "rust-v0.32.4"
+base_sha = "df72cc6d3fba014a77243ce80514a6122b46a89b"
+candidate_sha = "UNSET"
+stack_sha = "UNSET"
+target_triple = "wasm32-unknown-unknown"
+expected_package_source = "https://github.com/daxis-io/delta-rs"
+package_patterns = ["deltalake-browser"]

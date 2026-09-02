@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "missing required tool: rg" >&2
+  exit 127
+fi
+
 repo_root="${AXON_DAXIS_EXTERNAL_PROOF_REPO_ROOT:-$(pwd)}"
 packet_file="${AXON_DAXIS_EXTERNAL_PROOF_PACKET_FILE:-docs/release-gates/daxis-external-proof-packet.json}"
 stable_default=false

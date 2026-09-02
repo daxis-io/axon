@@ -10,6 +10,12 @@
   - [ADR-0009: Axon Is The Lakehouse Query Engine And Workbench Runtime](../adr/ADR-0009-axon-is-the-lakehouse-workbench.md)
   - [ADR-0010: Pluggable Catalog Providers](../adr/ADR-0010-pluggable-catalog-providers.md)
 
+> **Supersession notice (2026-09-01):** Current provider behavior remains documented below. The
+> earlier target root/per-file Delta access union is superseded by
+> `BrowserDeltaTableDescriptor`, one `ResolvedBrowserRead` carrying an opaque authorized-store
+> handle, and a hard cutover to one production browser query provider. No production provider flag
+> or descriptor-authoritative Delta path survives that cutover.
+
 ## Current Implementation
 
 Axon executes browser-local Delta and public GCS/S3 sources through app-layer

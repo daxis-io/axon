@@ -142,7 +142,9 @@ jobs:
           rg -q "standard DataFusion Parquet over Axon ObjectStore" docs/program/browser-lakehouse-engine-strategy.md
           rg -Uq 'accepted browser failure never transparently becomes[[:space:]]+native execution' docs/program/browser-lakehouse-engine-strategy.md
           rg -Fq 'Existing `sql()` and its `single_buffer` / `chunked_buffers` delivery modes remain atomic' docs/program/browser-lakehouse-engine-strategy.md
-          rg -Fq '`sqlProgressive()` is a separate API' docs/program/browser-lakehouse-engine-strategy.md
+          rg -Fq 'Progressive public results are excluded from v1' docs/program/browser-lakehouse-engine-strategy.md
+          rg -Fq '`BrowserDeltaTableDescriptor`' docs/program/browser-lakehouse-engine-strategy.md
+          rg -Fq 'single-provider Axon cutover' docs/program/browser-lakehouse-engine-strategy.md
           for file in docs/program/browser-owned-descriptor-materialization.md docs/program/browser-uc-brokered-runtime-contract.md docs/program/browser-embedding-deployment.md docs/program/provider-model.md; do
             rg -q "root-scoped" "$file"
             rg -q "per-file" "$file"
@@ -171,6 +173,18 @@ jobs:
 
       - name: Run patch inventory guard regression
         run: bash tests/conformance/verify_patch_inventory_state_test.sh
+
+      - name: Test production stack lock and release attestation contracts
+        run: |
+          bash tests/conformance/verify_wasm_stack_lock_v2_test.sh
+          bash tests/conformance/generate_wasm_stack_attestation_test.sh
+          bash tests/conformance/verify_wasm_stack_attestation_test.sh
+          bash tests/conformance/verify_wasm_release_workflows_test.sh
+          bash tests/conformance/verify_browser_lakehouse_strategy_v2_test.sh
+          bash tests/conformance/verify_verifiers_require_rg_test.sh
+
+      - name: Verify production stack governance
+        run: bash tests/conformance/verify_upstream_wasm_fork_stack.sh --production --ci
 
       - name: Verify patch inventory state
         run: bash tests/conformance/verify_patch_inventory_state.sh
@@ -356,3 +370,158 @@ jobs:
           name: browser-datafusion-engine-size-report
           path: target/df-size
           if-no-files-found: warn
+
+  wasm-stack-release-qualification:
+    name: Qualified WASM stack release artifact
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs:
+      [rust, browser-external-memory-artifact, browser-datafusion-wasm-size]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the exact qualified commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Detect final stack lock and deployment credentials
+        id: release
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          import tomllib
+          from pathlib import Path
+
+          lock = tomllib.loads(Path("wasm-stack.lock.toml").read_text())
+          components = lock.get("components", {})
+          ready = bool(components) and all(
+              entry.get(field) != "UNSET"
+              for entry in components.values()
+              for field in ("candidate_sha", "stack_sha")
+          )
+          credentials = all(
+              os.environ.get(name)
+              for name in ("VERCEL_TOKEN", "VERCEL_ORG_ID", "VERCEL_PROJECT_ID")
+          )
+          print(f"ready={'true' if ready else 'false'}")
+          print(f"credentials={'true' if credentials else 'false'}")
+          PY
+
+      - name: Report bootstrap-only release state
+        if: steps.release.outputs.ready != 'true'
+        run: echo "::notice::Qualified release artifact is unavailable while wasm-stack.lock.toml contains UNSET revisions."
+
+      - name: Report unavailable deployment credentials
+        if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials != 'true'
+        run: |
+          echo "Qualified release artifact requires VERCEL_TOKEN, VERCEL_ORG_ID, and VERCEL_PROJECT_ID." >&2
+          exit 1
+
+      - name: Install Rust release toolchain
+        if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Set up Node.js
+        if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/axon-web/package-lock.json
+
+      - name: Install release tools
+        if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends brotli ripgrep
+          cargo install wasm-bindgen-cli --version 0.2.114 --locked
+          npm install --global vercel@latest
+
+      - name: Verify final stack, tags, DCO, and locked WASM closure
+        if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials == 'true'
+        run: bash tests/conformance/verify_upstream_wasm_fork_stack.sh --production --final
+
+      - name: Build the production-environment prebuilt artifact
+        if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials == 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          vercel build --prod --token="$VERCEL_TOKEN"
+          bash apps/axon-web/scripts/verify-build-output.sh .vercel/output/static
+
+      - name: Generate immutable WASM stack release attestation
+        if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials == 'true'
+        run: |
+          mkdir -p target/qualified-release
+          mapfile -t wasm_assets < <(find .vercel/output/static -type f -name '*.wasm' -print | sort)
+          if [ "${#wasm_assets[@]}" -ne 1 ]; then
+            echo "expected exactly one production WASM asset, found ${#wasm_assets[@]}" >&2
+            exit 1
+          fi
+          wasm_asset="${wasm_assets[0]}"
+          compressed_asset="target/qualified-release/$(basename "$wasm_asset").br"
+          brotli -f -q 11 -o "$compressed_asset" "$wasm_asset"
+          compressed_bytes="$(wc -c < "$compressed_asset" | tr -d '[:space:]')"
+          if (( compressed_bytes > 6291456 )); then
+            echo "production WASM Brotli budget exceeded: ${compressed_bytes} bytes > 6291456 bytes" >&2
+            exit 1
+          fi
+          bash tests/conformance/generate_wasm_stack_attestation.sh \
+            --output target/qualified-release/wasm-stack-attestation.json \
+            --axon-commit "$GITHUB_SHA" \
+            --stack-lock wasm-stack.lock.toml \
+            --cargo-lock Cargo.lock \
+            --wasm "$wasm_asset" \
+            --compressed-asset "$compressed_asset"
+          bash tests/conformance/verify_wasm_stack_attestation.sh \
+            --attestation target/qualified-release/wasm-stack-attestation.json \
+            --axon-commit "$GITHUB_SHA" \
+            --stack-lock wasm-stack.lock.toml \
+            --cargo-lock Cargo.lock \
+            --wasm "$wasm_asset" \
+            --compressed-asset "$compressed_asset"
+          python3 - "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "${wasm_asset#.vercel/output/}" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          commit, run_id, run_attempt, wasm_path = sys.argv[1:]
+          manifest = {
+              "schema": "axon.qualified-wasm-release.v1",
+              "axon_commit": commit,
+              "ci_run_id": run_id,
+              "ci_run_attempt": run_attempt,
+              "wasm_path": wasm_path,
+          }
+          Path("target/qualified-release/release-manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Upload qualified Vercel prebuilt artifact
+        if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: axon-web-qualified-prebuilt
+          path: .vercel/output
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload qualified release evidence
+        if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: axon-web-qualified-release-evidence
+          path: target/qualified-release
+          if-no-files-found: error
+          retention-days: 30

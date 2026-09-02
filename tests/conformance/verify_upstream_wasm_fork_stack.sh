@@ -2,6 +2,25 @@
 
 set -euo pipefail
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "missing required tool: rg" >&2
+  exit 127
+fi
+
+profile="poc"
+forwarded_arguments=()
+for argument in "$@"; do
+  if [[ "$argument" == "--production" ]]; then
+    profile="production"
+  else
+    forwarded_arguments+=("$argument")
+  fi
+done
+if [[ "$profile" == "production" ]]; then
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  exec python3 "$script_dir/verify_wasm_stack_lock_v2.py" "${forwarded_arguments[@]}"
+fi
+
 mode="final"
 repo_root="${AXON_UPSTREAM_WASM_POC_REPO_ROOT:-}"
 metadata_file="${AXON_UPSTREAM_WASM_POC_METADATA_FILE:-}"

@@ -9,6 +9,11 @@
 
 set -euo pipefail
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "missing required tool: rg" >&2
+  exit 127
+fi
+
 deploy_url="${1:-}"
 dist_root="${2:-}"
 if [[ -z "${deploy_url}" || -z "${dist_root}" ]]; then

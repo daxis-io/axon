@@ -7,6 +7,12 @@
 - Related:
   - [Browser Lakehouse Engine Strategy](./browser-lakehouse-engine-strategy.md)
 
+> **Supersession notice (2026-09-01):** Shipped broker compatibility behavior below remains
+> descriptive, but the target root/per-file `BrowserDeltaAccessDescriptor` union is superseded by
+> `BrowserDeltaTableDescriptor`, an opaque execution-local authorized-store handle, and the
+> canonical two-view `AxonTableAccess` boundary. Broker credentials and concrete URLs never become
+> Delta table authority in the v1 engine.
+
 ## Contract Position
 
 Axon is Contract First for this work. This repository owns the browser/runtime contracts that let a browser query engine consume governed table access, but it does not own the production Unity Catalog BFF or object-access broker.

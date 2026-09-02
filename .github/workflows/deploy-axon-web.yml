@@ -1,134 +1,296 @@
 name: Deploy axon-web
 
-# The browser editor needs a Rust toolchain to produce its WASM bundle, which Vercel's build image
-# does not provide. The build therefore runs here and ships as a prebuilt deployment.
-#
-# Push to main  -> preview deployment.
-# Manual run    -> preview, or production when the environment input says so.
-#
-# Requires three repository secrets. Without VERCEL_TOKEN every step is skipped, so the workflow
-# stays green until deployment is wired up rather than failing on each push:
-#   VERCEL_TOKEN       - account token from https://vercel.com/account/tokens
-#   VERCEL_ORG_ID      - "orgId" from .vercel/project.json after `vercel link`
-#   VERCEL_PROJECT_ID  - "projectId" from the same file
+# Deployment never rebuilds application bytes. CI first produces a production-environment Vercel
+# prebuilt artifact after the native, browser, size, final-stack, DCO, and attestation gates fan in.
+# This workflow stages that exact artifact without assigning production domains, then promotes the
+# recorded staged deployment in a separate explicit production run.
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       environment:
-        description: Deployment environment
+        description: Stage the qualified artifact or promote a prior staged deployment
         type: choice
         options:
-          - preview
+          - staged
           - production
-        default: preview
+        default: staged
+      qualified_ci_run_id:
+        description: Successful main-branch CI run containing the qualified release artifacts
+        type: string
+        required: true
+      qualified_commit:
+        description: Exact 40-character Axon commit qualified by that CI run
+        type: string
+        required: true
+      staged_deployment_run_id:
+        description: Successful staged Deploy axon-web run to promote; required for production
+        type: string
+        required: false
+
+permissions:
+  actions: read
+  contents: read
 
 concurrency:
-  group: deploy-axon-web-${{ github.ref }}
-  cancel-in-progress: true
+  group: deploy-axon-web-${{ inputs.environment }}
+  cancel-in-progress: false
 
 env:
+  VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
   VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
   VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
 jobs:
   deploy:
-    name: Build and deploy axon-web
+    name: Deploy exact qualified axon-web artifact
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check deployment credentials
-        id: guard
+      - name: Validate release inputs and deployment credentials
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          QUALIFIED_COMMIT: ${{ inputs.qualified_commit }}
+          QUALIFIED_CI_RUN_ID: ${{ inputs.qualified_ci_run_id }}
+          STAGED_DEPLOYMENT_RUN_ID: ${{ inputs.staged_deployment_run_id }}
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
         run: |
-          if [ -z "${VERCEL_TOKEN}" ]; then
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping deploy: VERCEL_TOKEN is not set. Add VERCEL_TOKEN, VERCEL_ORG_ID and VERCEL_PROJECT_ID to the repository secrets to enable it."
-          else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
+          if [[ ! "$QUALIFIED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "qualified_commit must be a 40-character lowercase Git revision" >&2
+            exit 2
+          fi
+          if [[ ! "$QUALIFIED_CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "qualified_ci_run_id must be a positive Actions run ID" >&2
+            exit 2
+          fi
+          if [ "$DEPLOYMENT_ENVIRONMENT" = "production" ] && [[ ! "$STAGED_DEPLOYMENT_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "staged_deployment_run_id is required for production promotion" >&2
+            exit 2
+          fi
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "VERCEL_TOKEN, VERCEL_ORG_ID, and VERCEL_PROJECT_ID are required" >&2
+            exit 1
           fi
 
-      - name: Check out repository
-        if: steps.guard.outputs.configured == 'true'
-        uses: actions/checkout@v4
+      - name: Verify the selected CI run identity
+        uses: actions/github-script@v7
+        env:
+          QUALIFIED_CI_RUN_ID: ${{ inputs.qualified_ci_run_id }}
+          QUALIFIED_COMMIT: ${{ inputs.qualified_commit }}
+        with:
+          script: |
+            const runId = Number(process.env.QUALIFIED_CI_RUN_ID);
+            const expectedCommit = process.env.QUALIFIED_COMMIT;
+            const { data: run } = await github.rest.actions.getWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: runId,
+            });
+            if (run.name !== "CI" || run.event !== "push" || run.head_branch !== "main") {
+              core.setFailed(`run ${runId} is not a main-branch CI push run`);
+            } else if (run.conclusion !== "success") {
+              core.setFailed(`run ${runId} did not complete successfully`);
+            } else if (run.head_sha !== expectedCommit) {
+              core.setFailed(`run ${runId} qualified ${run.head_sha}, not ${expectedCommit}`);
+            }
 
-      - name: Install Rust toolchain
-        if: steps.guard.outputs.configured == 'true'
+      - name: Check out the exact qualified commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.qualified_commit }}
+
+      - name: Install verification tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends brotli ripgrep
+
+      - name: Install Rust metadata toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Restore cargo cache
-        if: steps.guard.outputs.configured == 'true'
-        uses: Swatinem/rust-cache@v2
+      - name: Download the qualified Vercel prebuilt artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: axon-web-qualified-prebuilt
+          path: .vercel/output
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.qualified_ci_run_id }}
 
-      - name: Install wasm-bindgen CLI
-        if: steps.guard.outputs.configured == 'true'
-        run: cargo install wasm-bindgen-cli --version 0.2.114 --locked
+      - name: Download the qualified release evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: axon-web-qualified-release-evidence
+          path: target/qualified-release
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.qualified_ci_run_id }}
+
+      - name: Resolve qualified artifact identity
+        id: artifact
+        env:
+          QUALIFIED_COMMIT: ${{ inputs.qualified_commit }}
+          QUALIFIED_CI_RUN_ID: ${{ inputs.qualified_ci_run_id }}
+        run: |
+          python3 - "$QUALIFIED_COMMIT" "$QUALIFIED_CI_RUN_ID" <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          import sys
+
+          commit, run_id = sys.argv[1:]
+          manifest = json.loads(Path("target/qualified-release/release-manifest.json").read_text())
+          if manifest.get("schema") != "axon.qualified-wasm-release.v1":
+              raise SystemExit("invalid qualified release manifest schema")
+          if manifest.get("axon_commit") != commit or manifest.get("ci_run_id") != run_id:
+              raise SystemExit("qualified release manifest identity mismatch")
+          wasm_path = Path(".vercel/output") / manifest["wasm_path"]
+          compressed = sorted(Path("target/qualified-release").glob("*.wasm.br"))
+          if not wasm_path.is_file():
+              raise SystemExit(f"qualified WASM asset is missing: {wasm_path}")
+          if len(compressed) != 1:
+              raise SystemExit(f"expected exactly one compressed evidence asset, found {len(compressed)}")
+          print(f"wasm={wasm_path}")
+          print(f"compressed={compressed[0]}")
+          PY
+
+      - name: Verify final stack and exact attested bytes
+        env:
+          QUALIFIED_COMMIT: ${{ inputs.qualified_commit }}
+        run: |
+          bash tests/conformance/verify_upstream_wasm_fork_stack.sh --production --final
+          bash tests/conformance/verify_wasm_stack_attestation.sh \
+            --attestation target/qualified-release/wasm-stack-attestation.json \
+            --axon-commit "$QUALIFIED_COMMIT" \
+            --stack-lock wasm-stack.lock.toml \
+            --cargo-lock Cargo.lock \
+            --wasm "${{ steps.artifact.outputs.wasm }}" \
+            --compressed-asset "${{ steps.artifact.outputs.compressed }}"
+          bash apps/axon-web/scripts/verify-build-output.sh .vercel/output/static
 
       - name: Set up Node.js
-        if: steps.guard.outputs.configured == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: apps/axon-web/package-lock.json
 
       - name: Install Vercel CLI
-        if: steps.guard.outputs.configured == 'true'
         run: npm install --global vercel@latest
 
-      - name: Resolve deployment target
-        if: steps.guard.outputs.configured == 'true'
-        id: target
-        env:
-          PRODUCTION_URL: ${{ vars.AXON_PRODUCTION_URL || 'https://axon.daxistech.io' }}
+      - name: Link the production Vercel environment without rebuilding
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Stage the exact production-environment artifact without assigning domains
+        if: inputs.environment == 'staged'
+        id: stage
         run: |
-          # Production requires an explicit workflow_dispatch. A push to main publishes a preview
-          # so a bad commit cannot reach users on its own; nothing here gates on the test suites.
-          if [ "${{ inputs.environment }}" = "production" ]; then
-            # Verify the public alias, not the per-deployment URL. Vercel protects the generated
-            # *.vercel.app URL even for production, so checking it would skip every real assertion
-            # on the one deployment users actually reach.
-            {
-              echo "environment=production"
-              echo "prod_flag=--prod"
-              echo "verify_url=${PRODUCTION_URL}"
-            } >> "$GITHUB_OUTPUT"
-          else
-            {
-              echo "environment=preview"
-              echo "prod_flag="
-              echo "verify_url="
-            } >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Pull Vercel environment
-        if: steps.guard.outputs.configured == 'true'
-        run: vercel pull --yes --environment=${{ steps.target.outputs.environment }} --token=${{ secrets.VERCEL_TOKEN }}
-
-      - name: Build
-        if: steps.guard.outputs.configured == 'true'
-        run: vercel build ${{ steps.target.outputs.prod_flag }} --token=${{ secrets.VERCEL_TOKEN }}
-
-      - name: Verify the build emitted compiled workers and the WASM bundle
-        if: steps.guard.outputs.configured == 'true'
-        run: bash apps/axon-web/scripts/verify-build-output.sh .vercel/output/static
-
-      - name: Deploy
-        if: steps.guard.outputs.configured == 'true'
-        id: deploy
-        run: |
-          url="$(vercel deploy --prebuilt ${{ steps.target.outputs.prod_flag }} --token=${{ secrets.VERCEL_TOKEN }})"
+          url="$(vercel deploy --prebuilt --prod --skip-domain --token="$VERCEL_TOKEN")"
           echo "url=$url" >> "$GITHUB_OUTPUT"
-          echo "Deployed to $url"
+          echo "Staged exact qualified artifact at $url"
 
-      - name: Verify deployed assets are reachable
-        if: steps.guard.outputs.configured == 'true'
+      - name: Record staged deployment identity
+        if: inputs.environment == 'staged'
+        env:
+          STAGED_URL: ${{ steps.stage.outputs.url }}
+          QUALIFIED_COMMIT: ${{ inputs.qualified_commit }}
+          QUALIFIED_CI_RUN_ID: ${{ inputs.qualified_ci_run_id }}
+        run: |
+          mkdir -p target/staged-production
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          attestation = Path("target/qualified-release/wasm-stack-attestation.json")
+          record = {
+              "schema": "axon.staged-production-deployment.v1",
+              "staged_deployment_url": os.environ["STAGED_URL"],
+              "axon_commit": os.environ["QUALIFIED_COMMIT"],
+              "qualified_ci_run_id": os.environ["QUALIFIED_CI_RUN_ID"],
+              "attestation_sha256": hashlib.sha256(attestation.read_bytes()).hexdigest(),
+          }
+          Path("target/staged-production/deployment.json").write_text(
+              json.dumps(record, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+
+      - name: Upload staged deployment identity
+        if: inputs.environment == 'staged'
+        uses: actions/upload-artifact@v4
+        with:
+          name: axon-web-staged-production
+          path: target/staged-production/deployment.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Verify the selected staged deployment run
+        if: inputs.environment == 'production'
+        uses: actions/github-script@v7
+        env:
+          STAGED_DEPLOYMENT_RUN_ID: ${{ inputs.staged_deployment_run_id }}
+        with:
+          script: |
+            const runId = Number(process.env.STAGED_DEPLOYMENT_RUN_ID);
+            const { data: run } = await github.rest.actions.getWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: runId,
+            });
+            if (run.name !== "Deploy axon-web" || run.event !== "workflow_dispatch") {
+              core.setFailed(`run ${runId} is not a staged Deploy axon-web run`);
+            } else if (run.conclusion !== "success") {
+              core.setFailed(`staged deployment run ${runId} did not complete successfully`);
+            }
+
+      - name: Download staged deployment identity
+        if: inputs.environment == 'production'
+        uses: actions/download-artifact@v4
+        with:
+          name: axon-web-staged-production
+          path: target/staged-production
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.staged_deployment_run_id }}
+
+      - name: Resolve staged deployment for exact-artifact promotion
+        if: inputs.environment == 'production'
+        id: promotion
+        env:
+          QUALIFIED_COMMIT: ${{ inputs.qualified_commit }}
+          QUALIFIED_CI_RUN_ID: ${{ inputs.qualified_ci_run_id }}
+        run: |
+          python3 - "$QUALIFIED_COMMIT" "$QUALIFIED_CI_RUN_ID" <<'PY' >> "$GITHUB_OUTPUT"
+          import hashlib
+          import json
+          from pathlib import Path
+          import re
+          import sys
+
+          commit, run_id = sys.argv[1:]
+          record = json.loads(Path("target/staged-production/deployment.json").read_text())
+          if record.get("schema") != "axon.staged-production-deployment.v1":
+              raise SystemExit("invalid staged deployment record schema")
+          if record.get("axon_commit") != commit or record.get("qualified_ci_run_id") != run_id:
+              raise SystemExit("staged deployment does not belong to the selected qualified artifact")
+          attestation = Path("target/qualified-release/wasm-stack-attestation.json")
+          if record.get("attestation_sha256") != hashlib.sha256(attestation.read_bytes()).hexdigest():
+              raise SystemExit("staged deployment attestation identity mismatch")
+          url = record.get("staged_deployment_url", "")
+          if not re.fullmatch(r"https://[a-zA-Z0-9.-]+\.vercel\.app", url):
+              raise SystemExit("invalid staged Vercel deployment URL")
+          print(f"url={url}")
+          PY
+
+      - name: Promote the exact staged deployment without rebuilding
+        if: inputs.environment == 'production'
+        env:
+          STAGED_URL: ${{ steps.promotion.outputs.url }}
+        run: vercel promote "$STAGED_URL" --yes --timeout 5m --token="$VERCEL_TOKEN"
+
+      - name: Verify staged or production assets
         env:
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-        run: bash apps/axon-web/scripts/verify-deployment.sh "${{ steps.target.outputs.verify_url || steps.deploy.outputs.url }}" .vercel/output/static
+          PRODUCTION_URL: ${{ vars.AXON_PRODUCTION_URL || 'https://axon.daxistech.io' }}
+        run: |
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            verify_url="$PRODUCTION_URL"
+          else
+            verify_url="${{ steps.stage.outputs.url }}"
+          fi
+          bash apps/axon-web/scripts/verify-deployment.sh "$verify_url" .vercel/output/static

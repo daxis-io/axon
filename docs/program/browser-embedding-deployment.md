@@ -10,6 +10,11 @@
   - [ADR-0002: Browser Access Uses Signed HTTPS Or A Narrow Proxy, Never Cloud Secrets](../adr/ADR-0002-browser-access-uses-signed-https-or-proxy-never-cloud-secrets.md)
   - [Axon Web Runtime](../../apps/axon-web/README.md)
 
+> **Supersession notice (2026-09-01):** The shipped descriptor and worker packaging sections below
+> remain current-state guidance. Their target root/per-file Delta descriptor model is superseded by
+> `BrowserDeltaTableDescriptor`, execution-local authorized-store handles, Kernel-owned discovery,
+> one production WASM artifact, and exact attested-artifact promotion without a deployment rebuild.
+
 ## Current Package State
 
 Axon's browser deployment is worker-first:
@@ -114,7 +119,7 @@ import {
   createAxonBrowserClient,
   getPlatformFeatures,
   selectBundle,
-} from './axon-browser-sdk';
+} from "./axon-browser-sdk";
 
 const features = getPlatformFeatures();
 const selection = selectBundle(AXON_BROWSER_BUNDLE_MANIFEST, features);
@@ -154,15 +159,18 @@ import {
   getPlatformFeatures,
   selectBundle,
   type BrowserBundleManifest,
-} from './axon-browser-sdk';
+} from "./axon-browser-sdk";
 
 const manifest: BrowserBundleManifest = {
   bundles: [
     {
-      id: 'baseline',
-      tier: 'baseline',
-      workerUrl: new URL('/workers/axon-web-worker.js', window.location.origin),
-      wasmUrl: new URL('/workers/axon_web_wasm_bg.wasm', window.location.origin),
+      id: "baseline",
+      tier: "baseline",
+      workerUrl: new URL("/workers/axon-web-worker.js", window.location.origin),
+      wasmUrl: new URL(
+        "/workers/axon_web_wasm_bg.wasm",
+        window.location.origin,
+      ),
     },
   ],
 };
@@ -176,25 +184,25 @@ const client = createAxonBrowserClient({
 Development headers can live in `vite.config.ts`:
 
 ```ts
-import { defineConfig } from 'vite';
+import { defineConfig } from "vite";
 
-const enableCrossOriginIsolation = process.env.AXON_BROWSER_COI === '1';
+const enableCrossOriginIsolation = process.env.AXON_BROWSER_COI === "1";
 
 export default defineConfig({
   server: {
     headers: {
-      'Content-Security-Policy': [
+      "Content-Security-Policy": [
         "default-src 'self'",
         "script-src 'self' 'wasm-unsafe-eval'",
         "worker-src 'self'",
         "connect-src 'self' https://storage.googleapis.com https://*.storage.googleapis.com",
         "object-src 'none'",
         "base-uri 'none'",
-      ].join('; '),
+      ].join("; "),
       ...(enableCrossOriginIsolation
         ? {
-            'Cross-Origin-Opener-Policy': 'same-origin',
-            'Cross-Origin-Embedder-Policy': 'require-corp',
+            "Cross-Origin-Opener-Policy": "same-origin",
+            "Cross-Origin-Embedder-Policy": "require-corp",
           }
         : {}),
     },
@@ -214,15 +222,15 @@ For a no-bundler host, serve ESM files and static assets directly:
     createAxonBrowserClient,
     getPlatformFeatures,
     selectBundle,
-  } from '/vendor/axon/axon-browser-sdk.js';
+  } from "/vendor/axon/axon-browser-sdk.js";
 
   const manifest = {
     bundles: [
       {
-        id: 'baseline',
-        tier: 'baseline',
-        workerUrl: '/vendor/axon/axon-web-worker.js',
-        wasmUrl: '/vendor/axon/axon_web_wasm_bg.wasm',
+        id: "baseline",
+        tier: "baseline",
+        workerUrl: "/vendor/axon/axon-web-worker.js",
+        wasmUrl: "/vendor/axon/axon_web_wasm_bg.wasm",
       },
     ],
   };
@@ -230,12 +238,15 @@ For a no-bundler host, serve ESM files and static assets directly:
   const { bundle } = selectBundle(manifest, getPlatformFeatures());
   const client = createAxonBrowserClient({ workerUrl: bundle.workerUrl });
 
-  const snapshot = await fetch('/api/tables/events/browser-snapshot', {
-    credentials: 'include',
+  const snapshot = await fetch("/api/tables/events/browser-snapshot", {
+    credentials: "include",
   }).then((response) => response.json());
 
-  await client.openDeltaTable('events', snapshot);
-  const result = await client.query('events', 'SELECT COUNT(*) AS row_count FROM events');
+  await client.openDeltaTable("events", snapshot);
+  const result = await client.query(
+    "events",
+    "SELECT COUNT(*) AS row_count FROM events",
+  );
   console.log(result.result.content_type, result.result.bytes.byteLength);
 </script>
 ```
@@ -445,9 +456,12 @@ import {
   createAxonBrowserClient,
   getPlatformFeatures,
   selectBundle,
-} from '@axon/browser';
+} from "@axon/browser";
 
-const selection = selectBundle(AXON_BROWSER_BUNDLE_MANIFEST, getPlatformFeatures());
+const selection = selectBundle(
+  AXON_BROWSER_BUNDLE_MANIFEST,
+  getPlatformFeatures(),
+);
 
 const client = createAxonBrowserClient({
   workerUrl: selection.bundle.workerUrl,
@@ -457,8 +471,8 @@ const client = createAxonBrowserClient({
 and direct asset imports for bundlers that support URL imports:
 
 ```ts
-import { createAxonBrowserClient } from '@axon/browser';
-import workerUrl from '@axon/browser/worker/axon-web-worker.js?url';
+import { createAxonBrowserClient } from "@axon/browser";
+import workerUrl from "@axon/browser/worker/axon-web-worker.js?url";
 
 const client = createAxonBrowserClient({ workerUrl });
 ```

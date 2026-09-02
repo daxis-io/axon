@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "missing required tool: rg" >&2
+  exit 127
+fi
+
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 web_root=$(cd -- "${script_dir}/.." && pwd)
 metadata_root="${AXON_S3_PERF_METADATA_ROOT:-${web_root}/public/fixtures/s3-perf}"

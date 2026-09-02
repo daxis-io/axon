@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "missing required tool: rg" >&2
+  exit 127
+fi
+
 artifact="${1:-target/wasm32-unknown-unknown/release/browser_engine_worker.wasm}"
 dependency_package="${AXON_BROWSER_DEPENDENCY_PACKAGE:-browser-engine-worker}"
 tree_file="$(mktemp)"

@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "missing required tool: rg" >&2
+  exit 127
+fi
+
 tree="$(cargo tree -p browser-engine-worker --target wasm32-unknown-unknown --locked)"
 
 if rg -n '(^|[[:space:]])wasm-datafusion-poc v|(^|[[:space:]])datafusion v' <<<"$tree"; then

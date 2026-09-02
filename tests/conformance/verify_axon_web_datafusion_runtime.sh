@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "missing required tool: rg" >&2
+  exit 127
+fi
+
 tree="$(cargo tree -p axon-web-wasm --target wasm32-unknown-unknown --locked)"
 artifact_report="docs/program/browser-lakehouse-release-handoff-examples/browser-worker-artifact-report.datafusion.json"
 release_handoff="docs/program/browser-lakehouse-release-handoff.md"

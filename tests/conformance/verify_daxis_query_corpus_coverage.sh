@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "missing required tool: rg" >&2
+  exit 127
+fi
+
 repo_root="${AXON_DAXIS_QUERY_CORPUS_REPO_ROOT:-$(pwd)}"
 corpus_file="${AXON_DAXIS_QUERY_CORPUS_FILE:-tests/conformance/daxis-browser-datafusion-query-corpus.json}"
 parity_doc="${AXON_DAXIS_QUERY_CORPUS_PARITY_DOC:-docs/program/browser-datafusion-runtime-parity.md}"

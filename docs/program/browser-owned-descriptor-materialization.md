@@ -12,6 +12,12 @@
   - [Browser Unity Catalog Brokered Runtime Contract](./browser-uc-brokered-runtime-contract.md)
   - [Browser Embedding Deployment Guide](./browser-embedding-deployment.md)
 
+> **Supersession notice (2026-09-01):** This document remains authoritative only for shipped
+> compatibility behavior. Its target `BrowserDeltaAccessDescriptor` root/per-file union is
+> superseded by the canonical `BrowserDeltaTableDescriptor`, execution-local
+> `AuthorizedStoreRegistry`, and Kernel-owned snapshot discovery in the Browser Lakehouse Engine
+> Strategy. The old descriptor must not be used as Delta table authority in the v1 cutover.
+
 ## Product Contract
 
 The default browser product path is:

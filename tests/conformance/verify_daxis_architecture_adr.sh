@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "missing required tool: rg" >&2
+  exit 127
+fi
+
 repo_root="${AXON_DAXIS_ADR_REPO_ROOT:-$(pwd)}"
 adr_file="${AXON_DAXIS_ADR_FILE:-docs/adr/ADR-0008-daxis-browser-read-compute-contract.md}"
 adr_index="${AXON_DAXIS_ADR_INDEX:-docs/adr/README.md}"

@@ -18,6 +18,9 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      - name: Install verifier dependencies
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep
+
       - name: Restore cargo cache
         uses: Swatinem/rust-cache@v2
 
@@ -113,6 +116,20 @@ jobs:
 
       - name: Run patch inventory guard regression
         run: bash tests/conformance/verify_patch_inventory_state_test.sh
+
+      - name: Require fail-closed verifier prerequisites
+        run: bash tests/conformance/verify_verifiers_require_rg_test.sh
+
+      - name: Test production stack lock and release attestation contracts
+        run: |
+          bash tests/conformance/verify_wasm_stack_lock_v2_test.sh
+          bash tests/conformance/generate_wasm_stack_attestation_test.sh
+          bash tests/conformance/verify_wasm_stack_attestation_test.sh
+          bash tests/conformance/verify_wasm_release_workflows_test.sh
+          bash tests/conformance/verify_browser_lakehouse_strategy_v2_test.sh
+
+      - name: Verify production stack governance
+        run: bash tests/conformance/verify_upstream_wasm_fork_stack.sh --production --ci
 
       - name: Verify patch inventory state
         run: bash tests/conformance/verify_patch_inventory_state.sh

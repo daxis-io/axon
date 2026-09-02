@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "missing required tool: rg" >&2
+  exit 127
+fi
+
 repo_root="${AXON_DAXIS_STRATEGY_DOCUMENT_REPO_ROOT:-$(pwd)}"
 strategy_file="${AXON_DAXIS_STRATEGY_DOCUMENT_FILE:-docs/integrations/daxis/daxis-first-class-integration-strategy.md}"
 

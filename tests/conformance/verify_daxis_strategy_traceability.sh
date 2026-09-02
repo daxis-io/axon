@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "missing required tool: rg" >&2
+  exit 127
+fi
+
 repo_root="${AXON_DAXIS_STRATEGY_REPO_ROOT:-$(pwd)}"
 matrix_file="${AXON_DAXIS_STRATEGY_TRACEABILITY_FILE:-docs/release-gates/daxis-strategy-traceability.json}"
 

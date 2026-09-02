@@ -1,9 +1,9 @@
 # Browser Lakehouse Engine Strategy
 
 - Status: **Canonical design — implementation in progress**
-- Revision date: 2026-08-02
+- Revision date: 2026-09-02
 - Decision owner: Runtime / engine team
-- Authored against Axon `origin/main`: [`9ad43ce72fc8235128c5fa604eecd95aabf1bc29`](https://github.com/daxis-io/axon/commit/9ad43ce72fc8235128c5fa604eecd95aabf1bc29)
+- Authored against Axon `origin/main`: [`0c95d07bf22b65231363b2db88953fc2904a35d3`](https://github.com/daxis-io/axon/commit/0c95d07bf22b65231363b2db88953fc2904a35d3)
 - Scope: normative browser-engine architecture, compatibility policy, migration, and promotion gates
 - Related:
   - [Axon workbench and query-engine architecture](./axon-workbench-architecture.md)
@@ -42,17 +42,37 @@ When documents disagree, apply this precedence:
    promote local, POC, or design-review evidence into a remotely reproducible release, shipping
    adoption, or production-default claim.
 
-## Maturity Ledger: 2026-08-02
+## Maturity Ledger: 2026-09-01
 
 Maturity is recorded by evidence class rather than by a single "done" label.
 
-| Maturity                             | Exact state                                                                                                                                                                                                                                                                                                                                                                                                                                                              | What it permits                                                                                                                             |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Landed on current Axon main          | `9ad43ce72fc8235128c5fa604eecd95aabf1bc29` contains the compatibility DataFusion provider and custom scan, persistent worker/session path, pull-driven private Arrow IPC cursor with atomic public `sql()`, typed budgets and cancellation, identity-aware HTTP range handling, and bounded path-free OPFS aggregate spill with structured `resource_exhausted` and cleanup metrics. Delta snapshot reconstruction is already repo-owned through the compatibility path. | Maintain and use the qualified compatibility provider. It does not prove the target Kernel-native provider or progressive API.              |
-| Locally verified but unpublished     | The exact Axon and upstream heads in the immutable-head ledger below passed their stated local verifier scope.                                                                                                                                                                                                                                                                                                                                                           | Review and publication preparation only. They are not remotely reproducible releases or valid shipping dependency pins.                     |
-| Accepted only for Axon design review | `BrowserDeltaAccessDescriptor`, `AxonTableAccess`, `KernelTaskDriver`, `AxonKernelTableProvider`, `BrowserScanPredicates`, `BrowserDataFusionProfile`, the prefix router, and `sqlProgressive()` are the selected target seams.                                                                                                                                                                                                                                          | Axon preparation may implement the independent pieces called out in the roadmap. Kernel-dependent work still waits for upstream acceptance. |
-| Experimental / non-authoritative     | `poc/upstream-wasm-fork-stack`, the historical prefetch/cached-callback integration, the permanent-custom-scan POC shape, and the [Mangrove comparison source at `601be3c`](https://github.com/open-lakehouse/mangrove/commit/601be3cddbe68a676c7740d75cbce26190ad4279).                                                                                                                                                                                                 | Comparison, fixture, and risk evidence only. None defines Axon's production architecture.                                                   |
-| Planned                              | Publication, isolated shipping workspace, standard ObjectStore adapter, Kernel K1-K5, parallel provider, access convergence, progressive delivery, and promotion.                                                                                                                                                                                                                                                                                                        | Execution only in the dependency order and behind the gates below.                                                                          |
+| Maturity                         | Exact state                                                                                                                                                                                                                                                                               | What it permits                                                                                                         |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Landed on current Axon main      | `0c95d07bf22b65231363b2db88953fc2904a35d3` contains the Arrow/Parquet 58.3, `object_store` 0.13.2, and DataFusion 53.1 compatibility provider, persistent worker/session path, private pull-driven Arrow IPC cursor, typed budgets and cancellation, and OPFS aggregate-spill groundwork. | Baseline and rollback evidence only. It is not the canonical v1 stack.                                                  |
+| Production baseline              | Production deployment workflow `33353379053` serves Axon commit `52006f0b49ecdedea1525a94fe6a5d1b4f62c3fe` at `axon.daxistech.io`.                                                                                                                                                        | Immutable comparison point for artifact, functional, and performance qualification; it is not proof of the new stack.   |
+| Locally verified but unpublished | The exact Axon and upstream heads in the immutable-head ledger below passed their stated local verifier scope.                                                                                                                                                                            | Review and publication preparation only. They are not remotely reproducible releases or valid shipping dependency pins. |
+| Normative target                 | `BrowserDeltaTableDescriptor`, `ResolvedBrowserRead`, `AuthorizedStoreRegistry`, `AxonTableAccess`, bounded Kernel `OperationTask`s, `deltalake-browser`, one DataFusion 55 session, and one atomic result cursor are the selected target seams.                                          | Implement in the frozen dependency order. Upstream review or acceptance is not a Daxis release gate.                    |
+| Experimental / non-authoritative | `poc/upstream-wasm-fork-stack`, the historical prefetch/cached-callback integration, the permanent-custom-scan POC shape, and the [Mangrove comparison source at `601be3c`](https://github.com/open-lakehouse/mangrove/commit/601be3cddbe68a676c7740d75cbce26190ad4279).                  | Comparison, fixture, and risk evidence only. None defines Axon's production architecture.                               |
+| Planned                          | Frozen fork release branches/tags, standard ObjectStore adapter, Kernel tasks, the generic delta-rs facade, all four access classes, a single-provider Axon cutover, and production promotion of one immutable artifact.                                                                  | Execution only in the dependency order and behind the gates below.                                                      |
+
+### Frozen comparison baseline
+
+The 2026-09-01 local baseline was rebuilt from Axon `origin/main` at
+`0c95d07bf22b65231363b2db88953fc2904a35d3`; it is comparison evidence, not production
+qualification:
+
+| Evidence            | Baseline                                                                                                                                                                                       |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Browser closure     | Daxis Arrow/Parquet 58.3.0 at `52c8fb2e`, `object_store` 0.13.2 at `ab9fda65`, DataFusion 53.1.0 at `8c5b4526`, and `buoyant_kernel` 0.22.2                                                    |
+| Optimized WASM      | 23,725,619 bytes; SHA-256 `9cb867ef9fef4089ca0f9da48836b810dd7a8f74542d290888346f65c155d3f1`                                                                                                   |
+| Brotli asset        | 3,967,584 bytes; SHA-256 `8f50529b10a6c4331db8699e0c959d3c1a834d2edf10e9aadcdc6de60fa6b79e`                                                                                                    |
+| Chromium probe      | Chromium 143; startup 226.99 ms; cold query 82.64 ms; warm query 13.91 ms; five repeated executions 120.24 ms                                                                                  |
+| Atomic/memory probe | 968 public result bytes after success; 968-byte peak coordinator staging; 704-byte peak cursor chunk; 101,200-byte peak DataFusion reservation; 306,688-byte retained heap delta after 20 runs |
+| Functional fixture  | Generated Delta snapshot version 3, two active files, 1,400 active-file bytes; Rust workspace and 500 web unit tests passed before stack changes                                               |
+
+The production rollback baseline remains deployment workflow `33353379053` at Axon
+`52006f0b49ecdedea1525a94fe6a5d1b4f62c3fe`. Its live provider/access-class matrix must be
+refreshed separately; the local fixture numbers above MUST NOT be relabeled as production data.
 
 ### Immutable local-head ledger
 
@@ -67,10 +87,11 @@ reproducible releases:
 | DataFusion                     | `eb00a115c9caf4abc66c9ca9209ad83b3b1fcc83` | Yes, for the local browser contract                        | No                            | No upstream acceptance recorded here                                                   | No                | No                 |
 | Kernel operation-task contract | `4223fa43039d418238f6c4a1304d23e9f3764aa6` | Design packet reviewed locally; implementation GO is gated | No                            | Pending on [Kernel issue #252](https://github.com/delta-io/delta-kernel-rs/issues/252) | No                | No                 |
 
-The current compatibility provider is shipping code and is the Daxis-facing browser DataFusion
-default runtime SKU where its release gates are satisfied. The Kernel-native provider described
-here has neither shipping adoption nor production-default status. A local GO on an upstream head
-does not change either fact.
+The old immutable-local-head ledger above is historical evidence. It does not override the
+production root [`wasm-stack.lock.toml`](../../wasm-stack.lock.toml), whose schema v2 release bases
+are Arrow/Parquet 59.3.0, `object_store` 0.14.1, DataFusion 55.0.0, Delta Kernel 0.28.0, and
+delta-rs 0.32.4. `UNSET` candidate or stack revisions make that lock bootstrap-only and block a
+release or production claim.
 
 ## Canonical Decision
 
@@ -85,7 +106,7 @@ The end-to-end target is:
 ```text
 CanonicalResourceRef
   → existing DataAccessResolver
-  → one execution-local BrowserDeltaAccess
+  → one execution-local ResolvedBrowserRead
   → persistent Axon worker/session
   → capability and expiry validation
   → root-scoped or per-file object access
@@ -94,7 +115,7 @@ CanonicalResourceRef
   → DataFusion logical and physical planning
   → standard DataFusion Parquet over Axon ObjectStore
   → existing pull-driven continuous Arrow IPC cursor
-  → atomic sql() or consumer-credited sqlProgressive()
+  → bounded atomic public sql()
 ```
 
 Product APIs MAY compose resolve, open, and query into one call. Internally, resolution remains a
@@ -141,41 +162,49 @@ correlation state. The worker creates it after admission validation and disposes
 or terminal execution. Sessions may retain non-secret table identity and eligible cached bytes,
 but never reuse this capability-bearing binding for another execution.
 
-### `BrowserDeltaAccessDescriptor`
+### Browser descriptors and resolved authority
 
-`ResolvedBrowserRead` already contains an openable descriptor union. The target extends that
-existing union with a Delta-specific `BrowserDeltaAccessDescriptor`; it does not replace
-`ResolvedBrowserRead` or add a provider seam.
+The old active-file-authoritative Delta descriptor is superseded. The only public Delta dataset
+description is:
 
 ```text
-BrowserDeltaAccessDescriptor
-  RootScopedDelta
-    table root
-    requested latest/exact or pinned snapshot selection
-    access capabilities
-    opaque grant or store-factory reference
-    earliest expiry and non-secret provenance
-
-  PerFileSnapshot
-    existing BrowserHttpSnapshotDescriptor
+BrowserDeltaTableDescriptor {
+  table_uri
+  snapshot_selection: Latest | Version(u64)
+}
 ```
 
-`RootScopedDelta` supports browser-safe list/head/range access to a table root. Its grant or
-factory reference carries an execution-local capability handle. It contains neither a cloud
-credential nor an `ObjectStore` instance. `PerFileSnapshot` preserves the existing active-file
-descriptor for signed-file, manifest, Delta Sharing URL-mode, and compatibility paths.
+Delta Kernel, not an Axon-provided active-file list, owns snapshot authority. A Parquet dataset
+description contains logical paths, sizes, and partition metadata, but no URL, credential,
+JavaScript handle, callback, or concrete `ObjectStore`.
 
-Plain Parquet remains its existing openable descriptor arm. The Delta union is an extension, not a
-reason to make every source look like Delta or to encode internal objects on the wire.
+One pre-admission resolution produces:
+
+```text
+ResolvedBrowserRead {
+  dataset
+  authorized_store_handle: uint64
+  access_class: PUBLIC | LOCAL_HANDLE | SIGNED_URL | SESSION_PROXY
+  expires_at
+  correlation_id
+  resolver_provenance
+}
+```
+
+The generated bindings MUST represent `authorized_store_handle` losslessly. The handle is valid
+only in the execution's worker-local `AuthorizedStoreRegistry`; it is revoked on success, error,
+cancellation, deadline, or worker teardown and cannot be reused across execution, table, worker,
+tenant, or authority boundaries.
 
 ### `AxonTableAccess`
 
-`AxonTableAccess` is the internal deep module that consumes a validated Delta access descriptor
-and produces exactly one of:
+`AxonTableAccess` consumes one validated registry binding and exposes two views over the same
+authority: a bounded Kernel operation driver for list/head/range discovery, and an
+`Arc<dyn ObjectStore>` for DataFusion reads of files already identified by Kernel.
 
-- a root-scoped `Arc<dyn ObjectStore>` plus normalized table prefix; or
-- the per-file compatibility representation used by the current provider and, later, by a
-  manifest-backed standard DataFusion Parquet source.
+`BrokeredObjectStoreAdapter::from_authorized_store` remains known-file and range-only. It MUST NOT
+gain listing; Kernel discovery uses the operation-driver view. Both views share resource identity,
+strong-validator continuity, expiry, cancellation, metrics, and cache isolation.
 
 Object-store instances, callbacks, JavaScript objects, tokens, and secrets MUST NOT cross
 protobuf or JSON boundaries. Only opaque, bounded, validated references cross the boundary; the
@@ -279,24 +308,12 @@ Atomic execution MUST stage within its output and coordinator budgets. Failure o
 before terminal success discards the staged public result. This is atomic rollback, not an
 implicit retry.
 
-### `sqlProgressive()` is a separate API
+### Progressive public results are excluded from v1
 
-Progressive delivery is a new `sqlProgressive()` async iterator or `ReadableStream` contract. It
-MUST carry consumer credit across every boundary:
-
-```text
-SDK consumer
-  → public worker
-  → coordinator
-  → child worker
-  → Rust Arrow IPC cursor
-```
-
-No layer may pull, encode, transfer, or retain bytes beyond its granted window. The first public
-chunk is irrevocable: after it is emitted, a late failure produces a typed terminal stream error
-and MUST NOT be represented as an atomic rollback, a successful partial result, or an automatic
-native retry. Slow-consumer, cancellation, deadline, and expiry behavior must remain bounded and
-observable.
+`sqlProgressive()` and any other public partial-result API are superseded for this program. The
+private pull-driven Arrow IPC cursor remains an internal backpressure mechanism. Public `sql()`
+exposes zero bytes until complete success; cancellation, expiry, result overflow, or a late stream
+failure discards staged output and returns one typed terminal error.
 
 ### Explicit native retry only
 
@@ -328,13 +345,15 @@ The target retains:
 
 This strategy supersedes:
 
-| Historical mechanic                                                           | Canonical replacement                                                                                         |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Async prefetch followed by synchronous cached Kernel callbacks                | Bounded `SnapshotTask` / `ScanTask` driven asynchronously through `KernelTaskDriver`                          |
-| `BrowserHttpSnapshotDescriptor.active_files` as the universal execution input | `BrowserDeltaAccessDescriptor` with root-scoped and per-file variants inside the existing resolved-read union |
-| `AxonParquetScanExec` and `wasm-parquet-engine` as the permanent scan engine  | Standard DataFusion Parquet over an Axon `ObjectStore`; compatibility scan remains during migration           |
-| Renaming the historical POC into the production engine                        | A fresh independently locked `engines/kernel-datafusion/` shipping workspace and optional bundle              |
-| Treating `chunked_buffers` as progressive delivery                            | Atomic reassembly remains; `sqlProgressive()` is a separate credited API                                      |
+| Historical mechanic                                                          | Canonical replacement                                                                                                  |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Async prefetch followed by synchronous cached Kernel callbacks               | Bounded `SnapshotTask` / `ScanTask` driven asynchronously through `KernelTaskDriver`                                   |
+| `BrowserHttpSnapshotDescriptor.active_files` as Delta table authority        | `BrowserDeltaTableDescriptor` plus worker-local `AuthorizedStoreRegistry`; Kernel discovers the authoritative snapshot |
+| `AxonParquetScanExec` and `wasm-parquet-engine` as the permanent scan engine | Standard DataFusion Parquet over an Axon `ObjectStore`; compatibility scan remains during migration                    |
+| A parallel production provider or provider-selection flag                    | One hard cutover whose merge state contains only the canonical `deltalake-browser` provider                            |
+| A separate `engines/kernel-datafusion/` workspace and selectable bundle      | The production root workspace, root schema-v2 stack lock, and one generated WASM artifact                              |
+| Treating `chunked_buffers` as progressive delivery                           | Atomic internal transport and final-only public values; progressive public results are excluded                        |
+| Upstream issue or PR acceptance as a Daxis release gate                      | Clean upstreamable commits plus Daxis-owned qualification; upstream convergence follows separately                     |
 
 Historical documents may still describe those mechanics accurately for their implementation
 date. They MUST carry a supersession notice when readers could mistake them for the target.
@@ -382,47 +401,35 @@ design does not make capability-bearing descriptors or grants persistable.
 
 ## Shipping Topology
 
-The historical `poc/upstream-wasm-fork-stack` workspace and its evidence remain unchanged. It is
-immutable compatibility evidence, not the directory to rename or evolve into production.
-
-Create `engines/kernel-datafusion/` afresh as the shipping engine workspace. It has:
-
-- an independent `Cargo.lock` and reproducible dependency report;
-- a separate optional WASM bundle selected by the existing capability/asset policy;
-- permission to reuse Axon source crates through deliberate workspace interfaces; and
-- exact external dependency revisions that are remotely reachable, with no tracked local path
-  overlays.
-
-The supplied local fork heads cannot enter that lock until their commits are published at stable,
-reviewable remote refs. Keep the current compatibility bundle, provider, and worker protocol
-active until promotion; do not make the isolated shell itself evidence of adoption.
+The historical `poc/upstream-wasm-fork-stack` workspace remains comparison evidence only. The
+shipping topology is the production root Cargo workspace, root `Cargo.lock`, root
+`wasm-stack.lock.toml`, and one browser query WASM artifact. No provider flag, optional legacy
+bundle, branch dependency, or local-path external dependency may appear in the final WASM closure.
 
 ## Productization And Migration Roadmap
 
-### 1. Publication and review gates
+### 1. Freeze and qualify fork releases
 
-Publish in dependency order: `object_store`, Arrow/Parquet, then DataFusion. Publish and tag the
-Axon verifier evidence. Circulate Kernel contract head
-`4223fa43039d418238f6c4a1304d23e9f3764aa6` on
-[issue #252](https://github.com/delta-io/delta-kernel-rs/issues/252). Publication requires its own
-authorization and upstream review; this document grants neither.
+Publish in dependency order: Arrow/Parquet and `object_store`, DataFusion, Delta Kernel, delta-rs,
+then Axon. Every fork uses protected `axon-wasm/v1`, annotated
+`axon-wasm-v1.0.0-rc.1`, and final `axon-wasm-v1.0.0` at the exact qualified RC commit. DCO,
+native regression, WASM closure, and downstream fan-in are mandatory. Upstream review is welcome
+but is not a release gate.
 
-### 2. Independent Axon preparation
+### 2. Axon authority and contract preparation
 
 Axon may proceed before Kernel acceptance with:
 
 - the standard brokered `ObjectStore` adapter;
-- the isolated `engines/kernel-datafusion/` shell and optional bundle;
+- the execution-local authorized-store registry and two-view access binding;
 - authoritative `BrowserDataFusionProfile` validation;
 - the path-segment-aware prefix router; and
-- a host parity harness that can run compatibility-provider, target-provider, and native-oracle
-  lanes over the same fixture/query identity.
-
-These changes MUST NOT invent the Kernel protocol or claim target-provider parity.
+- a test-only differential harness that can run the target engine and native oracle over the same
+  fixture/query identity. It MUST NOT create a production provider flag.
 
 ### 3. Kernel and delta-rs
 
-After explicit Kernel maintainer acceptance, implement these slices in order:
+Implement these Daxis-first slices in order on Delta Kernel 0.28:
 
 1. **K1, exact browser target policy:** select the target-safe randomness and
    feature closure without weakening native defaults.
@@ -445,52 +452,44 @@ work:
 - [#3024: `Load` to `DynamicScan`](https://github.com/delta-io/delta-kernel-rs/pull/3024)
 - [#3039: scan-owned plan construction](https://github.com/delta-io/delta-kernel-rs/pull/3039)
 
-Issue [#252](https://github.com/delta-io/delta-kernel-rs/issues/252) and all three
-PRs were open when this revision was authored.
+Issue [#252](https://github.com/delta-io/delta-kernel-rs/issues/252) and related declarative-plan
+PRs remain useful convergence references, not blockers. Only after K1-K5 are qualified may
+delta-rs publish the target-neutral `deltalake-browser` facade.
 
-Only after K1-K5 are complete may delta-rs add the production browser/WASM facade. If maintainers
-reject or materially revise the operation-task seam, stop and revise this strategy before doing
-Kernel or delta-rs implementation.
+### 4. Single-provider Axon cutover
 
-### 4. Parallel Axon provider
-
-Add one-table root-scoped Kernel execution over standard DataFusion Parquet. Keep the descriptor
-provider active as compatibility. Every supported query and fixture runs differential snapshot,
-plan, result, error, and metric checks across the compatibility provider, Kernel provider, and
-native oracle where applicable.
+Prepare the new engine behind test-only differential coverage, then merge one cutover whose final
+state routes both Delta and direct Parquet through the same DataFusion session and contains no
+selectable legacy provider, fallback branch, active-file materializer, or obsolete engine bundle.
 
 ### 5. Access and delivery convergence
 
-Extend `ResolvedBrowserRead` with the root-scoped/per-file Delta access union, then enable multiple
-routed roots. Move per-file grants to the manifest-backed standard Parquet source. Add
-`sqlProgressive()` only after the full credit path and irreversible-first-chunk semantics pass
-their own browser tests.
+Connect `PUBLIC`, `LOCAL_HANDLE`, `SIGNED_URL`, and `SESSION_PROXY` through the same binding
+path. Preserve final-only atomic results. A post-admission error is terminal; an explicit retry
+receives a new execution ID.
 
 ### 6. Promotion and retirement
 
-Make the Kernel-native provider the default only for qualified root-scoped access after parity,
-memory, request-byte, cancellation, spill-cleanup, artifact-size, and browser gates pass. Per-file
-access remains a supported route. After a rollback window and release-evidence review, freeze and
-eventually remove the bespoke replay and physical-scan layers.
-
-Promotion is per access class and browser. A Chrome pass cannot promote Firefox, and a root-scoped
-pass cannot promote per-file access. Local, public-object, canary, and production-default evidence
-remain separate.
+Promote the exact qualified preview artifact atomically, with deployment-level rollback only.
+Promotion is blocked until all four access classes, Chromium/Firefox/WebKit functional gates,
+real provider scenarios, artifact/performance limits, and cleanup invariants pass. Local, fork-CI,
+provider, preview, and production evidence remain separate.
 
 ## Implementation Acceptance Matrix
 
-| Area                          | Required evidence before promotion                                                                                                                                                                                                                                                                                      |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Kernel task protocol          | Start/resume state machine; monotonically matched IDs; wrong IDs and result variants; empty/final pages; pagination at sizes 1, 2, and configured maximum; malformed, reordered, overlapping, or oversized responses; every per-page and cumulative counter; typed resource exhaustion; exact one-shot error ownership. |
-| Cancellation and deadlines    | Before first I/O, between pages, during pending Fetch, after completion, and late-result rejection; driver-owned I/O is released and no request occurs after terminal state.                                                                                                                                            |
-| Snapshot and scan parity      | Commit-only, V1 single/multipart checkpoints, inline V2 and manifest/sidecars, checkpoint plus tail, exact/latest/time travel, catalog tails, CRC policy, no-match scans, and unsupported protocol features across compatibility provider, Kernel provider, and native oracle.                                          |
-| Predicate correctness         | Projection; null and partition semantics; supported/unsupported lowering; Kernel file skipping; Parquet row-group and page pruning; casts and transforms; full residual retention; no false exclusion.                                                                                                                  |
-| Access and identity           | Root-scoped and per-file access; local/public/signed/proxy classes; earliest expiry; capability mismatch; ETag drift; exact ranges; `If-Range`; normalized longest-prefix routing; same-bucket multi-table isolation; no credential or cache leakage.                                                                   |
-| DataFusion profile and memory | View-type policy; partition/repartition configuration; optimizer requirements; independent metadata/data concurrency; bounded memory pool; path-free OPFS spill; storage exhaustion; cancellation; cleanup; zero active spill files/scopes at terminal metrics; structured `resource_exhausted`.                        |
-| Atomic results                | `single_buffer` and `chunked_buffers`; coordinator and output budgets; exact-sized transfers; rollback on cancellation, expiry, output exhaustion, and late execution failure; no public bytes before terminal success.                                                                                                 |
-| Progressive results           | End-to-end consumer credit; slow and stopped consumers; bounded buffering at every hop; cancel/deadline/expiry; first public chunk irrevocability; typed late failure; no automatic native replay.                                                                                                                      |
-| Dependency and artifact       | Independent lock; every exact revision remotely reachable; no tracked local path overlays; denied dependency graph; reproducible source report; raw, gzip, and Brotli bundle size.                                                                                                                                      |
-| Browser and efficiency        | Real worker I/O in Chrome and Firefox; exact request count, requested bytes, response bytes, overfetch, cache provenance, peak operator/process memory as separately named measures, startup and steady-state latency, cancellation request cutoff, and spill cleanup.                                                  |
+| Area                          | Required evidence before promotion                                                                                                                                                                                                                                                                                                                               |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kernel task protocol          | Start/resume state machine; monotonically matched IDs; wrong IDs and result variants; empty/final pages; pagination at sizes 1, 2, and configured maximum; malformed, reordered, overlapping, or oversized responses; every per-page and cumulative counter; typed resource exhaustion; exact one-shot error ownership.                                          |
+| Cancellation and deadlines    | Before first I/O, between pages, during pending Fetch, after completion, and late-result rejection; driver-owned I/O is released and no request occurs after terminal state.                                                                                                                                                                                     |
+| Snapshot and scan parity      | Commit-only, V1 single/multipart checkpoints, inline V2 and manifest/sidecars, checkpoint plus tail, exact/latest/time travel, catalog tails, CRC policy, no-match scans, and unsupported protocol features across compatibility provider, Kernel provider, and native oracle.                                                                                   |
+| Predicate correctness         | Projection; null and partition semantics; supported/unsupported lowering; Kernel file skipping; Parquet row-group and page pruning; casts and transforms; full residual retention; no false exclusion.                                                                                                                                                           |
+| Access and identity           | Root-scoped and per-file access; local/public/signed/proxy classes; earliest expiry; capability mismatch; ETag drift; exact ranges; `If-Range`; normalized longest-prefix routing; same-bucket multi-table isolation; no credential or cache leakage.                                                                                                            |
+| DataFusion profile and memory | View-type policy; partition/repartition configuration; optimizer requirements; independent metadata/data concurrency; bounded memory pool; path-free OPFS spill; storage exhaustion; cancellation; cleanup; zero active spill files/scopes at terminal metrics; structured `resource_exhausted`.                                                                 |
+| Atomic results                | `single_buffer` and `chunked_buffers`; coordinator and output budgets; exact-sized transfers; rollback on cancellation, expiry, output exhaustion, and late execution failure; no public bytes before terminal success.                                                                                                                                          |
+| Dependency and artifact       | The production root `Cargo.lock` and root schema-v2 stack lock; every exact revision remotely reachable; annotated RC and final tags at one qualified stack commit; base/candidate/stack ancestry; DCO identity; no branch or external local-path dependencies; exactly one source/version per component in the WASM closure; raw, gzip, and Brotli bundle size. |
+| Release qualification         | Native/default regression, target-specific WASM graph, browser qualification, dependency-order downstream fan-in, final-mode stack verification, and a release attestation binding the Axon commit, both locks, generated WASM, and compressed bytes.                                                                                                            |
+| Browser and efficiency        | Real worker I/O in Chromium, Firefox, and WebKit; exact request count, requested bytes, response bytes, overfetch, cache provenance, peak operator/process memory as separately named measures, startup and steady-state latency, cancellation request cutoff, and spill cleanup.                                                                                |
+| Promotion and rollback        | CI produces one production-environment prebuilt artifact; staging deploys it without assigning production domains; production promotes that exact staged artifact without rebuilding; verification binds deployment SHA, attestation, runtime manifest, asset hashes, and deliberate missing-asset behavior.                                                     |
 
 Every matrix result records provider, access class, browser/version, Axon commit, engine bundle hash,
 dependency lock hash, fixture provenance, query corpus hash, budget profile, and whether the proof is
@@ -500,14 +499,11 @@ local, remotely reproducible, canary, or production-default evidence.
 
 Stop promotion or implementation at the applicable boundary when:
 
-- Kernel maintainers have not accepted the operation-task seam;
-- K4's declarative-plan dependencies have not landed in accepted form;
 - an exact external revision is not remotely reachable;
 - the shipping workspace requires a tracked local path overlay;
 - result, error, request-byte, or snapshot parity diverges without a classified cause;
 - a budget can truncate correctness rather than return a typed terminal error;
 - spill cleanup, cancellation, identity validation, or route isolation is unproven;
-- progressive credit can be bypassed at any hop; or
 - release evidence cannot distinguish local GO, remote reproducibility, maintainer acceptance,
   shipping adoption, and production default.
 

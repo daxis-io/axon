@@ -13,8 +13,18 @@ Current contents:
 - `verify_daxis_query_corpus_coverage_test.sh`: regression coverage for the query-corpus compatibility coverage verifier.
 - `verify_embedding_sketch_contract.sh`: verifies the minimal embedding sketch uses the SDK client contract rather than obsolete raw worker messages.
 - `verify_patch_inventory_state.sh`: verifies the patch inventory is real state, not a template, and that vendoring or `[patch]` sections cannot appear without an inventory entry.
-- `verify_upstream_wasm_fork_stack.sh`: verifies the Daxis upstream-WASM POC repository revisions, rejects mutable branch dependencies, compares fork revisions with the nested browser `Cargo.lock`, and checks the target-filtered normal/build graph for duplicate Arrow, Parquet, `object_store`, DataFusion, or Kernel package sources. `--bootstrap` (also accepted as `--allow-unset`) permits unfinished leaf revisions and a missing browser lock; the default final mode rejects both.
+- `verify_upstream_wasm_fork_stack.sh`: verifies the retained Daxis upstream-WASM POC by default. With `--production`, it verifies the root schema-v2 stack lock using real locked Cargo metadata, remote tag and revision evidence, ancestry, DCO identity, immutable dependency sources, and one canonical source/version for each component in the selected WASM closure. Production `--bootstrap` permits `UNSET` release revisions, `--final` requires complete release evidence, and `--ci` selects bootstrap only while revisions remain `UNSET` and otherwise enforces final mode.
 - `verify_upstream_wasm_fork_stack_test.sh`: regression coverage for stack-lock shape, revision reachability, bootstrap/final mode separation, immutable dependency pins, Cargo lock provenance, and duplicate guarded package sources.
+- `verify_wasm_stack_lock_v2_test.sh`: deterministic real-Cargo-metadata coverage for schema v2 bootstrap/final/CI mode selection, fork reachability and retry, revision ancestry, annotated release tags, identity-bound DCO, stale locks, branch and external WASM path dependencies, and duplicate component sources.
+- `generate_wasm_stack_attestation.sh`: emits the CI release attestation binding the Axon commit, production stack lock, Cargo lock, generated WASM, and compressed asset hashes.
+- `generate_wasm_stack_attestation_test.sh`: regression coverage for all release-attestation digests.
+- `verify_wasm_stack_attestation.sh`: verifies a release attestation against the exact Axon commit, production stack lock, Cargo lock, generated WASM, and compressed asset bytes.
+- `verify_wasm_stack_attestation_test.sh`: positive and tampered-byte coverage for release-attestation verification.
+- `verify_wasm_release_workflows.sh`: verifies CI fans native, browser, size, final-stack, DCO, and attestation gates into one qualified Vercel prebuilt artifact and that deployment stages and promotes those exact bytes without rebuilding.
+- `verify_wasm_release_workflows_test.sh`: regression entry point for the release qualification and promotion workflow contract.
+- `verify_browser_lakehouse_strategy_v2.sh`: verifies the normative strategy's root-lock, tag, DCO, fan-in, attestation, three-browser, exact-promotion, and companion-document supersession requirements.
+- `verify_browser_lakehouse_strategy_v2_test.sh`: regression entry point for the canonical strategy v2 contract.
+- `verify_verifiers_require_rg_test.sh`: enumerates every production `verify*.sh` entry point and proves each fails before inspection with an explicit diagnostic when `rg` is unavailable.
 - `verify_daxis_operational_readiness.sh`: verifies the M4 Daxis operational-readiness handoff names dashboard, runbook, rollout-control, compatibility-dashboard, and release-evidence requirements without claiming production systems exist in this repo. It also requires unique source docs, dashboard names, runbook names, and release automation commands, rejects release automation commands that are not listed by the release-evidence runner, keeps the operational-readiness verifier in the automation set, and requires the ADR, operational maturity, observability, release runbook, strategy, external handoff, rollout decisions, external proof packet, release bundle, release evidence, and external blocker source docs.
 - `verify_daxis_operational_readiness_test.sh`: regression coverage for the operational-readiness verifier.
 - `verify_daxis_release_evidence.sh`: runs or lists the Daxis release evidence gate set for repeatable go/no-go checks, including Daxis verifier regression scripts, the Daxis default-worker dependency and bundle secret-marker guardrail after the WASM artifact is built, and the skip-safe public GCS live smoke.
@@ -75,8 +85,15 @@ Useful local commands:
 - `bash tests/conformance/verify_patch_inventory_state.sh`
 - `bash tests/conformance/verify_patch_inventory_state_test.sh`
 - `bash tests/conformance/verify_upstream_wasm_fork_stack_test.sh`
+- `bash tests/conformance/verify_wasm_stack_lock_v2_test.sh`
+- `bash tests/conformance/generate_wasm_stack_attestation_test.sh`
+- `bash tests/conformance/verify_wasm_stack_attestation_test.sh`
+- `bash tests/conformance/verify_wasm_release_workflows_test.sh`
+- `bash tests/conformance/verify_browser_lakehouse_strategy_v2_test.sh`
+- `bash tests/conformance/verify_verifiers_require_rg_test.sh`
 - `bash tests/conformance/verify_upstream_wasm_fork_stack.sh --bootstrap`
 - `bash tests/conformance/verify_upstream_wasm_fork_stack.sh`
+- `bash tests/conformance/verify_upstream_wasm_fork_stack.sh --production --ci`
 - `bash tests/conformance/verify_daxis_operational_readiness_test.sh`
 - `bash tests/conformance/verify_daxis_operational_readiness.sh`
 - `bash tests/conformance/verify_daxis_release_evidence_test.sh`
