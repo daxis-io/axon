@@ -85,6 +85,21 @@ describe('browser external-memory release contract', () => {
     expect(pageIndexFixtureTestSource).toContain('grep -Fq');
   });
 
+  it('installs ripgrep before the browser artifact build invokes production verifiers', () => {
+    const artifactJob = ciWorkflowSource.slice(
+      ciWorkflowSource.indexOf('  browser-external-memory-artifact:'),
+      ciWorkflowSource.indexOf('  browser-datafusion-wasm-size:'),
+    );
+    const installIndex = artifactJob.indexOf('- name: Install verifier dependencies');
+    const buildIndex = artifactJob.indexOf(
+      '- name: Build and verify the spill-capable browser artifact',
+    );
+
+    expect(installIndex).toBeGreaterThanOrEqual(0);
+    expect(buildIndex).toBeGreaterThan(installIndex);
+    expect(artifactJob.slice(installIndex, buildIndex)).toContain('ripgrep');
+  });
+
   it('matches literal atomic API names in the documentation gate', () => {
     expect(ciWorkflowSource).toContain(
       "rg -Uq 'accepted browser failure never transparently becomes[[:space:]]+native execution'",
@@ -92,7 +107,7 @@ describe('browser external-memory release contract', () => {
     expect(ciWorkflowSource).toContain(
       "rg -Fq 'Existing `sql()` and its `single_buffer` / `chunked_buffers` delivery modes remain atomic'",
     );
-    expect(ciWorkflowSource).toContain("rg -Fq '`sqlProgressive()` is a separate API'");
+    expect(ciWorkflowSource).toContain("rg -Fq 'Progressive public results are excluded from v1'");
   });
 
   it('exposes only the normal build commands for the fixed runtime', () => {
