@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.daxistech.io/schemas/public-delta-log-index-v1.schema.json",
+  "title": "PublicDeltaLogIndexV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "table_uri", "objects"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "table_uri": {
+      "type": "string",
+      "pattern": "^r2://[a-z0-9][a-z0-9-]{1,61}[a-z0-9]/[^?#]+$"
+    },
+    "objects": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["relative_path", "size_bytes"],
+        "properties": {
+          "relative_path": {
+            "type": "string",
+            "pattern": "^_delta_log/[^\\\\]*$"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "etag": {
+            "type": "string",
+            "pattern": "^\"[!#-~]*\"$"
+          }
+        }
+      }
+    }
+  }
+}

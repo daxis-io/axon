@@ -44,6 +44,7 @@ import type {
   PublicObjectStorageDescriptorResolutionMetrics,
   PublicObjectStorageProvider,
 } from '../../services/object-storage.ts';
+import { PUBLIC_R2_DEMO_PRESET } from '../../services/public-r2-demo.ts';
 
 type Props = {
   initialStep?: 1 | 2 | 3;
@@ -184,9 +185,12 @@ export function ConnectModal({
     if (source === 'object_store') {
       try {
         if (!isPublicObjectStorageProvider(form.provider)) {
-          throw new Error('Public object storage currently supports GCS and S3 table roots.');
+          throw new Error('Public object storage currently supports GCS, S3, and R2 table roots.');
         }
         const publicProvider = form.provider;
+        if (publicProvider === 'r2' && !form.endpoint.trim()) {
+          throw new Error('Public R2 object storage requires a public HTTPS endpoint.');
+        }
         const [wasm, objectStorage] = await Promise.all([
           loadConnectWasm(),
           import('../../services/object-storage.ts'),
@@ -196,7 +200,8 @@ export function ConnectModal({
         const descriptor = await objectStorage.resolvePublicObjectStorageDescriptor({
           provider: publicProvider,
           tableUri: form.uri,
-          region: form.region,
+          region: publicProvider === 'r2' ? undefined : form.region,
+          endpoint: form.endpoint,
           signal: controller.signal,
           resolveDeltaSnapshotFromManifest: wasm.resolve_delta_snapshot_from_manifest,
           onMetrics: (metrics) => {
@@ -212,12 +217,15 @@ export function ConnectModal({
         const root = objectStorage.parsePublicObjectStorageTableRoot({
           provider: publicProvider,
           tableUri: descriptor.tableUri,
-          region: form.region,
+          region: publicProvider === 'r2' ? undefined : form.region,
+          endpoint: publicProvider === 'r2' ? form.endpoint : undefined,
         });
         const catalogProviderIdentity =
           root.provider === 's3'
             ? { provider: root.provider, region: root.region }
-            : { provider: root.provider };
+            : root.provider === 'r2'
+              ? { provider: root.provider, endpoint: root.endpoint }
+              : { provider: root.provider };
         const catalogDiscovery = await discoverFlatCatalog(
           createPublicObjectStorageCatalogProvider({
             ...catalogProviderIdentity,
@@ -238,6 +246,7 @@ export function ConnectModal({
           provider: publicProvider,
           tableUri: form.uri,
           region: form.region,
+          endpoint: form.endpoint,
           signal: controller.signal,
           snapshot: { kind: 'latest' },
           descriptor,
@@ -309,7 +318,7 @@ export function ConnectModal({
         ? source === 'local'
           ? !!form.localDelta && !!form.localCatalogDiscovery
           : source === 'object_store'
-            ? form.uri.length > 8
+            ? form.uri.length > 8 && (form.provider !== 'r2' || form.endpoint.trim().length > 0)
             : source === 'unity_catalog'
               ? form.uc_host.length > 8 && form.uc_bff_url.length > 0
               : source === 'delta_share'
@@ -904,7 +913,7 @@ function publicObjectStorageErrorMessage(error: unknown): string {
 function isPublicObjectStorageProvider(
   provider: ConnectForm['provider'],
 ): provider is PublicObjectStorageProvider {
-  return provider === 'gcs' || provider === 's3';
+  return provider === 'gcs' || provider === 's3' || provider === 'r2';
 }
 
 // ─── Object storage config ──────────────────────────────
@@ -926,6 +935,7 @@ function ConfigObjectStore({
   ) as ObjectStoreProvider;
   const okURI = form.uri.startsWith(provider.scheme);
   const regionRequired = provider.id === 's3';
+  const demoPreset = PUBLIC_R2_DEMO_PRESET;
 
   return (
     <div className="cc-config-grid">
@@ -941,7 +951,7 @@ function ConfigObjectStore({
                 title={
                   isPublicObjectStorageProvider(p.id)
                     ? undefined
-                    : 'Public object storage currently supports GCS and S3'
+                    : 'Public object storage currently supports GCS, S3, and R2'
                 }
                 onClick={() => {
                   if (!isPublicObjectStorageProvider(p.id)) return;
@@ -949,7 +959,8 @@ function ConfigObjectStore({
                     ...form,
                     provider: p.id,
                     uri: `${p.scheme}${objectStorePathWithoutScheme(form.uri, provider.scheme)}`,
-                    region: p.regions[0] ?? '',
+                    region: p.id === 'r2' ? '' : (p.regions[0] ?? ''),
+                    endpoint: p.id === 'r2' ? '' : form.endpoint,
                     objectStorage: null,
                   });
                 }}
@@ -959,6 +970,26 @@ function ConfigObjectStore({
               </button>
             ))}
           </div>
+          {demoPreset && (
+            <div className="cc-help">
+              <button
+                type="button"
+                className="cc-btn"
+                onClick={() =>
+                  setForm({
+                    ...form,
+                    provider: 'r2',
+                    uri: demoPreset.tableUri,
+                    region: '',
+                    endpoint: demoPreset.endpoint,
+                    objectStorage: null,
+                  })
+                }
+              >
+                Use Axon public R2 demo
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="cc-field">
@@ -986,47 +1017,78 @@ function ConfigObjectStore({
             )}
           </div>
           <div className="cc-help">
-            Point at a public GCS or S3 Delta table root. Axon lists and reads{' '}
-            <code>_delta_log/</code> in the browser without private credentials.
+            {provider.id === 'r2' ? (
+              <>
+                Point at a public R2 Delta table root. Axon reads its well-known index and table
+                objects in the browser without private credentials.
+              </>
+            ) : (
+              <>
+                Point at a public GCS or S3 Delta table root. Axon lists and reads{' '}
+                <code>_delta_log/</code> in the browser without private credentials.
+              </>
+            )}
           </div>
         </div>
 
-        <div className="cc-row-2">
+        {provider.id === 'r2' ? (
           <div className="cc-field">
-            <label className="cc-label">
-              Region <span className="opt">· {regionRequired ? 'required' : 'optional'}</span>
+            <label className="cc-label" htmlFor="public-r2-endpoint">
+              Public R2 HTTPS endpoint <span className="opt">· required</span>
             </label>
-            <select
-              className="cc-select"
-              value={form.region}
-              onChange={(e: ChangeEvent<HTMLSelectElement>) =>
-                setForm({ ...form, region: e.target.value, objectStorage: null })
-              }
-            >
-              {!regionRequired && <option value="">Auto-detect</option>}
-              {provider.regions.map((r: string) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="cc-field">
-            <label className="cc-label">Browser-local Delta log access</label>
             <input
+              id="public-r2-endpoint"
               className="cc-input mono"
-              placeholder="CORS-enabled HTTPS or browser storage adapter"
+              placeholder="https://data.example.com"
               value={form.endpoint}
               onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                setForm({ ...form, endpoint: e.target.value })
+                setForm({ ...form, endpoint: e.target.value, objectStorage: null })
               }
             />
             <div className="cc-help">
-              Axon lists and reads <code>_delta_log/</code> in the browser, then builds the
-              BrowserHttpSnapshotDescriptor locally.
+              Publish <code>_axon/public-delta-log-index.json</code> under the table root. The index
+              names only validated <code>_delta_log/</code> objects; Axon derives every data URL
+              from this endpoint.
             </div>
           </div>
-        </div>
+        ) : (
+          <div className="cc-row-2">
+            <div className="cc-field">
+              <label className="cc-label">
+                Region <span className="opt">· {regionRequired ? 'required' : 'optional'}</span>
+              </label>
+              <select
+                className="cc-select"
+                value={form.region}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) =>
+                  setForm({ ...form, region: e.target.value, objectStorage: null })
+                }
+              >
+                {!regionRequired && <option value="">Auto-detect</option>}
+                {provider.regions.map((r: string) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="cc-field">
+              <label className="cc-label">Browser-local Delta log access</label>
+              <input
+                className="cc-input mono"
+                placeholder="CORS-enabled HTTPS or browser storage adapter"
+                value={form.endpoint}
+                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                  setForm({ ...form, endpoint: e.target.value })
+                }
+              />
+              <div className="cc-help">
+                Axon lists and reads <code>_delta_log/</code> in the browser, then builds the
+                BrowserHttpSnapshotDescriptor locally.
+              </div>
+            </div>
+          </div>
+        )}
 
         {form.objectStorage && (
           <div className="cc-detected">
@@ -1051,7 +1113,11 @@ function ConfigObjectStore({
           okText={`${provider.label} Delta log is browser-readable`}
           okDetail="The browser can reconstruct the snapshot and range-read active Parquet files."
           errText={error ?? 'Browser-local storage access not configured'}
-          errDetail="Use a public GCS or S3 Delta table root with anonymous listing, log reads, Parquet range reads, and CORS for this browser origin."
+          errDetail={
+            provider.id === 'r2'
+              ? 'Use an r2:// table root, a public HTTPS endpoint, the well-known Delta log index, anonymous object reads, Parquet range reads, and CORS for this browser origin.'
+              : 'Use a public GCS or S3 Delta table root with anonymous listing, log reads, Parquet range reads, and CORS for this browser origin.'
+          }
         />
       </div>
 
@@ -1067,7 +1133,11 @@ function ConfigObjectStore({
         <hr />
         <h5>Required permissions</h5>
         <ul>
-          <li>Browser can anonymously list the table&apos;s Delta log prefix.</li>
+          {provider.id === 'r2' ? (
+            <li>Browser can anonymously read the table&apos;s well-known Delta log index.</li>
+          ) : (
+            <li>Browser can anonymously list the table&apos;s Delta log prefix.</li>
+          )}
           <li>Browser can read Delta log objects and range-read active Parquet objects.</li>
         </ul>
         <hr />

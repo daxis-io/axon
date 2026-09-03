@@ -40,8 +40,8 @@ export const SOURCES: SourceCard[] = [
   {
     id: 'object_store',
     title: 'Object storage',
-    blurb: 'Read public GCS or S3 Delta logs from the browser.',
-    examples: 'public gs:// or s3:// table root · browser range reads',
+    blurb: 'Read public GCS, S3, or R2 Delta logs from the browser.',
+    examples: 'public gs://, s3://, or r2:// table root · browser range reads',
     owners: {
       access: 'Browser',
       snapshot: 'Browser',
@@ -144,7 +144,7 @@ export const OBJECT_STORE_PROVIDERS: ObjectStoreProvider[] = [
     label: 'Cloudflare R2',
     scheme: 'r2://',
     placeholder: 'r2://acme-lake/silver/orders',
-    regions: ['auto'],
+    regions: [],
   },
 ];
 

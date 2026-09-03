@@ -34,7 +34,9 @@ type PublicObjectStorageCanonicalTableBase = Readonly<{
 
 export type PublicObjectStorageCanonicalTableInput =
   | (PublicObjectStorageCanonicalTableBase & Readonly<{ provider: 'gcs'; region?: never }>)
-  | (PublicObjectStorageCanonicalTableBase & Readonly<{ provider: 's3'; region: string }>);
+  | (PublicObjectStorageCanonicalTableBase & Readonly<{ provider: 's3'; region: string }>)
+  | (PublicObjectStorageCanonicalTableBase &
+      Readonly<{ provider: 'r2'; endpoint: string; region?: never }>);
 
 export type CanonicalQueryTableSource =
   | Readonly<{
@@ -47,6 +49,7 @@ export type CanonicalQueryTableSource =
       provider: PublicObjectStorageProvider;
       tableUri: string;
       region: string;
+      endpoint?: string;
       tableName: string;
     }>;
 
@@ -86,9 +89,17 @@ export function createPublicObjectStorageCanonicalTable(
   const expectedConnectionId =
     input.provider === 'gcs'
       ? `axon-connection://public-gcs/${encodeURIComponent(parsed.hostname)}`
-      : `axon-connection://public-s3/${encodeURIComponent(
-          normalizedS3Region(input.region),
-        )}/${encodeURIComponent(parsed.hostname)}`;
+      : input.provider === 's3'
+        ? `axon-connection://public-s3/${encodeURIComponent(
+            normalizedS3Region(input.region),
+          )}/${encodeURIComponent(parsed.hostname)}`
+        : publicObjectStorageConnectionId(
+            parsePublicObjectStorageTableRoot({
+              provider: input.provider,
+              tableUri: normalizedTableUri,
+              endpoint: input.endpoint,
+            }),
+          );
   if (connectionId !== expectedConnectionId) {
     throw new Error('public connection ID did not match the normalized table root');
   }
@@ -133,7 +144,8 @@ export function canonicalTableForQuerySource(source: CanonicalQueryTableSource):
   const root = parsePublicObjectStorageTableRoot({
     provider: source.provider,
     tableUri: source.tableUri,
-    region: source.region,
+    region: source.provider === 'r2' ? undefined : source.region,
+    endpoint: source.endpoint,
   });
   const identity = {
     connectionId: publicObjectStorageConnectionId(root),
@@ -146,7 +158,13 @@ export function canonicalTableForQuerySource(source: CanonicalQueryTableSource):
         provider: root.provider,
         region: root.region,
       })
-    : createPublicObjectStorageCanonicalTable({ ...identity, provider: root.provider });
+    : root.provider === 'r2'
+      ? createPublicObjectStorageCanonicalTable({
+          ...identity,
+          provider: root.provider,
+          endpoint: root.endpoint,
+        })
+      : createPublicObjectStorageCanonicalTable({ ...identity, provider: root.provider });
 }
 
 export function canonicalTableFromMetadataJson(
@@ -222,10 +240,10 @@ function requiredIdentityPart(value: string, label: string): string {
   return value;
 }
 
-function normalizedPublicTableUri(provider: 'gcs' | 's3', value: string): string {
+function normalizedPublicTableUri(provider: PublicObjectStorageProvider, value: string): string {
   const uri = requiredIdentityPart(value, 'public table URI');
   const parsed = new URL(uri);
-  const scheme = provider === 'gcs' ? 'gs' : 's3';
+  const scheme = provider === 'gcs' ? 'gs' : provider;
   const path = parsed.pathname.replace(/^\/+|\/+$/g, '');
   if (
     parsed.protocol !== `${scheme}:` ||

@@ -10,6 +10,8 @@ Querying lakehouse data usually means running something. A warehouse, a query se
 
 Axon gives that data a workbench. For queries the browser can handle, it pulls Parquet byte ranges from browser-safe local files, public objects, signed URLs, proxy URLs, or brokered object routes and runs the query in the tab. No query service sits in the middle of supported browser scans.
 
+Anonymous public object storage currently includes GCS, S3, and Cloudflare R2. R2 uses a logical `r2://bucket/table-prefix` locator, a separately configured public HTTPS origin, and a table-owned closed Delta-log index because public R2 endpoints do not expose bucket listing. See the [web runtime documentation](apps/axon-web/README.md) and [index schema](apps/axon-web/schemas/public-delta-log-index-v1.schema.json).
+
 For queries the browser can't handle, the same request runs on a native DataFusion runtime instead. That side is a Rust crate, so you run it wherever you already have compute. Laptop, container, VM, whatever.
 
 Axon is the engine layer, not the business analytics platform around it. Host products provide identity, tenancy, policy, catalog governance, billing, audit, workflow, dashboards, agents, and rollout. Axon integrates with those hosts through browser-safe session, descriptor, read-plan, and execution contracts while keeping secrets and product authority outside the engine.

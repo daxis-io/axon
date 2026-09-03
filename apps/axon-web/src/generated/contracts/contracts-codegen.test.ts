@@ -244,11 +244,16 @@ describe('contract codegen', () => {
 });
 
 type CanonicalLocatorFixture = {
-  providerNamespace: 'axon.public-gcs/v1' | 'axon.public-s3/v1' | 'axon.sample-fixture/v1';
-  provider: 'gcs' | 's3' | 'sample';
+  providerNamespace:
+    | 'axon.public-gcs/v1'
+    | 'axon.public-s3/v1'
+    | 'axon.public-r2/v1'
+    | 'axon.sample-fixture/v1';
+  provider: 'gcs' | 's3' | 'r2' | 'sample';
   input: string;
   expected?: string;
   region?: string;
+  endpoint?: string;
 };
 
 type CanonicalLocatorFixtures = {
@@ -269,6 +274,7 @@ function canonicalizeFixture(fixture: CanonicalLocatorFixture): string {
     provider: fixture.provider,
     tableUri: fixture.input,
     region: fixture.region,
+    endpoint: fixture.endpoint,
   }).tableUri;
 }
 

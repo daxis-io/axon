@@ -105,7 +105,9 @@ type PublicObjectStorageCatalogProviderBase = Readonly<{
 
 export type PublicObjectStorageCatalogProviderInput =
   | (PublicObjectStorageCatalogProviderBase & Readonly<{ provider: 'gcs'; region?: never }>)
-  | (PublicObjectStorageCatalogProviderBase & Readonly<{ provider: 's3'; region: string }>);
+  | (PublicObjectStorageCatalogProviderBase & Readonly<{ provider: 's3'; region: string }>)
+  | (PublicObjectStorageCatalogProviderBase &
+      Readonly<{ provider: 'r2'; endpoint: string; region?: never }>);
 
 export function createLocalDeltaCatalogProvider(
   input: LocalDeltaCatalogProviderInput,
@@ -158,21 +160,30 @@ export function createPublicObjectStorageCatalogProvider(
     connectionId = input.connectionId;
     normalizedTableUri = input.normalizedTableUri;
     requiredText(input.schemaName, 'schema name');
-    table =
-      input.provider === 's3'
-        ? createPublicObjectStorageCanonicalTable({
-            provider: input.provider,
-            connectionId,
-            normalizedTableUri,
-            region: input.region,
-            tableName: input.tableName,
-          })
-        : createPublicObjectStorageCanonicalTable({
-            provider: input.provider,
-            connectionId,
-            normalizedTableUri,
-            tableName: input.tableName,
-          });
+    if (input.provider === 's3') {
+      table = createPublicObjectStorageCanonicalTable({
+        provider: input.provider,
+        connectionId,
+        normalizedTableUri,
+        region: input.region,
+        tableName: input.tableName,
+      });
+    } else if (input.provider === 'r2') {
+      table = createPublicObjectStorageCanonicalTable({
+        provider: input.provider,
+        connectionId,
+        normalizedTableUri,
+        endpoint: input.endpoint,
+        tableName: input.tableName,
+      });
+    } else {
+      table = createPublicObjectStorageCanonicalTable({
+        provider: input.provider,
+        connectionId,
+        normalizedTableUri,
+        tableName: input.tableName,
+      });
+    }
   } catch {
     throw new CatalogProviderError(
       'invalid_request',

@@ -55,6 +55,7 @@ export type ConnectedTableSourceBinding = {
   host?: string;
   path?: string;
   region: string;
+  endpoint?: string;
   canonicalKey: string;
   connectedAt: string;
 };
@@ -91,6 +92,7 @@ export type ConnectedCatalog = {
   host?: string;
   path?: string;
   region: string;
+  endpoint?: string;
   status: 'connected';
   connectedAt: string;
   schemas: ConnectedCatalogSchema[];

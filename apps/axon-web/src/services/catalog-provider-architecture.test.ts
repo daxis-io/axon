@@ -33,7 +33,6 @@ describe('CatalogProvider architecture boundary', () => {
     ['Unity Catalog', /\bUnity\s+Catalog\b|\bunity_catalog\b/i],
     ['Delta Sharing', /\bDelta\s+Sharing\b|\bdelta_share\b/i],
     ['ABFSS', /\babfss\b/i],
-    ['R2', /\br2\b/i],
     ['object-storage acquisition', /from ['"].*object-storage/],
     ['persistence', /from ['"].*persistence|localStorage|indexedDB/],
     ['logging', /\bconsole\.|\blogger\b/],

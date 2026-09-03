@@ -143,6 +143,7 @@ type BrowserReadResolutionDependencies = Readonly<{
     provider: PublicObjectStorageProvider;
     tableUri: string;
     region?: string;
+    endpoint?: string;
     snapshotVersion?: number;
     expectedSnapshotVersion?: number;
     signal: AbortSignal;
@@ -283,7 +284,8 @@ function publicObjectStorageResolver(
   const root = parsePublicObjectStorageTableRoot({
     provider: source.provider,
     tableUri: source.tableUri,
-    region: source.region,
+    region: source.provider === 'r2' ? undefined : source.region,
+    endpoint: source.endpoint,
   });
   const expectedResource = canonicalResourceForSelection(selection);
 
@@ -313,6 +315,7 @@ function publicObjectStorageResolver(
           provider: root.provider,
           tableUri: root.tableUri,
           region: root.region,
+          ...(root.provider === 'r2' ? { endpoint: root.endpoint } : {}),
           snapshotVersion: context.snapshotVersion,
           expectedSnapshotVersion: context.snapshotVersion ?? source.snapshot,
           signal: context.signal,

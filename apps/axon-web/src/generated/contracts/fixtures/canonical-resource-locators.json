@@ -14,6 +14,13 @@
       "expected": "s3://axon-fixtures/tables/events"
     },
     {
+      "providerNamespace": "axon.public-r2/v1",
+      "provider": "r2",
+      "input": " r2://axon-public-data/fixtures/onboarding-v1/table/ ",
+      "endpoint": "https://data.axon.daxistech.io",
+      "expected": "r2://axon-public-data/fixtures/onboarding-v1/table"
+    },
+    {
       "providerNamespace": "axon.sample-fixture/v1",
       "provider": "sample",
       "input": "/fixtures/prod-like/delta-log-manifest.json",
@@ -35,6 +42,12 @@
       "providerNamespace": "axon.public-s3/v1",
       "provider": "s3",
       "input": "s3://access-key:secret@axon-fixtures/tables/events"
+    },
+    {
+      "providerNamespace": "axon.public-r2/v1",
+      "provider": "r2",
+      "input": "r2://axon-public-data/fixtures/onboarding-v1/table",
+      "endpoint": "https://account.r2.cloudflarestorage.com"
     },
     {
       "providerNamespace": "axon.sample-fixture/v1",

@@ -978,7 +978,7 @@ test.describe('editor (Phase 1 smoke)', () => {
       /Access\s*Browser/i,
     );
     await expect(dialog.locator('.cc-source-row', { hasText: 'Object storage' })).toContainText(
-      /public GCS or S3/i,
+      /public GCS, S3, or R2/i,
     );
     await expect(dialog.locator('.cc-source-row', { hasText: 'Object storage' })).toContainText(
       /Snapshot\s*Browser/i,
@@ -1023,10 +1023,31 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(configDialog.locator('.prefix')).toHaveText('s3://');
     await expect(configDialog.locator('select.cc-select')).toHaveValue('us-east-1');
     await expect(configDialog.locator('select.cc-select option[value=""]')).toHaveCount(0);
+    const r2Provider = configDialog.getByRole('button', { name: /Cloudflare R2/ });
+    await expect(r2Provider).toBeEnabled();
+    await r2Provider.click();
+    await expect(configDialog.locator('.prefix')).toHaveText('r2://');
+    await expect(configDialog.getByLabel(/Public R2 HTTPS endpoint/)).toBeVisible();
+    await expect(configDialog.locator('select.cc-select')).toHaveCount(0);
+    await expect(configDialog).toContainText(/_axon\/public-delta-log-index\.json/);
+    const demoPreset = configDialog.getByRole('button', { name: 'Use Axon public R2 demo' });
+    if (
+      process.env.VITE_AXON_PUBLIC_R2_DEMO_TABLE_URI &&
+      process.env.VITE_AXON_PUBLIC_R2_DEMO_ENDPOINT
+    ) {
+      await expect(demoPreset).toBeVisible();
+      await demoPreset.click();
+      await expect(configDialog.locator('.prefix')).toHaveText('r2://');
+      await expect(configDialog.getByLabel(/Public R2 HTTPS endpoint/)).toHaveValue(
+        'https://data.axon.daxistech.io',
+      );
+    } else {
+      await expect(demoPreset).toHaveCount(0);
+    }
     await configDialog.getByRole('button', { name: /Google Cloud Storage/ }).click();
+    await configDialog.locator('input.has-prefix').fill('acme-lake/silver');
     await expect(configDialog.locator('.prefix')).toHaveText('gs://');
     await expect(configDialog.getByRole('button', { name: /Azure ADLS Gen2/ })).toBeDisabled();
-    await expect(configDialog.getByRole('button', { name: /Cloudflare R2/ })).toBeDisabled();
     await expect(
       configDialog.getByText(
         /secret key|access key|SAS|bearer token|service-account JSON|encrypted/i,
@@ -1121,6 +1142,92 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(persisted).toContain('gs://acme-lake/silver');
     expect(persisted).not.toContain('storage.googleapis.com');
     expect(persisted).not.toContain('X-Goog');
+  });
+
+  test('connects public R2 through its well-known index and persists the endpoint', async ({
+    page,
+  }) => {
+    const endpoint = 'https://public-r2.example';
+    const tableUri = 'r2://axon-public-data/fixtures/onboarding-v1/table';
+    const tablePrefix = '/fixtures/onboarding-v1/table/';
+    const fixtureRoot = fileURLToPath(
+      new URL('../public/fixtures/prod-like/table/', import.meta.url),
+    );
+    const fixtureManifest = JSON.parse(
+      readFileSync(
+        new URL('../public/fixtures/prod-like/delta-log-manifest.json', import.meta.url),
+        'utf8',
+      ),
+    ) as {
+      objects: Array<{ relative_path: string; size_bytes: number }>;
+    };
+    const endpointRequests: string[] = [];
+
+    await page.route(`${endpoint}/**`, async (route) => {
+      const requestUrl = new URL(route.request().url());
+      endpointRequests.push(requestUrl.toString());
+      if (requestUrl.pathname === `${tablePrefix}_axon/public-delta-log-index.json`) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': APP_ORIGIN },
+          body: JSON.stringify({
+            schema_version: 1,
+            table_uri: tableUri,
+            objects: fixtureManifest.objects.map(({ relative_path, size_bytes }) => ({
+              relative_path,
+              size_bytes,
+            })),
+          }),
+        });
+        return;
+      }
+
+      const relativePath = decodeURIComponent(requestUrl.pathname.slice(tablePrefix.length));
+      const bytes = readFileSync(join(fixtureRoot, relativePath));
+      await fulfillRangeRequest(route, bytes, APP_ORIGIN);
+    });
+
+    await page.goto('/connect');
+    await page.getByRole('button', { name: 'Connect a source' }).click();
+    const sourceDialog = page.getByRole('dialog', { name: 'Connect a Delta source' });
+    await sourceDialog.locator('.cc-source-row', { hasText: 'Object storage' }).click();
+    await sourceDialog.getByRole('button', { name: /Continue/ }).click();
+
+    const configDialog = page.getByRole('dialog', { name: 'Connect to object storage' });
+    await configDialog.getByRole('button', { name: /Cloudflare R2/ }).click();
+    const testConnection = configDialog.getByRole('button', { name: 'Test connection' });
+    await configDialog
+      .locator('input.has-prefix')
+      .fill('axon-public-data/fixtures/onboarding-v1/table');
+    await expect(testConnection).toBeDisabled();
+    await configDialog.getByLabel(/Public R2 HTTPS endpoint/).fill(endpoint);
+    await expect(testConnection).toBeEnabled();
+    await testConnection.click();
+    await expect(configDialog).toContainText(/source check passed/i);
+    await configDialog.getByRole('button', { name: /Discover tables/ }).click();
+
+    const reviewDialog = page.getByRole('dialog', { name: 'Review & name catalog' });
+    await expect(reviewDialog).toContainText(/Detected 1 (?:public Delta|catalog) table/i);
+    await reviewDialog.getByRole('button', { name: /Connect catalog/ }).click();
+
+    const persistedBeforeReload = await page.evaluate(
+      () => localStorage.getItem('axon.connect.catalogs.v1') ?? '',
+    );
+    expect(persistedBeforeReload).toContain(tableUri);
+    expect(persistedBeforeReload).toContain(endpoint);
+    expect(persistedBeforeReload).not.toContain('cloudflarestorage.com');
+
+    await page.reload();
+    const persistedAfterReload = await page.evaluate(
+      () => localStorage.getItem('axon.connect.catalogs.v1') ?? '',
+    );
+    expect(persistedAfterReload).toContain(tableUri);
+    expect(persistedAfterReload).toContain(endpoint);
+    expect(
+      endpointRequests.filter((url) => url.includes('public-delta-log-index.json')),
+    ).toHaveLength(1);
+    expect(endpointRequests.some((url) => /[?&](?:list-type|prefix)=/i.test(url))).toBe(false);
   });
 
   test('local Delta connect prefers persistent browser folder access when supported', async ({

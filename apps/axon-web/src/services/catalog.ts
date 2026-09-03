@@ -125,7 +125,8 @@ function createPublicProvider(
     root = parsePublicObjectStorageTableRoot({
       provider: source.provider,
       tableUri: source.tableUri,
-      region: source.region,
+      region: source.provider === 'r2' ? undefined : source.region,
+      endpoint: source.endpoint,
     });
   } catch {
     throw new CatalogProviderError(
@@ -137,7 +138,9 @@ function createPublicProvider(
   const providerIdentity =
     root.provider === 's3'
       ? { provider: root.provider, region: root.region }
-      : { provider: root.provider };
+      : root.provider === 'r2'
+        ? { provider: root.provider, endpoint: root.endpoint }
+        : { provider: root.provider };
   return createPublicObjectStorageCatalogProvider({
     ...providerIdentity,
     connectionId: publicObjectStorageConnectionId(root),

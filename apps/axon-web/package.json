@@ -35,6 +35,7 @@
     "test:browser:editor-smoke": "playwright test --config=playwright.editor-smoke.config.ts",
     "test:browser:public-gcs-live": "playwright test --config=playwright.public-gcs-live.config.ts",
     "test:browser:public-s3-live": "playwright test --config=playwright.public-s3-live.config.ts",
+    "test:browser:public-r2-live": "playwright test --config=playwright.public-r2-live.config.ts",
     "test:browser:query-performance": "playwright test --config=playwright.browser-query-performance.config.ts",
     "test:browser:page-index-ab": "playwright test --config=playwright.page-index-ab.config.ts",
     "test:browser:external-memory:qualification": "AXON_BROWSER_EXTERNAL_MEMORY_FULL_PARITY=1 AXON_BROWSER_EXTERNAL_MEMORY_REPEAT_RUNS=10 playwright test --config=playwright.browser-external-memory.config.ts --grep \"spill-forcing aggregate\"",

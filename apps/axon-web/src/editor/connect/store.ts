@@ -183,6 +183,8 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
         ? form.ds_endpoint
         : undefined;
   const path = source === 'local' ? form.path : undefined;
+  const endpoint =
+    source === 'object_store' && form.provider === 'r2' ? form.endpoint.trim() : undefined;
   const region = regionForResult(result);
   const connectedAt = 'just now';
   const schemas = disc.schemas
@@ -230,6 +232,7 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
             host,
             path,
             region,
+            ...(endpoint ? { endpoint } : {}),
             canonicalKey: tableSourceKeyFromParts({
               kind: source,
               provider:
@@ -237,6 +240,7 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
               storage,
               host,
               path,
+              endpoint,
               schemaName,
               tableName: t.name,
             }),
@@ -257,6 +261,7 @@ export function buildCatalogFromResult(result: ConnectResult): ConnectedCatalog 
     host,
     path,
     region,
+    ...(endpoint ? { endpoint } : {}),
     status: 'connected',
     connectedAt,
     schemas,
@@ -402,22 +407,29 @@ function logicalTableForPersistedTable(
     const root = parsePublicObjectStorageTableRoot({
       provider,
       tableUri,
-      region: table.source?.region ?? catalog.region,
+      region: provider === 'r2' ? undefined : (table.source?.region ?? catalog.region),
+      endpoint: table.source?.endpoint ?? catalog.endpoint,
     });
     const connectionId = publicObjectStorageConnectionId(root);
-    if (provider === 'gcs') {
+    if (root.provider === 'gcs') {
       return createPublicObjectStorageCanonicalTable({
-        provider,
+        provider: root.provider,
         connectionId,
         normalizedTableUri: root.tableUri,
         tableName: table.name,
       });
     }
-    if (root.provider !== 's3') {
-      throw new Error('public S3 identity resolved as a non-S3 table root');
+    if (root.provider === 'r2') {
+      return createPublicObjectStorageCanonicalTable({
+        provider: root.provider,
+        connectionId,
+        normalizedTableUri: root.tableUri,
+        tableName: table.name,
+        endpoint: root.endpoint,
+      });
     }
     return createPublicObjectStorageCanonicalTable({
-      provider,
+      provider: root.provider,
       connectionId,
       normalizedTableUri: root.tableUri,
       tableName: table.name,
@@ -432,7 +444,10 @@ function migratedCatalogEnvelope(
   catalog: ConnectedCatalog,
   table: ConnectedCatalogSchema['tables'][number],
   logicalTable: TableNode,
-): Pick<ConnectedCatalog, 'kind' | 'provider' | 'storage' | 'host' | 'path' | 'region'> {
+): Pick<
+  ConnectedCatalog,
+  'kind' | 'provider' | 'storage' | 'host' | 'path' | 'region' | 'endpoint'
+> {
   const namespace = logicalTable.resource?.providerNamespace;
   if (namespace === LOCAL_DELTA_PROVIDER_NAMESPACE) {
     return {
@@ -457,6 +472,9 @@ function migratedCatalogEnvelope(
       host: undefined,
       path: undefined,
       region: table.source?.region ?? catalog.region,
+      ...((table.source?.endpoint ?? catalog.endpoint)
+        ? { endpoint: table.source?.endpoint ?? catalog.endpoint }
+        : {}),
     };
   }
   return {
@@ -466,6 +484,7 @@ function migratedCatalogEnvelope(
     host: catalog.host,
     path: catalog.path,
     region: catalog.region,
+    ...(catalog.endpoint ? { endpoint: catalog.endpoint } : {}),
   };
 }
 
@@ -482,13 +501,14 @@ function publicObjectStorageProviderForNamespace(
 ): PublicObjectStorageProvider | undefined {
   if (namespace === 'axon.public-gcs/v1') return 'gcs';
   if (namespace === 'axon.public-s3/v1') return 's3';
+  if (namespace === 'axon.public-r2/v1') return 'r2';
   return undefined;
 }
 
 function publicObjectStorageProvider(
   provider: ObjectStoreProviderId | undefined,
 ): PublicObjectStorageProvider | undefined {
-  return provider === 'gcs' || provider === 's3' ? provider : undefined;
+  return provider === 'gcs' || provider === 's3' || provider === 'r2' ? provider : undefined;
 }
 
 function migrateLegacyExplicitSampleCatalogClaim(
@@ -687,6 +707,7 @@ function durableConnectedCatalog(
     host: catalog.host,
     path: catalog.path,
     region: catalog.region,
+    ...(catalog.endpoint ? { endpoint: catalog.endpoint } : {}),
     status: catalog.status,
     connectedAt: catalog.connectedAt,
     schemas,
@@ -721,6 +742,7 @@ function durableConnectedTable(
           host: table.source.host,
           path: table.source.path,
           region: table.source.region,
+          ...(table.source.endpoint ? { endpoint: table.source.endpoint } : {}),
           canonicalKey: table.source.canonicalKey,
           connectedAt: table.source.connectedAt,
         }
@@ -836,6 +858,7 @@ function legacyTableSourceKey(
     storage: catalog.storage,
     host: catalog.host,
     path: catalog.path,
+    endpoint: catalog.endpoint,
     schemaName: '',
     tableName: table.name,
   });
@@ -847,6 +870,7 @@ function tableSourceKeyFromParts({
   storage,
   host,
   path,
+  endpoint,
   schemaName,
   tableName,
 }: {
@@ -855,18 +879,20 @@ function tableSourceKeyFromParts({
   storage: string;
   host?: string;
   path?: string;
+  endpoint?: string;
   schemaName: string;
   tableName: string;
 }): string {
-  return [
+  const parts = [
     kind,
     provider ?? '',
     normalizeCatalogLocator(storage),
     normalizeCatalogLocator(host),
     normalizeCatalogLocator(path),
-    normalizeCatalogAlias(schemaName),
-    normalizeCatalogAlias(tableName),
-  ].join('|');
+  ];
+  if (endpoint) parts.push(normalizeCatalogLocator(endpoint));
+  parts.push(normalizeCatalogAlias(schemaName), normalizeCatalogAlias(tableName));
+  return parts.join('|');
 }
 
 function sourceBindingId(
@@ -920,6 +946,7 @@ function storageForResult(result: ConnectResult): string {
 function regionForResult(result: ConnectResult): string {
   const { source, form } = result;
   if (source === 'object_store') {
+    if (form.provider === 'r2') return 'global';
     const region = form.region.trim();
     if (form.provider === 's3' && !region) {
       throw new Error('Public S3 object storage requires an AWS region.');

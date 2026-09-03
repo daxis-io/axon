@@ -56,6 +56,7 @@ export type ObjectStoreTableRootQueryTableSource = {
   tableUri: string;
   storage: string;
   region: string;
+  endpoint?: string;
   snapshot?: number;
   rows?: number;
   files?: number;
@@ -73,13 +74,8 @@ export type QueryTableSource =
 export type QuerySourceIdentity =
   | readonly ['manifest', string, string, string, string, string, string, number | null]
   | readonly ['local_delta', string, number | null]
-  | readonly [
-      'object_store_table_root',
-      PublicObjectStorageProvider,
-      string,
-      string,
-      number | null,
-    ];
+  | readonly ['object_store_table_root', 'gcs' | 's3', string, string, number | null]
+  | readonly ['object_store_table_root', 'r2', string, string, number | null];
 
 export function querySourceIdentity(source: QueryTableSource): QuerySourceIdentity {
   if (source.kind === 'manifest') {
@@ -99,13 +95,21 @@ export function querySourceIdentity(source: QueryTableSource): QuerySourceIdenti
     return ['local_delta', source.localRegistryId, source.snapshot ?? null] as const;
   }
 
-  return [
-    'object_store_table_root',
-    source.provider,
-    source.tableUri,
-    source.region,
-    source.snapshot ?? null,
-  ] as const;
+  return source.provider === 'r2'
+    ? [
+        'object_store_table_root',
+        source.provider,
+        source.tableUri,
+        source.endpoint ?? '',
+        source.snapshot ?? null,
+      ]
+    : [
+        'object_store_table_root',
+        source.provider,
+        source.tableUri,
+        source.region,
+        source.snapshot ?? null,
+      ];
 }
 
 export type QueryCatalogCandidate = {
@@ -114,6 +118,7 @@ export type QueryCatalogCandidate = {
   alias: string;
   storage: string;
   region?: string;
+  endpoint?: string;
   kind?: string;
   provider?: string;
   schemas: Array<{
@@ -132,6 +137,7 @@ export type QueryCatalogCandidate = {
       source?: {
         storage: string;
         region: string;
+        endpoint?: string;
       };
       uri?: string;
       descriptorResolutionMetrics?: PublicObjectStorageDescriptorResolutionMetrics;
@@ -221,7 +227,8 @@ function isGeneratedQuerySourceNamespace(namespace: string | undefined): boolean
   return (
     namespace === 'axon.local-delta/v1' ||
     namespace === 'axon.public-gcs/v1' ||
-    namespace === 'axon.public-s3/v1'
+    namespace === 'axon.public-s3/v1' ||
+    namespace === 'axon.public-r2/v1'
   );
 }
 
@@ -396,6 +403,7 @@ function querySourceForTable(
       tableUri: tableRoot.tableUri,
       storage: tableRoot.tableUri,
       region: table.source?.region ?? catalog.region ?? 'browser-local',
+      ...(tableRoot.endpoint ? { endpoint: tableRoot.endpoint } : {}),
       snapshot: table.snapshot,
       rows: table.rows,
       files: table.files,
@@ -421,19 +429,22 @@ function isQueryableTable(
 function publicObjectStoreTableRoot(
   catalog: QueryCatalogCandidate,
   table: QueryCatalogCandidate['schemas'][number]['tables'][number],
-): { provider: PublicObjectStorageProvider; tableUri: string } | undefined {
+): { provider: PublicObjectStorageProvider; tableUri: string; endpoint?: string } | undefined {
   if (catalog.kind !== 'object_store') return undefined;
   const provider = publicObjectStorageProvider(catalog.provider);
   if (!provider) return undefined;
   const tableUri = table.uri ?? table.source?.storage ?? catalog.storage;
-  const expectedScheme = provider === 's3' ? 's3://' : 'gs://';
-  return tableUri.startsWith(expectedScheme) ? { provider, tableUri } : undefined;
+  const expectedScheme = provider === 'gcs' ? 'gs://' : `${provider}://`;
+  if (!tableUri.startsWith(expectedScheme)) return undefined;
+  const endpoint = table.source?.endpoint ?? catalog.endpoint;
+  if (provider === 'r2' && !endpoint) return undefined;
+  return { provider, tableUri, ...(endpoint ? { endpoint } : {}) };
 }
 
 function publicObjectStorageProvider(
   provider: string | undefined,
 ): PublicObjectStorageProvider | undefined {
-  return provider === 'gcs' || provider === 's3' ? provider : undefined;
+  return provider === 'gcs' || provider === 's3' || provider === 'r2' ? provider : undefined;
 }
 
 function countTables(catalogs: QueryCatalogCandidate[]): number {

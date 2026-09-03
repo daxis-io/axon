@@ -1070,9 +1070,10 @@ async function loadSampleFixtureDescriptor(input: {
 }
 
 async function loadPublicObjectStorageDescriptor(input: {
-  provider: 'gcs' | 's3';
+  provider: 'gcs' | 's3' | 'r2';
   tableUri: string;
   region?: string;
+  endpoint?: string;
   snapshotVersion?: number;
   expectedSnapshotVersion?: number;
   signal: AbortSignal;
@@ -1088,6 +1089,7 @@ async function loadPublicObjectStorageDescriptor(input: {
     provider: input.provider,
     tableUri: input.tableUri,
     region: input.region,
+    endpoint: input.endpoint,
     snapshot,
     expectedSnapshotVersion: input.expectedSnapshotVersion,
   });
@@ -1101,7 +1103,9 @@ async function loadPublicObjectStorageDescriptor(input: {
     provider: input.provider,
     tableUri: input.tableUri,
     region: input.region,
+    endpoint: input.endpoint,
     snapshotVersion: input.snapshotVersion,
+    signal: input.signal,
     resolveDeltaSnapshotFromManifest: resolve_delta_snapshot_from_manifest,
     onMetrics: (metrics) => {
       setupMetrics = sessionSetupMetricsFromPublicObjectStorage(metrics);

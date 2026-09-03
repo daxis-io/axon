@@ -73,6 +73,30 @@ fn full_reads_support_injected_reqwest_clients() {
 }
 
 #[test]
+fn full_reads_reject_cross_origin_redirects() {
+    let (target_url, target_requests, target_server) = spawn_test_server(|request| {
+        assert_eq!(request.method, "GET");
+        full_or_ranged_response(request, b"redirected")
+    });
+    let redirect_target = target_url.clone();
+    let (source_url, source_requests, source_server) = spawn_test_server(move |_| TestResponse {
+        status_line: "302 Found",
+        headers: vec![("Location".to_string(), redirect_target)],
+        body: Vec::new(),
+    });
+
+    let error = runtime()
+        .block_on(HttpRangeReader::new().read_range(&source_url, HttpByteRange::Full))
+        .expect_err("cross-origin redirects must be rejected");
+
+    finish_request(source_server, source_requests);
+    finish_request(target_server, target_requests);
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert!(error.message.contains("cross-origin redirect"));
+    assert!(!error.message.contains(&target_url));
+}
+
+#[test]
 fn full_reads_validate_response_identity_without_if_range_header() {
     let (url, requests, server) = spawn_test_server(|request| {
         assert_eq!(request.method, "GET");

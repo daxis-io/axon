@@ -17,7 +17,7 @@ import {
   type TableMetadata,
 } from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 
-export type PublicObjectStorageProvider = 'gcs' | 's3';
+export type PublicObjectStorageProvider = 'gcs' | 's3' | 'r2';
 
 type PublicObjectStorageTableRootBase = {
   tableUri: string;
@@ -28,7 +28,12 @@ type PublicObjectStorageTableRootBase = {
 
 export type PublicObjectStorageTableRoot =
   | (PublicObjectStorageTableRootBase & { provider: 'gcs'; region?: never })
-  | (PublicObjectStorageTableRootBase & { provider: 's3'; region: string });
+  | (PublicObjectStorageTableRootBase & { provider: 's3'; region: string })
+  | (PublicObjectStorageTableRootBase & {
+      provider: 'r2';
+      endpoint: string;
+      region?: never;
+    });
 
 export type PublicObjectStorageErrorCode =
   | 'invalid_public_object_storage_uri'
@@ -57,6 +62,16 @@ export type PublicDeltaLogManifest = {
   objects: PublicDeltaLogManifestObject[];
   list_request_count: number;
   list_duration_ms: number;
+};
+
+export type PublicDeltaLogIndexV1 = {
+  schema_version: 1;
+  table_uri: string;
+  objects: Array<{
+    relative_path: string;
+    size_bytes: number;
+    etag?: string;
+  }>;
 };
 
 export type PublicObjectStorageFetch = typeof fetch;
@@ -138,6 +153,7 @@ export function parsePublicObjectStorageTableRoot(input: {
   provider: PublicObjectStorageProvider;
   tableUri: string;
   region?: string;
+  endpoint?: string;
 }): PublicObjectStorageTableRoot {
   const trimmed = input.tableUri.trim().replace(/\/+$/, '');
   if (containsSecretMaterial(trimmed)) {
@@ -196,6 +212,26 @@ export function parsePublicObjectStorageTableRoot(input: {
     };
   }
 
+  if (input.provider === 'r2') {
+    if (parsed.protocol !== 'r2:') {
+      throw invalidUri(providerUriShapeMessage(input.provider));
+    }
+    validatePublicR2LogicalPath(trimmed);
+    if (input.region?.trim()) {
+      throw invalidUri('public R2 object storage does not accept a region');
+    }
+    const bucket = normalizePublicR2Bucket(parsed.hostname, parsed.port);
+    const endpoint = normalizePublicR2Endpoint(input.endpoint);
+    return {
+      provider: input.provider,
+      tableUri: `r2://${bucket}/${prefix}`,
+      bucket,
+      prefix,
+      endpoint,
+      tableRootUrl: `${endpoint}/${encodeObjectPath(prefix)}/`,
+    };
+  }
+
   const unsupportedProvider: never = input.provider;
   throw invalidUri(`unsupported public object storage provider: ${String(unsupportedProvider)}`);
 }
@@ -214,6 +250,11 @@ export function publicObjectUrl(root: PublicObjectStorageTableRoot, relativePath
 export function publicObjectStorageConnectionId(root: PublicObjectStorageTableRoot): string {
   if (root.provider === 'gcs') {
     return `axon-connection://public-gcs/${encodeURIComponent(root.bucket)}`;
+  }
+  if (root.provider === 'r2') {
+    return `axon-connection://public-r2/${encodeURIComponent(root.endpoint)}/${encodeURIComponent(
+      root.bucket,
+    )}`;
   }
   if (!root.region) throw invalidUri('public object storage S3 region is required');
   return `axon-connection://public-s3/${encodeURIComponent(root.region)}/${encodeURIComponent(
@@ -262,6 +303,10 @@ export async function buildPublicDeltaLogManifest(
     throw accessFailed('global fetch is not available for public object storage');
   }
 
+  if (root.provider === 'r2') {
+    return buildPublicR2DeltaLogManifest(root, fetcher, options);
+  }
+
   const objects: PublicDeltaLogManifestObject[] = [];
   let continuationToken: string | undefined;
   let listRequestCount = 0;
@@ -299,10 +344,160 @@ export async function buildPublicDeltaLogManifest(
   };
 }
 
+async function buildPublicR2DeltaLogManifest(
+  root: Extract<PublicObjectStorageTableRoot, { provider: 'r2' }>,
+  fetcher: PublicObjectStorageFetch,
+  options: PublicObjectStorageFetchOptions,
+): Promise<PublicDeltaLogManifest> {
+  throwIfPublicObjectStorageAborted(options.signal);
+  const startedAt = nowMs();
+  const indexUrl = publicObjectUrl(root, '_axon/public-delta-log-index.json');
+  const response = await fetcher(indexUrl, {
+    credentials: 'omit',
+    redirect: 'follow',
+    signal: options.signal,
+  });
+  throwIfPublicObjectStorageAborted(options.signal);
+  rejectCrossOriginPublicR2Redirect(response, root.endpoint);
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw accessFailed(
+        'public R2 Delta log index _axon/public-delta-log-index.json was not found; publish the well-known index at the table root',
+      );
+    }
+    throw accessFailed(`public R2 Delta log index request failed (HTTP ${response.status})`);
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(await response.text());
+  } catch {
+    throw accessFailed('public R2 Delta log index returned invalid JSON');
+  }
+  throwIfPublicObjectStorageAborted(options.signal);
+  const objects = parsePublicDeltaLogIndexV1(value, root);
+  if (objects.length === 0) {
+    throw accessFailed('public R2 Delta log index did not contain any Delta log objects');
+  }
+  return {
+    tableUri: root.tableUri,
+    objects,
+    list_request_count: 1,
+    list_duration_ms: Math.round(nowMs() - startedAt),
+  };
+}
+
+export function parsePublicDeltaLogIndexV1(
+  value: unknown,
+  root: PublicObjectStorageTableRoot,
+): PublicDeltaLogManifestObject[] {
+  if (root.provider !== 'r2') {
+    throw accessFailed('PublicDeltaLogIndexV1 is only valid for public R2 table roots');
+  }
+  if (!isRecord(value) || !hasExactKeys(value, ['objects', 'schema_version', 'table_uri'])) {
+    throw accessFailed('public R2 Delta log index envelope must use the closed v1 schema');
+  }
+  if (value.schema_version !== 1) {
+    throw accessFailed('public R2 Delta log index schema_version must equal 1');
+  }
+  if (value.table_uri !== root.tableUri || containsSecretMaterial(String(value.table_uri ?? ''))) {
+    throw accessFailed('public R2 Delta log index table_uri did not match the configured table');
+  }
+  if (!Array.isArray(value.objects)) {
+    throw accessFailed('public R2 Delta log index objects must be an array');
+  }
+
+  const paths = new Set<string>();
+  const objects = value.objects.map((candidate) => {
+    if (
+      !isRecord(candidate) ||
+      !hasExactKeys(
+        candidate,
+        candidate.etag === undefined
+          ? ['relative_path', 'size_bytes']
+          : ['etag', 'relative_path', 'size_bytes'],
+      )
+    ) {
+      throw accessFailed('public R2 Delta log index object must use the closed v1 schema');
+    }
+    const relativePath = candidate.relative_path;
+    if (
+      typeof relativePath !== 'string' ||
+      !relativePath.startsWith('_delta_log/') ||
+      relativePath.includes('\\') ||
+      /%(?:2f|5c)/i.test(relativePath) ||
+      containsSecretMaterial(relativePath)
+    ) {
+      throw accessFailed('public R2 Delta log index contained an invalid Delta log path');
+    }
+    let normalized: string;
+    try {
+      normalized = normalizeObjectPath(relativePath);
+    } catch {
+      throw accessFailed('public R2 Delta log index contained an unsafe Delta log path');
+    }
+    if (!normalized || normalized !== relativePath) {
+      throw accessFailed('public R2 Delta log index contained an unsafe Delta log path');
+    }
+    if (paths.has(relativePath)) {
+      throw accessFailed('public R2 Delta log index contained a duplicate Delta log path');
+    }
+    paths.add(relativePath);
+
+    if (!Number.isSafeInteger(candidate.size_bytes) || Number(candidate.size_bytes) < 0) {
+      throw accessFailed('public R2 Delta log index contained an unsafe object size');
+    }
+    const sizeBytes = Number(candidate.size_bytes);
+    const object: PublicDeltaLogManifestObject = {
+      relative_path: relativePath,
+      url: publicObjectUrl(root, relativePath),
+      size_bytes: sizeBytes,
+    };
+    if (candidate.etag !== undefined) {
+      if (
+        typeof candidate.etag !== 'string' ||
+        strongObjectEtag(candidate.etag) !== candidate.etag ||
+        containsSecretMaterial(candidate.etag)
+      ) {
+        throw accessFailed('public R2 Delta log index contained an invalid strong ETag');
+      }
+      object.etag = candidate.etag;
+    }
+    return object;
+  });
+
+  return objects.sort((left, right) =>
+    left.relative_path < right.relative_path
+      ? -1
+      : left.relative_path > right.relative_path
+        ? 1
+        : 0,
+  );
+}
+
+function rejectCrossOriginPublicR2Redirect(response: Response, endpoint: string): void {
+  if (!response.url) {
+    if (response.redirected) {
+      throw accessFailed('public R2 Delta log index used an unverifiable cross-origin redirect');
+    }
+    return;
+  }
+  let responseOrigin: string;
+  try {
+    responseOrigin = new URL(response.url).origin;
+  } catch {
+    throw accessFailed('public R2 Delta log index returned an invalid response URL');
+  }
+  if (responseOrigin !== endpoint) {
+    throw accessFailed('public R2 Delta log index rejected a cross-origin redirect');
+  }
+}
+
 export async function resolvePublicObjectStorageDescriptor(input: {
   provider: PublicObjectStorageProvider;
   tableUri: string;
   region?: string;
+  endpoint?: string;
   snapshotVersion?: number;
   resolveDeltaSnapshotFromManifest: (
     manifestJson: string,
@@ -323,6 +518,7 @@ export async function resolvePublicObjectStorageDescriptor(input: {
     provider: input.provider,
     tableUri: input.tableUri,
     region: input.region,
+    endpoint: input.endpoint,
   });
   throwIfPublicObjectStorageAborted(input.signal);
   const manifest = await buildPublicDeltaLogManifest(root, {
@@ -331,13 +527,25 @@ export async function resolvePublicObjectStorageDescriptor(input: {
   });
   throwIfPublicObjectStorageAborted(input.signal);
   const snapshotResolveStartedAt = nowMs();
-  const snapshot = JSON.parse(
-    await input.resolveDeltaSnapshotFromManifest(
-      JSON.stringify({ objects: manifest.objects }),
-      root.tableUri,
-      input.snapshotVersion,
-    ),
-  ) as ResolvedPublicSnapshot;
+  let snapshot: ResolvedPublicSnapshot;
+  try {
+    snapshot = JSON.parse(
+      await input.resolveDeltaSnapshotFromManifest(
+        JSON.stringify({ objects: manifest.objects }),
+        root.tableUri,
+        input.snapshotVersion,
+      ),
+    ) as ResolvedPublicSnapshot;
+  } catch (error) {
+    throwIfPublicObjectStorageAborted(input.signal);
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    if (root.provider === 'r2') {
+      throw accessFailed(
+        'public R2 Delta log index is stale or incomplete for the requested snapshot; republish the table index after all Delta log objects',
+      );
+    }
+    throw error;
+  }
   throwIfPublicObjectStorageAborted(input.signal);
   input.onMetrics?.({
     descriptor_resolution_count: 1,
@@ -425,6 +633,7 @@ export function registerPublicObjectStorageRuntimeCache(input: {
   provider: PublicObjectStorageProvider;
   tableUri: string;
   region?: string;
+  endpoint?: string;
   snapshot: PublicObjectStorageRuntimeCacheSnapshot;
   descriptor: BrowserHttpSnapshotDescriptor;
   preflight: PublicObjectStoragePreflightResult;
@@ -437,6 +646,7 @@ export function registerPublicObjectStorageRuntimeCache(input: {
     provider: input.provider,
     tableUri: input.tableUri,
     region: input.region,
+    endpoint: input.endpoint,
   });
   if (input.descriptor.tableUri !== root.tableUri) return false;
   if (
@@ -462,7 +672,13 @@ export function registerPublicObjectStorageRuntimeCache(input: {
   );
 
   publicObjectStorageRuntimeCache.set(
-    publicObjectStorageRuntimeCacheKey(root.provider, root.tableUri, input.snapshot, root.region),
+    publicObjectStorageRuntimeCacheKey(
+      root.provider,
+      root.tableUri,
+      input.snapshot,
+      root.region,
+      root.provider === 'r2' ? root.endpoint : undefined,
+    ),
     {
       descriptor,
       identity: {
@@ -480,6 +696,7 @@ export function lookupPublicObjectStorageRuntimeCache(input: {
   provider: PublicObjectStorageProvider;
   tableUri: string;
   region?: string;
+  endpoint?: string;
   snapshot: PublicObjectStorageRuntimeCacheSnapshot;
   expectedSnapshotVersion?: number;
   nowMs?: () => number;
@@ -496,12 +713,14 @@ export function lookupPublicObjectStorageRuntimeCache(input: {
     provider: input.provider,
     tableUri: input.tableUri,
     region: input.region,
+    endpoint: input.endpoint,
   });
   const key = publicObjectStorageRuntimeCacheKey(
     root.provider,
     root.tableUri,
     input.snapshot,
     root.region,
+    root.provider === 'r2' ? root.endpoint : undefined,
   );
   const entry = publicObjectStorageRuntimeCache.get(key);
   if (!entry) return undefined;
@@ -713,9 +932,84 @@ function containsSecretMaterial(value: string): boolean {
 }
 
 function providerUriShapeMessage(provider: PublicObjectStorageProvider): string {
-  return provider === 's3'
-    ? 'public object storage S3 table URI must look like s3://bucket/table'
-    : 'public object storage GCS table URI must look like gs://bucket/table';
+  switch (provider) {
+    case 's3':
+      return 'public object storage S3 table URI must look like s3://bucket/table';
+    case 'gcs':
+      return 'public object storage GCS table URI must look like gs://bucket/table';
+    case 'r2':
+      return 'public R2 object storage table URI must look like r2://bucket/table';
+  }
+}
+
+function normalizePublicR2Endpoint(endpoint: string | undefined): string {
+  const trimmed = endpoint?.trim();
+  if (!trimmed || containsSecretMaterial(trimmed)) {
+    throw invalidUri('public R2 object storage requires a credential-free HTTPS endpoint origin');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw invalidUri('public R2 object storage endpoint must be an HTTPS origin');
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    !parsed.hostname ||
+    hasUserinfo(parsed) ||
+    !hasOriginOnlyRawPath(trimmed, 'https') ||
+    parsed.search ||
+    parsed.hash ||
+    parsed.hostname.toLowerCase().endsWith('.r2.cloudflarestorage.com')
+  ) {
+    throw invalidUri(
+      'public R2 object storage endpoint must be a public HTTPS origin without a path, credentials, query, or fragment',
+    );
+  }
+  return parsed.origin;
+}
+
+function validatePublicR2LogicalPath(uri: string): void {
+  const rawPath = rawPathAfterAuthority(uri, 'r2');
+  const rawSegments = rawPath?.startsWith('/') ? rawPath.slice(1).split('/') : [];
+  if (
+    !rawPath ||
+    rawSegments.some((segment) => !segment) ||
+    rawPath.includes('\\') ||
+    /%(?:2f|5c)/i.test(rawPath) ||
+    rawSegments.some((segment) => {
+      try {
+        const decoded = decodeURIComponent(segment);
+        return (
+          decoded === '.' || decoded === '..' || decoded.includes('/') || decoded.includes('\\')
+        );
+      } catch {
+        return true;
+      }
+    })
+  ) {
+    throw invalidUri('public R2 object storage table URI contained an unsafe table path');
+  }
+}
+
+function hasOriginOnlyRawPath(value: string, scheme: string): boolean {
+  const rawPath = rawPathAfterAuthority(value, scheme);
+  return rawPath === '' || rawPath === '/';
+}
+
+function rawPathAfterAuthority(value: string, scheme: string): string | undefined {
+  return new RegExp(`^${scheme}:\\/\\/[^/?#]+([^?#]*)$`, 'i').exec(value)?.[1];
+}
+
+function normalizePublicR2Bucket(bucket: string, port: string): string {
+  if (
+    port ||
+    bucket !== bucket.toLowerCase() ||
+    !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(bucket)
+  ) {
+    throw invalidUri('public R2 bucket must be a lowercase DNS-compatible bucket name');
+  }
+  return bucket;
 }
 
 function normalizeS3Region(region: string | undefined): string {
@@ -754,9 +1048,22 @@ function publicObjectStorageRuntimeCacheKey(
   tableUri: string,
   snapshot: PublicObjectStorageRuntimeCacheSnapshot,
   region?: string,
+  endpoint?: string,
 ): string {
   const snapshotKey = snapshot.kind === 'latest' ? 'latest' : `version:${snapshot.version}`;
-  return `${provider}|${region ?? ''}|${tableUri}|${snapshotKey}`;
+  return endpoint === undefined
+    ? `${provider}|${region ?? ''}|${tableUri}|${snapshotKey}`
+    : `${provider}|${region ?? ''}|${endpoint}|${tableUri}|${snapshotKey}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
 function parsePreflightResult(json: string): PublicObjectStoragePreflightResult {
@@ -784,7 +1091,7 @@ function numericPreflightValue(value: unknown): number | undefined {
 function strongObjectEtag(etag: string | undefined): string | undefined {
   const trimmed = etag?.trim();
   if (!trimmed || trimmed.startsWith('W/') || trimmed.startsWith('w/')) return undefined;
-  if (!trimmed.startsWith('"') || !trimmed.endsWith('"')) return undefined;
+  if (!/^"[\u0021\u0023-\u007e]*"$/.test(trimmed)) return undefined;
   return trimmed;
 }
 

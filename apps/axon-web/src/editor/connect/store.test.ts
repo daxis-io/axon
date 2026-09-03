@@ -595,7 +595,7 @@ describe('connected catalog persistence', () => {
     [
       'unknown public provider',
       (candidate: ConnectedCatalog) => {
-        candidate.provider = 'r2' as ConnectedCatalog['provider'];
+        candidate.provider = 'abfss';
       },
     ],
     [
@@ -821,6 +821,97 @@ describe('connected catalog persistence', () => {
 
     expect(table?.descriptorResolutionMetrics).toEqual(metrics);
     expect(JSON.stringify(table?.catalogMetadataJson)).not.toContain('descriptor_resolution_count');
+  });
+
+  it('persists and reloads the public R2 endpoint as query-source identity', async () => {
+    const tableUri = 'r2://axon-public-data/fixtures/onboarding-v1/table';
+    const endpoint = 'https://data.axon.daxistech.io';
+    const connectionId =
+      'axon-connection://public-r2/https%3A%2F%2Fdata.axon.daxistech.io/axon-public-data';
+    const descriptor = create(BrowserHttpSnapshotDescriptorSchema, {
+      tableUri,
+      snapshotVersion: 3n,
+    });
+    const catalogDiscovery = await discoverFlatCatalog(
+      createPublicObjectStorageCatalogProvider({
+        provider: 'r2',
+        endpoint,
+        connectionId,
+        normalizedTableUri: tableUri,
+        schemaName: 'default',
+        tableName: 'table',
+        metadata: publicObjectStorageCatalogMetadata(descriptor),
+      }),
+      create(PageRequestSchema),
+      {
+        signal: new AbortController().signal,
+        correlationId: 'store-public-r2-provider-test',
+      },
+    );
+    const result: ConnectResult = {
+      source: 'object_store',
+      alias: 'public-r2',
+      selection: { default: 'all' },
+      catalogDiscovery,
+      discovered: { summary: 'generated', schemas: [] },
+      form: {
+        path: '',
+        detected: null,
+        localDelta: null,
+        localCatalogDiscovery: null,
+        provider: 'r2',
+        uri: tableUri,
+        region: '',
+        endpoint,
+        objectStorage: {
+          tableUri,
+          tableName: 'table',
+          catalogDiscovery,
+        },
+        uc_mode: 'databricks',
+        uc_host: '',
+        uc_bff_url: '',
+        uc_session_label: '',
+        uc_catalog: '',
+        uc_schema_filter: '',
+        ds_mode: 'profile',
+        ds_profile_name: '',
+        ds_endpoint: '',
+        ds_share: '',
+      },
+    };
+
+    saveConnectedCatalogs([buildCatalogFromResult(result)]);
+    const restored = loadConnectedCatalogs();
+
+    expect(restored).toMatchObject([
+      {
+        id: connectionId,
+        provider: 'r2',
+        endpoint,
+        region: 'global',
+        schemas: [
+          {
+            tables: [
+              {
+                source: {
+                  provider: 'r2',
+                  endpoint,
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    expect(restored.flatMap(querySourcesForCatalog)).toMatchObject([
+      {
+        kind: 'object_store_table_root',
+        provider: 'r2',
+        tableUri,
+        endpoint,
+      },
+    ]);
   });
 });
 

@@ -99,7 +99,11 @@ function testLogicalTable(
         provider: root.provider,
         region: root.region,
       })
-    : createPublicObjectStorageCanonicalTable({ ...identity, provider: root.provider });
+    : root.provider === 'gcs'
+      ? createPublicObjectStorageCanonicalTable({ ...identity, provider: root.provider })
+      : (() => {
+          throw new Error('test object-store root resolved to an unexpected provider');
+        })();
 }
 
 test.describe('query source', () => {

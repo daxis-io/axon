@@ -51,6 +51,20 @@ Server query fallback is an opt-in build mode. The default app build has it disa
 
 The Connect flow supports selected local Delta folders through browser-owned snapshot reconstruction and browser WASM query execution. It persists only local registry metadata in catalog state; local file bytes stay in browser storage where supported. ZIP import, object-registry import, and broad "any local table" guarantees are outside the current UI claim.
 
+Public Cloudflare R2 is a browser-only object-storage source. Connect with a logical `r2://bucket/table-prefix` locator and a credential-free HTTPS public origin. The origin must be exactly an origin such as `https://pub-example.r2.dev` or `https://data.axon.daxistech.io`; S3 API endpoints under `r2.cloudflarestorage.com`, URL paths, queries, fragments, and userinfo are rejected. R2 has no region input.
+
+R2 public endpoints cannot list a bucket, so every table must publish [`PublicDeltaLogIndexV1`](schemas/public-delta-log-index-v1.schema.json) at `<table-root>/_axon/public-delta-log-index.json`. The closed index contains only the exact logical table URI plus sorted `_delta_log/` object paths, sizes, and optional strong ETags. It cannot provide absolute data URLs. Axon derives every log and Parquet URL from the configured origin, reads anonymously with browser credentials omitted, rejects cross-origin redirects, and fails with a publication error when the index is missing, stale, or incomplete. There is no Worker, private credential, authenticated listing, or server fallback in this path.
+
+The optional onboarding button is build-time controlled and intentionally fail-closed. It appears only when both values are present and the endpoint is the production-qualified custom domain:
+
+```bash
+VITE_AXON_PUBLIC_R2_DEMO_TABLE_URI=r2://axon-public-data/fixtures/onboarding-v1/table \
+VITE_AXON_PUBLIC_R2_DEMO_ENDPOINT=https://data.axon.daxistech.io \
+npm run build
+```
+
+Generic public R2 connections remain available when the preset is hidden. An `r2.dev` origin can be entered manually for provider qualification, but it is rate-limited and must not be presented as production performance evidence.
+
 The browser query path still uses `src/sandbox-query-worker.ts` and `src/lib.rs` as the worker bridge. The duplicate piece was the old sandbox page, not the worker contract.
 
 The E2E test starts Vite over HTTPS, opens Chromium, Firefox, and WebKit through Playwright, and covers the browser worker envelope path for startup, Arrow IPC result bytes, structured browser errors, Delta Sharing descriptor handoff, and cancellation-shaped errors. The editor smoke suite covers root UI catalog selection, query execution, and local-folder registry reload.
@@ -77,6 +91,15 @@ The public S3 live smoke is env-gated the same way and needs the bucket region b
 
 ```bash
 AXON_LIVE_PUBLIC_S3_TABLE_URI=s3://bucket/table AXON_LIVE_PUBLIC_S3_REGION=us-east-2 npm run test:browser:public-s3-live -- --reporter=line
+```
+
+The public R2 qualification suite is env-gated on one endpoint and both pinned fixture URIs. It checks CORS, `HEAD`, strong ETags, `206`, `If-Range`, `416`, the exact four-row onboarding snapshot, three fresh-runtime 1M-row counts, the filtered performance query, browser-only execution, range/byte metrics, memory/IPC bounds, and redacted evidence output.
+
+```bash
+AXON_LIVE_PUBLIC_R2_ENDPOINT=https://pub-example.r2.dev \
+AXON_LIVE_PUBLIC_R2_ONBOARDING_TABLE_URI=r2://axon-public-data/fixtures/onboarding-v1/table \
+AXON_LIVE_PUBLIC_R2_PERF_TABLE_URI=r2://axon-public-data/fixtures/s3-browser-perf-v1/table \
+npm run test:browser:public-r2-live -- --reporter=line
 ```
 
 In the Codex macOS execution sandbox, Chromium can fail before any app code runs with `bootstrap_check_in ... MachPortRendezvousServer ... Permission denied`. Treat that as an environment failure and rerun the same Playwright browser command outside the sandbox or with elevated execution permissions before diagnosing app behavior.

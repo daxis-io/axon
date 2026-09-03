@@ -3048,7 +3048,7 @@ pub struct HttpRangeReader {
 
 #[cfg(target_arch = "wasm32")]
 fn bypass_browser_http_cache(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    request.fetch_cache_no_store()
+    request.fetch_cache_no_store().fetch_credentials_omit()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -3127,6 +3127,7 @@ impl HttpRangeReader {
                     supported_target(),
                 )
             })?;
+        validate_same_origin_response(&url, response.url(), &display_url)?;
 
         if let Some(error) = map_status_error(response.status(), &display_url) {
             return Err(error);
@@ -3236,6 +3237,7 @@ impl HttpRangeReader {
                     supported_target(),
                 )
             })?;
+        validate_same_origin_response(&url, response.url(), &display_url)?;
 
         if response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
             let unsatisfied_size =
@@ -3357,6 +3359,19 @@ fn parse_url(url: &str) -> Result<Url, QueryError> {
             redacted_url(&parsed)
         ))),
     }
+}
+
+fn validate_same_origin_response(
+    requested_url: &Url,
+    response_url: &Url,
+    display_url: &str,
+) -> Result<(), QueryError> {
+    if requested_url.origin() != response_url.origin() {
+        return Err(protocol_error(format!(
+            "http request to '{display_url}' rejected a cross-origin redirect"
+        )));
+    }
+    Ok(())
 }
 
 fn map_status_error(status: StatusCode, display_url: &str) -> Option<QueryError> {
