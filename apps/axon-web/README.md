@@ -5,9 +5,11 @@ This example proves that a real browser can load Axon's WASM Delta snapshot faca
 It has two fixture paths:
 
 - a tiny checked-in JSON log smoke fixture under `public/fixtures/table/_delta_log/`
-- a generated prod-like fixture under `public/fixtures/prod-like/`
+- a complete checked-in Delta table under `public/fixtures/prod-like/`
 
-The prod-like fixture is generated with delta-rs before dev/build/test. It creates real partitioned Parquet data files, multiple Delta commits, a Snappy-compressed checkpoint parquet at version `2`, `_last_checkpoint`, stats-bearing add actions, and an overwrite commit at version `3` that removes old files and adds the latest active files.
+The prod-like fixture is a real, same-origin sample table that ships with the browser app. It contains partitioned Parquet data files, multiple Delta commits, a Snappy-compressed checkpoint parquet at version `2`, `_last_checkpoint`, stats-bearing add actions, and an overwrite commit at version `3` that removes old files and leaves the B and D partitions active. `npm run build:fixture` verifies its inventory, Parquet markers, latest-snapshot shape, exact file sizes, and 128 KiB package budget. Ordinary dev, build, and test commands verify these committed bytes instead of requiring Rust to recreate them.
+
+Maintainers can deliberately replace the sample with `npm run regenerate:fixture`. Regeneration uses delta-rs and changes the checked-in table, so review the resulting manifest, Delta log, and Parquet files before committing them.
 
 Run it locally:
 
@@ -35,7 +37,7 @@ To use the interactive SQL workbench locally:
 npm run dev
 ```
 
-Open `https://127.0.0.1:5173` and run queries against the selected connected catalog. The default connected sample is `sample-lake.prod_like.events`, backed by the generated prod-like fixture. The workbench resolves that selected table source and opens the browser query session as part of query execution, so there is no separate snapshot step. The editor uses CodeMirror 6 with SQL highlighting and sample queries for row counts, category totals, and filtered top values. Results keep Arrow IPC as the canonical transport and render only a bounded preview in the page, alongside elapsed time, execution target, metrics, Arrow IPC byte length, row count, worker events, and structured errors.
+Open `https://127.0.0.1:5173` and run queries against the selected connected catalog. The default connected sample is `sample-lake.prod_like.events`, backed by the bundled prod-like fixture. The workbench resolves that selected table source and opens the browser query session as part of query execution, so there is no separate snapshot step. The editor uses CodeMirror 6 with SQL highlighting and sample queries for row counts, category totals, and filtered top values. Results keep Arrow IPC as the canonical transport and render only a bounded preview in the page, alongside elapsed time, execution target, metrics, Arrow IPC byte length, row count, worker events, and structured errors.
 
 The editor uses History API routes. Static deployments must rewrite `/connect` and any future editor routes to `index.html`. The root editor is the only product UI in the production build.
 

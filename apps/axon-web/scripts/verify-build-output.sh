@@ -25,6 +25,7 @@ if [[ ! -d "${dist_root}/assets" ]]; then
 fi
 
 failures=0
+script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 fail() {
   echo "FAIL: $1" >&2
@@ -77,6 +78,13 @@ if node --experimental-strip-types "$(dirname "$0")/browser-runtime-build.ts" ve
   pass "browser runtime artifact matches the spill-capable runtime"
 else
   fail "browser runtime artifact does not match the spill-capable runtime"
+fi
+
+# 6. The default sample must be a complete, queryable Delta table rather than log-only metadata.
+if node "${script_root}/verify-bundled-delta-fixture.mjs" "${dist_root}"; then
+  pass "bundled Delta sample is present and within its package budget"
+else
+  fail "bundled Delta sample is missing or invalid"
 fi
 
 if [[ "${failures}" -ne 0 ]]; then

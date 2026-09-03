@@ -1,0 +1,108 @@
+{
+  "name": "Prod-like generated Delta table",
+  "table_uri": "gs://axon-sandbox/prod-like-events",
+  "expected_latest_version": 3,
+  "checkpoint_version": 2,
+  "generated_steps": [
+    {
+      "version": 0,
+      "label": "create table",
+      "detail": "Create schema and partition metadata for category-partitioned events."
+    },
+    {
+      "version": 1,
+      "label": "append A/B",
+      "detail": "Write initial partitioned Parquet data files."
+    },
+    {
+      "version": 2,
+      "label": "append C + checkpoint",
+      "detail": "Append another partition and write a checkpoint parquet file."
+    },
+    {
+      "version": 3,
+      "label": "overwrite B/D",
+      "detail": "Replay removes old active files and adds the latest B/D data files."
+    }
+  ],
+  "objects": [
+    {
+      "relative_path": "_delta_log/00000000000000000000.json",
+      "url_path": "/fixtures/prod-like/table/_delta_log/00000000000000000000.json",
+      "kind": "commit_json",
+      "size_bytes": 1722
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000001.json",
+      "url_path": "/fixtures/prod-like/table/_delta_log/00000000000000000001.json",
+      "kind": "commit_json",
+      "size_bytes": 1168
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000002.checkpoint.parquet",
+      "url_path": "/fixtures/prod-like/table/_delta_log/00000000000000000002.checkpoint.parquet",
+      "kind": "checkpoint_parquet",
+      "size_bytes": 14617
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000002.json",
+      "url_path": "/fixtures/prod-like/table/_delta_log/00000000000000000002.json",
+      "kind": "commit_json",
+      "size_bytes": 744
+    },
+    {
+      "relative_path": "_delta_log/00000000000000000003.json",
+      "url_path": "/fixtures/prod-like/table/_delta_log/00000000000000000003.json",
+      "kind": "commit_json",
+      "size_bytes": 1853
+    },
+    {
+      "relative_path": "_delta_log/_last_checkpoint",
+      "url_path": "/fixtures/prod-like/table/_delta_log/_last_checkpoint",
+      "kind": "last_checkpoint",
+      "size_bytes": 61
+    }
+  ],
+  "data_files": [
+    {
+      "relative_path": "category=A/part-00000-4ab69ffd-52a2-44f3-abea-5727232465a0-c000.snappy.parquet",
+      "url_path": "/fixtures/prod-like/table/category=A/part-00000-4ab69ffd-52a2-44f3-abea-5727232465a0-c000.snappy.parquet",
+      "size_bytes": 700,
+      "partition_values": {
+        "category": "A"
+      }
+    },
+    {
+      "relative_path": "category=B/part-00000-984e4916-d80d-455d-a6eb-22c79a4e74b4-c000.snappy.parquet",
+      "url_path": "/fixtures/prod-like/table/category=B/part-00000-984e4916-d80d-455d-a6eb-22c79a4e74b4-c000.snappy.parquet",
+      "size_bytes": 700,
+      "partition_values": {
+        "category": "B"
+      }
+    },
+    {
+      "relative_path": "category=B/part-00000-d66a58b9-eae5-4d14-9fb6-28073d2af0da-c000.snappy.parquet",
+      "url_path": "/fixtures/prod-like/table/category=B/part-00000-d66a58b9-eae5-4d14-9fb6-28073d2af0da-c000.snappy.parquet",
+      "size_bytes": 700,
+      "partition_values": {
+        "category": "B"
+      }
+    },
+    {
+      "relative_path": "category=C/part-00000-bbfb22fc-d071-4280-a104-d9f3d3f9e86c-c000.snappy.parquet",
+      "url_path": "/fixtures/prod-like/table/category=C/part-00000-bbfb22fc-d071-4280-a104-d9f3d3f9e86c-c000.snappy.parquet",
+      "size_bytes": 700,
+      "partition_values": {
+        "category": "C"
+      }
+    },
+    {
+      "relative_path": "category=D/part-00000-bed68792-31de-436e-9911-f587bc341ed2-c000.snappy.parquet",
+      "url_path": "/fixtures/prod-like/table/category=D/part-00000-bed68792-31de-436e-9911-f587bc341ed2-c000.snappy.parquet",
+      "size_bytes": 700,
+      "partition_values": {
+        "category": "D"
+      }
+    }
+  ]
+}

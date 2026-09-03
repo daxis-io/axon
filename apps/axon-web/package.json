@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "build:fixture": "cargo run --locked -p axon-web-wasm --features fixture-generator --bin generate-prod-fixture -- public/fixtures/prod-like",
+    "build:fixture": "node scripts/verify-bundled-delta-fixture.mjs public",
+    "regenerate:fixture": "cargo run --locked -p axon-web-wasm --features fixture-generator --bin generate-prod-fixture -- public/fixtures/prod-like",
     "build:s3-perf-fixture": "cargo run --locked -p axon-web-wasm --features fixture-generator --bin generate-s3-perf-fixture -- ../../target/fixtures/s3-perf-generated",
     "build:page-index-v2-fixture": "cargo run --locked -p axon-web-wasm --features fixture-generator --bin generate-page-index-v2-fixture -- ../../target/fixtures/s3-browser-perf-page-index-v2",
     "test:page-index-v2-fixture": "bash scripts/verify-page-index-v2-fixture.test.sh",

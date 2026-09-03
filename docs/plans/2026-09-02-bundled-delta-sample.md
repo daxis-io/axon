@@ -13,7 +13,8 @@
 ### Task 1: Specify the bundled fixture contract
 
 **Files:**
-- Create: `apps/axon-web/scripts/verify-bundled-delta-fixture.test.ts`
+
+- Create: `apps/axon-web/src/services/bundled-delta-fixture.test.ts`
 - Create: `apps/axon-web/scripts/verify-bundled-delta-fixture.mjs`
 
 1. Write a Vitest test that invokes the verifier against `public`, expects a real Delta log/checkpoint/Parquet inventory, checks every manifest size, and enforces a 128 KiB total budget.
@@ -24,6 +25,7 @@
 ### Task 2: Package the real table and stop implicit generation
 
 **Files:**
+
 - Modify: `.gitignore`
 - Modify: `apps/axon-web/package.json`
 - Add: `apps/axon-web/public/fixtures/prod-like/**`
@@ -36,10 +38,11 @@
 ### Task 3: Guard Vercel output and document the contract
 
 **Files:**
+
 - Modify: `apps/axon-web/scripts/verify-build-output.sh`
 - Modify: `apps/axon-web/README.md`
 
-1. Add a shell regression test that constructs an otherwise-valid fake build without the Delta fixture and expects `verify-build-output.sh` to fail for the missing sample.
+1. Add a regression test that constructs an otherwise-valid fake build without the Delta fixture and expects `verify-build-output.sh` to fail for the missing sample.
 2. Run it and confirm the current guard incorrectly accepts the fake build.
 3. Call the Node fixture verifier from `verify-build-output.sh`, then rerun the shell test to green.
 4. Update the README to describe the checked-in table, verification, regeneration, and package budget.
