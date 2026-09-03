@@ -110,6 +110,27 @@ describe('browser external-memory release contract', () => {
     expect(ciWorkflowSource).toContain("rg -Fq 'Progressive public results are excluded from v1'");
   });
 
+  it('does not apply legacy status assertions to the canonical v2 strategy', () => {
+    const docsGate = ciWorkflowSource.slice(
+      ciWorkflowSource.indexOf('- name: Validate browser DataFusion and legacy compatibility docs'),
+      ciWorkflowSource.indexOf('- name: Report host-proxy browser worker startup', 1),
+    );
+    for (const assertion of [
+      'Delta snapshot reconstruction is already repo-owned',
+      'browser DataFusion.*default runtime SKU',
+    ]) {
+      const assertionIndex = docsGate.indexOf(assertion);
+      const loopStart = docsGate.lastIndexOf('for file in ', assertionIndex);
+      const loopEnd = docsGate.indexOf('; do', loopStart);
+
+      expect(assertionIndex).toBeGreaterThanOrEqual(0);
+      expect(loopStart).toBeGreaterThanOrEqual(0);
+      expect(docsGate.slice(loopStart, loopEnd)).not.toContain(
+        'docs/program/browser-lakehouse-engine-strategy.md',
+      );
+    }
+  });
+
   it('exposes only the normal build commands for the fixed runtime', () => {
     expect(packageJson.scripts.build).toBe(
       'node --experimental-strip-types scripts/browser-runtime-build.ts build',

@@ -113,7 +113,7 @@ jobs:
             rg -q 'legacy .*compatibility|legacy narrow .*browser_datafusion = false' "$file"
             rg -q 'Daxis-facing .*browser DataFusion|Daxis-facing .*`browser_datafusion`.*default runtime SKU|browser DataFusion-backed|DataFusion default worker' "$file"
           done
-          for file in README.md docs/program/browser-lakehouse-engine-strategy.md docs/program/browser-lakehouse-release-handoff.md docs/program/browser-release-integration-runbook.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md tests/perf/README.md tests/security/README.md; do
+          for file in README.md docs/program/browser-lakehouse-release-handoff.md docs/program/browser-release-integration-runbook.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md tests/perf/README.md tests/security/README.md; do
             rg -q "Delta snapshot reconstruction is already repo-owned" "$file"
           done
           for file in README.md docs/program/browser-lakehouse-release-handoff.md docs/program/browser-release-integration-runbook.md docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md tests/perf/README.md tests/security/README.md; do
@@ -122,7 +122,7 @@ jobs:
           for file in README.md docs/program/browser-lakehouse-engine-strategy.md docs/program/browser-lakehouse-release-handoff.md docs/release-gates/browser-wasm-delta-gcs-launch-checklist.md tests/perf/README.md tests/security/README.md; do
             rg -q "OPFS / IndexedDB" "$file"
           done
-          for file in README.md docs/program/browser-lakehouse-engine-strategy.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md tests/perf/README.md tests/security/README.md; do
+          for file in README.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md tests/perf/README.md tests/security/README.md; do
             rg -q "Daxis-facing .*browser DataFusion|browser DataFusion.*default runtime SKU|browser DataFusion-backed" "$file"
           done
           for file in README.md docs/program/browser-lakehouse-release-handoff.md docs/program/browser-release-integration-runbook.md docs/release-gates/browser-wasm-delta-gcs-external-blockers.md; do
