@@ -4,7 +4,7 @@
 
 **Goal:** Ship a small real Delta table inside axon-web so fresh checkouts and Vercel artifacts always have a queryable default sample.
 
-**Architecture:** Commit the existing prod-like Delta table as a static asset and make fixture generation an explicit maintainer action. Add one Node verifier used by local scripts and the deployment artifact guard to enforce inventory integrity and a 128 KiB package budget.
+**Architecture:** Commit the existing prod-like Delta table and its browser-qualification page-index companion as static assets, and make fixture generation an explicit maintainer action. Add one Node verifier used by local scripts and the deployment artifact guard to enforce inventory integrity, a 128 KiB Delta-table budget, and a 1 MiB combined package budget.
 
 **Tech Stack:** Node.js ESM, Vitest, Bash, Vite static assets, Delta Lake JSON/checkpoint/Parquet files.
 
@@ -17,7 +17,7 @@
 - Create: `apps/axon-web/src/services/bundled-delta-fixture.test.ts`
 - Create: `apps/axon-web/scripts/verify-bundled-delta-fixture.mjs`
 
-1. Write a Vitest test that invokes the verifier against `public`, expects a real Delta log/checkpoint/Parquet inventory, checks every manifest size, and enforces a 128 KiB total budget.
+1. Write a Vitest test that invokes the verifier against `public`, expects a real Delta log/checkpoint/Parquet inventory and the page-index qualification artifact, checks manifest sizes and the page-index checksum, and enforces a 128 KiB Delta-table budget plus a 1 MiB combined budget.
 2. Run `npm test -- scripts/verify-bundled-delta-fixture.test.ts` and confirm it fails because `public/fixtures/prod-like` is absent in the clean worktree.
 3. Implement the minimal reusable verifier and CLI error reporting.
 4. Keep the test red until the table assets are added in Task 2.

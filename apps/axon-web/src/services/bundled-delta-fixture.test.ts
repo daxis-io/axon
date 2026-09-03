@@ -39,7 +39,7 @@ describe('bundled Delta sample fixture', () => {
       status: 0,
       stderr: '',
     });
-    expect(result.stdout).toMatch(/verified bundled Delta fixture: .* bytes, 12 files/);
+    expect(result.stdout).toMatch(/verified bundled Delta fixture: .* bytes, 14 files/);
   });
 
   it('reports a missing fixture as a fixture contract failure', () => {

@@ -1,0 +1,1199 @@
+{
+  "schema_version": 1,
+  "fixture_revision": "local-page-index-ab-v1",
+  "url_path": "/fixtures/prod-like/page-index-ab/event-id.parquet",
+  "size_bytes": 654095,
+  "seed": "12109367126683295782",
+  "row_count": 65536,
+  "row_group_count": 1,
+  "page_row_count_limit": 1024,
+  "predicate": "event_id >= 63488",
+  "expected_row_count": 2048,
+  "expected_event_id_sum": 132119552,
+  "expected_payload_length_sum": 262144,
+  "expected_pages_selected": 2,
+  "expected_pages_skipped": 62,
+  "footer_extent": {
+    "offset_bytes": 653371,
+    "length_bytes": 724
+  },
+  "column_index_extents": [
+    {
+      "column": "event_id",
+      "offset_bytes": 641959,
+      "length_bytes": 1295
+    },
+    {
+      "column": "payload",
+      "offset_bytes": 643254,
+      "length_bytes": 8463
+    }
+  ],
+  "offset_index_extents": [
+    {
+      "column": "event_id",
+      "offset_bytes": 651717,
+      "length_bytes": 633
+    },
+    {
+      "column": "payload",
+      "offset_bytes": 652350,
+      "length_bytes": 1021
+    }
+  ],
+  "data_page_extents": [
+    {
+      "column": "event_id",
+      "page_index": 0,
+      "first_row_index": 0,
+      "row_count": 1024,
+      "offset_bytes": 4,
+      "length_bytes": 39,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 1,
+      "first_row_index": 1024,
+      "row_count": 1024,
+      "offset_bytes": 43,
+      "length_bytes": 51,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 2,
+      "first_row_index": 2048,
+      "row_count": 1024,
+      "offset_bytes": 94,
+      "length_bytes": 51,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 3,
+      "first_row_index": 3072,
+      "row_count": 1024,
+      "offset_bytes": 145,
+      "length_bytes": 51,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 4,
+      "first_row_index": 4096,
+      "row_count": 1024,
+      "offset_bytes": 196,
+      "length_bytes": 51,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 5,
+      "first_row_index": 5120,
+      "row_count": 1024,
+      "offset_bytes": 247,
+      "length_bytes": 51,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 6,
+      "first_row_index": 6144,
+      "row_count": 1024,
+      "offset_bytes": 298,
+      "length_bytes": 51,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 7,
+      "first_row_index": 7168,
+      "row_count": 1024,
+      "offset_bytes": 349,
+      "length_bytes": 51,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 8,
+      "first_row_index": 8192,
+      "row_count": 1024,
+      "offset_bytes": 400,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 9,
+      "first_row_index": 9216,
+      "row_count": 1024,
+      "offset_bytes": 452,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 10,
+      "first_row_index": 10240,
+      "row_count": 1024,
+      "offset_bytes": 504,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 11,
+      "first_row_index": 11264,
+      "row_count": 1024,
+      "offset_bytes": 556,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 12,
+      "first_row_index": 12288,
+      "row_count": 1024,
+      "offset_bytes": 608,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 13,
+      "first_row_index": 13312,
+      "row_count": 1024,
+      "offset_bytes": 660,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 14,
+      "first_row_index": 14336,
+      "row_count": 1024,
+      "offset_bytes": 712,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 15,
+      "first_row_index": 15360,
+      "row_count": 1024,
+      "offset_bytes": 764,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 16,
+      "first_row_index": 16384,
+      "row_count": 1024,
+      "offset_bytes": 816,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 17,
+      "first_row_index": 17408,
+      "row_count": 1024,
+      "offset_bytes": 868,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 18,
+      "first_row_index": 18432,
+      "row_count": 1024,
+      "offset_bytes": 920,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 19,
+      "first_row_index": 19456,
+      "row_count": 1024,
+      "offset_bytes": 972,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 20,
+      "first_row_index": 20480,
+      "row_count": 1024,
+      "offset_bytes": 1024,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 21,
+      "first_row_index": 21504,
+      "row_count": 1024,
+      "offset_bytes": 1076,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 22,
+      "first_row_index": 22528,
+      "row_count": 1024,
+      "offset_bytes": 1128,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 23,
+      "first_row_index": 23552,
+      "row_count": 1024,
+      "offset_bytes": 1180,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 24,
+      "first_row_index": 24576,
+      "row_count": 1024,
+      "offset_bytes": 1232,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 25,
+      "first_row_index": 25600,
+      "row_count": 1024,
+      "offset_bytes": 1284,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 26,
+      "first_row_index": 26624,
+      "row_count": 1024,
+      "offset_bytes": 1336,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 27,
+      "first_row_index": 27648,
+      "row_count": 1024,
+      "offset_bytes": 1388,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 28,
+      "first_row_index": 28672,
+      "row_count": 1024,
+      "offset_bytes": 1440,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 29,
+      "first_row_index": 29696,
+      "row_count": 1024,
+      "offset_bytes": 1492,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 30,
+      "first_row_index": 30720,
+      "row_count": 1024,
+      "offset_bytes": 1544,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 31,
+      "first_row_index": 31744,
+      "row_count": 1024,
+      "offset_bytes": 1596,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 32,
+      "first_row_index": 32768,
+      "row_count": 1024,
+      "offset_bytes": 1648,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 33,
+      "first_row_index": 33792,
+      "row_count": 1024,
+      "offset_bytes": 1700,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 34,
+      "first_row_index": 34816,
+      "row_count": 1024,
+      "offset_bytes": 1752,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 35,
+      "first_row_index": 35840,
+      "row_count": 1024,
+      "offset_bytes": 1804,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 36,
+      "first_row_index": 36864,
+      "row_count": 1024,
+      "offset_bytes": 1856,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 37,
+      "first_row_index": 37888,
+      "row_count": 1024,
+      "offset_bytes": 1908,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 38,
+      "first_row_index": 38912,
+      "row_count": 1024,
+      "offset_bytes": 1960,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 39,
+      "first_row_index": 39936,
+      "row_count": 1024,
+      "offset_bytes": 2012,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 40,
+      "first_row_index": 40960,
+      "row_count": 1024,
+      "offset_bytes": 2064,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 41,
+      "first_row_index": 41984,
+      "row_count": 1024,
+      "offset_bytes": 2116,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 42,
+      "first_row_index": 43008,
+      "row_count": 1024,
+      "offset_bytes": 2168,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 43,
+      "first_row_index": 44032,
+      "row_count": 1024,
+      "offset_bytes": 2220,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 44,
+      "first_row_index": 45056,
+      "row_count": 1024,
+      "offset_bytes": 2272,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 45,
+      "first_row_index": 46080,
+      "row_count": 1024,
+      "offset_bytes": 2324,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 46,
+      "first_row_index": 47104,
+      "row_count": 1024,
+      "offset_bytes": 2376,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 47,
+      "first_row_index": 48128,
+      "row_count": 1024,
+      "offset_bytes": 2428,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 48,
+      "first_row_index": 49152,
+      "row_count": 1024,
+      "offset_bytes": 2480,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 49,
+      "first_row_index": 50176,
+      "row_count": 1024,
+      "offset_bytes": 2532,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 50,
+      "first_row_index": 51200,
+      "row_count": 1024,
+      "offset_bytes": 2584,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 51,
+      "first_row_index": 52224,
+      "row_count": 1024,
+      "offset_bytes": 2636,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 52,
+      "first_row_index": 53248,
+      "row_count": 1024,
+      "offset_bytes": 2688,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 53,
+      "first_row_index": 54272,
+      "row_count": 1024,
+      "offset_bytes": 2740,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 54,
+      "first_row_index": 55296,
+      "row_count": 1024,
+      "offset_bytes": 2792,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 55,
+      "first_row_index": 56320,
+      "row_count": 1024,
+      "offset_bytes": 2844,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 56,
+      "first_row_index": 57344,
+      "row_count": 1024,
+      "offset_bytes": 2896,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 57,
+      "first_row_index": 58368,
+      "row_count": 1024,
+      "offset_bytes": 2948,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 58,
+      "first_row_index": 59392,
+      "row_count": 1024,
+      "offset_bytes": 3000,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 59,
+      "first_row_index": 60416,
+      "row_count": 1024,
+      "offset_bytes": 3052,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 60,
+      "first_row_index": 61440,
+      "row_count": 1024,
+      "offset_bytes": 3104,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 61,
+      "first_row_index": 62464,
+      "row_count": 1024,
+      "offset_bytes": 3156,
+      "length_bytes": 52,
+      "predicate_match": false
+    },
+    {
+      "column": "event_id",
+      "page_index": 62,
+      "first_row_index": 63488,
+      "row_count": 1024,
+      "offset_bytes": 3208,
+      "length_bytes": 52,
+      "predicate_match": true
+    },
+    {
+      "column": "event_id",
+      "page_index": 63,
+      "first_row_index": 64512,
+      "row_count": 1024,
+      "offset_bytes": 3260,
+      "length_bytes": 52,
+      "predicate_match": true
+    },
+    {
+      "column": "payload",
+      "page_index": 0,
+      "first_row_index": 0,
+      "row_count": 1024,
+      "offset_bytes": 3312,
+      "length_bytes": 9963,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 1,
+      "first_row_index": 1024,
+      "row_count": 1024,
+      "offset_bytes": 13275,
+      "length_bytes": 9978,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 2,
+      "first_row_index": 2048,
+      "row_count": 1024,
+      "offset_bytes": 23253,
+      "length_bytes": 9988,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 3,
+      "first_row_index": 3072,
+      "row_count": 1024,
+      "offset_bytes": 33241,
+      "length_bytes": 9976,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 4,
+      "first_row_index": 4096,
+      "row_count": 1024,
+      "offset_bytes": 43217,
+      "length_bytes": 9968,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 5,
+      "first_row_index": 5120,
+      "row_count": 1024,
+      "offset_bytes": 53185,
+      "length_bytes": 9978,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 6,
+      "first_row_index": 6144,
+      "row_count": 1024,
+      "offset_bytes": 63163,
+      "length_bytes": 9994,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 7,
+      "first_row_index": 7168,
+      "row_count": 1024,
+      "offset_bytes": 73157,
+      "length_bytes": 9973,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 8,
+      "first_row_index": 8192,
+      "row_count": 1024,
+      "offset_bytes": 83130,
+      "length_bytes": 9969,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 9,
+      "first_row_index": 9216,
+      "row_count": 1024,
+      "offset_bytes": 93099,
+      "length_bytes": 9977,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 10,
+      "first_row_index": 10240,
+      "row_count": 1024,
+      "offset_bytes": 103076,
+      "length_bytes": 9992,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 11,
+      "first_row_index": 11264,
+      "row_count": 1024,
+      "offset_bytes": 113068,
+      "length_bytes": 9973,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 12,
+      "first_row_index": 12288,
+      "row_count": 1024,
+      "offset_bytes": 123041,
+      "length_bytes": 9966,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 13,
+      "first_row_index": 13312,
+      "row_count": 1024,
+      "offset_bytes": 133007,
+      "length_bytes": 9976,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 14,
+      "first_row_index": 14336,
+      "row_count": 1024,
+      "offset_bytes": 142983,
+      "length_bytes": 9992,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 15,
+      "first_row_index": 15360,
+      "row_count": 1024,
+      "offset_bytes": 152975,
+      "length_bytes": 9973,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 16,
+      "first_row_index": 16384,
+      "row_count": 1024,
+      "offset_bytes": 162948,
+      "length_bytes": 9969,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 17,
+      "first_row_index": 17408,
+      "row_count": 1024,
+      "offset_bytes": 172917,
+      "length_bytes": 9973,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 18,
+      "first_row_index": 18432,
+      "row_count": 1024,
+      "offset_bytes": 182890,
+      "length_bytes": 9991,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 19,
+      "first_row_index": 19456,
+      "row_count": 1024,
+      "offset_bytes": 192881,
+      "length_bytes": 9971,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 20,
+      "first_row_index": 20480,
+      "row_count": 1024,
+      "offset_bytes": 202852,
+      "length_bytes": 9968,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 21,
+      "first_row_index": 21504,
+      "row_count": 1024,
+      "offset_bytes": 212820,
+      "length_bytes": 9979,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 22,
+      "first_row_index": 22528,
+      "row_count": 1024,
+      "offset_bytes": 222799,
+      "length_bytes": 9993,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 23,
+      "first_row_index": 23552,
+      "row_count": 1024,
+      "offset_bytes": 232792,
+      "length_bytes": 9972,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 24,
+      "first_row_index": 24576,
+      "row_count": 1024,
+      "offset_bytes": 242764,
+      "length_bytes": 9967,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 25,
+      "first_row_index": 25600,
+      "row_count": 1024,
+      "offset_bytes": 252731,
+      "length_bytes": 9982,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 26,
+      "first_row_index": 26624,
+      "row_count": 1024,
+      "offset_bytes": 262713,
+      "length_bytes": 9994,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 27,
+      "first_row_index": 27648,
+      "row_count": 1024,
+      "offset_bytes": 272707,
+      "length_bytes": 9972,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 28,
+      "first_row_index": 28672,
+      "row_count": 1024,
+      "offset_bytes": 282679,
+      "length_bytes": 9967,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 29,
+      "first_row_index": 29696,
+      "row_count": 1024,
+      "offset_bytes": 292646,
+      "length_bytes": 9979,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 30,
+      "first_row_index": 30720,
+      "row_count": 1024,
+      "offset_bytes": 302625,
+      "length_bytes": 9994,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 31,
+      "first_row_index": 31744,
+      "row_count": 1024,
+      "offset_bytes": 312619,
+      "length_bytes": 9971,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 32,
+      "first_row_index": 32768,
+      "row_count": 1024,
+      "offset_bytes": 322590,
+      "length_bytes": 9967,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 33,
+      "first_row_index": 33792,
+      "row_count": 1024,
+      "offset_bytes": 332557,
+      "length_bytes": 9980,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 34,
+      "first_row_index": 34816,
+      "row_count": 1024,
+      "offset_bytes": 342537,
+      "length_bytes": 9988,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 35,
+      "first_row_index": 35840,
+      "row_count": 1024,
+      "offset_bytes": 352525,
+      "length_bytes": 9973,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 36,
+      "first_row_index": 36864,
+      "row_count": 1024,
+      "offset_bytes": 362498,
+      "length_bytes": 9971,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 37,
+      "first_row_index": 37888,
+      "row_count": 1024,
+      "offset_bytes": 372469,
+      "length_bytes": 9978,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 38,
+      "first_row_index": 38912,
+      "row_count": 1024,
+      "offset_bytes": 382447,
+      "length_bytes": 9992,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 39,
+      "first_row_index": 39936,
+      "row_count": 1024,
+      "offset_bytes": 392439,
+      "length_bytes": 9971,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 40,
+      "first_row_index": 40960,
+      "row_count": 1024,
+      "offset_bytes": 402410,
+      "length_bytes": 9967,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 41,
+      "first_row_index": 41984,
+      "row_count": 1024,
+      "offset_bytes": 412377,
+      "length_bytes": 9982,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 42,
+      "first_row_index": 43008,
+      "row_count": 1024,
+      "offset_bytes": 422359,
+      "length_bytes": 9990,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 43,
+      "first_row_index": 44032,
+      "row_count": 1024,
+      "offset_bytes": 432349,
+      "length_bytes": 9977,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 44,
+      "first_row_index": 45056,
+      "row_count": 1024,
+      "offset_bytes": 442326,
+      "length_bytes": 9977,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 45,
+      "first_row_index": 46080,
+      "row_count": 1024,
+      "offset_bytes": 452303,
+      "length_bytes": 9982,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 46,
+      "first_row_index": 47104,
+      "row_count": 1024,
+      "offset_bytes": 462285,
+      "length_bytes": 9996,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 47,
+      "first_row_index": 48128,
+      "row_count": 1024,
+      "offset_bytes": 472281,
+      "length_bytes": 9978,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 48,
+      "first_row_index": 49152,
+      "row_count": 1024,
+      "offset_bytes": 482259,
+      "length_bytes": 9973,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 49,
+      "first_row_index": 50176,
+      "row_count": 1024,
+      "offset_bytes": 492232,
+      "length_bytes": 9985,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 50,
+      "first_row_index": 51200,
+      "row_count": 1024,
+      "offset_bytes": 502217,
+      "length_bytes": 9994,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 51,
+      "first_row_index": 52224,
+      "row_count": 1024,
+      "offset_bytes": 512211,
+      "length_bytes": 9972,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 52,
+      "first_row_index": 53248,
+      "row_count": 1024,
+      "offset_bytes": 522183,
+      "length_bytes": 9973,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 53,
+      "first_row_index": 54272,
+      "row_count": 1024,
+      "offset_bytes": 532156,
+      "length_bytes": 9979,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 54,
+      "first_row_index": 55296,
+      "row_count": 1024,
+      "offset_bytes": 542135,
+      "length_bytes": 9993,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 55,
+      "first_row_index": 56320,
+      "row_count": 1024,
+      "offset_bytes": 552128,
+      "length_bytes": 9978,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 56,
+      "first_row_index": 57344,
+      "row_count": 1024,
+      "offset_bytes": 562106,
+      "length_bytes": 9978,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 57,
+      "first_row_index": 58368,
+      "row_count": 1024,
+      "offset_bytes": 572084,
+      "length_bytes": 9982,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 58,
+      "first_row_index": 59392,
+      "row_count": 1024,
+      "offset_bytes": 582066,
+      "length_bytes": 9993,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 59,
+      "first_row_index": 60416,
+      "row_count": 1024,
+      "offset_bytes": 592059,
+      "length_bytes": 9973,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 60,
+      "first_row_index": 61440,
+      "row_count": 1024,
+      "offset_bytes": 602032,
+      "length_bytes": 9974,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 61,
+      "first_row_index": 62464,
+      "row_count": 1024,
+      "offset_bytes": 612006,
+      "length_bytes": 9983,
+      "predicate_match": false
+    },
+    {
+      "column": "payload",
+      "page_index": 62,
+      "first_row_index": 63488,
+      "row_count": 1024,
+      "offset_bytes": 621989,
+      "length_bytes": 9993,
+      "predicate_match": true
+    },
+    {
+      "column": "payload",
+      "page_index": 63,
+      "first_row_index": 64512,
+      "row_count": 1024,
+      "offset_bytes": 631982,
+      "length_bytes": 9977,
+      "predicate_match": true
+    }
+  ],
+  "sha256": "27c03fe1530ad0de3da608192d3a7742ad0c07884e9176daec98ec098ec66a2e"
+}

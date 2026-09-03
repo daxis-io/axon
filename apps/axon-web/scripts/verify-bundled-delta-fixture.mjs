@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, posix, relative, resolve, sep } from 'node:path';
 
 const FIXTURE_PATH = 'fixtures/prod-like';
 const MANIFEST_PATH = `${FIXTURE_PATH}/delta-log-manifest.json`;
 const URL_PREFIX = `/${FIXTURE_PATH}/table/`;
-const MAX_FIXTURE_BYTES = 128 * 1024;
+const MAX_DELTA_TABLE_BYTES = 128 * 1024;
+const MAX_PAGE_INDEX_FIXTURE_BYTES = 768 * 1024;
+const MAX_BUNDLED_FIXTURE_BYTES = 1024 * 1024;
 
 const staticRoot = process.argv[2];
 if (!staticRoot) {
@@ -52,6 +55,7 @@ function verifyBundledDeltaFixture(root) {
   }
 
   verifyLatestSnapshotActions(manifest, fixtureRoot);
+  const pageIndexBytes = verifyPageIndexFixture(fixtureRoot, expectedFiles);
 
   const actualFiles = listRegularFiles(fixtureRoot);
   assertSameInventory(actualFiles, expectedFiles);
@@ -59,12 +63,68 @@ function verifyBundledDeltaFixture(root) {
     (total, path) => total + statSync(join(fixtureRoot, path)).size,
     0,
   );
+  const deltaTableBytes = totalBytes - pageIndexBytes;
   assert(
-    totalBytes <= MAX_FIXTURE_BYTES,
-    `bundled Delta fixture is ${totalBytes} bytes; maximum is ${MAX_FIXTURE_BYTES} bytes`,
+    deltaTableBytes <= MAX_DELTA_TABLE_BYTES,
+    `bundled Delta table is ${deltaTableBytes} bytes; maximum is ${MAX_DELTA_TABLE_BYTES} bytes`,
+  );
+  assert(
+    totalBytes <= MAX_BUNDLED_FIXTURE_BYTES,
+    `bundled fixture set is ${totalBytes} bytes; maximum is ${MAX_BUNDLED_FIXTURE_BYTES} bytes`,
   );
 
   return { totalBytes, fileCount: actualFiles.length };
+}
+
+function verifyPageIndexFixture(fixtureRoot, expectedFiles) {
+  const manifestRelativePath = 'page-index-ab/manifest.json';
+  const parquetRelativePath = 'page-index-ab/event-id.parquet';
+  const manifestFile = join(fixtureRoot, ...manifestRelativePath.split('/'));
+  const parquetFile = join(fixtureRoot, ...parquetRelativePath.split('/'));
+  expectedFiles.add(manifestRelativePath);
+  expectedFiles.add(parquetRelativePath);
+
+  assertRegularFile(
+    manifestFile,
+    `bundled page-index fixture manifest is missing at '${FIXTURE_PATH}/${manifestRelativePath}'`,
+  );
+  const manifest = parseJsonFile(manifestFile, manifestRelativePath);
+  assert(manifest.schema_version === 1, 'page-index fixture schema version must be 1');
+  assert(
+    manifest.fixture_revision === 'local-page-index-ab-v1',
+    "page-index fixture revision must be 'local-page-index-ab-v1'",
+  );
+  assert(
+    manifest.url_path === `/${FIXTURE_PATH}/${parquetRelativePath}`,
+    'page-index fixture URL must address the bundled Parquet file',
+  );
+  assert(manifest.row_count === 65_536, 'page-index fixture must contain 65536 rows');
+  assert(manifest.row_group_count === 1, 'page-index fixture must contain one row group');
+  assert(manifest.expected_pages_selected === 2, 'page-index fixture must select two pages');
+  assert(manifest.expected_pages_skipped === 62, 'page-index fixture must skip 62 pages');
+  assert(
+    Array.isArray(manifest.data_page_extents) && manifest.data_page_extents.length === 128,
+    'page-index fixture must inventory 128 data page extents',
+  );
+
+  assertRegularFile(
+    parquetFile,
+    `bundled page-index fixture Parquet is missing at '${FIXTURE_PATH}/${parquetRelativePath}'`,
+  );
+  assert(
+    statSync(parquetFile).size === manifest.size_bytes,
+    `fixture size mismatch for '${parquetRelativePath}'`,
+  );
+  verifyParquetMagic(parquetFile, parquetRelativePath);
+  const sha256 = createHash('sha256').update(readFileSync(parquetFile)).digest('hex');
+  assert(sha256 === manifest.sha256, `fixture checksum mismatch for '${parquetRelativePath}'`);
+
+  const totalBytes = statSync(manifestFile).size + statSync(parquetFile).size;
+  assert(
+    totalBytes <= MAX_PAGE_INDEX_FIXTURE_BYTES,
+    `bundled page-index fixture is ${totalBytes} bytes; maximum is ${MAX_PAGE_INDEX_FIXTURE_BYTES} bytes`,
+  );
+  return totalBytes;
 }
 
 function verifyInventoryEntry(entry, fixtureRoot, expectedFiles) {
