@@ -355,9 +355,15 @@ fi
 unrelated_seed="$tmpdir/unrelated-seed"
 git clone -q "$seed" "$unrelated_seed"
 unrelated_tree="$(git -C "$unrelated_seed" rev-parse "HEAD^{tree}")"
-unrelated_sha="$(git -C "$unrelated_seed" commit-tree "$unrelated_tree" \
-  -m "test: unrelated candidate" \
-  -m "Signed-off-by: Axon stack lock v2 test <stack-lock-v2@example.invalid>")"
+unrelated_sha="$(
+  GIT_AUTHOR_NAME="Axon stack lock v2 test" \
+  GIT_AUTHOR_EMAIL="stack-lock-v2@example.invalid" \
+  GIT_COMMITTER_NAME="Axon stack lock v2 test" \
+  GIT_COMMITTER_EMAIL="stack-lock-v2@example.invalid" \
+    git -C "$unrelated_seed" commit-tree "$unrelated_tree" \
+      -m "test: unrelated candidate" \
+      -m "Signed-off-by: Axon stack lock v2 test <stack-lock-v2@example.invalid>"
+)"
 git -C "$unrelated_seed" update-ref refs/heads/unrelated "$unrelated_sha"
 unrelated_bare="$tmpdir/unrelated.git"
 git clone -q --bare "$unrelated_seed" "$unrelated_bare"
@@ -437,8 +443,12 @@ GIT_COMMITTER_EMAIL="actual-committer@example.invalid" \
     -m "test: mismatched DCO identity" \
     -m "Signed-off-by: Unrelated Person <unrelated@example.invalid>"
 bad_dco_sha="$(git -C "$bad_dco_seed" rev-parse HEAD)"
-git -C "$bad_dco_seed" tag -f -a axon-wasm-v1.0.0-rc.1 -m "bad DCO release candidate"
-git -C "$bad_dco_seed" tag -f -a axon-wasm-v1.0.0 -m "bad DCO final release"
+GIT_COMMITTER_NAME="Axon stack lock v2 test" \
+GIT_COMMITTER_EMAIL="stack-lock-v2@example.invalid" \
+  git -C "$bad_dco_seed" tag -f -a axon-wasm-v1.0.0-rc.1 -m "bad DCO release candidate"
+GIT_COMMITTER_NAME="Axon stack lock v2 test" \
+GIT_COMMITTER_EMAIL="stack-lock-v2@example.invalid" \
+  git -C "$bad_dco_seed" tag -f -a axon-wasm-v1.0.0 -m "bad DCO final release"
 bad_dco_bare="$tmpdir/bad-dco.git"
 git clone -q --bare "$bad_dco_seed" "$bad_dco_bare"
 bad_dco_url="file://$bad_dco_bare"
