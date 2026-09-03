@@ -103,12 +103,13 @@ import {
 } from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 import type {
   CatalogTable,
+  CommitEntry,
   QueryEvent,
   QueryPageRequest,
   QueryRunError,
   QueryRunOutcome,
 } from './types.ts';
-import { isCurrentLocalDeltaObjectUrl } from './local-delta.ts';
+import { isCurrentLocalDeltaObjectUrl, localDeltaCommitHistory } from './local-delta.ts';
 import {
   lookupPublicObjectStorageRuntimeCache,
   resolvePublicObjectStorageDescriptor,
@@ -192,6 +193,7 @@ type SessionState = {
   descriptor: BrowserHttpSnapshotDescriptor;
   contractDescriptor?: ContractBrowserHttpSnapshotDescriptor;
   manifest?: FixtureManifest;
+  commits?: CommitEntry[];
   setupMetrics?: SessionSetupMetrics;
   setupMetricsEmitted: boolean;
   snapshot: ResolvedSnapshot;
@@ -344,6 +346,11 @@ async function buildSession(
     descriptor,
     contractDescriptor,
     manifest: sampleDescriptorManifests.get(contractDescriptor),
+    commits:
+      source.kind === 'local_delta' &&
+      (source.snapshot === undefined || source.snapshot === descriptor.snapshot_version)
+        ? localDeltaCommitHistory(source.localRegistryId, descriptor.snapshot_version)
+        : undefined,
     setupMetrics:
       source.kind === 'manifest' ? sampleDescriptorSetupMetrics.get(contractDescriptor) : undefined,
     setupMetricsEmitted: source.kind === 'local_delta',
@@ -732,6 +739,7 @@ export async function getSession(
           source: s.source,
           catalog: catalogFromSession(s),
           manifest: s.manifest,
+          commits: s.commits,
         },
         coldStartMs,
       );

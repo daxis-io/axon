@@ -25,6 +25,8 @@ import {
   markLocalDeltaRuntimeActive,
   markLocalDeltaRuntimeInactive,
 } from './local-delta-session.ts';
+import { buildDeltaCommitHistory, type DeltaCommitLogText } from './delta-commit-history.ts';
+import type { CommitEntry } from './types.ts';
 
 export type LocalFileSystemFileHandle = {
   readonly kind: 'file';
@@ -72,6 +74,7 @@ export type LocalDeltaRuntime = {
   storageLabel: string;
   descriptor: BrowserHttpSnapshotDescriptor;
   catalogMetadata: TableMetadata;
+  commits: CommitEntry[];
 };
 
 export type LocalDeltaPersistenceMode =
@@ -129,6 +132,7 @@ type LocalLogFacts = {
   minWriterVersion?: number;
   schemaString?: string;
   partitionColumns: string[];
+  commitLogs: DeltaCommitLogText[];
 };
 
 const LOCAL_DELTA_DB_NAME = 'axon-local-delta-registry';
@@ -221,6 +225,31 @@ export async function loadActiveLocalDeltaRuntime(
 
 export function hasLocalDeltaRuntime(registryId?: string): boolean {
   return hasMarkedLocalDeltaRuntime(registryId);
+}
+
+export function localDeltaCommitHistory(
+  registryId: string,
+  snapshotVersion?: number,
+): CommitEntry[] | undefined {
+  let latest: LocalDeltaRuntime | undefined;
+  for (const runtime of localDeltaRuntimes.values()) {
+    if (runtime.registryId !== registryId) continue;
+    const runtimeVersion = safeGeneratedInteger(
+      runtime.descriptor.snapshotVersion,
+      'snapshot_version',
+    );
+    if (snapshotVersion !== undefined) {
+      if (runtimeVersion === snapshotVersion) return [...runtime.commits];
+      continue;
+    }
+    if (
+      !latest ||
+      runtimeVersion > safeGeneratedInteger(latest.descriptor.snapshotVersion, 'snapshot_version')
+    ) {
+      latest = runtime;
+    }
+  }
+  return latest ? [...latest.commits] : undefined;
 }
 
 export function clearActiveLocalDeltaRegistryId(): void {
@@ -378,6 +407,7 @@ async function buildLocalDeltaRuntime(
     storageLabel: `Local folder: ${table.tableRootName}`,
     descriptor,
     catalogMetadata: catalogMetadataFromRuntimeFacts(descriptor, facts),
+    commits: buildDeltaCommitHistory(facts.commitLogs, snapshot.snapshot_version),
   };
 }
 
@@ -745,7 +775,7 @@ async function readLocalLogFacts(
   logEntries: LocalDeltaFileEntry[],
   signal?: AbortSignal,
 ): Promise<LocalLogFacts> {
-  const facts: LocalLogFacts = { partitionColumns: [] };
+  const facts: LocalLogFacts = { partitionColumns: [], commitLogs: [] };
   const commitEntries = logEntries.filter((entry) =>
     /^_delta_log\/\d{20}\.json$/.test(entry.relativePath),
   );
@@ -754,6 +784,7 @@ async function readLocalLogFacts(
     throwIfLocalDeltaAborted(signal);
     const text = await entry.file.text();
     throwIfLocalDeltaAborted(signal);
+    facts.commitLogs.push({ relativePath: entry.relativePath, text });
     for (const [index, line] of text.split(/\r?\n/).entries()) {
       if (!line.trim()) continue;
       let action: unknown;

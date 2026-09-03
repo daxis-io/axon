@@ -1230,6 +1230,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
               commits={commits}
               snapshotPin={active.pin}
               tableSnapshot={tableMeta?.snapshot}
+              tableFileCount={tableMeta?.file_count}
               tableUri={tableMeta?.uri}
               activeResultPageRun={activeResultPageRun}
               onLoadMoreRows={loadMoreRows}

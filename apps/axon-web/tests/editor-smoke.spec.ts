@@ -1354,6 +1354,17 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.locator('table.grid')).toContainText('row_count');
     await expect(page.locator('table.grid')).toContainText('4');
 
+    await page.locator('.res-tab', { hasText: 'Snapshot' }).click();
+    const snapshot = page.locator('.plan-body');
+    await expect(snapshot.locator('.commit')).toHaveCount(4);
+    await expect(snapshot.locator('.commit.current .v')).toHaveText('v3');
+    await expect(snapshot.locator('.commit.current .files')).toHaveText('+2 / −3');
+    await expect(
+      snapshot
+        .locator('.kpi', { has: page.locator('.l', { hasText: 'Active files' }) })
+        .locator('.v'),
+    ).toHaveText('2');
+
     const connectState = await page.evaluate(
       () => localStorage.getItem('axon.connect.catalogs.v1') ?? '',
     );

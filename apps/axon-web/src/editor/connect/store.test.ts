@@ -717,6 +717,7 @@ describe('connected catalog persistence', () => {
           storageLabel: 'Local folder: events',
           descriptor: {} as BrowserHttpSnapshotDescriptor,
           catalogMetadata: create(TableMetadataSchema),
+          commits: [],
         },
         localCatalogDiscovery: catalogDiscovery,
         provider: 'gcs',

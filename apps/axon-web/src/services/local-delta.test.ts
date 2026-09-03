@@ -355,6 +355,36 @@ describe('local Delta registry persistence', () => {
     expect(serialized).not.toContain('metadata-only');
   });
 
+  it('retains available commit history through the resolved local snapshot', async () => {
+    const runtime = await openLocalDeltaTableFromFileList(deltaHistoryTableFiles(), {
+      registryId: 'session-only',
+      snapshotVersion: 2,
+    });
+
+    expect(runtime.commits).toEqual([
+      {
+        v: 2,
+        ts: '2027-01-01 00:00:02Z',
+        op: 'WRITE',
+        author: 'delta-test',
+        adds: 1,
+        removes: 1,
+        current: true,
+        note: '1 add / 1 remove',
+      },
+      {
+        v: 0,
+        ts: '2027-01-01 00:00:00Z',
+        op: 'CREATE TABLE',
+        author: 'delta-test',
+        adds: 0,
+        removes: 0,
+        current: false,
+        note: 'CREATE TABLE',
+      },
+    ]);
+  });
+
   it('persists file-list imports as metadata-only records without bytes or object URLs', async () => {
     const putSpy = vi.spyOn(HandleStore.prototype, 'put');
 
@@ -509,6 +539,70 @@ function deltaTableFiles(): File[] {
     ),
     fileWithBrowserPath('part-00001.parquet', 'parquet', 'application/vnd.apache.parquet'),
   ];
+}
+
+function deltaHistoryTableFiles(): File[] {
+  const base = deltaTableFiles();
+  return [
+    fileWithBrowserPath(
+      '_delta_log/00000000000000000000.json',
+      [
+        JSON.stringify({
+          commitInfo: {
+            timestamp: Date.parse('2027-01-01T00:00:00Z'),
+            operation: 'CREATE TABLE',
+            engineInfo: 'delta-test',
+          },
+        }),
+        localTableMetadataLogText(),
+      ].join('\n'),
+      'application/json',
+    ),
+    fileWithBrowserPath(
+      '_delta_log/00000000000000000002.json',
+      [
+        JSON.stringify({
+          commitInfo: {
+            timestamp: Date.parse('2027-01-01T00:00:02Z'),
+            operation: 'WRITE',
+            engineInfo: 'delta-test',
+          },
+        }),
+        JSON.stringify({ remove: { path: 'old.parquet' } }),
+        JSON.stringify({ add: { path: 'part-00001.parquet', size: 7 } }),
+      ].join('\n'),
+      'application/json',
+    ),
+    fileWithBrowserPath(
+      '_delta_log/00000000000000000003.json',
+      JSON.stringify({
+        commitInfo: {
+          timestamp: Date.parse('2027-01-01T00:00:03Z'),
+          operation: 'WRITE',
+          engineInfo: 'delta-test',
+        },
+      }),
+      'application/json',
+    ),
+    ...base.filter((file) => !file.webkitRelativePath.endsWith('00000000000000000000.json')),
+  ];
+}
+
+function localTableMetadataLogText(): string {
+  return [
+    JSON.stringify({ protocol: { minReaderVersion: 1, minWriterVersion: 2 } }),
+    JSON.stringify({
+      metaData: {
+        name: 'table_from_log',
+        schemaString: JSON.stringify({
+          type: 'struct',
+          fields: [{ name: 'value', type: 'long', nullable: true, metadata: {} }],
+        }),
+        partitionColumns: [],
+        configuration: {},
+      },
+    }),
+  ].join('\n');
 }
 
 function fileWithBrowserPath(relativePath: string, body: string, type: string): File {

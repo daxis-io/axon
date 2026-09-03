@@ -1,5 +1,5 @@
 import type { BrowserWorkerEventEnvelope } from '../axon-browser-sdk.ts';
-import type { Catalog } from './types.ts';
+import type { Catalog, CommitEntry } from './types.ts';
 import { sameQuerySource, type QueryTableSource } from './query-source.ts';
 
 export type QueryRuntimeManifestObject = {
@@ -18,6 +18,7 @@ export type QueryRuntimeState = {
   source: QueryTableSource;
   catalog: Catalog;
   manifest?: QueryRuntimeManifest;
+  commits?: CommitEntry[];
 };
 
 type RuntimeStateSubscriber = {

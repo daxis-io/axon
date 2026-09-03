@@ -21,6 +21,7 @@ type RunResultsPanelProps = {
   commits: CommitEntry[];
   snapshotPin: number | null;
   tableSnapshot: number | undefined;
+  tableFileCount: number | undefined;
   tableUri: string | undefined;
   protocolVersion: { reader: number; writer: number; features: string[] } | undefined;
   activeResultPageRun: QueryResultPageRun | undefined;
@@ -33,6 +34,7 @@ export function RunResultsPanel({
   commits,
   snapshotPin,
   tableSnapshot,
+  tableFileCount,
   tableUri,
   protocolVersion,
   activeResultPageRun,
@@ -63,6 +65,7 @@ export function RunResultsPanel({
       commits={commits}
       snapshotPin={snapshotPin}
       tableSnapshot={tableSnapshot}
+      tableFileCount={tableFileCount}
       tableUri={tableUri}
       loadingMoreRows={loadingMoreRows}
       onLoadMoreRows={canLoadMoreRows ? onLoadMoreRows : undefined}

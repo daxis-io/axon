@@ -34,6 +34,7 @@ type ResultsProps = {
   commits: CommitEntry[];
   snapshotPin: number | null;
   tableSnapshot: number | undefined;
+  tableFileCount: number | undefined;
   tableUri: string | undefined;
   protocolVersion: { reader: number; writer: number; features: string[] } | undefined;
   loadingMoreRows?: boolean;
@@ -66,6 +67,7 @@ export function Results({
   commits,
   snapshotPin,
   tableSnapshot,
+  tableFileCount,
   tableUri,
   protocolVersion,
   loadingMoreRows = false,
@@ -718,7 +720,7 @@ export function Results({
                 value={`v${tableSnapshot ?? '—'}`}
                 sub={snapshotPin != null ? 'pinned · time travel' : 'latest'}
               />
-              <KpiTile label="Active files" value={`${plan?.files?.length ?? '—'}`} />
+              <KpiTile label="Active files" value={`${tableFileCount ?? '—'}`} />
               <KpiTile
                 label="Protocol"
                 value={`r${protocolVersion?.reader ?? 0}`}
@@ -762,7 +764,7 @@ export function Results({
                   textAlign: 'center',
                 }}
               >
-                Commit log will appear here once Delta log parsing is wired (Phase 2).
+                No Delta commit history is available for this snapshot.
               </div>
             </div>
           )}
