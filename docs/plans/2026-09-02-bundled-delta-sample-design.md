@@ -1,0 +1,9 @@
+# Bundled Delta Sample Design
+
+The browser editor's default catalog points at `/fixtures/prod-like/delta-log-manifest.json`, but the complete table is ignored by Git and recreated with a Rust-only generator during `dev`, `build`, and browser tests. A fresh checkout therefore does not contain the sample it advertises, and a deployment path without the fixture-generation toolchain cannot package a queryable example. The two checked-in JSON files under `public/fixtures/table` are only log smoke inputs; they do not form a readable Delta table because they have no Parquet data.
+
+The app will instead own one small, real Delta table as a versioned static asset. The existing prod-like fixture is suitable: it is about 60 KiB on disk, contains four commits, a checkpoint, `_last_checkpoint`, partitioned Snappy Parquet files, stats, and overwrite history. Its latest snapshot resolves to the B and D partitions used by the current browser tests. Keeping the schema and URLs stable avoids changes to editor behavior and sample SQL.
+
+`build:fixture` will become a fast integrity check for the committed fixture, while a separate explicit regeneration command will retain the delta-rs generator for maintainers. The verifier will reject a missing or oversized fixture, malformed inventory, absent Delta metadata, missing referenced objects, and size mismatches. The production build-output guard will run the same check against the emitted static tree so a Vercel artifact cannot pass with only workers and WASM present. Unit and browser tests continue to query the same manifest URL, but no ordinary build step may synthesize or replace the checked-in sample.
+
+This deliberately avoids embedding binary data in JavaScript and avoids an external cloud dependency. The fixture remains cacheable static content served from the same origin as the browser app.
