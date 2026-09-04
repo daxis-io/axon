@@ -30,7 +30,8 @@ export default defineConfig({
         url: baseURL,
         ignoreHTTPSErrors: true,
         reuseExistingServer: false,
-        timeout: 240_000,
+        // Qualification runners may build the complete WASM dependency graph without a warm cache.
+        timeout: 900_000,
       }
     : undefined,
 });
