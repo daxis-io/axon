@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  isIgnorablePublicR2ConsoleError,
   validatePublicR2BrowserQueryEvidence,
   validatePublicR2OnboardingCsv,
   validatePublicR2PerformanceCsv,
+  validatePublicR2UnsatisfiedRangeObservation,
 } from './public-r2-qualification.ts';
 
 const HEADER = 'event_id,event_ts,region,customer_id,amount,status';
@@ -29,6 +31,21 @@ describe('public R2 pinned performance result qualification', () => {
       result_sha256: EXPECTED_RESULT_SHA256,
       columns: ['event_id', 'event_ts', 'region', 'customer_id', 'amount', 'status'],
     });
+  });
+
+  it('canonicalizes an exact-cent amount transported with binary-float noise', async () => {
+    const csv = validPinnedRowsCsv().replace(',282.66,paid', ',282.65999999999997,paid');
+
+    await expect(validatePublicR2PerformanceCsv(csv)).resolves.toMatchObject({
+      row_count: 1000,
+      result_sha256: EXPECTED_RESULT_SHA256,
+    });
+  });
+
+  it('rejects amount drift larger than binary-float noise', async () => {
+    const csv = validPinnedRowsCsv().replace(',282.66,paid', ',282.659,paid');
+
+    await expect(validatePublicR2PerformanceCsv(csv)).rejects.toThrow(/amount was invalid/i);
   });
 
   it('rejects a nonempty result with correct columns but wrong broad semantics', async () => {
@@ -114,6 +131,69 @@ describe('public R2 browser query evidence qualification', () => {
       mutate(mutated);
       expect(() => validatePublicR2BrowserQueryEvidence(mutated)).toThrow(/zero at terminal/i);
     }
+  });
+
+  it('allows metadata-only count activity without weakening scan evidence', () => {
+    const metadataOnly = structuredClone(evidence);
+    metadataOnly.metrics.bytes_fetched = 0;
+    metadataOnly.metrics.scan_data_range_reads = 0;
+
+    expect(() => validatePublicR2BrowserQueryEvidence(metadataOnly)).toThrow(/bytes_fetched/i);
+    expect(() =>
+      validatePublicR2BrowserQueryEvidence(metadataOnly, 'metadata-only-allowed'),
+    ).not.toThrow();
+    expect(() => validatePublicR2BrowserQueryEvidence(metadataOnly, 'unexpected' as never)).toThrow(
+      /activity requirement/i,
+    );
+
+    metadataOnly.metrics.rows_emitted = 0;
+    expect(() =>
+      validatePublicR2BrowserQueryEvidence(metadataOnly, 'metadata-only-allowed'),
+    ).toThrow(/rows_emitted/i);
+  });
+});
+
+describe('public R2 live HTTP qualification', () => {
+  it('accepts R2 416 responses with an absent or correct Content-Range', () => {
+    expect(() =>
+      validatePublicR2UnsatisfiedRangeObservation(
+        { status: 416, exact_url: true, content_range: null },
+        700,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validatePublicR2UnsatisfiedRangeObservation(
+        { status: 416, exact_url: true, content_range: 'bytes */700' },
+        700,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validatePublicR2UnsatisfiedRangeObservation(
+        { status: 416, exact_url: true, content_range: 'bytes */701' },
+        700,
+      ),
+    ).toThrow(/unsatisfied range/i);
+  });
+
+  it('ignores only the known Vercel preview analytics 404', () => {
+    expect(
+      isIgnorablePublicR2ConsoleError(
+        'https://127.0.0.1:5173/_vercel/insights/script.js',
+        'https://127.0.0.1:5173',
+      ),
+    ).toBe(true);
+    expect(
+      isIgnorablePublicR2ConsoleError(
+        'https://pub-example.r2.dev/fixtures/table/missing.parquet',
+        'https://127.0.0.1:5173',
+      ),
+    ).toBe(false);
+    expect(
+      isIgnorablePublicR2ConsoleError(
+        'https://pub-example.r2.dev/_vercel/insights/script.js',
+        'https://127.0.0.1:5173',
+      ),
+    ).toBe(false);
   });
 });
 

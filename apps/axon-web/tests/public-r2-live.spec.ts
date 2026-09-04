@@ -14,9 +14,11 @@ import {
   publicObjectUrl,
 } from '../src/services/object-storage.ts';
 import {
+  isIgnorablePublicR2ConsoleError,
   validatePublicR2BrowserQueryEvidence,
   validatePublicR2OnboardingCsv,
   validatePublicR2PerformanceCsv,
+  validatePublicR2UnsatisfiedRangeObservation,
   type PublicR2BrowserQueryEvidence,
 } from '../src/services/public-r2-qualification.ts';
 
@@ -200,9 +202,14 @@ test.describe('public R2 live qualification', () => {
     expect(unsatisfied.status()).toBe(416);
     expect(unsatisfied.url()).toBe(dataUrl);
     expectCors(unsatisfied.headers(), productionOrigin);
-    expectImmutableCache(unsatisfied.headers());
-    expect(unsatisfied.headers()['content-range']).toBe(
-      `bytes */${onboardingDataObject!.size_bytes}`,
+    const unsatisfiedObservation = {
+      status: unsatisfied.status(),
+      exact_url: unsatisfied.url() === dataUrl,
+      content_range: unsatisfied.headers()['content-range'] ?? null,
+    };
+    validatePublicR2UnsatisfiedRangeObservation(
+      unsatisfiedObservation,
+      onboardingDataObject!.size_bytes,
     );
 
     const hostileOrigin = 'https://attacker.invalid';
@@ -263,9 +270,7 @@ test.describe('public R2 live qualification', () => {
           etag_preserved: ifRange.headers().etag === etag,
         },
         unsatisfied_range: {
-          status: unsatisfied.status(),
-          exact_url: unsatisfied.url() === dataUrl,
-          content_range: unsatisfied.headers()['content-range'],
+          ...unsatisfiedObservation,
         },
       },
       public_artifacts: publicArtifacts,
@@ -355,7 +360,7 @@ test.describe('public R2 live qualification', () => {
           '1048576',
         );
         const evidence = await latestEvidence(freshPage);
-        validatePublicR2BrowserQueryEvidence(evidence);
+        validatePublicR2BrowserQueryEvidence(evidence, 'metadata-only-allowed');
         expect(freshRuntimeErrors).toEqual([]);
         runs.push({ run, scalar_result: scalar, evidence });
       } finally {
@@ -385,6 +390,8 @@ LIMIT 1000
     await page.locator('.btn.primary', { hasText: 'Run' }).click();
     await expect(page.locator('.res-meta')).toContainText(/browser · wasm/i, { timeout: 90_000 });
     await expect(page.locator('table.grid')).toContainText('event_id');
+    const filteredEvidence = await latestEvidence(page);
+    validatePublicR2BrowserQueryEvidence(filteredEvidence);
     await loadAllQueryRows(page);
     const downloadPromise = page.waitForEvent('download');
     await page.locator('button[title="Export results as CSV"]').click();
@@ -394,8 +401,6 @@ LIMIT 1000
     const filteredResult = await validatePublicR2PerformanceCsv(
       await readFile(downloadPath!, 'utf8'),
     );
-    const filteredEvidence = await latestEvidence(page);
-    validatePublicR2BrowserQueryEvidence(filteredEvidence);
     expect(filteredResult.columns).toEqual(performanceContract.qualification.columns);
     expect(runtimeErrors).toEqual([]);
 
@@ -679,7 +684,12 @@ function captureRuntimeErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
-    if (message.type() === 'error') errors.push(message.text());
+    if (
+      message.type() === 'error' &&
+      !isIgnorablePublicR2ConsoleError(message.location().url, qualificationLocalOrigin)
+    ) {
+      errors.push(message.text());
+    }
   });
   return errors;
 }

@@ -44,7 +44,24 @@ export type PublicR2BrowserQueryEvidence = {
   };
 };
 
-export function validatePublicR2BrowserQueryEvidence(evidence: PublicR2BrowserQueryEvidence): void {
+export type PublicR2QueryActivityRequirement = 'range-read-required' | 'metadata-only-allowed';
+
+export type PublicR2UnsatisfiedRangeObservation = {
+  status: number;
+  exact_url: boolean;
+  content_range: string | null;
+};
+
+export function validatePublicR2BrowserQueryEvidence(
+  evidence: PublicR2BrowserQueryEvidence,
+  activityRequirement: PublicR2QueryActivityRequirement = 'range-read-required',
+): void {
+  if (
+    activityRequirement !== 'range-read-required' &&
+    activityRequirement !== 'metadata-only-allowed'
+  ) {
+    throw new Error('public R2 qualification activity requirement was invalid');
+  }
   if (
     evidence.execution.executed_on !== 'browser_wasm' ||
     evidence.execution.fallback_event_observed !== false ||
@@ -59,12 +76,14 @@ export function validatePublicR2BrowserQueryEvidence(evidence: PublicR2BrowserQu
       throw new Error(`public R2 qualification metric '${field}' was not a safe integer`);
     }
   }
-  for (const field of [
-    'bytes_fetched',
-    'scan_data_range_reads',
+  const positiveMetrics: Array<keyof PublicR2BrowserQueryEvidence['metrics']> = [
     'rows_emitted',
     'arrow_ipc_bytes',
-  ] as const) {
+  ];
+  if (activityRequirement === 'range-read-required') {
+    positiveMetrics.push('bytes_fetched', 'scan_data_range_reads');
+  }
+  for (const field of positiveMetrics) {
     if (metrics[field] === 0) {
       throw new Error(`public R2 qualification metric '${field}' must be positive`);
     }
@@ -106,6 +125,29 @@ export function validatePublicR2BrowserQueryEvidence(evidence: PublicR2BrowserQu
     datafusion.peak_bytes > datafusion.limit_bytes
   ) {
     throw new Error('public R2 qualification owned-memory peak exceeded its limit');
+  }
+}
+
+export function validatePublicR2UnsatisfiedRangeObservation(
+  observation: PublicR2UnsatisfiedRangeObservation,
+  objectSizeBytes: number,
+): void {
+  const expectedContentRange = `bytes */${objectSizeBytes}`;
+  if (
+    observation.status !== 416 ||
+    observation.exact_url !== true ||
+    (observation.content_range !== null && observation.content_range !== expectedContentRange)
+  ) {
+    throw new Error('public R2 unsatisfied range observation was invalid');
+  }
+}
+
+export function isIgnorablePublicR2ConsoleError(sourceUrl: string, appOrigin: string): boolean {
+  try {
+    const source = new URL(sourceUrl);
+    return source.origin === appOrigin && source.pathname === '/_vercel/insights/script.js';
+  } catch {
+    return false;
   }
 }
 
@@ -260,11 +302,18 @@ function parsePerformanceRow(line: string): PublicR2PerformanceRow {
     throw new Error('public R2 performance result event_id was invalid');
   }
   const eventTimestampMs = utcTimestampMs(eventTs);
-  if (!/^-?(?:0|[1-9]\d*)(?:\.\d{1,2})?$/.test(amount)) {
+  if (!/^-?(?:0|[1-9]\d*)(?:\.\d{1,17})?$/.test(amount)) {
     throw new Error('public R2 performance result amount was invalid');
   }
   const numericAmount = Number(amount);
-  if (!Number.isFinite(numericAmount)) {
+  const amountCents = Math.round(numericAmount * 100);
+  const canonicalAmount = amountCents / 100;
+  const floatingPointTolerance = Number.EPSILON * Math.max(1, Math.abs(numericAmount)) * 4;
+  if (
+    !Number.isFinite(numericAmount) ||
+    !Number.isSafeInteger(amountCents) ||
+    Math.abs(numericAmount - canonicalAmount) > floatingPointTolerance
+  ) {
     throw new Error('public R2 performance result amount was invalid');
   }
   return {
@@ -272,7 +321,7 @@ function parsePerformanceRow(line: string): PublicR2PerformanceRow {
     eventTimestampMs,
     region,
     customerId,
-    amount: numericAmount,
+    amount: canonicalAmount,
     status,
   };
 }
