@@ -164,6 +164,10 @@ impl BrowserHttpDeltaLogStorageHandler {
         self.request_timeout = Some(request_timeout);
         self
     }
+
+    pub fn request_timeout(&self) -> Option<Duration> {
+        self.request_timeout
+    }
 }
 
 #[async_trait(?Send)]

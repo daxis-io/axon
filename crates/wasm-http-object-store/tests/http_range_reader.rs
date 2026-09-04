@@ -4,6 +4,7 @@ use std::net::TcpListener;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use query_contract::QueryErrorCode;
@@ -49,32 +50,8 @@ fn full_reads_fetch_entire_object_without_range_header() {
 }
 
 #[test]
-fn full_reads_support_injected_reqwest_clients() {
-    let (url, requests, server) = spawn_test_server(|request| {
-        assert_eq!(request.method, "GET");
-        assert_eq!(request.path, "/object");
-        full_or_ranged_response(request, b"hello world")
-    });
-
-    let reader = HttpRangeReader::with_client(
-        reqwest::Client::builder()
-            .build()
-            .expect("custom reqwest client should build"),
-    );
-    let result = runtime()
-        .block_on(reader.read_range(&url, HttpByteRange::Full))
-        .expect("full read should succeed");
-
-    let request = finish_request(server, requests);
-    assert!(!request.headers.contains_key("range"));
-    assert_eq!(result.metadata.url, url);
-    assert_eq!(result.metadata.size_bytes, Some(11));
-    assert_eq!(result.bytes.as_ref(), b"hello world");
-}
-
-#[test]
-fn full_reads_reject_cross_origin_redirects() {
-    let (target_url, target_requests, target_server) = spawn_test_server(|request| {
+fn full_reads_reject_cross_origin_redirects_without_contacting_the_target() {
+    let (target_url, target_requests, target_server) = spawn_optional_test_server(|request| {
         assert_eq!(request.method, "GET");
         full_or_ranged_response(request, b"redirected")
     });
@@ -90,10 +67,74 @@ fn full_reads_reject_cross_origin_redirects() {
         .expect_err("cross-origin redirects must be rejected");
 
     finish_request(source_server, source_requests);
-    finish_request(target_server, target_requests);
+    assert!(finish_optional_request(target_server, target_requests).is_none());
     assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
-    assert!(error.message.contains("cross-origin redirect"));
+    assert!(error.message.contains("redirect"));
     assert!(!error.message.contains(&target_url));
+}
+
+#[test]
+fn full_reads_reject_same_origin_redirects_without_requesting_the_target_path() {
+    let (source_url, requests, server) = spawn_same_origin_redirect_server();
+
+    let error = runtime()
+        .block_on(HttpRangeReader::new().read_range(&source_url, HttpByteRange::Full))
+        .expect_err("same-origin redirects must be rejected");
+
+    let requests = finish_requests(server, requests);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/object");
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+    assert!(error.message.contains("redirect"));
+}
+
+#[test]
+fn metadata_probes_reject_redirects_without_contacting_the_target() {
+    let (target_url, target_requests, target_server) =
+        spawn_optional_test_server(|request| full_or_ranged_response(request, b"redirected"));
+    let redirect_target = target_url.clone();
+    let (source_url, source_requests, source_server) = spawn_test_server(move |_| TestResponse {
+        status_line: "302 Found",
+        headers: vec![("Location".to_string(), redirect_target)],
+        body: Vec::new(),
+    });
+
+    let error = runtime()
+        .block_on(
+            HttpRangeReader::new()
+                .probe_metadata(&source_url, HttpMetadataProbeRequirements::default()),
+        )
+        .expect_err("metadata redirects must be rejected");
+
+    finish_request(source_server, source_requests);
+    assert!(finish_optional_request(target_server, target_requests).is_none());
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
+}
+
+#[test]
+fn bounded_reads_reject_redirects_without_contacting_the_target() {
+    let (target_url, target_requests, target_server) =
+        spawn_optional_test_server(|request| full_or_ranged_response(request, b"redirected"));
+    let redirect_target = target_url.clone();
+    let (source_url, source_requests, source_server) = spawn_test_server(move |_| TestResponse {
+        status_line: "307 Temporary Redirect",
+        headers: vec![("Location".to_string(), redirect_target)],
+        body: Vec::new(),
+    });
+
+    let error = runtime()
+        .block_on(HttpRangeReader::new().read_range(
+            &source_url,
+            HttpByteRange::Bounded {
+                offset: 0,
+                length: 4,
+            },
+        ))
+        .expect_err("bounded read redirects must be rejected");
+
+    finish_request(source_server, source_requests);
+    assert!(finish_optional_request(target_server, target_requests).is_none());
+    assert_eq!(error.code, QueryErrorCode::ObjectStoreProtocol);
 }
 
 #[test]
@@ -1056,6 +1097,103 @@ fn finish_request(server: JoinHandle<()>, requests: Receiver<CapturedRequest>) -
     requests
         .recv()
         .expect("test should receive the captured request")
+}
+
+fn spawn_optional_test_server<F>(
+    handler: F,
+) -> (String, Receiver<Option<CapturedRequest>>, JoinHandle<()>)
+where
+    F: FnOnce(&CapturedRequest) -> TestResponse + Send + 'static,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+    listener
+        .set_nonblocking(true)
+        .expect("test listener should become nonblocking");
+    let address = listener.local_addr().expect("listener addr should resolve");
+    let url = format!("http://{address}/redirected");
+    let (request_tx, request_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let request = read_request(&mut stream);
+                    let response = handler(&request);
+                    write_response(&mut stream, response);
+                    let _ = request_tx.send(Some(request));
+                    return;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        let _ = request_tx.send(None);
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("optional test listener failed: {error}"),
+            }
+        }
+    });
+    (url, request_rx, server)
+}
+
+fn finish_optional_request(
+    server: JoinHandle<()>,
+    requests: Receiver<Option<CapturedRequest>>,
+) -> Option<CapturedRequest> {
+    server
+        .join()
+        .expect("optional test server should shut down cleanly");
+    requests
+        .recv()
+        .expect("test should receive the optional captured request")
+}
+
+fn spawn_same_origin_redirect_server() -> (String, Receiver<Vec<CapturedRequest>>, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("ephemeral port should bind");
+    let address = listener.local_addr().expect("listener addr should resolve");
+    let source_url = format!("http://{address}/object");
+    let target_url = format!("http://{address}/redirected");
+    let (request_tx, request_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut source_stream, _) = listener.accept().expect("source request should connect");
+        let source_request = read_request(&mut source_stream);
+        write_response(
+            &mut source_stream,
+            TestResponse {
+                status_line: "302 Found",
+                headers: vec![("Location".to_string(), target_url)],
+                body: Vec::new(),
+            },
+        );
+        listener
+            .set_nonblocking(true)
+            .expect("test listener should become nonblocking");
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut captured = vec![source_request];
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let request = read_request(&mut stream);
+                    write_response(
+                        &mut stream,
+                        full_or_ranged_response(&request, b"redirected"),
+                    );
+                    captured.push(request);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("same-origin redirect listener failed: {error}"),
+            }
+        }
+        let _ = request_tx.send(captured);
+    });
+    (source_url, request_rx, server)
 }
 
 fn spawn_test_server_sequence(

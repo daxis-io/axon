@@ -107,6 +107,48 @@ describe('queryKeys', () => {
     );
   });
 
+  it('keys public R2 sources by normalized endpoint origin and canonical locator', () => {
+    const publicR2: QueryTableSource = {
+      kind: 'object_store_table_root',
+      provider: 'r2',
+      catalogName: 'public-r2',
+      schemaName: 'main',
+      tableName: 'events',
+      tableUri: 'r2://axon-public-data/fixtures/events/table',
+      storage: 'r2://axon-public-data/fixtures/events/table',
+      region: 'global',
+      endpoint: ' HTTPS://DATA.AXON.DAXISTECH.IO/ ',
+    };
+
+    expect(queryKeys.catalog.table(publicR2)).toEqual([
+      'catalog',
+      'provider',
+      'axon.public-r2/v1',
+      'connection',
+      'axon-connection://public-r2/https%3A%2F%2Fdata.axon.daxistech.io/axon-public-data',
+      'authority',
+      'non-session',
+      'resource',
+      'table',
+      'canonicalLocator',
+      'r2://axon-public-data/fixtures/events/table',
+      'snapshot',
+      null,
+    ]);
+    expect(
+      queryKeys.catalog.table({
+        ...publicR2,
+        endpoint: 'https://data.axon.daxistech.io',
+      }),
+    ).toEqual(queryKeys.catalog.table(publicR2));
+    expect(
+      queryKeys.catalog.connection({
+        ...publicR2,
+        endpoint: 'https://qualification.example.com',
+      }),
+    ).not.toEqual(queryKeys.catalog.connection(publicR2));
+  });
+
   it('builds local workspace keys without product data fetch behavior', () => {
     expect(queryKeys.local.root()).toEqual(['local']);
     expect(queryKeys.local.history()).toEqual(['local', 'history']);

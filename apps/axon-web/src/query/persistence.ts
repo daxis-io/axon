@@ -6,8 +6,8 @@ import type {
 } from '@tanstack/react-query-persist-client';
 import { KeyValueStore } from '../persistence/key-value.ts';
 import {
-  parsePublicObjectStorageTableRoot,
-  publicObjectStorageConnectionId,
+  parsePublicObjectStorageTableRootFromConnection,
+  publicObjectStorageProviderForNamespace,
 } from '../services/object-storage.ts';
 
 export const AXON_QUERY_CACHE_SCHEMA_VERSION = 3;
@@ -153,39 +153,19 @@ function isAllowedQueryKey(queryKey: QueryKey): boolean {
     return false;
   }
 
-  const provider =
-    providerNamespace === 'axon.public-gcs/v1'
-      ? 'gcs'
-      : providerNamespace === 'axon.public-s3/v1'
-        ? 's3'
-        : undefined;
+  const provider = publicObjectStorageProviderForNamespace(String(providerNamespace));
   if (!provider) return false;
 
   try {
-    const region = provider === 's3' ? s3RegionFromConnectionId(connectionId) : 'browser-local';
-    const root = parsePublicObjectStorageTableRoot({
+    const root = parsePublicObjectStorageTableRootFromConnection({
       provider,
       tableUri: identityValue,
-      region,
+      connectionId,
     });
-    return (
-      publicObjectStorageConnectionId(root) === connectionId && root.tableUri === identityValue
-    );
+    return root.tableUri === identityValue;
   } catch {
     return false;
   }
-}
-
-function s3RegionFromConnectionId(connectionId: string): string {
-  const prefix = 'axon-connection://public-s3/';
-  if (!connectionId.startsWith(prefix)) {
-    throw new Error('invalid public S3 connection ID');
-  }
-  const [encodedRegion, encodedBucket, ...rest] = connectionId.slice(prefix.length).split('/');
-  if (!encodedRegion || !encodedBucket || rest.length > 0) {
-    throw new Error('invalid public S3 connection ID');
-  }
-  return decodeURIComponent(encodedRegion);
 }
 
 function isAllowedLocalQueryKey(queryKey: QueryKey): boolean {

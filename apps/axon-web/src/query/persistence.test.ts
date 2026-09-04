@@ -47,6 +47,18 @@ const s3Source: QueryTableSource = {
   region: 'us-east-1',
 };
 
+const r2Source: QueryTableSource = {
+  kind: 'object_store_table_root',
+  provider: 'r2',
+  catalogName: 'public-r2',
+  schemaName: 'main',
+  tableName: 'events',
+  tableUri: 'r2://axon-public-data/fixtures/events/table',
+  storage: 'r2://axon-public-data/fixtures/events/table',
+  region: 'global',
+  endpoint: 'https://data.axon.daxistech.io',
+};
+
 const localDeltaSource: QueryTableSource = {
   kind: 'local_delta',
   catalogName: 'local',
@@ -183,24 +195,36 @@ describe('query cache persistence', () => {
     expect(restored.getQueryData(queryKey)).toEqual(data);
   });
 
-  it('restores allowed public GCS and S3 catalog query families', async () => {
+  it('restores allowed public GCS, S3, and endpoint-scoped R2 catalog query families', async () => {
     const gcsKey = queryKeys.catalog.tableDerived(gcsSource);
     const s3Key = queryKeys.catalog.commits(s3Source);
+    const r2Key = queryKeys.catalog.tableDerived(r2Source);
     const gcsData = catalogData('gcs-catalog');
     const s3Data = [commitEntry()];
+    const r2Data = catalogData('r2-catalog');
 
     const restored = await persistEntries([
       [gcsKey, gcsData],
       [s3Key, s3Data],
+      [r2Key, r2Data],
     ]);
 
     expect(restored.getQueryData(gcsKey)).toEqual(gcsData);
     expect(restored.getQueryData(s3Key)).toEqual(s3Data);
+    expect(restored.getQueryData(r2Key)).toEqual(r2Data);
+    expect(
+      restored.getQueryData(
+        queryKeys.catalog.tableDerived({
+          ...r2Source,
+          endpoint: 'https://qualification.example.com',
+        }),
+      ),
+    ).toBeUndefined();
   });
 
   it.each([
     ['session authority', 6, 'session'],
-    ['unknown provider', 2, 'axon.public-r2/v1'],
+    ['unknown provider', 2, 'axon.public-azure/v1'],
     ['malformed connection', 4, 'axon-connection://public-gcs/other-bucket'],
     ['wrong identity arm', 9, 'providerObjectId'],
     ['unsafe locator', 10, 'gs://public-bucket/events?token=secret'],

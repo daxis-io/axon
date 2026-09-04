@@ -1224,9 +1224,33 @@ test.describe('editor (Phase 1 smoke)', () => {
     );
     expect(persistedAfterReload).toContain(tableUri);
     expect(persistedAfterReload).toContain(endpoint);
+    const [persistedCatalog] = JSON.parse(persistedAfterReload) as Array<{
+      alias: string;
+      schemas: Array<{ name: string; tables: Array<{ name: string }> }>;
+    }>;
+    const persistedSchema = persistedCatalog!.schemas[0]!;
+    const persistedTable = persistedSchema.tables[0]!;
+    await page.goto('/');
+    await activateConnectedTable(
+      page,
+      persistedCatalog!.alias,
+      persistedSchema.name,
+      persistedTable.name,
+    );
+    await expect(page.locator('.queryref-bar .qref')).toContainText(persistedTable.name);
+    await page
+      .locator('.code-input')
+      .fill(`SELECT COUNT(*) AS row_count FROM "${persistedTable.name}"`);
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+    await expect(page.locator('.res-meta')).toContainText(/browser · wasm/i, {
+      timeout: 30_000,
+    });
+    await expect(page.locator('table.grid tbody tr')).toHaveCount(1);
+    await expect(page.locator('table.grid')).toContainText('row_count');
+    await expect(page.locator('table.grid')).toContainText('4');
     expect(
       endpointRequests.filter((url) => url.includes('public-delta-log-index.json')),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     expect(endpointRequests.some((url) => /[?&](?:list-type|prefix)=/i.test(url))).toBe(false);
   });
 

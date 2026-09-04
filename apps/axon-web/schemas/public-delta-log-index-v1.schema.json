@@ -2,6 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://axon.daxistech.io/schemas/public-delta-log-index-v1.schema.json",
   "title": "PublicDeltaLogIndexV1",
+  "$comment": "This schema validates the serialized shape. Conforming readers and publishers must also enforce unique objects[].relative_path values because JSON Schema uniqueItems compares whole objects, not one property, and must strictly decode every percent escape as valid UTF-8.",
+  "x-axon-semantic-constraints": [
+    "objects.relative_path values are unique",
+    "percent escapes decode as valid UTF-8"
+  ],
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "table_uri", "objects"],
@@ -11,11 +16,13 @@
     },
     "table_uri": {
       "type": "string",
-      "pattern": "^r2://[a-z0-9][a-z0-9-]{1,61}[a-z0-9]/[^?#]+$"
+      "pattern": "^r2://[a-z0-9][a-z0-9-]{1,61}[a-z0-9]/(?!.*//)(?!.*\\\\)(?!.*%(?:2[fF]|5[cC]))(?!.*%(?![0-9a-fA-F]{2}))(?!(?:[^/]+/)*(?:(?:\\.|%2[eE]){1,2})(?:/|$))[^/?#]+(?:/[^/?#]+)*$"
     },
     "objects": {
       "type": "array",
       "minItems": 1,
+      "maxItems": 50000,
+      "uniqueItems": true,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -23,7 +30,7 @@
         "properties": {
           "relative_path": {
             "type": "string",
-            "pattern": "^_delta_log/[^\\\\]*$"
+            "pattern": "^_delta_log/(?!.*//)(?!.*\\\\)(?!.*%(?:2[fF]|5[cC]))(?!.*%(?![0-9a-fA-F]{2}))(?!(?:[^/]+/)*(?:(?:\\.|%2[eE]){1,2})(?:/|$))[^/]+(?:/[^/]+)*$"
           },
           "size_bytes": {
             "type": "integer",

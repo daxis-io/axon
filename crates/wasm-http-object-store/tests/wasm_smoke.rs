@@ -227,7 +227,7 @@ async fn http_requests_bypass_browser_cache_without_changing_range_validation() 
     assert_eq!(result.bytes.as_ref(), b"cde");
     assert_eq!(
         requests,
-        r#"[{"cache":"no-store","credentials":"omit","range":"bytes=0-0","ifRange":null},{"cache":"no-store","credentials":"omit","range":"bytes=2-4","ifRange":"\"v1\""}]"#
+        r#"[{"cache":"no-store","credentials":"omit","redirect":"error","range":"bytes=0-0","ifRange":null},{"cache":"no-store","credentials":"omit","redirect":"error","range":"bytes=2-4","ifRange":"\"v1\""}]"#
     );
 }
 
@@ -352,6 +352,7 @@ fn take_http_fetch_requests_and_restore() -> String {
         const summary = requests.map((request) => ({
           cache: request.cache,
           credentials: request.credentials,
+          redirect: request.redirect,
           range: request.headers.get('range'),
           ifRange: request.headers.get('if-range'),
         }));

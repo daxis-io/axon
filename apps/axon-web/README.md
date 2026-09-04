@@ -53,7 +53,7 @@ The Connect flow supports selected local Delta folders through browser-owned sna
 
 Public Cloudflare R2 is a browser-only object-storage source. Connect with a logical `r2://bucket/table-prefix` locator and a credential-free HTTPS public origin. The origin must be exactly an origin such as `https://pub-example.r2.dev` or `https://data.axon.daxistech.io`; S3 API endpoints under `r2.cloudflarestorage.com`, URL paths, queries, fragments, and userinfo are rejected. R2 has no region input.
 
-R2 public endpoints cannot list a bucket, so every table must publish [`PublicDeltaLogIndexV1`](schemas/public-delta-log-index-v1.schema.json) at `<table-root>/_axon/public-delta-log-index.json`. The closed index contains only the exact logical table URI plus sorted `_delta_log/` object paths, sizes, and optional strong ETags. It cannot provide absolute data URLs. Axon derives every log and Parquet URL from the configured origin, reads anonymously with browser credentials omitted, rejects cross-origin redirects, and fails with a publication error when the index is missing, stale, or incomplete. There is no Worker, private credential, authenticated listing, or server fallback in this path.
+R2 public endpoints cannot list a bucket, so every table must publish [`PublicDeltaLogIndexV1`](schemas/public-delta-log-index-v1.schema.json) at `<table-root>/_axon/public-delta-log-index.json`. The JSON Schema validates the serialized shape; publishers and readers must additionally enforce its declared semantic uniqueness of `objects[].relative_path` because JSON Schema `uniqueItems` compares complete objects, and every percent escape must decode as valid UTF-8. The closed index contains only the exact logical table URI plus sorted, safely percent-encoded `_delta_log/` object paths, sizes, and optional strong ETags. It cannot provide absolute data URLs. Axon derives every log and Parquet URL from the configured origin, reads anonymously with browser credentials omitted, rejects every redirect before traversal, and fails with a publication error when the index is missing, stale, or incomplete. There is no Worker, private credential, authenticated listing, or server fallback in this path.
 
 The optional onboarding button is build-time controlled and intentionally fail-closed. It appears only when both values are present and the endpoint is the production-qualified custom domain:
 
@@ -93,12 +93,18 @@ The public S3 live smoke is env-gated the same way and needs the bucket region b
 AXON_LIVE_PUBLIC_S3_TABLE_URI=s3://bucket/table AXON_LIVE_PUBLIC_S3_REGION=us-east-2 npm run test:browser:public-s3-live -- --reporter=line
 ```
 
-The public R2 qualification suite is env-gated on one endpoint and both pinned fixture URIs. It checks CORS, `HEAD`, strong ETags, `206`, `If-Range`, `416`, the exact four-row onboarding snapshot, three fresh-runtime 1M-row counts, the filtered performance query, browser-only execution, range/byte metrics, memory/IPC bounds, and redacted evidence output.
+The public R2 qualification suite is env-gated on the complete reviewed qualification contract, endpoint class, exact Daxis/Axon commits, one endpoint, and both pinned fixture URIs. It hashes the public index and provenance bytes for both fixtures against that contract; checks final URLs, immutable caching, allowed and hostile CORS origins, `HEAD`, strong ETags, `206`, `If-Range`, and `416`; queries the exact four-row onboarding result; then runs three isolated fresh-browser-context 1M-row counts and the filtered performance query. Both query projections must match their complete pinned result digests, not only row counts or boundary rows. The suite also verifies browser-only execution, range/byte metrics, memory/IPC bounds, and redacted evidence output.
+
+Public R2 indexes are limited to 8 MiB and 50,000 Delta-log objects so an untrusted public endpoint cannot force unbounded browser parsing or sorting.
 
 ```bash
 AXON_LIVE_PUBLIC_R2_ENDPOINT=https://pub-example.r2.dev \
+AXON_LIVE_PUBLIC_R2_ENDPOINT_CLASS=r2.dev \
 AXON_LIVE_PUBLIC_R2_ONBOARDING_TABLE_URI=r2://axon-public-data/fixtures/onboarding-v1/table \
 AXON_LIVE_PUBLIC_R2_PERF_TABLE_URI=r2://axon-public-data/fixtures/s3-browser-perf-v1/table \
+AXON_LIVE_PUBLIC_R2_DAXIS_COMMIT=<40-character-reviewed-daxis-commit> \
+AXON_LIVE_PUBLIC_R2_RUNTIME_COMMIT=<40-character-axon-runtime-commit> \
+AXON_LIVE_PUBLIC_R2_QUALIFICATION_CONTRACT=/absolute/path/to/public-data-qualification-contract.json \
 npm run test:browser:public-r2-live -- --reporter=line
 ```
 

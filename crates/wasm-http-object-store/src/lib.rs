@@ -66,14 +66,16 @@ use query_contract::{
     ObjectGrantHeadRequest, ObjectGrantListRequest, ObjectGrantListResponse, ObjectGrantObject,
     ObjectGrantRangeRequest, ObjectGrantSignedUrl, QueryError, QueryErrorCode,
 };
-use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_RANGE, RANGE};
+#[cfg(target_arch = "wasm32")]
+use reqwest::header::HeaderValue;
+use reqwest::header::{HeaderMap, CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_RANGE, RANGE};
 use reqwest::{StatusCode, Url};
 use sha2::{Digest, Sha256};
 
 #[cfg(target_arch = "wasm32")]
 use js_sys::{Function, Object, Promise, Reflect, Uint8Array};
 #[cfg(target_arch = "wasm32")]
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::{closure::Closure, JsCast, JsValue};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::JsFuture;
 
@@ -216,17 +218,12 @@ impl HttpRangeValidation {
         Self::IfRangeEtag(etag)
     }
 
-    fn apply_request(
-        self,
-        request: reqwest::RequestBuilder,
-    ) -> Result<reqwest::RequestBuilder, QueryError> {
+    fn if_range_value(&self) -> Result<&str, QueryError> {
         match self {
-            Self::IfRangeEtag(etag) => {
-                if etag.trim().is_empty() {
-                    return Err(invalid_request("if-range validators must not be empty"));
-                }
-                Ok(request.header(IF_RANGE, etag))
+            Self::IfRangeEtag(etag) if etag.trim().is_empty() => {
+                Err(invalid_request("if-range validators must not be empty"))
             }
+            Self::IfRangeEtag(etag) => Ok(etag),
         }
     }
 
@@ -3043,17 +3040,8 @@ fn js_cache_error(context: impl Into<String>, error: JsValue) -> QueryError {
 
 #[derive(Clone, Debug)]
 pub struct HttpRangeReader {
+    #[cfg(not(target_arch = "wasm32"))]
     client: reqwest::Client,
-}
-
-#[cfg(target_arch = "wasm32")]
-fn bypass_browser_http_cache(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    request.fetch_cache_no_store().fetch_credentials_omit()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn bypass_browser_http_cache(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    request
 }
 
 impl Default for HttpRangeReader {
@@ -3064,11 +3052,18 @@ impl Default for HttpRangeReader {
 
 impl HttpRangeReader {
     pub fn new() -> Self {
-        Self::with_client(reqwest::Client::new())
-    }
-
-    pub fn with_client(client: reqwest::Client) -> Self {
-        Self { client }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("no-redirect HTTP client configuration should be valid");
+            Self { client }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Self {}
+        }
     }
 
     pub async fn read_range(
@@ -3104,57 +3099,46 @@ impl HttpRangeReader {
         }
         let range_header = range.header_value()?;
 
-        let mut request = self.client.get(url.clone());
-        if let Some(range_header) = &range_header {
-            request = request.header(RANGE, range_header);
-        }
-        if range.expects_partial_response() {
-            if let Some(validation) = validation.clone() {
-                request = validation.apply_request(request)?;
-            }
-        }
-        if let Some(timeout) = timeout {
-            request = request.timeout(timeout);
-        }
+        let response = self
+            .strict_get(
+                &url,
+                range_header.as_deref(),
+                if range.expects_partial_response() {
+                    validation.as_ref()
+                } else {
+                    None
+                },
+                timeout,
+                &display_url,
+            )
+            .await?;
 
-        let response = bypass_browser_http_cache(request)
-            .send()
-            .await
-            .map_err(|error| {
-                QueryError::new(
-                    QueryErrorCode::ExecutionFailed,
-                    format!("http request to '{display_url}' failed: {error}"),
-                    supported_target(),
-                )
-            })?;
-        validate_same_origin_response(&url, response.url(), &display_url)?;
-
-        if let Some(error) = map_status_error(response.status(), &display_url) {
+        if let Some(error) = map_status_error(response.status, &display_url) {
             return Err(error);
         }
 
         let content_range = if range.expects_partial_response() {
-            if response.status() != StatusCode::PARTIAL_CONTENT {
+            if response.status != StatusCode::PARTIAL_CONTENT {
                 if validation.is_some() {
                     return Err(protocol_error(format!(
                         "range request to '{display_url}' expected HTTP 206 Partial Content, got {}; If-Range validation likely failed due object identity drift",
-                        response.status()
+                        response.status
                     )));
                 }
                 return Err(protocol_error(format!(
                     "range request to '{display_url}' expected HTTP 206 Partial Content, got {}",
-                    response.status()
+                    response.status
                 )));
             }
 
-            let content_range = parse_content_range(response.headers(), &display_url)?;
+            let content_range = parse_content_range(&response.headers, &display_url)?;
             range.validate_content_range(content_range, &display_url)?;
             Some(content_range)
         } else {
-            if response.status() != StatusCode::OK {
+            if response.status != StatusCode::OK {
                 return Err(protocol_error(format!(
                     "full-object request to '{display_url}' expected HTTP 200 OK, got {}",
-                    response.status()
+                    response.status
                 )));
             }
 
@@ -3162,20 +3146,14 @@ impl HttpRangeReader {
         };
         let object_size = match content_range {
             Some(content_range) => Some(content_range.total_size),
-            None => parse_optional_content_length(response.headers(), &display_url)?,
+            None => parse_optional_content_length(&response.headers, &display_url)?,
         };
-        let etag = parse_optional_header_string(response.headers(), ETAG.as_str(), &display_url)?;
+        let etag = parse_optional_header_string(&response.headers, ETAG.as_str(), &display_url)?;
         if let Some(validation) = validation {
             validation.validate_response_identity(etag.as_deref(), &display_url)?;
         }
 
-        let bytes = response.bytes().await.map_err(|error| {
-            QueryError::new(
-                QueryErrorCode::ExecutionFailed,
-                format!("http response body from '{display_url}' could not be read: {error}"),
-                supported_target(),
-            )
-        })?;
+        let bytes = response.bytes;
 
         if let Some(content_range) = content_range {
             let expected_length = content_range
@@ -3223,28 +3201,16 @@ impl HttpRangeReader {
         if url.scheme() == "blob" {
             return probe_blob_url_metadata(&url, requirements).await;
         }
-        let mut request = self.client.get(url.clone()).header(RANGE, "bytes=0-0");
-        if let Some(timeout) = timeout {
-            request = request.timeout(timeout);
-        }
-        let response = bypass_browser_http_cache(request)
-            .send()
-            .await
-            .map_err(|error| {
-                QueryError::new(
-                    QueryErrorCode::ExecutionFailed,
-                    format!("http request to '{display_url}' failed: {error}"),
-                    supported_target(),
-                )
-            })?;
-        validate_same_origin_response(&url, response.url(), &display_url)?;
+        let response = self
+            .strict_get(&url, Some("bytes=0-0"), None, timeout, &display_url)
+            .await?;
 
-        if response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
+        if response.status == StatusCode::RANGE_NOT_SATISFIABLE {
             let unsatisfied_size =
-                parse_unsatisfied_content_range_total_size(response.headers(), &display_url)?;
+                parse_unsatisfied_content_range_total_size(&response.headers, &display_url)?;
             if unsatisfied_size == Some(0) {
                 let etag =
-                    parse_optional_header_string(response.headers(), ETAG.as_str(), &display_url)?;
+                    parse_optional_header_string(&response.headers, ETAG.as_str(), &display_url)?;
                 let metadata = HttpObjectMetadata {
                     url: display_url,
                     size_bytes: Some(0),
@@ -3255,30 +3221,24 @@ impl HttpRangeReader {
             }
         }
 
-        if let Some(error) = map_status_error(response.status(), &display_url) {
+        if let Some(error) = map_status_error(response.status, &display_url) {
             return Err(error);
         }
-        if response.status() != StatusCode::PARTIAL_CONTENT {
+        if response.status != StatusCode::PARTIAL_CONTENT {
             return Err(protocol_error(format!(
                 "metadata probe to '{display_url}' expected HTTP 206 Partial Content, got {}",
-                response.status()
+                response.status
             )));
         }
 
-        let content_range = parse_content_range(response.headers(), &display_url)?;
+        let content_range = parse_content_range(&response.headers, &display_url)?;
         HttpByteRange::Bounded {
             offset: 0,
             length: 1,
         }
         .validate_content_range(content_range, &display_url)?;
-        let etag = parse_optional_header_string(response.headers(), ETAG.as_str(), &display_url)?;
-        let bytes = response.bytes().await.map_err(|error| {
-            QueryError::new(
-                QueryErrorCode::ExecutionFailed,
-                format!("http response body from '{display_url}' could not be read: {error}"),
-                supported_target(),
-            )
-        })?;
+        let etag = parse_optional_header_string(&response.headers, ETAG.as_str(), &display_url)?;
+        let bytes = response.bytes;
         let expected_length = content_range
             .end
             .checked_sub(content_range.start)
@@ -3299,6 +3259,61 @@ impl HttpRangeReader {
         validate_metadata_probe_requirements(&metadata, requirements)?;
 
         Ok(metadata)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn strict_get(
+        &self,
+        url: &Url,
+        range: Option<&str>,
+        validation: Option<&HttpRangeValidation>,
+        timeout: Option<Duration>,
+        display_url: &str,
+    ) -> Result<StrictHttpResponse, QueryError> {
+        let mut request = self.client.get(url.clone());
+        if let Some(range) = range {
+            request = request.header(RANGE, range);
+        }
+        if let Some(validation) = validation {
+            request = request.header(IF_RANGE, validation.if_range_value()?);
+        }
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
+        }
+        let response = request.send().await.map_err(|error| {
+            QueryError::new(
+                QueryErrorCode::ExecutionFailed,
+                format!("http request to '{display_url}' failed: {error}"),
+                supported_target(),
+            )
+        })?;
+        reject_redirect_response(url, response.url(), response.status(), display_url)?;
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response.bytes().await.map_err(|error| {
+            QueryError::new(
+                QueryErrorCode::ExecutionFailed,
+                format!("http response body from '{display_url}' could not be read: {error}"),
+                supported_target(),
+            )
+        })?;
+        Ok(StrictHttpResponse {
+            status,
+            headers,
+            bytes,
+        })
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn strict_get(
+        &self,
+        url: &Url,
+        range: Option<&str>,
+        validation: Option<&HttpRangeValidation>,
+        timeout: Option<Duration>,
+        display_url: &str,
+    ) -> Result<StrictHttpResponse, QueryError> {
+        browser_strict_get(url, range, validation, timeout, display_url).await
     }
 
     pub async fn resolve_metadata(
@@ -3361,14 +3376,183 @@ fn parse_url(url: &str) -> Result<Url, QueryError> {
     }
 }
 
-fn validate_same_origin_response(
+struct StrictHttpResponse {
+    status: StatusCode,
+    headers: HeaderMap,
+    bytes: Bytes,
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn browser_strict_get(
+    url: &Url,
+    range: Option<&str>,
+    validation: Option<&HttpRangeValidation>,
+    timeout: Option<Duration>,
+    display_url: &str,
+) -> Result<StrictHttpResponse, QueryError> {
+    let headers = web_sys::Headers::new().map_err(|_| {
+        browser_transport_error(display_url, "request headers could not be created")
+    })?;
+    if let Some(range) = range {
+        headers
+            .set(RANGE.as_str(), range)
+            .map_err(|_| browser_transport_error(display_url, "Range header could not be set"))?;
+    }
+    if let Some(validation) = validation {
+        headers
+            .set(IF_RANGE.as_str(), validation.if_range_value()?)
+            .map_err(|_| {
+                browser_transport_error(display_url, "If-Range header could not be set")
+            })?;
+    }
+
+    let guard = BrowserAbortGuard::new(timeout, display_url)?;
+    let init = web_sys::RequestInit::new();
+    init.set_method("GET");
+    init.set_headers(&headers.into());
+    init.set_credentials(web_sys::RequestCredentials::Omit);
+    init.set_cache(web_sys::RequestCache::NoStore);
+    init.set_redirect(web_sys::RequestRedirect::Error);
+    init.set_signal(Some(&guard.controller.signal()));
+    let request = web_sys::Request::new_with_str_and_init(url.as_str(), &init)
+        .map_err(|_| browser_transport_error(display_url, "request could not be created"))?;
+    let global = js_sys::global();
+    let fetch = Reflect::get(&global, &JsValue::from_str("fetch"))
+        .ok()
+        .and_then(|value| value.dyn_into::<Function>().ok())
+        .ok_or_else(|| browser_transport_error(display_url, "global fetch is unavailable"))?;
+    let promise = fetch
+        .call1(&global, &request)
+        .ok()
+        .and_then(|value| value.dyn_into::<Promise>().ok())
+        .ok_or_else(|| browser_transport_error(display_url, "fetch could not be started"))?;
+    let response = JsFuture::from(promise)
+        .await
+        .map_err(|_| browser_transport_error(display_url, "request failed or redirected"))?
+        .dyn_into::<web_sys::Response>()
+        .map_err(|_| browser_transport_error(display_url, "fetch returned an invalid response"))?;
+    let status = StatusCode::from_u16(response.status())
+        .map_err(|_| browser_transport_error(display_url, "response status was invalid"))?;
+    let response_url = Url::parse(&response.url())
+        .map_err(|_| browser_transport_error(display_url, "response URL was invalid"))?;
+    reject_redirect_response(url, &response_url, status, display_url)?;
+
+    let mut response_headers = HeaderMap::new();
+    for name in [CONTENT_LENGTH, CONTENT_RANGE, ETAG] {
+        if let Some(value) = response
+            .headers()
+            .get(name.as_str())
+            .map_err(|_| browser_transport_error(display_url, "response headers were invalid"))?
+        {
+            response_headers.insert(
+                name,
+                HeaderValue::from_str(&value).map_err(|_| {
+                    browser_transport_error(display_url, "response header value was invalid")
+                })?,
+            );
+        }
+    }
+    let array_buffer = response
+        .array_buffer()
+        .map_err(|_| browser_transport_error(display_url, "response body could not be started"))?;
+    let buffer = JsFuture::from(array_buffer)
+        .await
+        .map_err(|_| browser_transport_error(display_url, "response body could not be read"))?;
+    let bytes = Bytes::from(Uint8Array::new(&buffer).to_vec());
+    drop(guard);
+    Ok(StrictHttpResponse {
+        status,
+        headers: response_headers,
+        bytes,
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+struct BrowserAbortGuard {
+    controller: web_sys::AbortController,
+    timeout_id: Option<i32>,
+    timeout_callback: Option<Closure<dyn FnMut()>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl BrowserAbortGuard {
+    fn new(timeout: Option<Duration>, display_url: &str) -> Result<Self, QueryError> {
+        let controller = web_sys::AbortController::new()
+            .map_err(|_| browser_transport_error(display_url, "abort controller is unavailable"))?;
+        let Some(timeout) = timeout else {
+            return Ok(Self {
+                controller,
+                timeout_id: None,
+                timeout_callback: None,
+            });
+        };
+        let timeout_controller = controller.clone();
+        let callback =
+            Closure::wrap(Box::new(move || timeout_controller.abort()) as Box<dyn FnMut()>);
+        let global = js_sys::global();
+        let set_timeout = Reflect::get(&global, &JsValue::from_str("setTimeout"))
+            .ok()
+            .and_then(|value| value.dyn_into::<Function>().ok())
+            .ok_or_else(|| browser_transport_error(display_url, "setTimeout is unavailable"))?;
+        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+        let timeout_id = set_timeout
+            .call2(
+                &global,
+                callback.as_ref(),
+                &JsValue::from_f64(f64::from(timeout_ms)),
+            )
+            .ok()
+            .and_then(|value| value.as_f64())
+            .map(|value| value as i32)
+            .ok_or_else(|| {
+                browser_transport_error(display_url, "request timeout could not be set")
+            })?;
+        Ok(Self {
+            controller,
+            timeout_id: Some(timeout_id),
+            timeout_callback: Some(callback),
+        })
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for BrowserAbortGuard {
+    fn drop(&mut self) {
+        if let Some(timeout_id) = self.timeout_id {
+            let global = js_sys::global();
+            if let Ok(clear_timeout) = Reflect::get(&global, &JsValue::from_str("clearTimeout")) {
+                if let Ok(clear_timeout) = clear_timeout.dyn_into::<Function>() {
+                    let _ = clear_timeout.call1(&global, &JsValue::from_f64(f64::from(timeout_id)));
+                }
+            }
+        }
+        self.controller.abort();
+        self.timeout_callback.take();
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_transport_error(display_url: &str, context: &str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::ExecutionFailed,
+        format!("http request to '{display_url}' failed: {context}"),
+        supported_target(),
+    )
+}
+
+fn reject_redirect_response(
     requested_url: &Url,
     response_url: &Url,
+    status: StatusCode,
     display_url: &str,
 ) -> Result<(), QueryError> {
-    if requested_url.origin() != response_url.origin() {
+    let mut transport_url = requested_url.clone();
+    transport_url.set_fragment(None);
+    let mut canonical_response_url = response_url.clone();
+    canonical_response_url.set_fragment(None);
+    if status.is_redirection() || transport_url != canonical_response_url {
         return Err(protocol_error(format!(
-            "http request to '{display_url}' rejected a cross-origin redirect"
+            "http request to '{display_url}' rejected a redirect"
         )));
     }
     Ok(())

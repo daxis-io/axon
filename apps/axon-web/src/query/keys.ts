@@ -63,7 +63,8 @@ function catalogCanonicalIdentity(source: QueryTableSource): CatalogCanonicalIde
   const root = parsePublicObjectStorageTableRoot({
     provider: source.provider,
     tableUri: source.tableUri,
-    region: source.region,
+    region: source.provider === 'r2' ? undefined : source.region,
+    endpoint: source.provider === 'r2' ? source.endpoint : undefined,
   });
   return {
     providerNamespace: `axon.public-${source.provider}/v1`,

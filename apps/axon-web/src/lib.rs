@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::time::Duration;
 
 use futures_util::lock::Mutex as AsyncMutex;
 use js_sys::{BigInt, Object, Reflect, Uint8Array};
@@ -34,6 +35,7 @@ const IPC_METADATA_VERSION: u32 = 1;
 const DEFAULT_IPC_TRANSPORT_CHUNK_BYTES: usize = 1024 * 1024;
 const DEFAULT_MAX_PENDING_ENCODED_BATCH_BYTES: usize = 8 * 1024 * 1024;
 const JAVASCRIPT_MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+const PUBLIC_OBJECT_CONNECT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -668,7 +670,7 @@ pub async fn resolve_delta_snapshot_from_manifest(
     let manifest = BrowserDeltaLogManifest::new(table_uri.clone(), objects)
         .map_err(query_error_to_js_value)?;
     let resolver = SnapshotResolver::new(
-        BrowserHttpDeltaLogStorageHandler::new(manifest),
+        public_delta_log_storage_handler(manifest),
         DefaultJsonHandler::default(),
         DefaultParquetHandler::default(),
     );
@@ -698,6 +700,17 @@ fn validated_js_snapshot_version(value: Option<f64>) -> Result<Option<i64>, &'st
     Ok(Some(value as i64))
 }
 
+fn public_delta_log_storage_handler(
+    manifest: BrowserDeltaLogManifest,
+) -> BrowserHttpDeltaLogStorageHandler {
+    BrowserHttpDeltaLogStorageHandler::new(manifest)
+        .with_request_timeout(PUBLIC_OBJECT_CONNECT_REQUEST_TIMEOUT)
+}
+
+fn public_parquet_preflight_request_timeout() -> Option<Duration> {
+    Some(PUBLIC_OBJECT_CONNECT_REQUEST_TIMEOUT)
+}
+
 #[wasm_bindgen]
 pub async fn preflight_parquet_metadata_for_targets(
     targets_json: String,
@@ -720,7 +733,7 @@ pub async fn preflight_parquet_metadata_for_targets(
         let footer = wasm_parquet_engine::read_parquet_footer_for_target_with_cache(
             &reader,
             &scan_target,
-            None,
+            public_parquet_preflight_request_timeout(),
             Some(&metadata_cache),
             None,
         )
@@ -1114,6 +1127,21 @@ mod tests {
                 "{invalid} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn public_object_connect_paths_apply_the_bounded_deadline() {
+        let manifest = BrowserDeltaLogManifest::new("r2://bucket/table", Vec::new())
+            .expect("empty manifest is sufficient to inspect connection policy");
+        let delta_log = public_delta_log_storage_handler(manifest);
+        assert_eq!(
+            delta_log.request_timeout(),
+            Some(std::time::Duration::from_secs(30))
+        );
+        assert_eq!(
+            public_parquet_preflight_request_timeout(),
+            Some(std::time::Duration::from_secs(30))
+        );
     }
 
     #[test]

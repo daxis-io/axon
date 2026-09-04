@@ -110,9 +110,13 @@ export type PublicObjectStorageRuntimeCacheEntry = {
 type PublicObjectStorageFetchOptions = {
   fetch?: PublicObjectStorageFetch;
   signal?: AbortSignal;
+  timeoutMs?: number;
 };
 
 const DEFAULT_RUNTIME_CACHE_TTL_MS = 2 * 60 * 1000;
+const MAX_PUBLIC_R2_INDEX_BYTES = 8 * 1024 * 1024;
+const MAX_PUBLIC_R2_INDEX_OBJECTS = 50_000;
+const DEFAULT_PUBLIC_R2_INDEX_TIMEOUT_MS = 30_000;
 const publicObjectStorageRuntimeCache = new Map<string, PublicObjectStorageRuntimeCacheEntry>();
 
 type ResolvedPublicSnapshot = {
@@ -262,6 +266,51 @@ export function publicObjectStorageConnectionId(root: PublicObjectStorageTableRo
   )}`;
 }
 
+export function publicObjectStorageProviderForNamespace(
+  namespace: string,
+): PublicObjectStorageProvider | undefined {
+  if (namespace === 'axon.public-gcs/v1') return 'gcs';
+  if (namespace === 'axon.public-s3/v1') return 's3';
+  if (namespace === 'axon.public-r2/v1') return 'r2';
+  return undefined;
+}
+
+export function parsePublicObjectStorageTableRootFromConnection(input: {
+  provider: PublicObjectStorageProvider;
+  tableUri: string;
+  connectionId: string;
+}): PublicObjectStorageTableRoot {
+  const prefix = `axon-connection://public-${input.provider}/`;
+  if (!input.connectionId.startsWith(prefix)) {
+    throw invalidUri('public object storage connection identity is invalid');
+  }
+  const segments = input.connectionId.slice(prefix.length).split('/');
+  const expectedSegmentCount = input.provider === 'gcs' ? 1 : 2;
+  if (segments.length !== expectedSegmentCount || segments.some((segment) => !segment)) {
+    throw invalidUri('public object storage connection identity is invalid');
+  }
+
+  let region: string | undefined;
+  let endpoint: string | undefined;
+  try {
+    if (input.provider === 's3') region = decodeURIComponent(segments[0]!);
+    if (input.provider === 'r2') endpoint = decodeURIComponent(segments[0]!);
+  } catch {
+    throw invalidUri('public object storage connection identity is invalid');
+  }
+
+  const root = parsePublicObjectStorageTableRoot({
+    provider: input.provider,
+    tableUri: input.tableUri,
+    region,
+    endpoint,
+  });
+  if (publicObjectStorageConnectionId(root) !== input.connectionId) {
+    throw invalidUri('public object storage connection identity is invalid');
+  }
+  return root;
+}
+
 export function publicObjectStorageCatalogMetadata(
   descriptor: BrowserHttpSnapshotDescriptor,
 ): TableMetadata {
@@ -352,39 +401,66 @@ async function buildPublicR2DeltaLogManifest(
   throwIfPublicObjectStorageAborted(options.signal);
   const startedAt = nowMs();
   const indexUrl = publicObjectUrl(root, '_axon/public-delta-log-index.json');
-  const response = await fetcher(indexUrl, {
-    credentials: 'omit',
-    redirect: 'follow',
-    signal: options.signal,
-  });
-  throwIfPublicObjectStorageAborted(options.signal);
-  rejectCrossOriginPublicR2Redirect(response, root.endpoint);
-  if (!response.ok) {
-    if (response.status === 404) {
-      throw accessFailed(
-        'public R2 Delta log index _axon/public-delta-log-index.json was not found; publish the well-known index at the table root',
-      );
-    }
-    throw accessFailed(`public R2 Delta log index request failed (HTTP ${response.status})`);
-  }
-
-  let value: unknown;
+  const deadline = publicR2IndexDeadline(
+    options.signal,
+    options.timeoutMs ?? DEFAULT_PUBLIC_R2_INDEX_TIMEOUT_MS,
+  );
   try {
-    value = JSON.parse(await response.text());
-  } catch {
-    throw accessFailed('public R2 Delta log index returned invalid JSON');
+    const response = await fetcher(indexUrl, {
+      credentials: 'omit',
+      redirect: 'error',
+      signal: deadline.signal,
+    });
+    throwIfPublicObjectStorageAborted(options.signal);
+    rejectPublicR2Redirect(response, indexUrl);
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw accessFailed(
+          'public R2 Delta log index _axon/public-delta-log-index.json was not found; publish the well-known index at the table root',
+        );
+      }
+      throw accessFailed(`public R2 Delta log index request failed (HTTP ${response.status})`);
+    }
+
+    const declaredLength = response.headers.get('content-length');
+    if (declaredLength !== null) {
+      const bytes = Number(declaredLength);
+      if (Number.isSafeInteger(bytes) && bytes > MAX_PUBLIC_R2_INDEX_BYTES) {
+        throw accessFailed('public R2 Delta log index exceeded the maximum byte size');
+      }
+    }
+
+    let value: unknown;
+    try {
+      value = JSON.parse(
+        await readPublicR2IndexText(response, MAX_PUBLIC_R2_INDEX_BYTES, deadline.signal),
+      );
+    } catch (error) {
+      if (deadline.timedOut()) throw error;
+      throwIfPublicObjectStorageAborted(options.signal);
+      if (error instanceof PublicObjectStorageError) throw error;
+      throw accessFailed('public R2 Delta log index returned invalid JSON');
+    }
+    throwIfPublicObjectStorageAborted(options.signal);
+    const objects = parsePublicDeltaLogIndexV1(value, root);
+    if (objects.length === 0) {
+      throw accessFailed('public R2 Delta log index did not contain any Delta log objects');
+    }
+    return {
+      tableUri: root.tableUri,
+      objects,
+      list_request_count: 1,
+      list_duration_ms: Math.round(nowMs() - startedAt),
+    };
+  } catch (error) {
+    if (deadline.timedOut()) {
+      throw accessFailed('public R2 Delta log index request timed out');
+    }
+    throwIfPublicObjectStorageAborted(options.signal);
+    throw error;
+  } finally {
+    deadline.dispose();
   }
-  throwIfPublicObjectStorageAborted(options.signal);
-  const objects = parsePublicDeltaLogIndexV1(value, root);
-  if (objects.length === 0) {
-    throw accessFailed('public R2 Delta log index did not contain any Delta log objects');
-  }
-  return {
-    tableUri: root.tableUri,
-    objects,
-    list_request_count: 1,
-    list_duration_ms: Math.round(nowMs() - startedAt),
-  };
 }
 
 export function parsePublicDeltaLogIndexV1(
@@ -403,8 +479,11 @@ export function parsePublicDeltaLogIndexV1(
   if (value.table_uri !== root.tableUri || containsSecretMaterial(String(value.table_uri ?? ''))) {
     throw accessFailed('public R2 Delta log index table_uri did not match the configured table');
   }
-  if (!Array.isArray(value.objects)) {
-    throw accessFailed('public R2 Delta log index objects must be an array');
+  if (!Array.isArray(value.objects) || value.objects.length === 0) {
+    throw accessFailed('public R2 Delta log index objects must be a non-empty array');
+  }
+  if (value.objects.length > MAX_PUBLIC_R2_INDEX_OBJECTS) {
+    throw accessFailed('public R2 Delta log index object count exceeded the browser limit');
   }
 
   const paths = new Set<string>();
@@ -426,6 +505,7 @@ export function parsePublicDeltaLogIndexV1(
       !relativePath.startsWith('_delta_log/') ||
       relativePath.includes('\\') ||
       /%(?:2f|5c)/i.test(relativePath) ||
+      hasUnsafeEncodedPathSegment(relativePath) ||
       containsSecretMaterial(relativePath)
     ) {
       throw accessFailed('public R2 Delta log index contained an invalid Delta log path');
@@ -475,22 +555,116 @@ export function parsePublicDeltaLogIndexV1(
   );
 }
 
-function rejectCrossOriginPublicR2Redirect(response: Response, endpoint: string): void {
-  if (!response.url) {
-    if (response.redirected) {
-      throw accessFailed('public R2 Delta log index used an unverifiable cross-origin redirect');
+async function readPublicR2IndexText(
+  response: Response,
+  maxBytes: number,
+  signal: AbortSignal | undefined,
+): Promise<string> {
+  if (!response.body) {
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > maxBytes) {
+      throw accessFailed('public R2 Delta log index exceeded the maximum byte size');
     }
-    return;
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let byteLength = 0;
+  let text = '';
+  try {
+    while (true) {
+      throwIfPublicObjectStorageAborted(signal);
+      const { done, value } = await readPublicR2IndexChunk(reader, signal);
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > maxBytes) {
+        await reader.cancel();
+        throw accessFailed('public R2 Delta log index exceeded the maximum byte size');
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function readPublicR2IndexChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal | undefined,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (!signal) return await reader.read();
+  throwIfPublicObjectStorageAborted(signal);
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = () => {
+      void reader.cancel().catch(() => undefined);
+      finish(() => {
+        const error = new Error('public object storage acquisition was cancelled');
+        error.name = 'AbortError';
+        reject(error);
+      });
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    void reader.read().then(
+      (result) => finish(() => resolve(result)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
+}
+
+function rejectPublicR2Redirect(response: Response, requestedUrl: string): void {
+  if (!response.url) {
+    throw accessFailed('public R2 Delta log index returned an unverifiable response URL');
   }
   let responseOrigin: string;
+  let requestedOrigin: string;
   try {
     responseOrigin = new URL(response.url).origin;
+    requestedOrigin = new URL(requestedUrl).origin;
   } catch {
     throw accessFailed('public R2 Delta log index returned an invalid response URL');
   }
-  if (responseOrigin !== endpoint) {
+  if (response.url !== requestedUrl || response.redirected) {
+    if (responseOrigin === requestedOrigin) {
+      throw accessFailed('public R2 Delta log index rejected a redirect');
+    }
     throw accessFailed('public R2 Delta log index rejected a cross-origin redirect');
   }
+}
+
+function publicR2IndexDeadline(
+  parent: AbortSignal | undefined,
+  timeoutMs: number,
+): {
+  signal: AbortSignal;
+  timedOut: () => boolean;
+  dispose: () => void;
+} {
+  const controller = new AbortController();
+  let didTimeOut = false;
+  const abortFromParent = () => controller.abort(parent?.reason);
+  if (parent?.aborted) abortFromParent();
+  else parent?.addEventListener('abort', abortFromParent, { once: true });
+  const timer = setTimeout(() => {
+    didTimeOut = true;
+    controller.abort(new DOMException('public R2 index request timed out', 'TimeoutError'));
+  }, timeoutMs);
+  return {
+    signal: controller.signal,
+    timedOut: () => didTimeOut,
+    dispose: () => {
+      clearTimeout(timer);
+      parent?.removeEventListener('abort', abortFromParent);
+    },
+  };
 }
 
 export async function resolvePublicObjectStorageDescriptor(input: {
@@ -540,8 +714,13 @@ export async function resolvePublicObjectStorageDescriptor(input: {
     throwIfPublicObjectStorageAborted(input.signal);
     if (error instanceof Error && error.name === 'AbortError') throw error;
     if (root.provider === 'r2') {
+      if (isPublicR2StaleIndexError(error)) {
+        throw accessFailed(
+          'public R2 Delta log index is stale or incomplete for the requested snapshot; republish the table index after all Delta log objects',
+        );
+      }
       throw accessFailed(
-        'public R2 Delta log index is stale or incomplete for the requested snapshot; republish the table index after all Delta log objects',
+        'public R2 Delta snapshot resolution failed; verify runtime compatibility and retry',
       );
     }
     throw error;
@@ -589,6 +768,36 @@ export async function resolvePublicObjectStorageDescriptor(input: {
       }),
     ),
   });
+}
+
+function isPublicR2StaleIndexError(error: unknown): boolean {
+  const serialized =
+    error instanceof Error ? error.message : typeof error === 'string' ? error : undefined;
+  if (!serialized) return false;
+
+  let structured: unknown;
+  try {
+    structured = JSON.parse(serialized);
+  } catch {
+    return false;
+  }
+  if (
+    !isRecord(structured) ||
+    typeof structured.code !== 'string' ||
+    typeof structured.message !== 'string'
+  ) {
+    return false;
+  }
+  if (structured.code === 'object_not_found') return true;
+  if (structured.code === 'object_store_protocol') {
+    return /^Delta log object '.+' (?:size|identity) changed between manifest and read$/.test(
+      structured.message,
+    );
+  }
+  if (structured.code !== 'invalid_request') return false;
+  return /^(?:delta log did not contain any commits or checkpoints|requested snapshot version \d+ exceeds the latest available version \d+|delta log replay expected commit file '.+'|missing checkpoint part '.+'|checkpoint sidecar '.+' referenced by '.+' was missing)$/.test(
+    structured.message,
+  );
 }
 
 export async function preflightPublicObjectStorageDescriptorRangeRead(input: {
@@ -977,19 +1186,21 @@ function validatePublicR2LogicalPath(uri: string): void {
     rawSegments.some((segment) => !segment) ||
     rawPath.includes('\\') ||
     /%(?:2f|5c)/i.test(rawPath) ||
-    rawSegments.some((segment) => {
-      try {
-        const decoded = decodeURIComponent(segment);
-        return (
-          decoded === '.' || decoded === '..' || decoded.includes('/') || decoded.includes('\\')
-        );
-      } catch {
-        return true;
-      }
-    })
+    hasUnsafeEncodedPathSegment(rawPath)
   ) {
     throw invalidUri('public R2 object storage table URI contained an unsafe table path');
   }
+}
+
+function hasUnsafeEncodedPathSegment(path: string): boolean {
+  return path.split('/').some((segment) => {
+    try {
+      const decoded = decodeURIComponent(segment);
+      return decoded === '.' || decoded === '..' || decoded.includes('/') || decoded.includes('\\');
+    } catch {
+      return true;
+    }
+  });
 }
 
 function hasOriginOnlyRawPath(value: string, scheme: string): boolean {

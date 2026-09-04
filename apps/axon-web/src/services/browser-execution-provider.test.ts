@@ -71,6 +71,30 @@ const publicSelection: AvailableQuerySourceSelection = {
   },
 };
 
+const publicR2Selection: AvailableQuerySourceSelection = {
+  kind: 'resource',
+  ref: createPublicObjectStorageCanonicalTable({
+    provider: 'r2',
+    connectionId:
+      'axon-connection://public-r2/https%3A%2F%2Fdata.axon.daxistech.io/axon-public-data',
+    normalizedTableUri: 'r2://axon-public-data/fixtures/events/table',
+    endpoint: 'https://data.axon.daxistech.io',
+    tableName: 'events',
+  }),
+  source: {
+    kind: 'object_store_table_root',
+    provider: 'r2',
+    catalogName: 'Public R2',
+    schemaName: 'default',
+    tableName: 'events',
+    tableUri: 'r2://axon-public-data/fixtures/events/table',
+    storage: 'r2://axon-public-data/fixtures/events/table',
+    region: 'global',
+    endpoint: 'https://data.axon.daxistech.io',
+    snapshot: 12,
+  },
+};
+
 describe('validated browser execution provider', () => {
   it('passes the exact generated browser binding to the executor after validation', async () => {
     const table = canonicalTableForSelection(localSelection);
@@ -259,6 +283,35 @@ describe('validated browser execution provider', () => {
     );
     expect(execute).toHaveBeenCalledTimes(1);
   });
+
+  it('accepts endpoint-scoped R2 reads and rejects a descriptor from another endpoint', async () => {
+    const input = await publicR2ExecuteInput();
+    const execute = vi.fn(() => responses(create(ExecuteResponseSchema)));
+    const provider = createValidatedBrowserExecutionProvider({
+      execute,
+      cancel: () =>
+        create(CancelResponseSchema, {
+          executionId: input.request.executionId,
+          state: ExecutionLifecycleState.CANCEL_REQUESTED,
+        }),
+    });
+
+    await collect(provider.execute(input));
+    expect(execute).toHaveBeenCalledTimes(1);
+
+    if (
+      input.request.binding.case !== 'browserRead' ||
+      input.request.binding.value.descriptor?.descriptor.case !== 'snapshot'
+    ) {
+      throw new Error('R2 test input omitted its snapshot');
+    }
+    input.request.binding.value.descriptor.descriptor.value.activeFiles[0]!.url =
+      'https://qualification.example.com/fixtures/events/table/part-000.parquet';
+    await expect(collect(provider.execute(input))).rejects.toBeInstanceOf(
+      BrowserExecutionValidationError,
+    );
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
 });
 
 async function localExecuteRequest() {
@@ -339,6 +392,47 @@ async function publicExecuteInput(): Promise<BrowserExecuteInput> {
       binding: { case: 'browserRead', value: resolution.outcome.value },
       query: create(QueryRequestSchema, {
         sql: 'select * from events',
+        preferredTarget: ExecutionTarget.BROWSER_WASM,
+      }),
+      deadline,
+    }),
+  };
+}
+
+async function publicR2ExecuteInput(): Promise<BrowserExecuteInput> {
+  const table = canonicalTableForSelection(publicR2Selection);
+  const deadline = timestampFromMs(1_800_000_120_000);
+  const resolution = await dataAccessResolverForSelection(publicR2Selection, {
+    loadPublicObjectStorageDescriptor: async () =>
+      create(BrowserHttpSnapshotDescriptorSchema, {
+        tableUri: 'r2://axon-public-data/fixtures/events/table',
+        snapshotVersion: 12n,
+        activeFiles: [
+          {
+            path: 'part-000.parquet',
+            url: 'https://data.axon.daxistech.io/fixtures/events/table/part-000.parquet',
+            sizeBytes: 128n,
+            partitionValues: {},
+            objectEtag: '"part-v1"',
+          },
+        ],
+      }),
+  }).resolve(table.resource!, {
+    executionId: 'execution-r2-1',
+    deadline,
+    snapshotVersion: 12,
+    signal: new AbortController().signal,
+  });
+  if (resolution.outcome.case !== 'browserRead') {
+    throw new Error(`unexpected resolution ${resolution.outcome.case}`);
+  }
+  return {
+    table,
+    request: create(ExecuteRequestSchema, {
+      executionId: 'execution-r2-1',
+      binding: { case: 'browserRead', value: resolution.outcome.value },
+      query: create(QueryRequestSchema, {
+        sql: 'select count(*) from events',
         preferredTarget: ExecutionTarget.BROWSER_WASM,
       }),
       deadline,

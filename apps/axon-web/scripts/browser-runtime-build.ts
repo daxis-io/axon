@@ -7,13 +7,21 @@ export type BrowserRuntimeBuildManifest = {
   schema_version: 1;
   tier: 'external-memory';
   browser_external_memory: true;
+  source_commit: string | null;
+  source_dirty: boolean;
 };
 
-export function browserRuntimeBuildManifest(): BrowserRuntimeBuildManifest {
+type SourceProvenance = { sourceCommit: string | null; sourceDirty: boolean };
+
+export function browserRuntimeBuildManifest(
+  provenance: SourceProvenance = resolvedSourceProvenance(),
+): BrowserRuntimeBuildManifest {
   return {
     schema_version: 1,
     tier: 'external-memory',
     browser_external_memory: true,
+    source_commit: provenance.sourceCommit,
+    source_dirty: provenance.sourceDirty,
   };
 }
 
@@ -29,14 +37,70 @@ export function verifyBrowserRuntimeBuildManifest(
     !('tier' in value) ||
     value.tier !== expected.tier ||
     !('browser_external_memory' in value) ||
-    value.browser_external_memory !== expected.browser_external_memory
+    value.browser_external_memory !== expected.browser_external_memory ||
+    !('source_commit' in value) ||
+    (value.source_commit !== null &&
+      (typeof value.source_commit !== 'string' || !/^[0-9a-f]{40}$/.test(value.source_commit))) ||
+    !('source_dirty' in value) ||
+    typeof value.source_dirty !== 'boolean'
   ) {
     throw new Error('browser runtime build manifest did not match the spill-capable artifact');
   }
 }
 
+export function verifyQualificationRuntimeBuildManifest(
+  value: unknown,
+  expectedCommit: string,
+): asserts value is BrowserRuntimeBuildManifest {
+  verifyBrowserRuntimeBuildManifest(value);
+  const manifest = value as BrowserRuntimeBuildManifest;
+  if (manifest.source_commit !== expectedCommit) {
+    throw new Error(
+      'browser runtime build commit did not match the requested qualification commit',
+    );
+  }
+  if (manifest.source_dirty) {
+    throw new Error('browser runtime build was dirty and cannot produce qualification evidence');
+  }
+}
+
+function resolvedSourceProvenance(): SourceProvenance {
+  const resolvedCommit = process.env.AXON_RUNTIME_BUILD_RESOLVED_COMMIT;
+  const resolvedDirty = process.env.AXON_RUNTIME_BUILD_RESOLVED_DIRTY;
+  if (resolvedCommit !== undefined || resolvedDirty !== undefined) {
+    return {
+      sourceCommit: resolvedCommit && /^[0-9a-f]{40}$/.test(resolvedCommit) ? resolvedCommit : null,
+      sourceDirty: resolvedDirty !== 'false',
+    };
+  }
+  const commit = git(['rev-parse', 'HEAD']);
+  const status = git(['status', '--porcelain', '--untracked-files=all']);
+  return {
+    sourceCommit: commit && /^[0-9a-f]{40}$/.test(commit) ? commit : null,
+    sourceDirty: status === null || status.length > 0,
+  };
+}
+
+function git(args: string[]): string | null {
+  const result = spawnSync('git', args, { encoding: 'utf8' });
+  if (result.status !== 0 || result.error) return null;
+  return result.stdout.trim();
+}
+
 function runBuild(): void {
-  const environment = process.env;
+  const provenance = resolvedSourceProvenance();
+  const expectedCommit = process.env.AXON_RUNTIME_BUILD_SOURCE_COMMIT;
+  if (expectedCommit && provenance.sourceCommit !== expectedCommit) {
+    throw new Error('resolved Axon source commit did not match AXON_RUNTIME_BUILD_SOURCE_COMMIT');
+  }
+  if (process.env.AXON_RUNTIME_BUILD_REQUIRE_CLEAN === '1' && provenance.sourceDirty) {
+    throw new Error('Axon qualification build requires a clean source checkout');
+  }
+  const environment = {
+    ...process.env,
+    AXON_RUNTIME_BUILD_RESOLVED_COMMIT: provenance.sourceCommit ?? '',
+    AXON_RUNTIME_BUILD_RESOLVED_DIRTY: String(provenance.sourceDirty),
+  };
   run('npm', ['run', 'build:fixture'], environment);
   run('npm', ['run', 'build:wasm'], environment);
   run('npm', ['exec', '--', 'tsc', '--noEmit'], environment);
