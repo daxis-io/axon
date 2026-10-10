@@ -279,7 +279,7 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Install verifier dependencies
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ripgrep
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ripgrep brotli
 
       - name: Restore cargo cache
         uses: Swatinem/rust-cache@v2
@@ -301,6 +301,11 @@ jobs:
       - name: Build and verify the spill-capable browser artifact
         working-directory: apps/axon-web
         run: npm run build
+
+      - name: Enforce the shipped WASM name-section and Brotli budget gate
+        run: |
+          bash tests/perf/report_shipped_wasm_size_test.sh
+          bash tests/perf/report_shipped_wasm_size.sh apps/axon-web/dist
 
       - name: Run browser unit tests
         working-directory: apps/axon-web
