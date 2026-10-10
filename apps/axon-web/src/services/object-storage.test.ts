@@ -5,6 +5,7 @@ import {
   BrowserHttpSnapshotDescriptorSchema,
 } from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 import {
+  buildPublicDeltaLogManifest,
   clearPublicObjectStorageRuntimeCache,
   lookupPublicObjectStorageRuntimeCache,
   parsePublicObjectStorageTableRoot,
@@ -185,18 +186,7 @@ describe('public object storage Delta data file URLs', () => {
       provider: 's3',
       tableUri: root.tableUri,
       region: 'us-east-1',
-      fetch: async () =>
-        new Response(
-          `<?xml version="1.0" encoding="UTF-8"?>
-          <ListBucketResult>
-            <IsTruncated>false</IsTruncated>
-            <Contents>
-              <Key>tables/events/_delta_log/00000000000000000000.json</Key>
-              <Size>512</Size>
-            </Contents>
-          </ListBucketResult>`,
-          { status: 200, headers: { 'content-type': 'application/xml' } },
-        ),
+      fetch: async (input) => listingPage(input),
       resolveDeltaSnapshotFromManifest: async (_manifestJson, tableUri) =>
         JSON.stringify({
           table_uri: tableUri,
@@ -213,6 +203,160 @@ describe('public object storage Delta data file URLs', () => {
     );
     expect(descriptor.activeFiles.map((file) => objectKeyRequestedBy(root, file.url))).toEqual(
       ENCODED_DELTA_ADD_PATHS.map(({ objectKey }) => objectKey),
+    );
+  });
+});
+
+// A listing page in the S3/GCS ListObjectsV2 shape, answered from the requested URL.
+function listingPage(
+  input: RequestInfo | URL,
+  options: { firstVersion?: number; keys?: number; token?: string } = {},
+): Response {
+  const firstVersion = options.firstVersion ?? 0;
+  const contents = Array.from(
+    { length: options.keys ?? 1 },
+    (_, index) =>
+      `<Contents><Key>tables/events/_delta_log/${String(firstVersion + index).padStart(20, '0')}.json</Key><Size>100</Size></Contents>`,
+  ).join('');
+  const token = options.token
+    ? `<NextContinuationToken>${options.token}</NextContinuationToken>`
+    : '';
+  return withResponseUrl(
+    new Response(
+      `<ListBucketResult><IsTruncated>${options.token ? 'true' : 'false'}</IsTruncated>${contents}${token}</ListBucketResult>`,
+      { status: 200 },
+    ),
+    String(input),
+  );
+}
+
+function withResponseUrl(response: Response, url: string, redirected = false): Response {
+  Object.defineProperties(response, {
+    url: { value: url, configurable: true },
+    redirected: { value: redirected, configurable: true },
+  });
+  return response;
+}
+
+// Stops a listing that the code under test fails to bound, so a missing bound fails the test
+// instead of hanging it.
+function boundedFetch(handler: (input: RequestInfo | URL, request: number) => Response) {
+  let requests = 0;
+  const inits: Array<RequestInit | undefined> = [];
+  const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    requests += 1;
+    inits.push(init);
+    if (requests > 500) throw new Error('listing was not bounded');
+    return handler(input, requests);
+  }) as typeof globalThis.fetch;
+  return { fetch, inits, requests: () => requests };
+}
+
+describe('public S3/GCS Delta log discovery bounds', () => {
+  const s3Root = PUBLIC_ROOTS[0]!;
+  const gcsRoot = PUBLIC_ROOTS[1]!;
+
+  it('lists every page anonymously without following redirects', async () => {
+    const listing = boundedFetch((input, request) =>
+      listingPage(input, {
+        firstVersion: (request - 1) * 1000,
+        keys: 1000,
+        token: request < 3 ? `page-${request + 1}` : undefined,
+      }),
+    );
+
+    const manifest = await buildPublicDeltaLogManifest(gcsRoot, { fetch: listing.fetch });
+
+    expect(manifest.objects).toHaveLength(3000);
+    expect(manifest.list_request_count).toBe(3);
+    for (const init of listing.inits) {
+      expect(init).toMatchObject({ credentials: 'omit', redirect: 'error' });
+    }
+  });
+
+  it.each([
+    ['a cross-origin redirect', 'https://attacker.example/listing', true, /cross-origin redirect/],
+    ['a same-origin redirect', 'https://storage.googleapis.com/other-bucket', true, /redirect/],
+    ['an unverifiable response URL', '', false, /unverifiable response URL/],
+  ])('rejects %s', async (_label, responseUrl, redirected, message) => {
+    const listing = boundedFetch(() =>
+      withResponseUrl(listingPage('https://unused.example/'), responseUrl, redirected),
+    );
+
+    await expect(buildPublicDeltaLogManifest(gcsRoot, { fetch: listing.fetch })).rejects.toThrow(
+      message,
+    );
+  });
+
+  it('rejects a repeated continuation token', async () => {
+    const listing = boundedFetch((input, request) =>
+      listingPage(input, { firstVersion: request, token: 'same-token' }),
+    );
+
+    await expect(buildPublicDeltaLogManifest(s3Root, { fetch: listing.fetch })).rejects.toThrow(
+      /repeated a continuation token/,
+    );
+    expect(listing.requests()).toBe(2);
+  });
+
+  it('rejects a listing beyond the browser object limit', async () => {
+    const listing = boundedFetch((input, request) =>
+      listingPage(input, {
+        firstVersion: (request - 1) * 1000,
+        keys: 1000,
+        token: request < 60 ? `page-${request + 1}` : undefined,
+      }),
+    );
+
+    await expect(buildPublicDeltaLogManifest(s3Root, { fetch: listing.fetch })).rejects.toThrow(
+      /object limit/,
+    );
+    expect(listing.requests()).toBeLessThanOrEqual(51);
+  });
+
+  it('rejects a listing that never stops paginating', async () => {
+    const listing = boundedFetch((input, request) =>
+      listingPage(input, { keys: 0, token: `page-${request + 1}` }),
+    );
+
+    await expect(buildPublicDeltaLogManifest(s3Root, { fetch: listing.fetch })).rejects.toThrow(
+      /maximum page count/,
+    );
+    expect(listing.requests()).toBeLessThanOrEqual(100);
+  });
+
+  it('stops reading a listing page beyond the maximum byte size', async () => {
+    let pulledChunks = 0;
+    const listing = boundedFetch((input) => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulledChunks += 1;
+          if (pulledChunks > 12) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(new Uint8Array(1024 * 1024).fill(0x20));
+        },
+      });
+      return withResponseUrl(new Response(body, { status: 200 }), String(input));
+    });
+
+    await expect(buildPublicDeltaLogManifest(s3Root, { fetch: listing.fetch })).rejects.toThrow(
+      /maximum byte size/,
+    );
+    expect(pulledChunks).toBeLessThanOrEqual(10);
+  });
+
+  it('times out a listing that does not finish within its deadline', async () => {
+    const fetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError')),
+        );
+      })) as typeof globalThis.fetch;
+
+    await expect(buildPublicDeltaLogManifest(s3Root, { fetch, timeoutMs: 20 })).rejects.toThrow(
+      /timed out/,
     );
   });
 });

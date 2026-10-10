@@ -117,6 +117,15 @@ const DEFAULT_RUNTIME_CACHE_TTL_MS = 2 * 60 * 1000;
 const MAX_PUBLIC_R2_INDEX_BYTES = 8 * 1024 * 1024;
 const MAX_PUBLIC_R2_INDEX_OBJECTS = 50_000;
 const DEFAULT_PUBLIC_R2_INDEX_TIMEOUT_MS = 30_000;
+// Public S3/GCS discovery lists the Delta log page by page. It admits as many log objects as one
+// R2 index, reads each page under the R2 index byte limit and finishes within the R2 index
+// deadline; the page cap leaves room for short pages.
+const PUBLIC_LIST_PAGE_MAX_KEYS = 1000;
+const MAX_PUBLIC_DELTA_LOG_LIST_OBJECTS = MAX_PUBLIC_R2_INDEX_OBJECTS;
+const MAX_PUBLIC_DELTA_LOG_LIST_PAGES =
+  (2 * MAX_PUBLIC_DELTA_LOG_LIST_OBJECTS) / PUBLIC_LIST_PAGE_MAX_KEYS;
+const MAX_PUBLIC_DELTA_LOG_LIST_PAGE_BYTES = MAX_PUBLIC_R2_INDEX_BYTES;
+const DEFAULT_PUBLIC_DELTA_LOG_LIST_TIMEOUT_MS = DEFAULT_PUBLIC_R2_INDEX_TIMEOUT_MS;
 const publicObjectStorageRuntimeCache = new Map<string, PublicObjectStorageRuntimeCacheEntry>();
 
 type ResolvedPublicSnapshot = {
@@ -384,29 +393,77 @@ export async function buildPublicDeltaLogManifest(
   }
 
   const objects: PublicDeltaLogManifestObject[] = [];
+  const seenContinuationTokens = new Set<string>();
   let continuationToken: string | undefined;
   let listRequestCount = 0;
   const listStartedAt = nowMs();
+  const deadline = publicDiscoveryDeadline(
+    options.signal,
+    options.timeoutMs ?? DEFAULT_PUBLIC_DELTA_LOG_LIST_TIMEOUT_MS,
+  );
 
-  do {
-    throwIfPublicObjectStorageAborted(options.signal);
-    listRequestCount += 1;
-    const response = await fetcher(publicObjectStorageListUrl(root, continuationToken), {
-      credentials: 'omit',
-      signal: options.signal,
-    });
-    throwIfPublicObjectStorageAborted(options.signal);
-    if (!response.ok) {
-      throw accessFailed(
-        `public object storage Delta log listing failed (HTTP ${response.status})`,
+  try {
+    do {
+      throwIfPublicObjectStorageAborted(options.signal);
+      if (listRequestCount >= MAX_PUBLIC_DELTA_LOG_LIST_PAGES) {
+        throw accessFailed(
+          'public object storage Delta log listing exceeded the maximum page count',
+        );
+      }
+      listRequestCount += 1;
+      const listUrl = publicObjectStorageListUrl(root, continuationToken);
+      const response = await fetcher(listUrl, {
+        credentials: 'omit',
+        redirect: 'error',
+        signal: deadline.signal,
+      });
+      throwIfPublicObjectStorageAborted(options.signal);
+      rejectRedirectedResponse(response, listUrl, 'public object storage Delta log listing');
+      if (!response.ok) {
+        throw accessFailed(
+          `public object storage Delta log listing failed (HTTP ${response.status})`,
+        );
+      }
+      const pageTooLarge =
+        'public object storage Delta log listing page exceeded the maximum byte size';
+      if (declaredContentLength(response) > MAX_PUBLIC_DELTA_LOG_LIST_PAGE_BYTES) {
+        throw accessFailed(pageTooLarge);
+      }
+
+      const page = parseObjectStorageListResponse(
+        await readBoundedText(
+          response,
+          MAX_PUBLIC_DELTA_LOG_LIST_PAGE_BYTES,
+          deadline.signal,
+          pageTooLarge,
+        ),
       );
+      throwIfPublicObjectStorageAborted(options.signal);
+      if (objects.length + page.keys.length > MAX_PUBLIC_DELTA_LOG_LIST_OBJECTS) {
+        throw accessFailed(
+          'public object storage Delta log listing exceeded the browser object limit',
+        );
+      }
+      for (const entry of page.keys) objects.push(deltaLogObjectFromListEntry(root, entry));
+      continuationToken = page.nextContinuationToken;
+      if (continuationToken !== undefined) {
+        if (seenContinuationTokens.has(continuationToken)) {
+          throw accessFailed(
+            'public object storage Delta log listing repeated a continuation token',
+          );
+        }
+        seenContinuationTokens.add(continuationToken);
+      }
+    } while (continuationToken);
+  } catch (error) {
+    if (deadline.timedOut()) {
+      throw accessFailed('public object storage Delta log listing timed out');
     }
-
-    const page = parseObjectStorageListResponse(await response.text());
     throwIfPublicObjectStorageAborted(options.signal);
-    objects.push(...page.keys.map((entry) => deltaLogObjectFromListEntry(root, entry)));
-    continuationToken = page.nextContinuationToken;
-  } while (continuationToken);
+    throw error;
+  } finally {
+    deadline.dispose();
+  }
 
   if (objects.length === 0) {
     throw accessFailed('public object storage table root did not expose Delta log objects');
@@ -428,7 +485,7 @@ async function buildPublicR2DeltaLogManifest(
   throwIfPublicObjectStorageAborted(options.signal);
   const startedAt = nowMs();
   const indexUrl = publicObjectUrl(root, '_axon/public-delta-log-index.json');
-  const deadline = publicR2IndexDeadline(
+  const deadline = publicDiscoveryDeadline(
     options.signal,
     options.timeoutMs ?? DEFAULT_PUBLIC_R2_INDEX_TIMEOUT_MS,
   );
@@ -439,7 +496,7 @@ async function buildPublicR2DeltaLogManifest(
       signal: deadline.signal,
     });
     throwIfPublicObjectStorageAborted(options.signal);
-    rejectPublicR2Redirect(response, indexUrl);
+    rejectRedirectedResponse(response, indexUrl, 'public R2 Delta log index');
     if (!response.ok) {
       if (response.status === 404) {
         throw accessFailed(
@@ -449,18 +506,15 @@ async function buildPublicR2DeltaLogManifest(
       throw accessFailed(`public R2 Delta log index request failed (HTTP ${response.status})`);
     }
 
-    const declaredLength = response.headers.get('content-length');
-    if (declaredLength !== null) {
-      const bytes = Number(declaredLength);
-      if (Number.isSafeInteger(bytes) && bytes > MAX_PUBLIC_R2_INDEX_BYTES) {
-        throw accessFailed('public R2 Delta log index exceeded the maximum byte size');
-      }
+    const indexTooLarge = 'public R2 Delta log index exceeded the maximum byte size';
+    if (declaredContentLength(response) > MAX_PUBLIC_R2_INDEX_BYTES) {
+      throw accessFailed(indexTooLarge);
     }
 
     let value: unknown;
     try {
       value = JSON.parse(
-        await readPublicR2IndexText(response, MAX_PUBLIC_R2_INDEX_BYTES, deadline.signal),
+        await readBoundedText(response, MAX_PUBLIC_R2_INDEX_BYTES, deadline.signal, indexTooLarge),
       );
     } catch (error) {
       if (deadline.timedOut()) throw error;
@@ -582,15 +636,23 @@ export function parsePublicDeltaLogIndexV1(
   );
 }
 
-async function readPublicR2IndexText(
+function declaredContentLength(response: Response): number {
+  const declaredLength = response.headers.get('content-length');
+  if (declaredLength === null) return 0;
+  const bytes = Number(declaredLength);
+  return Number.isSafeInteger(bytes) ? bytes : 0;
+}
+
+async function readBoundedText(
   response: Response,
   maxBytes: number,
   signal: AbortSignal | undefined,
+  tooLargeMessage: string,
 ): Promise<string> {
   if (!response.body) {
     const text = await response.text();
     if (new TextEncoder().encode(text).byteLength > maxBytes) {
-      throw accessFailed('public R2 Delta log index exceeded the maximum byte size');
+      throw accessFailed(tooLargeMessage);
     }
     return text;
   }
@@ -602,12 +664,12 @@ async function readPublicR2IndexText(
   try {
     while (true) {
       throwIfPublicObjectStorageAborted(signal);
-      const { done, value } = await readPublicR2IndexChunk(reader, signal);
+      const { done, value } = await readBoundedChunk(reader, signal);
       if (done) break;
       byteLength += value.byteLength;
       if (byteLength > maxBytes) {
         await reader.cancel();
-        throw accessFailed('public R2 Delta log index exceeded the maximum byte size');
+        throw accessFailed(tooLargeMessage);
       }
       text += decoder.decode(value, { stream: true });
     }
@@ -617,7 +679,7 @@ async function readPublicR2IndexText(
   }
 }
 
-async function readPublicR2IndexChunk(
+async function readBoundedChunk(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   signal: AbortSignal | undefined,
 ): Promise<ReadableStreamReadResult<Uint8Array>> {
@@ -647,9 +709,9 @@ async function readPublicR2IndexChunk(
   });
 }
 
-function rejectPublicR2Redirect(response: Response, requestedUrl: string): void {
+function rejectRedirectedResponse(response: Response, requestedUrl: string, subject: string): void {
   if (!response.url) {
-    throw accessFailed('public R2 Delta log index returned an unverifiable response URL');
+    throw accessFailed(`${subject} returned an unverifiable response URL`);
   }
   let responseOrigin: string;
   let requestedOrigin: string;
@@ -657,17 +719,17 @@ function rejectPublicR2Redirect(response: Response, requestedUrl: string): void 
     responseOrigin = new URL(response.url).origin;
     requestedOrigin = new URL(requestedUrl).origin;
   } catch {
-    throw accessFailed('public R2 Delta log index returned an invalid response URL');
+    throw accessFailed(`${subject} returned an invalid response URL`);
   }
   if (response.url !== requestedUrl || response.redirected) {
     if (responseOrigin === requestedOrigin) {
-      throw accessFailed('public R2 Delta log index rejected a redirect');
+      throw accessFailed(`${subject} rejected a redirect`);
     }
-    throw accessFailed('public R2 Delta log index rejected a cross-origin redirect');
+    throw accessFailed(`${subject} rejected a cross-origin redirect`);
   }
 }
 
-function publicR2IndexDeadline(
+function publicDiscoveryDeadline(
   parent: AbortSignal | undefined,
   timeoutMs: number,
 ): {
@@ -682,7 +744,7 @@ function publicR2IndexDeadline(
   else parent?.addEventListener('abort', abortFromParent, { once: true });
   const timer = setTimeout(() => {
     didTimeOut = true;
-    controller.abort(new DOMException('public R2 index request timed out', 'TimeoutError'));
+    controller.abort(new DOMException('public object storage discovery timed out', 'TimeoutError'));
   }, timeoutMs);
   return {
     signal: controller.signal,
@@ -1011,7 +1073,7 @@ function publicObjectStorageListUrl(
       : new URL(`https://storage.googleapis.com/${encodeObjectPath(root.bucket)}`);
   url.searchParams.set('list-type', '2');
   url.searchParams.set('prefix', `${root.prefix}/_delta_log/`);
-  url.searchParams.set('max-keys', '1000');
+  url.searchParams.set('max-keys', String(PUBLIC_LIST_PAGE_MAX_KEYS));
   if (continuationToken) {
     url.searchParams.set('continuation-token', continuationToken);
   }
