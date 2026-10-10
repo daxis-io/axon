@@ -1060,6 +1060,145 @@ async fn rejects_deletion_vectors_without_a_storage_identity() {
     assert_eq!(error.code, QueryErrorCode::ExecutionFailed);
 }
 
+#[tokio::test]
+async fn multipart_checkpoint_ignores_a_leftover_set_with_more_parts() {
+    // A failed checkpoint attempt can leave parts of a larger set beside the complete set later
+    // written at the same version. Parts of the two sets must never be combined.
+    let fixture = TempDir::new().expect("tempdir should be created");
+    write_multipart_checkpoint_adds(
+        fixture.path(),
+        1,
+        2,
+        &[(1, "data/a.parquet"), (2, "data/b.parquet")],
+    );
+    write_multipart_checkpoint_adds(
+        fixture.path(),
+        1,
+        3,
+        &[(1, "data/x.parquet"), (3, "data/y.parquet")],
+    );
+
+    for parts in [None, Some(2)] {
+        write_last_checkpoint(fixture.path(), 1, parts);
+        let snapshot = resolve_local_snapshot(fixture.path())
+            .await
+            .expect("snapshot should resolve");
+
+        assert_eq!(
+            active_paths(&snapshot),
+            vec!["data/a.parquet", "data/b.parquet"],
+            "_last_checkpoint parts {parts:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn multipart_checkpoint_ignores_a_leftover_first_part_of_a_larger_set() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    write_multipart_checkpoint_adds(
+        fixture.path(),
+        1,
+        3,
+        &[
+            (1, "data/a.parquet"),
+            (2, "data/b.parquet"),
+            (3, "data/c.parquet"),
+        ],
+    );
+    write_multipart_checkpoint_adds(fixture.path(), 1, 4, &[(1, "data/x.parquet")]);
+
+    for parts in [None, Some(3), Some(4)] {
+        write_last_checkpoint(fixture.path(), 1, parts);
+        let snapshot = resolve_local_snapshot(fixture.path())
+            .await
+            .expect("snapshot should resolve");
+
+        assert_eq!(
+            active_paths(&snapshot),
+            vec!["data/a.parquet", "data/b.parquet", "data/c.parquet"],
+            "_last_checkpoint parts {parts:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn multipart_checkpoint_keeps_a_complete_set_beside_an_incomplete_larger_one() {
+    // Without the complete set the version would have no checkpoint, and replay would need commit
+    // files that log cleanup already removed.
+    let fixture = TempDir::new().expect("tempdir should be created");
+    write_multipart_checkpoint_adds(
+        fixture.path(),
+        1,
+        2,
+        &[(1, "data/a.parquet"), (2, "data/b.parquet")],
+    );
+    write_multipart_checkpoint_adds(
+        fixture.path(),
+        1,
+        3,
+        &[(1, "data/x.parquet"), (2, "data/y.parquet")],
+    );
+
+    let snapshot = resolve_local_snapshot(fixture.path())
+        .await
+        .expect("snapshot should resolve");
+
+    assert_eq!(
+        active_paths(&snapshot),
+        vec!["data/a.parquet", "data/b.parquet"]
+    );
+}
+
+#[tokio::test]
+async fn multipart_checkpoint_selection_follows_the_hint_between_complete_sets() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    write_multipart_checkpoint_adds(
+        fixture.path(),
+        1,
+        2,
+        &[(1, "data/a.parquet"), (2, "data/b.parquet")],
+    );
+    write_multipart_checkpoint_adds(
+        fixture.path(),
+        1,
+        3,
+        &[
+            (1, "data/c.parquet"),
+            (2, "data/d.parquet"),
+            (3, "data/e.parquet"),
+        ],
+    );
+
+    // A hint whose part count matches no complete set falls back to the same deterministic choice
+    // as no hint: the set with more parts.
+    for (parts, expected) in [
+        (Some(2), vec!["data/a.parquet", "data/b.parquet"]),
+        (
+            Some(3),
+            vec!["data/c.parquet", "data/d.parquet", "data/e.parquet"],
+        ),
+        (
+            Some(5),
+            vec!["data/c.parquet", "data/d.parquet", "data/e.parquet"],
+        ),
+        (
+            None,
+            vec!["data/c.parquet", "data/d.parquet", "data/e.parquet"],
+        ),
+    ] {
+        write_last_checkpoint(fixture.path(), 1, parts);
+        let snapshot = resolve_local_snapshot(fixture.path())
+            .await
+            .expect("snapshot should resolve");
+
+        assert_eq!(
+            active_paths(&snapshot),
+            expected,
+            "_last_checkpoint parts {parts:?}"
+        );
+    }
+}
+
 async fn resolve_local_snapshot(root: &Path) -> Result<ResolvedSnapshotDescriptor, QueryError> {
     SnapshotResolver::new(
         LocalFileStorageHandler::default(),
@@ -1290,6 +1429,18 @@ fn write_multipart_checkpoint_part(
         )),
         rows,
     );
+}
+
+fn write_multipart_checkpoint_adds(root: &Path, version: u64, parts: u32, adds: &[(u32, &str)]) {
+    for (part, path) in adds {
+        write_multipart_checkpoint_part(
+            root,
+            version,
+            *part,
+            parts,
+            &[CheckpointRow::add(*path, 10, BTreeMap::new())],
+        );
+    }
 }
 
 fn write_sidecar(root: &Path, filename: &str, rows: &[CheckpointRow]) {

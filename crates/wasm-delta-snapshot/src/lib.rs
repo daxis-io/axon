@@ -418,9 +418,9 @@ where
         }
 
         Ok(grouped
-            .into_values()
-            .filter(|candidate| candidate.version <= target_version)
-            .max_by_key(|candidate| candidate.version))
+            .range(..=target_version)
+            .next_back()
+            .and_then(|(_, candidates)| candidates.first().cloned()))
     }
 
     async fn read_last_checkpoint_hint(
@@ -599,39 +599,41 @@ struct SelectedCheckpoint {
 struct CheckpointAccumulator {
     single_path: Option<String>,
     uuid_path: Option<String>,
-    multipart_paths: BTreeMap<u32, String>,
-    multipart_total_parts: Option<u32>,
+    // Multipart parts keyed by the part count their file names declare, then by part number. A
+    // failed checkpoint attempt can leave a partial set beside a complete set of another size at
+    // the same version, and parts of different sets must never be combined.
+    multipart_sets: BTreeMap<u32, BTreeMap<u32, String>>,
 }
 
 impl CheckpointAccumulator {
-    fn into_selected(self, version: i64) -> Option<SelectedCheckpoint> {
-        if let Some(path) = self.uuid_path.or(self.single_path) {
-            return Some(SelectedCheckpoint {
+    // Complete checkpoints at this version, most preferred first: a UUID-named checkpoint, then a
+    // classic single file, then multipart sets with more parts first, the order delta-kernel uses
+    // to choose between multipart sets. Incomplete multipart sets are dropped.
+    fn into_candidates(self, version: i64) -> Vec<SelectedCheckpoint> {
+        let mut candidates = [self.uuid_path, self.single_path]
+            .into_iter()
+            .flatten()
+            .map(|path| SelectedCheckpoint {
                 version,
                 display_path: path.clone(),
                 part_paths: vec![path],
-            });
+            })
+            .collect::<Vec<_>>();
+
+        for (total_parts, mut parts) in self.multipart_sets.into_iter().rev() {
+            let part_paths = (1..=total_parts)
+                .map(|part| parts.remove(&part))
+                .collect::<Option<Vec<_>>>();
+            if let Some(part_paths) = part_paths.filter(|part_paths| !part_paths.is_empty()) {
+                candidates.push(SelectedCheckpoint {
+                    version,
+                    display_path: part_paths[0].clone(),
+                    part_paths,
+                });
+            }
         }
 
-        let total_parts = self.multipart_total_parts?;
-        if total_parts == 0 {
-            return None;
-        }
-
-        let mut part_paths = Vec::with_capacity(total_parts as usize);
-        for part in 1..=total_parts {
-            let path = self.multipart_paths.get(&part)?.clone();
-            part_paths.push(path);
-        }
-
-        Some(SelectedCheckpoint {
-            version,
-            display_path: part_paths
-                .first()
-                .cloned()
-                .unwrap_or_else(|| format!("{DELTA_LOG_DIR}/{version:020}.checkpoint.parquet")),
-            part_paths,
-        })
+        candidates
     }
 }
 
@@ -1261,7 +1263,9 @@ fn is_uuid_like(value: &str) -> bool {
     groups.next().is_none()
 }
 
-fn group_checkpoints(entries: &[LogEntry]) -> BTreeMap<i64, SelectedCheckpoint> {
+// Complete checkpoint candidates per version, most preferred first. Versions without a complete
+// checkpoint are absent, so selection falls back to the newest older complete checkpoint.
+fn group_checkpoints(entries: &[LogEntry]) -> BTreeMap<i64, Vec<SelectedCheckpoint>> {
     let mut grouped = BTreeMap::new();
     for entry in entries {
         let accumulator = grouped
@@ -1272,9 +1276,10 @@ fn group_checkpoints(entries: &[LogEntry]) -> BTreeMap<i64, SelectedCheckpoint> 
             LogKind::UuidCheckpoint => accumulator.uuid_path = Some(entry.path.clone()),
             LogKind::MultiPartCheckpoint { part, total_parts } => {
                 accumulator
-                    .multipart_paths
+                    .multipart_sets
+                    .entry(*total_parts)
+                    .or_default()
                     .insert(*part, entry.path.clone());
-                accumulator.multipart_total_parts = Some(*total_parts);
             }
             LogKind::Commit => {}
         }
@@ -1282,25 +1287,25 @@ fn group_checkpoints(entries: &[LogEntry]) -> BTreeMap<i64, SelectedCheckpoint> 
 
     grouped
         .into_iter()
-        .filter_map(|(version, candidate)| {
-            candidate
-                .into_selected(version)
-                .map(|candidate| (version, candidate))
-        })
+        .map(|(version, accumulator)| (version, accumulator.into_candidates(version)))
+        .filter(|(_, candidates)| !candidates.is_empty())
         .collect()
 }
 
+// Uses the complete checkpoint _last_checkpoint names. When its part count matches no complete
+// checkpoint at that version, the caller falls back to the default choice.
 fn selected_checkpoint_from_hint(
-    grouped: &BTreeMap<i64, SelectedCheckpoint>,
+    grouped: &BTreeMap<i64, Vec<SelectedCheckpoint>>,
     hint: &LastCheckpointHint,
 ) -> Option<SelectedCheckpoint> {
-    let checkpoint = grouped.get(&hint.version)?.clone();
-    if let Some(parts) = hint.parts {
-        if checkpoint.part_paths.len() != parts as usize {
-            return None;
-        }
+    let candidates = grouped.get(&hint.version)?;
+    match hint.parts {
+        Some(parts) => candidates
+            .iter()
+            .find(|candidate| candidate.part_paths.len() == parts as usize)
+            .cloned(),
+        None => candidates.first().cloned(),
     }
-    Some(checkpoint)
 }
 
 fn apply_actions(
