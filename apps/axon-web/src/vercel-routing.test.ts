@@ -1,7 +1,9 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
 import {
+  vercelPreviewMiddleware,
   vercelRewriteDestination,
   vercelSourcePattern,
   type VercelRoutingConfig,
@@ -72,5 +74,59 @@ describe('production host routing (vercel.json)', () => {
     expect(vercelSourcePattern('/(.*).wasm').test('/assets/engine-1a2b.wasm')).toBe(true);
     expect(() => vercelSourcePattern('/catalog/:id(\\d+)')).toThrow(/unsupported/);
     expect(() => vercelSourcePattern('catalog')).toThrow(/unsupported/);
+  });
+});
+
+describe('production host routing in vite preview', () => {
+  const outDir = mkdtempSync(join(tmpdir(), 'axon-preview-dist-'));
+  mkdirSync(join(outDir, 'assets'));
+  writeFileSync(join(outDir, 'index.html'), '<!doctype html>');
+  writeFileSync(join(outDir, 'assets', 'engine-1a2b.wasm'), 'wasm');
+  writeFileSync(join(outDir, 'assets', 'editor-1a2b.js'), 'js');
+  afterAll(() => rmSync(outDir, { recursive: true, force: true }));
+
+  function serve(url: string) {
+    const request = { url };
+    const response = {
+      statusCode: 200,
+      headers: {} as Record<string, string>,
+      body: undefined as string | undefined,
+      setHeader(name: string, value: string) {
+        this.headers[name.toLowerCase()] = value;
+      },
+      end(body?: string) {
+        this.body = body;
+      },
+    };
+    let passedOn = false;
+    vercelPreviewMiddleware(vercel, outDir)(request, response, () => {
+      passedOn = true;
+    });
+    return { url: request.url, passedOn, response };
+  }
+
+  it('serves built files with the production headers', () => {
+    const wasm = serve('/assets/engine-1a2b.wasm');
+    expect(wasm.passedOn).toBe(true);
+    expect(wasm.url).toBe('/assets/engine-1a2b.wasm');
+    expect(wasm.response.headers['content-type']).toBe('application/wasm');
+    expect(wasm.response.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+  });
+
+  it('rewrites application routes to the SPA entry', () => {
+    const route = serve(
+      `${catalogTableSqlPath(createSampleFixtureCanonicalTable('events'))}?tab=1`,
+    );
+    expect(route.passedOn).toBe(true);
+    expect(route.url).toBe('/index.html?tab=1');
+  });
+
+  it('answers paths with no file and no rewrite with the host NOT_FOUND page', () => {
+    for (const path of ['/assets/missing-1a2b.js', '/unknown', '/assets/../../vercel.json']) {
+      const missing = serve(path);
+      expect(missing.passedOn, path).toBe(false);
+      expect(missing.response.statusCode, path).toBe(404);
+      expect(missing.response.body, path).toContain('NOT_FOUND');
+    }
   });
 });

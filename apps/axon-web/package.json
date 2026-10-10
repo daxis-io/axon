@@ -33,6 +33,7 @@
     "test:sdk": "playwright test --config=playwright.sdk.config.ts",
     "test:browser": "npm run test:e2e",
     "test:browser:editor-smoke": "playwright test --config=playwright.editor-smoke.config.ts",
+    "test:browser:production-bundle": "playwright test --config=playwright.production-bundle.config.ts",
     "test:browser:public-gcs-live": "playwright test --config=playwright.public-gcs-live.config.ts",
     "test:browser:public-s3-live": "playwright test --config=playwright.public-s3-live.config.ts",
     "test:browser:public-r2-live": "playwright test --config=playwright.public-r2-live.config.ts",

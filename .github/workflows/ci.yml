@@ -322,13 +322,21 @@ jobs:
         working-directory: apps/axon-web
         run: npm test
 
+      - name: Run the browser SDK suite
+        working-directory: apps/axon-web
+        run: npm run test:sdk
+
       - name: Run page-index v2 fixture source gate
         working-directory: apps/axon-web
         run: npm run test:page-index-v2-fixture
 
-      - name: Install Chromium for external-memory qualification
+      - name: Install Chromium for the bundle smoke and external-memory qualification
         working-directory: apps/axon-web
         run: npx playwright install --with-deps chromium
+
+      - name: Query the built bundle under production routing and headers
+        working-directory: apps/axon-web
+        run: npm run test:browser:production-bundle
 
       - name: Run the ten-spill memory qualification
         working-directory: apps/axon-web

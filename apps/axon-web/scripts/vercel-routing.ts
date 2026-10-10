@@ -5,6 +5,9 @@
 // segments), and parenthesized regular-expression groups. Anything else throws, so a new rule the
 // emulation cannot evaluate fails its tests instead of being silently treated as a non-match.
 
+import { statSync } from 'node:fs';
+import { resolve, sep } from 'node:path';
+
 export type VercelRewrite = { source: string; destination: string };
 export type VercelHeaderRule = { source: string; headers: { key: string; value: string }[] };
 export type VercelRoutingConfig = { rewrites?: VercelRewrite[]; headers?: VercelHeaderRule[] };
@@ -54,4 +57,65 @@ export function vercelRewriteDestination(
   return (config.rewrites ?? []).find((rewrite) =>
     vercelSourcePattern(rewrite.source).test(pathname),
   )?.destination;
+}
+
+/** Every header that the matching `headers` rules attach to a response for this path. */
+export function vercelResponseHeaders(
+  config: VercelRoutingConfig,
+  pathname: string,
+): [string, string][] {
+  return (config.headers ?? [])
+    .filter((rule) => vercelSourcePattern(rule.source).test(pathname))
+    .flatMap((rule) => rule.headers.map(({ key, value }): [string, string] => [key, value]));
+}
+
+type PreviewRequest = { url?: string };
+type PreviewResponse = {
+  statusCode: number;
+  setHeader(name: string, value: string): unknown;
+  end(body?: string): unknown;
+};
+
+/**
+ * Connect middleware for `vite preview` that serves a build the way the production host does: a
+ * built file first, then the first matching rewrite, otherwise a plain-text NOT_FOUND instead of
+ * Vite's SPA fallback. Matching `headers` rules apply to every response.
+ */
+export function vercelPreviewMiddleware(config: VercelRoutingConfig, outDir: string) {
+  const root = resolve(outDir);
+  return (request: PreviewRequest, response: PreviewResponse, next: () => void): void => {
+    const url = new URL(request.url ?? '/', 'http://preview.invalid');
+    for (const [key, value] of vercelResponseHeaders(config, url.pathname)) {
+      response.setHeader(key, value);
+    }
+    if (url.pathname === '/' || isBuiltFile(root, url.pathname)) {
+      next();
+      return;
+    }
+    const destination = vercelRewriteDestination(config, url.pathname);
+    if (destination !== undefined) {
+      request.url = `${destination}${url.search}`;
+      next();
+      return;
+    }
+    response.statusCode = 404;
+    response.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    response.end('The page could not be found\n\nNOT_FOUND\n');
+  };
+}
+
+function isBuiltFile(root: string, pathname: string): boolean {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return false;
+  }
+  const file = resolve(root, `.${decoded}`);
+  if (!file.startsWith(`${root}${sep}`)) return false;
+  try {
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
 }
