@@ -165,6 +165,46 @@ describe('local Delta folders with checkpoint-only capability evidence', () => {
   });
 });
 
+describe('local Delta folders with JSON-commit capability evidence', () => {
+  it('rejects a legacy-protocol change-data-feed table that the commit scan lets through', async () => {
+    // Writer version 4 enables change data feed through table configuration alone, with no
+    // protocol feature list for the JSON-commit scan to reject. The resolver reports it as
+    // native_only, and local folders have no native engine to fall back to.
+    const add = {
+      add: {
+        path: 'part-00000.parquet',
+        partitionValues: {},
+        size: 7,
+        modificationTime: 1_690_885_056_000,
+        dataChange: true,
+        stats: JSON.stringify({ numRecords: 1 }),
+      },
+    };
+
+    await expect(
+      openLocalDeltaTableFromFileList(
+        [
+          tableFile(
+            '_delta_log/00000000000000000000.json',
+            jsonLines(
+              commitInfo('CREATE TABLE'),
+              { protocol: { minReaderVersion: 1, minWriterVersion: 4 } },
+              tableMetadata({ 'delta.enableChangeDataFeed': 'true' }),
+              add,
+            ),
+          ),
+          tableFile('part-00000.parquet', new Uint8Array(7)),
+        ],
+        { registryId: 'json-only-change-data-feed' },
+      ),
+    ).rejects.toMatchObject({
+      name: 'LocalDeltaError',
+      code: 'unsupported_delta_feature',
+      message: 'Selected local Delta table requires unsupported features: change_data_feed.',
+    });
+  });
+});
+
 function tableMetadata(configuration: Record<string, string>) {
   return {
     metaData: {
