@@ -23,6 +23,17 @@ except ModuleNotFoundError as error:
 
 
 COMPONENTS = ("arrow_rs", "object_store", "datafusion", "delta_kernel", "delta_rs")
+# Fields that describe a fork release. A component declared `wasm_closure = "absent"` ships no
+# code in the WASM closure, so it has no release to describe and must not carry any of them.
+RELEASE_FIELDS = (
+    "daxis_url",
+    "release_version",
+    "base_tag",
+    "base_sha",
+    "candidate_sha",
+    "stack_sha",
+    "expected_package_source",
+)
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 TARGET = "wasm32-unknown-unknown"
 
@@ -205,16 +216,62 @@ def verify_no_external_path_packages(packages: Iterable[dict], repo_root: Path) 
             )
 
 
-def verify_final_component(
-    component: str, entry: dict, repo_root: Path, packages: list[dict]
-) -> None:
+def verify_closure_identity(component: str, entry: dict, packages: list[dict]) -> None:
+    """Checks the locked WASM closure against the component's version, source, and stack revision.
+
+    Runs in every mode, so a lock that describes a different stack than the one the closure
+    builds fails even while its release revisions are still UNSET.
+    """
+    patterns = entry["package_patterns"]
+    expected_version = entry["release_version"]
+    expected_source = normalized_git_url(entry["expected_package_source"])
+    stack_sha = entry["stack_sha"]
+    selected = [package for package in packages if matches(str(package.get("name", "")), patterns)]
+    if not selected:
+        fail(f"WASM closure has no package for {component}")
+    identities = {
+        (
+            str(package.get("version", "")),
+            normalized_git_url(str(package.get("source") or "path")),
+            str(package.get("source") or "").rsplit("#", 1)[-1],
+        )
+        for package in selected
+    }
+    if len(identities) != 1:
+        fail(f"WASM closure has multiple source/version identities for {component}: {sorted(identities)}")
+    version, source, revision = next(iter(identities))
+    expected_revision = "" if stack_sha == "UNSET" else stack_sha
+    if (
+        version != expected_version
+        or source != expected_source
+        or (expected_revision and revision != expected_revision)
+    ):
+        fail(
+            f"WASM closure mismatch for {component}: expected {expected_version}@{expected_source}#{stack_sha}, "
+            f"found {version}@{source}#{revision}"
+        )
+
+
+def verify_absent_component(component: str, entry: dict, packages: list[dict]) -> None:
+    linked = sorted(
+        {
+            str(package.get("name", ""))
+            for package in packages
+            if matches(str(package.get("name", "")), entry["package_patterns"])
+        }
+    )
+    if linked:
+        fail(
+            f"{component} is declared absent from the WASM closure, but the closure contains "
+            f"{', '.join(linked)}"
+        )
+
+
+def verify_final_component(component: str, entry: dict, repo_root: Path) -> None:
     base_sha = entry["base_sha"]
     candidate_sha = entry["candidate_sha"]
     stack_sha = entry["stack_sha"]
     daxis_url = entry["daxis_url"]
-    expected_source = normalized_git_url(entry["expected_package_source"])
-    expected_version = entry["release_version"]
-    patterns = entry["package_patterns"]
 
     release = load_toml(repo_root / "wasm-stack.lock.toml")["release"]
     for tag_field in ("candidate_tag", "final_tag"):
@@ -268,26 +325,6 @@ def verify_final_component(
             if commit and author not in signoffs and committer not in signoffs:
                 fail(f"{component} commit has DCO sign-off identity mismatch: {commit}")
 
-    selected = [package for package in packages if matches(str(package.get("name", "")), patterns)]
-    if not selected:
-        fail(f"WASM closure has no package for {component}")
-    identities = {
-        (
-            str(package.get("version", "")),
-            normalized_git_url(str(package.get("source") or "path")),
-            str(package.get("source") or "").rsplit("#", 1)[-1],
-        )
-        for package in selected
-    }
-    if len(identities) != 1:
-        fail(f"WASM closure has multiple source/version identities for {component}: {sorted(identities)}")
-    version, source, revision = next(iter(identities))
-    if version != expected_version or source != expected_source or revision != stack_sha:
-        fail(
-            f"WASM closure mismatch for {component}: expected {expected_version}@{expected_source}#{stack_sha}, "
-            f"found {version}@{source}#{revision}"
-        )
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(add_help=True)
@@ -328,12 +365,29 @@ def main() -> None:
     if not isinstance(components, dict):
         fail("wasm-stack.lock.toml must contain a components table")
     validated: dict[str, dict] = {}
+    absent: dict[str, dict] = {}
     reachable_daxis_urls: set[str] = set()
     has_unset = False
     for component in COMPONENTS:
         entry = components.get(component)
         if not isinstance(entry, dict):
             fail(f"missing component entry: {component}")
+        closure = entry.get("wasm_closure", "present")
+        if closure not in ("present", "absent"):
+            fail(f"{component}.wasm_closure must be present or absent")
+        patterns = entry.get("package_patterns")
+        if not isinstance(patterns, list) or not patterns or not all(isinstance(pattern, str) and pattern for pattern in patterns):
+            fail(f"{component}.package_patterns must be a non-empty string list")
+        if closure == "absent":
+            for field in ("canonical_url", "target_triple"):
+                require_string(entry, component, field)
+            if entry["target_triple"] != TARGET:
+                fail(f"{component}.target_triple must be {TARGET}")
+            for field in RELEASE_FIELDS:
+                if field in entry:
+                    fail(f"{component} is declared absent from the WASM closure and must not carry {field}")
+            absent[component] = entry
+            continue
         for field in (
             "canonical_url",
             "daxis_url",
@@ -355,9 +409,6 @@ def main() -> None:
             ).strip():
                 fail(f"Daxis fork for {component} has no reachable HEAD")
             reachable_daxis_urls.add(entry["daxis_url"])
-        patterns = entry.get("package_patterns")
-        if not isinstance(patterns, list) or not patterns or not all(isinstance(pattern, str) and pattern for pattern in patterns):
-            fail(f"{component}.package_patterns must be a non-empty string list")
         if not REVISION.fullmatch(entry["base_sha"]):
             fail(f"{component}.base_sha must be a 40-character lowercase hexadecimal revision")
         if tag_commit(entry["canonical_url"], entry["base_tag"], require_annotated=False) != entry["base_sha"]:
@@ -383,13 +434,22 @@ def main() -> None:
     metadata = active_metadata(repo_root)
     packages = list(reachable_packages(metadata, wasm_roots))
     verify_no_external_path_packages(packages, repo_root)
+    for component, entry in absent.items():
+        verify_absent_component(component, entry, packages)
+    components_checked = len(validated) + len(absent)
     if args.bootstrap or (args.ci and has_unset):
-        print(f"production WASM stack verified mode=bootstrap components={len(validated)}")
+        for component, entry in validated.items():
+            verify_closure_identity(component, entry, packages)
+        print(f"production WASM stack verified mode=bootstrap components={components_checked}")
         return
 
     for component, entry in validated.items():
-        verify_final_component(component, entry, repo_root, packages)
-    print(f"production WASM stack verified mode=final components={len(validated)} graph_packages={len(packages)}")
+        verify_final_component(component, entry, repo_root)
+        verify_closure_identity(component, entry, packages)
+    print(
+        f"production WASM stack verified mode=final components={components_checked} "
+        f"graph_packages={len(packages)}"
+    )
 
 
 if __name__ == "__main__":

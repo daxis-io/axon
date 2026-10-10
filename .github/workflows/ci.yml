@@ -420,10 +420,15 @@ jobs:
           from pathlib import Path
 
           lock = tomllib.loads(Path("wasm-stack.lock.toml").read_text())
-          components = lock.get("components", {})
-          ready = bool(components) and all(
-              entry.get(field) != "UNSET"
-              for entry in components.values()
+          # Components declared absent from the WASM closure have no fork release to qualify.
+          released = [
+              entry
+              for entry in lock.get("components", {}).values()
+              if entry.get("wasm_closure", "present") != "absent"
+          ]
+          ready = bool(released) and all(
+              entry.get(field) not in (None, "UNSET")
+              for entry in released
               for field in ("candidate_sha", "stack_sha")
           )
           credentials = all(

@@ -2,6 +2,15 @@ schema = 2
 target_triple = "wasm32-unknown-unknown"
 wasm_roots = ["axon-web-wasm"]
 
+# This lock describes the stack that main's axon-web-wasm closure actually builds: the Daxis
+# DataFusion 53.1.0, Arrow/Parquet 58.3.0, and object_store 0.13.2 forks pinned in the root
+# Cargo.toml. Delta Kernel and delta-rs are not linked into the WASM closure, so they are declared
+# absent. Every mode checks versions, sources, and pinned stack revisions against the locked
+# closure. `candidate_sha` stays UNSET until the fork owners publish the release tags, which keeps
+# CI in bootstrap mode. The canonical target stack (DataFusion 55, Arrow 59.3, object_store 0.14.1,
+# Delta Kernel 0.28, deltalake-browser) replaces these entries in the change that moves the
+# closure to it.
+
 [release]
 branch = "axon-wasm/v1"
 candidate_tag = "axon-wasm-v1.0.0-rc.1"
@@ -10,11 +19,11 @@ final_tag = "axon-wasm-v1.0.0"
 [components.arrow_rs]
 canonical_url = "https://github.com/apache/arrow-rs"
 daxis_url = "https://github.com/daxis-io/arrow-rs"
-release_version = "59.3.0"
-base_tag = "59.3.0"
-base_sha = "f90e061326bd821a7af09281d9e92de6f3b603d9"
+release_version = "58.3.0"
+base_tag = "58.3.0"
+base_sha = "913bab26ba9bed8fc2bc1acda300cc52345b0da1"
 candidate_sha = "UNSET"
-stack_sha = "UNSET"
+stack_sha = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99"
 target_triple = "wasm32-unknown-unknown"
 expected_package_source = "https://github.com/daxis-io/arrow-rs"
 package_patterns = ["arrow", "arrow-*", "parquet"]
@@ -22,11 +31,11 @@ package_patterns = ["arrow", "arrow-*", "parquet"]
 [components.object_store]
 canonical_url = "https://github.com/apache/arrow-rs-object-store"
 daxis_url = "https://github.com/daxis-io/arrow-rs-object-store"
-release_version = "0.14.1"
-base_tag = "v0.14.1"
-base_sha = "c7316d29face118e7409eead0cda098f38589428"
+release_version = "0.13.2"
+base_tag = "v0.13.2"
+base_sha = "7a65b75b0d26fd8a282999462cb7030fb85fdcc3"
 candidate_sha = "UNSET"
-stack_sha = "UNSET"
+stack_sha = "ab9fda65805487edf5487e63082cab8111f0a178"
 target_triple = "wasm32-unknown-unknown"
 expected_package_source = "https://github.com/daxis-io/arrow-rs-object-store"
 package_patterns = ["object_store"]
@@ -34,35 +43,23 @@ package_patterns = ["object_store"]
 [components.datafusion]
 canonical_url = "https://github.com/apache/datafusion"
 daxis_url = "https://github.com/daxis-io/datafusion"
-release_version = "55.0.0"
-base_tag = "55.0.0"
-base_sha = "d5552342012888b7d1a3ab88d92e3d292fc0cde0"
+release_version = "53.1.0"
+base_tag = "53.1.0"
+base_sha = "eae7bf4fa1c037c0a065d1f36d0669f5bb97a9cf"
 candidate_sha = "UNSET"
-stack_sha = "UNSET"
+stack_sha = "8c5b4526a6b31ebec56f32c173f14be74240da49"
 target_triple = "wasm32-unknown-unknown"
 expected_package_source = "https://github.com/daxis-io/datafusion"
 package_patterns = ["datafusion", "datafusion-*"]
 
 [components.delta_kernel]
 canonical_url = "https://github.com/delta-io/delta-kernel-rs"
-daxis_url = "https://github.com/daxis-io/delta-kernel-rs"
-release_version = "0.28.0"
-base_tag = "v0.28.0"
-base_sha = "b77d6518b2ae76bcb8796256666ad0de3f7f654b"
-candidate_sha = "UNSET"
-stack_sha = "UNSET"
 target_triple = "wasm32-unknown-unknown"
-expected_package_source = "https://github.com/daxis-io/delta-kernel-rs"
-package_patterns = ["delta_kernel"]
+wasm_closure = "absent"
+package_patterns = ["delta_kernel", "delta_kernel_*", "buoyant_kernel", "buoyant_kernel_*"]
 
 [components.delta_rs]
 canonical_url = "https://github.com/delta-io/delta-rs"
-daxis_url = "https://github.com/daxis-io/delta-rs"
-release_version = "0.32.4"
-base_tag = "rust-v0.32.4"
-base_sha = "df72cc6d3fba014a77243ce80514a6122b46a89b"
-candidate_sha = "UNSET"
-stack_sha = "UNSET"
 target_triple = "wasm32-unknown-unknown"
-expected_package_source = "https://github.com/daxis-io/delta-rs"
-package_patterns = ["deltalake-browser"]
+wasm_closure = "absent"
+package_patterns = ["deltalake", "deltalake-*"]
