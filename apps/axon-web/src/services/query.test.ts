@@ -378,6 +378,28 @@ describe('query failure classification', () => {
     expect(queryFailureInvalidatesSession(invalidatedWorker)).toBe(true);
     expect(queryFailureInvalidatesSession(ordinaryWorkerFailure)).toBe(false);
   });
+
+  it('invalidates the cached session when the worker no longer has the opened table', () => {
+    const missingTable = new AxonWorkerError({
+      request_id: 'execution-missing-table',
+      error: {
+        code: 'invalid_request',
+        message: "browser DataFusion session does not have an open table named 'events'",
+        target: 'browser_wasm',
+      },
+    });
+    const ordinaryInvalidRequest = new AxonWorkerError({
+      request_id: 'execution-invalid',
+      error: {
+        code: 'invalid_request',
+        message: "table 'other' not found",
+        target: 'browser_wasm',
+      },
+    });
+
+    expect(queryFailureInvalidatesSession(missingTable)).toBe(true);
+    expect(queryFailureInvalidatesSession(ordinaryInvalidRequest)).toBe(false);
+  });
 });
 
 describe('admitted editor query bounds and delivery', () => {
