@@ -357,12 +357,15 @@ jobs:
       - name: Install WASM size tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y binaryen brotli gzip
+          sudo apt-get install -y binaryen brotli gzip ripgrep
 
       - name: Install Rust WASM reporting tools
         run: |
           cargo install wasm-bindgen-cli --version 0.2.114 --locked
           cargo install twiggy --locked
+
+      - name: Test the browser DataFusion engine size report contract
+        run: bash tests/perf/report_datafusion_wasm_size_test.sh
 
       - name: Run browser DataFusion engine size report
         env:

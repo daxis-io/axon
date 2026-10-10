@@ -54,7 +54,10 @@ section, or when its Brotli -q 11 size exceeds `AXON_SHIPPED_WASM_BROTLI_BUDGET_
 ### Size report
 
 The repeatable DataFusion size report requires local `cargo`, `wasm-bindgen`, `wasm-opt`, `gzip`,
-`brotli`, and `twiggy` tools. It writes generated artifacts under `target/df-size`.
+`brotli`, and `twiggy` tools. It writes generated artifacts under `target/df-size`. It rebuilds the
+engine, runs the same `wasm-bindgen --remove-name-section` step as `npm run build:wasm`, and applies
+the Brotli budget to that shipped form. The `wasm-opt -Oz` row is a reference point only: the app
+does not ship it. twiggy reads a separate names-bearing copy.
 
 The shipped `axon-web-wasm` worker and its 6 MiB Brotli budget are the defaults:
 

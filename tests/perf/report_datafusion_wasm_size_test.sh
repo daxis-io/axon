@@ -11,8 +11,17 @@ rg -F -q 'package="${AXON_DF_SIZE_PACKAGE:-axon-web-wasm}"' tests/perf/report_da
 rg -F -q 'default_brotli_budget_bytes="6291456"' tests/perf/report_datafusion_wasm_size.sh
 rg -q 'twiggy monos' tests/perf/report_datafusion_wasm_size.sh
 rg -F -q 'target/df-size/${package}' tests/perf/report_datafusion_wasm_size.sh
-rg -q 'wasm-opt -Oz generated wasm' tests/perf/report_datafusion_wasm_size.sh
-rg -q 'Brotli -q 11 of optimized wasm' tests/perf/report_datafusion_wasm_size.sh
+# The budgeted form must be the shipped one: the same name-section-stripped wasm-bindgen output as
+# `npm run build:wasm`, not the unshipped wasm-opt -Oz reference copy.
+rg -F -q -- '--remove-name-section' apps/axon-web/package.json
+rg -F -q -- '--remove-name-section' tests/perf/report_datafusion_wasm_size.sh
+rg -F -q 'brotli_bytes="$(wc -c < "${bindgen_wasm}.br"' tests/perf/report_datafusion_wasm_size.sh
+rg -q 'Brotli -q 11 of shipped wasm' tests/perf/report_datafusion_wasm_size.sh
+rg -q 'wasm-opt -Oz of shipped wasm \(reference only; not shipped\)' tests/perf/report_datafusion_wasm_size.sh
+if rg -q 'Brotli -q 11 of optimized wasm' tests/perf/report_datafusion_wasm_size.sh; then
+  echo "size report must not present the unshipped wasm-opt -Oz copy as the budgeted artifact" >&2
+  exit 1
+fi
 rg -q 'AXON_DF_BROTLI_BUDGET_BYTES' tests/perf/report_datafusion_wasm_size.sh
 rg -q 'DataFusion Brotli budget exceeded' tests/perf/report_datafusion_wasm_size.sh
 rg -q 'browser_query_performance.sh' tests/perf/report_datafusion_wasm_size.sh
