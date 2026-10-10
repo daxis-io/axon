@@ -317,7 +317,7 @@ function publicObjectStorageResolver(
           region: root.region,
           ...(root.provider === 'r2' ? { endpoint: root.endpoint } : {}),
           snapshotVersion: context.snapshotVersion,
-          expectedSnapshotVersion: context.snapshotVersion ?? source.snapshot,
+          expectedSnapshotVersion: context.snapshotVersion,
           signal: context.signal,
         });
       } catch (error) {
@@ -344,10 +344,11 @@ function publicObjectStorageResolver(
           context.executionId,
         );
       }
-      const expectedSnapshotVersion = context.snapshotVersion ?? source.snapshot;
+      // Only a pinned read names a snapshot. An unpinned read means latest, so the
+      // connect-time catalog snapshot must not constrain it.
       if (
-        expectedSnapshotVersion !== undefined &&
-        descriptor.snapshotVersion !== BigInt(expectedSnapshotVersion)
+        context.snapshotVersion !== undefined &&
+        descriptor.snapshotVersion !== BigInt(context.snapshotVersion)
       ) {
         return providerErrorResolution(
           ProviderErrorCode.INVALID,
@@ -409,7 +410,7 @@ function localDeltaResolver(
           {
             schemaName: source.schemaName,
             tableName: source.tableName,
-            snapshotVersion: context.snapshotVersion ?? source.snapshot,
+            snapshotVersion: context.snapshotVersion,
           },
         );
       } catch (error) {
