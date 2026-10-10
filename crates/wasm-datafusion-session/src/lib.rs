@@ -15,10 +15,13 @@ use query_contract::{
     QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse, QueryResultPage,
     QueryRuntimeLimits, MAX_QUERY_RESULT_PAGE_LIMIT,
 };
+use sqlparser::ast::helpers::attached_token::AttachedToken;
 use sqlparser::ast::{
-    ObjectName, Query as SqlQuery, Select, SelectFlavor, SetExpr as SqlSetExpr,
-    Statement as SqlStatement, TableFactor as SqlTableFactor, TableWithJoins as SqlTableWithJoins,
-    Visit, Visitor,
+    Expr as SqlExpr, GroupByExpr, Ident, LimitClause as SqlLimitClause, ObjectName,
+    Offset as SqlOffset, OffsetRows as SqlOffsetRows, Query as SqlQuery, Select, SelectFlavor,
+    SelectItem, SetExpr as SqlSetExpr, Statement as SqlStatement, TableAlias,
+    TableFactor as SqlTableFactor, TableWithJoins as SqlTableWithJoins, Value as SqlValue, Visit,
+    Visitor, WildcardAdditionalOptions,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -1694,43 +1697,104 @@ fn datafusion_sql_with_result_page(
         ));
     }
 
-    let mut inner_sql = sql.trim();
-    while let Some(stripped) = inner_sql.strip_suffix(';') {
-        inner_sql = stripped.trim_end();
-    }
-
-    if inner_sql.is_empty() {
+    // The page is applied to the parsed statement and rendered back to SQL, so comments, trailing
+    // semicolons and the user's own LIMIT cannot swallow or collide with the page clause.
+    let mut statements = Parser::parse_sql(&GenericDialect {}, sql)
+        .map_err(|error| invalid_datafusion_sql(format!("invalid SQL: {error}")))?;
+    if statements.len() != 1 {
         return Err(QueryError::new(
             QueryErrorCode::InvalidRequest,
-            "browser DataFusion result page requires non-empty SQL",
+            "browser DataFusion result page requires exactly one SQL statement",
             runtime_target(),
         ));
     }
+    let SqlStatement::Query(query) = statements.pop().expect("statement length already checked")
+    else {
+        return Err(invalid_datafusion_sql(
+            "only read-only SELECT statements are supported",
+        ));
+    };
 
-    if datafusion_sql_has_top_level_limit_clause(inner_sql)? {
-        return Ok(Cow::Owned(format!(
-            "SELECT * FROM ({inner_sql}) AS axon_result_page LIMIT {} OFFSET {}",
-            result_page.limit, result_page.offset
-        )));
-    }
-
-    Ok(Cow::Owned(format!(
-        "{inner_sql} LIMIT {} OFFSET {}",
-        result_page.limit, result_page.offset
-    )))
+    Ok(Cow::Owned(
+        SqlStatement::Query(Box::new(sql_query_with_result_page(*query, result_page))).to_string(),
+    ))
 }
 
-fn datafusion_sql_has_top_level_limit_clause(sql: &str) -> Result<bool, QueryError> {
-    let mut statements = Parser::parse_sql(&GenericDialect {}, sql)
-        .map_err(|error| invalid_datafusion_sql(format!("invalid SQL: {error}")))?;
-    let Some(statement) = statements.pop() else {
-        return Ok(false);
+fn sql_query_with_result_page(query: SqlQuery, result_page: QueryResultPage) -> SqlQuery {
+    let mut query = if query.limit_clause.is_some() || query.fetch.is_some() {
+        sql_result_page_derived_query(query)
+    } else {
+        query
     };
-    let SqlStatement::Query(query) = statement else {
-        return Ok(false);
+    query.limit_clause = Some(SqlLimitClause::LimitOffset {
+        limit: Some(sql_number(result_page.limit)),
+        offset: Some(SqlOffset {
+            value: sql_number(result_page.offset),
+            rows: SqlOffsetRows::None,
+        }),
+        limit_by: Vec::new(),
+    });
+    query
+}
+
+// `SELECT * FROM (<query>) AS axon_result_page`, so the page applies after the query's own
+// LIMIT, OFFSET or FETCH.
+fn sql_result_page_derived_query(query: SqlQuery) -> SqlQuery {
+    let select = Select {
+        select_token: AttachedToken::empty(),
+        optimizer_hint: None,
+        distinct: None,
+        select_modifiers: None,
+        top: None,
+        top_before_distinct: false,
+        projection: vec![SelectItem::Wildcard(WildcardAdditionalOptions::default())],
+        exclude: None,
+        into: None,
+        from: vec![SqlTableWithJoins {
+            relation: SqlTableFactor::Derived {
+                lateral: false,
+                subquery: Box::new(query),
+                alias: Some(TableAlias {
+                    explicit: true,
+                    name: Ident::new("axon_result_page"),
+                    columns: Vec::new(),
+                }),
+                sample: None,
+            },
+            joins: Vec::new(),
+        }],
+        lateral_views: Vec::new(),
+        prewhere: None,
+        selection: None,
+        connect_by: Vec::new(),
+        group_by: GroupByExpr::Expressions(Vec::new(), Vec::new()),
+        cluster_by: Vec::new(),
+        distribute_by: Vec::new(),
+        sort_by: Vec::new(),
+        having: None,
+        named_window: Vec::new(),
+        qualify: None,
+        window_before_qualify: false,
+        value_table_mode: None,
+        flavor: SelectFlavor::Standard,
     };
 
-    Ok(query.limit_clause.is_some() || query.fetch.is_some())
+    SqlQuery {
+        with: None,
+        body: Box::new(SqlSetExpr::Select(Box::new(select))),
+        order_by: None,
+        limit_clause: None,
+        fetch: None,
+        locks: Vec::new(),
+        for_clause: None,
+        settings: None,
+        format_clause: None,
+        pipe_operators: Vec::new(),
+    }
+}
+
+fn sql_number(value: u64) -> SqlExpr {
+    SqlExpr::value(SqlValue::Number(value.to_string(), false))
 }
 
 fn datafusion_query_budget_from_runtime_config(
@@ -2159,6 +2223,56 @@ mod tests {
             paged_sql.as_ref(),
             "SELECT * FROM (SELECT * FROM events ORDER BY id OFFSET 10) AS axon_result_page LIMIT 501 OFFSET 500"
         );
+    }
+
+    #[test]
+    fn result_page_applies_to_sql_that_ends_in_a_comment() {
+        let page = QueryResultPage {
+            limit: 501,
+            offset: 500,
+        };
+
+        for (sql, expected) in [
+            (
+                "SELECT id FROM events -- check",
+                "SELECT id FROM events LIMIT 501 OFFSET 500",
+            ),
+            (
+                "SELECT id\nFROM events\nWHERE id < 600\n-- AND id % 2 = 0\n",
+                "SELECT id FROM events WHERE id < 600 LIMIT 501 OFFSET 500",
+            ),
+            (
+                "SELECT id FROM events ORDER BY id; -- done",
+                "SELECT id FROM events ORDER BY id LIMIT 501 OFFSET 500",
+            ),
+            (
+                "SELECT id FROM events /* trailing note */;",
+                "SELECT id FROM events LIMIT 501 OFFSET 500",
+            ),
+            (
+                "SELECT id FROM events LIMIT 3 -- sample",
+                "SELECT * FROM (SELECT id FROM events LIMIT 3) AS axon_result_page LIMIT 501 OFFSET 500",
+            ),
+        ] {
+            let paged_sql = datafusion_sql_with_result_page(sql, Some(page))
+                .unwrap_or_else(|error| panic!("{sql:?} should be pageable: {error:?}"));
+            assert_eq!(paged_sql.as_ref(), expected, "{sql:?}");
+        }
+    }
+
+    #[test]
+    fn result_page_rejects_sql_without_a_statement() {
+        for sql in ["", " ; ", "-- only a comment"] {
+            let error = datafusion_sql_with_result_page(
+                sql,
+                Some(QueryResultPage {
+                    limit: 501,
+                    offset: 0,
+                }),
+            )
+            .expect_err("empty SQL should not be paged");
+            assert_eq!(error.code, QueryErrorCode::InvalidRequest, "{sql:?}");
+        }
     }
 
     #[test]

@@ -21,8 +21,11 @@ use deltalake::datafusion::physical_plan::{
 };
 use deltalake::datafusion::prelude::SessionContext;
 use deltalake::datafusion::sql::parser::{DFParser, Statement as ParsedStatement};
+use deltalake::datafusion::sql::sqlparser::ast::helpers::attached_token::AttachedToken;
 use deltalake::datafusion::sql::sqlparser::ast::{
-    ObjectName, Query as SqlQuery, SetExpr, Statement as SqlStatement, TableFactor, TableWithJoins,
+    Expr, GroupByExpr, Ident, LimitClause, ObjectName, Offset, OffsetRows, Query as SqlQuery,
+    Select, SelectFlavor, SelectItem, SetExpr, Statement as SqlStatement, TableAlias, TableFactor,
+    TableWithJoins, Value, WildcardAdditionalOptions,
 };
 use deltalake::kernel::{DataType, PrimitiveType, StructField};
 use deltalake::table::{config::TablePropertiesExt, state::DeltaTableState};
@@ -206,44 +209,108 @@ fn native_sql_with_result_page(
         )));
     }
 
-    let mut inner_sql = sql.trim();
-    while let Some(stripped) = inner_sql.strip_suffix(';') {
-        inner_sql = stripped.trim_end();
-    }
-
-    if inner_sql.is_empty() {
+    // The page is applied to the parsed statement and rendered back to SQL, so comments, trailing
+    // semicolons and the user's own LIMIT cannot swallow or collide with the page clause.
+    let mut statements = DFParser::parse_sql(sql).map_err(map_datafusion_error)?;
+    if statements.len() != 1 {
         return Err(invalid_query_request(
-            "native query result page requires non-empty SQL",
+            "native query result page requires exactly one SQL statement",
         ));
     }
-
-    if native_sql_has_top_level_limit_clause(inner_sql)? {
-        return Ok(Cow::Owned(format!(
-            "SELECT * FROM ({inner_sql}) AS axon_result_page LIMIT {} OFFSET {}",
-            result_page.limit, result_page.offset
+    let ParsedStatement::Statement(statement) = statements
+        .pop_front()
+        .expect("statement length already checked")
+    else {
+        return Err(invalid_query_request(format!(
+            "only read-only SELECT queries over {DEFAULT_TABLE_NAME} are supported"
         )));
-    }
-
-    Ok(Cow::Owned(format!(
-        "{inner_sql} LIMIT {} OFFSET {}",
-        result_page.limit, result_page.offset
-    )))
-}
-
-fn native_sql_has_top_level_limit_clause(sql: &str) -> Result<bool, QueryError> {
-    let mut statements = DFParser::parse_sql(sql).map_err(map_datafusion_error)?;
-    let Some(statement) = statements.pop_front() else {
-        return Ok(false);
-    };
-
-    let ParsedStatement::Statement(statement) = statement else {
-        return Ok(false);
     };
     let SqlStatement::Query(query) = *statement else {
-        return Ok(false);
+        return Err(invalid_query_request(format!(
+            "only read-only SELECT queries over {DEFAULT_TABLE_NAME} are supported"
+        )));
     };
 
-    Ok(query.limit_clause.is_some() || query.fetch.is_some())
+    Ok(Cow::Owned(
+        SqlStatement::Query(Box::new(sql_query_with_result_page(*query, result_page))).to_string(),
+    ))
+}
+
+fn sql_query_with_result_page(query: SqlQuery, result_page: QueryResultPage) -> SqlQuery {
+    let mut query = if query.limit_clause.is_some() || query.fetch.is_some() {
+        sql_result_page_derived_query(query)
+    } else {
+        query
+    };
+    query.limit_clause = Some(LimitClause::LimitOffset {
+        limit: Some(sql_number(result_page.limit)),
+        offset: Some(Offset {
+            value: sql_number(result_page.offset),
+            rows: OffsetRows::None,
+        }),
+        limit_by: Vec::new(),
+    });
+    query
+}
+
+// `SELECT * FROM (<query>) AS axon_result_page`, so the page applies after the query's own
+// LIMIT, OFFSET or FETCH.
+fn sql_result_page_derived_query(query: SqlQuery) -> SqlQuery {
+    let select = Select {
+        select_token: AttachedToken::empty(),
+        optimizer_hint: None,
+        distinct: None,
+        select_modifiers: None,
+        top: None,
+        top_before_distinct: false,
+        projection: vec![SelectItem::Wildcard(WildcardAdditionalOptions::default())],
+        exclude: None,
+        into: None,
+        from: vec![TableWithJoins {
+            relation: TableFactor::Derived {
+                lateral: false,
+                subquery: Box::new(query),
+                alias: Some(TableAlias {
+                    explicit: true,
+                    name: Ident::new("axon_result_page"),
+                    columns: Vec::new(),
+                }),
+                sample: None,
+            },
+            joins: Vec::new(),
+        }],
+        lateral_views: Vec::new(),
+        prewhere: None,
+        selection: None,
+        connect_by: Vec::new(),
+        group_by: GroupByExpr::Expressions(Vec::new(), Vec::new()),
+        cluster_by: Vec::new(),
+        distribute_by: Vec::new(),
+        sort_by: Vec::new(),
+        having: None,
+        named_window: Vec::new(),
+        qualify: None,
+        window_before_qualify: false,
+        value_table_mode: None,
+        flavor: SelectFlavor::Standard,
+    };
+
+    SqlQuery {
+        with: None,
+        body: Box::new(SetExpr::Select(Box::new(select))),
+        order_by: None,
+        limit_clause: None,
+        fetch: None,
+        locks: Vec::new(),
+        for_clause: None,
+        settings: None,
+        format_clause: None,
+        pipe_operators: Vec::new(),
+    }
+}
+
+fn sql_number(value: u64) -> Expr {
+    Expr::value(Value::Number(value.to_string(), false))
 }
 
 fn validate_query_sql(sql: &str) -> Result<(), QueryError> {
