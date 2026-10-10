@@ -556,9 +556,9 @@ export async function beginOpfsSpillExecution(options: BeginOptions): Promise<Op
 }
 
 /**
- * Acquires the storage scope installed for one SQL query. Every invocation
- * performs a fresh capability probe so a transient setup failure cannot poison
- * later commands in the long-lived child worker.
+ * Acquires the storage scope installed for one SQL query. Every invocation asks
+ * `probe` (a fresh OPFS probe by default) and creates a new namespace; the
+ * query child supplies a probe it caches for its worker generation.
  */
 export async function acquireQueryScopedOpfsSpill(
   options: QueryScopedSpillOptions,

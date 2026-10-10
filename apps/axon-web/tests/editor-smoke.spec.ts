@@ -1849,7 +1849,7 @@ test.describe('editor (Phase 1 smoke)', () => {
     }
   });
 
-  test('returns a reusable typed spill-storage error when private WebKit cannot use OPFS', async ({
+  test('keeps non-spilling queries available when private WebKit cannot use OPFS', async ({
     page,
   }, testInfo) => {
     test.skip(testInfo.project.name !== 'webkit', 'This qualification is specific to WebKit.');
@@ -1878,27 +1878,23 @@ test.describe('editor (Phase 1 smoke)', () => {
       expectedTable: 'axon_prod_like_fixture',
       pagePath: '/',
     });
-    await page.locator('.code-input').fill('SELECT COUNT(*) FROM axon_prod_like_fixture');
-    const observedReasons: string[] = [];
+    await page
+      .locator('.code-input')
+      .fill('SELECT COUNT(*) AS row_count FROM axon_prod_like_fixture');
 
     for (let execution = 1; execution <= 2; execution += 1) {
       const priorTerminalCount = await capturedQueryTerminalCount(page);
       await page.locator('.btn.primary', { hasText: 'Run' }).click();
       const terminal = await latestCapturedQueryTerminal(page, priorTerminalCount + 1);
-      expect(terminal.success).toBeUndefined();
-      expect(terminal.error?.error, spillDiagnostics.join('\n')).toMatchObject({
-        code: 'resource_exhausted',
-        resource_details: {
-          resource: 'spill_storage',
-        },
-      });
-      const reason = terminal.error?.error?.resource_details?.reason;
-      expect(['unavailable', 'io_failure']).toContain(reason);
-      if (reason) observedReasons.push(reason);
-      await expect(page.locator('table.grid')).toHaveCount(0);
+      expect(terminal.error, spillDiagnostics.join('\n')).toBeUndefined();
+      expect(terminal.success?.response?.executed_on).toBe('browser_wasm');
+      expect(terminal.success?.response?.fallback_reason).toBeUndefined();
+      expect(terminal.success?.response?.capabilities?.capabilities?.browser_external_memory).toBe(
+        'unsupported',
+      );
+      await expect(page.locator('table.grid')).toContainText('row_count');
+      await expect(page.locator('table.grid')).toContainText('4');
     }
-    expect(observedReasons).toHaveLength(2);
-    expect(new Set(observedReasons).size).toBe(1);
   });
 
   test('isolates simultaneous OPFS spill scopes across two same-origin tabs', async ({
