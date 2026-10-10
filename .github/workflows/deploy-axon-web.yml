@@ -171,6 +171,13 @@ jobs:
         with:
           node-version: 24
 
+      - name: Verify the artifact names the qualified commit
+        env:
+          QUALIFIED_COMMIT: ${{ inputs.qualified_commit }}
+        run: |
+          node --experimental-strip-types apps/axon-web/scripts/browser-runtime-build.ts verify \
+            .vercel/output/static "$QUALIFIED_COMMIT"
+
       - name: Install Vercel CLI
         run: npm install --global vercel@latest
 

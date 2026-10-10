@@ -1,6 +1,10 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   browserRuntimeBuildManifest,
+  verifyBuildOutput,
   verifyQualificationRuntimeBuildManifest,
   verifyBrowserRuntimeBuildManifest,
 } from '../scripts/browser-runtime-build.ts';
@@ -47,5 +51,22 @@ describe('browser runtime build identity', () => {
         browser_external_memory: false,
       }),
     ).toThrow(/manifest/i);
+  });
+
+  it('binds a built output directory to the commit it was qualified from', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'axon-runtime-build-'));
+    try {
+      writeFileSync(
+        join(directory, 'axon-runtime-build.json'),
+        JSON.stringify(
+          browserRuntimeBuildManifest({ sourceCommit: 'a'.repeat(40), sourceDirty: false }),
+        ),
+      );
+      expect(() => verifyBuildOutput(directory)).not.toThrow();
+      expect(() => verifyBuildOutput(directory, 'a'.repeat(40))).not.toThrow();
+      expect(() => verifyBuildOutput(directory, 'b'.repeat(40))).toThrow(/commit/i);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

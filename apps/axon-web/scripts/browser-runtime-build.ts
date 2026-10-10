@@ -108,7 +108,7 @@ function runBuild(): void {
   run('bash', ['scripts/verify-build-output.sh', 'dist'], environment);
 }
 
-function verifyBuildOutput(directory: string): void {
+export function verifyBuildOutput(directory: string, expectedCommit?: string): void {
   let value: unknown;
   try {
     value = JSON.parse(readFileSync(resolve(directory, 'axon-runtime-build.json'), 'utf8'));
@@ -117,7 +117,11 @@ function verifyBuildOutput(directory: string): void {
       cause: error,
     });
   }
-  verifyBrowserRuntimeBuildManifest(value);
+  if (expectedCommit === undefined) {
+    verifyBrowserRuntimeBuildManifest(value);
+  } else {
+    verifyQualificationRuntimeBuildManifest(value, expectedCommit);
+  }
 }
 
 function run(command: string, args: string[], environment: NodeJS.ProcessEnv): void {
@@ -138,14 +142,17 @@ function main(): void {
     return;
   }
   if (action === 'verify') {
-    const directory = process.argv[3];
-    if (!directory || process.argv.length !== 4) {
-      throw new TypeError('usage: browser-runtime-build.ts verify <directory>');
+    // An expected commit additionally requires a clean build of exactly that commit.
+    const [directory, expectedCommit] = process.argv.slice(3);
+    if (!directory || process.argv.length > 5) {
+      throw new TypeError('usage: browser-runtime-build.ts verify <directory> [expected-commit]');
     }
-    verifyBuildOutput(directory);
+    verifyBuildOutput(directory, expectedCommit);
     return;
   }
-  throw new TypeError('usage: browser-runtime-build.ts <build|verify> [directory]');
+  throw new TypeError(
+    'usage: browser-runtime-build.ts <build|verify> [directory] [expected-commit]',
+  );
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

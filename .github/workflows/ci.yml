@@ -307,6 +307,10 @@ jobs:
 
       - name: Build and verify the spill-capable browser artifact
         working-directory: apps/axon-web
+        env:
+          # The emitted axon-runtime-build.json must name this exact, clean commit.
+          AXON_RUNTIME_BUILD_SOURCE_COMMIT: ${{ github.sha }}
+          AXON_RUNTIME_BUILD_REQUIRE_CLEAN: "1"
         run: npm run build
 
       - name: Enforce the shipped WASM name-section and Brotli budget gate
@@ -473,10 +477,14 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          AXON_RUNTIME_BUILD_SOURCE_COMMIT: ${{ github.sha }}
+          AXON_RUNTIME_BUILD_REQUIRE_CLEAN: "1"
         run: |
           vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
           vercel build --prod --token="$VERCEL_TOKEN"
           bash apps/axon-web/scripts/verify-build-output.sh .vercel/output/static
+          node --experimental-strip-types apps/axon-web/scripts/browser-runtime-build.ts verify \
+            .vercel/output/static "$GITHUB_SHA"
 
       - name: Generate immutable WASM stack release attestation
         if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials == 'true'
