@@ -20,6 +20,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           components: rustfmt
           targets: wasm32-unknown-unknown
 
@@ -31,6 +32,11 @@ jobs:
 
       - name: Install wasm bindgen test runner
         run: cargo install wasm-bindgen-cli --version 0.2.114 --locked
+
+      - name: Verify the pinned Rust toolchain
+        run: |
+          bash tests/conformance/verify_rust_toolchain_pin_test.sh
+          bash tests/conformance/verify_rust_toolchain_pin.sh
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -276,6 +282,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           targets: wasm32-unknown-unknown
 
       - name: Install verifier dependencies
@@ -349,6 +356,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           targets: wasm32-unknown-unknown
 
       - name: Restore cargo cache
@@ -436,6 +444,7 @@ jobs:
         if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials == 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           targets: wasm32-unknown-unknown
 
       - name: Set up Node.js

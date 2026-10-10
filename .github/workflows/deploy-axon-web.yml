@@ -106,6 +106,7 @@ jobs:
       - name: Install Rust metadata toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           targets: wasm32-unknown-unknown
 
       - name: Download the qualified Vercel prebuilt artifact

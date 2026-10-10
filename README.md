@@ -57,7 +57,7 @@ Control-plane integrations can provide governed descriptors, approved read plans
 
 ## Get Started
 
-You'll need Rust (workspace MSRV is pinned in `rust-toolchain.toml`) and the `wasm32-unknown-unknown` target if you want to build the browser crates.
+You'll need Rust. `rust-toolchain.toml` pins the exact release (with `rustfmt`, `clippy`, and the `wasm32-unknown-unknown` target), and rustup installs it on first use; CI installs the same release.
 
 ```bash
 git clone <repo>
