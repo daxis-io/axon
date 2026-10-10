@@ -9,14 +9,17 @@ use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use arrow_array::builder::{Int64Builder, MapBuilder, MapFieldNames, StringBuilder, StructBuilder};
+use arrow_array::builder::{
+    Int32Builder, Int64Builder, MapBuilder, MapFieldNames, StringBuilder, StructBuilder,
+};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Fields, Schema};
 use async_trait::async_trait;
 use bytes::Bytes;
 use parquet::arrow::ArrowWriter;
 use query_contract::{
-    QueryError, QueryErrorCode, ResolvedFileDescriptor, SnapshotResolutionRequest,
+    CapabilityKey, CapabilityState, QueryError, QueryErrorCode, ResolvedFileDescriptor,
+    ResolvedSnapshotDescriptor, SnapshotResolutionRequest,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -794,15 +797,386 @@ async fn rejects_sidecar_symlinks_that_escape_the_table_root() {
     );
 }
 
+#[tokio::test]
+async fn checkpoint_tombstones_do_not_drop_live_deletion_vector_files() {
+    // Spark/Databricks checkpoints sort file actions by path with the live add before the
+    // same-path tombstones left by earlier deletion-vector updates.
+    let fixture = TempDir::new().expect("tempdir should be created");
+    write_classic_checkpoint(
+        fixture.path(),
+        1,
+        &[
+            CheckpointRow::add_with_deletion_vector(
+                "data/p.parquet",
+                10,
+                TestDeletionVector::uuid("dvB"),
+            ),
+            CheckpointRow::remove("data/p.parquet", None),
+            CheckpointRow::remove("data/p.parquet", Some(TestDeletionVector::uuid("dvA"))),
+            CheckpointRow::add("data/q.parquet", 20, BTreeMap::new()),
+            CheckpointRow::remove("data/expired.parquet", None),
+        ],
+    );
+    write_last_checkpoint(fixture.path(), 1, None);
+
+    let snapshot = resolve_local_snapshot(fixture.path())
+        .await
+        .expect("snapshot should resolve");
+
+    assert_eq!(
+        active_paths(&snapshot),
+        vec!["data/p.parquet", "data/q.parquet"]
+    );
+    assert_eq!(
+        snapshot
+            .required_capabilities
+            .state(CapabilityKey::DeletionVectors),
+        Some(CapabilityState::NativeOnly)
+    );
+}
+
+#[tokio::test]
+async fn v2_checkpoint_tombstones_keep_the_deletion_vector_gate_when_the_flag_is_off() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    let live_dv = TestDeletionVector::uuid("dvB");
+    let replaced_dv = TestDeletionVector::uuid("dvA");
+    write_json_uuid_checkpoint(
+        fixture.path(),
+        20,
+        "11111111-1111-1111-1111-111111111111",
+        &[
+            r#"{"checkpointMetadata":{"version":20}}"#,
+            &deletion_vector_protocol_json(),
+            &table_metadata_json("false"),
+            &add_json("data/p.parquet", 10, Some(&live_dv), None),
+            &remove_json("data/p.parquet", None),
+            &remove_json("data/p.parquet", Some(&replaced_dv)),
+        ],
+    );
+    write_last_checkpoint(fixture.path(), 20, None);
+
+    let snapshot = resolve_local_snapshot(fixture.path())
+        .await
+        .expect("snapshot should resolve");
+
+    assert_eq!(active_paths(&snapshot), vec!["data/p.parquet"]);
+    assert_eq!(
+        snapshot
+            .required_capabilities
+            .state(CapabilityKey::DeletionVectors),
+        Some(CapabilityState::NativeOnly)
+    );
+}
+
+#[tokio::test]
+async fn sidecar_tombstones_do_not_drop_live_deletion_vector_files() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    write_uuid_checkpoint(
+        fixture.path(),
+        1,
+        "11111111-1111-1111-1111-111111111111",
+        &[CheckpointRow::sidecar("part-00001.parquet")],
+    );
+    write_sidecar(
+        fixture.path(),
+        "part-00001.parquet",
+        &[
+            CheckpointRow::add_with_deletion_vector(
+                "data/p.parquet",
+                10,
+                TestDeletionVector::uuid("dvB"),
+            ),
+            CheckpointRow::remove("data/p.parquet", None),
+            CheckpointRow::remove("data/p.parquet", Some(TestDeletionVector::uuid("dvA"))),
+        ],
+    );
+    write_last_checkpoint(fixture.path(), 1, None);
+
+    let snapshot = resolve_local_snapshot(fixture.path())
+        .await
+        .expect("snapshot should resolve");
+
+    assert_eq!(active_paths(&snapshot), vec!["data/p.parquet"]);
+    assert_eq!(
+        snapshot
+            .required_capabilities
+            .state(CapabilityKey::DeletionVectors),
+        Some(CapabilityState::NativeOnly)
+    );
+}
+
+#[tokio::test]
+async fn commit_replay_tracks_deletion_vector_updates_by_logical_file() {
+    // A commit is a set of actions: the new logical file may be listed before the removal of
+    // the one it replaces.
+    let fixture = TempDir::new().expect("tempdir should be created");
+    let first_dv = TestDeletionVector::uuid("dvA");
+    let second_dv = TestDeletionVector::uuid("dvB");
+    write_json_commit(
+        fixture.path(),
+        0,
+        &[
+            &deletion_vector_protocol_json(),
+            &table_metadata_json("false"),
+            &add_json("data/p.parquet", 10, None, Some(r#"{"numRecords":3}"#)),
+            &add_json("data/q.parquet", 20, None, None),
+        ],
+    );
+    write_json_commit(
+        fixture.path(),
+        1,
+        &[
+            &add_json(
+                "data/p.parquet",
+                10,
+                Some(&first_dv),
+                Some(r#"{"numRecords":3}"#),
+            ),
+            &remove_json("data/p.parquet", None),
+        ],
+    );
+    write_json_commit(
+        fixture.path(),
+        2,
+        &[
+            &add_json(
+                "data/p.parquet",
+                10,
+                Some(&second_dv),
+                Some(r#"{"numRecords":3,"tightBounds":false}"#),
+            ),
+            &remove_json("data/p.parquet", Some(&first_dv)),
+        ],
+    );
+
+    let snapshot = resolve_local_snapshot(fixture.path())
+        .await
+        .expect("snapshot should resolve");
+
+    assert_eq!(
+        active_paths(&snapshot),
+        vec!["data/p.parquet", "data/q.parquet"]
+    );
+    assert_eq!(
+        snapshot.active_files[0].stats.as_deref(),
+        Some(r#"{"numRecords":3,"tightBounds":false}"#)
+    );
+    assert_eq!(
+        snapshot
+            .required_capabilities
+            .state(CapabilityKey::DeletionVectors),
+        Some(CapabilityState::NativeOnly)
+    );
+}
+
+#[tokio::test]
+async fn checkpoint_and_commit_deletion_vector_ids_identify_the_same_logical_file() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    let checkpoint_dv = TestDeletionVector::uuid("dvB");
+    let inline_dv = TestDeletionVector::inline("inlineR");
+    write_classic_checkpoint(
+        fixture.path(),
+        1,
+        &[
+            CheckpointRow::add_with_deletion_vector("data/p.parquet", 10, checkpoint_dv.clone()),
+            CheckpointRow::add_with_deletion_vector("data/r.parquet", 30, inline_dv.clone()),
+        ],
+    );
+    write_last_checkpoint(fixture.path(), 1, None);
+    write_json_commit(
+        fixture.path(),
+        2,
+        &[
+            &add_json(
+                "data/p.parquet",
+                10,
+                Some(&TestDeletionVector::uuid("dvC")),
+                None,
+            ),
+            &remove_json("data/p.parquet", Some(&checkpoint_dv)),
+            &remove_json("data/r.parquet", Some(&inline_dv)),
+        ],
+    );
+
+    let snapshot = resolve_local_snapshot(fixture.path())
+        .await
+        .expect("snapshot should resolve");
+
+    assert_eq!(active_paths(&snapshot), vec!["data/p.parquet"]);
+    assert_eq!(
+        snapshot
+            .required_capabilities
+            .state(CapabilityKey::DeletionVectors),
+        Some(CapabilityState::NativeOnly)
+    );
+}
+
+#[tokio::test]
+async fn rejects_replay_that_leaves_two_live_files_for_one_path() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    write_json_commit(
+        fixture.path(),
+        0,
+        &[&add_json("data/p.parquet", 10, None, None)],
+    );
+    write_json_commit(
+        fixture.path(),
+        1,
+        &[&add_json(
+            "data/p.parquet",
+            10,
+            Some(&TestDeletionVector::uuid("dvA")),
+            None,
+        )],
+    );
+
+    let error = resolve_local_snapshot(fixture.path())
+        .await
+        .expect_err("two live logical files for one path should not resolve");
+
+    assert_eq!(error.code, QueryErrorCode::ExecutionFailed);
+    assert!(
+        error.message.contains("data/p.parquet"),
+        "unexpected error message: {}",
+        error.message
+    );
+}
+
+#[tokio::test]
+async fn rejects_deletion_vectors_without_a_storage_identity() {
+    let fixture = TempDir::new().expect("tempdir should be created");
+    write_json_commit(
+        fixture.path(),
+        0,
+        &[
+            r#"{"add":{"path":"data/p.parquet","size":10,"partitionValues":{},"deletionVector":{"cardinality":2}}}"#,
+        ],
+    );
+
+    let error = resolve_local_snapshot(fixture.path())
+        .await
+        .expect_err("a deletion vector without storageType/pathOrInlineDv should not resolve");
+
+    assert_eq!(error.code, QueryErrorCode::ExecutionFailed);
+}
+
+async fn resolve_local_snapshot(root: &Path) -> Result<ResolvedSnapshotDescriptor, QueryError> {
+    SnapshotResolver::new(
+        LocalFileStorageHandler::default(),
+        DefaultJsonHandler::default(),
+        DefaultParquetHandler::default(),
+    )
+    .resolve_snapshot(SnapshotResolutionRequest {
+        table_uri: root.display().to_string(),
+        snapshot_version: None,
+    })
+    .await
+}
+
+fn active_paths(snapshot: &ResolvedSnapshotDescriptor) -> Vec<&str> {
+    snapshot
+        .active_files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect()
+}
+
+fn deletion_vector_protocol_json() -> String {
+    r#"{"protocol":{"minReaderVersion":3,"minWriterVersion":7,"readerFeatures":["deletionVectors"],"writerFeatures":["deletionVectors"]}}"#.to_string()
+}
+
+fn table_metadata_json(deletion_vectors_enabled: &str) -> String {
+    let schema = r#"{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":true,\"metadata\":{}}]}"#;
+    format!(
+        r#"{{"metaData":{{"id":"dv-table","format":{{"provider":"parquet","options":{{}}}},"schemaString":"{schema}","partitionColumns":[],"configuration":{{"delta.enableDeletionVectors":"{deletion_vectors_enabled}"}}}}}}"#
+    )
+}
+
+fn add_json(
+    path: &str,
+    size: u64,
+    deletion_vector: Option<&TestDeletionVector>,
+    stats: Option<&str>,
+) -> String {
+    let mut fields = vec![
+        format!(r#""path":"{path}""#),
+        format!(r#""size":{size}"#),
+        r#""partitionValues":{}"#.to_string(),
+        r#""dataChange":true"#.to_string(),
+    ];
+    if let Some(stats) = stats {
+        fields.push(format!(r#""stats":{}"#, json!(stats)));
+    }
+    if let Some(deletion_vector) = deletion_vector {
+        fields.push(format!(r#""deletionVector":{}"#, deletion_vector.json()));
+    }
+    format!(r#"{{"add":{{{}}}}}"#, fields.join(","))
+}
+
+fn remove_json(path: &str, deletion_vector: Option<&TestDeletionVector>) -> String {
+    let mut fields = vec![
+        format!(r#""path":"{path}""#),
+        r#""deletionTimestamp":1"#.to_string(),
+        r#""dataChange":true"#.to_string(),
+    ];
+    if let Some(deletion_vector) = deletion_vector {
+        fields.push(format!(r#""deletionVector":{}"#, deletion_vector.json()));
+    }
+    format!(r#"{{"remove":{{{}}}}}"#, fields.join(","))
+}
+
 #[derive(Clone)]
 enum CheckpointRow {
     Add {
         file: ResolvedFileDescriptor,
         stats: Option<String>,
+        deletion_vector: Option<TestDeletionVector>,
+    },
+    Remove {
+        path: String,
+        deletion_vector: Option<TestDeletionVector>,
     },
     Sidecar {
         path: String,
     },
+}
+
+#[derive(Clone)]
+struct TestDeletionVector {
+    storage_type: &'static str,
+    path_or_inline_dv: &'static str,
+    offset: Option<i32>,
+}
+
+impl TestDeletionVector {
+    fn uuid(path_or_inline_dv: &'static str) -> Self {
+        Self {
+            storage_type: "u",
+            path_or_inline_dv,
+            offset: Some(1),
+        }
+    }
+
+    fn inline(path_or_inline_dv: &'static str) -> Self {
+        Self {
+            storage_type: "i",
+            path_or_inline_dv,
+            offset: None,
+        }
+    }
+
+    fn json(&self) -> String {
+        match self.offset {
+            Some(offset) => format!(
+                r#"{{"storageType":"{}","pathOrInlineDv":"{}","offset":{offset},"sizeInBytes":36,"cardinality":2}}"#,
+                self.storage_type, self.path_or_inline_dv
+            ),
+            None => format!(
+                r#"{{"storageType":"{}","pathOrInlineDv":"{}","sizeInBytes":36,"cardinality":2}}"#,
+                self.storage_type, self.path_or_inline_dv
+            ),
+        }
+    }
 }
 
 impl CheckpointRow {
@@ -819,6 +1193,7 @@ impl CheckpointRow {
                 stats: None,
             },
             stats: None,
+            deletion_vector: None,
         }
     }
 
@@ -836,6 +1211,31 @@ impl CheckpointRow {
                 stats: None,
             },
             stats: Some(stats.into()),
+            deletion_vector: None,
+        }
+    }
+
+    fn add_with_deletion_vector(
+        path: impl Into<String>,
+        size_bytes: u64,
+        deletion_vector: TestDeletionVector,
+    ) -> Self {
+        Self::Add {
+            file: ResolvedFileDescriptor {
+                path: path.into(),
+                size_bytes,
+                partition_values: BTreeMap::new(),
+                stats: None,
+            },
+            stats: None,
+            deletion_vector: Some(deletion_vector),
+        }
+    }
+
+    fn remove(path: impl Into<String>, deletion_vector: Option<TestDeletionVector>) -> Self {
+        Self::Remove {
+            path: path.into(),
+            deletion_vector,
         }
     }
 
@@ -938,6 +1338,13 @@ fn checkpoint_bytes(rows: &[CheckpointRow]) -> Bytes {
 }
 
 fn checkpoint_record_batch(rows: &[CheckpointRow]) -> RecordBatch {
+    let deletion_vector_fields = Fields::from(vec![
+        Field::new("storageType", DataType::Utf8, true),
+        Field::new("pathOrInlineDv", DataType::Utf8, true),
+        Field::new("offset", DataType::Int32, true),
+        Field::new("sizeInBytes", DataType::Int32, true),
+        Field::new("cardinality", DataType::Int64, true),
+    ]);
     let add_fields = Fields::from(vec![
         Field::new("path", DataType::Utf8, true),
         Field::new("size", DataType::Int64, true),
@@ -957,8 +1364,20 @@ fn checkpoint_record_batch(rows: &[CheckpointRow]) -> RecordBatch {
             ),
             true,
         ),
+        Field::new(
+            "deletionVector",
+            DataType::Struct(deletion_vector_fields.clone()),
+            true,
+        ),
     ]);
-    let remove_fields = Fields::from(vec![Field::new("path", DataType::Utf8, true)]);
+    let remove_fields = Fields::from(vec![
+        Field::new("path", DataType::Utf8, true),
+        Field::new(
+            "deletionVector",
+            DataType::Struct(deletion_vector_fields.clone()),
+            true,
+        ),
+    ]);
     let sidecar_fields = Fields::from(vec![Field::new("path", DataType::Utf8, true)]);
 
     let mut add_builder = StructBuilder::new(
@@ -976,92 +1395,51 @@ fn checkpoint_record_batch(rows: &[CheckpointRow]) -> RecordBatch {
                 StringBuilder::new(),
                 StringBuilder::new(),
             )),
+            Box::new(StructBuilder::from_fields(
+                deletion_vector_fields.clone(),
+                0,
+            )),
         ],
     );
-    let mut remove_builder =
-        StructBuilder::new(remove_fields.clone(), vec![Box::new(StringBuilder::new())]);
+    let mut remove_builder = StructBuilder::new(
+        remove_fields.clone(),
+        vec![
+            Box::new(StringBuilder::new()),
+            Box::new(StructBuilder::from_fields(deletion_vector_fields, 0)),
+        ],
+    );
     let mut sidecar_builder =
         StructBuilder::new(sidecar_fields.clone(), vec![Box::new(StringBuilder::new())]);
 
     for row in rows {
         match row {
-            CheckpointRow::Add { file, stats } => {
-                add_builder
-                    .field_builder::<StringBuilder>(0)
-                    .expect("path builder")
-                    .append_value(&file.path);
-                add_builder
-                    .field_builder::<Int64Builder>(1)
-                    .expect("size builder")
-                    .append_value(i64::try_from(file.size_bytes).expect("size should fit in i64"));
-                match stats {
-                    Some(stats) => add_builder
-                        .field_builder::<StringBuilder>(2)
-                        .expect("stats builder")
-                        .append_value(stats),
-                    None => add_builder
-                        .field_builder::<StringBuilder>(2)
-                        .expect("stats builder")
-                        .append_null(),
-                }
-                let map_builder = add_builder
-                    .field_builder::<MapBuilder<StringBuilder, StringBuilder>>(3)
-                    .expect("partition map builder");
-                for (key, value) in &file.partition_values {
-                    map_builder.keys().append_value(key);
-                    match value {
-                        Some(value) => map_builder.values().append_value(value),
-                        None => map_builder.values().append_null(),
-                    }
-                }
-                map_builder
-                    .append(true)
-                    .expect("partition map entry should append");
-                add_builder.append(true);
-
-                remove_builder
-                    .field_builder::<StringBuilder>(0)
-                    .expect("remove path builder")
-                    .append_null();
-                remove_builder.append(false);
-
-                sidecar_builder
-                    .field_builder::<StringBuilder>(0)
-                    .expect("sidecar path builder")
-                    .append_null();
-                sidecar_builder.append(false);
+            CheckpointRow::Add {
+                file,
+                stats,
+                deletion_vector,
+            } => {
+                append_checkpoint_add(
+                    &mut add_builder,
+                    Some((file, stats.as_deref(), deletion_vector.as_ref())),
+                );
+                append_checkpoint_remove(&mut remove_builder, None);
+                append_checkpoint_sidecar(&mut sidecar_builder, None);
+            }
+            CheckpointRow::Remove {
+                path,
+                deletion_vector,
+            } => {
+                append_checkpoint_add(&mut add_builder, None);
+                append_checkpoint_remove(
+                    &mut remove_builder,
+                    Some((path, deletion_vector.as_ref())),
+                );
+                append_checkpoint_sidecar(&mut sidecar_builder, None);
             }
             CheckpointRow::Sidecar { path } => {
-                add_builder
-                    .field_builder::<StringBuilder>(0)
-                    .expect("path builder")
-                    .append_null();
-                add_builder
-                    .field_builder::<Int64Builder>(1)
-                    .expect("size builder")
-                    .append_null();
-                add_builder
-                    .field_builder::<StringBuilder>(2)
-                    .expect("stats builder")
-                    .append_null();
-                add_builder
-                    .field_builder::<MapBuilder<StringBuilder, StringBuilder>>(3)
-                    .expect("partition map builder")
-                    .append(false)
-                    .expect("null partition map should append");
-                add_builder.append(false);
-
-                remove_builder
-                    .field_builder::<StringBuilder>(0)
-                    .expect("remove path builder")
-                    .append_null();
-                remove_builder.append(false);
-
-                sidecar_builder
-                    .field_builder::<StringBuilder>(0)
-                    .expect("sidecar path builder")
-                    .append_value(path);
-                sidecar_builder.append(true);
+                append_checkpoint_add(&mut add_builder, None);
+                append_checkpoint_remove(&mut remove_builder, None);
+                append_checkpoint_sidecar(&mut sidecar_builder, Some(path));
             }
         }
     }
@@ -1079,6 +1457,125 @@ fn checkpoint_record_batch(rows: &[CheckpointRow]) -> RecordBatch {
         ],
     )
     .expect("record batch should be created")
+}
+
+fn append_checkpoint_add(
+    builder: &mut StructBuilder,
+    add: Option<(
+        &ResolvedFileDescriptor,
+        Option<&str>,
+        Option<&TestDeletionVector>,
+    )>,
+) {
+    let Some((file, stats, deletion_vector)) = add else {
+        builder
+            .field_builder::<StringBuilder>(0)
+            .expect("path builder")
+            .append_null();
+        builder
+            .field_builder::<Int64Builder>(1)
+            .expect("size builder")
+            .append_null();
+        builder
+            .field_builder::<StringBuilder>(2)
+            .expect("stats builder")
+            .append_null();
+        builder
+            .field_builder::<MapBuilder<StringBuilder, StringBuilder>>(3)
+            .expect("partition map builder")
+            .append(false)
+            .expect("null partition map should append");
+        append_checkpoint_deletion_vector(
+            builder
+                .field_builder::<StructBuilder>(4)
+                .expect("deletion vector builder"),
+            None,
+        );
+        builder.append(false);
+        return;
+    };
+
+    builder
+        .field_builder::<StringBuilder>(0)
+        .expect("path builder")
+        .append_value(&file.path);
+    builder
+        .field_builder::<Int64Builder>(1)
+        .expect("size builder")
+        .append_value(i64::try_from(file.size_bytes).expect("size should fit in i64"));
+    builder
+        .field_builder::<StringBuilder>(2)
+        .expect("stats builder")
+        .append_option(stats);
+    let map_builder = builder
+        .field_builder::<MapBuilder<StringBuilder, StringBuilder>>(3)
+        .expect("partition map builder");
+    for (key, value) in &file.partition_values {
+        map_builder.keys().append_value(key);
+        map_builder.values().append_option(value.as_deref());
+    }
+    map_builder
+        .append(true)
+        .expect("partition map entry should append");
+    append_checkpoint_deletion_vector(
+        builder
+            .field_builder::<StructBuilder>(4)
+            .expect("deletion vector builder"),
+        deletion_vector,
+    );
+    builder.append(true);
+}
+
+fn append_checkpoint_remove(
+    builder: &mut StructBuilder,
+    remove: Option<(&String, Option<&TestDeletionVector>)>,
+) {
+    builder
+        .field_builder::<StringBuilder>(0)
+        .expect("remove path builder")
+        .append_option(remove.map(|(path, _)| path));
+    append_checkpoint_deletion_vector(
+        builder
+            .field_builder::<StructBuilder>(1)
+            .expect("remove deletion vector builder"),
+        remove.and_then(|(_, deletion_vector)| deletion_vector),
+    );
+    builder.append(remove.is_some());
+}
+
+fn append_checkpoint_sidecar(builder: &mut StructBuilder, path: Option<&String>) {
+    builder
+        .field_builder::<StringBuilder>(0)
+        .expect("sidecar path builder")
+        .append_option(path);
+    builder.append(path.is_some());
+}
+
+fn append_checkpoint_deletion_vector(
+    builder: &mut StructBuilder,
+    deletion_vector: Option<&TestDeletionVector>,
+) {
+    builder
+        .field_builder::<StringBuilder>(0)
+        .expect("storageType builder")
+        .append_option(deletion_vector.map(|dv| dv.storage_type));
+    builder
+        .field_builder::<StringBuilder>(1)
+        .expect("pathOrInlineDv builder")
+        .append_option(deletion_vector.map(|dv| dv.path_or_inline_dv));
+    builder
+        .field_builder::<Int32Builder>(2)
+        .expect("offset builder")
+        .append_option(deletion_vector.and_then(|dv| dv.offset));
+    builder
+        .field_builder::<Int32Builder>(3)
+        .expect("sizeInBytes builder")
+        .append_option(deletion_vector.map(|_| 36));
+    builder
+        .field_builder::<Int64Builder>(4)
+        .expect("cardinality builder")
+        .append_option(deletion_vector.map(|_| 2));
+    builder.append(deletion_vector.is_some());
 }
 
 #[derive(Clone)]

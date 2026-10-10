@@ -384,6 +384,7 @@ where
                 apply_actions(&mut replay_state, actions)?;
             }
         }
+        reject_duplicate_live_paths(&replay_state)?;
         let schema_derivations = derive_schema_derivations(replay_state.current_metadata.as_ref())?;
         let browser_compatibility = self
             .compatibility
@@ -451,7 +452,9 @@ where
                 .ok_or_else(|| {
                     invalid_request(format!("missing checkpoint part '{}'", part_path))
                 })?;
-            actions.extend(self.parse_checkpoint_actions(part_path, bytes)?);
+            actions.extend(checkpoint_live_actions(
+                self.parse_checkpoint_actions(part_path, bytes)?,
+            ));
         }
 
         let sidecar_paths = actions
@@ -475,7 +478,9 @@ where
                         resolved_sidecar_path, checkpoint.display_path
                     ))
                 })?;
-            let actions = self.parse_checkpoint_actions(&resolved_sidecar_path, bytes)?;
+            let actions = checkpoint_live_actions(
+                self.parse_checkpoint_actions(&resolved_sidecar_path, bytes)?,
+            );
             apply_actions(replay_state, actions)?;
         }
 
@@ -505,10 +510,11 @@ pub struct LastCheckpointHint {
 pub enum SnapshotLogAction {
     Add {
         file: ResolvedFileDescriptor,
-        uses_deletion_vector: bool,
+        deletion_vector_id: Option<String>,
     },
     Remove {
         path: String,
+        deletion_vector_id: Option<String>,
     },
     Sidecar {
         path: String,
@@ -528,10 +534,18 @@ pub enum SnapshotLogAction {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct SnapshotReplayState {
-    active_files: BTreeMap<String, ResolvedFileDescriptor>,
-    active_deletion_vector_paths: BTreeSet<String>,
+    active_files: BTreeMap<LogicalFileKey, ResolvedFileDescriptor>,
     current_protocol: Option<SnapshotProtocol>,
     current_metadata: Option<SnapshotMetadata>,
+}
+
+// Delta identifies a logical file by its path together with the unique id of its deletion vector,
+// so replacing a file's deletion vector (remove(p, dvA) + add(p, dvB)) reconciles the same way
+// whatever order the commit lists the two actions in.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct LogicalFileKey {
+    path: String,
+    deletion_vector_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -652,12 +666,25 @@ struct JsonAddAction {
     #[serde(default)]
     stats: Option<String>,
     #[serde(default, rename = "deletionVector")]
-    deletion_vector: Option<JsonValue>,
+    deletion_vector: Option<JsonDeletionVector>,
 }
 
 #[derive(Deserialize)]
 struct JsonRemoveAction {
     path: String,
+    #[serde(default, rename = "deletionVector")]
+    deletion_vector: Option<JsonDeletionVector>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JsonDeletionVector {
+    #[serde(default)]
+    storage_type: Option<String>,
+    #[serde(default)]
+    path_or_inline_dv: Option<String>,
+    #[serde(default)]
+    offset: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -1284,19 +1311,22 @@ fn apply_actions(
         match action {
             SnapshotLogAction::Add {
                 file,
-                uses_deletion_vector,
+                deletion_vector_id,
             } => {
-                let path = file.path.clone();
-                replay_state.active_files.insert(path.clone(), file);
-                if uses_deletion_vector {
-                    replay_state.active_deletion_vector_paths.insert(path);
-                } else {
-                    replay_state.active_deletion_vector_paths.remove(&path);
-                }
+                let key = LogicalFileKey {
+                    path: file.path.clone(),
+                    deletion_vector_id,
+                };
+                replay_state.active_files.insert(key, file);
             }
-            SnapshotLogAction::Remove { path } => {
-                replay_state.active_files.remove(&path);
-                replay_state.active_deletion_vector_paths.remove(&path);
+            SnapshotLogAction::Remove {
+                path,
+                deletion_vector_id,
+            } => {
+                replay_state.active_files.remove(&LogicalFileKey {
+                    path,
+                    deletion_vector_id,
+                });
             }
             SnapshotLogAction::Sidecar { .. } => {}
             SnapshotLogAction::Protocol {
@@ -1328,6 +1358,68 @@ fn apply_actions(
     Ok(())
 }
 
+// A checkpoint is reconciled table state: its adds are the live files and its removes are
+// tombstones kept for VACUUM, not deletions to replay. Spark/Databricks checkpoints list a live
+// deletion-vector add before the same-path tombstones of the deletion vectors it replaced.
+fn checkpoint_live_actions(actions: Vec<SnapshotLogAction>) -> Vec<SnapshotLogAction> {
+    actions
+        .into_iter()
+        .filter(|action| !matches!(action, SnapshotLogAction::Remove { .. }))
+        .collect()
+}
+
+// A table version may hold at most one live logical file per path. Two survivors mean an add for a
+// new deletion vector arrived without removing the previous logical file, so the log is
+// inconsistent and choosing either one would guess which rows are live.
+fn reject_duplicate_live_paths(replay_state: &SnapshotReplayState) -> Result<(), QueryError> {
+    let mut previous_path = None;
+    for key in replay_state.active_files.keys() {
+        if previous_path == Some(key.path.as_str()) {
+            return Err(execution_error(format!(
+                "delta log replay left more than one live file for path '{}'",
+                key.path
+            )));
+        }
+        previous_path = Some(key.path.as_str());
+    }
+    Ok(())
+}
+
+// Matches the Delta deletion vector uniqueId: storageType followed by pathOrInlineDv, with
+// `@offset` appended only when the descriptor has an offset. A descriptor missing either identity
+// field cannot be matched against its remove, so it yields None for the caller to reject.
+fn deletion_vector_unique_id(
+    storage_type: Option<String>,
+    path_or_inline_dv: Option<String>,
+    offset: Option<i64>,
+) -> Option<String> {
+    let (storage_type, path_or_inline_dv) = (storage_type?, path_or_inline_dv?);
+    Some(match offset {
+        Some(offset) => format!("{storage_type}{path_or_inline_dv}@{offset}"),
+        None => format!("{storage_type}{path_or_inline_dv}"),
+    })
+}
+
+fn json_deletion_vector_id(
+    deletion_vector: Option<JsonDeletionVector>,
+    action_name: &str,
+) -> Result<Option<String>, QueryError> {
+    let Some(deletion_vector) = deletion_vector else {
+        return Ok(None);
+    };
+    deletion_vector_unique_id(
+        deletion_vector.storage_type,
+        deletion_vector.path_or_inline_dv,
+        deletion_vector.offset,
+    )
+    .map(Some)
+    .ok_or_else(|| {
+        execution_error(format!(
+            "delta {action_name} action carried a deletion vector without storageType and pathOrInlineDv"
+        ))
+    })
+}
+
 fn snapshot_action_from_json(
     envelope: JsonActionEnvelope,
 ) -> Result<Option<SnapshotLogAction>, QueryError> {
@@ -1341,12 +1433,15 @@ fn snapshot_action_from_json(
                 partition_values: add.partition_values,
                 stats: add.stats,
             },
-            uses_deletion_vector: add.deletion_vector.is_some(),
+            deletion_vector_id: json_deletion_vector_id(add.deletion_vector, "add")?,
         }));
     }
 
     if let Some(remove) = envelope.remove {
-        return Ok(Some(SnapshotLogAction::Remove { path: remove.path }));
+        return Ok(Some(SnapshotLogAction::Remove {
+            path: remove.path,
+            deletion_vector_id: json_deletion_vector_id(remove.deletion_vector, "remove")?,
+        }));
     }
 
     if let Some(sidecar) = envelope.sidecar {
@@ -1389,7 +1484,7 @@ fn snapshot_action_from_checkpoint_row(
     }
 
     if let Some(field) = fields.get("remove") {
-        if let Some(action) = checkpoint_remove_action(field)? {
+        if let Some(action) = checkpoint_remove_action(field, relative_path)? {
             return Ok(Some(action));
         }
     }
@@ -1447,18 +1542,49 @@ fn checkpoint_add_action(
             partition_values,
             stats,
         },
-        uses_deletion_vector: group_has_non_null_field(group, "deletionVector")?,
+        deletion_vector_id: checkpoint_deletion_vector_id(group, "add", relative_path)?,
     }))
 }
 
-fn checkpoint_remove_action(field: &ParquetField) -> Result<Option<SnapshotLogAction>, QueryError> {
+fn checkpoint_remove_action(
+    field: &ParquetField,
+    relative_path: &str,
+) -> Result<Option<SnapshotLogAction>, QueryError> {
     let Some(group) = as_group(field) else {
         return Ok(None);
     };
     let Some(path) = group_string(group, "path")? else {
         return Ok(None);
     };
-    Ok(Some(SnapshotLogAction::Remove { path }))
+    Ok(Some(SnapshotLogAction::Remove {
+        path,
+        deletion_vector_id: checkpoint_deletion_vector_id(group, "remove", relative_path)?,
+    }))
+}
+
+fn checkpoint_deletion_vector_id(
+    action: &parquet::record::Row,
+    action_name: &str,
+    relative_path: &str,
+) -> Result<Option<String>, QueryError> {
+    match group_field(action, "deletionVector")? {
+        Some(ParquetField::Group(deletion_vector)) => deletion_vector_unique_id(
+            group_string(deletion_vector, "storageType")?,
+            group_string(deletion_vector, "pathOrInlineDv")?,
+            group_i64(deletion_vector, "offset")?,
+        )
+        .map(Some)
+        .ok_or_else(|| {
+            execution_error(format!(
+                "checkpoint {action_name} action in '{relative_path}' carried a deletion vector without storageType and pathOrInlineDv"
+            ))
+        }),
+        Some(ParquetField::Null) | None => Ok(None),
+        Some(other) => Err(execution_error(format!(
+            "delta checkpoint field 'deletionVector' had unexpected type '{:?}'",
+            other
+        ))),
+    }
 }
 
 fn checkpoint_sidecar_action(
@@ -1595,13 +1721,6 @@ fn group_string_list(group: &parquet::record::Row, name: &str) -> Result<Vec<Str
     }
 }
 
-fn group_has_non_null_field(group: &parquet::record::Row, name: &str) -> Result<bool, QueryError> {
-    Ok(match group_field(group, name)? {
-        Some(ParquetField::Null) | None => false,
-        Some(_) => true,
-    })
-}
-
 fn group_string_map(
     group: &parquet::record::Row,
     name: &str,
@@ -1688,7 +1807,10 @@ fn required_capabilities_from_replay_state(
         report.insert(CapabilityKey::ColumnMapping, CapabilityState::NativeOnly);
     }
 
-    if !replay_state.active_deletion_vector_paths.is_empty()
+    if replay_state
+        .active_files
+        .keys()
+        .any(|key| key.deletion_vector_id.is_some())
         || (metadata_flag_enabled(
             replay_state.current_metadata.as_ref(),
             "delta.enableDeletionVectors",
