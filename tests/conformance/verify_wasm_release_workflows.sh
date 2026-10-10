@@ -32,6 +32,11 @@ require 'axon-web-qualified-release-evidence' "$ci" "CI does not publish release
 require 'vercel build --prod' "$ci" "CI does not build the qualified production-environment artifact"
 require 'Generate immutable WASM stack release attestation[[:space:][:print:]]*compressed_bytes > 6291456' "$ci" "the exact production artifact is not checked against the Brotli size budget"
 require '--production --ci' "$rehearsal" "upgrade rehearsal does not automatically enforce final mode for a populated lock"
+require "if: steps\.release\.outputs\.ready != 'true'[[:space:][:print:]]*GITHUB_STEP_SUMMARY[[:space:][:print:]]*::warning title=Release not qualified::" "$ci" "an unqualified main run does not explain the missing release in a warning and run summary"
+if rg -q '::notice::Qualified release artifact is unavailable' "$ci"; then
+  echo "WASM release workflow verification failed: an unqualified main run is still reported only as a notice" >&2
+  exit 1
+fi
 require 'AXON_RUNTIME_BUILD_SOURCE_COMMIT: \$\{\{ github\.sha \}\}\n[[:space:]]+AXON_RUNTIME_BUILD_REQUIRE_CLEAN: "1"\n[[:space:]]+run: \|\n[[:space:]]+vercel pull' "$ci" "the qualified build is not bound to a clean build of the exact commit"
 require 'browser-runtime-build\.ts verify[[:space:]\\]+\.vercel/output/static "\$GITHUB_SHA"' "$ci" "the qualified artifact's runtime manifest is not checked against the qualified commit"
 

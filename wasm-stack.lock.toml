@@ -7,9 +7,9 @@ wasm_roots = ["axon-web-wasm"]
 # Cargo.toml. Delta Kernel and delta-rs are not linked into the WASM closure, so they are declared
 # absent. Every mode checks versions, sources, and pinned stack revisions against the locked
 # closure. `candidate_sha` stays UNSET until the fork owners publish the release tags, which keeps
-# CI in bootstrap mode. The canonical target stack (DataFusion 55, Arrow 59.3, object_store 0.14.1,
-# Delta Kernel 0.28, deltalake-browser) replaces these entries in the change that moves the
-# closure to it.
+# CI in bootstrap mode; docs/release-gates/main-release-qualification.md lists the owner actions.
+# The canonical target stack (DataFusion 55, Arrow 59.3, object_store 0.14.1, Delta Kernel 0.28,
+# deltalake-browser) replaces these entries in the change that moves the closure to it.
 
 [release]
 branch = "axon-wasm/v1"

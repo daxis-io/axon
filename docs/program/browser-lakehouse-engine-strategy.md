@@ -95,7 +95,8 @@ closure. The target release bases in this document (Arrow/Parquet 59.3.0, `objec
 DataFusion 55.0.0, Delta Kernel 0.28.0, and delta-rs 0.32.4) replace those entries in the change
 that moves the closure to them, because every verifier mode checks the lock against the locked
 closure. `UNSET` candidate or stack revisions make that lock bootstrap-only and block a release or
-production claim.
+production claim; [`main-release-qualification.md`](../release-gates/main-release-qualification.md)
+lists the owner actions that complete it.
 
 ## Canonical Decision
 

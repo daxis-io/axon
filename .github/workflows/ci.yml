@@ -439,9 +439,38 @@ jobs:
           print(f"credentials={'true' if credentials else 'false'}")
           PY
 
-      - name: Report bootstrap-only release state
+      - name: Report the unqualified release state
         if: steps.release.outputs.ready != 'true'
-        run: echo "::notice::Qualified release artifact is unavailable while wasm-stack.lock.toml contains UNSET revisions."
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import tomllib
+          from pathlib import Path
+
+          lock = tomllib.loads(Path("wasm-stack.lock.toml").read_text())
+          release = lock["release"]
+          print("## Release not qualified: this run produced no deployable artifact")
+          print()
+          print(
+              "`wasm-stack.lock.toml` still has `UNSET` release revisions, so this run built no "
+              "`axon-web-qualified-prebuilt` artifact and `Deploy axon-web` has nothing to stage "
+              "or promote. Production keeps serving its previous deployment."
+          )
+          print()
+          print("| Component | Fork | Missing |")
+          print("| --- | --- | --- |")
+          for name, entry in lock["components"].items():
+              if entry.get("wasm_closure", "present") == "absent":
+                  continue
+              unset = [field for field in ("candidate_sha", "stack_sha") if entry.get(field) == "UNSET"]
+              if unset:
+                  tags = f"annotated `{release['candidate_tag']}` and `{release['final_tag']}` at `stack_sha`"
+                  fields = ", ".join(f"`{field}`" for field in unset)
+                  print(f"| `{name}` | {entry['daxis_url']} | {fields}; {tags} |")
+          print()
+          print("The owner actions that qualify and deploy main are listed in")
+          print("`docs/release-gates/main-release-qualification.md`.")
+          PY
+          echo "::warning title=Release not qualified::wasm-stack.lock.toml has UNSET release revisions, so this run produced no axon-web-qualified-prebuilt artifact and cannot be deployed. See the run summary and docs/release-gates/main-release-qualification.md."
 
       - name: Report unavailable deployment credentials
         if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials != 'true'

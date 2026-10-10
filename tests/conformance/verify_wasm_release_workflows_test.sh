@@ -35,6 +35,10 @@ expect_rejected() {
 }
 
 reset_workflows
+sed -i.bak 's/::warning title=Release not qualified::/::notice::/' "$tmpdir/repo/.github/workflows/ci.yml"
+expect_rejected "an unqualified main run reported only as a notice"
+
+reset_workflows
 sed -i.bak '/AXON_RUNTIME_BUILD_REQUIRE_CLEAN/d' "$tmpdir/repo/.github/workflows/ci.yml"
 expect_rejected "a qualified build that is not bound to a clean exact commit"
 
@@ -42,4 +46,4 @@ reset_workflows
 sed -i.bak 's/static "$QUALIFIED_COMMIT"/static/' "$tmpdir/repo/.github/workflows/deploy-axon-web.yml"
 expect_rejected "a deployment that does not check the artifact's recorded commit"
 
-echo "WASM release workflow negative rebuild and commit-identity coverage passed"
+echo "WASM release workflow negative rebuild, release-state, and commit-identity coverage passed"
