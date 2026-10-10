@@ -34,8 +34,8 @@
 
 ## Correctness
 
-- [x] Native runtime exists and is production-callable.
-- [x] Every supported browser query has a native parity test.
+- [ ] Native runtime exists and is production-callable. Not met: no native DataFusion runtime runs outside the browser. The `native-query-runtime` crate is compiled and run only by tests, and the shipped app has no native or server execution path.
+- [ ] Every supported browser query has a native parity test. Not met: the CI browser/native parity tests exercise the legacy `wasm-query-runtime` executor, and the shipped DataFusion engine's corpora assert fixed expected rows.
 - [x] Advanced Delta features are classified as supported, native-only, unsupported, or hard-fail in the browser engine plan and README, including unknown protocol features as terminal snapshot-resolution failures.
 - [x] Unsupported cases fail clearly or route deterministically to native.
 - [x] Range-read correctness is proven for footer, bounded, offset, and suffix reads.
