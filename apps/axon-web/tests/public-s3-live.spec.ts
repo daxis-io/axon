@@ -5,7 +5,7 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 import {
   buildPublicDeltaLogManifest,
   parsePublicObjectStorageTableRoot,
-  publicObjectUrl,
+  publicObjectUrlForDeltaPath,
 } from '../src/services/object-storage.ts';
 
 const liveTableUri = process.env.AXON_LIVE_PUBLIC_S3_TABLE_URI;
@@ -914,7 +914,7 @@ test.describe('public S3 live smoke', () => {
     expect(manifest.objects.length).toBeGreaterThan(0);
 
     const addPath = await firstAddPathFromDeltaLogs(request, manifest.objects, liveOrigin);
-    const dataResponse = await request.get(publicObjectUrl(root, addPath), {
+    const dataResponse = await request.get(publicObjectUrlForDeltaPath(root, addPath), {
       headers: {
         Origin: liveOrigin,
         Range: 'bytes=0-15',

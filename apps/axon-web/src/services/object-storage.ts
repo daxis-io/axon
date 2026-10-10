@@ -251,6 +251,33 @@ export function publicObjectUrl(root: PublicObjectStorageTableRoot, relativePath
   return `${root.tableRootUrl}${encodeObjectPath(normalized)}`;
 }
 
+// Delta add/remove paths are URI-encoded, so the object key is the path decoded once.
+// Listing keys and index entries are raw keys and keep using publicObjectUrl.
+export function publicObjectUrlForDeltaPath(
+  root: PublicObjectStorageTableRoot,
+  deltaPath: string,
+): string {
+  const segments = deltaPath.split('/').map((segment) => {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      throw invalidPath('public Delta data file path contains an invalid percent-encoding');
+    }
+    if (
+      !decoded ||
+      decoded === '.' ||
+      decoded === '..' ||
+      decoded.includes('/') ||
+      decoded.includes('\\')
+    ) {
+      throw invalidPath('public Delta data file path must stay inside the table root');
+    }
+    return decoded;
+  });
+  return `${root.tableRootUrl}${encodeObjectPath(segments.join('/'))}`;
+}
+
 export function publicObjectStorageConnectionId(root: PublicObjectStorageTableRoot): string {
   if (root.provider === 'gcs') {
     return `axon-connection://public-gcs/${encodeURIComponent(root.bucket)}`;
@@ -751,7 +778,7 @@ export async function resolvePublicObjectStorageDescriptor(input: {
     activeFiles: snapshot.active_files.map((file) =>
       create(BrowserHttpFileDescriptorSchema, {
         path: file.path,
-        url: publicObjectUrl(root, file.path),
+        url: publicObjectUrlForDeltaPath(root, file.path),
         sizeBytes: BigInt(validatedResolvedInteger(file.size_bytes, 'active file size')),
         partitionValues: Object.fromEntries(
           Object.entries(file.partition_values ?? {}).map(([name, value]) => [
