@@ -11,7 +11,7 @@ import {
 import { initSync, SandboxQuerySession } from './wasm/axon_web_wasm.js';
 
 // Matches QUERY_PREVIEW_LIMIT in sandbox-query-child-worker.ts.
-export const CHILD_QUERY_PREVIEW_LIMIT = 501;
+const CHILD_QUERY_PREVIEW_LIMIT = 501;
 
 const PROD_LIKE_FIXTURE = new URL('../public/fixtures/prod-like/', import.meta.url);
 const PROD_LIKE_SNAPSHOT_VERSION = 3;
