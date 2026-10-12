@@ -18,8 +18,8 @@ use wasm_bindgen::JsCast;
 use wasm_datafusion_session::{
     ArrowIpcPhase, BrowserDataFusionCancellation, BrowserDataFusionCursorCancellation,
     BrowserDataFusionIpcCursor, BrowserDataFusionIpcCursorItem, BrowserDataFusionMemoryMetrics,
-    BrowserDataFusionQueryTerminal, BrowserDataFusionSession, IpcCursorMetrics, IpcPreview,
-    IpcStreamLimits, IpcTransportChunk, QueryTerminalStatus,
+    BrowserDataFusionQueryTerminal, BrowserDataFusionResultPageOrder, BrowserDataFusionSession,
+    IpcCursorMetrics, IpcPreview, IpcStreamLimits, IpcTransportChunk, QueryTerminalStatus,
 };
 use wasm_delta_snapshot::{
     BrowserDeltaLogManifest, BrowserDeltaLogObject, BrowserHttpDeltaLogStorageHandler,
@@ -136,6 +136,8 @@ struct SandboxSqlMetadata {
     #[serde(serialize_with = "serialize_decimal_string")]
     preview_duration_ms: u64,
     cache_metrics: SandboxCacheMetrics,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result_page: Option<SandboxResultPageOutput>,
 }
 
 #[derive(Debug, Serialize)]
@@ -159,6 +161,18 @@ struct SandboxSqlTerminalMetadata {
     cursor_metrics: SandboxCursorMetrics,
     datafusion_memory: SandboxDataFusionMemoryMetrics,
     wasm_memory: SandboxWasmMemoryMetrics,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result_page: Option<SandboxResultPageOutput>,
+}
+
+/// How a requested result page is ordered: `ordered` is false when later offsets continue the page
+/// in scan order. When it is true, the next page continues this one only if the last page row and
+/// the row after it differ in one of `order_key_columns` (output column indexes of the leading
+/// ORDER BY keys, possibly empty).
+#[derive(Debug, Serialize)]
+struct SandboxResultPageOutput {
+    ordered: bool,
+    order_key_columns: Vec<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -886,6 +900,7 @@ fn sandbox_sql_metadata(
     terminal: BrowserDataFusionQueryTerminal,
     cache_metrics: SandboxCacheMetrics,
 ) -> Result<SandboxSqlMetadata, JsValue> {
+    let result_page = result_page_output(terminal.result_page);
     let preview = query_preview_output(terminal.preview);
     let preview_string_bytes = preview_string_bytes(&preview).map_err(query_error_to_js_value)?;
     let mut response = terminal.response.ok_or_else(|| {
@@ -904,6 +919,7 @@ fn sandbox_sql_metadata(
         preview_string_bytes,
         preview_duration_ms: 0,
         cache_metrics,
+        result_page,
     })
 }
 
@@ -971,6 +987,7 @@ fn ipc_terminal_js_value(
     cache_metrics: SandboxCacheMetrics,
 ) -> Result<JsValue, JsValue> {
     let preview_string_bytes = terminal.preview.string_bytes;
+    let result_page = result_page_output(terminal.result_page);
     let preview = query_preview_output(terminal.preview);
     let cursor_metrics = sandbox_cursor_metrics(&terminal.cursor_metrics);
     let datafusion_memory = sandbox_datafusion_memory_metrics(&terminal.memory_metrics);
@@ -996,6 +1013,7 @@ fn ipc_terminal_js_value(
         cursor_metrics,
         datafusion_memory,
         wasm_memory,
+        result_page,
     };
     let metadata_json = serde_json::to_string(&metadata).map_err(|error| {
         JsValue::from_str(&format!(
@@ -1011,6 +1029,21 @@ fn ipc_terminal_js_value(
     let envelope = Object::new();
     Reflect::set(&envelope, &JsValue::from_str("terminal"), value.as_ref())?;
     Ok(envelope.into())
+}
+
+fn result_page_output(
+    order: Option<BrowserDataFusionResultPageOrder>,
+) -> Option<SandboxResultPageOutput> {
+    order.map(|order| match order {
+        BrowserDataFusionResultPageOrder::Unordered => SandboxResultPageOutput {
+            ordered: false,
+            order_key_columns: Vec::new(),
+        },
+        BrowserDataFusionResultPageOrder::Ordered { key_columns } => SandboxResultPageOutput {
+            ordered: true,
+            order_key_columns: key_columns,
+        },
+    })
 }
 
 fn query_preview_output(preview: IpcPreview) -> QueryPreviewOutput {

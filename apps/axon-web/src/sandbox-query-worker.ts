@@ -8,6 +8,7 @@ import {
   type BrowserWorkerEventEnvelope,
   type BrowserWorkerLogLevel,
   type BrowserWorkerProgressStage,
+  type BrowserWorkerResultPage,
   type BrowserWorkerResultPreview,
   type BrowserWorkerSqlDelivery,
   type BrowserWorkerSqlCommand,
@@ -61,6 +62,7 @@ type SandboxWireResultPreview = Omit<BrowserWorkerResultPreview, 'row_count'> & 
 type SandboxTerminalMetadata = PrivateTerminalMetadata & {
   response?: QueryResponse;
   preview?: SandboxWireResultPreview;
+  result_page?: BrowserWorkerResultPage;
   preview_string_bytes?: DecimalString;
   preview_duration_ms?: DecimalString;
   cache_metrics?: SandboxCacheMetrics;
@@ -672,6 +674,7 @@ function commitSuccessfulQuery(
           chunk_count: publicChunkCount,
         },
         preview,
+        ...(metadata.result_page ? { result_page: metadata.result_page } : {}),
       },
     });
     return;
@@ -695,6 +698,7 @@ function commitSuccessfulQuery(
           chunk_count: publicChunkCount,
         },
         preview,
+        ...(metadata.result_page ? { result_page: metadata.result_page } : {}),
       },
     },
     [bytes.buffer],

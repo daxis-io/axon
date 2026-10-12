@@ -126,6 +126,7 @@ export function Results({
   const pageStart = sorted.length === 0 ? 0 : startIndex + 1;
   const pageEnd = Math.min(sorted.length, endIndex);
   const hasMoreRows = resultData?.page?.has_more === true;
+  const loadMoreBlocked = hasMoreRows ? resultData?.page?.load_more_blocked : undefined;
   const loadedRows = resultData?.page?.loaded_rows ?? sorted.length;
   const hasMultipleResultPages = hasMoreRows || loadedRows > (resultData?.page?.size ?? loadedRows);
 
@@ -414,6 +415,14 @@ export function Results({
             <div className="result-pagination-notice" data-testid="result-pagination-notice">
               Loading more recomputes the original query until streaming results are available. Use
               an explicit ORDER BY for stable results across pages.
+            </div>
+          )}
+
+          {loadMoreBlocked && (
+            <div className="result-pagination-notice" data-testid="result-load-more-blocked">
+              {loadMoreBlocked === 'order_by_tie'
+                ? 'Load more is off: the next row may tie with the last loaded row on the ORDER BY key, and a re-run page can order tied rows differently, so rows could repeat or go missing. Add a unique column to the end of ORDER BY to page through every row, or narrow the query with LIMIT and OFFSET in SQL.'
+                : 'Load more is off because the runtime did not report how these rows are ordered, so a re-run page could repeat or skip rows.'}
             </div>
           )}
 

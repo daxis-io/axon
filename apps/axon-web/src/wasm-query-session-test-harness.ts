@@ -32,6 +32,7 @@ export type WasmTerminal = {
   error?: { code: string; message: string };
   preview?: WasmPreview;
   response?: { metrics?: Record<string, unknown> };
+  result_page?: { ordered: boolean; order_key_columns: number[] };
 };
 
 export type WasmTable = { name: string; tableUri: string; snapshotVersion?: number };

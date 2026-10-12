@@ -1,4 +1,5 @@
 import {
+  canLoadMoreResultRows,
   sameQueryResultPageRun,
   type QueryResultPageRun,
 } from '../../services/query-pagination.ts';
@@ -48,7 +49,7 @@ export function RunResultsPanel({
   const events = useAxonClientStore(selectRunEvents);
   const plan = useAxonClientStore(selectRunPlan);
   const canLoadMoreRows =
-    resultData?.page?.has_more === true &&
+    canLoadMoreResultRows(resultData?.page) &&
     resultPageRun !== undefined &&
     activeResultPageRun !== undefined &&
     sameQueryResultPageRun(resultPageRun, activeResultPageRun);

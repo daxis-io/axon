@@ -83,7 +83,13 @@ export type QueryResultPageInfo = {
   returned_rows: number;
   loaded_rows: number;
   has_more: boolean;
+  // Set only when Load more is offered.
   next_offset?: number;
+  // Why Load more is not offered although has_more is true. Load more re-runs the query with a
+  // later OFFSET, which only continues the loaded rows when the next row is known to sort after
+  // the last one ('order_by_tie' otherwise), or when the runtime did not report how the rows are
+  // ordered ('unknown_order').
+  load_more_blocked?: 'order_by_tie' | 'unknown_order';
 };
 
 export type QueryResultData = {
