@@ -10,7 +10,12 @@ import { resolve, sep } from 'node:path';
 
 export type VercelRewrite = { source: string; destination: string };
 export type VercelHeaderRule = { source: string; headers: { key: string; value: string }[] };
-export type VercelRoutingConfig = { rewrites?: VercelRewrite[]; headers?: VercelHeaderRule[] };
+export type VercelRoutingConfig = {
+  rewrites?: VercelRewrite[];
+  headers?: VercelHeaderRule[];
+  cleanUrls?: boolean;
+  trailingSlash?: boolean;
+};
 
 const SEGMENT = '[^/#?]+?';
 
@@ -77,18 +82,31 @@ type PreviewResponse = {
 };
 
 /**
- * Connect middleware for `vite preview` that serves a build the way the production host does: a
- * built file first, then the first matching rewrite, otherwise a plain-text NOT_FOUND instead of
- * Vite's SPA fallback. Matching `headers` rules apply to every response.
+ * Connect middleware for `vite preview` that serves a build the way the production host does with
+ * its default `cleanUrls` and `trailingSlash` settings: a built file first, then a directory's
+ * index.html with or without the trailing slash, then the first matching rewrite, otherwise a
+ * plain-text NOT_FOUND instead of Vite's SPA fallback. Matching `headers` rules apply to every
+ * response.
  */
 export function vercelPreviewMiddleware(config: VercelRoutingConfig, outDir: string) {
+  if (config.cleanUrls !== undefined || config.trailingSlash !== undefined) {
+    throw new Error(
+      'unsupported Vercel cleanUrls or trailingSlash setting: preview emulates only the defaults',
+    );
+  }
   const root = resolve(outDir);
   return (request: PreviewRequest, response: PreviewResponse, next: () => void): void => {
     const url = new URL(request.url ?? '/', 'http://preview.invalid');
     for (const [key, value] of vercelResponseHeaders(config, url.pathname)) {
       response.setHeader(key, value);
     }
-    if (url.pathname === '/' || isBuiltFile(root, url.pathname)) {
+    if (isBuiltFile(root, url.pathname)) {
+      next();
+      return;
+    }
+    const index = `${url.pathname.replace(/\/$/, '')}/index.html`;
+    if (isBuiltFile(root, index)) {
+      request.url = `${index}${url.search}`;
       next();
       return;
     }

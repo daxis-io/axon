@@ -80,7 +80,9 @@ describe('production host routing (vercel.json)', () => {
 describe('production host routing in vite preview', () => {
   const outDir = mkdtempSync(join(tmpdir(), 'axon-preview-dist-'));
   mkdirSync(join(outDir, 'assets'));
+  mkdirSync(join(outDir, 'designs', 'sql-editor'), { recursive: true });
   writeFileSync(join(outDir, 'index.html'), '<!doctype html>');
+  writeFileSync(join(outDir, 'designs', 'sql-editor', 'index.html'), '<!doctype html>');
   writeFileSync(join(outDir, 'assets', 'engine-1a2b.wasm'), 'wasm');
   writeFileSync(join(outDir, 'assets', 'editor-1a2b.js'), 'js');
   afterAll(() => rmSync(outDir, { recursive: true, force: true }));
@@ -113,6 +115,27 @@ describe('production host routing in vite preview', () => {
     expect(wasm.response.headers['cache-control']).toBe('public, max-age=31536000, immutable');
   });
 
+  it('serves a directory index with or without the trailing slash, as the host does by default', () => {
+    for (const [path, served] of [
+      ['/', '/index.html'],
+      ['/designs/sql-editor/?v=1', '/designs/sql-editor/index.html?v=1'],
+      ['/designs/sql-editor', '/designs/sql-editor/index.html'],
+    ]) {
+      const index = serve(path);
+      expect(index.passedOn, path).toBe(true);
+      expect(index.url, path).toBe(served);
+    }
+  });
+
+  it('rejects cleanUrls and trailingSlash settings it does not emulate', () => {
+    expect(() => vercelPreviewMiddleware({ ...vercel, cleanUrls: true }, outDir)).toThrow(
+      /unsupported/,
+    );
+    expect(() => vercelPreviewMiddleware({ ...vercel, trailingSlash: false }, outDir)).toThrow(
+      /unsupported/,
+    );
+  });
+
   it('rewrites application routes to the SPA entry', () => {
     const route = serve(
       `${catalogTableSqlPath(createSampleFixtureCanonicalTable('events'))}?tab=1`,
@@ -122,7 +145,12 @@ describe('production host routing in vite preview', () => {
   });
 
   it('answers paths with no file and no rewrite with the host NOT_FOUND page', () => {
-    for (const path of ['/assets/missing-1a2b.js', '/unknown', '/assets/../../vercel.json']) {
+    for (const path of [
+      '/assets/missing-1a2b.js',
+      '/assets/',
+      '/unknown',
+      '/assets/../../vercel.json',
+    ]) {
       const missing = serve(path);
       expect(missing.passedOn, path).toBe(false);
       expect(missing.response.statusCode, path).toBe(404);
