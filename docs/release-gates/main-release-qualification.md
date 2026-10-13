@@ -32,8 +32,14 @@ These are repository-owner and fork-owner actions; nothing in this repository pe
    1. Confirm that the upstream `base_sha` recorded in the lock is an ancestor of the pinned
       `stack_sha`, and choose a `candidate_sha` on that path (it may equal `stack_sha`).
    2. Confirm that every commit in `base_sha..stack_sha` has a `Signed-off-by` trailer naming its
-      author or committer. Final mode rejects any other commit, so a missing sign-off means
-      re-publishing the fork history before release.
+      author or committer. Final mode rejects any other commit. The arrow-rs pin passes; the
+      object_store pin `ab9fda65` and the DataFusion pin `8c5b4526` do not. Each is the tip of its
+      range and its one commit without a sign-off, so tagging the current pins makes
+      `--production --final` fail with `object_store commit lacks DCO sign-off`, then with the same
+      error for DataFusion. For those two forks, sign off the tip without changing its tree or
+      parents (`git commit --amend --no-edit --signoff`), push the result to a new ref so the
+      current pin stays fetchable for older main commits, and repin main to it: the `rev` entries
+      in the root `Cargo.toml`, `Cargo.lock`, and `stack_sha` in `wasm-stack.lock.toml`.
    3. Create the annotated tags `axon-wasm-v1.0.0-rc.1` and `axon-wasm-v1.0.0` at `stack_sha`, and
       protect the `axon-wasm/v1` branch. These names are fixed by the verifier and the strategy;
       using them for this stack means the later canonical-stack release needs new release names in
