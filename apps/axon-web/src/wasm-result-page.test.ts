@@ -108,12 +108,23 @@ describe('result pages for SQL as typed in the editor', () => {
 describe('Load more across re-run pages', () => {
   // Each Load more re-runs the query with a deeper top-K sort, which can order tied rows
   // differently, so following it would repeat some rows and skip others.
-  test('Load more is not offered when the next row may tie on the ORDER BY key', async () => {
-    for (const sql of [
-      'SELECT event_id, event_id % 4 AS bucket FROM event_ids ORDER BY bucket',
+  test('Load more is not offered when the next row may tie or the order cannot be checked', async () => {
+    for (const [sql, reason] of [
+      ['SELECT event_id, event_id % 4 AS bucket FROM event_ids ORDER BY bucket', 'order_by_tie'],
       // The leading key is not an output column, so the boundary rows cannot be compared.
-      'SELECT event_id, event_id % 4 AS bucket FROM event_ids ORDER BY event_id % 4, event_id',
-    ]) {
+      [
+        'SELECT event_id, event_id % 4 AS bucket FROM event_ids ORDER BY event_id % 4, event_id',
+        'unverifiable_order',
+      ],
+      // A unique key, but qualified. A two-part name can also be a struct field (s.field) that is
+      // unrelated to the output column of the same name, so qualified keys are never matched.
+      ['SELECT e.event_id FROM event_ids AS e ORDER BY e.event_id', 'unverifiable_order'],
+      // The window partitions rows the page cannot see.
+      [
+        'SELECT event_id, ROW_NUMBER() OVER (PARTITION BY event_id % 4) AS n FROM event_ids ORDER BY event_id',
+        'unverifiable_order',
+      ],
+    ] as const) {
       const result = await runAndLoadAll(sql, 4);
       const ids = eventIdsOf(result);
 
@@ -121,6 +132,7 @@ describe('Load more across re-run pages', () => {
       expect(result.rows, sql).toHaveLength(500);
       expect(result.page?.has_more, sql).toBe(true);
       expect(result.page?.next_offset, sql).toBeUndefined();
+      expect(result.page?.load_more_blocked, sql).toBe(reason);
     }
   }, 60_000);
 

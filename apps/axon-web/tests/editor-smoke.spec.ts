@@ -477,7 +477,7 @@ test.describe('editor (Phase 1 smoke)', () => {
       'Loading more recomputes the original query until streaming results are available.',
     );
     await expect(page.getByTestId('result-pagination-notice')).toContainText(
-      'Use an explicit ORDER BY for stable results across pages.',
+      'Load more is offered only when the next page is known to continue the loaded rows.',
     );
 
     await page.locator('.table-wrap').evaluate((node) => {

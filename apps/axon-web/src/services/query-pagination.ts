@@ -174,7 +174,8 @@ export function canLoadMoreResultRows(page: QueryResultPageInfo | undefined): bo
 // order every time. Sorted rows only continue the loaded ones when the last page row and the row
 // after it (the sentinel past the page) differ in a leading ORDER BY column: then every loaded row
 // sorts strictly before every later row, so a deeper re-run cannot move a row across the boundary.
-// Rows that tie there can come back in a different order and repeat or skip rows.
+// Rows that tie there can come back in a different order and repeat or skip rows. Sorted rows
+// without any reported ORDER BY column cannot be compared at all, which is not a tie.
 function loadMoreBlockedReason(
   rows: BrowserWorkerResultPreview['rows'],
   size: number,
@@ -182,6 +183,7 @@ function loadMoreBlockedReason(
 ): QueryResultPageInfo['load_more_blocked'] {
   if (!order) return 'unknown_order';
   if (!order.ordered) return undefined;
+  if (order.order_key_columns.length === 0) return 'unverifiable_order';
   const last = rows[size - 1];
   const next = rows[size];
   if (last && next && order.order_key_columns.some((column) => last[column] !== next[column])) {

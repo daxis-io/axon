@@ -195,7 +195,6 @@ describe('Load more over re-run result pages', () => {
   it('offers Load more for sorted rows only past a boundary a leading ORDER BY column splits', () => {
     for (const [rows, orderKeyColumns, blocked] of [
       [tiedAtBoundary.rows, [0], true],
-      [tiedAtBoundary.rows, [], true],
       [tiedAtBoundary.rows, [0, 1], false],
       [tiedAtBoundary.rows, [1], false],
       [
@@ -228,6 +227,30 @@ describe('Load more over re-run result pages', () => {
       );
       expect(result.page?.next_offset).toBe(blocked ? undefined : 2);
       expect(result.page?.load_more_blocked).toBe(blocked ? 'order_by_tie' : undefined);
+    }
+  });
+
+  it('does not offer Load more for sorted rows that no reported ORDER BY column can split', () => {
+    // An empty key list means the runtime found no ORDER BY key the page rows can be compared on
+    // (an expression or qualified leading key, a sorting window, DISTINCT ON or a nested ORDER BY),
+    // which is not a tie at the boundary: adding a unique ORDER BY column would not change it.
+    for (const rows of [
+      tiedAtBoundary.rows,
+      [
+        [0, 1],
+        [0, 2],
+        [1, 3],
+      ],
+    ]) {
+      const result = resultPageFromPreview(preview(rows.map((row) => [...row])), page, {
+        ordered: true,
+        order_key_columns: [],
+      });
+
+      expect(result.page?.has_more).toBe(true);
+      expect(result.page?.next_offset).toBeUndefined();
+      expect(result.page?.load_more_blocked).toBe('unverifiable_order');
+      expect(canLoadMoreResultRows(result.page)).toBe(false);
     }
   });
 

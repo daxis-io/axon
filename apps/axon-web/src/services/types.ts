@@ -87,9 +87,12 @@ export type QueryResultPageInfo = {
   next_offset?: number;
   // Why Load more is not offered although has_more is true. Load more re-runs the query with a
   // later OFFSET, which only continues the loaded rows when the next row is known to sort after
-  // the last one ('order_by_tie' otherwise), or when the runtime did not report how the rows are
-  // ordered ('unknown_order').
-  load_more_blocked?: 'order_by_tie' | 'unknown_order';
+  // the last one. 'order_by_tie': the next row may tie with the last one on the ORDER BY columns
+  // the runtime could match to output columns. 'unverifiable_order': the rows are sorted but no
+  // ORDER BY key matches an output column (an expression or qualified leading key, or another
+  // sort such as a window, DISTINCT ON or a nested ORDER BY). 'unknown_order': the runtime did not
+  // report how the rows are ordered.
+  load_more_blocked?: 'order_by_tie' | 'unverifiable_order' | 'unknown_order';
 };
 
 export type QueryResultData = {

@@ -6,6 +6,7 @@ import type {
   QueryEvent,
   QueryMetricsSummary,
   QueryResultData,
+  QueryResultPageInfo,
   ResultCell,
   ResultColumn,
 } from '../../services/types.ts';
@@ -54,6 +55,39 @@ export function externalMemoryReservationPresentation(
     title:
       'DataFusion-accounted operator reservations. Includes aggregate spill-sort headroom and does not represent total browser memory.',
   };
+}
+
+const LOAD_MORE_BLOCKED_NOTICES: Record<
+  NonNullable<QueryResultPageInfo['load_more_blocked']>,
+  string
+> = {
+  order_by_tie:
+    'Load more is off: the next row may tie with the last loaded row on the ORDER BY key, and a re-run page can order tied rows differently, so rows could repeat or go missing. Add a unique column to the end of ORDER BY to page through every row, naming each ORDER BY key by its SELECT-list column name or position, or narrow the query with LIMIT and OFFSET in SQL.',
+  unverifiable_order:
+    'Load more is off: this query sorts rows in a way Load more cannot check across re-run pages, so rows could repeat or go missing. Load more continues sorted rows only for an outer ORDER BY whose keys are SELECT-list column names or positions (not expressions or qualified names such as e.id), in a query with no other sort: no window with PARTITION BY or ORDER BY, no DISTINCT ON and no ORDER BY in a subquery. Sort that way, ending ORDER BY with a unique column, to page through every row, or narrow the query with LIMIT and OFFSET in SQL.',
+  unknown_order:
+    'Load more is off because the runtime did not report how these rows are ordered, so a re-run page could repeat or skip rows.',
+};
+
+// The single notice shown above a paged result: why Load more is off while more rows exist, or
+// otherwise how Load more works once the result spans more than one page.
+export function resultPageNotice(
+  page: QueryResultPageInfo | undefined,
+): { testId: 'result-pagination-notice' | 'result-load-more-blocked'; text: string } | undefined {
+  if (!page) return undefined;
+  if (page.has_more && page.load_more_blocked) {
+    return {
+      testId: 'result-load-more-blocked',
+      text: LOAD_MORE_BLOCKED_NOTICES[page.load_more_blocked],
+    };
+  }
+  if (page.has_more || page.loaded_rows > page.size) {
+    return {
+      testId: 'result-pagination-notice',
+      text: 'Loading more recomputes the original query until streaming results are available. Load more is offered only when the next page is known to continue the loaded rows.',
+    };
+  }
+  return undefined;
 }
 
 export function Results({
@@ -126,9 +160,8 @@ export function Results({
   const pageStart = sorted.length === 0 ? 0 : startIndex + 1;
   const pageEnd = Math.min(sorted.length, endIndex);
   const hasMoreRows = resultData?.page?.has_more === true;
-  const loadMoreBlocked = hasMoreRows ? resultData?.page?.load_more_blocked : undefined;
   const loadedRows = resultData?.page?.loaded_rows ?? sorted.length;
-  const hasMultipleResultPages = hasMoreRows || loadedRows > (resultData?.page?.size ?? loadedRows);
+  const pageNotice = resultPageNotice(resultData?.page);
 
   function clickHeader(c: ResultColumn) {
     setSort((s) => {
@@ -411,18 +444,9 @@ export function Results({
             {copyState === 'copied' && <span className="copy-state">copied</span>}
           </div>
 
-          {hasMultipleResultPages && (
-            <div className="result-pagination-notice" data-testid="result-pagination-notice">
-              Loading more recomputes the original query until streaming results are available. Use
-              an explicit ORDER BY for stable results across pages.
-            </div>
-          )}
-
-          {loadMoreBlocked && (
-            <div className="result-pagination-notice" data-testid="result-load-more-blocked">
-              {loadMoreBlocked === 'order_by_tie'
-                ? 'Load more is off: the next row may tie with the last loaded row on the ORDER BY key, and a re-run page can order tied rows differently, so rows could repeat or go missing. Add a unique column to the end of ORDER BY to page through every row, or narrow the query with LIMIT and OFFSET in SQL.'
-                : 'Load more is off because the runtime did not report how these rows are ordered, so a re-run page could repeat or skip rows.'}
+          {pageNotice && (
+            <div className="result-pagination-notice" data-testid={pageNotice.testId}>
+              {pageNotice.text}
             </div>
           )}
 
