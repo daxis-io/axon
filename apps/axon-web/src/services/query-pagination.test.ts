@@ -1,6 +1,8 @@
 import { create } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
+import { BrowserHttpSnapshotDescriptorSchema } from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 import {
+  ExecuteRequestSchema,
   PreviewCellSchema,
   QueryExecutionOptionsSchema,
   QueryRequestSchema,
@@ -17,6 +19,7 @@ import {
 import { canonicalTableForSelection } from './browser-read-resolution.ts';
 import {
   QUERY_RESULT_PAGE_SIZE,
+  browserReadSnapshotVersion,
   queryPageFromRequest,
   queryResultPageRequest,
   queryResultPageRun,
@@ -46,6 +49,39 @@ function request(sql = 'select * from events') {
     }),
   });
 }
+
+function resolvedRequest(snapshotVersion: bigint) {
+  return create(ExecuteRequestSchema, {
+    executionId: 'execution-1',
+    binding: {
+      case: 'browserRead',
+      value: {
+        descriptor: {
+          descriptor: {
+            case: 'snapshot',
+            value: create(BrowserHttpSnapshotDescriptorSchema, {
+              tableUri: 'gs://public-bucket/events',
+              snapshotVersion,
+            }),
+          },
+        },
+      },
+    },
+  });
+}
+
+describe('result page snapshot', () => {
+  it('reads the snapshot version the first page was resolved at', () => {
+    expect(browserReadSnapshotVersion(resolvedRequest(14n))).toBe(14);
+  });
+
+  it('reports no version unless the request resolved one exact snapshot', () => {
+    expect(browserReadSnapshotVersion(create(ExecuteRequestSchema, {}))).toBeUndefined();
+    expect(
+      browserReadSnapshotVersion(resolvedRequest(BigInt(Number.MAX_SAFE_INTEGER) + 1n)),
+    ).toBeUndefined();
+  });
+});
 
 describe('generated query pagination identity', () => {
   it('carries the sentinel page in the generated query contract', () => {
@@ -97,6 +133,17 @@ describe('generated query pagination identity', () => {
 
     expect(sameQueryResultPageRun(original, displayOnlyChange)).toBe(true);
     expect(sameQueryResultPageRun(original, edited)).toBe(false);
+  });
+
+  it('keeps an unpinned run on the snapshot its first page read', () => {
+    const table = canonicalTableForSelection(selection);
+    const firstRead = queryResultPageRun(table, request(), selection, undefined, 14);
+    const sameRead = queryResultPageRun(table, request(), selection, undefined, 14);
+    const newerRead = queryResultPageRun(table, request(), selection, undefined, 15);
+
+    expect(firstRead).toMatchObject({ snapshotVersion: undefined, readSnapshotVersion: 14 });
+    expect(sameQueryResultPageRun(firstRead, sameRead)).toBe(true);
+    expect(sameQueryResultPageRun(firstRead, newerRead)).toBe(false);
   });
 
   it('projects every generated preview cell variant into the bounded UI page', () => {

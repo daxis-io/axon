@@ -96,6 +96,7 @@ function pageResult(
 function runFor(
   sql: string,
   target: ExecutionTarget | 'auto' = 'browser_wasm',
+  readSnapshotVersion = 12,
 ): QueryResultPageRun {
   const selection = {
     kind: 'sample',
@@ -111,6 +112,7 @@ function runFor(
     }),
     selection,
     12,
+    readSnapshotVersion,
   );
 }
 
@@ -478,6 +480,54 @@ describe('run slice', () => {
     });
     expect(selectRunMetrics(store.getState())?.bytes_fetched).toBe(4096);
     expect(selectRunPlan(store.getState())).toEqual({ tree: 'NextPlan' });
+  });
+
+  it('discards a page read at a different snapshot than the loaded rows', () => {
+    const store = createAxonClientStore({ storage: createMemoryClientStateStorage() });
+    const actions = selectRunActions(store.getState());
+    const rerun = runFor('select * from events', 'browser_wasm', 15);
+    const earlierRead = runFor('select * from events', 'browser_wasm', 14);
+
+    actions.createRun('execution-1', 'browser_wasm');
+    actions.startRun('execution-1');
+    actions.finishRunSuccess({
+      runState: {
+        status: 'completed',
+        executionId: 'execution-1',
+        target: 'browser_wasm',
+        ms: 10,
+        rows: 2,
+        fallback: null,
+      },
+      resultData: result(
+        [
+          [1, 'a'],
+          [2, 'b'],
+        ],
+        true,
+      ),
+      resultPageRun: rerun,
+      metrics: metrics(),
+      plan: { tree: 'InitialPlan' },
+      capabilities: defaultCapabilityMatrix(),
+    });
+
+    actions.startLoadMoreRows('page-execution-1');
+    const update = actions.finishLoadMoreRowsSuccess({
+      executionId: 'page-execution-1',
+      runForPage: earlierRead,
+      activeRun: earlierRead,
+      resultData: pageResult(2, [[3, 'older snapshot']]),
+      metrics: metrics(),
+      elapsedMs: 19,
+    });
+
+    expect(update).toEqual({ discarded: true });
+    expect(selectRunResultData(store.getState())?.rows).toEqual([
+      [1, 'a'],
+      [2, 'b'],
+    ]);
+    expect(selectRunResultPageRun(store.getState())?.readSnapshotVersion).toBe(15);
   });
 
   it('does not persist run lifecycle state with client state', () => {

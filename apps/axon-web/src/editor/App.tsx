@@ -32,6 +32,7 @@ import { sameCanonicalTableIdentity } from '../services/canonical-table-identity
 import { hasLocalDeltaRuntime } from '../services/local-delta-session.ts';
 import {
   browserQueryRequest,
+  browserReadSnapshotVersion,
   queryResultPageRun,
   queryResultPageRunRequest,
   sameQueryResultPageRun,
@@ -302,6 +303,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
       }),
       querySelection,
       active.pin ?? undefined,
+      resultPageRun.readSnapshotVersion,
     );
   }, [active.pin, active.preferred, active.sql, querySelection, resultPageRun]);
   const activeResultPageRunRef = useRef<QueryResultPageRun | undefined>(undefined);
@@ -473,6 +475,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
         query,
         selectedSelection,
         tab.pin ?? undefined,
+        browserReadSnapshotVersion(browserInput.request),
       );
       const admission = editorExecutionController.admit(browserInput.request);
       if (admission.admission.outcome.case !== 'accepted') {
@@ -739,6 +742,12 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
       showToast('Run the current query before loading more rows.', 'warn');
       return;
     }
+    // Later pages must read the snapshot the loaded rows came from; latest may have moved on.
+    const readSnapshotVersion = runForPage.readSnapshotVersion;
+    if (readSnapshotVersion === undefined) {
+      showToast('Run the query again before loading more rows.', 'warn');
+      return;
+    }
 
     const ctrl = new AbortController();
     const deadlineCtrl = new AbortController();
@@ -780,7 +789,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
         selection: runForPage.selection,
         table: runForPage.table,
         query: req,
-        snapshotVersion: runForPage.snapshotVersion,
+        snapshotVersion: readSnapshotVersion,
         execution,
         signal: ctrl.signal,
       });
