@@ -583,6 +583,36 @@ describe('browser read canonical identity', () => {
     expect(resolution.outcome.case).toBe('browserRead');
   });
 
+  it('rejects a local runtime whose snapshot is not the pinned one', async () => {
+    const loadLocalDeltaRuntime = vi.fn(async () => ({
+      descriptor: localDescriptor(undefined, 13),
+      registryId: 'local events/2026',
+      tableName: 'events',
+      schemaName: 'default',
+    }));
+    const resolver = dataAccessResolverForSelection(localSelection, {
+      loadLocalDeltaRuntime,
+    });
+
+    const resolution = await resolver.resolve(
+      canonicalTableForSelection(localSelection).resource!,
+      {
+        executionId: 'execution-local-pinned',
+        deadline: timestampFromMs(1_800_000_120_000),
+        snapshotVersion: 12,
+        signal: new AbortController().signal,
+      },
+    );
+
+    expect(resolution.outcome).toMatchObject({
+      case: 'error',
+      value: {
+        code: ProviderErrorCode.INVALID,
+        message: 'local Delta snapshot did not match the requested snapshot',
+      },
+    });
+  });
+
   it('maps only the exact sample selection to its fixed fixture identity and PUBLIC envelope', async () => {
     const selection: AvailableQuerySourceSelection = {
       kind: 'sample',

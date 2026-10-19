@@ -449,6 +449,16 @@ function localDeltaResolver(
           context.executionId,
         );
       }
+      if (
+        context.snapshotVersion !== undefined &&
+        runtime.descriptor.snapshotVersion !== BigInt(context.snapshotVersion)
+      ) {
+        return providerErrorResolution(
+          ProviderErrorCode.INVALID,
+          'local Delta snapshot did not match the requested snapshot',
+          context.executionId,
+        );
+      }
 
       return create(ReadResolutionSchema, {
         outcome: {

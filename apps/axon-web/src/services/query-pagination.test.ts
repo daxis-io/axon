@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { BrowserHttpSnapshotDescriptorSchema } from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 import {
   ExecuteRequestSchema,
+  ExecutionRejectionReason,
   PreviewCellSchema,
   QueryExecutionOptionsSchema,
   QueryRequestSchema,
@@ -24,6 +25,7 @@ import {
   queryResultPageRequest,
   queryResultPageRun,
   queryResultPageRunRequest,
+  resolveNextResultPage,
   resultPageFromContractPreview,
   sameQueryResultPageRun,
 } from './query-pagination.ts';
@@ -73,6 +75,99 @@ function resolvedRequest(snapshotVersion: bigint) {
 describe('result page snapshot', () => {
   it('reads the snapshot version the first page was resolved at', () => {
     expect(browserReadSnapshotVersion(resolvedRequest(14n))).toBe(14);
+  });
+
+  function pageRun(snapshotVersion: number | undefined, readSnapshotVersion?: number) {
+    return queryResultPageRun(
+      canonicalTableForSelection(selection),
+      request(),
+      selection,
+      snapshotVersion,
+      readSnapshotVersion,
+    );
+  }
+
+  function resolverAt(...versions: bigint[]) {
+    const requested: Array<number | undefined> = [];
+    const resolve = async (snapshotVersion: number | undefined) => {
+      requested.push(snapshotVersion);
+      const version = versions[requested.length - 1];
+      if (version === undefined) throw new Error('unexpected resolution');
+      return { request: resolvedRequest(version) };
+    };
+    return { requested, resolve };
+  }
+
+  it('reuses the latest resolution while latest is still the version the rows came from', async () => {
+    const { requested, resolve } = resolverAt(14n);
+
+    const input = await resolveNextResultPage(pageRun(undefined, 14), resolve);
+
+    expect(requested).toEqual([undefined]);
+    expect(browserReadSnapshotVersion(input.request)).toBe(14);
+  });
+
+  it('requests the rows snapshot explicitly once latest has moved on', async () => {
+    const { requested, resolve } = resolverAt(15n, 14n);
+
+    const input = await resolveNextResultPage(pageRun(undefined, 14), resolve);
+
+    expect(requested).toEqual([undefined, 14]);
+    expect(browserReadSnapshotVersion(input.request)).toBe(14);
+  });
+
+  it('still reads the rows snapshot when latest cannot be resolved', async () => {
+    const requested: Array<number | undefined> = [];
+    const input = await resolveNextResultPage(pageRun(undefined, 14), async (snapshotVersion) => {
+      requested.push(snapshotVersion);
+      if (snapshotVersion === undefined) throw new Error('missing checkpoint part');
+      return { request: resolvedRequest(14n) };
+    });
+
+    expect(requested).toEqual([undefined, 14]);
+    expect(browserReadSnapshotVersion(input.request)).toBe(14);
+  });
+
+  it('stops at a cancelled or expired latest resolution', async () => {
+    for (const error of [
+      new DOMException('cancelled', 'AbortError'),
+      Object.assign(new Error('deadline'), {
+        rejectionReason: ExecutionRejectionReason.DEADLINE_EXPIRED,
+      }),
+      Object.assign(new Error('cancelled'), {
+        rejectionReason: ExecutionRejectionReason.CANCELLED,
+      }),
+    ]) {
+      const requested: Array<number | undefined> = [];
+      await expect(
+        resolveNextResultPage(pageRun(undefined, 14), async (snapshotVersion) => {
+          requested.push(snapshotVersion);
+          throw error;
+        }),
+      ).rejects.toBe(error);
+      expect(requested).toEqual([undefined]);
+    }
+  });
+
+  it('requests a pinned run at its pin directly', async () => {
+    const { requested, resolve } = resolverAt(3n);
+
+    await resolveNextResultPage(pageRun(3, 3), resolve);
+
+    expect(requested).toEqual([3]);
+  });
+
+  it('fails closed instead of reading another snapshot', async () => {
+    const moved = resolverAt(15n, 15n);
+    await expect(resolveNextResultPage(pageRun(undefined, 14), moved.resolve)).rejects.toThrow(
+      'Snapshot 14, which the loaded rows came from, could not be read again.',
+    );
+
+    const unrecorded = resolverAt(3n);
+    await expect(resolveNextResultPage(pageRun(3), unrecorded.resolve)).rejects.toThrow(
+      'The loaded rows did not record their snapshot. Run the query again.',
+    );
+    expect(unrecorded.requested).toEqual([]);
   });
 
   it('reports no version unless the request resolved one exact snapshot', () => {

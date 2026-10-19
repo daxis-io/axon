@@ -6,6 +6,7 @@ import {
   type BrowserWorkerResultPreview,
 } from '../axon-browser-sdk.ts';
 import {
+  ExecutionRejectionReason,
   ExecutionTarget,
   QueryExecutionOptionsSchema,
   QueryRequestSchema,
@@ -65,6 +66,54 @@ export function sameQueryResultPageRun(
     equals(QueryRequestSchema, left.query, right.query) &&
     Object.is(left.snapshotVersion, right.snapshotVersion) &&
     Object.is(left.readSnapshotVersion, right.readSnapshotVersion)
+  );
+}
+
+/**
+ * Resolve the table for the next page at the snapshot the loaded rows came from.
+ *
+ * A pinned run requests its pin. An unpinned run first resolves latest, which reuses the
+ * descriptor and query session its first page used, and keeps that resolution while latest is
+ * still the rows' version. Once latest has moved on, or fails to resolve, it requests that version
+ * explicitly, so the resolvers' pinned-version checks apply. Pinned versions stay their own cache
+ * dimension, so a cached latest entry is never taken as a pinned answer. Fails rather than read
+ * another snapshot.
+ */
+export async function resolveNextResultPage<T extends { request: ExecuteRequest }>(
+  run: QueryResultPageRun,
+  resolve: (snapshotVersion: number | undefined) => Promise<T>,
+): Promise<T> {
+  const required = run.readSnapshotVersion;
+  if (required === undefined) {
+    throw new Error('The loaded rows did not record their snapshot. Run the query again.');
+  }
+  if (run.snapshotVersion === undefined) {
+    try {
+      const latest = await resolve(undefined);
+      if (browserReadSnapshotVersion(latest.request) === required) return latest;
+    } catch (error) {
+      // Latest can fail where the rows' snapshot does not, such as a commit still being written.
+      if (endsResolution(error)) throw error;
+    }
+  }
+  const exact = await resolve(required);
+  if (browserReadSnapshotVersion(exact.request) !== required) {
+    throw new Error(
+      `Snapshot ${required}, which the loaded rows came from, could not be read again.`,
+    );
+  }
+  return exact;
+}
+
+function endsResolution(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'AbortError') return true;
+  const reason =
+    typeof error === 'object' && error !== null && 'rejectionReason' in error
+      ? error.rejectionReason
+      : undefined;
+  return (
+    reason === ExecutionRejectionReason.CANCELLED ||
+    reason === ExecutionRejectionReason.DEADLINE_EXPIRED
   );
 }
 
