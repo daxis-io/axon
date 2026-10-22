@@ -21,6 +21,10 @@ import {
 import type { ConnectedCatalog } from '../editor/connect/types.ts';
 import { TableMetadataSchema } from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 import {
+  CapabilityKey,
+  CapabilityState,
+} from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
+import {
   createLocalDeltaCanonicalTable,
   localDeltaConnectionId,
 } from './canonical-table-identity.ts';
@@ -355,6 +359,41 @@ describe('local Delta registry persistence', () => {
     expect(serialized).not.toContain('metadata-only');
   });
 
+  it('carries the resolver capability report into the generated local descriptor', async () => {
+    mockResolvedCapabilities({ range_reads: 'supported' });
+
+    const runtime = await openLocalDeltaTableFromFileList(deltaTableFiles(), {
+      registryId: 'session-only',
+    });
+
+    const expected = [{ key: CapabilityKey.RANGE_READS, state: CapabilityState.SUPPORTED }];
+    expect(runtime.descriptor.requiredCapabilities?.capabilities).toMatchObject(expected);
+    expect(runtime.descriptor.browserCompatibility?.capabilities).toMatchObject(expected);
+  });
+
+  it('fails a local open when the resolver requires a native-only capability', async () => {
+    mockResolvedCapabilities({ timestamp_ntz: 'native_only', column_mapping: 'native_only' });
+
+    await expect(
+      openLocalDeltaTableFromFileList(deltaTableFiles(), { registryId: 'session-only' }),
+    ).rejects.toMatchObject({
+      name: 'LocalDeltaError',
+      code: 'unsupported_delta_feature',
+      message:
+        'Selected local Delta table requires unsupported features: column_mapping, timestamp_ntz.',
+    });
+    expect(hasLocalDeltaRuntime('session-only')).toBe(false);
+    expect(revokeObjectUrl).toHaveBeenCalledTimes(createObjectUrl.mock.calls.length);
+  });
+
+  it('rejects a resolver capability report it cannot map', async () => {
+    mockResolvedCapabilities({ row_tracking: 'supported' });
+
+    await expect(
+      openLocalDeltaTableFromFileList(deltaTableFiles(), { registryId: 'session-only' }),
+    ).rejects.toMatchObject({ name: 'LocalDeltaError', code: 'invalid_delta_log' });
+  });
+
   it('retains available commit history through the resolved local snapshot', async () => {
     const runtime = await openLocalDeltaTableFromFileList(deltaHistoryTableFiles(), {
       registryId: 'session-only',
@@ -539,6 +578,27 @@ function deltaTableFiles(): File[] {
     ),
     fileWithBrowserPath('part-00001.parquet', 'parquet', 'application/vnd.apache.parquet'),
   ];
+}
+
+function mockResolvedCapabilities(capabilities: Record<string, string>): void {
+  vi.mocked(resolve_delta_snapshot_from_manifest).mockImplementationOnce(
+    async (_manifestJson: string, tableUri: string) =>
+      JSON.stringify({
+        table_uri: tableUri,
+        snapshot_version: 0,
+        partition_column_types: {},
+        browser_compatibility: { capabilities },
+        required_capabilities: { capabilities },
+        active_files: [
+          {
+            path: 'part-00001.parquet',
+            size_bytes: 7,
+            partition_values: {},
+            stats: JSON.stringify({ numRecords: 1 }),
+          },
+        ],
+      }),
+  );
 }
 
 function deltaHistoryTableFiles(): File[] {

@@ -3,19 +3,18 @@ import { NullValue } from '@bufbuild/protobuf/wkt';
 import {
   BrowserHttpFileDescriptorSchema,
   BrowserHttpSnapshotDescriptorSchema,
-  CapabilityEntrySchema,
-  CapabilityKey,
-  CapabilityReportSchema,
-  CapabilityState,
   PartitionColumnType,
   PartitionValueSchema,
   type BrowserHttpSnapshotDescriptor,
-  type CapabilityReport,
 } from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 import {
   TableMetadataSchema,
   type TableMetadata,
 } from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
+import {
+  generatedCapabilityReport,
+  type ResolvedCapabilityReport,
+} from './delta-capability-report.ts';
 
 export type PublicObjectStorageProvider = 'gcs' | 's3' | 'r2';
 
@@ -134,24 +133,6 @@ type ResolvedPublicSnapshot = {
 };
 
 type ResolvedPartitionColumnType = 'string' | 'int64' | 'boolean' | 'unsupported';
-
-type ResolvedCapabilityKey =
-  | 'change_data_feed'
-  | 'column_mapping'
-  | 'deletion_vectors'
-  | 'multi_partition_execution'
-  | 'proxy_access'
-  | 'range_reads'
-  | 'signed_url_access'
-  | 'time_travel'
-  | 'timestamp_ntz'
-  | 'unknown_protocol_features';
-
-type ResolvedCapabilityState = 'supported' | 'native_only' | 'unsupported' | 'experimental';
-
-type ResolvedCapabilityReport = {
-  capabilities?: Partial<Record<ResolvedCapabilityKey, ResolvedCapabilityState>>;
-};
 
 export function parsePublicObjectStorageTableRoot(input: {
   provider: PublicObjectStorageProvider;
@@ -746,8 +727,14 @@ export async function resolvePublicObjectStorageDescriptor(input: {
     tableUri: root.tableUri,
     snapshotVersion: BigInt(snapshot.snapshot_version),
     partitionColumnTypes: generatedPartitionColumnTypes(snapshot.partition_column_types ?? {}),
-    browserCompatibility: generatedCapabilityReport(snapshot.browser_compatibility),
-    requiredCapabilities: generatedCapabilityReport(snapshot.required_capabilities),
+    browserCompatibility: generatedCapabilityReport(
+      snapshot.browser_compatibility,
+      invalidResolvedCapabilities,
+    ),
+    requiredCapabilities: generatedCapabilityReport(
+      snapshot.required_capabilities,
+      invalidResolvedCapabilities,
+    ),
     activeFiles: snapshot.active_files.map((file) =>
       create(BrowserHttpFileDescriptorSchema, {
         path: file.path,
@@ -1331,64 +1318,8 @@ function generatedPartitionColumnTypes(
   );
 }
 
-function generatedCapabilityReport(report: ResolvedCapabilityReport | undefined): CapabilityReport {
-  return create(CapabilityReportSchema, {
-    capabilities: Object.entries(report?.capabilities ?? {}).flatMap(([key, state]) => {
-      const generatedKey = generatedCapabilityKey(key as ResolvedCapabilityKey);
-      const generatedState = generatedCapabilityState(state);
-      if (generatedKey === undefined || generatedState === undefined) {
-        throw accessFailed('public object storage snapshot resolver returned invalid capabilities');
-      }
-      return [
-        create(CapabilityEntrySchema, {
-          key: generatedKey,
-          state: generatedState,
-        }),
-      ];
-    }),
-  });
-}
-
-function generatedCapabilityKey(value: ResolvedCapabilityKey): CapabilityKey | undefined {
-  switch (value) {
-    case 'change_data_feed':
-      return CapabilityKey.CHANGE_DATA_FEED;
-    case 'column_mapping':
-      return CapabilityKey.COLUMN_MAPPING;
-    case 'deletion_vectors':
-      return CapabilityKey.DELETION_VECTORS;
-    case 'multi_partition_execution':
-      return CapabilityKey.MULTI_PARTITION_EXECUTION;
-    case 'proxy_access':
-      return CapabilityKey.PROXY_ACCESS;
-    case 'range_reads':
-      return CapabilityKey.RANGE_READS;
-    case 'signed_url_access':
-      return CapabilityKey.SIGNED_URL_ACCESS;
-    case 'time_travel':
-      return CapabilityKey.TIME_TRAVEL;
-    case 'timestamp_ntz':
-      return CapabilityKey.TIMESTAMP_NTZ;
-    case 'unknown_protocol_features':
-      return CapabilityKey.UNKNOWN_PROTOCOL_FEATURES;
-  }
-}
-
-function generatedCapabilityState(
-  value: ResolvedCapabilityState | undefined,
-): CapabilityState | undefined {
-  switch (value) {
-    case 'supported':
-      return CapabilityState.SUPPORTED;
-    case 'native_only':
-      return CapabilityState.NATIVE_ONLY;
-    case 'unsupported':
-      return CapabilityState.UNSUPPORTED;
-    case 'experimental':
-      return CapabilityState.EXPERIMENTAL;
-    case undefined:
-      return undefined;
-  }
+function invalidResolvedCapabilities(): PublicObjectStorageError {
+  return accessFailed('public object storage snapshot resolver returned invalid capabilities');
 }
 
 function validatedResolvedInteger(value: number, field: string): number {
