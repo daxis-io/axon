@@ -152,12 +152,154 @@ expected_package_source = "$component_url"
 package_patterns = ["deltalake-browser"]
 EOF_LOCK
 
+# Rewrites the named components as declared absent from the WASM closure.
+declare_absent() {
+  local lock="$1"
+  shift
+  python3 - "$lock" "$@" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+for name in sys.argv[2:]:
+    section = re.compile(rf"^\[components\.{name}\]\n(?:(?!\[).*\n?)*", re.M)
+
+    def absent(match: re.Match) -> str:
+        canonical = re.search(r"^canonical_url = .*$", match.group(0), re.M).group(0)
+        patterns = re.search(r"^package_patterns = .*$", match.group(0), re.M).group(0)
+        return (
+            f"[components.{name}]\n{canonical}\n"
+            'target_triple = "wasm32-unknown-unknown"\n'
+            'wasm_closure = "absent"\n'
+            f"{patterns}\n\n"
+        )
+
+    text, count = section.subn(absent, text)
+    if count != 1:
+        raise SystemExit(f"fixture has no component section for {name}")
+path.write_text(text)
+PY
+}
+
+# Removes the named dependencies from the fixture crate and relocks it.
+drop_dependencies() {
+  local root="$1"
+  shift
+  local dependency
+  for dependency in "$@"; do
+    sed -i.bak "/^${dependency} = /d" "$root/crates/fixture/Cargo.toml"
+  done
+  rm -f "$root/crates/fixture/Cargo.toml.bak"
+  cargo generate-lockfile --manifest-path "$root/Cargo.toml" >/dev/null
+}
+
+expect_rejection() {
+  local description="$1" expected="$2"
+  shift 2
+  local output=""
+  if output="$("$@" 2>&1)"; then
+    echo "stack verification accepted ${description}" >&2
+    exit 1
+  fi
+  if [[ "$output" != *"$expected"* ]]; then
+    echo "stack verification rejected ${description} for the wrong reason" >&2
+    printf '%s\n' "$output" >&2
+    exit 1
+  fi
+}
+
 bash "$verifier" --production --bootstrap --repo-root "$fixture" >/dev/null
 ci_bootstrap_output="$(bash "$verifier" --production --ci --repo-root "$fixture")"
 if [[ "$ci_bootstrap_output" != *"mode=bootstrap"* ]]; then
   echo "CI mode did not identify the UNSET lock as bootstrap-only" >&2
   exit 1
 fi
+
+# Bootstrap mode still checks each present component's release version and package source against
+# the locked WASM closure, so a lock that describes a different stack fails before any release
+# revision exists.
+drifted_version_fixture="$tmpdir/drifted-version-repo"
+cp -R "$fixture" "$drifted_version_fixture"
+sed -i.bak 's/^release_version = "55.0.0"$/release_version = "53.1.0"/' "$drifted_version_fixture/wasm-stack.lock.toml"
+expect_rejection "a bootstrap lock that names another DataFusion release" \
+  "WASM closure mismatch for datafusion: expected 53.1.0@" \
+  bash "$verifier" --production --ci --repo-root "$drifted_version_fixture"
+
+drifted_source_fixture="$tmpdir/drifted-source-repo"
+cp -R "$fixture" "$drifted_source_fixture"
+python3 - "$drifted_source_fixture/wasm-stack.lock.toml" "$component_url" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+lines = []
+for line in path.read_text().splitlines():
+    if line.startswith("expected_package_source = "):
+        line = 'expected_package_source = "https://github.com/daxis-io/other-fork"'
+    lines.append(line)
+path.write_text("\n".join(lines) + "\n")
+PY
+expect_rejection "a bootstrap lock that names another package source" \
+  "WASM closure mismatch for arrow_rs" \
+  bash "$verifier" --production --bootstrap --repo-root "$drifted_source_fixture"
+
+drifted_revision_fixture="$tmpdir/drifted-revision-repo"
+cp -R "$fixture" "$drifted_revision_fixture"
+python3 - "$drifted_revision_fixture/wasm-stack.lock.toml" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+head, datafusion = text.split("[components.datafusion]\n", 1)
+datafusion = datafusion.replace(
+    'stack_sha = "UNSET"', 'stack_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"', 1
+)
+path.write_text(head + "[components.datafusion]\n" + datafusion)
+PY
+expect_rejection "a bootstrap lock whose pinned stack revision differs from the closure" \
+  "WASM closure mismatch for datafusion" \
+  bash "$verifier" --production --ci --repo-root "$drifted_revision_fixture"
+
+# A component the closure does not contain must be declared absent rather than silently ignored.
+kernel_free_fixture="$tmpdir/kernel-free-repo"
+cp -R "$fixture" "$kernel_free_fixture"
+drop_dependencies "$kernel_free_fixture" delta_kernel deltalake-browser
+expect_rejection "a present component that is missing from the closure" \
+  "WASM closure has no package for delta_kernel" \
+  bash "$verifier" --production --ci --repo-root "$kernel_free_fixture"
+declare_absent "$kernel_free_fixture/wasm-stack.lock.toml" delta_kernel delta_rs
+kernel_free_output="$(bash "$verifier" --production --ci --repo-root "$kernel_free_fixture")"
+if [[ "$kernel_free_output" != *"mode=bootstrap components=5"* ]]; then
+  echo "CI bootstrap verification did not accept components declared absent from the closure" >&2
+  exit 1
+fi
+
+absent_but_linked_fixture="$tmpdir/absent-but-linked-repo"
+cp -R "$fixture" "$absent_but_linked_fixture"
+declare_absent "$absent_but_linked_fixture/wasm-stack.lock.toml" delta_kernel
+expect_rejection "a component declared absent that the closure links" \
+  "delta_kernel is declared absent from the WASM closure, but the closure contains delta_kernel" \
+  bash "$verifier" --production --bootstrap --repo-root "$absent_but_linked_fixture"
+
+absent_with_release_fixture="$tmpdir/absent-with-release-repo"
+cp -R "$kernel_free_fixture" "$absent_with_release_fixture"
+python3 - "$absent_with_release_fixture/wasm-stack.lock.toml" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+path.write_text(
+    path.read_text().replace(
+        '[components.delta_rs]\n', '[components.delta_rs]\nrelease_version = "0.32.4"\n'
+    )
+)
+PY
+expect_rejection "an absent component that still carries release fields" \
+  "delta_rs is declared absent from the WASM closure and must not carry release_version" \
+  bash "$verifier" --production --bootstrap --repo-root "$absent_with_release_fixture"
 
 unreachable_fork_fixture="$tmpdir/unreachable-fork-repo"
 cp -R "$fixture" "$unreachable_fork_fixture"
@@ -258,6 +400,18 @@ bash "$verifier" --production --final --repo-root "$fixture" >/dev/null
 ci_final_output="$(bash "$verifier" --production --ci --repo-root "$fixture")"
 if [[ "$ci_final_output" != *"mode=final"* ]]; then
   echo "CI mode did not enforce final verification for a populated lock" >&2
+  exit 1
+fi
+
+# Final mode qualifies the present components and does not require release tags for components
+# that the closure does not contain.
+final_kernel_free_fixture="$tmpdir/final-kernel-free-repo"
+cp -R "$fixture" "$final_kernel_free_fixture"
+drop_dependencies "$final_kernel_free_fixture" delta_kernel deltalake-browser
+declare_absent "$final_kernel_free_fixture/wasm-stack.lock.toml" delta_kernel delta_rs
+final_kernel_free_output="$(bash "$verifier" --production --ci --repo-root "$final_kernel_free_fixture")"
+if [[ "$final_kernel_free_output" != *"mode=final components=5"* ]]; then
+  echo "CI final verification did not qualify a lock with components declared absent" >&2
   exit 1
 fi
 

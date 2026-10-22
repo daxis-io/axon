@@ -153,8 +153,8 @@ if ! rg -n 'Legacy narrow worker artifact size reporting remains enforced in CI 
   exit 1
 fi
 
-if ! rg -n 'Daxis DataFusion default worker size reporting remains release-process evidence .*`axon-web-wasm`' "$launch_checklist"; then
-  echo "launch checklist must name axon-web-wasm size reporting as Daxis default-worker release-process evidence" >&2
+if ! rg -n 'Daxis DataFusion default worker size is gated in CI .*exact shipped `axon-web-wasm` asset' "$launch_checklist"; then
+  echo "launch checklist must name the CI size gate on the exact shipped axon-web-wasm asset" >&2
   exit 1
 fi
 
