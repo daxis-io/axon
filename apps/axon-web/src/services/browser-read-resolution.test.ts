@@ -500,6 +500,119 @@ describe('browser read canonical identity', () => {
     },
   );
 
+  it.each([publicGcsSelection, publicS3Selection])(
+    'resolves an unpinned public read at the latest snapshot after the table advanced',
+    async (selection) => {
+      const source = selection.source;
+      if (source.kind !== 'object_store_table_root' || source.snapshot === undefined) {
+        throw new Error('public resolver fixture must be a connected object-store table root');
+      }
+      const tableUri =
+        source.provider === 'gcs'
+          ? 'gs://Public-Bucket/events/table'
+          : 's3://public-bucket/events/table';
+      // The catalog still records the connect-time snapshot; a writer has since committed.
+      const advanced = localDescriptor(tableUri, source.snapshot + 1);
+      const loadPublicObjectStorageDescriptor = vi.fn(async () => advanced);
+      const resolver = dataAccessResolverForSelection(selection, {
+        loadPublicObjectStorageDescriptor,
+      });
+      const table = canonicalTableForSelection(selection);
+
+      const resolution = await resolver.resolve(table.resource!, {
+        executionId: `execution-latest-${source.provider}`,
+        deadline: timestampFromMs(1_800_000_120_000),
+        signal: new AbortController().signal,
+      });
+
+      expect(loadPublicObjectStorageDescriptor).toHaveBeenCalledWith({
+        provider: source.provider,
+        tableUri,
+        region: source.provider === 's3' ? 'us-east-2' : undefined,
+        snapshotVersion: undefined,
+        expectedSnapshotVersion: undefined,
+        signal: expect.objectContaining({ aborted: false }),
+      });
+      expect(resolution.outcome).toMatchObject({
+        case: 'browserRead',
+        value: { descriptor: { descriptor: { case: 'snapshot', value: advanced } } },
+      });
+
+      loadPublicObjectStorageDescriptor.mockResolvedValueOnce(advanced);
+      const pinned = await resolver.resolve(table.resource!, {
+        executionId: `execution-pinned-${source.provider}`,
+        deadline: timestampFromMs(1_800_000_120_000),
+        snapshotVersion: source.snapshot,
+        signal: new AbortController().signal,
+      });
+      expect(pinned.outcome).toMatchObject({
+        case: 'error',
+        value: {
+          code: ProviderErrorCode.INVALID,
+          message: 'public descriptor snapshot did not match the requested snapshot',
+        },
+      });
+    },
+  );
+
+  it('resolves an unpinned local read at the latest snapshot instead of the connect-time one', async () => {
+    const loadLocalDeltaRuntime = vi.fn(async () => ({
+      descriptor: localDescriptor(undefined, 13),
+      registryId: 'local events/2026',
+      tableName: 'events',
+      schemaName: 'default',
+    }));
+    const resolver = dataAccessResolverForSelection(localSelection, {
+      loadLocalDeltaRuntime,
+    });
+
+    const resolution = await resolver.resolve(
+      canonicalTableForSelection(localSelection).resource!,
+      {
+        executionId: 'execution-local-latest',
+        deadline: timestampFromMs(1_800_000_120_000),
+        signal: new AbortController().signal,
+      },
+    );
+
+    expect(loadLocalDeltaRuntime).toHaveBeenCalledWith('local events/2026', {
+      schemaName: 'default',
+      tableName: 'events',
+      snapshotVersion: undefined,
+    });
+    expect(resolution.outcome.case).toBe('browserRead');
+  });
+
+  it('rejects a local runtime whose snapshot is not the pinned one', async () => {
+    const loadLocalDeltaRuntime = vi.fn(async () => ({
+      descriptor: localDescriptor(undefined, 13),
+      registryId: 'local events/2026',
+      tableName: 'events',
+      schemaName: 'default',
+    }));
+    const resolver = dataAccessResolverForSelection(localSelection, {
+      loadLocalDeltaRuntime,
+    });
+
+    const resolution = await resolver.resolve(
+      canonicalTableForSelection(localSelection).resource!,
+      {
+        executionId: 'execution-local-pinned',
+        deadline: timestampFromMs(1_800_000_120_000),
+        snapshotVersion: 12,
+        signal: new AbortController().signal,
+      },
+    );
+
+    expect(resolution.outcome).toMatchObject({
+      case: 'error',
+      value: {
+        code: ProviderErrorCode.INVALID,
+        message: 'local Delta snapshot did not match the requested snapshot',
+      },
+    });
+  });
+
   it('maps only the exact sample selection to its fixed fixture identity and PUBLIC envelope', async () => {
     const selection: AvailableQuerySourceSelection = {
       kind: 'sample',

@@ -19,8 +19,8 @@ import {
 import type { TableNode } from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
 import {
   parsePublicObjectStorageTableRootFromConnection,
-  publicObjectUrl,
   publicObjectStorageProviderForNamespace,
+  publicObjectUrlForDeltaPath,
 } from './object-storage.ts';
 
 export type BrowserExecuteInput = Readonly<{
@@ -163,7 +163,7 @@ function validatePublicRead(
   for (const file of descriptor.activeFiles) {
     let expectedUrl: string;
     try {
-      expectedUrl = publicObjectUrl(root, file.path);
+      expectedUrl = publicObjectUrlForDeltaPath(root, file.path);
     } catch {
       invalid('public descriptor contains a path outside its canonical root');
     }

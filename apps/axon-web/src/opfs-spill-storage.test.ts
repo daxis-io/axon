@@ -205,7 +205,7 @@ describe('browser OPFS spill storage', () => {
     expect(beginExecution).toHaveBeenCalledTimes(2);
   });
 
-  it('rejects a query with typed unavailable storage when its fresh probe is unsupported', async () => {
+  it('reports typed unavailable storage when its fresh probe is unsupported', async () => {
     const beginExecution = vi.fn();
 
     await expect(

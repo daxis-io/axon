@@ -122,7 +122,10 @@ import {
   publishWorkerEvent,
 } from './query-runtime-state.ts';
 import { isBrowserDataFusionCancellation } from './query-cancellation.ts';
-import { isQuerySessionInvalidation } from './query-session-invalidation.ts';
+import {
+  isMissingOpenTableError,
+  isQuerySessionInvalidation,
+} from './query-session-invalidation.ts';
 import {
   sameQuerySource,
   type AvailableQuerySourceSelection,
@@ -2235,7 +2238,8 @@ export async function runQuery(
 export function queryFailureInvalidatesSession(error: unknown): boolean {
   return (
     error instanceof ExecutionDeadlineError ||
-    (error instanceof AxonWorkerError && isQuerySessionInvalidation(error.queryError))
+    (error instanceof AxonWorkerError &&
+      (isQuerySessionInvalidation(error.queryError) || isMissingOpenTableError(error.queryError)))
   );
 }
 

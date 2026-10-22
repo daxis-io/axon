@@ -46,9 +46,11 @@ import {
   applyBrowserExternalMemoryTelemetry,
   installOpfsSpillBridge,
   privateOpfsSpillMetrics,
+  probeBrowserExternalMemory,
   spillErrorName,
   sweepStaleOpfsSpillNamespaces,
   unregisterOpfsSpillExecution,
+  type BrowserExternalMemoryCapability,
   type OpfsSpillExecution,
 } from './opfs-spill-storage.ts';
 
@@ -76,12 +78,16 @@ type PrivateChildScope = {
   postMessage(message: PrivateChildMessage, transfer?: Transferable[]): void;
 };
 
+type SpillStorageFailure = 'unavailable' | 'quota_exceeded' | 'io_failure';
+
 type ActiveQuery = {
   queryId: string;
   gate: QueryCreditGate;
   stream?: SandboxSqlStream;
   session?: SandboxQuerySession;
   spill?: OpfsSpillExecution;
+  // Why this query runs without spill storage, when it does.
+  spillUnavailable?: SpillStorageFailure;
 };
 
 type SqlOutcome = DeferredQueryOutcome<unknown, QueryError>;
@@ -94,6 +100,10 @@ const QUERY_PREVIEW_LIMIT = QUERY_RESULT_PAGE_SIZE + 1;
 const childScope = self as unknown as PrivateChildScope;
 
 let sessionPromise: Promise<SandboxQuerySession> | undefined;
+// OPFS support is a property of this worker's browser context, so one probe serves every query of
+// the child generation. Quota and I/O failures are not remembered, and a setup failure after a
+// successful probe clears it, so a transient fault cannot disable spill for the whole generation.
+let externalMemoryCapability: BrowserExternalMemoryCapability | undefined;
 let activeQuery: ActiveQuery | undefined;
 let commandQueue = Promise.resolve();
 const queuedQueryIds = new Set<string>();
@@ -306,10 +316,12 @@ async function handleSql(
                   spillStorageErrorReason((metadata as { error?: QueryError } | undefined)?.error),
                 )
               : undefined;
-            applySpillAccountingToTerminalError(metadata, accounting);
+            applySpillAccountingToTerminalError(metadata, accounting, active.spillUnavailable);
             applyBrowserExternalMemoryTelemetry(
               metadata,
-              { state: 'supported' },
+              active.spillUnavailable
+                ? { state: 'unsupported', reason: active.spillUnavailable }
+                : { state: 'supported' },
               accounting,
               datafusionMemory?.limitBytes,
               datafusionMemory?.peakBytes,
@@ -328,7 +340,11 @@ async function handleSql(
             });
             return;
           }
-          const error = normalizeQueryErrorWithSpillAccounting(finalOutcome.error, accounting);
+          const error = normalizeQueryErrorWithSpillAccounting(
+            finalOutcome.error,
+            accounting,
+            active.spillUnavailable,
+          );
           const originalMemory =
             pendingOutcome.kind === 'stream_terminal'
               ? terminalDataFusionMemory(pendingOutcome.metadata)
@@ -357,8 +373,10 @@ async function handleSql(
 function normalizeQueryErrorWithSpillAccounting(
   error: unknown,
   accounting: ReturnType<OpfsSpillExecution['accounting']> | undefined,
+  spillUnavailable: SpillStorageFailure | undefined,
 ): QueryError {
   const queryError = normalizeQueryError(error);
+  applySpillSetupFailure(queryError, spillUnavailable);
   if (
     queryError.code === 'resource_exhausted' &&
     queryError.resource_details?.resource === 'spill_storage' &&
@@ -375,11 +393,14 @@ function normalizeQueryErrorWithSpillAccounting(
 function applySpillAccountingToTerminalError(
   metadata: unknown,
   accounting: ReturnType<OpfsSpillExecution['accounting']> | undefined,
+  spillUnavailable: SpillStorageFailure | undefined,
 ): void {
-  if (!accounting || !metadata || typeof metadata !== 'object') return;
+  if (!metadata || typeof metadata !== 'object') return;
   const error = (metadata as { error?: unknown }).error;
   if (!error || typeof error !== 'object') return;
   const queryError = error as QueryError;
+  applySpillSetupFailure(queryError, spillUnavailable);
+  if (!accounting) return;
   if (
     queryError.code !== 'resource_exhausted' ||
     queryError.resource_details?.resource !== 'spill_storage' ||
@@ -390,6 +411,24 @@ function applySpillAccountingToTerminalError(
   if (accounting.error_operation) {
     queryError.message = `browser aggregate spill storage I/O failed during ${accounting.error_operation}`;
   }
+}
+
+// A query that runs without spill storage reports any spill as `unavailable`. When the storage was
+// there but full or failing, name that setup failure instead.
+function applySpillSetupFailure(
+  error: QueryError,
+  spillUnavailable: SpillStorageFailure | undefined,
+): void {
+  if (
+    spillUnavailable === undefined ||
+    spillUnavailable === 'unavailable' ||
+    spillStorageErrorReason(error) !== 'unavailable'
+  ) {
+    return;
+  }
+  const setupError = spillSetupQueryError(spillUnavailable);
+  error.message = setupError.message;
+  error.resource_details = setupError.resource_details;
 }
 
 function spillStorageErrorReason(
@@ -575,11 +614,26 @@ async function configureExternalMemory(
   const spillWake = Reflect.get(axonWasm, 'axon_spill_wake') as
     | ((executionId: number, operationId: number) => void)
     | undefined;
-  const acquired = await acquireQueryScopedOpfsSpill({
-    productionCapBytes: BROWSER_SPILL_PRODUCTION_CAP_BYTES,
-    wakeOperation: spillWake,
-  });
-  if (acquired.state === 'failed') throw spillSetupQueryError(acquired.reason);
+  const acquired = spillWake
+    ? await acquireQueryScopedOpfsSpill({
+        productionCapBytes: BROWSER_SPILL_PRODUCTION_CAP_BYTES,
+        wakeOperation: spillWake,
+        probe: probeExternalMemoryOncePerChild,
+      })
+    : ({ state: 'failed', reason: 'unavailable' } as const);
+  if (acquired.state === 'failed') {
+    if (externalMemoryCapability?.state === 'supported') externalMemoryCapability = undefined;
+    // Spill storage is optional. Execution id zero installs the unavailable backend, so the query
+    // runs in memory and only an operator that actually needs to spill fails, with a typed
+    // spill_storage error.
+    active.spillUnavailable = acquired.reason;
+    try {
+      session.set_external_memory_execution(0);
+    } catch {
+      throw spillSetupQueryError('io_failure');
+    }
+    return;
+  }
 
   active.spill = acquired.execution;
   try {
@@ -589,7 +643,16 @@ async function configureExternalMemory(
   }
 }
 
-function spillSetupQueryError(reason: 'unavailable' | 'quota_exceeded' | 'io_failure'): QueryError {
+async function probeExternalMemoryOncePerChild(): Promise<BrowserExternalMemoryCapability> {
+  if (externalMemoryCapability) return externalMemoryCapability;
+  const capability = await probeBrowserExternalMemory();
+  if (capability.state === 'supported' || capability.reason === 'unavailable') {
+    externalMemoryCapability = capability;
+  }
+  return capability;
+}
+
+function spillSetupQueryError(reason: SpillStorageFailure): QueryError {
   const message =
     reason === 'unavailable'
       ? 'browser spill storage is unavailable'
@@ -624,8 +687,13 @@ async function cleanupExternalMemory(
     console.warn('[axon] browser spill cleanup failed', {
       error_name: spillErrorName(error),
     });
+    const accounting = spill.accounting();
+    // A namespace that only ever held its lease costs nothing to leave behind: it is recorded as
+    // abandoned and a later worker generation's stale-namespace sweep removes it, so the query's
+    // own outcome stands.
+    if (accounting.files_created === 0) return { accounting, error: clearError };
     return {
-      accounting: spill.accounting(),
+      accounting,
       error: spillCleanupQueryError(),
     };
   } finally {
