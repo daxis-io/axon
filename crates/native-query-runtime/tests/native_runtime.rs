@@ -1147,6 +1147,47 @@ fn execute_query_wraps_top_level_offset_before_applying_result_page() {
 }
 
 #[test]
+fn execute_query_applies_result_page_to_sql_that_ends_in_a_comment() {
+    let fixture = TestTableFixture::create();
+    for (sql, expected) in [
+        (
+            format!("SELECT id FROM {DEFAULT_TABLE_NAME} ORDER BY id -- check"),
+            "+----+\n| id |\n+----+\n| 3  |\n| 4  |\n+----+",
+        ),
+        (
+            format!("SELECT id FROM {DEFAULT_TABLE_NAME} ORDER BY id; -- done"),
+            "+----+\n| id |\n+----+\n| 3  |\n| 4  |\n+----+",
+        ),
+        (
+            format!("SELECT id FROM {DEFAULT_TABLE_NAME} ORDER BY id LIMIT 3 -- sample"),
+            "+----+\n| id |\n+----+\n| 3  |\n+----+",
+        ),
+    ] {
+        let request = QueryRequest::new(&fixture.table_uri, sql.as_str(), ExecutionTarget::Native)
+            .with_options(QueryExecutionOptions {
+                include_explain: false,
+                collect_metrics: true,
+                result_page: Some(QueryResultPage {
+                    limit: 2,
+                    offset: 2,
+                }),
+                runtime_limits: None,
+            });
+
+        let result = execute_query(request)
+            .unwrap_or_else(|error| panic!("{sql:?} page should execute: {error:?}"));
+
+        assert_eq!(
+            pretty_format_batches(&result.batches)
+                .expect("batches should format")
+                .to_string(),
+            expected,
+            "{sql:?}"
+        );
+    }
+}
+
+#[test]
 fn execute_query_rejects_queries_without_axon_table() {
     let fixture = TestTableFixture::create();
     let request = QueryRequest::new(&fixture.table_uri, "SELECT 1", ExecutionTarget::Native);

@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::Future;
+use std::ops::ControlFlow;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -29,11 +30,12 @@ use query_contract::{
 };
 use reqwest::Url;
 use sqlparser::ast::{
-    BinaryOperator as SqlBinaryOperator, Expr as SqlExpr, FunctionArg, FunctionArgExpr,
-    FunctionArguments, GroupByExpr, Ident, LimitClause, ObjectName, ObjectNamePart, OrderByKind,
-    Query as SqlQuery, Select, SelectItem, SetExpr as SqlSetExpr, Statement as SqlStatement,
-    TableAlias, TableFactor as SqlTableFactor, TableWithJoins as SqlTableWithJoins,
-    UnaryOperator as SqlUnaryOperator, Value as SqlValue,
+    visit_expressions, visit_relations, BinaryOperator as SqlBinaryOperator, Expr as SqlExpr,
+    FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, Ident, LimitClause, ObjectName,
+    ObjectNamePart, OrderByKind, Query as SqlQuery, Select, SelectItem, SetExpr as SqlSetExpr,
+    Statement as SqlStatement, TableAlias, TableFactor as SqlTableFactor,
+    TableWithJoins as SqlTableWithJoins, UnaryOperator as SqlUnaryOperator, Value as SqlValue,
+    Visit, Visitor,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -3213,11 +3215,72 @@ fn analyze_datafusion_prebootstrap_query(
         )));
     };
 
+    validate_datafusion_prebootstrap_scan_shape(query.as_ref())?;
     rewrite_datafusion_query_table_references(query.as_mut(), table_name)?;
     validate_browser_query(query.as_ref(), &BTreeSet::new())?;
     let shape = collect_browser_query_shape(query.as_ref())?;
 
     Ok(AnalyzedBrowserQuery { shape, query })
+}
+
+/// DataFusion runs the whole statement against the table registered with the prebootstrap file
+/// subset, so that subset is only sound when the statement reads the table exactly once, under
+/// the top-level WHERE that selected the files, and through its physical column names.
+fn validate_datafusion_prebootstrap_scan_shape(query: &SqlQuery) -> Result<(), QueryError> {
+    let mut relation_references = 0_usize;
+    let repeated_relation = visit_relations(query, |_| {
+        relation_references += 1;
+        if relation_references > 1 {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    });
+    if repeated_relation.is_break() {
+        return Err(invalid_query_request(
+            "prebootstrap pruning requires exactly one table reference",
+        ));
+    }
+
+    let subquery = visit_expressions(query, |expr| match expr {
+        SqlExpr::Subquery(_) | SqlExpr::Exists { .. } | SqlExpr::InSubquery { .. } => {
+            ControlFlow::Break(())
+        }
+        _ => ControlFlow::Continue(()),
+    });
+    if subquery.is_break() {
+        return Err(invalid_query_request(
+            "prebootstrap pruning does not apply to statements with subqueries",
+        ));
+    }
+
+    if query.visit(&mut TableAliasColumnListVisitor).is_break() {
+        return Err(invalid_query_request(
+            "prebootstrap pruning does not apply to table alias column lists",
+        ));
+    }
+
+    Ok(())
+}
+
+struct TableAliasColumnListVisitor;
+
+impl Visitor for TableAliasColumnListVisitor {
+    type Break = ();
+
+    fn pre_visit_table_factor(&mut self, table_factor: &SqlTableFactor) -> ControlFlow<()> {
+        let alias = match table_factor {
+            SqlTableFactor::Table { alias, .. } | SqlTableFactor::Derived { alias, .. } => {
+                alias.as_ref()
+            }
+            _ => None,
+        };
+        if alias.is_some_and(|alias| !alias.columns.is_empty()) {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
 }
 
 fn rewrite_datafusion_query_table_references(
@@ -5209,6 +5272,52 @@ mod tests {
 
         assert_eq!(error.code, QueryErrorCode::FallbackRequired);
         assert_eq!(error.fallback_reason, Some(FallbackReason::NativeRequired));
+    }
+
+    #[test]
+    fn datafusion_prebootstrap_analysis_admits_single_reference_filters() {
+        for sql in [
+            "SELECT id FROM events WHERE category = 'B' ORDER BY id",
+            "SELECT e.id FROM events AS e WHERE e.value > 80",
+            "SELECT TRIM(BOTH 'B' FROM category) AS t FROM events WHERE category = 'B'",
+            "SELECT category, COUNT(*) AS c FROM events WHERE id > 8 GROUP BY category",
+        ] {
+            analyze_datafusion_prebootstrap_query(sql, "events").unwrap_or_else(|error| {
+                panic!("{sql} should stay eligible for prebootstrap pruning: {error:?}")
+            });
+        }
+    }
+
+    #[test]
+    fn datafusion_prebootstrap_analysis_rejects_subqueries_in_any_expression_position() {
+        for sql in [
+            "SELECT id, TRIM(BOTH (SELECT MAX(category) FROM events) FROM category) AS t FROM events WHERE category = 'B'",
+            "SELECT id, TRIM(category, (SELECT MAX(category) FROM events)) AS t FROM events WHERE category = 'B'",
+            "SELECT id FROM events WHERE category = 'B' AND TRIM(BOTH (SELECT 'B') FROM category) = ''",
+            "SELECT id, (SELECT MAX(category) FROM events) AS m FROM events WHERE category = 'B'",
+            "SELECT id FROM events WHERE category = 'B' AND id IN (SELECT id FROM events)",
+            "SELECT id FROM events WHERE category = 'B' AND EXISTS (SELECT 1 FROM events)",
+            "SELECT id, ARRAY(SELECT id FROM events) AS ids FROM events WHERE category = 'B'",
+        ] {
+            assert!(
+                analyze_datafusion_prebootstrap_query(sql, "events").is_err(),
+                "{sql} reads the table outside the top-level WHERE and must not be pruned"
+            );
+        }
+    }
+
+    #[test]
+    fn datafusion_prebootstrap_analysis_rejects_table_alias_column_lists() {
+        for sql in [
+            "SELECT COUNT(*) AS c FROM events AS e(value, id, category) WHERE id > 8",
+            "SELECT COUNT(*) AS c FROM events AS e(category, id, value) WHERE category = 'B'",
+            "SELECT COUNT(*) AS c FROM (SELECT id, value FROM events) AS d(value, id) WHERE id > 8",
+        ] {
+            assert!(
+                analyze_datafusion_prebootstrap_query(sql, "events").is_err(),
+                "{sql} renames columns, so physical-name pruning must not apply"
+            );
+        }
     }
 
     fn non_aggregate_test_plan(

@@ -3,6 +3,7 @@ import {
   BROWSER_SAFE_ARROW_IPC_BYTES,
   BROWSER_SAFE_PREVIEW_STRING_BYTES,
   BROWSER_SAFE_RESULT_ROW_LIMIT,
+  type BrowserWorkerResultPage,
   type BrowserWorkerResultPreview,
 } from '../axon-browser-sdk.ts';
 import {
@@ -19,7 +20,13 @@ import {
   TableNodeSchema,
   type TableNode,
 } from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
-import type { QueryPageRequest, QueryResultData, ResultCell, ResultColumn } from './types.ts';
+import type {
+  QueryPageRequest,
+  QueryResultData,
+  QueryResultPageInfo,
+  ResultCell,
+  ResultColumn,
+} from './types.ts';
 import type { AvailableQuerySourceSelection } from './query-source.ts';
 
 export const QUERY_RESULT_PAGE_SIZE = 500;
@@ -123,6 +130,7 @@ export function queryPageFromRequest(request: QueryRequest): QueryPageRequest {
 export function resultPageFromPreview(
   preview: BrowserWorkerResultPreview | undefined,
   page: QueryPageRequest,
+  order?: BrowserWorkerResultPage,
 ): QueryResultData {
   if (!preview) {
     return emptyPageResult(page);
@@ -137,6 +145,7 @@ export function resultPageFromPreview(
   const rows = preview.rows.slice(0, size).map((row) => row as ResultCell[]);
   const hasMore = preview.row_count > rows.length || preview.rows.length > size;
   const loadedRows = offset + rows.length;
+  const loadMoreBlocked = hasMore ? loadMoreBlockedReason(preview.rows, size, order) : undefined;
 
   return {
     columns,
@@ -149,14 +158,44 @@ export function resultPageFromPreview(
       returned_rows: rows.length,
       loaded_rows: loadedRows,
       has_more: hasMore,
-      next_offset: hasMore ? loadedRows : undefined,
+      next_offset: hasMore && !loadMoreBlocked ? loadedRows : undefined,
+      ...(loadMoreBlocked ? { load_more_blocked: loadMoreBlocked } : {}),
     },
   };
+}
+
+export function canLoadMoreResultRows(page: QueryResultPageInfo | undefined): boolean {
+  return (
+    page?.has_more === true && page.load_more_blocked === undefined && page.next_offset != null
+  );
+}
+
+// Load more re-runs the query with the next OFFSET. Unsorted rows come back in the same scan
+// order every time. Sorted rows only continue the loaded ones when the last page row and the row
+// after it (the sentinel past the page) differ in a leading ORDER BY column: then every loaded row
+// sorts strictly before every later row, so a deeper re-run cannot move a row across the boundary.
+// Rows that tie there can come back in a different order and repeat or skip rows. Sorted rows
+// without any reported ORDER BY column cannot be compared at all, which is not a tie.
+function loadMoreBlockedReason(
+  rows: BrowserWorkerResultPreview['rows'],
+  size: number,
+  order: BrowserWorkerResultPage | undefined,
+): QueryResultPageInfo['load_more_blocked'] {
+  if (!order) return 'unknown_order';
+  if (!order.ordered) return undefined;
+  if (order.order_key_columns.length === 0) return 'unverifiable_order';
+  const last = rows[size - 1];
+  const next = rows[size];
+  if (last && next && order.order_key_columns.some((column) => last[column] !== next[column])) {
+    return undefined;
+  }
+  return 'order_by_tie';
 }
 
 export function resultPageFromContractPreview(
   preview: ResultPreview | undefined,
   page: QueryPageRequest,
+  order?: BrowserWorkerResultPage,
 ): QueryResultData {
   if (!preview) return emptyPageResult(page);
   return resultPageFromPreview(
@@ -186,6 +225,7 @@ export function resultPageFromContractPreview(
       truncated: preview.truncated ?? false,
     },
     page,
+    order,
   );
 }
 
@@ -197,6 +237,7 @@ export function appendResultPage(current: QueryResultData, next: QueryResultData
   const rows = [...current.rows, ...next.rows];
   const loadedRows = rows.length;
   const hasMore = next.page?.has_more === true;
+  const loadMoreBlocked = hasMore ? next.page?.load_more_blocked : undefined;
   const pageSize = next.page?.size ?? current.page?.size ?? QUERY_RESULT_PAGE_SIZE;
 
   return {
@@ -210,7 +251,8 @@ export function appendResultPage(current: QueryResultData, next: QueryResultData
       returned_rows: next.page?.returned_rows ?? next.rows.length,
       loaded_rows: loadedRows,
       has_more: hasMore,
-      next_offset: hasMore ? loadedRows : undefined,
+      next_offset: hasMore && !loadMoreBlocked ? loadedRows : undefined,
+      ...(loadMoreBlocked ? { load_more_blocked: loadMoreBlocked } : {}),
     },
   };
 }

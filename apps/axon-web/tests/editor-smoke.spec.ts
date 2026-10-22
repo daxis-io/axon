@@ -385,6 +385,7 @@ test.describe('editor (Phase 1 smoke)', () => {
         truncated: false,
       },
       { offset: 0, size: QUERY_RESULT_PAGE_SIZE },
+      { ordered: false, order_key_columns: [] },
     );
 
     expect(workerPage).toMatchObject({
@@ -476,7 +477,7 @@ test.describe('editor (Phase 1 smoke)', () => {
       'Loading more recomputes the original query until streaming results are available.',
     );
     await expect(page.getByTestId('result-pagination-notice')).toContainText(
-      'Use an explicit ORDER BY for stable results across pages.',
+      'Load more is offered only when the next page is known to continue the loaded rows.',
     );
 
     await page.locator('.table-wrap').evaluate((node) => {
@@ -523,6 +524,27 @@ test.describe('editor (Phase 1 smoke)', () => {
 
     await expect(page.locator('.res-meta')).toContainText('1,000 rows+', { timeout: 15_000 });
     await expect(page.getByTestId('result-pagination-notice')).toBeVisible();
+  });
+
+  test('load-more stays off when the next row ties on the ORDER BY key', async ({ page }) => {
+    await installFakePaginationWorker(page, { tiedIds: true });
+    await page.goto('/');
+
+    await page.locator('.code-input').fill('SELECT id FROM axon_prod_like_fixture ORDER BY id');
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+    await expect(page.locator('.res-meta')).toContainText('500 rows+', { timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Load more' })).toBeDisabled();
+    await expect(page.getByTestId('result-load-more-blocked')).toContainText(
+      'Add a unique column to the end of ORDER BY to page through every row',
+    );
+    expect(
+      await page.evaluate(
+        (captureKey) =>
+          ((window as typeof window & Record<string, unknown>)[captureKey] as unknown[]).length,
+        PAGINATION_EXECUTIONS_CAPTURE_KEY,
+      ),
+    ).toBe(1);
   });
 
   test('routes between the workspace and connect page', async ({ page }) => {
@@ -2819,9 +2841,14 @@ async function installUnavailableDirectoryPicker(page: Page): Promise<void> {
   });
 }
 
-async function installFakePaginationWorker(page: Page): Promise<void> {
+// The fake answers every page of `... ORDER BY id`: by default with unique ids, or with
+// `tiedIds` every id equal, so the row past each page ties with the last page row.
+async function installFakePaginationWorker(
+  page: Page,
+  options: { tiedIds?: boolean } = {},
+): Promise<void> {
   await page.addInitScript(
-    ({ captureKey }) => {
+    ({ captureKey, tiedIds }) => {
       type Listener = EventListenerOrEventListenerObject;
       const captureWindow = window as typeof window & Record<string, unknown>;
       captureWindow[captureKey] = [];
@@ -2880,7 +2907,9 @@ async function installFakePaginationWorker(page: Page): Promise<void> {
                 sql: string;
               }>
             ).push({ limit, offset, sql: payload.sql.query?.sql ?? '' });
-            const rows = Array.from({ length: limit }, (_, index) => [offset + index + 1]);
+            const rows = Array.from({ length: limit }, (_, index) => [
+              tiedIds ? 1 : offset + index + 1,
+            ]);
             this.emit({
               success: {
                 request_id: payload.sql.request_id,
@@ -2908,6 +2937,7 @@ async function installFakePaginationWorker(page: Page): Promise<void> {
                   preview_row_limit: limit,
                   truncated: false,
                 },
+                result_page: { ordered: true, order_key_columns: [0] },
               },
             });
           }
@@ -2937,7 +2967,7 @@ async function installFakePaginationWorker(page: Page): Promise<void> {
         value: FakeQueryWorker,
       });
     },
-    { captureKey: PAGINATION_EXECUTIONS_CAPTURE_KEY },
+    { captureKey: PAGINATION_EXECUTIONS_CAPTURE_KEY, tiedIds: options.tiedIds === true },
   );
 }
 

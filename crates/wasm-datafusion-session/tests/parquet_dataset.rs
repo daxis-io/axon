@@ -1039,6 +1039,126 @@ fn session_fail_opens_unsupported_prebootstrap_shape_to_all_active_files() {
 }
 
 #[test]
+fn session_does_not_prune_partitions_for_subqueries_inside_trim_operands() {
+    let _guard = PARQUET_DATASET_TEST_LOCK
+        .lock()
+        .expect("Parquet dataset tests should serialize local HTTP servers");
+
+    // Each subquery counts every row of the table (3), so TRIM only yields '' when the scalar
+    // subquery saw the whole table rather than the partition the outer WHERE selects.
+    for sql in [
+        "SELECT id FROM events WHERE event_date = '2026-06-25' AND TRIM(BOTH (SELECT CAST(COUNT(*) AS VARCHAR) FROM events) FROM '3') = '' ORDER BY id",
+        "SELECT id FROM events WHERE event_date = '2026-06-25' AND TRIM('3', (SELECT CAST(COUNT(*) AS VARCHAR) FROM events)) = '' ORDER BY id",
+    ] {
+        runtime().block_on(async {
+            let matching_object = parquet_bytes_with_i64_columns(&[(1, 12), (2, 18)]);
+            let other_object = parquet_bytes_with_i64_columns(&[(3, 30)]);
+            let matching_server = RequestCapturingServer::new(matching_object.clone());
+            let other_server = RequestCapturingServer::new(other_object.clone());
+            let dataset = two_partition_dataset(
+                (matching_server.url(), matching_object.len()),
+                (other_server.url(), other_object.len()),
+            );
+            let mut session = BrowserDataFusionSession::new(browser_safe_http_config(), u64::MAX)
+                .expect("browser DataFusion session should construct");
+            session
+                .open_parquet_dataset("events", dataset)
+                .await
+                .expect("dataset open should not eagerly bootstrap nonempty footers");
+
+            let request = QueryRequest::new(
+                "https://example.invalid/datasets/events",
+                sql,
+                ExecutionTarget::BrowserWasm,
+            );
+            let result = session
+                .sql("events", &request)
+                .await
+                .unwrap_or_else(|error| panic!("{sql} should execute: {error:?}"));
+
+            assert_eq!(
+                result.runtime_result.row_count, 2,
+                "{sql}: the TRIM subquery must see every partition"
+            );
+            assert!(
+                !other_server.recorded_requests().is_empty(),
+                "{sql}: the partition outside the outer WHERE is still read by the subquery"
+            );
+            assert_eq!(
+                result.response.metrics.prebootstrap_files_pruned,
+                Some(0),
+                "{sql}"
+            );
+        });
+    }
+}
+
+#[test]
+fn session_does_not_prune_delta_stats_through_table_alias_column_lists() {
+    let _guard = PARQUET_DATASET_TEST_LOCK
+        .lock()
+        .expect("Parquet dataset tests should serialize local HTTP servers");
+
+    runtime().block_on(async {
+        let low_id_object = parquet_bytes_with_i64_columns(&[(1, 10), (2, 20)]);
+        let high_id_object = parquet_bytes_with_i64_columns(&[(9, 90), (10, 100)]);
+        let low_id_server = RequestCapturingServer::new(low_id_object.clone());
+        let high_id_server = RequestCapturingServer::new(high_id_object.clone());
+        let dataset = BrowserHttpParquetDatasetDescriptor {
+            table_uri: "https://example.invalid/datasets/events".to_string(),
+            partition_column_types: BTreeMap::new(),
+            browser_compatibility: CapabilityReport::default(),
+            required_capabilities: CapabilityReport::default(),
+            files: vec![
+                BrowserHttpFileDescriptor {
+                    path: "part-low-id.parquet".to_string(),
+                    url: low_id_server.url(),
+                    size_bytes: u64::try_from(low_id_object.len())
+                        .expect("object size should fit in u64"),
+                    partition_values: BTreeMap::new(),
+                    stats: Some(delta_i64_id_value_stats_json((1, 2), (10, 20))),
+                    object_etag: None,
+                },
+                BrowserHttpFileDescriptor {
+                    path: "part-high-id.parquet".to_string(),
+                    url: high_id_server.url(),
+                    size_bytes: u64::try_from(high_id_object.len())
+                        .expect("object size should fit in u64"),
+                    partition_values: BTreeMap::new(),
+                    stats: Some(delta_i64_id_value_stats_json((9, 10), (90, 100))),
+                    object_etag: None,
+                },
+            ],
+        };
+        let mut session = BrowserDataFusionSession::new(browser_safe_http_config(), u64::MAX)
+            .expect("browser DataFusion session should construct");
+        session
+            .open_parquet_dataset("events", dataset)
+            .await
+            .expect("dataset open should not eagerly bootstrap nonempty footers");
+
+        // The alias list swaps the names: alias `id` is the physical `value` column, which is
+        // above 8 on every row, so all four rows match.
+        let request = QueryRequest::new(
+            "https://example.invalid/datasets/events",
+            "SELECT value FROM events AS e(value, id) WHERE id > 8 ORDER BY value",
+            ExecutionTarget::BrowserWasm,
+        );
+        let result = session
+            .sql("events", &request)
+            .await
+            .expect("aliased SQL should execute against every active file");
+
+        assert_eq!(result.runtime_result.row_count, 4);
+        assert!(
+            !low_id_server.recorded_requests().is_empty(),
+            "physical id stats must not prune a file for the aliased id column"
+        );
+        assert_eq!(result.response.metrics.prebootstrap_files_pruned, Some(0));
+    });
+}
+
+#[test]
 fn session_fail_opens_missing_malformed_incomplete_or_incompatible_delta_stats() {
     let _guard = PARQUET_DATASET_TEST_LOCK
         .lock()
@@ -1397,6 +1517,52 @@ fn delta_i64_stats_json(column: &str, min_value: i64, max_value: i64) -> String 
     format!(
         r#"{{"minValues":{{"{column}":{min_value}}},"maxValues":{{"{column}":{max_value}}},"nullCount":{{"{column}":0}}}}"#
     )
+}
+
+fn delta_i64_id_value_stats_json(id: (i64, i64), value: (i64, i64)) -> String {
+    format!(
+        r#"{{"minValues":{{"id":{},"value":{}}},"maxValues":{{"id":{},"value":{}}},"nullCount":{{"id":0,"value":0}}}}"#,
+        id.0, value.0, id.1, value.1
+    )
+}
+
+fn two_partition_dataset(
+    matching: (String, usize),
+    other: (String, usize),
+) -> BrowserHttpParquetDatasetDescriptor {
+    let file =
+        |path: &str, (url, size): (String, usize), event_date: &str| BrowserHttpFileDescriptor {
+            path: path.to_string(),
+            url,
+            size_bytes: u64::try_from(size).expect("object size should fit in u64"),
+            partition_values: BTreeMap::from([(
+                "event_date".to_string(),
+                Some(event_date.to_string()),
+            )]),
+            stats: None,
+            object_etag: None,
+        };
+    BrowserHttpParquetDatasetDescriptor {
+        table_uri: "https://example.invalid/datasets/events".to_string(),
+        partition_column_types: BTreeMap::from([(
+            "event_date".to_string(),
+            PartitionColumnType::String,
+        )]),
+        browser_compatibility: CapabilityReport::default(),
+        required_capabilities: CapabilityReport::default(),
+        files: vec![
+            file(
+                "event_date=2026-06-25/part-000.parquet",
+                matching,
+                "2026-06-25",
+            ),
+            file(
+                "event_date=2026-06-24/part-000.parquet",
+                other,
+                "2026-06-24",
+            ),
+        ],
+    }
 }
 
 fn runtime() -> tokio::runtime::Runtime {
