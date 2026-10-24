@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "source": "https://github.com/delta-io/delta-rs",
+  "source_release": "deltalake-core 0.32.4",
+  "source_path": "crates/test/tests/data/table_with_deletion_logs/_delta_log/00000000000000000020.checkpoint.parquet",
+  "license": "Apache-2.0",
+  "writer": "Databricks-Runtime/12.2.x-photon-scala2.12",
+  "table_facts": {
+    "checkpoint_version": 20,
+    "protocol": "minReaderVersion 3, minWriterVersion 7, deletionVectors reader/writer feature",
+    "live_files": 1,
+    "live_file_path": "part-00000-cb251d5e-b665-437a-a9a7-fbfc5137c77d.c000.snappy.parquet",
+    "live_file_size_bytes": 10499,
+    "live_file_records": 100,
+    "live_file_deleted_rows": 2,
+    "checkpoint_rows": "protocol, metaData, the live add carrying its deletion vector, and same-path remove tombstones for the two replaced deletion vectors"
+  },
+  "files": {
+    "_delta_log/00000000000000000020.checkpoint.parquet": {
+      "size_bytes": 27370,
+      "sha256": "5332276f28cf1f16a2beb6b060048dc6c383d9db0b2c3312a1d33cc38159e3be"
+    }
+  }
+}
