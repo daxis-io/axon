@@ -840,6 +840,7 @@ export type BrowserWorkerSuccessEnvelope = {
   response: QueryResponse;
   result: ArrowIpcResult;
   preview?: BrowserWorkerResultPreview;
+  result_page?: BrowserWorkerResultPage;
 };
 
 export type WireBrowserWorkerSuccessEnvelope = Omit<BrowserWorkerSuccessEnvelope, 'result'> & {
@@ -919,6 +920,16 @@ export type BrowserWorkerResultPreview = {
   row_count: number;
   preview_row_limit: number;
   truncated: boolean;
+};
+
+// Reported for a query that requested a result page. A later page re-runs the query with a larger
+// OFFSET. When `ordered` is false the rows arrive in scan order and later offsets continue this
+// page. When it is true, a deeper run can order rows that tie on the sort key differently, so the
+// next page continues this one only if the last page row and the row after it differ in one of
+// `order_key_columns`: output column indexes of the leading ORDER BY keys, possibly empty.
+export type BrowserWorkerResultPage = {
+  ordered: boolean;
+  order_key_columns: number[];
 };
 
 export type BrowserWorkerDisposedEnvelope = {
@@ -4642,6 +4653,7 @@ function normalizeWorkerResponse(data: unknown): BrowserWorkerResponseEnvelope {
         ...response.success,
         result: normalizeArrowIpcResult(response.success.result),
         preview: normalizeResultPreview(response.success.preview, 'success.preview'),
+        result_page: normalizeResultPage(response.success.result_page, 'success.result_page'),
       },
     };
   }
@@ -5265,6 +5277,25 @@ function normalizeResultPreview(
     preview_row_limit: previewRowLimit,
     truncated: requiredBoolean(value.truncated, `${path}.truncated`),
   };
+}
+
+function normalizeResultPage(value: unknown, path: string): BrowserWorkerResultPage | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isObject(value)) {
+    throw new AxonProtocolError(`${path} must be an object`);
+  }
+
+  const ordered = requiredBoolean(value.ordered, `${path}.ordered`);
+  const orderKeyColumns = requiredArray(value.order_key_columns, `${path}.order_key_columns`).map(
+    (column, index) => requiredNonNegativeInteger(column, `${path}.order_key_columns[${index}]`),
+  );
+  if (!ordered && orderKeyColumns.length > 0) {
+    throw new AxonProtocolError(`${path}.order_key_columns must be empty for unordered rows`);
+  }
+
+  return { ordered, order_key_columns: orderKeyColumns };
 }
 
 function normalizeResultPreviewCell(value: unknown, path: string): BrowserWorkerResultPreviewCell {

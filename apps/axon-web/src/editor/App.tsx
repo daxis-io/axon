@@ -32,6 +32,7 @@ import { sameCanonicalTableIdentity } from '../services/canonical-table-identity
 import { hasLocalDeltaRuntime } from '../services/local-delta-session.ts';
 import {
   browserQueryRequest,
+  canLoadMoreResultRows,
   queryResultPageRun,
   queryResultPageRunRequest,
   sameQueryResultPageRun,
@@ -734,7 +735,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
     const activeRun = activeResultPageRun;
     if (!currentResult || !runForPage || !activeRun) return;
     const page = currentResult.page;
-    if (!page?.has_more || page.next_offset == null) return;
+    if (!canLoadMoreResultRows(page) || page?.next_offset == null) return;
     if (!sameQueryResultPageRun(runForPage, activeRun)) {
       showToast('Run the current query before loading more rows.', 'warn');
       return;

@@ -1467,6 +1467,77 @@ test('rejects malformed result previews on success envelopes', async () => {
   await expect(resultPromise).rejects.toThrow('success.preview.row_count');
 });
 
+test('preserves the result page order on success envelopes', async () => {
+  const worker = new FakeWorker();
+  const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+  const resultPromise = client.query(
+    'events',
+    {
+      table_uri: snapshot.table_uri,
+      snapshot_version: snapshot.snapshot_version,
+      sql: 'SELECT id FROM events ORDER BY id',
+      preferred_target: 'browser_wasm',
+    },
+    { requestId: 'req-query-result-page' },
+  );
+
+  worker.emitMessage({
+    success: {
+      request_id: 'req-query-result-page',
+      response: queryResponse(),
+      result: {
+        format: 'stream',
+        content_type: 'application/vnd.apache.arrow.stream',
+        bytes: [1, 2, 3, 4],
+      },
+      result_page: { ordered: true, order_key_columns: [0] },
+    },
+  });
+
+  await expect(resultPromise).resolves.toMatchObject({
+    result_page: { ordered: true, order_key_columns: [0] },
+  });
+});
+
+test('rejects malformed result page orders on success envelopes', async () => {
+  for (const [requestId, resultPage, path] of [
+    ['req-result-page-flag', { ordered: 'yes', order_key_columns: [] }, 'ordered'],
+    ['req-result-page-column', { ordered: true, order_key_columns: [-1] }, 'order_key_columns[0]'],
+    ['req-result-page-unordered', { ordered: false, order_key_columns: [0] }, 'order_key_columns'],
+  ] as const) {
+    const worker = new FakeWorker();
+    const client = createAxonBrowserClient({ worker: worker as unknown as Worker });
+
+    const resultPromise = client.query(
+      'events',
+      {
+        table_uri: snapshot.table_uri,
+        snapshot_version: snapshot.snapshot_version,
+        sql: 'SELECT id FROM events ORDER BY id',
+        preferred_target: 'browser_wasm',
+      },
+      { requestId },
+    );
+
+    worker.emitMessage({
+      success: {
+        request_id: requestId,
+        response: queryResponse(),
+        result: {
+          format: 'stream',
+          content_type: 'application/vnd.apache.arrow.stream',
+          bytes: [1, 2, 3, 4],
+        },
+        result_page: resultPage as never,
+      },
+    });
+
+    await expect(resultPromise).rejects.toThrow(AxonProtocolError);
+    await expect(resultPromise).rejects.toThrow(`success.result_page.${path}`);
+  }
+});
+
 test('redacts URL credentials, query strings, and fragments from diagnostics', () => {
   expect(
     redactUrlSecrets(
