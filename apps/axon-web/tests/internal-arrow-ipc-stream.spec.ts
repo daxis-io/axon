@@ -1422,24 +1422,33 @@ test('coordinator deadline owns the terminal and replaces a hung child', async (
       );
 
       await new Promise((resolve) => setTimeout(resolve, 300));
-      worker.postMessage({
-        open_delta_table: {
-          request_id: 'open-after-deadline-watchdog',
-          name: 'deadline_recovery',
-          snapshot: {
-            table_uri: new URL(
-              '/fixtures/browser-datafusion-runtime/deadline-recovery',
-              location.href,
-            ).href,
-            snapshot_version: 0,
-            partition_column_types: {},
-            browser_compatibility: { capabilities: {} },
-            required_capabilities: { capabilities: {} },
-            active_files: [],
+      const postOpen = (requestId: string): void => {
+        worker.postMessage({
+          open_delta_table: {
+            request_id: requestId,
+            name: 'deadline_recovery',
+            snapshot: {
+              table_uri: new URL(
+                '/fixtures/browser-datafusion-runtime/deadline-recovery',
+                location.href,
+              ).href,
+              snapshot_version: 0,
+              partition_column_types: {},
+              browser_compatibility: { capabilities: {} },
+              required_capabilities: { capabilities: {} },
+              active_files: [],
+            },
           },
-        },
-      });
-      await waitFor((message) => message.opened?.request_id === 'open-after-deadline-watchdog');
+        });
+      };
+      // The watchdog replaced the child without failing any request, so the first request after
+      // it reports the lost session before the owner reopens.
+      postOpen('open-after-deadline-watchdog');
+      const invalidated = await waitFor(
+        (message) => message.error?.request_id === 'open-after-deadline-watchdog',
+      );
+      postOpen('reopen-after-deadline-watchdog');
+      await waitFor((message) => message.opened?.request_id === 'reopen-after-deadline-watchdog');
       postSql('query-deadline-watchdog');
       const recovered = await waitFor(
         (message) => message.success?.request_id === 'query-deadline-watchdog',
@@ -1449,6 +1458,7 @@ test('coordinator deadline owns the terminal and replaces a hung child', async (
         capacity: capacity.error?.error,
         first: first.error?.error,
         reuseWhileDraining: reuseWhileDraining.error?.error,
+        invalidated: invalidated.error?.error,
         recoveredRows: recovered.success?.preview?.row_count,
       };
     } finally {
@@ -1471,6 +1481,12 @@ test('coordinator deadline owns the terminal and replaces a hung child', async (
     target: 'browser_wasm',
   });
   expect(result.reuseWhileDraining?.message).toContain('already active');
+  expect(result.invalidated).toMatchObject({
+    code: 'execution_failed',
+    target: 'browser_wasm',
+  });
+  expect(result.invalidated?.message).toContain('browser query session invalidated:');
+  expect(result.invalidated?.message).toContain("did not drain 'query-deadline-watchdog'");
   expect(result.recoveredRows).toBe(0);
 });
 

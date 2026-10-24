@@ -17,6 +17,15 @@ import {
   resolvePublicObjectStorageDescriptor,
 } from '../src/services/object-storage.ts';
 
+// A real fetch reports the URL that answered; these listing mocks answer the URL they were asked.
+function answeringRequestedUrl(fetcher: typeof fetch): typeof fetch {
+  return async (input, init) => {
+    const response = await fetcher(input, init);
+    Object.defineProperty(response, 'url', { value: String(input) });
+    return response;
+  };
+}
+
 test.describe('public object storage', () => {
   test('parses GCS table roots and maps object URLs', () => {
     const root = parsePublicObjectStorageTableRoot({
@@ -187,10 +196,12 @@ test.describe('public object storage', () => {
       );
     };
 
-    const manifest = await buildPublicDeltaLogManifest(root, { fetch: fetchLog });
+    const manifest = await buildPublicDeltaLogManifest(root, {
+      fetch: answeringRequestedUrl(fetchLog),
+    });
 
     expect(requests).toHaveLength(1);
-    expect(requests[0].init).toMatchObject({ credentials: 'omit' });
+    expect(requests[0].init).toMatchObject({ credentials: 'omit', redirect: 'error' });
     const listUrl = new URL(requests[0].url);
     expect(listUrl.origin).toBe('https://storage.googleapis.com');
     expect(listUrl.pathname).toBe('/axon-public-delta-fixture-20260522-6cf5c6');
@@ -234,10 +245,12 @@ test.describe('public object storage', () => {
       );
     };
 
-    const manifest = await buildPublicDeltaLogManifest(root, { fetch: fetchLog });
+    const manifest = await buildPublicDeltaLogManifest(root, {
+      fetch: answeringRequestedUrl(fetchLog),
+    });
 
     expect(requests).toHaveLength(1);
-    expect(requests[0].init).toMatchObject({ credentials: 'omit' });
+    expect(requests[0].init).toMatchObject({ credentials: 'omit', redirect: 'error' });
     const listUrl = new URL(requests[0].url);
     expect(listUrl.origin).toBe(
       'https://axon-public-s3-fixture-452456948477.s3.us-east-2.amazonaws.com',
@@ -268,7 +281,7 @@ test.describe('public object storage', () => {
 
     await expect(
       buildPublicDeltaLogManifest(root, {
-        fetch: async () => new Response('forbidden', { status: 403 }),
+        fetch: answeringRequestedUrl(async () => new Response('forbidden', { status: 403 })),
       }),
     ).rejects.toMatchObject({
       code: 'public_storage_access_failed',
@@ -283,7 +296,7 @@ test.describe('public object storage', () => {
       tableUri: 'gs://bucket/table',
       snapshotVersion: 7,
       onMetrics: (metrics) => metricEvents.push(metrics),
-      fetch: async (input) => {
+      fetch: answeringRequestedUrl(async (input) => {
         requests.push(String(input));
         return new Response(
           `<?xml version="1.0" encoding="UTF-8"?>
@@ -296,7 +309,7 @@ test.describe('public object storage', () => {
           </ListBucketResult>`,
           { status: 200, headers: { 'content-type': 'application/xml' } },
         );
-      },
+      }),
       resolveDeltaSnapshotFromManifest: async (manifestJson, tableUri, snapshotVersion) => {
         expect(tableUri).toBe('gs://bucket/table');
         expect(snapshotVersion).toBe(7);
@@ -389,18 +402,20 @@ test.describe('public object storage', () => {
       provider: 's3',
       tableUri: 's3://bucket/table',
       region: 'us-east-2',
-      fetch: async () =>
-        new Response(
-          `<?xml version="1.0" encoding="UTF-8"?>
-          <ListBucketResult>
-            <IsTruncated>false</IsTruncated>
-            <Contents>
-              <Key>table/_delta_log/00000000000000000000.json</Key>
-              <Size>512</Size>
-            </Contents>
-          </ListBucketResult>`,
-          { status: 200, headers: { 'content-type': 'application/xml' } },
-        ),
+      fetch: answeringRequestedUrl(
+        async () =>
+          new Response(
+            `<?xml version="1.0" encoding="UTF-8"?>
+            <ListBucketResult>
+              <IsTruncated>false</IsTruncated>
+              <Contents>
+                <Key>table/_delta_log/00000000000000000000.json</Key>
+                <Size>512</Size>
+              </Contents>
+            </ListBucketResult>`,
+            { status: 200, headers: { 'content-type': 'application/xml' } },
+          ),
+      ),
       resolveDeltaSnapshotFromManifest: async (manifestJson, tableUri) => {
         expect(tableUri).toBe('s3://bucket/table');
         expect(JSON.parse(manifestJson)).toEqual({
@@ -453,7 +468,7 @@ test.describe('public object storage', () => {
         provider: 'gcs',
         tableUri: 'gs://bucket/table',
         onMetrics: (metrics) => metricEvents.push(metrics),
-        fetch: async () => {
+        fetch: answeringRequestedUrl(async () => {
           listCalls += 1;
           return new Response(
             `<?xml version="1.0" encoding="UTF-8"?>
@@ -466,7 +481,7 @@ test.describe('public object storage', () => {
             </ListBucketResult>`,
             { status: 200, headers: { 'content-type': 'application/xml' } },
           );
-        },
+        }),
         resolveDeltaSnapshotFromManifest: async (_manifestJson, tableUri) => {
           snapshotResolves += 1;
           return JSON.stringify({

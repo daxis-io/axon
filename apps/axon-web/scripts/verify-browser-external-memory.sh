@@ -155,7 +155,7 @@ if [[ ",${projects}," == *,webkit,* ]]; then
   PLAYWRIGHT_BASE_URL="${base_url}" \
     npm run test:browser:editor-smoke -- \
       --project=webkit \
-      --grep "returns a reusable typed spill-storage error when private WebKit cannot use OPFS"
+      --grep "keeps non-spilling queries available when private WebKit cannot use OPFS"
 fi
 
 for stress_profile in 64 128; do

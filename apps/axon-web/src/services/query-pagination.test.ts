@@ -1,6 +1,9 @@
 import { create } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
+import { BrowserHttpSnapshotDescriptorSchema } from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 import {
+  ExecuteRequestSchema,
+  ExecutionRejectionReason,
   PreviewCellSchema,
   QueryExecutionOptionsSchema,
   QueryRequestSchema,
@@ -17,10 +20,12 @@ import {
 import { canonicalTableForSelection } from './browser-read-resolution.ts';
 import {
   QUERY_RESULT_PAGE_SIZE,
+  browserReadSnapshotVersion,
   queryPageFromRequest,
   queryResultPageRequest,
   queryResultPageRun,
   queryResultPageRunRequest,
+  resolveNextResultPage,
   resultPageFromContractPreview,
   sameQueryResultPageRun,
 } from './query-pagination.ts';
@@ -46,6 +51,132 @@ function request(sql = 'select * from events') {
     }),
   });
 }
+
+function resolvedRequest(snapshotVersion: bigint) {
+  return create(ExecuteRequestSchema, {
+    executionId: 'execution-1',
+    binding: {
+      case: 'browserRead',
+      value: {
+        descriptor: {
+          descriptor: {
+            case: 'snapshot',
+            value: create(BrowserHttpSnapshotDescriptorSchema, {
+              tableUri: 'gs://public-bucket/events',
+              snapshotVersion,
+            }),
+          },
+        },
+      },
+    },
+  });
+}
+
+describe('result page snapshot', () => {
+  it('reads the snapshot version the first page was resolved at', () => {
+    expect(browserReadSnapshotVersion(resolvedRequest(14n))).toBe(14);
+  });
+
+  function pageRun(snapshotVersion: number | undefined, readSnapshotVersion?: number) {
+    return queryResultPageRun(
+      canonicalTableForSelection(selection),
+      request(),
+      selection,
+      snapshotVersion,
+      readSnapshotVersion,
+    );
+  }
+
+  function resolverAt(...versions: bigint[]) {
+    const requested: Array<number | undefined> = [];
+    const resolve = async (snapshotVersion: number | undefined) => {
+      requested.push(snapshotVersion);
+      const version = versions[requested.length - 1];
+      if (version === undefined) throw new Error('unexpected resolution');
+      return { request: resolvedRequest(version) };
+    };
+    return { requested, resolve };
+  }
+
+  it('reuses the latest resolution while latest is still the version the rows came from', async () => {
+    const { requested, resolve } = resolverAt(14n);
+
+    const input = await resolveNextResultPage(pageRun(undefined, 14), resolve);
+
+    expect(requested).toEqual([undefined]);
+    expect(browserReadSnapshotVersion(input.request)).toBe(14);
+  });
+
+  it('requests the rows snapshot explicitly once latest has moved on', async () => {
+    const { requested, resolve } = resolverAt(15n, 14n);
+
+    const input = await resolveNextResultPage(pageRun(undefined, 14), resolve);
+
+    expect(requested).toEqual([undefined, 14]);
+    expect(browserReadSnapshotVersion(input.request)).toBe(14);
+  });
+
+  it('still reads the rows snapshot when latest cannot be resolved', async () => {
+    const requested: Array<number | undefined> = [];
+    const input = await resolveNextResultPage(pageRun(undefined, 14), async (snapshotVersion) => {
+      requested.push(snapshotVersion);
+      if (snapshotVersion === undefined) throw new Error('missing checkpoint part');
+      return { request: resolvedRequest(14n) };
+    });
+
+    expect(requested).toEqual([undefined, 14]);
+    expect(browserReadSnapshotVersion(input.request)).toBe(14);
+  });
+
+  it('stops at a cancelled or expired latest resolution', async () => {
+    for (const error of [
+      new DOMException('cancelled', 'AbortError'),
+      Object.assign(new Error('deadline'), {
+        rejectionReason: ExecutionRejectionReason.DEADLINE_EXPIRED,
+      }),
+      Object.assign(new Error('cancelled'), {
+        rejectionReason: ExecutionRejectionReason.CANCELLED,
+      }),
+    ]) {
+      const requested: Array<number | undefined> = [];
+      await expect(
+        resolveNextResultPage(pageRun(undefined, 14), async (snapshotVersion) => {
+          requested.push(snapshotVersion);
+          throw error;
+        }),
+      ).rejects.toBe(error);
+      expect(requested).toEqual([undefined]);
+    }
+  });
+
+  it('requests a pinned run at its pin directly', async () => {
+    const { requested, resolve } = resolverAt(3n);
+
+    await resolveNextResultPage(pageRun(3, 3), resolve);
+
+    expect(requested).toEqual([3]);
+  });
+
+  it('fails closed instead of reading another snapshot', async () => {
+    const moved = resolverAt(15n, 15n);
+    await expect(resolveNextResultPage(pageRun(undefined, 14), moved.resolve)).rejects.toThrow(
+      'Snapshot 14, which the loaded rows came from, could not be read again.',
+    );
+
+    const unrecorded = resolverAt(3n);
+    await expect(resolveNextResultPage(pageRun(3), unrecorded.resolve)).rejects.toThrow(
+      'The loaded rows did not record their snapshot. Run the query again.',
+    );
+    expect(unrecorded.requested).toEqual([]);
+  });
+
+  it('reports no version unless the request resolved one exact snapshot', () => {
+    expect(browserReadSnapshotVersion(create(ExecuteRequestSchema, {}))).toBeUndefined();
+    expect(
+      browserReadSnapshotVersion(resolvedRequest(BigInt(Number.MAX_SAFE_INTEGER) + 1n)),
+    ).toBeUndefined();
+  });
+});
 
 describe('generated query pagination identity', () => {
   it('carries the sentinel page in the generated query contract', () => {
@@ -97,6 +228,17 @@ describe('generated query pagination identity', () => {
 
     expect(sameQueryResultPageRun(original, displayOnlyChange)).toBe(true);
     expect(sameQueryResultPageRun(original, edited)).toBe(false);
+  });
+
+  it('keeps an unpinned run on the snapshot its first page read', () => {
+    const table = canonicalTableForSelection(selection);
+    const firstRead = queryResultPageRun(table, request(), selection, undefined, 14);
+    const sameRead = queryResultPageRun(table, request(), selection, undefined, 14);
+    const newerRead = queryResultPageRun(table, request(), selection, undefined, 15);
+
+    expect(firstRead).toMatchObject({ snapshotVersion: undefined, readSnapshotVersion: 14 });
+    expect(sameQueryResultPageRun(firstRead, sameRead)).toBe(true);
+    expect(sameQueryResultPageRun(firstRead, newerRead)).toBe(false);
   });
 
   it('projects every generated preview cell variant into the bounded UI page', () => {

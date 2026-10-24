@@ -147,6 +147,13 @@ let consecutiveRuntimeCrashes = 0;
 let unrecoverableReason: string | undefined;
 let bootTimer: ReturnType<typeof setTimeout> | undefined;
 let respawnTimer: ReturnType<typeof setTimeout> | undefined;
+// Tables the page opens live only in the child's session, so a child that received commands takes
+// them with it when it is replaced.
+let childReceivedCommands = false;
+// Set when a recycle dropped that session without failing any request, which happens when every
+// in-flight query was already draining or the child died idle. The next request is failed with it
+// so the page discards its session and reopens instead of querying an empty replacement.
+let unreportedSessionInvalidation: QueryError | undefined;
 let child = createChild();
 
 workerScope.addEventListener('message', (event) => {
@@ -165,6 +172,11 @@ workerScope.addEventListener('message', (event) => {
 function forwardCommand(command: BrowserWorkerCommand): void {
   const requestId = commandRequestId(command);
   const context = commandContext(command);
+  const lostSession = takeUnreportedSessionInvalidation();
+  if (lostSession) {
+    postQueryError(requestId, context, lostSession);
+    return;
+  }
   const unavailable = childUnavailableError();
   if (unavailable) {
     postQueryError(requestId, context, unavailable);
@@ -216,6 +228,7 @@ function createChild(): Worker {
     : undefined;
   childPhase = 'boot';
   childHealth = 'booting';
+  childReceivedCommands = false;
   clearBootTimer();
   const workerSearchParams = new URL(globalThis.location.href).searchParams;
   const workerNameParams = new URLSearchParams(workerScope.name.split('?', 2)[1] ?? '');
@@ -366,6 +379,11 @@ async function probeChildScript(url: string): Promise<string> {
 function startCoordinatedQuery(command: BrowserWorkerSqlCommand): void {
   const queryId = command.request_id;
   const context = commandContext({ sql: command });
+  const lostSession = takeUnreportedSessionInvalidation();
+  if (lostSession) {
+    postQueryError(queryId, context, lostSession);
+    return;
+  }
   const unavailable = childUnavailableError();
   if (unavailable) {
     postQueryError(queryId, context, unavailable);
@@ -804,11 +822,13 @@ function recycleChild(invalidationReason: string): void {
     querySessionInvalidationMessage(invalidationReason),
   );
   const hadInFlightWork = activeQueries.size > 0 || pendingForwardedCommands.size > 0;
+  let reportedInvalidation = pendingForwardedCommands.size > 0;
   for (const [queryId, active] of activeQueries) {
     active.stage.discard();
     releaseActiveMemory(active);
     if (active.lifecycle.beginDrain('failed')) {
       postQueryError(queryId, active.context, invalidationError);
+      reportedInvalidation = true;
     }
     clearTimeout(active.deadline);
     if (active.watchdog) clearTimeout(active.watchdog);
@@ -823,6 +843,11 @@ function recycleChild(invalidationReason: string): void {
   // neither loop above, so surface the reason on its own channel too.
   if (!hadInFlightWork) {
     emitLog({ phase: 'instantiate' }, 'error', invalidationError.message);
+  }
+  if (reportedInvalidation) {
+    unreportedSessionInvalidation = undefined;
+  } else if (childReceivedCommands) {
+    unreportedSessionInvalidation = invalidationError;
   }
 
   const previousChild = child;
@@ -888,6 +913,12 @@ function enterUnrecoverable(reason: string, phase: ChildPhase): void {
     'error',
     querySessionInvalidationMessage(`${reason} (session unrecoverable)`),
   );
+}
+
+function takeUnreportedSessionInvalidation(): QueryError | undefined {
+  const error = unreportedSessionInvalidation;
+  unreportedSessionInvalidation = undefined;
+  return error;
 }
 
 // Returns the error that should reject new work, or undefined when the child can accept it.
@@ -1026,6 +1057,7 @@ function postQueryError(
 function postToChild(message: PrivateCoordinatorMessage): void {
   child.postMessage(message);
   if (message.kind === 'command') {
+    childReceivedCommands = true;
     coordinatorCommandCount += 1;
     if (runtimeConfig.crashOnCommandNumber === coordinatorCommandCount) {
       handleChildCrash('injected sandbox query child crash');
