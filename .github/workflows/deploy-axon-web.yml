@@ -106,6 +106,7 @@ jobs:
       - name: Install Rust metadata toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           targets: wasm32-unknown-unknown
 
       - name: Download the qualified Vercel prebuilt artifact
@@ -169,6 +170,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
+
+      - name: Verify the artifact names the qualified commit
+        env:
+          QUALIFIED_COMMIT: ${{ inputs.qualified_commit }}
+        run: |
+          node --experimental-strip-types apps/axon-web/scripts/browser-runtime-build.ts verify \
+            .vercel/output/static "$QUALIFIED_COMMIT"
 
       - name: Install Vercel CLI
         run: npm install --global vercel@latest

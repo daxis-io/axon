@@ -20,6 +20,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           components: rustfmt
           targets: wasm32-unknown-unknown
 
@@ -31,6 +32,11 @@ jobs:
 
       - name: Install wasm bindgen test runner
         run: cargo install wasm-bindgen-cli --version 0.2.114 --locked
+
+      - name: Verify the pinned Rust toolchain
+        run: |
+          bash tests/conformance/verify_rust_toolchain_pin_test.sh
+          bash tests/conformance/verify_rust_toolchain_pin.sh
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -276,10 +282,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           targets: wasm32-unknown-unknown
 
       - name: Install verifier dependencies
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ripgrep
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ripgrep brotli
 
       - name: Restore cargo cache
         uses: Swatinem/rust-cache@v2
@@ -300,19 +307,36 @@ jobs:
 
       - name: Build and verify the spill-capable browser artifact
         working-directory: apps/axon-web
+        env:
+          # The emitted axon-runtime-build.json must name this exact, clean commit.
+          AXON_RUNTIME_BUILD_SOURCE_COMMIT: ${{ github.sha }}
+          AXON_RUNTIME_BUILD_REQUIRE_CLEAN: "1"
         run: npm run build
+
+      - name: Enforce the shipped WASM name-section and Brotli budget gate
+        run: |
+          bash tests/perf/report_shipped_wasm_size_test.sh
+          bash tests/perf/report_shipped_wasm_size.sh apps/axon-web/dist
 
       - name: Run browser unit tests
         working-directory: apps/axon-web
         run: npm test
 
+      - name: Run the browser SDK suite
+        working-directory: apps/axon-web
+        run: npm run test:sdk
+
       - name: Run page-index v2 fixture source gate
         working-directory: apps/axon-web
         run: npm run test:page-index-v2-fixture
 
-      - name: Install Chromium for external-memory qualification
+      - name: Install Chromium for the bundle smoke and external-memory qualification
         working-directory: apps/axon-web
         run: npx playwright install --with-deps chromium
+
+      - name: Query the built bundle under production routing and headers
+        working-directory: apps/axon-web
+        run: npm run test:browser:production-bundle
 
       - name: Run the ten-spill memory qualification
         working-directory: apps/axon-web
@@ -344,6 +368,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           targets: wasm32-unknown-unknown
 
       - name: Restore cargo cache
@@ -352,12 +377,15 @@ jobs:
       - name: Install WASM size tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y binaryen brotli gzip
+          sudo apt-get install -y binaryen brotli gzip ripgrep
 
       - name: Install Rust WASM reporting tools
         run: |
           cargo install wasm-bindgen-cli --version 0.2.114 --locked
           cargo install twiggy --locked
+
+      - name: Test the browser DataFusion engine size report contract
+        run: bash tests/perf/report_datafusion_wasm_size_test.sh
 
       - name: Run browser DataFusion engine size report
         env:
@@ -400,10 +428,15 @@ jobs:
           from pathlib import Path
 
           lock = tomllib.loads(Path("wasm-stack.lock.toml").read_text())
-          components = lock.get("components", {})
-          ready = bool(components) and all(
-              entry.get(field) != "UNSET"
-              for entry in components.values()
+          # Components declared absent from the WASM closure have no fork release to qualify.
+          released = [
+              entry
+              for entry in lock.get("components", {}).values()
+              if entry.get("wasm_closure", "present") != "absent"
+          ]
+          ready = bool(released) and all(
+              entry.get(field) not in (None, "UNSET")
+              for entry in released
               for field in ("candidate_sha", "stack_sha")
           )
           credentials = all(
@@ -414,9 +447,38 @@ jobs:
           print(f"credentials={'true' if credentials else 'false'}")
           PY
 
-      - name: Report bootstrap-only release state
+      - name: Report the unqualified release state
         if: steps.release.outputs.ready != 'true'
-        run: echo "::notice::Qualified release artifact is unavailable while wasm-stack.lock.toml contains UNSET revisions."
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import tomllib
+          from pathlib import Path
+
+          lock = tomllib.loads(Path("wasm-stack.lock.toml").read_text())
+          release = lock["release"]
+          print("## Release not qualified: this run produced no deployable artifact")
+          print()
+          print(
+              "`wasm-stack.lock.toml` still has `UNSET` release revisions, so this run built no "
+              "`axon-web-qualified-prebuilt` artifact and `Deploy axon-web` has nothing to stage "
+              "or promote. Production keeps serving its previous deployment."
+          )
+          print()
+          print("| Component | Fork | Missing |")
+          print("| --- | --- | --- |")
+          for name, entry in lock["components"].items():
+              if entry.get("wasm_closure", "present") == "absent":
+                  continue
+              unset = [field for field in ("candidate_sha", "stack_sha") if entry.get(field) == "UNSET"]
+              if unset:
+                  tags = f"annotated `{release['candidate_tag']}` and `{release['final_tag']}` at `stack_sha`"
+                  fields = ", ".join(f"`{field}`" for field in unset)
+                  print(f"| `{name}` | {entry['daxis_url']} | {fields}; {tags} |")
+          print()
+          print("The owner actions that qualify and deploy main are listed in")
+          print("`docs/release-gates/main-release-qualification.md`.")
+          PY
+          echo "::warning title=Release not qualified::wasm-stack.lock.toml has UNSET release revisions, so this run produced no axon-web-qualified-prebuilt artifact and cannot be deployed. See the run summary and docs/release-gates/main-release-qualification.md."
 
       - name: Report unavailable deployment credentials
         if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials != 'true'
@@ -428,6 +490,7 @@ jobs:
         if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials == 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           targets: wasm32-unknown-unknown
 
       - name: Set up Node.js
@@ -456,10 +519,14 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          AXON_RUNTIME_BUILD_SOURCE_COMMIT: ${{ github.sha }}
+          AXON_RUNTIME_BUILD_REQUIRE_CLEAN: "1"
         run: |
           vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
           vercel build --prod --token="$VERCEL_TOKEN"
           bash apps/axon-web/scripts/verify-build-output.sh .vercel/output/static
+          node --experimental-strip-types apps/axon-web/scripts/browser-runtime-build.ts verify \
+            .vercel/output/static "$GITHUB_SHA"
 
       - name: Generate immutable WASM stack release attestation
         if: steps.release.outputs.ready == 'true' && steps.release.outputs.credentials == 'true'

@@ -75,6 +75,15 @@ Browser Playwright gates launch real browsers and should run from a normal devel
 npm run test:browser
 ```
 
+The dev-server suites never load the production bundle. After `npm run build`, the bundle smoke
+serves `dist` with `vite preview` under the production host's `vercel.json` rewrites, headers, and
+NOT_FOUND behaviour (no COOP/COEP), loads a canonical table route cold, and runs a category query
+against the bundled sample through the UI. CI runs it on every pull request:
+
+```bash
+npm run test:browser:production-bundle
+```
+
 When validating the local Delta editor flow against an existing dev server, run `npm run dev` in one terminal and then run the focused browser gate from an unsandboxed terminal:
 
 ```bash

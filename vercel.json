@@ -7,7 +7,7 @@
     { "source": "/connect", "destination": "/index.html" },
     { "source": "/catalogs", "destination": "/index.html" },
     { "source": "/settings", "destination": "/index.html" },
-    { "source": "/catalog/:catalogId/:schemaName/:tableName", "destination": "/index.html" },
+    { "source": "/catalog/:path*", "destination": "/index.html" },
     { "source": "/saved/:savedId", "destination": "/index.html" }
   ],
   "headers": [

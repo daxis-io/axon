@@ -114,8 +114,10 @@ else
   fail "a missing asset returned ${missing_status} instead of 404; a catch-all rewrite is masking absent files"
 fi
 
-# History-API routes must still reach the app.
+# History-API routes must still reach the app, including the canonical table routes that selecting
+# a table pushes (reloading or sharing one must not hit the host's NOT_FOUND page).
 expect_asset "/connect" "text/html"
+expect_asset "/catalog/axon-connection%3A%2F%2Fsample-fixture%2Fsample-lake/table/axon.sample-fixture%2Fv1/canonical-locator/axon-fixture%3A%2F%2Fsample-lake%2Fprod_like%2Fevents/sql" "text/html"
 
 if [[ "${failures}" -ne 0 ]]; then
   echo "${failures} deployment check(s) failed" >&2

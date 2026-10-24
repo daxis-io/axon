@@ -36,8 +36,28 @@ Useful local commands:
 
 ## Browser DataFusion worker size
 
+### Shipped asset gate
+
+`npm run build:wasm` runs `wasm-bindgen --remove-name-section`, so the WASM the app serves carries
+no debug name section; the unshipped `target/wasm32-unknown-unknown/release/axon_web_wasm.wasm`
+keeps the names for symbolication. After `npm run build`, CI measures the exact served asset on
+every pull request and `main` push:
+
+```bash
+bash tests/perf/report_shipped_wasm_size.sh apps/axon-web/dist
+```
+
+It fails when `dist/assets` does not hold exactly one `.wasm`, when that asset still has a name
+section, or when its Brotli -q 11 size exceeds `AXON_SHIPPED_WASM_BROTLI_BUDGET_BYTES` (default
+6 MiB). `bash tests/perf/report_shipped_wasm_size_test.sh` covers the gate.
+
+### Size report
+
 The repeatable DataFusion size report requires local `cargo`, `wasm-bindgen`, `wasm-opt`, `gzip`,
-`brotli`, and `twiggy` tools. It writes generated artifacts under `target/df-size`.
+`brotli`, and `twiggy` tools. It writes generated artifacts under `target/df-size`. It rebuilds the
+engine, runs the same `wasm-bindgen --remove-name-section` step as `npm run build:wasm`, and applies
+the Brotli budget to that shipped form. The `wasm-opt -Oz` row is a reference point only: the app
+does not ship it. twiggy reads a separate names-bearing copy.
 
 The shipped `axon-web-wasm` worker and its 6 MiB Brotli budget are the defaults:
 

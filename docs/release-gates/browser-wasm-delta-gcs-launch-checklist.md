@@ -18,7 +18,7 @@
 - [x] Host tests run for `wasm-query-session` to verify repeated-query reuse, in-memory eviction, and dispose semantics.
 - [x] Dedicated `wasm32-unknown-unknown` smoke suites run in CI for `browser-sdk`, `wasm-parquet-engine`, `wasm-delta-snapshot`, `wasm-query-runtime`, and `browser-engine-worker`.
 - [x] Legacy narrow worker artifact size reporting remains enforced in CI on the real `browser-engine-worker.wasm` artifact.
-- [x] Daxis DataFusion default worker size reporting remains release-process evidence for `axon-web-wasm` until the full size toolchain is available in the gate, separate from correctness and runtime-SKU evidence.
+- [x] Daxis DataFusion default worker size is gated in CI on every pull request against the exact shipped `axon-web-wasm` asset in `apps/axon-web/dist/assets` (no name section, Brotli -q 11 at most 6 MiB), separate from correctness and runtime-SKU evidence.
 - [x] Host-proxy worker startup baseline is reported in CI from the worker baseline tests, and wasm smoke validates the same artifact-report path on the browser target.
 - [x] The worker artifact report names the runtime SKU, session-shell capability, Arrow IPC result transport, browser access mode, and shipped wasm artifact identity on both host and wasm paths.
 - [x] Host-proxy worker memory baseline is reported in CI from the worker baseline tests; blocking thresholds remain deferred.
@@ -34,8 +34,8 @@
 
 ## Correctness
 
-- [x] Native runtime exists and is production-callable.
-- [x] Every supported browser query has a native parity test.
+- [ ] Native runtime exists and is production-callable. Not met: no native DataFusion runtime runs outside the browser. The `native-query-runtime` crate is compiled and run only by tests, and the shipped app has no native or server execution path.
+- [ ] Every supported browser query has a native parity test. Not met: the CI browser/native parity tests exercise the legacy `wasm-query-runtime` executor, and the shipped DataFusion engine's corpora assert fixed expected rows.
 - [x] Advanced Delta features are classified as supported, native-only, unsupported, or hard-fail in the browser engine plan and README, including unknown protocol features as terminal snapshot-resolution failures.
 - [x] Unsupported cases fail clearly or route deterministically to native.
 - [x] Range-read correctness is proven for footer, bounded, offset, and suffix reads.
@@ -48,8 +48,8 @@
 - [x] Browser runtime ships single-partition by default.
 - [x] The legacy narrow runtime + streaming scan + in-memory session shell remains documented as compatibility-only, while the Daxis-facing app worker is DataFusion-backed Delta/Parquet execution.
 - [x] The shipped session shell is documented as in-memory only; persistent-cache hooks may exist below it, but OPFS / IndexedDB backends remain deferred.
-- [x] Browser bundle size is tracked in CI on the legacy narrow worker artifact and in release-process evidence for the Daxis DataFusion default worker.
-- [x] Browser DataFusion budget reporting is tracked for the Daxis-facing default worker; optional Brotli budget checks are not the current always-on worker size gate.
+- [x] Browser bundle size is tracked in CI on the legacy narrow worker artifact and gated in CI on the served asset of the Daxis DataFusion default worker.
+- [x] Browser DataFusion budget reporting is tracked for the Daxis-facing default worker, and its 6 MiB Brotli budget is an always-on CI gate measured on the bytes the deployment serves.
 - [x] Browser packages do not depend on signing or service-account code.
 - [x] Hosted UDF runtime remains separate from browser runtime dependencies.
 

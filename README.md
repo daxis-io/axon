@@ -1,8 +1,8 @@
 # Axon
 
-Axon is an embeddable lakehouse query engine and workbench runtime for inspecting and querying open lakehouse data. It owns the browser/native execution path for Delta and Parquet reads: provider contracts, descriptor validation, byte-range I/O, scan planning, pruning, caching, Arrow IPC, runtime budgets, metrics, and deterministic fallback to a native DataFusion runtime when the browser cannot make a safe correctness claim.
+Axon is an embeddable lakehouse query engine and workbench runtime for inspecting and querying open lakehouse data. It owns the browser execution path for Delta and Parquet reads: provider contracts, descriptor validation, byte-range I/O, scan planning, pruning, caching, Arrow IPC, runtime budgets, metrics, and typed refusals (`fallback_required`, `remote_required`) when the browser cannot make a safe correctness claim.
 
-> Axon is early. Browser support is intentionally bounded, and the native side is what we test browser results against. Expect things to change.
+> Axon is early. Browser support is intentionally bounded, and queries run only in the browser today. Expect things to change.
 
 ## What is Axon?
 
@@ -12,14 +12,14 @@ Axon gives that data a workbench. For queries the browser can handle, it pulls P
 
 Anonymous public object storage currently includes GCS, S3, and Cloudflare R2. R2 uses a logical `r2://bucket/table-prefix` locator, a separately configured public HTTPS origin, and a table-owned closed Delta-log index because public R2 endpoints do not expose bucket listing. See the [web runtime documentation](apps/axon-web/README.md) and [index schema](apps/axon-web/schemas/public-delta-log-index-v1.schema.json).
 
-For queries the browser can't handle, the same request runs on a native DataFusion runtime instead. That side is a Rust crate, so you run it wherever you already have compute. Laptop, container, VM, whatever.
+No native DataFusion runtime runs outside the browser: the shipped app has no native or server execution path. A query the browser cannot run safely ends with a typed `fallback_required` or `remote_required` diagnostic; nothing reruns it elsewhere. The `native-query-runtime` crate (DataFusion + delta-rs) is compiled and run only by tests; nothing deploys it and the app cannot call it.
 
 Axon is the engine layer, not the business analytics platform around it. Host products provide identity, tenancy, policy, catalog governance, billing, audit, workflow, dashboards, agents, and rollout. Axon integrates with those hosts through browser-safe session, descriptor, read-plan, and execution contracts while keeping secrets and product authority outside the engine.
 
 What that buys you:
 
 - Lower cost. Browser queries are about as cheap as the byte-range reads they make. No always-on compute.
-- Portable. Native side is a crate, not a vendor-locked service. Browser side is signed URLs and a frontend.
+- Portable. The browser side is browser-safe URLs and a frontend, not a vendor-locked service.
 - Lakehouse queries without managed query compute. For supported reads, once the data is exposed through a browser-safe descriptor or provider-backed access plan, Axon can query Delta and Parquet data directly in the tab.
 
 ## How it fits together
@@ -32,32 +32,29 @@ What that buys you:
    LocalDelta | ObjectStorage | UnityCatalog | DeltaSharing
                   │
                   ▼
-           query-router: browser?
+          Browser runtime
+          DataFusion WASM, browser-safe reads
                   │
-      yes ────────┴──────── no / fallback
-       │                         │
-       ▼                         ▼
- Browser runtime           Native runtime
- DataFusion WASM           DataFusion + delta-rs
- Browser-safe reads        Correctness oracle
-       │                         │
-       └────────────┬────────────┘
-                    ▼
-       Result, metrics, fallback contract
+       ┌──────────┴──────────┐
+       ▼                     ▼
+ Result, metrics       Typed refusal
+                       fallback_required / remote_required
 ```
 
-Three rules keep the providers and execution targets honest:
+`query-router` models a browser-or-native decision, but no crate or app code links it, and no host executor receives refused queries.
+
+Four rules keep the providers and execution targets honest:
 
 1. **Providers are not execution engines.** `LocalDelta`, `ObjectStorage`, `UnityCatalog`, and `DeltaSharing` describe how Axon opens lakehouse data; execution targets decide where a query runs.
-2. **One contract.** Browser and native runtimes use the same request and response types from `query-contract`, including the reasons for fallback.
-3. **Native is the oracle.** Every SQL case the browser claims to support has a matching native test. If they disagree, the browser stops and the native runtime takes the query.
-4. **The browser tells you when it can't help.** Unsupported aggregates, unknown partition types, multi-partition execution, missing footer stats, identity drift — all come back as a fallback reason instead of a guess.
+2. **One contract.** The browser runtime and the test-only native reference crate use the same request and response types from `query-contract`, including the fallback reasons.
+3. **Results are checked against fixed expectations.** The shipped DataFusion engine's SQL corpora assert literal expected rows. The CI "browser/native parity" tests exercise the legacy `wasm-query-runtime` executor, not the shipped engine, and the native reference builds on the same patched DataFusion, Arrow, and Parquet forks as the browser, so it cannot catch a defect in those forks.
+4. **The browser tells you when it can't help.** Unsupported aggregates, unknown partition types, multi-partition execution, missing footer stats, identity drift — all come back as a typed refusal with a reason instead of a guess. The refusal is terminal; nothing reruns the query natively.
 
 Control-plane integrations can provide governed descriptors, approved read plans, release evidence, or deployment policy. They do not become lakehouse providers unless they expose a provider contract that Axon can use independently of that integration policy.
 
 ## Get Started
 
-You'll need Rust (workspace MSRV is pinned in `rust-toolchain.toml`) and the `wasm32-unknown-unknown` target if you want to build the browser crates.
+You'll need Rust. `rust-toolchain.toml` pins the exact release (with `rustfmt`, `clippy`, and the `wasm32-unknown-unknown` target), and rustup installs it on first use; CI installs the same release.
 
 ```bash
 git clone <repo>
@@ -73,6 +70,7 @@ cargo test -p wasm-query-runtime
 
 # Confirm browser crates still build for wasm
 cargo check \
+  -p axon-web-wasm -p wasm-datafusion-session \
   -p wasm-query-runtime -p wasm-http-object-store \
   -p wasm-parquet-engine -p wasm-delta-snapshot \
   -p browser-sdk -p browser-engine-worker \
@@ -91,9 +89,9 @@ If you want the architecture context first:
 ```text
 # Shared contract
 query-contract              Request/response types, capability flags, fallback reasons
-query-router                Decides browser vs. native
+query-router                Browser-vs-native decision model; not linked by any crate or the app
 
-# Native tier (correctness oracle)
+# Native reference (test-only; nothing deploys or runs it outside tests)
 native-query-runtime        DataFusion + delta-rs reference runtime
 delta-runtime-support       Feature detection and Delta error mapping
 
@@ -117,15 +115,15 @@ udf-abi, udf-host-wasi      Placeholders for hosted UDF execution
 
 ## What works today
 
-- Native SQL over Delta tables, with snapshot pinning, partition pruning, and execution-derived metrics.
+- A test-only native reference over Delta tables in the `native-query-runtime` crate, with snapshot pinning, partition pruning, and execution-derived metrics. It runs only inside `cargo test`; there is no deployed native runtime.
 - Delta snapshot reconstruction is already repo-owned in `crates/wasm-delta-snapshot`.
-- A browser runtime that bootstraps a snapshot, plans a candidate file set, prunes partitions and integer footer stats, and runs a known SQL subset (filter, project, group, common aggregates, aligned `ORDER BY` / `LIMIT`).
+- The legacy constrained browser runtime in `wasm-query-runtime`, which bootstraps a snapshot, plans a candidate file set, prunes partitions and integer footer stats, and runs a known SQL subset (filter, project, group, common aggregates, aligned `ORDER BY` / `LIMIT`).
 - Browser-side DataFusion through `wasm-datafusion-session`; the Daxis-facing `axon-web-wasm` browser DataFusion app is the default worker.
 - Standard Parquet datasets through browser-safe file descriptors, using the same Parquet range-read and DataFusion query path without requiring Delta log metadata.
-- An OPFS persistent extent cache in `wasm-http-object-store`, bounded per object identity. If persistence fails, it's a cache miss, not an error.
-- A TypeScript SDK with a manifest-based bundle selector. The default bundle is single-threaded; SIMD and threaded tiers exist but aren't assumed.
-- A query router that returns a fallback reason instead of guessing.
-- CI gates for `wasm32` build, host tests, WASM smokes, a real `browser-engine-worker.wasm` size budget, and dependency guardrails that keep cloud SDKs out of browser bundles.
+- An OPFS persistent extent cache in `wasm-http-object-store`, bounded per object identity; the app's query path does not use it yet. If persistence fails, it's a cache miss, not an error.
+- A TypeScript SDK with a manifest-based bundle selector. Only the single-threaded bundle is built; the SIMD and threaded tiers in its manifest are placeholders marked `future`, and the app creates its worker directly.
+- Typed `fallback_required` and `remote_required` refusals instead of guesses.
+- CI gates for `wasm32` build, host tests, WASM smokes, the served `axon-web-wasm` asset (no name section, 6 MiB Brotli -q 11 budget), a query through the built bundle under production routing, the legacy `browser-engine-worker.wasm` size budget, and dependency guardrails that keep cloud SDKs out of that legacy worker bundle.
 
 ## What's not here yet
 
@@ -168,7 +166,7 @@ More detail in [`tests/perf/README.md`](tests/perf/README.md) and [`tests/securi
 
 ### GCS smoke tests (optional)
 
-The native runtime has env-gated smokes that run against real GCS Delta tables. They assume Application Default Credentials are already set up and that the table matches a narrow fixture contract (partition column, expected snapshot versions, and so on). See [`crates/native-query-runtime`](crates/native-query-runtime/) for the full list. The two common starting points:
+The test-only `native-query-runtime` crate has env-gated smoke tests that run against real GCS Delta tables. They assume Application Default Credentials are already set up and that the table matches a narrow fixture contract (partition column, expected snapshot versions, and so on). See [`crates/native-query-runtime`](crates/native-query-runtime/) for the full list. The two common starting points:
 
 ```bash
 AXON_GCS_TEST_TABLE_URI=gs://your-bucket/your-table \
@@ -198,7 +196,7 @@ CI runs the same commands behind `google-github-actions/auth` when `AXON_GCP_CRE
 
 - [`crates/`](crates/) — Rust workspace packages.
 - [`apps/axon-web/`](apps/axon-web/) — production browser runtime app.
-- [`tests/conformance/`](tests/conformance/) — native SQL corpora that double as the browser oracle.
+- [`tests/conformance/`](tests/conformance/) — native and browser SQL corpora with fixed expected results.
 - [`tests/perf/`](tests/perf/) — performance budgets and the `.wasm` size gate.
 - [`tests/security/`](tests/security/) — security guidance and dependency guardrails.
 - [`docs/`](docs/) — program, ADR, epic, plan, and release-gate documentation.

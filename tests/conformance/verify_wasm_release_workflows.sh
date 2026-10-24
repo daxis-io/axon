@@ -32,6 +32,13 @@ require 'axon-web-qualified-release-evidence' "$ci" "CI does not publish release
 require 'vercel build --prod' "$ci" "CI does not build the qualified production-environment artifact"
 require 'Generate immutable WASM stack release attestation[[:space:][:print:]]*compressed_bytes > 6291456' "$ci" "the exact production artifact is not checked against the Brotli size budget"
 require '--production --ci' "$rehearsal" "upgrade rehearsal does not automatically enforce final mode for a populated lock"
+require "if: steps\.release\.outputs\.ready != 'true'[[:space:][:print:]]*GITHUB_STEP_SUMMARY[[:space:][:print:]]*::warning title=Release not qualified::" "$ci" "an unqualified main run does not explain the missing release in a warning and run summary"
+if rg -q '::notice::Qualified release artifact is unavailable' "$ci"; then
+  echo "WASM release workflow verification failed: an unqualified main run is still reported only as a notice" >&2
+  exit 1
+fi
+require 'AXON_RUNTIME_BUILD_SOURCE_COMMIT: \$\{\{ github\.sha \}\}\n[[:space:]]+AXON_RUNTIME_BUILD_REQUIRE_CLEAN: "1"\n[[:space:]]+run: \|\n[[:space:]]+vercel pull' "$ci" "the qualified build is not bound to a clean build of the exact commit"
+require 'browser-runtime-build\.ts verify[[:space:]\\]+\.vercel/output/static "\$GITHUB_SHA"' "$ci" "the qualified artifact's runtime manifest is not checked against the qualified commit"
 
 if rg -q '^  push:' "$deploy"; then
   echo "WASM release workflow verification failed: deployment still runs directly on push" >&2
@@ -49,5 +56,6 @@ require 'verify_wasm_stack_attestation\.sh' "$deploy" "deployment does not verif
 require 'vercel deploy --prebuilt --prod --skip-domain' "$deploy" "staging does not create an unaliased production-environment deployment"
 require 'vercel promote .*--yes' "$deploy" "production does not promote the previously staged immutable deployment"
 require 'axon-web-staged-production' "$deploy" "staged deployment identity is not persisted for later promotion"
+require 'browser-runtime-build\.ts verify[[:space:]\\]+\.vercel/output/static "\$QUALIFIED_COMMIT"' "$deploy" "deployment does not check that the artifact's runtime manifest names the qualified commit"
 
 echo "WASM release qualification and exact-artifact promotion workflow contract passed"
