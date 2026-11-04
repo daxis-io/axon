@@ -31,21 +31,23 @@ including administrator enforcement. The required annotated `axon-wasm-v1.0.1-rc
 
 | Fork | Published source commit | DCO range |
 | --- | --- | --- |
-| `daxis-io/arrow-rs` | `52c8fb2e9c28b9d89d08c313e1bc938a35c29c99` | 11 commits passed |
+| `daxis-io/arrow-rs` | `7fda638045973b2aee44eee78fd5146e2e3575ca` | 12 commits passed |
 | `daxis-io/arrow-rs-object-store` | `73f659ffe91e0798527fc8eadcd36caedcbd6f84` | 17 commits passed |
-| `daxis-io/datafusion` | `c642f50a86c1cbfaf3d1cc816e742ca4c65b4a45` | 25 commits passed |
+| `daxis-io/datafusion` | `1634256cab2470eb4e6f966ebc5c4381c9799a7c` | 26 commits passed |
 
 The object-store and initial DataFusion replacements add the original author's sign-off while
-preserving the original source trees and ordered parents. DataFusion then updates only its root
-manifest and lockfile to request the signed object-store revision. Their old tips (`ab9fda65`,
-`8c5b4526`) remain on their original publication refs. Local fork checkouts and unrelated work
-were preserved.
+preserving the original source trees and ordered parents. Arrow then updates its root manifest's
+object-store pin; DataFusion updates only its root manifest and lockfile to request the signed
+object-store and updated Arrow revisions. All nine git dependencies across every fork manifest
+select the same release identities. Old tips remain on their original publication refs. Local
+fork checkouts and unrelated work were preserved.
 The root Cargo manifest, lockfile, shipping-pin policy, and stack lock agree on the new identities.
 
 The superseded `axon-wasm-v1.0.0-rc.1` and `axon-wasm-v1.0.0` source tags remain immutable.
 CI at `a9ed9fd` rejected the hand-updated Axon lockfile because DataFusion still requested the
-old object-store revision. The `v1.0.1` source set aligns that transitive dependency; only fresh
-locked-graph and artifact checks can qualify it.
+old object-store revision. CI at `fd15315` exposed the same old revision in Arrow's manifest.
+The `v1.0.1` source set aligns the complete fork dependency chain; only fresh locked-graph and
+artifact checks can qualify it.
 
 These source tags designate the current DataFusion 53/Arrow 58 stack. The separate canonical
 stack requires new release names and corresponding verifier/strategy changes. Source provenance

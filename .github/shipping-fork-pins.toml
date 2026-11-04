@@ -2,7 +2,7 @@ schema = 1
 
 [[pins]]
 repository = "https://github.com/daxis-io/arrow-rs"
-revision = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99"
+revision = "7fda638045973b2aee44eee78fd5146e2e3575ca"
 publication_ref = "refs/heads/axon-wasm/v1"
 
 [[pins]]
@@ -12,5 +12,5 @@ publication_ref = "refs/heads/axon-wasm/v1"
 
 [[pins]]
 repository = "https://github.com/daxis-io/datafusion"
-revision = "c642f50a86c1cbfaf3d1cc816e742ca4c65b4a45"
+revision = "1634256cab2470eb4e6f966ebc5c4381c9799a7c"
 publication_ref = "refs/heads/axon-wasm/v1"
