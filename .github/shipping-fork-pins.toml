@@ -3,14 +3,14 @@ schema = 1
 [[pins]]
 repository = "https://github.com/daxis-io/arrow-rs"
 revision = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99"
-publication_ref = "refs/heads/poc/wasm32-browser-stack"
+publication_ref = "refs/heads/axon-wasm/v1"
 
 [[pins]]
 repository = "https://github.com/daxis-io/arrow-rs-object-store"
-revision = "ab9fda65805487edf5487e63082cab8111f0a178"
-publication_ref = "refs/heads/poc/wasm32-browser-stack"
+revision = "73f659ffe91e0798527fc8eadcd36caedcbd6f84"
+publication_ref = "refs/heads/axon-wasm/v1"
 
 [[pins]]
 repository = "https://github.com/daxis-io/datafusion"
-revision = "8c5b4526a6b31ebec56f32c173f14be74240da49"
-publication_ref = "refs/heads/feat/opfs-aggregate-spill"
+revision = "5d179eb433f4ae0329d6615547b47c2f047cfee3"
+publication_ref = "refs/heads/axon-wasm/v1"

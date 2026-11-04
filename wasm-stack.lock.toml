@@ -6,8 +6,8 @@ wasm_roots = ["axon-web-wasm"]
 # DataFusion 53.1.0, Arrow/Parquet 58.3.0, and object_store 0.13.2 forks pinned in the root
 # Cargo.toml. Delta Kernel and delta-rs are not linked into the WASM closure, so they are declared
 # absent. Every mode checks versions, sources, and pinned stack revisions against the locked
-# closure. `candidate_sha` stays UNSET until the fork owners publish the release tags, which keeps
-# CI in bootstrap mode; docs/release-gates/main-release-qualification.md lists the owner actions.
+# closure. The linked fork revisions have annotated candidate/final source tags and protected
+# release branches. CI enforces final-mode provenance; Axon artifact qualification is separate.
 # The canonical target stack (DataFusion 55, Arrow 59.3, object_store 0.14.1, Delta Kernel 0.28,
 # deltalake-browser) replaces these entries in the change that moves the closure to it.
 
@@ -22,7 +22,7 @@ daxis_url = "https://github.com/daxis-io/arrow-rs"
 release_version = "58.3.0"
 base_tag = "58.3.0"
 base_sha = "913bab26ba9bed8fc2bc1acda300cc52345b0da1"
-candidate_sha = "UNSET"
+candidate_sha = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99"
 stack_sha = "52c8fb2e9c28b9d89d08c313e1bc938a35c29c99"
 target_triple = "wasm32-unknown-unknown"
 expected_package_source = "https://github.com/daxis-io/arrow-rs"
@@ -34,8 +34,8 @@ daxis_url = "https://github.com/daxis-io/arrow-rs-object-store"
 release_version = "0.13.2"
 base_tag = "v0.13.2"
 base_sha = "7a65b75b0d26fd8a282999462cb7030fb85fdcc3"
-candidate_sha = "UNSET"
-stack_sha = "ab9fda65805487edf5487e63082cab8111f0a178"
+candidate_sha = "73f659ffe91e0798527fc8eadcd36caedcbd6f84"
+stack_sha = "73f659ffe91e0798527fc8eadcd36caedcbd6f84"
 target_triple = "wasm32-unknown-unknown"
 expected_package_source = "https://github.com/daxis-io/arrow-rs-object-store"
 package_patterns = ["object_store"]
@@ -46,8 +46,8 @@ daxis_url = "https://github.com/daxis-io/datafusion"
 release_version = "53.1.0"
 base_tag = "53.1.0"
 base_sha = "eae7bf4fa1c037c0a065d1f36d0669f5bb97a9cf"
-candidate_sha = "UNSET"
-stack_sha = "8c5b4526a6b31ebec56f32c173f14be74240da49"
+candidate_sha = "5d179eb433f4ae0329d6615547b47c2f047cfee3"
+stack_sha = "5d179eb433f4ae0329d6615547b47c2f047cfee3"
 target_triple = "wasm32-unknown-unknown"
 expected_package_source = "https://github.com/daxis-io/datafusion"
 package_patterns = ["datafusion", "datafusion-*"]

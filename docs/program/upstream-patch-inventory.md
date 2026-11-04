@@ -10,13 +10,16 @@ compatible canonical releases are available.
 | Patch | Local Path | Owner | Upstream Disposition | Removal Condition | Tracking Issue |
 | --- | --- | --- | --- | --- | --- |
 | Arrow and Parquet browser-safe codec backends at `52c8fb2e9c28b9d89d08c313e1bc938a35c29c99` | Root [`Cargo.toml`](../../Cargo.toml) `[patch.crates-io]` | Runtime / engine team | `proposed` | Adopt an upstream Arrow release containing the required browser codec backends, pass the locked browser rehearsal, and remove the fork patch. | [daxis-io/axon#2](https://github.com/daxis-io/axon/issues/2) |
-| `object_store` browser HTTP, retry, and range protocol at `ab9fda65805487edf5487e63082cab8111f0a178` | Root [`Cargo.toml`](../../Cargo.toml) `[patch.crates-io]` | Runtime / engine team | `proposed` | Adopt an upstream `object_store` release containing the browser transport slices, pass the locked browser rehearsal, and remove the fork patch. | [daxis-io/axon#2](https://github.com/daxis-io/axon/issues/2) |
-| DataFusion browser runtime and path-free external-memory spill at `8c5b4526a6b31ebec56f32c173f14be74240da49` | Root [`Cargo.toml`](../../Cargo.toml) `[patch.crates-io]` | Runtime / engine team | `proposed` | Adopt upstream DataFusion releases containing the browser runtime and spill-storage boundary after the Arrow and `object_store` prerequisites, pass the locked browser rehearsal, and remove the fork patch. | [daxis-io/axon#2](https://github.com/daxis-io/axon/issues/2) |
+| `object_store` browser HTTP, retry, and range protocol at `73f659ffe91e0798527fc8eadcd36caedcbd6f84` | Root [`Cargo.toml`](../../Cargo.toml) `[patch.crates-io]` | Runtime / engine team | `proposed` | Adopt an upstream `object_store` release containing the browser transport slices, pass the locked browser rehearsal, and remove the fork patch. | [daxis-io/axon#2](https://github.com/daxis-io/axon/issues/2) |
+| DataFusion browser runtime and path-free external-memory spill at `5d179eb433f4ae0329d6615547b47c2f047cfee3` | Root [`Cargo.toml`](../../Cargo.toml) `[patch.crates-io]` | Runtime / engine team | `proposed` | Adopt upstream DataFusion releases containing the browser runtime and spill-storage boundary after the Arrow and `object_store` prerequisites, pass the locked browser rehearsal, and remove the fork patch. | [daxis-io/axon#2](https://github.com/daxis-io/axon/issues/2) |
 
 The complete proof and CI classification are recorded in
 [`docs/release-gates/upstream-wasm-fork-poc-evidence.md`](../release-gates/upstream-wasm-fork-poc-evidence.md).
 All rows are owned by the runtime / engine team and tracked by
 [daxis-io/axon#2](https://github.com/daxis-io/axon/issues/2).
+The shipping revisions are published on protected `axon-wasm/v1` branches and annotated
+`axon-wasm-v1.0.0-rc.1` and `axon-wasm-v1.0.0` tags. Source provenance is recorded in
+[`main-release-qualification.md`](../release-gates/main-release-qualification.md).
 
 ## Active POC Patches
 
