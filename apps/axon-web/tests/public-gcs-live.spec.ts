@@ -5,7 +5,7 @@ import { expect, test, type Page } from '@playwright/test';
 import {
   buildPublicDeltaLogManifest,
   parsePublicObjectStorageTableRoot,
-  publicObjectUrl,
+  publicObjectUrlForDeltaPath,
 } from '../src/services/object-storage.ts';
 
 const liveTableUri = process.env.AXON_LIVE_PUBLIC_GCS_TABLE_URI;
@@ -112,7 +112,7 @@ test.describe('public GCS live smoke', () => {
     expect(logResponse.headers()['access-control-allow-origin']).toBe(liveOrigin);
 
     const addPath = addPathFromDeltaLog(await logResponse.text());
-    const dataResponse = await request.get(publicObjectUrl(root, addPath), {
+    const dataResponse = await request.get(publicObjectUrlForDeltaPath(root, addPath), {
       headers: {
         Origin: liveOrigin,
         Range: 'bytes=0-15',

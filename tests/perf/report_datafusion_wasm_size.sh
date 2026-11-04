@@ -16,8 +16,13 @@ else
   out_dir="target/df-size/${package}"
 fi
 cargo_flags="${AXON_DF_SIZE_CARGO_FLAGS:-}"
-raw_wasm="target/wasm32-unknown-unknown/release/${wasm_stem}.wasm"
+raw_wasm="${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/${wasm_stem}.wasm"
+# The shipped form: the same wasm-bindgen invocation as `npm run build:wasm`, which strips the
+# debug name section. A names-bearing copy is kept only for twiggy, and the wasm-opt -Oz copy is a
+# reference point; neither is shipped, so neither is budgeted.
 bindgen_wasm="${out_dir}/${wasm_stem}_bg.wasm"
+names_dir="${out_dir}/with-names"
+names_wasm="${names_dir}/${wasm_stem}_bg.wasm"
 opt_wasm="${out_dir}/${wasm_stem}_bg.opt.wasm"
 
 reject_unsafe_out_dir() {
@@ -84,41 +89,50 @@ cargo build -p "$package" --target wasm32-unknown-unknown --release --locked $ca
 wasm-bindgen "$raw_wasm" \
   --target web \
   --out-dir "$out_dir" \
+  --typescript \
+  --remove-name-section
+wasm-bindgen "$raw_wasm" \
+  --target web \
+  --out-dir "$names_dir" \
   --typescript
 
+gzip -9 -c "$bindgen_wasm" > "${bindgen_wasm}.gz"
+brotli -f -q 11 "$bindgen_wasm"
 wasm-opt -Oz -o "$opt_wasm" "$bindgen_wasm"
-gzip -9 -c "$opt_wasm" > "${opt_wasm}.gz"
 brotli -f -q 11 "$opt_wasm"
 
-twiggy top -n 50 "$bindgen_wasm" > "${out_dir}/twiggy-top.txt"
-twiggy monos -g -m 30 "$bindgen_wasm" > "${out_dir}/twiggy-monos.txt"
+twiggy top -n 50 "$names_wasm" > "${out_dir}/twiggy-top.txt"
+twiggy monos -g -m 30 "$names_wasm" > "${out_dir}/twiggy-monos.txt"
 
 raw_bytes="$(wc -c < "$raw_wasm" | tr -d '[:space:]')"
 bindgen_bytes="$(wc -c < "$bindgen_wasm" | tr -d '[:space:]')"
+gzip_bytes="$(wc -c < "${bindgen_wasm}.gz" | tr -d '[:space:]')"
+brotli_bytes="$(wc -c < "${bindgen_wasm}.br" | tr -d '[:space:]')"
 opt_bytes="$(wc -c < "$opt_wasm" | tr -d '[:space:]')"
-gzip_bytes="$(wc -c < "${opt_wasm}.gz" | tr -d '[:space:]')"
-brotli_bytes="$(wc -c < "${opt_wasm}.br" | tr -d '[:space:]')"
+opt_brotli_bytes="$(wc -c < "${opt_wasm}.br" | tr -d '[:space:]')"
 
 cat > "${out_dir}/summary.md" <<SUMMARY
 # ${package} WASM Size Report
 
 | Artifact | Bytes |
 | --- | ---: |
-| Raw Rust release wasm | ${raw_bytes} |
-| wasm-bindgen generated wasm | ${bindgen_bytes} |
-| wasm-opt -Oz generated wasm | ${opt_bytes} |
-| gzip -9 of optimized wasm | ${gzip_bytes} |
-| Brotli -q 11 of optimized wasm | ${brotli_bytes} |
+| Raw Rust release wasm (keeps the name section; not shipped) | ${raw_bytes} |
+| Shipped wasm (wasm-bindgen --remove-name-section, as \`npm run build:wasm\`) | ${bindgen_bytes} |
+| gzip -9 of shipped wasm | ${gzip_bytes} |
+| Brotli -q 11 of shipped wasm | ${brotli_bytes} |
+| wasm-opt -Oz of shipped wasm (reference only; not shipped) | ${opt_bytes} |
+| Brotli -q 11 of wasm-opt -Oz wasm (reference only; not shipped) | ${opt_brotli_bytes} |
 
 Budget:
 
-- Brotli budget bytes: \`${brotli_budget_bytes:-report-only}\`
+- Brotli budget bytes, applied to the shipped wasm: \`${brotli_budget_bytes:-report-only}\`
+- The served asset of an app build is gated separately by
+  \`bash tests/perf/report_shipped_wasm_size.sh apps/axon-web/dist\`.
 
 Additional outputs:
 
 - \`${out_dir}/cargo-tree.txt\`
-- \`${out_dir}/twiggy-top.txt\`
-- \`${out_dir}/twiggy-monos.txt\`
+- \`${out_dir}/twiggy-top.txt\` and \`${out_dir}/twiggy-monos.txt\` (from the names-bearing copy)
 
 Release companion browser performance report:
 

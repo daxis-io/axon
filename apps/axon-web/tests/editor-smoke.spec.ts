@@ -51,6 +51,17 @@ import {
 
 const APP_ORIGIN = new URL(process.env.PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:5174').origin;
 
+test.beforeEach(async ({ context }) => {
+  await context.route(/^https:\/\/(?:fonts\.googleapis\.com|va\.vercel-scripts\.com)\//, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType:
+        route.request().resourceType() === 'stylesheet' ? 'text/css' : 'application/javascript',
+      body: '',
+    }),
+  );
+});
+
 // Console noise that says nothing about the app under test.
 const IGNORABLE_CONSOLE_ERRORS = [
   // Cancelling an in-flight WASM fetch during navigation.
@@ -385,6 +396,7 @@ test.describe('editor (Phase 1 smoke)', () => {
         truncated: false,
       },
       { offset: 0, size: QUERY_RESULT_PAGE_SIZE },
+      { ordered: false, order_key_columns: [] },
     );
 
     expect(workerPage).toMatchObject({
@@ -476,7 +488,7 @@ test.describe('editor (Phase 1 smoke)', () => {
       'Loading more recomputes the original query until streaming results are available.',
     );
     await expect(page.getByTestId('result-pagination-notice')).toContainText(
-      'Use an explicit ORDER BY for stable results across pages.',
+      'Load more is offered only when the next page is known to continue the loaded rows.',
     );
 
     await page.locator('.table-wrap').evaluate((node) => {
@@ -523,6 +535,27 @@ test.describe('editor (Phase 1 smoke)', () => {
 
     await expect(page.locator('.res-meta')).toContainText('1,000 rows+', { timeout: 15_000 });
     await expect(page.getByTestId('result-pagination-notice')).toBeVisible();
+  });
+
+  test('load-more stays off when the next row ties on the ORDER BY key', async ({ page }) => {
+    await installFakePaginationWorker(page, { tiedIds: true });
+    await page.goto('/');
+
+    await page.locator('.code-input').fill('SELECT id FROM axon_prod_like_fixture ORDER BY id');
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+
+    await expect(page.locator('.res-meta')).toContainText('500 rows+', { timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Load more' })).toBeDisabled();
+    await expect(page.getByTestId('result-load-more-blocked')).toContainText(
+      'Add a unique column to the end of ORDER BY to page through every row',
+    );
+    expect(
+      await page.evaluate(
+        (captureKey) =>
+          ((window as typeof window & Record<string, unknown>)[captureKey] as unknown[]).length,
+        PAGINATION_EXECUTIONS_CAPTURE_KEY,
+      ),
+    ).toBe(1);
   });
 
   test('routes between the workspace and connect page', async ({ page }) => {
@@ -1849,7 +1882,7 @@ test.describe('editor (Phase 1 smoke)', () => {
     }
   });
 
-  test('returns a reusable typed spill-storage error when private WebKit cannot use OPFS', async ({
+  test('keeps non-spilling queries available when private WebKit cannot use OPFS', async ({
     page,
   }, testInfo) => {
     test.skip(testInfo.project.name !== 'webkit', 'This qualification is specific to WebKit.');
@@ -1878,27 +1911,23 @@ test.describe('editor (Phase 1 smoke)', () => {
       expectedTable: 'axon_prod_like_fixture',
       pagePath: '/',
     });
-    await page.locator('.code-input').fill('SELECT COUNT(*) FROM axon_prod_like_fixture');
-    const observedReasons: string[] = [];
+    await page
+      .locator('.code-input')
+      .fill('SELECT COUNT(*) AS row_count FROM axon_prod_like_fixture');
 
     for (let execution = 1; execution <= 2; execution += 1) {
       const priorTerminalCount = await capturedQueryTerminalCount(page);
       await page.locator('.btn.primary', { hasText: 'Run' }).click();
       const terminal = await latestCapturedQueryTerminal(page, priorTerminalCount + 1);
-      expect(terminal.success).toBeUndefined();
-      expect(terminal.error?.error, spillDiagnostics.join('\n')).toMatchObject({
-        code: 'resource_exhausted',
-        resource_details: {
-          resource: 'spill_storage',
-        },
-      });
-      const reason = terminal.error?.error?.resource_details?.reason;
-      expect(['unavailable', 'io_failure']).toContain(reason);
-      if (reason) observedReasons.push(reason);
-      await expect(page.locator('table.grid')).toHaveCount(0);
+      expect(terminal.error, spillDiagnostics.join('\n')).toBeUndefined();
+      expect(terminal.success?.response?.executed_on).toBe('browser_wasm');
+      expect(terminal.success?.response?.fallback_reason).toBeUndefined();
+      expect(terminal.success?.response?.capabilities?.capabilities?.browser_external_memory).toBe(
+        'unsupported',
+      );
+      await expect(page.locator('table.grid')).toContainText('row_count');
+      await expect(page.locator('table.grid')).toContainText('4');
     }
-    expect(observedReasons).toHaveLength(2);
-    expect(new Set(observedReasons).size).toBe(1);
   });
 
   test('isolates simultaneous OPFS spill scopes across two same-origin tabs', async ({
@@ -2120,7 +2149,12 @@ test.describe('editor (Phase 1 smoke)', () => {
 
   test('persists File System Access directory handles across reload for local Delta catalogs', async ({
     page,
+    browserName,
   }) => {
+    test.skip(
+      browserName === 'webkit',
+      'WebKit cannot serialize directory handles; reload requires reselect.',
+    );
     const tableDir = fileURLToPath(new URL('../public/fixtures/prod-like/table', import.meta.url));
     const localRegistryId = await connectLocalDeltaDirectoryHandle(page, tableDir, 'handle-local');
 
@@ -2183,14 +2217,14 @@ test.describe('editor (Phase 1 smoke)', () => {
           },
         ]),
       );
-      const originalOpen = window.indexedDB.open.bind(window.indexedDB);
-      Object.defineProperty(window.indexedDB, 'open', {
+      const originalOpen = IDBFactory.prototype.open;
+      Object.defineProperty(IDBFactory.prototype, 'open', {
         configurable: true,
-        value: (name: string, version?: number) => {
+        value: function (this: IDBFactory, name: string, version?: number) {
           if (name === 'axon-local-delta-registry') {
             throw new Error('registry boom');
           }
-          return originalOpen(name, version);
+          return originalOpen.call(this, name, version);
         },
       });
     });
@@ -2251,19 +2285,13 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(browserErrors, `browser errors:\n${browserErrors.join('\n')}`).toEqual([]);
   });
 
-  test('loads selected connected catalog, populates table, runs a query', async ({
-    page,
-    context,
-  }) => {
+  test('loads selected connected catalog, populates table, runs a query', async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on('console', (msg) => {
       const text = msg.text();
       if (msg.type() === 'error' && !isIgnorableConsoleError(msg)) consoleErrors.push(text);
     });
     page.on('pageerror', (err) => consoleErrors.push(err.message));
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
-      origin: APP_ORIGIN,
-    });
 
     await page.goto('/');
 
@@ -2307,11 +2335,6 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(connectState).toBeNull();
 
     // Result-grid actions operate on the visible result set.
-    await page.locator('button[title="Copy results as CSV"]').click();
-    await expect
-      .poll(async () => page.evaluate(() => navigator.clipboard.readText()))
-      .toContain('row_count');
-
     await page.locator('table.grid tbody td').nth(1).dblclick();
     await expect(page.locator('[role="dialog"][aria-label="Cell value"]')).toContainText(
       'row_count',
@@ -2340,6 +2363,25 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.locator('.plan-tree')).toHaveCount(0);
 
     expect(consoleErrors, `console errors:\n${consoleErrors.join('\n')}`).toEqual([]);
+  });
+
+  test('copies query results to the system clipboard in Chromium', async ({
+    page,
+    context,
+    browserName,
+  }) => {
+    test.skip(
+      browserName !== 'chromium',
+      'Playwright clipboard permissions are Chromium-specific.',
+    );
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: APP_ORIGIN });
+    await page.goto('/');
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+    await expect(page.locator('table.grid tbody tr')).toHaveCount(1);
+    await page.locator('button[title="Copy results as CSV"]').click();
+    await expect
+      .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+      .toContain('row_count');
   });
 });
 
@@ -2819,9 +2861,14 @@ async function installUnavailableDirectoryPicker(page: Page): Promise<void> {
   });
 }
 
-async function installFakePaginationWorker(page: Page): Promise<void> {
+// The fake answers every page of `... ORDER BY id`: by default with unique ids, or with
+// `tiedIds` every id equal, so the row past each page ties with the last page row.
+async function installFakePaginationWorker(
+  page: Page,
+  options: { tiedIds?: boolean } = {},
+): Promise<void> {
   await page.addInitScript(
-    ({ captureKey }) => {
+    ({ captureKey, tiedIds }) => {
       type Listener = EventListenerOrEventListenerObject;
       const captureWindow = window as typeof window & Record<string, unknown>;
       captureWindow[captureKey] = [];
@@ -2880,7 +2927,9 @@ async function installFakePaginationWorker(page: Page): Promise<void> {
                 sql: string;
               }>
             ).push({ limit, offset, sql: payload.sql.query?.sql ?? '' });
-            const rows = Array.from({ length: limit }, (_, index) => [offset + index + 1]);
+            const rows = Array.from({ length: limit }, (_, index) => [
+              tiedIds ? 1 : offset + index + 1,
+            ]);
             this.emit({
               success: {
                 request_id: payload.sql.request_id,
@@ -2908,6 +2957,7 @@ async function installFakePaginationWorker(page: Page): Promise<void> {
                   preview_row_limit: limit,
                   truncated: false,
                 },
+                result_page: { ordered: true, order_key_columns: [0] },
               },
             });
           }
@@ -2937,7 +2987,7 @@ async function installFakePaginationWorker(page: Page): Promise<void> {
         value: FakeQueryWorker,
       });
     },
-    { captureKey: PAGINATION_EXECUTIONS_CAPTURE_KEY },
+    { captureKey: PAGINATION_EXECUTIONS_CAPTURE_KEY, tiedIds: options.tiedIds === true },
   );
 }
 
@@ -3154,7 +3204,7 @@ async function blockDurableLocalDeltaRegistry(page: Page): Promise<void> {
         value: undefined,
       });
     }
-    Object.defineProperty(window.indexedDB, 'open', {
+    Object.defineProperty(IDBFactory.prototype, 'open', {
       configurable: true,
       value: () => {
         throw new DOMException('blocked by test', 'InvalidStateError');

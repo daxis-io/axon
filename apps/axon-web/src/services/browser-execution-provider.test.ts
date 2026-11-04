@@ -255,6 +255,45 @@ describe('validated browser execution provider', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('accepts a URI-encoded Delta add path addressed once and rejects it encoded twice', async () => {
+    const input = await publicExecuteInput();
+    if (
+      input.request.binding.case !== 'browserRead' ||
+      input.request.binding.value.descriptor?.descriptor.case !== 'snapshot'
+    ) {
+      throw new Error('public test input omitted its snapshot');
+    }
+    const file = input.request.binding.value.descriptor.descriptor.value.activeFiles[0]!;
+    file.path = 'city=New%20York/part-000.parquet';
+    file.url =
+      'https://storage.googleapis.com/public-bucket/events/city%3DNew%20York/part-000.parquet';
+    const execute = vi.fn(() => responses(create(ExecuteResponseSchema)));
+    const provider = createValidatedBrowserExecutionProvider({
+      execute,
+      cancel: () =>
+        create(CancelResponseSchema, {
+          executionId: input.request.executionId,
+          state: ExecutionLifecycleState.CANCEL_REQUESTED,
+        }),
+    });
+
+    await collect(provider.execute(input));
+    expect(execute).toHaveBeenCalledTimes(1);
+
+    file.url =
+      'https://storage.googleapis.com/public-bucket/events/city%3DNew%2520York/part-000.parquet';
+    await expect(collect(provider.execute(input))).rejects.toBeInstanceOf(
+      BrowserExecutionValidationError,
+    );
+    file.path = 'city=New%2F..%2F..%2Fother/part-000.parquet';
+    file.url =
+      'https://storage.googleapis.com/public-bucket/events/city%3DNew%2F..%2F..%2Fother/part-000.parquet';
+    await expect(collect(provider.execute(input))).rejects.toBeInstanceOf(
+      BrowserExecutionValidationError,
+    );
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
   it('accepts the explicit same-origin sample fixture but rejects an outside-fixture URL', async () => {
     const input = await sampleExecuteInput();
     const execute = vi.fn(() => responses(create(ExecuteResponseSchema)));

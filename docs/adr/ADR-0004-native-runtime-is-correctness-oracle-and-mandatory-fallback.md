@@ -1,6 +1,6 @@
 # ADR-0004: Native Runtime Is The Correctness Oracle And Mandatory Fallback
 
-- Status: Proposed
+- Status: Proposed; not met. No native or server runtime runs outside the browser, the current deployment has no fallback, and the native parity tests cover only the legacy `wasm-query-runtime` executor
 - Date: 2026-03-20
 - Revised: 2026-07-15
 - Decision owner: Query platform lead

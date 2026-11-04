@@ -122,7 +122,10 @@ import {
   publishWorkerEvent,
 } from './query-runtime-state.ts';
 import { isBrowserDataFusionCancellation } from './query-cancellation.ts';
-import { isQuerySessionInvalidation } from './query-session-invalidation.ts';
+import {
+  isMissingOpenTableError,
+  isQuerySessionInvalidation,
+} from './query-session-invalidation.ts';
 import {
   sameQuerySource,
   type AvailableQuerySourceSelection,
@@ -1984,6 +1987,7 @@ function queryOutcomeFromCompleted(
   page: QueryPageRequest,
   fallbackReason: AxonQueryResult['fallbackReason'],
   elapsedMs: number,
+  resultPageOrder: AxonQueryResult['result_page'],
 ): QueryRunOutcome {
   if (!completed.response || !completed.result) {
     return {
@@ -1995,7 +1999,7 @@ function queryOutcomeFromCompleted(
   }
   return {
     status: 'done',
-    result: resultPageFromContractPreview(completed.preview, page),
+    result: resultPageFromContractPreview(completed.preview, page, resultPageOrder),
     metrics: sdkQueryMetrics(completed.response.metrics),
     executed_on: sdkExecutionTarget(completed.response.executedOn),
     capabilities: sdkCapabilityReport(completed.response.capabilities),
@@ -2062,6 +2066,9 @@ export async function runQuery(
   let runtimeFailure: unknown;
   let completed: ExecutionCompleted | undefined;
   let fallbackReason: AxonQueryResult['fallbackReason'];
+  // How the page's rows are ordered, which decides whether Load more may re-run the query. Like
+  // the fallback reason it has no generated contract field, so it is carried beside the terminal.
+  let resultPageOrder: AxonQueryResult['result_page'];
   let cancelActiveExecution: ((request: CancelRequest) => void) | undefined;
   const delegate: ExecutionProvider = {
     async *execute(validatedInput) {
@@ -2149,6 +2156,7 @@ export async function runQuery(
           const { result, setupMetrics } = execution.result;
           const metrics = mergeQueryMetrics(result.response.metrics, setupMetrics);
           fallbackReason = result.fallbackReason ?? result.response.fallback_reason;
+          resultPageOrder = result.result_page;
           markSessionSetupMetricsEmitted(execution.session);
           return completedExecuteResponse(validatedInput, result, metrics, 1n);
         } catch (error) {
@@ -2224,13 +2232,14 @@ export async function runQuery(
       elapsed_ms: since(),
     };
   }
-  return queryOutcomeFromCompleted(completed, page, fallbackReason, since());
+  return queryOutcomeFromCompleted(completed, page, fallbackReason, since(), resultPageOrder);
 }
 
 export function queryFailureInvalidatesSession(error: unknown): boolean {
   return (
     error instanceof ExecutionDeadlineError ||
-    (error instanceof AxonWorkerError && isQuerySessionInvalidation(error.queryError))
+    (error instanceof AxonWorkerError &&
+      (isQuerySessionInvalidation(error.queryError) || isMissingOpenTableError(error.queryError)))
   );
 }
 

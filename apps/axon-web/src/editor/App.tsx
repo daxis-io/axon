@@ -32,8 +32,11 @@ import { sameCanonicalTableIdentity } from '../services/canonical-table-identity
 import { hasLocalDeltaRuntime } from '../services/local-delta-session.ts';
 import {
   browserQueryRequest,
+  browserReadSnapshotVersion,
+  canLoadMoreResultRows,
   queryResultPageRun,
   queryResultPageRunRequest,
+  resolveNextResultPage,
   sameQueryResultPageRun,
   type QueryResultPageRun,
 } from '../services/query-pagination.ts';
@@ -302,6 +305,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
       }),
       querySelection,
       active.pin ?? undefined,
+      resultPageRun.readSnapshotVersion,
     );
   }, [active.pin, active.preferred, active.sql, querySelection, resultPageRun]);
   const activeResultPageRunRef = useRef<QueryResultPageRun | undefined>(undefined);
@@ -473,6 +477,7 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
         query,
         selectedSelection,
         tab.pin ?? undefined,
+        browserReadSnapshotVersion(browserInput.request),
       );
       const admission = editorExecutionController.admit(browserInput.request);
       if (admission.admission.outcome.case !== 'accepted') {
@@ -734,9 +739,14 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
     const activeRun = activeResultPageRun;
     if (!currentResult || !runForPage || !activeRun) return;
     const page = currentResult.page;
-    if (!page?.has_more || page.next_offset == null) return;
+    if (!canLoadMoreResultRows(page) || page?.next_offset == null) return;
     if (!sameQueryResultPageRun(runForPage, activeRun)) {
       showToast('Run the current query before loading more rows.', 'warn');
+      return;
+    }
+    // Later pages must read the snapshot the loaded rows came from (see resolveNextResultPage).
+    if (runForPage.readSnapshotVersion === undefined) {
+      showToast('Run the query again before loading more rows.', 'warn');
       return;
     }
 
@@ -776,14 +786,16 @@ export function App({ routeTable }: { routeTable?: ActiveConnectedTableRef } = {
     let admitted = false;
     try {
       const { resolveBrowserExecuteInput, runQuery } = await import('../services/query.ts');
-      const browserInput = await resolveBrowserExecuteInput({
-        selection: runForPage.selection,
-        table: runForPage.table,
-        query: req,
-        snapshotVersion: runForPage.snapshotVersion,
-        execution,
-        signal: ctrl.signal,
-      });
+      const browserInput = await resolveNextResultPage(runForPage, (snapshotVersion) =>
+        resolveBrowserExecuteInput({
+          selection: runForPage.selection,
+          table: runForPage.table,
+          query: req,
+          snapshotVersion,
+          execution,
+          signal: ctrl.signal,
+        }),
+      );
       const admission = editorExecutionController.admit(browserInput.request);
       if (
         admission.admission.outcome.case !== 'accepted' ||

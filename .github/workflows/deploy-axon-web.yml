@@ -44,7 +44,7 @@ env:
 jobs:
   deploy:
     name: Deploy exact qualified axon-web artifact
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Validate release inputs and deployment credentials
@@ -106,6 +106,7 @@ jobs:
       - name: Install Rust metadata toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.95.0
           targets: wasm32-unknown-unknown
 
       - name: Download the qualified Vercel prebuilt artifact
@@ -170,8 +171,21 @@ jobs:
         with:
           node-version: 24
 
+      - name: Verify the artifact names the qualified commit
+        env:
+          QUALIFIED_COMMIT: ${{ inputs.qualified_commit }}
+        run: |
+          node --experimental-strip-types apps/axon-web/scripts/browser-runtime-build.ts verify \
+            .vercel/output/static "$QUALIFIED_COMMIT"
+
       - name: Install Vercel CLI
         run: npm install --global vercel@latest
+
+      - name: Install deployment smoke dependencies
+        working-directory: apps/axon-web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
 
       - name: Link the production Vercel environment without rebuilding
         run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
@@ -277,20 +291,25 @@ jobs:
           print(f"url={url}")
           PY
 
+      - name: Verify staged deployment
+        working-directory: apps/axon-web
+        env:
+          STAGED_URL: ${{ steps.stage.outputs.url || steps.promotion.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          bash scripts/verify-deployment.sh "$STAGED_URL" ../../.vercel/output/static
+          PLAYWRIGHT_BASE_URL="$STAGED_URL" npm run test:browser:production-bundle
+
       - name: Promote the exact staged deployment without rebuilding
         if: inputs.environment == 'production'
         env:
           STAGED_URL: ${{ steps.promotion.outputs.url }}
         run: vercel promote "$STAGED_URL" --yes --timeout 5m --token="$VERCEL_TOKEN"
 
-      - name: Verify staged or production assets
+      - name: Verify production assets
+        if: inputs.environment == 'production'
         env:
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           PRODUCTION_URL: ${{ vars.AXON_PRODUCTION_URL || 'https://axon.daxistech.io' }}
         run: |
-          if [ "${{ inputs.environment }}" = "production" ]; then
-            verify_url="$PRODUCTION_URL"
-          else
-            verify_url="${{ steps.stage.outputs.url }}"
-          fi
-          bash apps/axon-web/scripts/verify-deployment.sh "$verify_url" .vercel/output/static
+          bash apps/axon-web/scripts/verify-deployment.sh "$PRODUCTION_URL" .vercel/output/static

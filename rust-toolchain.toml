@@ -1,0 +1,8 @@
+# The exact Rust release for local builds and CI. Shipped WASM bytes depend on rustc (1.98's
+# v0-style symbol names quadrupled the name section), so every workflow installs this same
+# release; tests/conformance/verify_rust_toolchain_pin.sh keeps the two in step.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

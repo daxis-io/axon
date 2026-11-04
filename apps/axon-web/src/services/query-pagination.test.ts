@@ -1,6 +1,9 @@
 import { create } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
+import { BrowserHttpSnapshotDescriptorSchema } from '../generated/contracts/protobuf/axon/dataaccess/v1/dataaccess_pb.ts';
 import {
+  ExecuteRequestSchema,
+  ExecutionRejectionReason,
   PreviewCellSchema,
   QueryExecutionOptionsSchema,
   QueryRequestSchema,
@@ -17,13 +20,19 @@ import {
 import { canonicalTableForSelection } from './browser-read-resolution.ts';
 import {
   QUERY_RESULT_PAGE_SIZE,
+  appendResultPage,
+  browserReadSnapshotVersion,
+  canLoadMoreResultRows,
   queryPageFromRequest,
   queryResultPageRequest,
   queryResultPageRun,
   queryResultPageRunRequest,
+  resolveNextResultPage,
   resultPageFromContractPreview,
+  resultPageFromPreview,
   sameQueryResultPageRun,
 } from './query-pagination.ts';
+import type { BrowserWorkerResultPreview } from '../axon-browser-sdk.ts';
 
 const selection: AvailableQuerySourceSelection = {
   kind: 'sample',
@@ -46,6 +55,132 @@ function request(sql = 'select * from events') {
     }),
   });
 }
+
+function resolvedRequest(snapshotVersion: bigint) {
+  return create(ExecuteRequestSchema, {
+    executionId: 'execution-1',
+    binding: {
+      case: 'browserRead',
+      value: {
+        descriptor: {
+          descriptor: {
+            case: 'snapshot',
+            value: create(BrowserHttpSnapshotDescriptorSchema, {
+              tableUri: 'gs://public-bucket/events',
+              snapshotVersion,
+            }),
+          },
+        },
+      },
+    },
+  });
+}
+
+describe('result page snapshot', () => {
+  it('reads the snapshot version the first page was resolved at', () => {
+    expect(browserReadSnapshotVersion(resolvedRequest(14n))).toBe(14);
+  });
+
+  function pageRun(snapshotVersion: number | undefined, readSnapshotVersion?: number) {
+    return queryResultPageRun(
+      canonicalTableForSelection(selection),
+      request(),
+      selection,
+      snapshotVersion,
+      readSnapshotVersion,
+    );
+  }
+
+  function resolverAt(...versions: bigint[]) {
+    const requested: Array<number | undefined> = [];
+    const resolve = async (snapshotVersion: number | undefined) => {
+      requested.push(snapshotVersion);
+      const version = versions[requested.length - 1];
+      if (version === undefined) throw new Error('unexpected resolution');
+      return { request: resolvedRequest(version) };
+    };
+    return { requested, resolve };
+  }
+
+  it('reuses the latest resolution while latest is still the version the rows came from', async () => {
+    const { requested, resolve } = resolverAt(14n);
+
+    const input = await resolveNextResultPage(pageRun(undefined, 14), resolve);
+
+    expect(requested).toEqual([undefined]);
+    expect(browserReadSnapshotVersion(input.request)).toBe(14);
+  });
+
+  it('requests the rows snapshot explicitly once latest has moved on', async () => {
+    const { requested, resolve } = resolverAt(15n, 14n);
+
+    const input = await resolveNextResultPage(pageRun(undefined, 14), resolve);
+
+    expect(requested).toEqual([undefined, 14]);
+    expect(browserReadSnapshotVersion(input.request)).toBe(14);
+  });
+
+  it('still reads the rows snapshot when latest cannot be resolved', async () => {
+    const requested: Array<number | undefined> = [];
+    const input = await resolveNextResultPage(pageRun(undefined, 14), async (snapshotVersion) => {
+      requested.push(snapshotVersion);
+      if (snapshotVersion === undefined) throw new Error('missing checkpoint part');
+      return { request: resolvedRequest(14n) };
+    });
+
+    expect(requested).toEqual([undefined, 14]);
+    expect(browserReadSnapshotVersion(input.request)).toBe(14);
+  });
+
+  it('stops at a cancelled or expired latest resolution', async () => {
+    for (const error of [
+      new DOMException('cancelled', 'AbortError'),
+      Object.assign(new Error('deadline'), {
+        rejectionReason: ExecutionRejectionReason.DEADLINE_EXPIRED,
+      }),
+      Object.assign(new Error('cancelled'), {
+        rejectionReason: ExecutionRejectionReason.CANCELLED,
+      }),
+    ]) {
+      const requested: Array<number | undefined> = [];
+      await expect(
+        resolveNextResultPage(pageRun(undefined, 14), async (snapshotVersion) => {
+          requested.push(snapshotVersion);
+          throw error;
+        }),
+      ).rejects.toBe(error);
+      expect(requested).toEqual([undefined]);
+    }
+  });
+
+  it('requests a pinned run at its pin directly', async () => {
+    const { requested, resolve } = resolverAt(3n);
+
+    await resolveNextResultPage(pageRun(3, 3), resolve);
+
+    expect(requested).toEqual([3]);
+  });
+
+  it('fails closed instead of reading another snapshot', async () => {
+    const moved = resolverAt(15n, 15n);
+    await expect(resolveNextResultPage(pageRun(undefined, 14), moved.resolve)).rejects.toThrow(
+      'Snapshot 14, which the loaded rows came from, could not be read again.',
+    );
+
+    const unrecorded = resolverAt(3n);
+    await expect(resolveNextResultPage(pageRun(3), unrecorded.resolve)).rejects.toThrow(
+      'The loaded rows did not record their snapshot. Run the query again.',
+    );
+    expect(unrecorded.requested).toEqual([]);
+  });
+
+  it('reports no version unless the request resolved one exact snapshot', () => {
+    expect(browserReadSnapshotVersion(create(ExecuteRequestSchema, {}))).toBeUndefined();
+    expect(
+      browserReadSnapshotVersion(resolvedRequest(BigInt(Number.MAX_SAFE_INTEGER) + 1n)),
+    ).toBeUndefined();
+  });
+});
 
 describe('generated query pagination identity', () => {
   it('carries the sentinel page in the generated query contract', () => {
@@ -99,6 +234,17 @@ describe('generated query pagination identity', () => {
     expect(sameQueryResultPageRun(original, edited)).toBe(false);
   });
 
+  it('keeps an unpinned run on the snapshot its first page read', () => {
+    const table = canonicalTableForSelection(selection);
+    const firstRead = queryResultPageRun(table, request(), selection, undefined, 14);
+    const sameRead = queryResultPageRun(table, request(), selection, undefined, 14);
+    const newerRead = queryResultPageRun(table, request(), selection, undefined, 15);
+
+    expect(firstRead).toMatchObject({ snapshotVersion: undefined, readSnapshotVersion: 14 });
+    expect(sameQueryResultPageRun(firstRead, sameRead)).toBe(true);
+    expect(sameQueryResultPageRun(firstRead, newerRead)).toBe(false);
+  });
+
   it('projects every generated preview cell variant into the bounded UI page', () => {
     const preview = create(ResultPreviewSchema, {
       columns: ['text', 'number', 'flag', 'missing'],
@@ -125,7 +271,13 @@ describe('generated query pagination identity', () => {
       truncated: true,
     });
 
-    expect(resultPageFromContractPreview(preview, { offset: 10, size: 1 })).toEqual({
+    expect(
+      resultPageFromContractPreview(
+        preview,
+        { offset: 10, size: 1 },
+        { ordered: false, order_key_columns: [] },
+      ),
+    ).toEqual({
       columns: [
         { name: 'text', type: 'string' },
         { name: 'number', type: 'double' },
@@ -144,5 +296,154 @@ describe('generated query pagination identity', () => {
         next_offset: 11,
       },
     });
+  });
+});
+
+describe('Load more over re-run result pages', () => {
+  // Two page rows plus the sentinel row the page request asks for past the page.
+  function preview(rows: BrowserWorkerResultPreview['rows']): BrowserWorkerResultPreview {
+    return {
+      columns: ['bucket', 'id'],
+      rows,
+      row_count: rows.length,
+      preview_row_limit: 3,
+      truncated: false,
+    };
+  }
+  const page = { offset: 0, size: 2 };
+  const tiedAtBoundary = preview([
+    [0, 1],
+    [0, 2],
+    [0, 3],
+  ]);
+
+  it('offers Load more for unsorted rows', () => {
+    const result = resultPageFromPreview(tiedAtBoundary, page, {
+      ordered: false,
+      order_key_columns: [],
+    });
+
+    expect(result.page).toEqual({
+      offset: 0,
+      size: 2,
+      returned_rows: 2,
+      loaded_rows: 2,
+      has_more: true,
+      next_offset: 2,
+    });
+    expect(canLoadMoreResultRows(result.page)).toBe(true);
+  });
+
+  it('offers Load more for sorted rows only past a boundary a leading ORDER BY column splits', () => {
+    for (const [rows, orderKeyColumns, blocked] of [
+      [tiedAtBoundary.rows, [0], true],
+      [tiedAtBoundary.rows, [0, 1], false],
+      [tiedAtBoundary.rows, [1], false],
+      [
+        [
+          [0, 1],
+          [0, 2],
+          [1, 2],
+        ],
+        [0],
+        false,
+      ],
+      [
+        [
+          [0, null],
+          [0, null],
+          [0, null],
+        ],
+        [0, 1],
+        true,
+      ],
+    ] as const) {
+      const result = resultPageFromPreview(preview(rows.map((row) => [...row])), page, {
+        ordered: true,
+        order_key_columns: [...orderKeyColumns],
+      });
+
+      expect(result.page?.has_more).toBe(true);
+      expect(canLoadMoreResultRows(result.page), JSON.stringify({ rows, orderKeyColumns })).toBe(
+        !blocked,
+      );
+      expect(result.page?.next_offset).toBe(blocked ? undefined : 2);
+      expect(result.page?.load_more_blocked).toBe(blocked ? 'order_by_tie' : undefined);
+    }
+  });
+
+  it('does not offer Load more for sorted rows that no reported ORDER BY column can split', () => {
+    // An empty key list means the runtime found no ORDER BY key the page rows can be compared on
+    // (an expression or qualified leading key, a sorting window, DISTINCT ON or a nested ORDER BY),
+    // which is not a tie at the boundary: adding a unique ORDER BY column would not change it.
+    for (const rows of [
+      tiedAtBoundary.rows,
+      [
+        [0, 1],
+        [0, 2],
+        [1, 3],
+      ],
+    ]) {
+      const result = resultPageFromPreview(preview(rows.map((row) => [...row])), page, {
+        ordered: true,
+        order_key_columns: [],
+      });
+
+      expect(result.page?.has_more).toBe(true);
+      expect(result.page?.next_offset).toBeUndefined();
+      expect(result.page?.load_more_blocked).toBe('unverifiable_order');
+      expect(canLoadMoreResultRows(result.page)).toBe(false);
+    }
+  });
+
+  it('does not offer Load more for sorted rows when the row past the page is not in the preview', () => {
+    const result = resultPageFromPreview(
+      { ...preview(tiedAtBoundary.rows.slice(0, 2)), row_count: 3 },
+      page,
+      { ordered: true, order_key_columns: [1] },
+    );
+
+    expect(result.page?.has_more).toBe(true);
+    expect(result.page?.load_more_blocked).toBe('order_by_tie');
+    expect(canLoadMoreResultRows(result.page)).toBe(false);
+  });
+
+  it('does not offer Load more when the runtime did not report the row order', () => {
+    const result = resultPageFromPreview(tiedAtBoundary, page);
+
+    expect(result.page?.has_more).toBe(true);
+    expect(result.page?.next_offset).toBeUndefined();
+    expect(result.page?.load_more_blocked).toBe('unknown_order');
+    expect(canLoadMoreResultRows(result.page)).toBe(false);
+    expect(canLoadMoreResultRows(undefined)).toBe(false);
+  });
+
+  it('takes the Load more decision of the newest page when appending', () => {
+    const first = resultPageFromPreview(tiedAtBoundary, page, {
+      ordered: true,
+      order_key_columns: [1],
+    });
+    const second = resultPageFromPreview(
+      tiedAtBoundary,
+      { offset: 2, size: 2 },
+      {
+        ordered: true,
+        order_key_columns: [0],
+      },
+    );
+
+    const appended = appendResultPage(first, second);
+
+    expect(appended.rows).toHaveLength(4);
+    expect(appended.page).toEqual({
+      offset: 0,
+      size: 2,
+      returned_rows: 2,
+      loaded_rows: 4,
+      has_more: true,
+      load_more_blocked: 'order_by_tie',
+    });
+    expect(canLoadMoreResultRows(appended.page)).toBe(false);
+    expect(appendResultPage(second, first).page?.next_offset).toBe(4);
   });
 });

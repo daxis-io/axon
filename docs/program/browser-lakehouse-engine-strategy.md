@@ -88,10 +88,15 @@ reproducible releases:
 | Kernel operation-task contract | `4223fa43039d418238f6c4a1304d23e9f3764aa6` | Design packet reviewed locally; implementation GO is gated | No                            | Pending on [Kernel issue #252](https://github.com/delta-io/delta-kernel-rs/issues/252) | No                | No                 |
 
 The old immutable-local-head ledger above is historical evidence. It does not override the
-production root [`wasm-stack.lock.toml`](../../wasm-stack.lock.toml), whose schema v2 release bases
-are Arrow/Parquet 59.3.0, `object_store` 0.14.1, DataFusion 55.0.0, Delta Kernel 0.28.0, and
-delta-rs 0.32.4. `UNSET` candidate or stack revisions make that lock bootstrap-only and block a
-release or production claim.
+production root [`wasm-stack.lock.toml`](../../wasm-stack.lock.toml). That schema v2 lock describes
+the stack the shipped WASM closure builds today: the Daxis Arrow/Parquet 58.3.0, `object_store`
+0.13.2, and DataFusion 53.1.0 forks, with Delta Kernel and delta-rs declared absent from the
+closure. The target release bases in this document (Arrow/Parquet 59.3.0, `object_store` 0.14.1,
+DataFusion 55.0.0, Delta Kernel 0.28.0, and delta-rs 0.32.4) replace those entries in the change
+that moves the closure to them, because every verifier mode checks the lock against the locked
+closure. `UNSET` candidate or stack revisions make that lock bootstrap-only and block a release or
+production claim; [`main-release-qualification.md`](../release-gates/main-release-qualification.md)
+lists the owner actions that complete it.
 
 ## Canonical Decision
 
@@ -412,7 +417,7 @@ bundle, branch dependency, or local-path external dependency may appear in the f
 
 Publish in dependency order: Arrow/Parquet and `object_store`, DataFusion, Delta Kernel, delta-rs,
 then Axon. Every fork uses protected `axon-wasm/v1`, annotated
-`axon-wasm-v1.0.0-rc.1`, and final `axon-wasm-v1.0.0` at the exact qualified RC commit. DCO,
+`axon-wasm-v1.0.1-rc.1`, and final `axon-wasm-v1.0.1` at the exact qualified RC commit. DCO,
 native regression, WASM closure, and downstream fan-in are mandatory. Upstream review is welcome
 but is not a release gate.
 

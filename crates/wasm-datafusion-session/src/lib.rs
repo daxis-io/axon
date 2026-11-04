@@ -15,10 +15,14 @@ use query_contract::{
     QueryError, QueryErrorCode, QueryMetricsSummary, QueryRequest, QueryResponse, QueryResultPage,
     QueryRuntimeLimits, MAX_QUERY_RESULT_PAGE_LIMIT,
 };
+use sqlparser::ast::helpers::attached_token::AttachedToken;
 use sqlparser::ast::{
-    ObjectName, Query as SqlQuery, Select, SelectFlavor, SetExpr as SqlSetExpr,
-    Statement as SqlStatement, TableFactor as SqlTableFactor, TableWithJoins as SqlTableWithJoins,
-    Visit, Visitor,
+    Distinct as SqlDistinct, Expr as SqlExpr, GroupByExpr, Ident, LimitClause as SqlLimitClause,
+    ObjectName, Offset as SqlOffset, OffsetRows as SqlOffsetRows, OrderByKind as SqlOrderByKind,
+    Query as SqlQuery, Select, SelectFlavor, SelectItem, SetExpr as SqlSetExpr,
+    Statement as SqlStatement, TableAlias, TableFactor as SqlTableFactor,
+    TableWithJoins as SqlTableWithJoins, Value as SqlValue, Visit, Visitor,
+    WildcardAdditionalOptions, WindowType as SqlWindowType,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -88,11 +92,30 @@ pub struct BrowserDataFusionQueryTerminal {
     pub preview: IpcPreview,
     pub cursor_metrics: IpcCursorMetrics,
     pub memory_metrics: BrowserDataFusionMemoryMetrics,
+    /// Set for a successful query that requested a result page.
+    pub result_page: Option<BrowserDataFusionResultPageOrder>,
+}
+
+/// How the rows of a result page are ordered. Each page re-runs the statement with its own LIMIT
+/// and OFFSET, so a later page continues an earlier one only if both runs put the same rows before
+/// the boundary between them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BrowserDataFusionResultPageOrder {
+    /// No query block has an ORDER BY and no window sorts its input, so rows arrive in the scan
+    /// order of the single target partition at every OFFSET.
+    Unordered,
+    /// The statement sorts rows, and a run with a deeper LIMIT can order rows that tie on the sort
+    /// key differently. The next page continues this one only if the rows on either side of the
+    /// boundary differ in a leading ORDER BY key. `key_columns` are the output column indexes of
+    /// the leading top-level ORDER BY keys, up to the first key that is not a plain output column;
+    /// it is empty when no key can be compared that way.
+    Ordered { key_columns: Vec<usize> },
 }
 
 pub struct BrowserDataFusionIpcCursor {
     cursor: DataFusionIpcCursor,
     completion: Option<BrowserDataFusionCursorCompletion>,
+    result_page_order: Option<DataFusionResultPageOrderKeys>,
 }
 
 #[derive(Clone, Debug)]
@@ -206,6 +229,13 @@ impl BrowserDataFusionIpcCursor {
             self.completion = None;
             None
         };
+        let result_page = if terminal.status == QueryTerminalStatus::Succeeded {
+            self.result_page_order
+                .as_ref()
+                .map(|order| order.resolve(&terminal.preview.columns))
+        } else {
+            None
+        };
 
         BrowserDataFusionQueryTerminal {
             status: terminal.status,
@@ -216,6 +246,7 @@ impl BrowserDataFusionIpcCursor {
             preview: terminal.preview,
             cursor_metrics: terminal.cursor_metrics,
             memory_metrics: terminal.memory_metrics,
+            result_page,
         }
     }
 }
@@ -603,7 +634,7 @@ impl BrowserDataFusionSession {
             table.materialized.required_capabilities().clone()
         };
         let started_at = BrowserRuntimeInstant::now();
-        let sql = datafusion_sql_with_result_page(&request.sql, request.options.result_page)?;
+        let paged_sql = datafusion_sql_with_result_page(&request.sql, request.options.result_page)?;
         let query_budget =
             datafusion_query_budget_for_request(self.query_budget, request.options.runtime_limits);
         let has_request_budget = query_budget != self.query_budget;
@@ -625,7 +656,11 @@ impl BrowserDataFusionSession {
 
         let cursor_result = self
             .datafusion
-            .start_arrow_ipc_cursor(sql.as_ref(), limits, request.options.include_explain)
+            .start_arrow_ipc_cursor(
+                paged_sql.sql.as_ref(),
+                limits,
+                request.options.include_explain,
+            )
             .await;
         let cursor = if has_request_budget {
             let restore_result = self
@@ -656,6 +691,7 @@ impl BrowserDataFusionSession {
                 reuse_metrics,
                 started_at,
             }),
+            result_page_order: paged_sql.order,
         })
     }
 
@@ -1668,12 +1704,22 @@ fn invalid_datafusion_sql(message: impl Into<String>) -> QueryError {
     )
 }
 
+#[derive(Debug)]
+struct DataFusionPagedSql<'a> {
+    sql: Cow<'a, str>,
+    /// Set when a result page was requested.
+    order: Option<DataFusionResultPageOrderKeys>,
+}
+
 fn datafusion_sql_with_result_page(
     sql: &str,
     result_page: Option<QueryResultPage>,
-) -> Result<Cow<'_, str>, QueryError> {
+) -> Result<DataFusionPagedSql<'_>, QueryError> {
     let Some(result_page) = result_page else {
-        return Ok(Cow::Borrowed(sql));
+        return Ok(DataFusionPagedSql {
+            sql: Cow::Borrowed(sql),
+            order: None,
+        });
     };
 
     if result_page.limit == 0 {
@@ -1694,43 +1740,237 @@ fn datafusion_sql_with_result_page(
         ));
     }
 
-    let mut inner_sql = sql.trim();
-    while let Some(stripped) = inner_sql.strip_suffix(';') {
-        inner_sql = stripped.trim_end();
-    }
-
-    if inner_sql.is_empty() {
+    // The page is applied to the parsed statement and rendered back to SQL, so comments, trailing
+    // semicolons and the user's own LIMIT cannot swallow or collide with the page clause.
+    let mut statements = Parser::parse_sql(&GenericDialect {}, sql)
+        .map_err(|error| invalid_datafusion_sql(format!("invalid SQL: {error}")))?;
+    if statements.len() != 1 {
         return Err(QueryError::new(
             QueryErrorCode::InvalidRequest,
-            "browser DataFusion result page requires non-empty SQL",
+            "browser DataFusion result page requires exactly one SQL statement",
             runtime_target(),
         ));
     }
+    let SqlStatement::Query(query) = statements.pop().expect("statement length already checked")
+    else {
+        return Err(invalid_datafusion_sql(
+            "only read-only SELECT statements are supported",
+        ));
+    };
 
-    if datafusion_sql_has_top_level_limit_clause(inner_sql)? {
-        return Ok(Cow::Owned(format!(
-            "SELECT * FROM ({inner_sql}) AS axon_result_page LIMIT {} OFFSET {}",
-            result_page.limit, result_page.offset
-        )));
-    }
-
-    Ok(Cow::Owned(format!(
-        "{inner_sql} LIMIT {} OFFSET {}",
-        result_page.limit, result_page.offset
-    )))
+    let order = datafusion_result_page_order(&query);
+    Ok(DataFusionPagedSql {
+        sql: Cow::Owned(
+            SqlStatement::Query(Box::new(sql_query_with_result_page(*query, result_page)))
+                .to_string(),
+        ),
+        order: Some(order),
+    })
 }
 
-fn datafusion_sql_has_top_level_limit_clause(sql: &str) -> Result<bool, QueryError> {
-    let mut statements = Parser::parse_sql(&GenericDialect {}, sql)
-        .map_err(|error| invalid_datafusion_sql(format!("invalid SQL: {error}")))?;
-    let Some(statement) = statements.pop() else {
-        return Ok(false);
+/// The ORDER BY keys of a paged statement as written, before the output columns are known.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DataFusionResultPageOrderKeys {
+    Unordered,
+    /// The leading top-level ORDER BY keys that name an output column, up to the first that does
+    /// not. Empty when the first key is an expression or anything else in the statement sorts.
+    Ordered(Vec<DataFusionOrderKey>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DataFusionOrderKey {
+    /// A bare identifier, normalized the way DataFusion normalizes it. DataFusion resolves it to the
+    /// output column of that name first, so it is that column when exactly one has the name.
+    Column(String),
+    /// A 1-based position in the SELECT list, which DataFusion reads as that output column.
+    Position(usize),
+}
+
+impl DataFusionResultPageOrderKeys {
+    fn resolve(&self, output_columns: &[String]) -> BrowserDataFusionResultPageOrder {
+        let Self::Ordered(keys) = self else {
+            return BrowserDataFusionResultPageOrder::Unordered;
+        };
+        let key_columns = keys
+            .iter()
+            .map_while(|key| match key {
+                DataFusionOrderKey::Column(name) => {
+                    let mut matches = output_columns
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, column)| *column == name)
+                        .map(|(index, _)| index);
+                    match (matches.next(), matches.next()) {
+                        (Some(index), None) => Some(index),
+                        _ => None,
+                    }
+                }
+                DataFusionOrderKey::Position(position) => position
+                    .checked_sub(1)
+                    .filter(|index| *index < output_columns.len()),
+            })
+            .collect();
+
+        BrowserDataFusionResultPageOrder::Ordered { key_columns }
+    }
+}
+
+fn datafusion_result_page_order(query: &SqlQuery) -> DataFusionResultPageOrderKeys {
+    let mut sorts = DataFusionSortVisitor::default();
+    let _ = query.visit(&mut sorts);
+    if sorts.ordered_queries == 0 && !sorts.other_sorts {
+        return DataFusionResultPageOrderKeys::Unordered;
+    }
+
+    // Only the top-level ORDER BY can be checked against output rows. A nested ORDER BY, a
+    // window that partitions or orders its input, or DISTINCT ON sorts rows the page cannot see.
+    let Some(order_by) = query
+        .order_by
+        .as_ref()
+        .filter(|_| sorts.ordered_queries == 1 && !sorts.other_sorts)
+    else {
+        return DataFusionResultPageOrderKeys::Ordered(Vec::new());
     };
-    let SqlStatement::Query(query) = statement else {
-        return Ok(false);
+    let SqlOrderByKind::Expressions(order_by_exprs) = &order_by.kind else {
+        return DataFusionResultPageOrderKeys::Ordered(Vec::new());
     };
 
-    Ok(query.limit_clause.is_some() || query.fetch.is_some())
+    DataFusionResultPageOrderKeys::Ordered(
+        order_by_exprs
+            .iter()
+            .map_while(|order_by_expr| match &order_by_expr.expr {
+                SqlExpr::Identifier(ident) => {
+                    Some(DataFusionOrderKey::Column(match ident.quote_style {
+                        Some(_) => ident.value.clone(),
+                        None => ident.value.to_ascii_lowercase(),
+                    }))
+                }
+                SqlExpr::Value(value) => match &value.value {
+                    SqlValue::Number(position, false) => position
+                        .parse::<usize>()
+                        .ok()
+                        .map(DataFusionOrderKey::Position),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+#[derive(Default)]
+struct DataFusionSortVisitor {
+    ordered_queries: usize,
+    other_sorts: bool,
+}
+
+impl Visitor for DataFusionSortVisitor {
+    type Break = ();
+
+    fn pre_visit_query(&mut self, query: &SqlQuery) -> ControlFlow<Self::Break> {
+        if query.order_by.is_some() {
+            self.ordered_queries += 1;
+        }
+        if let SqlSetExpr::Select(select) = query.body.as_ref() {
+            if matches!(select.distinct, Some(SqlDistinct::On(_)))
+                || !select.named_window.is_empty()
+            {
+                self.other_sorts = true;
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_expr(&mut self, expr: &SqlExpr) -> ControlFlow<Self::Break> {
+        if let SqlExpr::Function(function) = expr {
+            match &function.over {
+                None => {}
+                Some(SqlWindowType::WindowSpec(spec))
+                    if spec.window_name.is_none()
+                        && spec.partition_by.is_empty()
+                        && spec.order_by.is_empty() => {}
+                Some(_) => self.other_sorts = true,
+            }
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+fn sql_query_with_result_page(query: SqlQuery, result_page: QueryResultPage) -> SqlQuery {
+    let mut query = if query.limit_clause.is_some() || query.fetch.is_some() {
+        sql_result_page_derived_query(query)
+    } else {
+        query
+    };
+    query.limit_clause = Some(SqlLimitClause::LimitOffset {
+        limit: Some(sql_number(result_page.limit)),
+        offset: Some(SqlOffset {
+            value: sql_number(result_page.offset),
+            rows: SqlOffsetRows::None,
+        }),
+        limit_by: Vec::new(),
+    });
+    query
+}
+
+// `SELECT * FROM (<query>) AS axon_result_page`, so the page applies after the query's own
+// LIMIT, OFFSET or FETCH.
+fn sql_result_page_derived_query(query: SqlQuery) -> SqlQuery {
+    let select = Select {
+        select_token: AttachedToken::empty(),
+        optimizer_hint: None,
+        distinct: None,
+        select_modifiers: None,
+        top: None,
+        top_before_distinct: false,
+        projection: vec![SelectItem::Wildcard(WildcardAdditionalOptions::default())],
+        exclude: None,
+        into: None,
+        from: vec![SqlTableWithJoins {
+            relation: SqlTableFactor::Derived {
+                lateral: false,
+                subquery: Box::new(query),
+                alias: Some(TableAlias {
+                    explicit: true,
+                    name: Ident::new("axon_result_page"),
+                    columns: Vec::new(),
+                }),
+                sample: None,
+            },
+            joins: Vec::new(),
+        }],
+        lateral_views: Vec::new(),
+        prewhere: None,
+        selection: None,
+        connect_by: Vec::new(),
+        group_by: GroupByExpr::Expressions(Vec::new(), Vec::new()),
+        cluster_by: Vec::new(),
+        distribute_by: Vec::new(),
+        sort_by: Vec::new(),
+        having: None,
+        named_window: Vec::new(),
+        qualify: None,
+        window_before_qualify: false,
+        value_table_mode: None,
+        flavor: SelectFlavor::Standard,
+    };
+
+    SqlQuery {
+        with: None,
+        body: Box::new(SqlSetExpr::Select(Box::new(select))),
+        order_by: None,
+        limit_clause: None,
+        fetch: None,
+        locks: Vec::new(),
+        for_clause: None,
+        settings: None,
+        format_clause: None,
+        pipe_operators: Vec::new(),
+    }
+}
+
+fn sql_number(value: u64) -> SqlExpr {
+    SqlExpr::value(SqlValue::Number(value.to_string(), false))
 }
 
 fn datafusion_query_budget_from_runtime_config(
@@ -2118,7 +2358,7 @@ mod tests {
             .expect("valid SELECT should be pageable");
 
         assert_eq!(
-            paged_sql.as_ref(),
+            paged_sql.sql.as_ref(),
             "SELECT * FROM events LIMIT 501 OFFSET 500"
         );
     }
@@ -2156,9 +2396,230 @@ mod tests {
         .expect("valid SELECT with OFFSET should be pageable");
 
         assert_eq!(
-            paged_sql.as_ref(),
+            paged_sql.sql.as_ref(),
             "SELECT * FROM (SELECT * FROM events ORDER BY id OFFSET 10) AS axon_result_page LIMIT 501 OFFSET 500"
         );
+    }
+
+    #[test]
+    fn result_page_applies_to_sql_that_ends_in_a_comment() {
+        let page = QueryResultPage {
+            limit: 501,
+            offset: 500,
+        };
+
+        for (sql, expected) in [
+            (
+                "SELECT id FROM events -- check",
+                "SELECT id FROM events LIMIT 501 OFFSET 500",
+            ),
+            (
+                "SELECT id\nFROM events\nWHERE id < 600\n-- AND id % 2 = 0\n",
+                "SELECT id FROM events WHERE id < 600 LIMIT 501 OFFSET 500",
+            ),
+            (
+                "SELECT id FROM events ORDER BY id; -- done",
+                "SELECT id FROM events ORDER BY id LIMIT 501 OFFSET 500",
+            ),
+            (
+                "SELECT id FROM events /* trailing note */;",
+                "SELECT id FROM events LIMIT 501 OFFSET 500",
+            ),
+            (
+                "SELECT id FROM events LIMIT 3 -- sample",
+                "SELECT * FROM (SELECT id FROM events LIMIT 3) AS axon_result_page LIMIT 501 OFFSET 500",
+            ),
+        ] {
+            let paged_sql = datafusion_sql_with_result_page(sql, Some(page))
+                .unwrap_or_else(|error| panic!("{sql:?} should be pageable: {error:?}"));
+            assert_eq!(paged_sql.sql.as_ref(), expected, "{sql:?}");
+        }
+    }
+
+    #[test]
+    fn result_page_rejects_sql_without_a_statement() {
+        for sql in ["", " ; ", "-- only a comment"] {
+            let error = datafusion_sql_with_result_page(
+                sql,
+                Some(QueryResultPage {
+                    limit: 501,
+                    offset: 0,
+                }),
+            )
+            .expect_err("empty SQL should not be paged");
+            assert_eq!(error.code, QueryErrorCode::InvalidRequest, "{sql:?}");
+        }
+    }
+
+    #[test]
+    fn result_page_reports_how_the_statement_orders_rows() {
+        use DataFusionOrderKey::{Column, Position};
+        use DataFusionResultPageOrderKeys::{Ordered, Unordered};
+
+        let page = QueryResultPage {
+            limit: 501,
+            offset: 0,
+        };
+        for (sql, expected) in [
+            ("SELECT id FROM events WHERE id < 10", Unordered),
+            ("SELECT id FROM events LIMIT 3 -- sample", Unordered),
+            (
+                "SELECT category, COUNT(*) AS n FROM events GROUP BY category",
+                Unordered,
+            ),
+            ("SELECT id, COUNT(*) OVER () AS n FROM events", Unordered),
+            (
+                "SELECT category, array_agg(id ORDER BY id) AS ids FROM events GROUP BY category",
+                Unordered,
+            ),
+            (
+                "SELECT id, category FROM events ORDER BY category DESC, id",
+                Ordered(vec![Column("category".into()), Column("id".into())]),
+            ),
+            (
+                "SELECT id % 4 AS Bucket, \"Id\" FROM events ORDER BY BUCKET, \"Id\", 1",
+                Ordered(vec![
+                    Column("bucket".into()),
+                    Column("Id".into()),
+                    Position(1),
+                ]),
+            ),
+            (
+                "SELECT id FROM events ORDER BY category, id % 4, id LIMIT 10",
+                Ordered(vec![Column("category".into())]),
+            ),
+            ("SELECT id FROM events ORDER BY id % 4", Ordered(Vec::new())),
+            ("SELECT id FROM events ORDER BY events.id", Ordered(Vec::new())),
+            (
+                "SELECT * FROM (SELECT id FROM events ORDER BY id LIMIT 10) AS t",
+                Ordered(Vec::new()),
+            ),
+            (
+                "SELECT id FROM events WHERE id IN (SELECT id FROM events ORDER BY id LIMIT 2) ORDER BY id",
+                Ordered(Vec::new()),
+            ),
+            (
+                "SELECT id, SUM(id) OVER (ORDER BY category ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS s FROM events",
+                Ordered(Vec::new()),
+            ),
+            (
+                "SELECT id, ROW_NUMBER() OVER (PARTITION BY category) AS n FROM events ORDER BY id",
+                Ordered(Vec::new()),
+            ),
+            (
+                "SELECT id, SUM(id) OVER w AS s FROM events WINDOW w AS (ORDER BY id)",
+                Ordered(Vec::new()),
+            ),
+            (
+                "SELECT DISTINCT ON (category) category, id FROM events ORDER BY category, id",
+                Ordered(Vec::new()),
+            ),
+        ] {
+            let paged_sql = datafusion_sql_with_result_page(sql, Some(page))
+                .unwrap_or_else(|error| panic!("{sql:?} should be pageable: {error:?}"));
+            assert_eq!(paged_sql.order, Some(expected), "{sql:?}");
+        }
+
+        let unpaged = datafusion_sql_with_result_page("SELECT id FROM events ORDER BY id", None)
+            .expect("SQL without a result page passes through");
+        assert_eq!(unpaged.order, None);
+    }
+
+    #[test]
+    fn result_page_order_keys_resolve_to_single_matching_output_columns() {
+        use DataFusionOrderKey::{Column, Position};
+
+        let columns = ["id".to_string(), "category".to_string(), "id_2".to_string()];
+        let order = DataFusionResultPageOrderKeys::Ordered(vec![
+            Column("category".into()),
+            Position(1),
+            Column("missing".into()),
+            Column("id_2".into()),
+        ]);
+        assert_eq!(
+            order.resolve(&columns),
+            BrowserDataFusionResultPageOrder::Ordered {
+                key_columns: vec![1, 0]
+            }
+        );
+
+        let duplicated = ["id".to_string(), "id".to_string()];
+        assert_eq!(
+            DataFusionResultPageOrderKeys::Ordered(vec![Column("id".into())]).resolve(&duplicated),
+            BrowserDataFusionResultPageOrder::Ordered {
+                key_columns: Vec::new()
+            }
+        );
+        assert_eq!(
+            DataFusionResultPageOrderKeys::Ordered(vec![Position(3)]).resolve(&duplicated),
+            BrowserDataFusionResultPageOrder::Ordered {
+                key_columns: Vec::new()
+            }
+        );
+        assert_eq!(
+            DataFusionResultPageOrderKeys::Unordered.resolve(&duplicated),
+            BrowserDataFusionResultPageOrder::Unordered
+        );
+    }
+
+    #[test]
+    fn cursor_terminal_reports_the_result_page_order() {
+        for (sql, result_page, expected) in [
+            (
+                "SELECT COUNT(*) AS rows FROM events",
+                Some(QueryResultPage {
+                    limit: 501,
+                    offset: 0,
+                }),
+                Some(BrowserDataFusionResultPageOrder::Unordered),
+            ),
+            (
+                "SELECT COUNT(*) AS rows FROM events ORDER BY rows -- check",
+                Some(QueryResultPage {
+                    limit: 501,
+                    offset: 0,
+                }),
+                Some(BrowserDataFusionResultPageOrder::Ordered {
+                    key_columns: vec![0],
+                }),
+            ),
+            (
+                "SELECT COUNT(*) AS rows FROM events ORDER BY rows",
+                None,
+                None,
+            ),
+        ] {
+            let mut session =
+                BrowserDataFusionSession::new(BrowserRuntimeConfig::default(), u64::MAX)
+                    .expect("default browser runtime config should be supported");
+            let descriptor = empty_delta_descriptor();
+            let mut request = QueryRequest::new(
+                descriptor.table_uri.clone(),
+                sql,
+                ExecutionTarget::BrowserWasm,
+            );
+            request.options.result_page = result_page;
+
+            let terminal = test_runtime().block_on(async {
+                session
+                    .open_delta_table("events", descriptor)
+                    .await
+                    .unwrap();
+                let mut cursor = session
+                    .start_arrow_ipc_cursor("events", &request, IpcStreamLimits::default())
+                    .await
+                    .unwrap_or_else(|error| panic!("{sql:?} should start: {error:?}"));
+                loop {
+                    match cursor.next().await.unwrap().unwrap() {
+                        BrowserDataFusionIpcCursorItem::Chunk(_) => {}
+                        BrowserDataFusionIpcCursorItem::Terminal(terminal) => break terminal,
+                    }
+                }
+            });
+
+            assert_eq!(terminal.status, QueryTerminalStatus::Succeeded, "{sql:?}");
+            assert_eq!(terminal.result_page, expected, "{sql:?}");
+        }
     }
 
     #[test]

@@ -43,9 +43,9 @@ The editor uses History API routes. Static deployments must rewrite `/connect` a
 
 The supported SQL shape is the current browser runtime envelope: read-only `SELECT` statements over the selected connected table, with the projection, filter, grouping, ordering, and limit forms covered by the sample queries and browser runtime tests. Unsupported statements, such as mutations, render structured browser errors rather than routing silently.
 
-The one production browser worker artifact always enables OPFS-backed external memory. Each query probes OPFS and installs a fresh opaque query-scoped spill scope before execution. Grouped hash aggregates and external sorts may spill after the 128 MiB registered-memory working-set watermark (64 MiB in conformance); that watermark is not a total input, aggregate-state, spill-byte, or result-size limit. If OPFS is unavailable, full, or fails I/O, the query returns a typed `resource_exhausted` / `spill_storage` error and the worker remains reusable. It never silently changes engines or executes remotely.
+The one production browser worker artifact enables OPFS-backed external memory wherever the browser provides OPFS. The query worker probes OPFS on its first query and reuses a working or unavailable result for later queries; after a quota or I/O probe failure, or a spill setup failure that follows a working probe, the next query probes again. Each execution whose spill setup succeeds gets a fresh opaque query-scoped spill scope. Grouped hash aggregates and external sorts may spill after the 128 MiB registered-memory working-set watermark (64 MiB in conformance); that watermark is not a total input, aggregate-state, spill-byte, or result-size limit. If OPFS is unavailable (for example in private browsing), full, or fails during setup, queries still run in memory and report `browser_external_memory` as `unsupported`; only a query that actually needs to spill then returns a typed `resource_exhausted` / `spill_storage` error, as do spill I/O and cleanup failures, and the worker remains reusable. A failed delete of a query spill scope that never received a spill file does not fail the query; the scope is recorded as abandoned for a later worker's stale-scope sweep. It never silently changes engines or executes remotely.
 
-The public SDK remains atomic while lazy Arrow delivery is pending. The editor requests 501 final rows, displays 500, and uses the extra row only to indicate that more results exist. It never exposes provisional aggregate values. “Load more” is explicit and reruns the original SQL at the next 500-row offset; it does not retain a cursor. Because each page recomputes the query, stable multi-page results require an explicit deterministic `ORDER BY` over an immutable or pinned snapshot.
+The public SDK remains atomic while lazy Arrow delivery is pending. The editor requests 501 final rows, displays 500, and uses the extra row only to indicate that more results exist. It never exposes provisional aggregate values. “Load more” is explicit and reruns the original SQL at the next 500-row offset; it does not retain a cursor. Because each page recomputes the query, the editor offers Load more only when the rerun page is known to continue the loaded rows: rows that nothing in the query sorts keep their scan order, and sorted rows qualify when the last loaded row and the next row differ in one of the leading top-level `ORDER BY` keys that are SELECT-list column names or positions. Otherwise Load more is disabled and the results panel says why: the next row may tie with the last one (end `ORDER BY` with a unique SELECT-list column), or the query sorts in a way the page cannot check (an expression or qualified `ORDER BY` key, a window with `PARTITION BY` or `ORDER BY`, `DISTINCT ON`, or a subquery `ORDER BY`); in both cases `LIMIT` and `OFFSET` in the SQL can still narrow the query. Pages line up only over an immutable or pinned snapshot.
 
 Server query fallback is an opt-in build mode. The default app build has it disabled and does not show server fallback controls or labels. To expose that path in your own environment, build with `VITE_AXON_SERVER_QUERY_FALLBACK=server` and provide a separate authenticated server query module.
 
@@ -73,6 +73,15 @@ Browser Playwright gates launch real browsers and should run from a normal devel
 
 ```bash
 npm run test:browser
+```
+
+The dev-server suites never load the production bundle. After `npm run build`, the bundle smoke
+serves `dist` with `vite preview` under the production host's `vercel.json` rewrites, headers, and
+NOT_FOUND behaviour (no COOP/COEP), loads a canonical table route cold, and runs a category query
+against the bundled sample through the UI. CI runs it on every pull request:
+
+```bash
+npm run test:browser:production-bundle
 ```
 
 When validating the local Delta editor flow against an existing dev server, run `npm run dev` in one terminal and then run the focused browser gate from an unsandboxed terminal:

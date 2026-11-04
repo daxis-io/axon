@@ -293,7 +293,13 @@ Current default-worker measurement on July 23, 2026:
 
 The size-oriented release profile is now the shipped default and the
 `axon-web-wasm` 6,291,456-byte Brotli budget is a recurring pull-request and
-`main` CI gate. The browser performance probe is the companion check for the
+`main` CI gate. The Brotli column above measured a `wasm-opt -Oz` copy that the
+app never served; the app shipped the unoptimized `wasm-bindgen` output with its
+debug name section. The budget now applies to the shipped form (`wasm-bindgen
+--remove-name-section`, exactly as `npm run build:wasm` emits it), and
+`tests/perf/report_shipped_wasm_size.sh` gates the served asset of every CI app
+build. At a04309b with rustc 1.95.0 that form is 28,831,972 raw bytes and
+3,926,556 Brotli -q 11 bytes. The browser performance probe is the companion check for the
 size-versus-runtime tradeoff; host `cargo test` wall time is diagnostic only.
 
 Interpretation:

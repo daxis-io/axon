@@ -4,7 +4,6 @@ import init, { resolve_delta_snapshot_from_manifest } from '../wasm/axon_web_was
 import {
   BrowserHttpFileDescriptorSchema,
   BrowserHttpSnapshotDescriptorSchema,
-  CapabilityReportSchema,
   PartitionColumnType,
   PartitionValueSchema,
   type BrowserHttpSnapshotDescriptor,
@@ -26,6 +25,10 @@ import {
   markLocalDeltaRuntimeInactive,
 } from './local-delta-session.ts';
 import { buildDeltaCommitHistory, type DeltaCommitLogText } from './delta-commit-history.ts';
+import {
+  generatedCapabilityReport,
+  type ResolvedCapabilityReport,
+} from './delta-capability-report.ts';
 import type { CommitEntry } from './types.ts';
 
 export type LocalFileSystemFileHandle = {
@@ -116,6 +119,8 @@ type ResolvedSnapshot = {
   table_uri: string;
   snapshot_version: number;
   partition_column_types?: Partial<Record<string, ResolvedPartitionColumnType>>;
+  browser_compatibility?: ResolvedCapabilityReport;
+  required_capabilities?: ResolvedCapabilityReport;
   active_files: Array<{
     path: string;
     size_bytes: number;
@@ -354,6 +359,15 @@ async function buildLocalDeltaRuntime(
   );
   throwIfLocalDeltaAborted(options.signal);
   const snapshot = JSON.parse(snapshotJson) as ResolvedSnapshot;
+  const browserCompatibility = generatedCapabilityReport(
+    snapshot.browser_compatibility,
+    invalidResolvedCapabilities,
+  );
+  const requiredCapabilities = generatedCapabilityReport(
+    snapshot.required_capabilities,
+    invalidResolvedCapabilities,
+  );
+  rejectNativeOnlyLocalCapabilities(snapshot);
   const partitionTypes =
     snapshot.partition_column_types ??
     partitionTypesFromSchema(facts.schemaString, facts.partitionColumns);
@@ -361,8 +375,8 @@ async function buildLocalDeltaRuntime(
     tableUri: snapshot.table_uri,
     snapshotVersion: BigInt(snapshot.snapshot_version),
     partitionColumnTypes: generatedPartitionColumnTypes(partitionTypes),
-    browserCompatibility: create(CapabilityReportSchema),
-    requiredCapabilities: create(CapabilityReportSchema),
+    browserCompatibility,
+    requiredCapabilities,
     activeFiles: snapshot.active_files.map((file) => {
       const entry = localFileForDeltaPath(table, file.path);
       if (!entry) {
@@ -856,6 +870,39 @@ function applyLocalLogAction(facts: LocalLogFacts, action: unknown): void {
       'Selected local Delta table uses deletion vectors, which this browser runtime cannot apply.',
     );
   }
+}
+
+// Local folders have no native engine to fall back to, so any capability the resolver says the
+// browser cannot honour (for example deletion vectors that survive only in a checkpoint, which the
+// JSON-commit scan in readLocalLogFacts never sees) fails the open instead of returning wrong rows.
+function rejectNativeOnlyLocalCapabilities(snapshot: ResolvedSnapshot): void {
+  const features = [
+    ...new Set(
+      [snapshot.browser_compatibility, snapshot.required_capabilities].flatMap((report) =>
+        Object.entries(report?.capabilities ?? {})
+          .filter(([, state]) => state === 'native_only' || state === 'unsupported')
+          .map(([key]) => key),
+      ),
+    ),
+  ].sort();
+  if (features.length === 0) return;
+  if (features.includes('deletion_vectors')) {
+    throw new LocalDeltaError(
+      'unsupported_delta_feature',
+      'Selected local Delta table uses deletion vectors, which this browser runtime cannot apply.',
+    );
+  }
+  throw new LocalDeltaError(
+    'unsupported_delta_feature',
+    `Selected local Delta table requires unsupported features: ${features.join(', ')}.`,
+  );
+}
+
+function invalidResolvedCapabilities(): LocalDeltaError {
+  return new LocalDeltaError(
+    'invalid_delta_log',
+    'Resolved Delta snapshot reported invalid capabilities.',
+  );
 }
 
 function catalogMetadataFromRuntimeFacts(

@@ -3,14 +3,17 @@ import {
   BROWSER_SAFE_ARROW_IPC_BYTES,
   BROWSER_SAFE_PREVIEW_STRING_BYTES,
   BROWSER_SAFE_RESULT_ROW_LIMIT,
+  type BrowserWorkerResultPage,
   type BrowserWorkerResultPreview,
 } from '../axon-browser-sdk.ts';
 import {
+  ExecutionRejectionReason,
   ExecutionTarget,
   QueryExecutionOptionsSchema,
   QueryRequestSchema,
   QueryResultPageSchema,
   QueryRuntimeLimitsSchema,
+  type ExecuteRequest,
   type QueryRequest,
   type QueryResultPage,
   type ResultPreview,
@@ -19,7 +22,13 @@ import {
   TableNodeSchema,
   type TableNode,
 } from '../generated/contracts/protobuf/axon/catalog/v1/catalog_pb.ts';
-import type { QueryPageRequest, QueryResultData, ResultCell, ResultColumn } from './types.ts';
+import type {
+  QueryPageRequest,
+  QueryResultData,
+  QueryResultPageInfo,
+  ResultCell,
+  ResultColumn,
+} from './types.ts';
 import type { AvailableQuerySourceSelection } from './query-source.ts';
 
 export const QUERY_RESULT_PAGE_SIZE = 500;
@@ -29,7 +38,14 @@ export type QueryResultPageRun = Readonly<{
   table: TableNode;
   query: QueryRequest;
   selection: AvailableQuerySourceSelection;
+  /** The snapshot the user pinned; undefined means latest. */
   snapshotVersion?: number;
+  /**
+   * The snapshot the first page actually read. Later pages re-run the query at this version, so an
+   * unpinned run never mixes rows from a newer snapshot. Undefined means it was not recorded, and
+   * the run cannot load more rows.
+   */
+  readSnapshotVersion?: number;
 }>;
 
 export function queryResultPageRun(
@@ -37,12 +53,14 @@ export function queryResultPageRun(
   query: QueryRequest,
   selection: AvailableQuerySourceSelection,
   snapshotVersion?: number,
+  readSnapshotVersion?: number,
 ): QueryResultPageRun {
   return {
     table: clone(TableNodeSchema, table),
     query: clone(QueryRequestSchema, query),
     selection,
     snapshotVersion,
+    readSnapshotVersion,
   };
 }
 
@@ -53,8 +71,69 @@ export function sameQueryResultPageRun(
   return (
     equals(TableNodeSchema, left.table, right.table) &&
     equals(QueryRequestSchema, left.query, right.query) &&
-    Object.is(left.snapshotVersion, right.snapshotVersion)
+    Object.is(left.snapshotVersion, right.snapshotVersion) &&
+    Object.is(left.readSnapshotVersion, right.readSnapshotVersion)
   );
+}
+
+/**
+ * Resolve the table for the next page at the snapshot the loaded rows came from.
+ *
+ * A pinned run requests its pin. An unpinned run first resolves latest, which reuses the
+ * descriptor and query session its first page used, and keeps that resolution while latest is
+ * still the rows' version. Once latest has moved on, or fails to resolve, it requests that version
+ * explicitly, so the resolvers' pinned-version checks apply. Pinned versions stay their own cache
+ * dimension, so a cached latest entry is never taken as a pinned answer. Fails rather than read
+ * another snapshot.
+ */
+export async function resolveNextResultPage<T extends { request: ExecuteRequest }>(
+  run: QueryResultPageRun,
+  resolve: (snapshotVersion: number | undefined) => Promise<T>,
+): Promise<T> {
+  const required = run.readSnapshotVersion;
+  if (required === undefined) {
+    throw new Error('The loaded rows did not record their snapshot. Run the query again.');
+  }
+  if (run.snapshotVersion === undefined) {
+    try {
+      const latest = await resolve(undefined);
+      if (browserReadSnapshotVersion(latest.request) === required) return latest;
+    } catch (error) {
+      // Latest can fail where the rows' snapshot does not, such as a commit still being written.
+      if (endsResolution(error)) throw error;
+    }
+  }
+  const exact = await resolve(required);
+  if (browserReadSnapshotVersion(exact.request) !== required) {
+    throw new Error(
+      `Snapshot ${required}, which the loaded rows came from, could not be read again.`,
+    );
+  }
+  return exact;
+}
+
+function endsResolution(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'AbortError') return true;
+  const reason =
+    typeof error === 'object' && error !== null && 'rejectionReason' in error
+      ? error.rejectionReason
+      : undefined;
+  return (
+    reason === ExecutionRejectionReason.CANCELLED ||
+    reason === ExecutionRejectionReason.DEADLINE_EXPIRED
+  );
+}
+
+/** The snapshot version a resolved browser read was planned against, if it names one exactly. */
+export function browserReadSnapshotVersion(request: ExecuteRequest): number | undefined {
+  if (request.binding.case !== 'browserRead') return undefined;
+  const descriptor = request.binding.value.descriptor?.descriptor;
+  if (descriptor?.case !== 'snapshot') return undefined;
+  const version = descriptor.value.snapshotVersion;
+  if (version === undefined || version < 0n || version > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return undefined;
+  }
+  return Number(version);
 }
 
 export function queryResultPageRunRequest(
@@ -123,6 +202,7 @@ export function queryPageFromRequest(request: QueryRequest): QueryPageRequest {
 export function resultPageFromPreview(
   preview: BrowserWorkerResultPreview | undefined,
   page: QueryPageRequest,
+  order?: BrowserWorkerResultPage,
 ): QueryResultData {
   if (!preview) {
     return emptyPageResult(page);
@@ -137,6 +217,7 @@ export function resultPageFromPreview(
   const rows = preview.rows.slice(0, size).map((row) => row as ResultCell[]);
   const hasMore = preview.row_count > rows.length || preview.rows.length > size;
   const loadedRows = offset + rows.length;
+  const loadMoreBlocked = hasMore ? loadMoreBlockedReason(preview.rows, size, order) : undefined;
 
   return {
     columns,
@@ -149,14 +230,44 @@ export function resultPageFromPreview(
       returned_rows: rows.length,
       loaded_rows: loadedRows,
       has_more: hasMore,
-      next_offset: hasMore ? loadedRows : undefined,
+      next_offset: hasMore && !loadMoreBlocked ? loadedRows : undefined,
+      ...(loadMoreBlocked ? { load_more_blocked: loadMoreBlocked } : {}),
     },
   };
+}
+
+export function canLoadMoreResultRows(page: QueryResultPageInfo | undefined): boolean {
+  return (
+    page?.has_more === true && page.load_more_blocked === undefined && page.next_offset != null
+  );
+}
+
+// Load more re-runs the query with the next OFFSET. Unsorted rows come back in the same scan
+// order every time. Sorted rows only continue the loaded ones when the last page row and the row
+// after it (the sentinel past the page) differ in a leading ORDER BY column: then every loaded row
+// sorts strictly before every later row, so a deeper re-run cannot move a row across the boundary.
+// Rows that tie there can come back in a different order and repeat or skip rows. Sorted rows
+// without any reported ORDER BY column cannot be compared at all, which is not a tie.
+function loadMoreBlockedReason(
+  rows: BrowserWorkerResultPreview['rows'],
+  size: number,
+  order: BrowserWorkerResultPage | undefined,
+): QueryResultPageInfo['load_more_blocked'] {
+  if (!order) return 'unknown_order';
+  if (!order.ordered) return undefined;
+  if (order.order_key_columns.length === 0) return 'unverifiable_order';
+  const last = rows[size - 1];
+  const next = rows[size];
+  if (last && next && order.order_key_columns.some((column) => last[column] !== next[column])) {
+    return undefined;
+  }
+  return 'order_by_tie';
 }
 
 export function resultPageFromContractPreview(
   preview: ResultPreview | undefined,
   page: QueryPageRequest,
+  order?: BrowserWorkerResultPage,
 ): QueryResultData {
   if (!preview) return emptyPageResult(page);
   return resultPageFromPreview(
@@ -186,6 +297,7 @@ export function resultPageFromContractPreview(
       truncated: preview.truncated ?? false,
     },
     page,
+    order,
   );
 }
 
@@ -197,6 +309,7 @@ export function appendResultPage(current: QueryResultData, next: QueryResultData
   const rows = [...current.rows, ...next.rows];
   const loadedRows = rows.length;
   const hasMore = next.page?.has_more === true;
+  const loadMoreBlocked = hasMore ? next.page?.load_more_blocked : undefined;
   const pageSize = next.page?.size ?? current.page?.size ?? QUERY_RESULT_PAGE_SIZE;
 
   return {
@@ -210,7 +323,8 @@ export function appendResultPage(current: QueryResultData, next: QueryResultData
       returned_rows: next.page?.returned_rows ?? next.rows.length,
       loaded_rows: loadedRows,
       has_more: hasMore,
-      next_offset: hasMore ? loadedRows : undefined,
+      next_offset: hasMore && !loadMoreBlocked ? loadedRows : undefined,
+      ...(loadMoreBlocked ? { load_more_blocked: loadMoreBlocked } : {}),
     },
   };
 }
