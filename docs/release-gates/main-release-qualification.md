@@ -10,8 +10,8 @@
 `Qualified WASM stack release artifact` CI job uploads for a `main` push. That job builds the
 artifact only when every component in [`wasm-stack.lock.toml`](../../wasm-stack.lock.toml) that is
 linked into the WASM closure has both `candidate_sha` and `stack_sha` set. This candidate now
-populates both fields. It still needs the required fork source tags, successful final-mode CI,
-and integration into main before a qualified artifact can be produced. Main at
+populates both fields and publishes the required fork source tags. It still needs successful
+final-mode CI and integration into main before a qualified artifact can be produced. Main at
 `a04309b` still has the earlier bootstrap lock and no qualifying deployment artifact.
 
 The last production deployment predates this governed path: `Deploy axon-web` run 33353379053
@@ -26,8 +26,8 @@ pinned revisions against the locked WASM closure, so the lock cannot drift from 
 ## Fork publication checkpoint
 
 The `axon-wasm/v1` branches are published and protected against force pushes and deletion,
-including administrator enforcement. The required annotated `axon-wasm-v1.0.1-rc.1` and
-`axon-wasm-v1.0.1` source tags must point to these exact commits:
+including administrator enforcement. Annotated `axon-wasm-v1.0.1-rc.1` and
+`axon-wasm-v1.0.1` source tags are published at these exact commits:
 
 | Fork | Published source commit | DCO range |
 | --- | --- | --- |
@@ -49,21 +49,34 @@ old object-store revision. CI at `fd15315` exposed the same old revision in Arro
 The `v1.0.1` source set aligns the complete fork dependency chain; only fresh locked-graph and
 artifact checks can qualify it.
 
+The locked native workspace check and fresh browser WASM build passed in
+[CI run 41772389780](https://github.com/daxis-io/axon/actions/runs/41772389780) at `b7f5249` before
+tag publication. All six remote annotated tag objects and peeled commits were then verified;
+the earlier tag objects are unchanged. The three upstream POC jobs passed on the same Axon
+commit. These partial shipping-build results and separate POC proofs do not qualify an Axon
+release artifact; the complete CI run and successful main artifact job are still required.
+
 These source tags designate the current DataFusion 53/Arrow 58 stack. The separate canonical
 stack requires new release names and corresponding verifier/strategy changes. Source provenance
 does not qualify an Axon executable or a production deployment.
 
+The production dependency audit also found Seroval `1.5.4` under TanStack Router. Updating only
+that lockfile entry to compatible `1.7.7` clears the production audit (zero advisories). All 684
+unit tests and the TypeScript check pass with the update. The maintainer documents the
+[patched deserializer release](https://github.com/lxsmnsyc/seroval/security/advisories/GHSA-97r2-qh9m-474h).
+Fresh artifact and bundle checks must cover this updated JavaScript dependency before release.
+
 ## Remaining owner actions
 
-1. Require a fresh locked-graph pass on [integration PR #143](https://github.com/daxis-io/axon/pull/143).
-   The local repinned metadata attempt was stopped during a test-data submodule fetch with about
-   2 GiB free; it is blocked evidence, not a passed graph check. No artifacts were deleted.
-2. After the locked graph passes, publish the annotated `axon-wasm-v1.0.1-rc.1` and
-   `axon-wasm-v1.0.1` tags in all three forks and verify the remote tag objects and peeled commits.
-   These tags are pending at this checkpoint. Require fresh Rust/WASM builds, browser artifact,
-   production-bundle smoke, ten-spill qualification, and final-mode provenance in CI before
-   integration. PR #143 contains #139–#142; retire their
-   separate integration paths after the combined changes land.
+1. Require full fresh CI on the Seroval-updated commit in
+   [integration PR #143](https://github.com/daxis-io/axon/pull/143): the locked graph, Rust/WASM
+   builds, browser artifact, production-bundle smoke, ten-spill qualification, and final-mode
+   provenance must pass before integration. Confirm the production dependency audit remains clear.
+   The earlier local repinned metadata attempt was stopped during a test-data submodule fetch
+   with about 2 GiB free; it is blocked evidence, not a passed local graph check. No artifacts
+   were deleted.
+2. Integrate only after those gates pass. PR #143 contains #139–#142; retire their separate
+   integration paths after the combined changes land.
 3. Confirm the `VERCEL_TOKEN`, `VERCEL_ORG_ID`, and `VERCEL_PROJECT_ID` repository secrets exist.
    Once the lock is complete, the release job fails rather than skips without them.
    Protected deployments also require a valid `VERCEL_AUTOMATION_BYPASS_SECRET`. Blocked access
@@ -99,7 +112,7 @@ propagation retries, and the deferred local commit-history import that fixes eag
 | Browser fixture repairs | **passed** | 18 passed, 3 capability skips; IndexedDB fault injection patches the prototype, external font/analytics requests are mocked, and clipboard permission coverage is Chromium-specific |
 | Final editor matrix | **passed** | Chromium, Firefox, WebKit: 143 passed, 22 explicit skips, zero failures; retained under `apps/axon-web/test-results/production-readiness-editor-final/`; skips include stress fixtures, browser-specific cases, clipboard permissions, and WebKit directory-handle persistence |
 | Persistent WebKit OPFS lifecycle | **passed** | Existing real 4 MiB worker lifecycle test; separate from private-WebKit unavailability |
-| Governed release artifact | **blocked** | Fork DCO repairs and protected source branches are complete; verify release tags, integrate into main, and require successful final-mode main CI |
+| Governed release artifact | **blocked** | Fork DCO repairs, protected source branches, and release tags are complete; integrate into main and require successful final-mode main CI |
 | Canonical Kernel/checkpoint stack | **blocked** | Separate candidate; enclosing qualification reports `RuntimeError: retained browsers changed`; passing functional substages do not close the runtime-identity audit |
 | Fresh native/WASM builds, ten-spill qualification, matched performance, real protected Vercel staging/promotion, and private-data host proof | **untested** | Not admitted by these local checks; no production or provider operation was performed |
 
