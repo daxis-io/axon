@@ -51,6 +51,17 @@ import {
 
 const APP_ORIGIN = new URL(process.env.PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:5174').origin;
 
+test.beforeEach(async ({ context }) => {
+  await context.route(/^https:\/\/(?:fonts\.googleapis\.com|va\.vercel-scripts\.com)\//, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType:
+        route.request().resourceType() === 'stylesheet' ? 'text/css' : 'application/javascript',
+      body: '',
+    }),
+  );
+});
+
 // Console noise that says nothing about the app under test.
 const IGNORABLE_CONSOLE_ERRORS = [
   // Cancelling an in-flight WASM fetch during navigation.
@@ -2138,7 +2149,12 @@ test.describe('editor (Phase 1 smoke)', () => {
 
   test('persists File System Access directory handles across reload for local Delta catalogs', async ({
     page,
+    browserName,
   }) => {
+    test.skip(
+      browserName === 'webkit',
+      'WebKit cannot serialize directory handles; reload requires reselect.',
+    );
     const tableDir = fileURLToPath(new URL('../public/fixtures/prod-like/table', import.meta.url));
     const localRegistryId = await connectLocalDeltaDirectoryHandle(page, tableDir, 'handle-local');
 
@@ -2201,14 +2217,14 @@ test.describe('editor (Phase 1 smoke)', () => {
           },
         ]),
       );
-      const originalOpen = window.indexedDB.open.bind(window.indexedDB);
-      Object.defineProperty(window.indexedDB, 'open', {
+      const originalOpen = IDBFactory.prototype.open;
+      Object.defineProperty(IDBFactory.prototype, 'open', {
         configurable: true,
-        value: (name: string, version?: number) => {
+        value: function (this: IDBFactory, name: string, version?: number) {
           if (name === 'axon-local-delta-registry') {
             throw new Error('registry boom');
           }
-          return originalOpen(name, version);
+          return originalOpen.call(this, name, version);
         },
       });
     });
@@ -2269,19 +2285,13 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(browserErrors, `browser errors:\n${browserErrors.join('\n')}`).toEqual([]);
   });
 
-  test('loads selected connected catalog, populates table, runs a query', async ({
-    page,
-    context,
-  }) => {
+  test('loads selected connected catalog, populates table, runs a query', async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on('console', (msg) => {
       const text = msg.text();
       if (msg.type() === 'error' && !isIgnorableConsoleError(msg)) consoleErrors.push(text);
     });
     page.on('pageerror', (err) => consoleErrors.push(err.message));
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
-      origin: APP_ORIGIN,
-    });
 
     await page.goto('/');
 
@@ -2325,11 +2335,6 @@ test.describe('editor (Phase 1 smoke)', () => {
     expect(connectState).toBeNull();
 
     // Result-grid actions operate on the visible result set.
-    await page.locator('button[title="Copy results as CSV"]').click();
-    await expect
-      .poll(async () => page.evaluate(() => navigator.clipboard.readText()))
-      .toContain('row_count');
-
     await page.locator('table.grid tbody td').nth(1).dblclick();
     await expect(page.locator('[role="dialog"][aria-label="Cell value"]')).toContainText(
       'row_count',
@@ -2358,6 +2363,25 @@ test.describe('editor (Phase 1 smoke)', () => {
     await expect(page.locator('.plan-tree')).toHaveCount(0);
 
     expect(consoleErrors, `console errors:\n${consoleErrors.join('\n')}`).toEqual([]);
+  });
+
+  test('copies query results to the system clipboard in Chromium', async ({
+    page,
+    context,
+    browserName,
+  }) => {
+    test.skip(
+      browserName !== 'chromium',
+      'Playwright clipboard permissions are Chromium-specific.',
+    );
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: APP_ORIGIN });
+    await page.goto('/');
+    await page.locator('.btn.primary', { hasText: 'Run' }).click();
+    await expect(page.locator('table.grid tbody tr')).toHaveCount(1);
+    await page.locator('button[title="Copy results as CSV"]').click();
+    await expect
+      .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+      .toContain('row_count');
   });
 });
 
@@ -3180,7 +3204,7 @@ async function blockDurableLocalDeltaRegistry(page: Page): Promise<void> {
         value: undefined,
       });
     }
-    Object.defineProperty(window.indexedDB, 'open', {
+    Object.defineProperty(IDBFactory.prototype, 'open', {
       configurable: true,
       value: () => {
         throw new DOMException('blocked by test', 'InvalidStateError');

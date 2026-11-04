@@ -1,6 +1,7 @@
 import { expect, test, type Request } from '@playwright/test';
 import { catalogTableSqlPath } from '../src/editor/catalog-navigation.ts';
 import { SAMPLE_QUERY_SOURCE_REF } from '../src/services/query-source.ts';
+import { authorizeDeploymentRequests } from './deployment-access.ts';
 
 // Runs under playwright.production-bundle.config.ts: the built bundle, the production host's
 // routing and headers, and no cross-origin isolation.
@@ -9,7 +10,12 @@ const CATEGORY_TOTALS_SQL =
 
 test('queries the bundled sample table through the built app under production headers', async ({
   page,
+  baseURL,
 }) => {
+  const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+  if (bypass) {
+    await authorizeDeploymentRequests(page.context(), baseURL!, bypass);
+  }
   const pageErrors: string[] = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
   const requests: Request[] = [];
@@ -40,6 +46,8 @@ test('queries the bundled sample table through the built app under production he
   expect(pageErrors).toEqual([]);
 
   // A hashed asset the build did not emit must 404 rather than come back as the app shell.
-  const missing = await page.request.get('/assets/sandbox-query-child-worker-missing.js');
-  expect(missing.status()).toBe(404);
+  const missingStatus = await page.evaluate(async () => {
+    return (await fetch('/assets/sandbox-query-child-worker-missing.js')).status;
+  });
+  expect(missingStatus).toBe(404);
 });

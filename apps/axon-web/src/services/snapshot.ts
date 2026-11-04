@@ -2,7 +2,6 @@
 // local sources publish already-parsed entries with their resolved runtime.
 
 import { buildDeltaCommitHistory, deltaCommitVersion } from './delta-commit-history.ts';
-import { localDeltaCommitHistory } from './local-delta.ts';
 import type { QueryTableSource } from './query-source.ts';
 import { getQueryRuntimeState } from './query-runtime-state.ts';
 import type { CommitEntry } from './types.ts';
@@ -10,7 +9,9 @@ import type { CommitEntry } from './types.ts';
 export async function loadCommits(source: QueryTableSource): Promise<CommitEntry[]> {
   const state = getQueryRuntimeState(source);
   if (source.kind === 'local_delta') {
-    return state?.commits ?? localDeltaCommitHistory(source.localRegistryId, source.snapshot) ?? [];
+    if (state?.commits) return state.commits;
+    const { localDeltaCommitHistory } = await import('./local-delta.ts');
+    return localDeltaCommitHistory(source.localRegistryId, source.snapshot) ?? [];
   }
   if (source.kind !== 'manifest') return [];
   if (!state?.manifest) return [];

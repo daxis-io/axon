@@ -57,5 +57,6 @@ require 'vercel deploy --prebuilt --prod --skip-domain' "$deploy" "staging does 
 require 'vercel promote .*--yes' "$deploy" "production does not promote the previously staged immutable deployment"
 require 'axon-web-staged-production' "$deploy" "staged deployment identity is not persisted for later promotion"
 require 'browser-runtime-build\.ts verify[[:space:]\\]+\.vercel/output/static "\$QUALIFIED_COMMIT"' "$deploy" "deployment does not check that the artifact's runtime manifest names the qualified commit"
+require 'Verify staged deployment[[:space:][:print:]]*verify-deployment\.sh[[:space:][:print:]]*PLAYWRIGHT_BASE_URL="\$STAGED_URL" npm run test:browser:production-bundle[[:space:][:print:]]*Promote the exact staged deployment' "$deploy" "promotion does not require asset verification and a real query against the staged deployment"
 
 echo "WASM release qualification and exact-artifact promotion workflow contract passed"

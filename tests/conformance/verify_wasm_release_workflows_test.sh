@@ -46,4 +46,8 @@ reset_workflows
 sed -i.bak 's/static "$QUALIFIED_COMMIT"/static/' "$tmpdir/repo/.github/workflows/deploy-axon-web.yml"
 expect_rejected "a deployment that does not check the artifact's recorded commit"
 
+reset_workflows
+sed -i.bak '/PLAYWRIGHT_BASE_URL=.*npm run test:browser:production-bundle/d' "$tmpdir/repo/.github/workflows/deploy-axon-web.yml"
+expect_rejected "a promotion without a successful staged query"
+
 echo "WASM release workflow negative rebuild, release-state, and commit-identity coverage passed"

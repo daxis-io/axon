@@ -47,30 +47,28 @@ probe() {
   curl "${curl_args[@]}" -o /dev/null -w '%{http_code} %{content_type}' "$1"
 }
 
-# A protected deployment is not a defect, so report it and skip rather than failing every check.
+# Inaccessible assets cannot qualify a deployment, including when a configured bypass is rejected.
 redirect_target=$(curl "${curl_args[@]}" -o /dev/null -w '%{redirect_url}' "${deploy_url}/")
 if [[ "${redirect_target}" == *"vercel.com/sso"* ]]; then
-  echo "Deployment protection is enabled on ${deploy_url} and no bypass secret is configured;"
-  echo "skipping asset verification. Set VERCEL_AUTOMATION_BYPASS_SECRET to verify protected"
-  echo "deployments (Project Settings -> Deployment Protection -> Protection Bypass for Automation)."
-  exit 0
+  echo "FAIL: deployment protection blocked verification. Configure a valid VERCEL_AUTOMATION_BYPASS_SECRET." >&2
+  exit 1
 fi
 
 expect_asset() {
-  local path="$1" expected_type="$2" result status content_type failure_reason attempt
+  local path="$1" expected_type="$2" expected_file="${3:-}" result status content_type failure_reason attempt
   for ((attempt = 1; attempt <= verify_attempts; attempt++)); do
     result=$(probe "${deploy_url}${path}")
     status="${result%% *}"
     content_type="${result#* }"
-    if [[ "${status}" == "200" && "${content_type}" == *"${expected_type}"* ]]; then
-      echo "ok: ${path} -> ${status} ${content_type}"
-      return
-    fi
-
     if [[ "${status}" != "200" ]]; then
       failure_reason="${path} returned ${status}, expected 200"
-    else
+    elif [[ "${content_type}" != *"${expected_type}"* ]]; then
       failure_reason="${path} served as '${content_type}', expected '${expected_type}'"
+    elif [[ -n "${expected_file}" ]] && ! curl "${curl_args[@]}" --fail "${deploy_url}${path}" | cmp -s "${expected_file}" -; then
+      failure_reason="${path} does not match the qualified build"
+    else
+      echo "ok: ${path} -> ${status} ${content_type}"
+      return
     fi
 
     if ((attempt < verify_attempts)); then
@@ -90,6 +88,8 @@ asset_path() {
 }
 
 expect_asset "/" "text/html"
+
+expect_asset "/axon-runtime-build.json" "application/json" "${dist_root}/axon-runtime-build.json"
 
 for pattern in 'sandbox-query-worker-*.js' 'sandbox-query-child-worker-*.js'; do
   if path=$(asset_path "${pattern}"); then
