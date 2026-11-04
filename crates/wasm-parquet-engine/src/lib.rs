@@ -8145,7 +8145,12 @@ mod tests {
     }
 
     fn write_response(stream: &mut std::net::TcpStream, response: TestResponse) {
-        write!(stream, "HTTP/1.1 {}\r\n", response.status_line).expect("status line should write");
+        write!(
+            stream,
+            "HTTP/1.1 {}\r\nConnection: close\r\n",
+            response.status_line
+        )
+        .expect("status line should write");
         for (header, value) in response.headers {
             write!(stream, "{header}: {value}\r\n").expect("header should write");
         }
