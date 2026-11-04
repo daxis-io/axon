@@ -49,8 +49,8 @@ printf '%s\n' stack >>"$seed/README.md"
 git -C "$seed" add README.md
 git -C "$seed" commit -q -s -m "chore: wire qualified stack"
 stack_sha="$(git -C "$seed" rev-parse HEAD)"
-git -C "$seed" tag -a axon-wasm-v1.0.0-rc.1 -m "qualified release candidate"
-git -C "$seed" tag -a axon-wasm-v1.0.0 -m "qualified final release"
+git -C "$seed" tag -a axon-wasm-v1.0.1-rc.1 -m "qualified release candidate"
+git -C "$seed" tag -a axon-wasm-v1.0.1 -m "qualified final release"
 bare="$tmpdir/component.git"
 git clone -q --bare "$seed" "$bare"
 component_url="file://$bare"
@@ -88,8 +88,8 @@ wasm_roots = ["stack-v2-fixture"]
 
 [release]
 branch = "axon-wasm/v1"
-candidate_tag = "axon-wasm-v1.0.0-rc.1"
-final_tag = "axon-wasm-v1.0.0"
+candidate_tag = "axon-wasm-v1.0.1-rc.1"
+final_tag = "axon-wasm-v1.0.1"
 
 [components.arrow_rs]
 canonical_url = "$component_url"
@@ -456,8 +456,8 @@ fi
 
 lightweight_seed="$tmpdir/lightweight-seed"
 git clone -q "$seed" "$lightweight_seed"
-git -C "$lightweight_seed" tag -d axon-wasm-v1.0.0 >/dev/null
-git -C "$lightweight_seed" tag axon-wasm-v1.0.0 "$stack_sha"
+git -C "$lightweight_seed" tag -d axon-wasm-v1.0.1 >/dev/null
+git -C "$lightweight_seed" tag axon-wasm-v1.0.1 "$stack_sha"
 lightweight_bare="$tmpdir/lightweight.git"
 git clone -q --bare "$lightweight_seed" "$lightweight_bare"
 lightweight_url="file://$lightweight_bare"
@@ -599,10 +599,10 @@ GIT_COMMITTER_EMAIL="actual-committer@example.invalid" \
 bad_dco_sha="$(git -C "$bad_dco_seed" rev-parse HEAD)"
 GIT_COMMITTER_NAME="Axon stack lock v2 test" \
 GIT_COMMITTER_EMAIL="stack-lock-v2@example.invalid" \
-  git -C "$bad_dco_seed" tag -f -a axon-wasm-v1.0.0-rc.1 -m "bad DCO release candidate"
+  git -C "$bad_dco_seed" tag -f -a axon-wasm-v1.0.1-rc.1 -m "bad DCO release candidate"
 GIT_COMMITTER_NAME="Axon stack lock v2 test" \
 GIT_COMMITTER_EMAIL="stack-lock-v2@example.invalid" \
-  git -C "$bad_dco_seed" tag -f -a axon-wasm-v1.0.0 -m "bad DCO final release"
+  git -C "$bad_dco_seed" tag -f -a axon-wasm-v1.0.1 -m "bad DCO final release"
 bad_dco_bare="$tmpdir/bad-dco.git"
 git clone -q --bare "$bad_dco_seed" "$bad_dco_bare"
 bad_dco_url="file://$bad_dco_bare"

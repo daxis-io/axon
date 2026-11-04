@@ -12,5 +12,5 @@ publication_ref = "refs/heads/axon-wasm/v1"
 
 [[pins]]
 repository = "https://github.com/daxis-io/datafusion"
-revision = "5d179eb433f4ae0329d6615547b47c2f047cfee3"
+revision = "c642f50a86c1cbfaf3d1cc816e742ca4c65b4a45"
 publication_ref = "refs/heads/axon-wasm/v1"

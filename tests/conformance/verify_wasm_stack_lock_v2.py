@@ -355,8 +355,8 @@ def main() -> None:
         fail("wasm-stack.lock.toml must contain a release table")
     for field, expected in (
         ("branch", "axon-wasm/v1"),
-        ("candidate_tag", "axon-wasm-v1.0.0-rc.1"),
-        ("final_tag", "axon-wasm-v1.0.0"),
+        ("candidate_tag", "axon-wasm-v1.0.1-rc.1"),
+        ("final_tag", "axon-wasm-v1.0.1"),
     ):
         if release.get(field) != expected:
             fail(f"release.{field} must be {expected}")

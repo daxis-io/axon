@@ -10,8 +10,8 @@
 `Qualified WASM stack release artifact` CI job uploads for a `main` push. That job builds the
 artifact only when every component in [`wasm-stack.lock.toml`](../../wasm-stack.lock.toml) that is
 linked into the WASM closure has both `candidate_sha` and `stack_sha` set. This candidate now
-populates both fields and publishes the required fork source tags. It still needs successful
-final-mode CI and integration into main before a qualified artifact can be produced. Main at
+populates both fields. It still needs the required fork source tags, successful final-mode CI,
+and integration into main before a qualified artifact can be produced. Main at
 `a04309b` still has the earlier bootstrap lock and no qualifying deployment artifact.
 
 The last production deployment predates this governed path: `Deploy axon-web` run 33353379053
@@ -26,19 +26,26 @@ pinned revisions against the locked WASM closure, so the lock cannot drift from 
 ## Fork publication checkpoint
 
 The `axon-wasm/v1` branches are published and protected against force pushes and deletion,
-including administrator enforcement. Annotated `axon-wasm-v1.0.0-rc.1` and
-`axon-wasm-v1.0.0` source tags point to these exact commits:
+including administrator enforcement. The required annotated `axon-wasm-v1.0.1-rc.1` and
+`axon-wasm-v1.0.1` source tags must point to these exact commits:
 
 | Fork | Published source commit | DCO range |
 | --- | --- | --- |
 | `daxis-io/arrow-rs` | `52c8fb2e9c28b9d89d08c313e1bc938a35c29c99` | 11 commits passed |
 | `daxis-io/arrow-rs-object-store` | `73f659ffe91e0798527fc8eadcd36caedcbd6f84` | 17 commits passed |
-| `daxis-io/datafusion` | `5d179eb433f4ae0329d6615547b47c2f047cfee3` | 24 commits passed |
+| `daxis-io/datafusion` | `c642f50a86c1cbfaf3d1cc816e742ca4c65b4a45` | 25 commits passed |
 
-The object-store and DataFusion replacements add the original author's sign-off while preserving
-the original source trees and ordered parents. Their old tips (`ab9fda65`, `8c5b4526`) remain on
-their original publication refs. Local fork checkouts and unrelated work were preserved.
+The object-store and initial DataFusion replacements add the original author's sign-off while
+preserving the original source trees and ordered parents. DataFusion then updates only its root
+manifest and lockfile to request the signed object-store revision. Their old tips (`ab9fda65`,
+`8c5b4526`) remain on their original publication refs. Local fork checkouts and unrelated work
+were preserved.
 The root Cargo manifest, lockfile, shipping-pin policy, and stack lock agree on the new identities.
+
+The superseded `axon-wasm-v1.0.0-rc.1` and `axon-wasm-v1.0.0` source tags remain immutable.
+CI at `a9ed9fd` rejected the hand-updated Axon lockfile because DataFusion still requested the
+old object-store revision. The `v1.0.1` source set aligns that transitive dependency; only fresh
+locked-graph and artifact checks can qualify it.
 
 These source tags designate the current DataFusion 53/Arrow 58 stack. The separate canonical
 stack requires new release names and corresponding verifier/strategy changes. Source provenance
@@ -46,12 +53,14 @@ does not qualify an Axon executable or a production deployment.
 
 ## Remaining owner actions
 
-1. Require fresh CI on [integration PR #143](https://github.com/daxis-io/axon/pull/143), including
-   the locked graph, Rust/WASM builds, browser artifact, production-bundle smoke, ten-spill lane,
-   and `bash tests/conformance/verify_upstream_wasm_fork_stack.sh --production --final`.
+1. Require a fresh locked-graph pass on [integration PR #143](https://github.com/daxis-io/axon/pull/143).
    The local repinned metadata attempt was stopped during a test-data submodule fetch with about
    2 GiB free; it is blocked evidence, not a passed graph check. No artifacts were deleted.
-2. Integrate the candidate only after those gates pass. PR #143 contains #139–#142; retire their
+2. After the locked graph passes, publish the annotated `axon-wasm-v1.0.1-rc.1` and
+   `axon-wasm-v1.0.1` tags in all three forks and verify the remote tag objects and peeled commits.
+   These tags are pending at this checkpoint. Require fresh Rust/WASM builds, browser artifact,
+   production-bundle smoke, ten-spill qualification, and final-mode provenance in CI before
+   integration. PR #143 contains #139–#142; retire their
    separate integration paths after the combined changes land.
 3. Confirm the `VERCEL_TOKEN`, `VERCEL_ORG_ID`, and `VERCEL_PROJECT_ID` repository secrets exist.
    Once the lock is complete, the release job fails rather than skips without them.
@@ -88,7 +97,7 @@ propagation retries, and the deferred local commit-history import that fixes eag
 | Browser fixture repairs | **passed** | 18 passed, 3 capability skips; IndexedDB fault injection patches the prototype, external font/analytics requests are mocked, and clipboard permission coverage is Chromium-specific |
 | Final editor matrix | **passed** | Chromium, Firefox, WebKit: 143 passed, 22 explicit skips, zero failures; retained under `apps/axon-web/test-results/production-readiness-editor-final/`; skips include stress fixtures, browser-specific cases, clipboard permissions, and WebKit directory-handle persistence |
 | Persistent WebKit OPFS lifecycle | **passed** | Existing real 4 MiB worker lifecycle test; separate from private-WebKit unavailability |
-| Governed release artifact | **blocked** | Fork DCO repairs and source release pins/tags are now complete; integration into main and successful final-mode main CI are still required |
+| Governed release artifact | **blocked** | Fork DCO repairs and protected source branches are complete; verify release tags, integrate into main, and require successful final-mode main CI |
 | Canonical Kernel/checkpoint stack | **blocked** | Separate candidate; enclosing qualification reports `RuntimeError: retained browsers changed`; passing functional substages do not close the runtime-identity audit |
 | Fresh native/WASM builds, ten-spill qualification, matched performance, real protected Vercel staging/promotion, and private-data host proof | **untested** | Not admitted by these local checks; no production or provider operation was performed |
 

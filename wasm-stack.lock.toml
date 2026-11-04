@@ -6,15 +6,15 @@ wasm_roots = ["axon-web-wasm"]
 # DataFusion 53.1.0, Arrow/Parquet 58.3.0, and object_store 0.13.2 forks pinned in the root
 # Cargo.toml. Delta Kernel and delta-rs are not linked into the WASM closure, so they are declared
 # absent. Every mode checks versions, sources, and pinned stack revisions against the locked
-# closure. The linked fork revisions have annotated candidate/final source tags and protected
-# release branches. CI enforces final-mode provenance; Axon artifact qualification is separate.
+# closure. The linked fork revisions have protected release branches. CI enforces the required
+# annotated candidate/final source tags; Axon artifact qualification is separate.
 # The canonical target stack (DataFusion 55, Arrow 59.3, object_store 0.14.1, Delta Kernel 0.28,
 # deltalake-browser) replaces these entries in the change that moves the closure to it.
 
 [release]
 branch = "axon-wasm/v1"
-candidate_tag = "axon-wasm-v1.0.0-rc.1"
-final_tag = "axon-wasm-v1.0.0"
+candidate_tag = "axon-wasm-v1.0.1-rc.1"
+final_tag = "axon-wasm-v1.0.1"
 
 [components.arrow_rs]
 canonical_url = "https://github.com/apache/arrow-rs"
@@ -46,8 +46,8 @@ daxis_url = "https://github.com/daxis-io/datafusion"
 release_version = "53.1.0"
 base_tag = "53.1.0"
 base_sha = "eae7bf4fa1c037c0a065d1f36d0669f5bb97a9cf"
-candidate_sha = "5d179eb433f4ae0329d6615547b47c2f047cfee3"
-stack_sha = "5d179eb433f4ae0329d6615547b47c2f047cfee3"
+candidate_sha = "c642f50a86c1cbfaf3d1cc816e742ca4c65b4a45"
+stack_sha = "c642f50a86c1cbfaf3d1cc816e742ca4c65b4a45"
 target_triple = "wasm32-unknown-unknown"
 expected_package_source = "https://github.com/daxis-io/datafusion"
 package_patterns = ["datafusion", "datafusion-*"]

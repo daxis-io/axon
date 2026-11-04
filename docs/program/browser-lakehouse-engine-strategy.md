@@ -417,7 +417,7 @@ bundle, branch dependency, or local-path external dependency may appear in the f
 
 Publish in dependency order: Arrow/Parquet and `object_store`, DataFusion, Delta Kernel, delta-rs,
 then Axon. Every fork uses protected `axon-wasm/v1`, annotated
-`axon-wasm-v1.0.0-rc.1`, and final `axon-wasm-v1.0.0` at the exact qualified RC commit. DCO,
+`axon-wasm-v1.0.1-rc.1`, and final `axon-wasm-v1.0.1` at the exact qualified RC commit. DCO,
 native regression, WASM closure, and downstream fan-in are mandatory. Upstream review is welcome
 but is not a release gate.
 
