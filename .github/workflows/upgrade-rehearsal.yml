@@ -29,7 +29,10 @@ jobs:
         run: cargo install wasm-bindgen-cli --version 0.2.114 --locked
 
       - name: Refresh candidate dependency set
-        run: cargo update
+        run: |
+          cargo update
+          # shortcut: derive 1.2.0 removed parse_column_name! used by kernel 0.22.2, revisit on kernel upgrade.
+          cargo update -p buoyant_kernel_derive --precise 1.0.0
 
       - name: Capture Cargo.lock diff
         run: git diff --binary -- Cargo.lock > upgrade-rehearsal-cargo-lock.diff
